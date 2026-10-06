@@ -1,0 +1,275 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Routing — v1</title><link rel="stylesheet" href="style.css">
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="car" viewBox="0 0 24 24"><path d="M5 16h14M6 16l1.5-5h9L18 16M5 16v3M19 16v3"/><circle cx="8" cy="16" r="0.6"/><circle cx="16" cy="16" r="0.6"/></symbol>
+    <symbol id="bike" viewBox="0 0 24 24"><circle cx="6" cy="16" r="3.5"/><circle cx="18" cy="16" r="3.5"/><path d="M6 16l4-7h5l3 7M10 9l2 7h-6M14 6h2"/></symbol>
+    <symbol id="walk" viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="1.6"/><path d="M11 21l2-6-2-3 1-4 3 3h3M9 12l2-4M13 15l3 6"/></symbol>
+    <symbol id="play" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></symbol>
+    <symbol id="skip" viewBox="0 0 24 24"><path d="M5 5l9 7-9 7zM17 5v14"/></symbol>
+    <symbol id="left" viewBox="0 0 24 24"><path d="M15 20v-7a4 4 0 0 0-4-4H5M9 5L5 9l4 4"/></symbol>
+    <symbol id="gps" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6.1-6-11a6 6 0 0 1 12 0c0 4.9-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+    <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></symbol>
+    <symbol id="meet" viewBox="0 0 24 24"><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.5 16.5L12 9l5.5 7.5"/><path d="M12 9V4l3 1.5L12 7"/></symbol>
+  </defs>
+</svg>
+</head>
+<body>
+
+<h1>Routing — <b>v1: walk in the world, ride and drive with a GPS, meet through a chat</b></h1>
+<p class="lede">Every frame is a <b>real capture of today's phone build</b> (412×915, the shot harness, Groningen) with the proposal drawn over it.
+Three journeys: <i>Walk</i> happens in the world — the avatar, the map and the follow camera stay. <i>Bike</i> and <i>Car</i> are
+real-world navigation and use today's driver mode, which needs a position fix. And a friend's chat is where a route starts
+when the point of it is to meet somebody.</p>
+<div class="legend"><span><span class="swatch"></span>new — not in the app today</span><span><span class="today"></span>everything else is today's app, unchanged</span></div>
+
+<!-- ============================================================ -->
+<section>
+<h2><span>1</span>The planner: one sheet, three answers</h2>
+<p>Today's bottom sheet, same place and same two detents. The mode chips carry each mode's time, solved together from the corridor the planner already fetches,
+so choosing a mode is a look rather than three solves. The Start button names what it will do.</p>
+<div class="row">
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/planner.png)"></div>
+    <h3><span>A</span>Today <em>capture</em></h3>
+    <ul><li>Mode chips Car / Bike / Walk; one time shown, for the selected mode.</li>
+        <li>Start always enters the same car satnav — for a walk too.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/planner.png)">
+      <div class="glass sheet new solid" id="sheetB" style="bottom:65px">
+        <div class="grab"></div>
+        <div class="chips">
+          <div class="chip"><span class="t"><svg class="i"><use href="#car"/></svg>9 min</span><span class="m">Car</span></div>
+          <div class="chip on"><span class="t"><svg class="i"><use href="#bike"/></svg>12 min</span><span class="m">Bike</span></div>
+          <div class="chip"><span class="t"><svg class="i"><use href="#walk"/></svg>31 min</span><span class="m">Walk</span></div>
+          <div class="x">✕</div>
+        </div>
+        <div class="summary"><b>12 min</b><span class="dim">· 2.6 km</span></div>
+        <div class="via">mostly fietspad · via Noorderhaven</div>
+        <div class="actions"><span class="btn">Clear</span><span class="btn primary grow"><svg class="i"><use href="#bike"/></svg>Ride</span></div>
+      </div>
+    </div>
+    <h3><span>B</span>Bike chosen <em class="new">new</em></h3>
+    <ul><li><b>All three times at once</b> on the chips. The line on the map is the selected mode's.</li>
+        <li>Bike is its own mode because the Netherlands is full of bike-only roads; the sheet says how much of the route is fietspad.</li>
+        <li>Start reads <b>Ride</b>. With a fix it opens driver mode with cycling chrome (frame F).</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/planner.png)">
+      <div class="glass sheet new solid" style="bottom:65px">
+        <div class="grab"></div>
+        <div class="chips">
+          <div class="chip on"><span class="t"><svg class="i"><use href="#car"/></svg>9 min</span><span class="m">Car</span></div>
+          <div class="chip"><span class="t"><svg class="i"><use href="#bike"/></svg>12 min</span><span class="m">Bike</span></div>
+          <div class="chip"><span class="t"><svg class="i"><use href="#walk"/></svg>31 min</span><span class="m">Walk</span></div>
+          <div class="x">✕</div>
+        </div>
+        <div class="summary"><b>9 min</b><span class="dim">· 3.4 km</span></div>
+        <div class="via"><span style="color:var(--warn)">●</span> Driving needs this device's position. Plan and read the turns here, drive with the phone.</div>
+        <div class="actions"><span class="btn">Clear</span><span class="btn off grow"><svg class="i"><use href="#gps"/></svg>Needs a GPS position</span></div>
+      </div>
+    </div>
+    <h3><span>C</span>Car, no position fix <em class="new">new</em></h3>
+    <ul><li>Car is <b>real navigation only</b>: no fix, no Start. The route, the time and the turn list all still work.</li>
+        <li>Desktop gets a fix when it has a location source (GeoClue on Linux, the OS service on Windows and macOS) — later step.</li>
+        <li>No drivable car in the world, and no protocol change.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/planner.png)">
+      <div class="glass sheet new solid" style="bottom:65px">
+        <div class="grab"></div>
+        <div class="chips">
+          <div class="chip"><span class="t"><svg class="i"><use href="#car"/></svg>9 min</span><span class="m">Car</span></div>
+          <div class="chip"><span class="t"><svg class="i"><use href="#bike"/></svg>12 min</span><span class="m">Bike</span></div>
+          <div class="chip on"><span class="t"><svg class="i"><use href="#walk"/></svg>31 min</span><span class="m">Walk</span></div>
+          <div class="x">✕</div>
+        </div>
+        <div class="summary"><b>31 min</b><span class="dim">· 2.4 km · to the front door</span></div>
+        <div class="via">That's a long walk in the world — skip ahead any time.</div>
+        <div class="actions"><span class="btn">Clear</span><span class="btn">Walk</span><span class="btn primary grow"><svg class="i"><use href="#play"/></svg>Walk me there</span></div>
+      </div>
+    </div>
+    <h3><span>D</span>Walk chosen <em class="new">new</em></h3>
+    <ul><li><b>Walk</b>: you walk it yourself, the route drawn on the ground.</li>
+        <li><b>Walk me there</b>: the avatar follows the route by itself (the bot account's <code>walk_to</code> already does this). Any movement key takes over.</li>
+        <li>The route ends at the building's <b>entrance</b> from the BAG address register, not at the nearest road.</li></ul>
+  </div>
+
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2><span>2</span>Following the route: walking stays in the world, riding and driving use driver mode</h2>
+<p>Today, Start strips the map, hides the avatar and locks a chase camera — for every mode. Walking keeps all of that instead; the satnav is for when you are really moving.</p>
+<div class="row">
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/walk.png)">
+      <svg class="new" style="left:0;top:0;width:412px;height:915px;outline:none" viewBox="0 0 412 915">
+        <path id="walkline" d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="var(--route)" stroke-width="14" stroke-linecap="round" opacity=".9"/>
+        <text font-size="17" fill="#fff" font-weight="600" dominant-baseline="central"><textPath href="#walkline" startOffset="30">&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;</textPath></text>
+      </svg>
+      <div class="tag" style="left:350px;top:520px">NEW</div>
+      <div class="glass turn new" style="top:16px;left:60px"><div class="arrow" style="background:var(--brand)"><svg class="i" style="transform:scaleX(-1)"><use href="#left"/></svg></div>
+        <div><b>40 m</b><span>Right into Oude Ebbingestraat</span></div></div>
+      <div class="glass new" style="left:10px;right:10px;bottom:72px;padding:8px 10px;display:flex;align-items:center;gap:8px">
+        <div style="flex:1"><div style="color:var(--cream);font-size:15px">27 min <span class="dim small">· 2.1 km left</span></div><div class="dim small">Stadsschouwburg, front door</div></div>
+        <span class="btn"><svg class="i"><use href="#skip"/></svg>Skip</span><span class="btn"><svg class="i"><use href="#play"/></svg>Auto</span><span class="btn">Stop</span>
+      </div>
+    </div>
+    <h3><span>E</span>Walking <em class="new">new</em></h3>
+    <ul><li>Avatar, buildings, people, chat and the follow camera all stay. Only the route and two small boxes are added.</li>
+        <li>The line near you turns into <b>chevrons on the ground</b>; the next turn is a small card, orange because it is the world's chrome, not the satnav's blue.</li>
+        <li><b>Skip</b> jumps to the next junction (long-press: to the destination). <b>Auto</b> is Walk me there.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/driver.png)">
+      <div class="tag" style="right:14px;top:14px">BIKE VARIANT</div>
+    </div>
+    <h3><span>F</span>Riding or driving <em>capture</em></h3>
+    <ul><li>Today's driver mode, unchanged for the car: chase camera, turn card, route rail, speed pill.</li>
+        <li>For a bike <span style="color:var(--brand)">(new)</span>: bike speeds on the rail, no speed-limit sign, the turn card names the fietspad, and the camera rig is tuned for 15–25 km/h.</li>
+        <li>Both need a position fix; the avatar is moved to the fix, as today.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/walk.png)">
+      <div class="glass pill new" style="left:50%;transform:translateX(-50%);top:58px;white-space:nowrap"><span class="dot" style="background:var(--brand)"></span>Walking you there · any key takes over</div>
+      <svg style="left:0;top:0;width:412px;height:915px" viewBox="0 0 412 915">
+        <path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="var(--route)" stroke-width="14" stroke-linecap="round" opacity=".9"/>
+      </svg>
+      <div class="glass new" style="left:10px;right:10px;bottom:72px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;color:var(--cream)"><span>Skip ahead to…</span><span class="dim small">✕</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:13.5px">
+          <div class="btn" style="justify-content:space-between"><span>Next turn · Oude Ebbingestraat</span><span class="dim">40 m</span></div>
+          <div class="btn" style="justify-content:space-between"><span>Halfway · Noorderplantsoen</span><span class="dim">1.1 km</span></div>
+          <div class="btn primary" style="justify-content:space-between"><span>Arrive · Stadsschouwburg</span><span>2.1 km</span></div>
+        </div>
+      </div>
+    </div>
+    <h3><span>G</span>Walk me there, and skipping <em class="new">new</em></h3>
+    <ul><li>While the avatar walks itself, a pill at the top says so — any movement key or a drag hands control back.</li>
+        <li>Long-pressing Skip offers the stops along the route. A skip is today's teleport, along the route.</li>
+        <li>Online, other people see you walk — or appear, after a skip.</li></ul>
+  </div>
+
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2><span>3</span>Meeting a friend: a route can start from a chat</h2>
+<p>Today's private chats already carry points and live shared locations, and tapping either flies the camera there. Each gains <i>Route here</i>; and one new kind of message,
+a <i>meet-up</i>, proposes a place that is fair to both of you. Everything new travels inside the chat's end-to-end encrypted messages — the server never learns where anyone is meeting.</p>
+<div class="row">
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/chatthread.png)" id="thread">
+      <!-- the point's single "Open in world" becomes two buttons -->
+      <div style="left:20px;top:468px;width:244px;height:36px;background:var(--raised)"></div>
+      <span class="btn brand" style="left:24px;top:471px;width:114px;height:30px;font-size:12.5px">Open in world</span>
+      <span class="btn new" style="left:146px;top:471px;width:112px;height:30px;font-size:12.5px;background:var(--surface);border-color:var(--brand);color:var(--accent)"><svg class="i"><use href="#route"/></svg>Route here</span>
+      <!-- a live location in place of the picture -->
+      <div style="left:0;top:572px;width:412px;height:272px;background:rgb(20,19,18)"></div>
+      <div class="chatbox new" style="left:12px;top:590px;width:280px;padding:0;overflow:hidden">
+        <div style="height:120px;background:url(shots/chatworld.png) -60px -330px;position:relative">
+          <div style="position:absolute;left:118px;top:48px;width:22px;height:22px;border-radius:50%;background:rgba(79,178,255,.3)"></div>
+          <div style="position:absolute;left:123px;top:53px;width:12px;height:12px;border-radius:50%;background:var(--real);border:2px solid #fff"></div>
+        </div>
+        <div style="padding:8px 12px 10px">
+          <b>Sanne's location</b>
+          <div class="sub"><span style="color:var(--real)">●</span> live until 20:00 · 1.2 km from you</div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <span class="btn brand" style="flex:1;font-size:12.5px;padding:6px 0">Open in world</span>
+            <span class="btn new" style="flex:1;font-size:12.5px;padding:6px 0;background:var(--surface);border-color:var(--brand);color:var(--accent)"><svg class="i"><use href="#route"/></svg>Route here</span>
+          </div>
+        </div>
+      </div>
+          </div>
+    <h3><span>H</span>A thread <em class="new">new: Route here</em></h3>
+    <ul><li>A point and a friend's live location each get <b>Route here</b> beside today's fly-to.</li>
+        <li>Routing to a <b>person</b> follows them: the route re-plans when they have moved ~50 m. That is the one case where a route's destination moves.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/chatthread.png)" id="meetcard">
+      <div style="left:0;top:520px;width:412px;height:326px;background:rgb(20,19,18)"></div>
+      <div class="chatbox new" style="left:12px;top:540px;width:300px;padding:0;overflow:hidden">
+        <div style="padding:8px 12px 4px;font-size:12px;color:var(--accent);display:flex;gap:6px;align-items:center"><svg class="i"><use href="#meet"/></svg>Sanne suggests meeting</div>
+        <div style="height:128px;background:url(shots/chatworld.png) -50px -250px;position:relative">
+          <svg style="position:absolute;left:0;top:0" width="300" height="128" viewBox="0 0 300 128">
+            <path d="M10 120 L60 96 L95 98 L140 64" fill="none" stroke="var(--real)" stroke-width="5" stroke-linecap="round"/>
+            <path d="M292 8 L250 30 L210 30 L176 50 L148 60" fill="none" stroke="#B48CF0" stroke-width="5" stroke-linecap="round"/>
+            <path d="M144 62 c-8 -10 -12 -15 -12 -21 a12 12 0 0 1 24 0 c0 6 -4 11 -12 21z" fill="var(--brand)" stroke="#fff" stroke-width="1.5"/>
+            <circle cx="144" cy="41" r="4" fill="#fff"/>
+          </svg>
+        </div>
+        <div style="padding:8px 12px 10px">
+          <b>Vismarkt</b>
+          <div class="sub">fair for both of you · about 7 pm</div>
+          <div class="etas"><div><span class="dot" style="background:var(--real)"></span>You <svg class="i"><use href="#bike"/></svg>12 min</div><div><span class="dot" style="background:#B48CF0"></span>Sanne <svg class="i"><use href="#walk"/></svg>11 min</div></div>
+          <div style="display:flex;gap:8px">
+            <span class="btn brand" style="flex:1;font-size:13px;padding:6px 0">Accept</span>
+            <span class="btn" style="flex:1;font-size:13px;padding:6px 0">Another spot</span>
+          </div>
+        </div>
+      </div>
+      
+          </div>
+    <h3><span>I</span>A meet-up <em class="new">new</em></h3>
+    <ul><li>Chat <b>+ ▸ Meet up</b> proposes a spot where your travel times are about equal, each by your own mode, moved onto a named place.</li>
+        <li>The card shows both times. <b>Accept</b> plans your route; <b>Another spot</b> offers the next candidate.</li></ul>
+  </div>
+
+  <div class="shot">
+    <div class="screen" style="background-image:url(shots/chatworld.png)" id="onway">
+      <svg class="new" style="left:0;top:0;outline:none" width="412" height="915" viewBox="0 0 412 915">
+        <path d="M40 700 L90 640 L120 600 L150 540 L190 470 L222 404" fill="none" stroke="var(--real)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>
+        <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 398" fill="none" stroke="#B48CF0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>
+        <path d="M228 402 c-11 -14 -17 -21 -17 -29 a17 17 0 0 1 34 0 c0 8 -6 15 -17 29z" fill="var(--brand)" stroke="#fff" stroke-width="2"/>
+        <circle cx="228" cy="373" r="5.5" fill="#fff"/>
+        <circle cx="120" cy="600" r="14" fill="rgba(79,178,255,.3)"/><circle cx="120" cy="600" r="7" fill="var(--real)" stroke="#fff" stroke-width="2.5"/>
+        <circle cx="330" cy="262" r="14" fill="rgba(180,140,240,.3)"/><circle cx="330" cy="262" r="7" fill="#B48CF0" stroke="#fff" stroke-width="2.5"/>
+      </svg>
+      <div class="glass pill" style="left:246px;top:352px;font-size:12px;padding:3px 9px">Vismarkt · 7 pm</div>
+      <div class="glass pill" style="left:136px;top:590px;font-size:12px;padding:3px 9px"><svg class="i"><use href="#bike"/></svg>You · 6 min</div>
+      <div class="glass pill" style="left:190px;top:222px;font-size:12px;padding:3px 9px"><svg class="i"><use href="#walk"/></svg>Sanne · 4 min</div>
+      <div class="glass pill new" style="left:50%;transform:translateX(-50%);top:132px;white-space:nowrap;font-size:12px"><span class="dot" style="background:var(--real)"></span>Sharing your trip with Sanne until you arrive<span class="btn" style="padding:1px 8px;font-size:11.5px">Stop</span></div>
+      <div style="left:0;top:752px;width:412px;height:96px;background:rgb(28,26,24)"></div>
+      <div class="chatline" style="left:16px;top:758px"><b>Sanne</b>Meet-up at Vismarkt, 7 pm <span class="dim small">· accepted</span></div>
+      <div class="chatline" style="left:16px;top:788px"><b>You</b>On my way <span class="dim small">· by bike, 6 min</span></div>
+      <div class="chatline new" style="left:16px;top:818px"><b>Sanne</b>On the way <span class="dim small">· walking, 4 min</span></div>
+    </div>
+    <h3><span>J</span>On the way, in the chat's World view <em class="new">new</em></h3>
+    <ul><li>Each person's route is drawn with their dot on it and their arrival time, from the existing live location share.</li>
+        <li>The share has a chip and Stop, as today, and <b>ends by itself</b> ten minutes after you arrive. Arriving posts "arrived".</li>
+        <li>If your friend is online as an avatar, <b>Join</b> puts you beside them instead.</li></ul>
+  </div>
+
+</div>
+</section>
+
+<div class="notes">
+  <div><h3>Stays exactly as today</h3><ul>
+    <li><b>The router</b>: Car, Bike and Walk on the noded graph, long routes by tier, the cost model.</li>
+    <li><b>The planner sheet</b>: its place, its two detents, the endpoint fields, pick-on-map, "Route to here" in the context menu.</li>
+    <li><b>Driver mode</b> for the car: chase camera, turn card, route rail, reroute, arrival.</li>
+    <li><b>Chats</b>: encryption, points, live location sharing and its chip.</li></ul></div>
+  <div><h3>New</h3><ul>
+    <li>Times for all three modes on the chips; Start names its action; Car needs a fix.</li>
+    <li>Walking in the world: ground chevrons, small turn card, Walk me there, Skip ahead.</li>
+    <li>Routes that end at the door (BAG entrance points).</li>
+    <li>Bike variant of driver mode.</li>
+    <li>Route here from a chat; meet-up messages; route and arrival time on the chat's map; "arrived".</li>
+    <li>Later: a desktop location source.</li></ul></div>
+</div>
+
+</body></html>
