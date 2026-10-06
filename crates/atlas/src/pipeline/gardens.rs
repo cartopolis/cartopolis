@@ -65,8 +65,17 @@ const MIN_INSIDE: u32 = 4;
 /// planted: a split that small is more likely the photograph than the garden.
 const WHOLE: f32 = 0.08;
 /// How far the planted outline may move when its staircase is straightened,
-/// in photo pixels (~0.45 m).
-const SIMPLIFY_PX: f64 = 2.0;
+/// in photo pixels (~0.7 m). It has to clear a diagonal staircase of `STEP`
+/// cells, whose corners stand `STEP / √2` ≈ 2.8 px off the line: at the first
+/// setting, 2 px, nothing was straightened and Groningen's centre cell shipped
+/// 186,000 garden vertices.
+const SIMPLIFY_PX: f64 = 3.0;
+/// A planted or hard piece smaller than this, in photo pixels (~4 m² at the
+/// cell photo's 0.23 m), goes to the other side. The cut leaves crumbs wherever
+/// the straightened outline runs along the plot's own edge — 16,581 of the
+/// 21,563 pieces in Groningen's centre cell were under 4 m² — and a crumb is
+/// nothing anybody sees but is a polygon every client triangulates.
+const MIN_PIECE_PX: f64 = 76.0;
 /// Sub-pixel lattice for the overlay.
 const LATTICE: f64 = 8.0;
 
@@ -227,31 +236,84 @@ pub fn split(
         .iter()
         .map(|r| r.iter().map(|p| IntPoint::new(q(p[0]), q(p[1]))).collect())
         .collect();
-    let cut = |rule: OverlayRule| -> Vec<Vec<Vec<[f64; 2]>>> {
-        let mut o: Overlay<i32> = Overlay::new(64);
-        for c in &plot {
-            o.add_contour(c, ShapeType::Subject);
-        }
-        for c in &outline {
-            o.add_contour(c, ShapeType::Clip);
-        }
-        o.overlay(rule, FillRule::NonZero)
+    // Cut the plot, then hand every crumb to the other side. Each side is
+    // recomputed from the plot rather than patched, so the two still cover it
+    // exactly once: drop the small planted pieces, take the hard side as what is
+    // left, drop its small pieces, and the planted side is what is left of that.
+    let min = MIN_PIECE_PX * LATTICE * LATTICE;
+    let big = |shapes: Vec<Vec<Vec<IntPoint<i32>>>>| -> Vec<Vec<Vec<IntPoint<i32>>>> {
+        shapes
+            .into_iter()
+            .filter(|s| shape_area(s) >= min)
+            .collect()
+    };
+    let planted = big(cut(&plot, outline.iter(), OverlayRule::Intersect));
+    if planted.is_empty() {
+        return Some((Vec::new(), whole(rings)));
+    }
+    let paved = big(cut(
+        &plot,
+        planted.iter().flatten(),
+        OverlayRule::Difference,
+    ));
+    if paved.is_empty() {
+        return Some((whole(rings), Vec::new()));
+    }
+    let planted = cut(&plot, paved.iter().flatten(), OverlayRule::Difference);
+    let px = |shapes: Vec<Vec<Vec<IntPoint<i32>>>>| -> Vec<Vec<Vec<[f64; 2]>>> {
+        shapes
             .into_iter()
             .map(|shape| {
                 shape
                     .into_iter()
-                    .filter(|c| c.len() >= 3)
                     .map(|c| {
                         c.into_iter()
                             .map(|p| [f64::from(p.x) / LATTICE, f64::from(p.y) / LATTICE])
                             .collect()
                     })
-                    .collect::<Vec<_>>()
+                    .collect()
             })
-            .filter(|s: &Vec<Vec<[f64; 2]>>| !s.is_empty())
             .collect()
     };
-    Some((cut(OverlayRule::Intersect), cut(OverlayRule::Difference)))
+    Some((px(planted), px(paved)))
+}
+
+/// The plot overlaid with `clip` by `rule`, as shapes (outer contour first).
+fn cut<'a>(
+    plot: &[Vec<IntPoint<i32>>],
+    clip: impl Iterator<Item = &'a Vec<IntPoint<i32>>>,
+    rule: OverlayRule,
+) -> Vec<Vec<Vec<IntPoint<i32>>>> {
+    let mut o: Overlay<i32> = Overlay::new(64);
+    for c in plot {
+        o.add_contour(c, ShapeType::Subject);
+    }
+    for c in clip {
+        o.add_contour(c, ShapeType::Clip);
+    }
+    o.overlay(rule, FillRule::NonZero)
+        .into_iter()
+        .map(|shape| {
+            shape
+                .into_iter()
+                .filter(|c| c.len() >= 3)
+                .collect::<Vec<_>>()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// A shape's area — outer contour less its holes — in lattice units.
+fn shape_area(shape: &[Vec<IntPoint<i32>>]) -> f64 {
+    let ring = |c: &Vec<IntPoint<i32>>| {
+        let mut s = 0i64;
+        for i in 0..c.len() {
+            let (a, b) = (c[i], c[(i + 1) % c.len()]);
+            s += i64::from(a.x) * i64::from(b.y) - i64::from(b.x) * i64::from(a.y);
+        }
+        (s as f64 / 2.0).abs()
+    };
+    ring(&shape[0]) - shape[1..].iter().map(ring).sum::<f64>()
 }
 
 /// Douglas–Peucker on a closed contour.
@@ -412,6 +474,38 @@ mod tests {
         assert!((a - 800.0).abs() <= f64::from(STEP) * 40.0, "planted {a}");
     }
 
+    /// A lawn with a ragged diagonal edge and a speckle of noise: no piece on
+    /// either side is a crumb, the two still cover the plot once, and the
+    /// staircase is straightened rather than shipped cell by cell.
+    #[test]
+    fn a_ragged_split_leaves_no_crumbs() {
+        let plot = vec![vec![[3.0, 5.0], [203.0, 5.0], [203.0, 155.0], [3.0, 155.0]]];
+        let hash = |x: u32, y: u32| {
+            (x / STEP).wrapping_mul(73_856_093) ^ (y / STEP).wrapping_mul(19_349_663)
+        };
+        let (planted, paved) = split(&plot, 256, |x, y| {
+            let lawn = x + y / 2 < 140;
+            let speck = hash(x, y) % 23 == 0;
+            if lawn != speck {
+                0.4
+            } else {
+                -0.05
+            }
+        })
+        .unwrap();
+        let (a, b) = (area(&planted), area(&paved));
+        assert!((a + b - 30_000.0).abs() < 1.0, "{a} + {b}");
+        for p in planted.iter().chain(&paved) {
+            assert!(
+                area(std::slice::from_ref(p)) >= MIN_PIECE_PX,
+                "crumb {}",
+                area(std::slice::from_ref(p))
+            );
+        }
+        let vertices: usize = planted.iter().chain(&paved).flatten().map(Vec::len).sum();
+        assert!(vertices < 40, "{vertices} vertices");
+    }
+
     /// Nearly all green is left whole rather than nibbled.
     #[test]
     fn a_lawn_stays_whole() {
@@ -543,10 +637,19 @@ mod real_area {
         };
         let mut plan = rgb.clone();
         let (mut planted_area, mut paved_area) = (0.0, 0.0);
+        let (mut pieces, mut vertices, mut plot_vertices) = (0, 0, 0);
         for plot in &plots {
             let Some((planted, paved)) = split(plot, size, at) else {
                 continue;
             };
+            pieces += planted.len() + paved.len();
+            plot_vertices += plot.iter().map(Vec::len).sum::<usize>();
+            vertices += planted
+                .iter()
+                .chain(&paved)
+                .flatten()
+                .map(Vec::len)
+                .sum::<usize>();
             for (polys, colour, total) in [
                 (&planted, [60u8, 200, 60], &mut planted_area),
                 (&paved, [150u8, 150, 150], &mut paved_area),
@@ -588,7 +691,7 @@ mod real_area {
         both.save(&out).unwrap();
         let m2 = 0.23f64 * 0.23;
         println!(
-            "{} plots: planted {:.0} m², hard {:.0} m² ({:.0} % planted)",
+            "{} plots, {pieces} pieces, {vertices} vertices (plots {plot_vertices}): planted {:.0} m², hard {:.0} m² ({:.0} % planted)",
             plots.len(),
             planted_area * m2,
             paved_area * m2,

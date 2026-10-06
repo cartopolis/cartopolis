@@ -59,6 +59,20 @@ cells, the whole `roofs` step taking **589 s** with the second photograph
 included (run in this container, 2026-10-06). How that divides between the
 fetch and the split was not measured.
 
+**What it ships, and the crumbs it used to.** The first run wrote 4.76 MB of
+gardens into Groningen's centre cell (`roofs/14/8490/5320.json`, 0.87 MB
+before): 21,563 pieces and 186,000 vertices for 1,824 plots, and 16,581 of those
+pieces under 4 m². The staircase tolerance (2 px) sat under the ~2.8 px a
+diagonal one-metre staircase stands off its line, so nothing was straightened,
+and the cut left a crumb wherever the outline ran along the plot's edge. The
+phone parses and triangulates every one, which made loading visibly slower.
+Now the tolerance is 3 px and a piece under ~4 m² goes to the other side (both
+sides recomputed from the plot, so they still cover it once): **1.98 MB, 4,579
+pieces, 76,000 vertices** on the same cell (2026-10-06). Of what is left, 10,000
+vertices are the 1,277 gardens left whole, each a copy of a plot ring the `bgt`
+surfaces already carry; a "whole" marker instead would save them, at the cost of
+a format change on both sides.
+
 `gardens::real_area::plan_of_real_gardens` (ignored, live network) draws the
 split over the photograph for any `ATLAS_GARDEN_BBOX` — the way to judge a new
 flight or a new threshold by eye.
