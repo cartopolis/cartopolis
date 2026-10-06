@@ -410,19 +410,54 @@ const NET_ROLL_M: f32 = 2.5;
 /// sagging between the ties at each lift. The holes show the shadow behind, so
 /// up close it is a fabric and from across the street a pale sheet over the
 /// facade — which is the whole point of drawing it.
-fn netting(pbr_input: ptr<function, PbrInput>, u: f32, v: f32, weave: vec2<f32>, weave_px: f32) {
+fn netting(pbr_input: ptr<function, PbrInput>, u: f32, v: f32, weave: vec2<f32>, weave_px: f32) -> f32 {
     let g = abs(fract(weave) - 0.5);
-    let strand = smoothstep(0.22, 0.34, max(g.x, g.y));
+    let line = min(0.5 - g.x, 0.5 - g.y);
+    let strand = 1.0 - smoothstep(0.1, 0.16, line);
     let near = 1.0 - clamp(weave_px * 1.6 - 0.35, 0.0, 1.0);
-    let mesh = mix(0.86, mix(0.7, 1.05, strand), near);
     let seam_d = abs(fract(u / NET_ROLL_M + 0.5) - 0.5) * NET_ROLL_M;
-    let seam = mix(0.78, 1.0, smoothstep(0.03, 0.07, seam_d));
+    let seam = 1.0 - smoothstep(0.03, 0.07, seam_d);
     // Each lift's sheet sags a little away from its tie line.
-    let sag = 0.92 + 0.08 * smoothstep(0.0, 0.5, abs(fract(v / 2.0) - 0.5));
+    let sag = 0.9 + 0.1 * smoothstep(0.0, 0.5, abs(fract(v / 2.0) - 0.5));
     let c = (*pbr_input).material.base_color;
-    (*pbr_input).material.base_color = vec4<f32>(c.rgb * mesh * seam * sag, c.a);
+    (*pbr_input).material.base_color = vec4<f32>(c.rgb * sag * mix(1.0, 0.8, seam), c.a);
     (*pbr_input).material.perceptual_roughness = 0.95;
     (*pbr_input).material.metallic = 0.0;
+    // How much of the surface the net covers: its strands up close, its mean
+    // at range, and solid where two rolls overlap.
+    return max(mix(NET_COVER, strand, near), seam);
+}
+
+/// The share of a scaffold's netting that is net rather than hole.
+const NET_COVER: f32 = 0.4;
+/// The share of a site fence's mesh panel that is wire, at range.
+const FENCE_COVER: f32 = 0.18;
+
+/// A site fence's welded mesh (`scaffolding::push_fence`, UV0.x = 3): wires
+/// every 7.5 cm across and 22.5 cm up. Returns the wire's coverage.
+fn fence_mesh(pbr_input: ptr<function, PbrInput>, wire: vec2<f32>, wire_px: f32) -> f32 {
+    let g = abs(fract(wire) - 0.5);
+    let d = 0.5 - g;
+    let on_wire = max(1.0 - smoothstep(0.03, 0.06, d.x), 1.0 - smoothstep(0.01, 0.025, d.y));
+    let near = 1.0 - clamp(wire_px * 1.6 - 0.35, 0.0, 1.0);
+    (*pbr_input).material.perceptual_roughness = 0.5;
+    (*pbr_input).material.metallic = 0.7;
+    return mix(FENCE_COVER, on_wire, near);
+}
+
+/// Screen-door transparency: whether a fragment of a surface with this
+/// coverage is a hole here, on a 4×4 ordered dither. The building material is
+/// opaque and there is no depth prepass (`render_features`), so a discarded
+/// fragment simply shows whatever lies behind it.
+fn see_through(coverage: f32, frag: vec2<f32>) -> bool {
+    let p = vec2<u32>(frag) % vec2<u32>(4u, 4u);
+    var bayer = array<f32, 16>(
+        0.0, 8.0, 2.0, 10.0,
+        12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0,
+        15.0, 7.0, 13.0, 5.0,
+    );
+    return coverage <= (bayer[p.y * 4u + p.x] + 0.5) / 16.0;
 }
 
 // ─── Neglect ─────────────────────────────────────────────────────────────────
@@ -731,12 +766,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let gutter_px = fwidth(v) / GUTTER_M;
     let weave = vec2<f32>(u, v) / NET_MESH_M;
     let weave_px = max(fwidth(weave.x), fwidth(weave.y));
+    let wire = vec2<f32>(u / 0.075, v / 0.225);
+    let wire_px = max(fwidth(wire.x), fwidth(wire.y));
 
     if door_part {
         door_surface(&pbr_input, face_uv);
-        // A scaffold's debris netting (`scaffolding`, UV0.x = 2).
+        // A scaffold's debris netting (`scaffolding`, UV0.x = 2) and a site
+        // fence's mesh panel (UV0.x = 3): both are see-through.
         if face_uv.y > -0.75 && face_uv.x > 1.5 {
-            netting(&pbr_input, u, v, weave, weave_px);
+            var cover = 1.0;
+            if face_uv.x > 2.5 {
+                cover = fence_mesh(&pbr_input, wire, wire_px);
+            } else {
+                cover = netting(&pbr_input, u, v, weave, weave_px);
+            }
+            if see_through(cover, in.position.xy) {
+                discard;
+            }
         }
     } else if is_wall {
         let idx = floor(cell);

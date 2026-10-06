@@ -149,7 +149,8 @@ ask at any time.
   `UnderConstruction` get a scaffold — tubes, boards and debris netting built into the cell mesh
   on a `Near` cell, on the walls carrying a door, or the longest outside wall when
   the register places none — and their windows mostly dark at night. `OutOfUse` and
-  `DemolitionPermit` get a dark building, a boarded ground floor (half the windows
+  `DemolitionPermit` get a dark building (and the latter a mesh site fence round
+  its outside edges, which is the part that reads from the street), a boarded ground floor (half the windows
   above it too, all of them once demolition is permitted), a whitewashed shop window and grime on
   the walls. Measured over Groningen's four central z14 cells on 2026-10-06: 31
   renovations, 56 under construction, 2 demolition permits and **no** out-of-use

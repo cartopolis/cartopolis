@@ -21,6 +21,12 @@
 //! the first deck up (the ground lift stays open for the pavement), drawn as a
 //! weave by the shader (UV0.x = 2).
 //!
+//! **A demolition permit gets a site fence** ([`push_fence`]): mesh panels in
+//! concrete feet a step out from the outline's outside edges. The boards and
+//! grime are drawn on windows, and a condemned shed or gable with none showed
+//! nothing at all. The net and the fence mesh are see-through by an ordered
+//! dither in the shader, since the building material is opaque.
+//!
 //! **Which walls.** A pand's solid includes its party walls, and a scaffold on
 //! one of those stands inside the neighbour. So a face is only a candidate if a
 //! step off it lands outside *every* building in the cell — a measurement on
@@ -331,6 +337,104 @@ pub fn push(buf: &mut MeshData, face: &WallFace, base: f32, origin: Vec2) -> boo
     true
 }
 
+/// The site fence's mesh panel; UV0.x = 3 asks the shader for welded mesh.
+const FENCE_UV: [f32; 2] = [3.0, -0.5];
+/// Concrete feet the fence panels stand in.
+const FOOT: [f32; 4] = [0.36, 0.36, 0.34, 1.0];
+/// How far off the building the fence runs, its panel width and its height.
+const FENCE_OUT_M: f32 = 1.5;
+const PANEL_M: f32 = 3.5;
+const FENCE_H_M: f32 = 2.0;
+/// An outline edge shorter than this takes no fence of its own; its
+/// neighbours' extended ends close the gap.
+const MIN_FENCE_EDGE_M: f32 = 1.5;
+
+/// Whether the register's status means the building is fenced off for
+/// demolition.
+#[must_use]
+pub fn wants_fence(status: BuildingStatus) -> bool {
+    status == BuildingStatus::DemolitionPermit
+}
+
+/// A temporary site fence round a building waiting for demolition: mesh panels
+/// in concrete feet, a step out from each outside edge of its outline.
+///
+/// This is what says "demolition" from the street. The facade's boards and
+/// grime are drawn on windows, and a building whose street side has none —
+/// a shed, a gable, a garage block — showed nothing at all. An edge shared
+/// with a neighbour takes no fence, by the same probe [`choose`] uses.
+/// Returns whether anything was drawn.
+pub fn push_fence(
+    buf: &mut MeshData,
+    ring: &[Vec2],
+    base: f32,
+    origin: Vec2,
+    outlines: &Outlines,
+) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let at = |q: Vec2, y: f32| Vec3::new(q.x - origin.x, base + y, q.y - origin.y);
+    let mut drawn = false;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        let len = a.distance(b);
+        if len < MIN_FENCE_EDGE_M {
+            continue;
+        }
+        let dir = (b - a) / len;
+        // Outward by measurement, not by winding.
+        let mut n = Vec2::new(-dir.y, dir.x);
+        if inside(ring, (a + b) * 0.5 + n * 0.3) {
+            n = -n;
+        }
+        let outside = [0.2, 0.5, 0.8]
+            .iter()
+            .all(|s| !outlines.inside_any(a + (b - a) * *s + n * (FENCE_OUT_M + 0.3)));
+        if !outside {
+            continue;
+        }
+        // Run past both corners so neighbouring runs meet.
+        let (s, e) = (
+            a - dir * FENCE_OUT_M + n * FENCE_OUT_M,
+            b + dir * FENCE_OUT_M + n * FENCE_OUT_M,
+        );
+        let run = s.distance(e);
+        let panels = (run / PANEL_M).ceil().max(1.0) as i32;
+        let joints: Vec<Vec2> = (0..=panels)
+            .map(|k| s + (e - s) * (k as f32 / panels as f32))
+            .collect();
+        let n3 = Vec3::new(n.x, 0.0, n.y);
+        for &j in &joints {
+            tube(buf, at(j, 0.1), at(j, FENCE_H_M));
+            bar(
+                buf,
+                at(j - dir * 0.3, 0.06),
+                at(j + dir * 0.3, 0.06),
+                n3 * 0.1,
+                Vec3::Y * 0.06,
+                FOOT,
+                BOARD_UV,
+            );
+        }
+        for w in joints.windows(2) {
+            for y in [0.15, FENCE_H_M - 0.05] {
+                tube(buf, at(w[0], y), at(w[1], y));
+            }
+            let sheet = [
+                at(w[0], 0.15),
+                at(w[1], 0.15),
+                at(w[1], FENCE_H_M - 0.05),
+                at(w[0], FENCE_H_M - 0.05),
+            ];
+            buf.quad_facing_uv(sheet, TUBE, n3, [FENCE_UV; 4]);
+            buf.quad_facing_uv(sheet, TUBE, -n3, [FENCE_UV; 4]);
+        }
+        drawn = true;
+    }
+    drawn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +534,31 @@ mod tests {
             top = top.max(v[1]);
         }
         assert!(top > 6.0 && top <= 9.5, "top at {top}");
+    }
+
+    /// A row of two condemned houses is fenced on its outside edges and not
+    /// along the wall they share.
+    #[test]
+    fn a_fence_skips_the_shared_wall() {
+        let mut outlines = Outlines::default();
+        outlines.push(&ring(0.0, 0.0));
+        outlines.push(&ring(10.0, 0.0));
+        let mut buf = MeshData::with_dedup().with_uvs();
+        assert!(push_fence(
+            &mut buf,
+            &ring(0.0, 0.0),
+            0.0,
+            Vec2::ZERO,
+            &outlines
+        ));
+        for v in buf.positions() {
+            // Nothing stands in the neighbour (x 10..20, z 0..8).
+            let inside_neighbour = v[0] > 10.2 && v[2] > 0.2 && v[2] < 7.8;
+            assert!(!inside_neighbour, "fence in the neighbour at {v:?}");
+            // …and nothing inside the house itself.
+            let inside_own = v[0] > 0.2 && v[0] < 9.8 && v[2] > 0.2 && v[2] < 7.8;
+            assert!(!inside_own, "fence inside the house at {v:?}");
+        }
     }
 
     #[test]

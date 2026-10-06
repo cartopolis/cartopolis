@@ -798,6 +798,8 @@ pub struct ShotMetrics {
     /// Buildings drawn with a scaffold because the register says work is going
     /// on at them (`systems::scaffolding`).
     pub building_scaffolds: usize,
+    /// Buildings drawn behind a demolition fence (`systems::scaffolding`).
+    pub building_fences: usize,
     /// Whether a building is selected, and whether the avatar is standing inside
     /// one (`systems::building_select`).
     ///
@@ -1232,7 +1234,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -3888,6 +3890,7 @@ pub fn drive_capture(
             building_shell_rendered: visuals.shells.iter().filter(|vv| vv.get()).count(),
             building_doors: readouts.lod22.doors(),
             building_scaffolds: readouts.lod22.scaffolds(),
+            building_fences: readouts.lod22.fences(),
             lod22_dated: readouts.lod22.dated().0,
             lod22_elements: readouts.lod22.dated().1,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
@@ -4632,6 +4635,7 @@ mod tests {
             building_shell_rendered: 0,
             building_doors: 0,
             building_scaffolds: 0,
+            building_fences: 0,
             lod22_dated: 0,
             lod22_elements: 0,
             grass_slots: 0,

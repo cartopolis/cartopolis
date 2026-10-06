@@ -589,6 +589,8 @@ struct DoorCount {
     doors: usize,
     /// Buildings given a scaffold (`scaffolding`), counted for the same reason.
     scaffolds: usize,
+    /// Buildings fenced off for demolition.
+    fences: usize,
 }
 
 /// Each drawn shell's BAG id and what its geometry measures. See [`ShellMeasure`]
@@ -809,6 +811,11 @@ impl Lod22Buildings {
     /// Buildings drawn with a scaffold across the loaded cells.
     pub fn scaffolds(&self) -> usize {
         self.doors.values().map(|d| d.scaffolds).sum()
+    }
+
+    /// Buildings drawn behind a demolition fence across the loaded cells.
+    pub fn fences(&self) -> usize {
+        self.doors.values().map(|d| d.fences).sum()
     }
 
     /// Every material this lane draws with — the shells' and the imported models'.
@@ -1864,6 +1871,7 @@ fn build_lod22_from_body(
     // wall from a party wall (`scaffolding`).
     let mut outlines = crate::systems::scaffolding::Outlines::default();
     let mut scaffolds_pending: Vec<crate::systems::scaffolding::Pending> = Vec::new();
+    let mut fences_pending: Vec<(Vec<Vec2>, f32)> = Vec::new();
     // How tall each drawn shell is, for `systems::interiors` to divide into
     // storeys. Measured here because this is the only lane that ever sees the
     // height: it arrives on the vertices, is baked into a merged mesh, and is
@@ -2166,6 +2174,12 @@ fn build_lod22_from_body(
                 base,
             ));
         }
+        if design.is_none()
+            && detail == load_control::Detail::Near
+            && fact.is_some_and(|f| crate::systems::scaffolding::wants_fence(f.status))
+        {
+            fences_pending.push((outline.clone(), base));
+        }
         if design.is_none() && detail == load_control::Detail::Near {
             for (face, _) in placed.iter().filter_map(|p| p.0.map(|i| (i, p.1))) {
                 let face = &faces.faces[face];
@@ -2262,6 +2276,16 @@ fn build_lod22_from_body(
         }
         drawn_scaffolds += usize::from(any);
     }
+    let mut drawn_fences = 0usize;
+    for (ring, base) in &fences_pending {
+        drawn_fences += usize::from(crate::systems::scaffolding::push_fence(
+            &mut buf,
+            ring,
+            *base,
+            Vec2::new(ox, oz),
+            &outlines,
+        ));
+    }
     // …and now the models, element by element. They share the palette and the
     // ground datum with the shells and differ in three ways: the whole model is
     // one building rather than one element being one, only its wall-like elements
@@ -2350,6 +2374,7 @@ fn build_lod22_from_body(
         DoorCount {
             doors: drawn_doors,
             scaffolds: drawn_scaffolds,
+            fences: drawn_fences,
         },
         heights,
     )))
