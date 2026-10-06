@@ -121,8 +121,18 @@ const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
 /// without asking which mode is on.
 const STREET_LEVEL_ALT: f32 = 40.0;
 
-/// The width multiplier at street level: a ~2 m path and ~4 m markers.
-const STREET_LEVEL_SCALE: f32 = 0.3;
+/// The width multiplier at street level: a 0.8 m path in a 1.2 m casing, and
+/// 1.75 m markers — a footpath beside an avatar about half a metre across. 0.3
+/// was tried first and still read as a road laid across the square.
+const STREET_LEVEL_SCALE: f32 = 0.125;
+
+/// How high the line floats at street level, in metres.
+///
+/// [`ROUTE_Y`]'s half metre is a margin for the far field; from behind an avatar
+/// it is knee height, and the line reads as a plank hovering over the pavement.
+/// Up close the depth buffer has precision to spare, and the depth bias that
+/// settles the line against the ground at range still applies.
+const STREET_LEVEL_Y: f32 = 0.15;
 
 /// The width multiplier for a camera this high, **quantised to powers of two**.
 ///
@@ -1494,7 +1504,14 @@ pub fn update_route_visuals(
         ));
     };
 
-    let base = DVec3::new(origin.x, f64::from(ROUTE_Y), origin.z);
+    // `width_scale` is in the redraw key, so the street-level height follows the
+    // same band switch as the street-level width.
+    let lift_y = if width_scale < 1.0 {
+        STREET_LEVEL_Y
+    } else {
+        ROUTE_Y
+    };
+    let base = DVec3::new(origin.x, f64::from(lift_y), origin.z);
     spawn(
         ribbon(&road, &road_lift, CASING_HALF_WIDTH * width_scale),
         palette.casing.clone(),
