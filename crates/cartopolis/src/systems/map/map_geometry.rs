@@ -1700,6 +1700,11 @@ fn spawn_geometry_task(
                                             // still draw every container twice.
                                             items.retain(|p| !by_city.contains(&p.kind));
                                         }
+                                        // A bench or a bin mapped in OSM *and*
+                                        // surveyed by the BGT is one object, so
+                                        // the survey's copy stands and the
+                                        // `pois` one is dropped.
+                                        furniture::drop_surveyed_twins(&mut items, &placed);
                                         cell_places.surveyed.1 = placed.len();
                                         items.extend(placed);
                                         let city_props = municipal::registered_props(

@@ -419,11 +419,31 @@ four collections.
 in `surveyed.rs` now names positions **7 `Board`, 8 `Bin`, 9 `Recycling`** — the
 forms `bord` and `bak` need, `kast` reusing position 6 `Cabinet`, and
 `scheiding_vlak` and `vegetatieobject_lijn` reusing `LINE_KINDS` 1 `Wall` and 2
-`Hedge`, so `LINE_KINDS` did not move. Nothing emits 7–9 yet. That order is
+`Hedge`, so `LINE_KINDS` did not move. That order is
 deliberate and is the only safe one across this seam: a client naming a form no
 host sends costs nothing, while a host sending a position no client has is
 content that vanishes with no error anywhere. Atlas's `pipeline/bgt.rs` must match those
 positions exactly when the walk is added there.
+
+**`bak` is read since 2026-10-05, with two `straatmeubilair` types beside it**
+(positions 10 `BikeRack` and 11 `Toilet`). `afvalbak` → `Bin`; `afval apart plaats`
+and `container` → `Recycling`; `fietsenrek` → `BikeRack`; `openbaar toilet` →
+`Toilet`. `bord` and `kast` are still not read. Measured that day, one page per
+box, current versions only (both end dates empty):
+
+| Box | `fietsenrek` | `afvalbak` | `afval apart plaats` | `openbaar toilet` |
+|---|---|---|---|---|
+| Den Haag centre | 398 | 36 | 542 | 0 |
+| Eindhoven centre | 160 | 349 | 198 | 0 |
+| Groningen, whole city | 14 | 14 | 5 | 0 |
+| Amsterdam centre | 8 | 5 | 132 | 23 |
+| Utrecht centre | 0 | 4 | 234 | 0 |
+
+Coverage is the municipality's choice, as with the trees, so these are added and
+never substituted. Where OSM's `pois` maps the same object, the surveyed copy
+stands and the `pois` one is dropped (`furniture::drop_surveyed_twins`, same
+form within 2.5 m) — benches were being drawn twice before this. A bike rack is
+drawn empty: the register says where it stands, not how full it is.
 
 ### Not worth reading: the rest
 

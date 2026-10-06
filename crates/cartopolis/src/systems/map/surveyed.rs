@@ -81,12 +81,13 @@ pub fn bgt_attribution() -> Option<String> {
 /// Positions 7–9 are claimed by the second round of collections
 /// (`docs/notes/surveyed-street-objects.md`, "The other forty-two"): the `bord`,
 /// `kast` and `bak` registers. `Cabinet` was already here for `straatmeubilair`,
-/// so `kast` needs no position of its own. Nothing emits 7–9 yet — atlas's
-/// `pipeline/bgt.rs` has not caught up — and a client that can name a form the host never sends
-/// is the harmless direction of this seam. The reverse is not: an extractor that
+/// so `kast` needs no position of its own. Positions 10 `BikeRack` and 11
+/// `Toilet` are the `fietsenrek` and `openbaar toilet` of `straatmeubilair`.
+/// `bord` and `kast` are still not read, so nothing emits 7 — and a client that
+/// can name a form the host never sends is the harmless direction of this seam. The reverse is not: an extractor that
 /// sends a position no client has is silently dropped content, so the client goes
 /// first.
-const PROP_KINDS: [FurnitureKind; 10] = [
+const PROP_KINDS: [FurnitureKind; 12] = [
     FurnitureKind::Lamp,
     FurnitureKind::Bench,
     FurnitureKind::Shelter,
@@ -97,6 +98,8 @@ const PROP_KINDS: [FurnitureKind; 10] = [
     FurnitureKind::Board,
     FurnitureKind::Bin,
     FurnitureKind::Recycling,
+    FurnitureKind::BikeRack,
+    FurnitureKind::Toilet,
 ];
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
@@ -1044,6 +1047,8 @@ mod tests {
                 FurnitureKind::Board,
                 FurnitureKind::Bin,
                 FurnitureKind::Recycling,
+                FurnitureKind::BikeRack,
+                FurnitureKind::Toilet,
             ]
         );
         assert_eq!(
@@ -1069,17 +1074,20 @@ mod tests {
 
         let new = parse_surveyed_cell(
             r#"{"props":[[53.2,6.5,7],[53.2,6.5,8],[53.2,6.5,9],
-                                                   [53.2,6.5,10]]}"#,
+                                                   [53.2,6.5,10],[53.2,6.5,11],
+                                                   [53.2,6.5,12]]}"#,
         )
         .expect("valid");
         assert_eq!(
             new.props.len(),
-            3,
-            "position 10 has no form here and is dropped"
+            5,
+            "position 12 has no form here and is dropped"
         );
         assert_eq!(new.props[0].2, FurnitureKind::Board);
         assert_eq!(new.props[1].2, FurnitureKind::Bin);
         assert_eq!(new.props[2].2, FurnitureKind::Recycling);
+        assert_eq!(new.props[3].2, FurnitureKind::BikeRack);
+        assert_eq!(new.props[4].2, FurnitureKind::Toilet);
     }
 
     #[test]

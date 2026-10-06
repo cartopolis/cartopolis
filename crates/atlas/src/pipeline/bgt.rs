@@ -39,7 +39,7 @@ const ATTRIBUTION: &str = "Street objects © Kadaster BGT via PDOK (open data)";
 
 /// Point forms in wire order, mirrored by `PROP_KINDS` in the client — **append,
 /// never renumber**.
-const PROP_KINDS: [&str; 7] = [
+const PROP_KINDS: [&str; 12] = [
     "lamp",
     "bench",
     "shelter",
@@ -47,6 +47,13 @@ const PROP_KINDS: [&str; 7] = [
     "artwork",
     "swing",
     "cabinet",
+    // Claimed for `bord`, which is not read yet; held so the positions after it
+    // match the client.
+    "board",
+    "bin",
+    "recycling",
+    "bike_rack",
+    "toilet",
 ];
 /// Linear forms in wire order, mirrored by `LINE_KINDS`.
 const LINE_KINDS: [&str; 4] = ["fence", "wall", "hedge", "quay"];
@@ -256,6 +263,13 @@ fn prop_form(t: &str) -> Option<&'static str> {
         "speelvoorziening" => "swing",
         // A box on a plinth, which is what `FurnitureKind::Cabinet` draws.
         "reclamezuil" | "betaalautomaat" => "cabinet",
+        // `straatmeubilair`.
+        "fietsenrek" => "bike_rack",
+        "openbaar toilet" => "toilet",
+        // `bak`. A collection point for separated waste is the big containers,
+        // which is the bottle bank's form, not the litter bin's.
+        "afvalbak" => "bin",
+        "afval apart plaats" | "container" => "recycling",
         _ => return None,
     })
 }
@@ -271,10 +285,11 @@ fn truthy(v: &Value) -> bool {
 }
 
 /// The object types the extract is asked for.
-const FEATURETYPES: [&str; 8] = [
+const FEATURETYPES: [&str; 9] = [
     "vegetatieobject",
     "paal",
     "straatmeubilair",
+    "bak",
     "scheiding",
     "overbruggingsdeel",
     "wegdeel",
@@ -490,7 +505,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     })?;
 
     let mut n_props = 0;
-    for collection in ["paal", "straatmeubilair"] {
+    for collection in ["paal", "straatmeubilair", "bak"] {
         ctx.log(format!("{collection}…"));
         items(ctx, extract, collection, |feat| {
             let Some(form) = prop_form(&js_str(&feat["properties"]["plus_type"])) else {
@@ -740,6 +755,30 @@ fn collect_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every point form lands on the position the client reads it at. `ix`
+    /// answers 0 for a name it does not find, so a form missing from the table
+    /// would be drawn as a lamppost rather than refused.
+    #[test]
+    fn every_point_form_has_its_wire_position() {
+        for (t, at) in [
+            ("lichtmast", 0),
+            ("bank", 1),
+            ("reclamezuil", 6),
+            ("afvalbak", 8),
+            ("afval apart plaats", 9),
+            ("container", 9),
+            ("fietsenrek", 10),
+            ("openbaar toilet", 11),
+        ] {
+            let form = prop_form(t).expect(t);
+            assert!(
+                PROP_KINDS.contains(&form),
+                "{t} → {form} is not in PROP_KINDS"
+            );
+            assert_eq!(ix(&PROP_KINDS, form), at, "{t}");
+        }
+    }
 
     /// Retaining walls are their own form, at the end of the table, so a wall
     /// that holds a quay up is not drawn standing on it.

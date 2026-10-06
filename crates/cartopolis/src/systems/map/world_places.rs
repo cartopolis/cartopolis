@@ -226,6 +226,8 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::TrafficLight => "Traffic light",
         FurnitureKind::Yacht => "Yacht",
         FurnitureKind::Houseboat => "Houseboat",
+        FurnitureKind::BikeRack => "Bike rack",
+        FurnitureKind::Toilet => "Public toilet",
     }
 }
 
@@ -238,7 +240,10 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
 /// source was `pois`, a layer of things people visit, and stops being fine the
 /// moment a city's worth of surveyed lampposts arrives.
 fn prop_interactable(kind: FurnitureKind) -> bool {
-    !matches!(kind, FurnitureKind::Lamp)
+    !matches!(
+        kind,
+        FurnitureKind::Lamp | FurnitureKind::BikeRack | FurnitureKind::Toilet
+    )
 }
 
 /// Radius (m) each furniture form occupies for collision. The meshes are built
@@ -276,6 +281,10 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         FurnitureKind::TrafficLight => 0.2,
         // On water, like the canal boats: a collider there is a wall in a basin.
         FurnitureKind::Yacht | FurnitureKind::Houseboat => 0.0,
+        // One circle on a 2 m rack: the middle is solid and the ends are not,
+        // which is the bench's compromise.
+        FurnitureKind::BikeRack => 0.6,
+        FurnitureKind::Toilet => 1.1,
     }
 }
 

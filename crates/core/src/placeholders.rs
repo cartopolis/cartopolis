@@ -47,6 +47,8 @@ pub const PLACEHOLDER_KINDS: &[&str] = &[
     "traffic-light",
     "yacht",
     "houseboat",
+    "bike-rack",
+    "toilet",
 ];
 
 /// Whether a slug names a form that may be overridden.

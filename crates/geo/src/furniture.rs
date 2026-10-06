@@ -188,6 +188,13 @@ pub enum FurnitureKind {
     /// A houseboat on a registered berth (the BAG's `ligplaats`): a long flat
     /// hull with a house on it, lying along the bank.
     Houseboat,
+    /// A bike rack — the BGT's surveyed `fietsenrek`. A rack, not the bikes in
+    /// it: the register says where the rack stands and nothing about how full it
+    /// is, so drawing bicycles in it would be inventing them.
+    BikeRack,
+    /// A public toilet — the BGT's surveyed `openbaar toilet`. Drawn as a cabin;
+    /// the register does not say whether it is one or an open urinal.
+    Toilet,
 }
 
 impl FurnitureKind {
@@ -229,6 +236,8 @@ impl FurnitureKind {
             Self::TrafficLight => "traffic-light",
             Self::Yacht => "yacht",
             Self::Houseboat => "houseboat",
+            Self::BikeRack => "bike-rack",
+            Self::Toilet => "toilet",
         }
     }
 
@@ -307,6 +316,8 @@ pub const ALL_FURNITURE_KINDS: &[FurnitureKind] = &[
     FurnitureKind::TrafficLight,
     FurnitureKind::Yacht,
     FurnitureKind::Houseboat,
+    FurnitureKind::BikeRack,
+    FurnitureKind::Toilet,
 ];
 
 /// Where a form can be sat on, in the object's own frame (+z front).
@@ -1034,6 +1045,21 @@ mod form {
         part([0.0, 3.98, 0.28], [0.05, 0.04, 0.28], Metal),
         part([0.0, 3.90, 0.52], [0.14, 0.06, 0.22], Roof),
     ];
+    /// A 2 m street rack of the common Dutch kind: two rails a wheel's width apart
+    /// at front-wheel height, on a post at each end. Long axis on x, like the
+    /// bench, so it squares up along the pavement.
+    pub const BIKE_RACK: [Part; 4] = [
+        part([0.0, 0.18, 0.0], [1.00, 0.02, 0.02], Metal),
+        part([0.0, 0.42, 0.0], [1.00, 0.02, 0.02], Metal),
+        part([-0.98, 0.22, 0.0], [0.03, 0.22, 0.12], Metal),
+        part([0.98, 0.22, 0.0], [0.03, 0.22, 0.12], Metal),
+    ];
+    /// A street toilet cabin, 2.3 m tall with a lighter roof and the door on +z.
+    pub const TOILET: [Part; 3] = [
+        part([0.0, 1.15, 0.0], [0.80, 1.15, 0.80], Metal),
+        part([0.0, 2.36, 0.0], [0.88, 0.06, 0.88], Roof),
+        part([0.0, 1.00, 0.81], [0.40, 0.95, 0.02], Wood),
+    ];
     /// A signal post: a 3 m pole and the head on it, dark, facing the road.
     pub const TRAFFIC_LIGHT: [Part; 2] = [
         part([0.0, 1.50, 0.0], [0.05, 1.50, 0.05], Metal),
@@ -1155,6 +1181,8 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::TrafficLight => &form::TRAFFIC_LIGHT,
         FurnitureKind::Yacht => &form::YACHT,
         FurnitureKind::Houseboat => &form::HOUSEBOAT,
+        FurnitureKind::BikeRack => &form::BIKE_RACK,
+        FurnitureKind::Toilet => &form::TOILET,
     }
 }
 
@@ -1195,6 +1223,27 @@ pub fn parts_for(item: &FurnitureInstance) -> &'static [Part] {
         return &form::HOUSEBOAT[..1];
     }
     parts(item.kind)
+}
+
+/// How far apart (m) an OSM object and a surveyed one of the same form may be and
+/// still be the same object. Both sources are mapped against aerial photography,
+/// which puts one bench a metre or two from itself; two real benches of a row
+/// stand further apart than this.
+const SURVEYED_TWIN_M: f32 = 2.5;
+
+/// Drop each `pois` instance that a surveyed one of the same form already stands
+/// on. The survey is the one kept: it is the register, and OSM's copy of the
+/// object was traced from the same street.
+pub fn drop_surveyed_twins(pois: &mut Vec<FurnitureInstance>, surveyed: &[FurnitureInstance]) {
+    if surveyed.is_empty() {
+        return;
+    }
+    let r2 = SURVEYED_TWIN_M * SURVEYED_TWIN_M;
+    pois.retain(|p| {
+        !surveyed
+            .iter()
+            .any(|s| s.kind == p.kind && (s.x - p.x).powi(2) + (s.z - p.z).powi(2) <= r2)
+    });
 }
 
 /// Turn **surveyed** points into oriented furniture instances.
@@ -1802,6 +1851,32 @@ pub fn paving_base(factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::vector_tiles::synth;
+
+    #[test]
+    fn a_surveyed_object_replaces_its_osm_twin_and_nothing_else() {
+        let at = |x: f32, kind| FurnitureInstance {
+            x,
+            z: 0.0,
+            yaw: 0.0,
+            kind,
+            luma: 1.0,
+            paint: palette::FURNITURE,
+            over_water: false,
+            hull_only: false,
+        };
+        let surveyed = [at(0.0, FurnitureKind::Bin)];
+        let mut pois = vec![
+            at(1.5, FurnitureKind::Bin),   // the same bin, traced a little off
+            at(6.0, FurnitureKind::Bin),   // the next bin along
+            at(0.5, FurnitureKind::Bench), // a bench beside the bin
+        ];
+        drop_surveyed_twins(&mut pois, &surveyed);
+        let left: Vec<(f32, FurnitureKind)> = pois.iter().map(|p| (p.x, p.kind)).collect();
+        assert_eq!(
+            left,
+            [(6.0, FurnitureKind::Bin), (0.5, FurnitureKind::Bench)]
+        );
+    }
 
     /// The forms and the shared placeholder vocabulary are one list seen from two
     /// crates, and nothing but this test keeps them equal. A form missing a slug
