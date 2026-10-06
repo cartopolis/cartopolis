@@ -42,7 +42,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::components::{FreeCamera, HideInSpace};
+use crate::components::{Avatar, FreeCamera, HideInSpace};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{AvatarState, MapAnchor};
 use crate::systems::building_facts::BuildingFacts;
@@ -487,13 +487,23 @@ fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
 /// `collision::Footprint` distinguishes a hollow building from a solid one and
 /// stops the avatar at a wall rather than at an area, so nothing has to be told
 /// which building anybody is in for a door to work.
+///
+/// Nobody is indoors without an avatar: offline there is none, but
+/// `AvatarState` still holds a position at the map anchor, and reading it named
+/// whatever building stood there — ghosting it and opening the floor picker
+/// over a map with nobody on it.
 pub fn track_indoors(
     floors: Res<InteriorFloors>,
     avatar: Res<AvatarState>,
+    avatars: Query<(), With<Avatar>>,
     mut selection: ResMut<BuildingSelection>,
 ) {
     let here = Vec2::new(avatar.position.x, avatar.position.z);
-    let now = floors.building_at(here).cloned();
+    let now = if avatars.is_empty() {
+        None
+    } else {
+        floors.building_at(here).cloned()
+    };
     if now != selection.indoors {
         selection.indoors = now;
     }

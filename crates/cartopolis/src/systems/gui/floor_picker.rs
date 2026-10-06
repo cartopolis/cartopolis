@@ -3,8 +3,10 @@
 //!
 //! A column at the right edge, top storey first, as a lift's buttons and every
 //! indoor map's level switcher are — so it reads as "floors" before a word of it
-//! is read. It appears whenever something is cut away: walking into a building,
-//! or the building card's Look inside. Tapping a storey shows that storey; the
+//! is read. It appears only for the building card's Look inside — the card is
+//! opened by double-tapping a building, so asking for the floors is always a
+//! choice. Walking in still cuts the building away; it no longer opens a panel
+//! over the map uninvited. Tapping a storey shows that storey; the
 //! storey the avatar is on carries a dot, and once another has been picked a
 //! "Follow me" row hands the choice back to the avatar's feet.
 //!
@@ -30,7 +32,7 @@ use crate::systems::theme;
 /// Width of the column, points. Wide enough for "Ground floor" and a dot.
 const WIDTH: f32 = 150.0;
 
-/// Draw the picker while something is cut away.
+/// Draw the picker while the building card is looking inside a building.
 #[allow(clippy::too_many_arguments)]
 pub fn render_floor_picker(
     egui: Res<EguiManager>,
@@ -41,6 +43,9 @@ pub fn render_floor_picker(
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
+    if cutaway.looking.is_none() {
+        return; // only the card's Look inside asks for the floors
+    }
     let Some(id) = cutaway.building.clone() else {
         return;
     };
@@ -54,7 +59,6 @@ pub fn render_floor_picker(
         return;
     }
 
-    let from_outside = cutaway.looking.is_some();
     let mut pick: Option<Option<usize>> = None;
     let mut close = false;
     let mut open: Option<String> = None;
@@ -69,11 +73,9 @@ pub fn render_floor_picker(
                 ui.set_width(WIDTH);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Floors").strong().size(theme::SIZE_SUB));
-                    if from_outside {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = theme::close_button(ui).clicked();
-                        });
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        close = theme::close_button(ui).clicked();
+                    });
                 });
                 if let Some(room) = &cutaway.room {
                     ui.label(

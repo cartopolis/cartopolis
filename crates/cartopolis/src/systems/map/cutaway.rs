@@ -16,7 +16,7 @@
 //! * **the building card's Look inside** — any building with an inside, looked
 //!   into from wherever the camera is, at the ground floor.
 //!
-//! Either way the floor picker (`gui::floor_picker`) lists the storeys by the
+//! The floor picker (`gui::floor_picker`) appears for the second only, and lists the storeys by the
 //! names the building's design gives them, so a storey picked there is the same
 //! storey its owner drew in the editor. A storey picked by hand holds until the
 //! building changes or the picker is told to follow the avatar again.
