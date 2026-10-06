@@ -956,6 +956,9 @@ pub fn erase_account_traces(
     // the other members' history (`e2ee::erase_account` says why that is safe).
     crate::e2ee::erase_account(conn, principal)?;
     crate::contacts::erase_account(conn, principal)?;
+    // A role held by nobody is harmless; one held by a recycled principal is
+    // not, so the grants go with the account.
+    crate::roles::forget_account(conn, principal)?;
     Ok(())
 }
 

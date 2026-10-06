@@ -39,13 +39,22 @@ fn fail(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error": message}))).into_response()
 }
 
+/// The signed-in operator behind a request, if their roles let them run the
+/// pipelines (`pipeline_run`; an admin always may).
 async fn admin(state: &ApiState, headers: &HeaderMap) -> Result<Principal, Response> {
-    state.auth.admin(headers).await.ok_or_else(|| {
+    let who = state.auth.admin(headers).await.ok_or_else(|| {
         fail(
             StatusCode::UNAUTHORIZED,
-            "That session is not an admin session",
+            "That session is not an operator session",
         )
-    })
+    })?;
+    if !who.may(cartopolis_core::permissions::Permission::PipelineRun) {
+        return Err(fail(
+            StatusCode::FORBIDDEN,
+            "That account may not run the map data pipelines",
+        ));
+    }
+    Ok(who)
 }
 
 /// A blocking read of the served tree, off the async workers.
@@ -462,6 +471,8 @@ mod tests {
             Ok((token == "admin").then(|| Principal {
                 principal: json!(1),
                 username: "op".into(),
+                admin: true,
+                permissions: Vec::new(),
             }))
         }
 
@@ -633,7 +644,7 @@ mod tests {
         let (s, v) = call("GET", format!("{base}/config"), "nobody", None).await;
         assert_eq!(
             (s, v["error"].as_str()),
-            (401, Some("That session is not an admin session"))
+            (401, Some("That session is not an operator session"))
         );
 
         let (s, v) = call("GET", format!("{base}/config"), "admin", None).await;

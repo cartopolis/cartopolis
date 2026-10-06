@@ -295,10 +295,55 @@ export interface StoredAsset {
     triangles: number
 }
 
+/**
+ * One permission, as the simulator lists it (`GET /api/admin/permissions`,
+ * `cartopolis_core::permissions`). The web UI keeps no list of its own — it
+ * draws whatever the server says exists.
+ */
+export interface PermissionInfo {
+    group: 'prims' | 'scripts' | 'buildings' | 'server'
+    label: string
+    player_default: boolean
+    slug: string
+}
+
+/** A role: a named set of permissions (`roles::RoleRow`). */
+export interface Role {
+    built_in: boolean
+    id: string
+    /** How many accounts hold it explicitly; `player` is held by everyone. */
+    members: number
+    name: string
+    permissions: string[]
+}
+
+/** The roles one account holds explicitly. A list rather than a map because
+ * deepsignal does not type string-keyed records. */
+export interface AccountRoles {
+    id: string
+    roles: string[]
+}
+
+/** What the signed-in operator may do (`/api/admin/me`). */
+export interface Me {
+    admin: boolean
+    permissions: string[]
+}
+
+export type AdminTab = 'accounts' | 'roles' | 'claims' | 'library' | 'pipeline' | 'autopilot'
+
 export interface AdminState extends Record<string, unknown> {
     accounts: Account[]
+    /** The roles each account holds explicitly, by account id. */
+    accountRoles: AccountRoles[]
     /** Which list the signed-in operator is looking at. */
-    adminTab: 'accounts' | 'claims' | 'library' | 'pipeline' | 'autopilot'
+    adminTab: AdminTab
+    /** What the signed-in operator may do; decides which tabs exist. */
+    me: Me
+    /** Every permission the server knows, for the roles grid. */
+    permissionCatalogue: PermissionInfo[]
+    /** Every role on the server. */
+    roles: Role[]
     /** The development lane's throttle; `null` until the server has answered. */
     autopilot: AutopilotConfig | null
     /** The operator's view of who owns which building. */

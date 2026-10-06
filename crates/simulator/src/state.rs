@@ -952,30 +952,27 @@ impl SimWorld {
         self.owners.insert(prim_id, owner.to_string());
     }
 
-    /// May `principal` change or delete this prim?
+    /// Is this prim `principal`'s?
     ///
-    /// Three rules, and the middle one is the reason this exists at all.
-    ///
-    /// An **admin always may** — the override, and the thing that keeps a build
-    /// whose author has gone from being permanently unmaintainable.
-    ///
-    /// An **owned prim is its owner's**, and nobody else's. Before this,
+    /// An **owned prim is its owner's**, and nobody else's. Before owners,
     /// `UpdatePrim` and `DeletePrim` were open to any connected client, so
     /// anything anybody built could be moved, recoloured, rescripted or deleted
     /// by anybody else.
     ///
-    /// An **unowned prim belongs to the server**, so only an admin may touch it.
-    /// That is everything built before schema V15 and everything a content pack
-    /// installs, and it is the deliberate side of a real trade: the alternative —
-    /// treating "no owner" as "anybody's" — would leave the firebird and the
-    /// beacon deletable by any passer-by. An operator re-homes a genuinely
-    /// orphaned build with `POST /api/content/transfer`.
+    /// An **unowned prim belongs to the server**: nobody owns it, so only an
+    /// account allowed to change anybody's prims (`prim_edit_any`; an admin)
+    /// may touch it. That is everything built before schema V15 and everything a
+    /// content pack installs, and it is the deliberate side of a real trade: the
+    /// alternative — treating "no owner" as "anybody's" — would leave the
+    /// firebird and the beacon deletable by any passer-by. An operator re-homes a
+    /// genuinely orphaned build with `POST /api/content/transfer`.
+    ///
+    /// What an actor may *do* with a prim is its permissions' business
+    /// (`prims::Actor::may_edit`, `docs/notes/permissions.md`); this answers only
+    /// whose the prim is.
     #[must_use]
-    pub fn may_edit(&self, prim_id: i64, principal: &str, is_admin: bool) -> bool {
-        if is_admin {
-            return true;
-        }
-        self.owners.get(&prim_id).is_some_and(|o| o == principal)
+    pub fn owns(&self, prim_id: i64, principal: &str) -> bool {
+        !principal.is_empty() && self.owners.get(&prim_id).is_some_and(|o| o == principal)
     }
 
     /// Record that a prim gained or lost a script, after the script budget has

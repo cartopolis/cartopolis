@@ -27,6 +27,7 @@ pub mod pictures;
 pub mod prims;
 pub mod push;
 pub mod registration;
+pub mod roles;
 pub mod scripting;
 pub mod state;
 pub mod textures;

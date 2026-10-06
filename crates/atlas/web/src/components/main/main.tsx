@@ -15,8 +15,10 @@ import {Library} from '@/components/pages/library/library'
 import {Login} from '@/components/pages/login/login'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Register} from '@/components/pages/register/register'
+import {Roles} from '@/components/pages/roles/roles'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
+import {may, visibleTabs} from '@/lib/roles'
 import {ADMIN, PLAYER_PATHS} from '@/lib/base'
 
 /**
@@ -30,7 +32,7 @@ const AdminView = (_props: RoutableProps) => {
     // Fetch on the transition into signed-in, from wherever it happened: a fresh
     // sign-in, or a remembered token that `App.init` has just had confirmed.
     useEffect(() => {
-        if ($s.signedIn && !$s.accounts.length) {
+        if ($s.signedIn && !$s.accounts.length && may('accounts_manage')) {
             void loadAccounts()
         }
     }, [$s.signedIn])
@@ -41,57 +43,32 @@ const AdminView = (_props: RoutableProps) => {
     if (!$s.signedIn) {
         return <Login />
     }
+    // Only the tabs this operator's roles open (`lib/roles.ts`). The server
+    // refuses the rest anyway; hiding them just keeps the screen honest.
+    const tabs = visibleTabs()
+    if (!tabs.length) {
+        return <div class="splash">This account has nothing to manage here.</div>
+    }
     return (
         <>
             <nav class="tabs">
-                <button
-                    class={$s.adminTab === 'accounts' ? 'tab is-current' : 'tab'}
-                    onClick={() => {
-                        $s.adminTab = 'accounts'
-                    }}
-                    type="button"
-                >
-                    Accounts
-                </button>
-                <button
-                    class={$s.adminTab === 'claims' ? 'tab is-current' : 'tab'}
-                    onClick={() => {
-                        $s.adminTab = 'claims'
-                    }}
-                    type="button"
-                >
-                    Buildings
-                </button>
-                <button
-                    class={$s.adminTab === 'library' ? 'tab is-current' : 'tab'}
-                    onClick={() => {
-                        $s.adminTab = 'library'
-                    }}
-                    type="button"
-                >
-                    Models
-                </button>
-                <button
-                    class={$s.adminTab === 'pipeline' ? 'tab is-current' : 'tab'}
-                    onClick={() => {
-                        $s.adminTab = 'pipeline'
-                    }}
-                    type="button"
-                >
-                    Data
-                </button>
-                <button
-                    class={$s.adminTab === 'autopilot' ? 'tab is-current' : 'tab'}
-                    onClick={() => {
-                        $s.adminTab = 'autopilot'
-                    }}
-                    type="button"
-                >
-                    Autopilot
-                </button>
+                {tabs.map((t) => (
+                    <button
+                        class={$s.adminTab === t.tab ? 'tab is-current' : 'tab'}
+                        key={t.tab}
+                        onClick={() => {
+                            $s.adminTab = t.tab
+                        }}
+                        type="button"
+                    >
+                        {t.label}
+                    </button>
+                ))}
             </nav>
             {$s.adminTab === 'claims' ? (
                 <Claims />
+            ) : $s.adminTab === 'roles' ? (
+                <Roles />
             ) : $s.adminTab === 'library' ? (
                 <Library />
             ) : $s.adminTab === 'pipeline' ? (

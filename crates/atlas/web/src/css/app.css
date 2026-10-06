@@ -1158,3 +1158,45 @@ a.ghost-link {
     fill: var(--text-dim);
     opacity: 0.7;
 }
+
+/* ── Roles ───────────────────────────────────────────────────────────────── */
+
+.role-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    margin: 12px 0;
+}
+
+.role-group {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin: 0;
+    padding: 8px 12px 10px;
+}
+
+.role-group legend {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    text-transform: uppercase;
+}
+
+.role-group .check {
+    margin: 4px 0;
+}
+
+/* A permission that is trust rather than a feature says so beside its box. */
+.role .warning {
+    color: var(--warn);
+    font-size: 0.8rem;
+}
+
+.account-roles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 8px 0;
+}

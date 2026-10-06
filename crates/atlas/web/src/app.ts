@@ -7,6 +7,7 @@ import type {AdminState, Notification, RegistrationRules} from '@/types'
 
 import {Api} from '@/lib/api'
 import {Notifier} from '@/lib/notifier'
+import {applyMe} from '@/lib/roles'
 import {persistentState, volatileState} from '@/lib/state'
 import {Store} from '@/lib/store'
 
@@ -69,8 +70,14 @@ export class App {
         // `signedIn` stays null until it does — which is what the splash is for.
         if ($s.profile.token) {
             try {
-                const me = await api.get<{principal: string; username: string}>('/api/admin/me')
+                const me = await api.get<{
+                    admin: boolean
+                    permissions?: string[]
+                    principal: string
+                    username: string
+                }>('/api/admin/me')
                 $s.profile = {principal: me.principal, token: $s.profile.token, username: me.username}
+                applyMe({admin: me.admin, permissions: me.permissions ?? []})
                 $s.signedIn = true
             } catch {
                 // The 401 path in `Api` has already cleared the profile.

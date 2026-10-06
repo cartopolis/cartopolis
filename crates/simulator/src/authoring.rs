@@ -44,12 +44,13 @@
 //! one of the two conventions is ever in flight past the API boundary — the
 //! author-facing side is the one that gets degrees.
 
-use crate::http::{require_admin, ApiError, ApiResult, HttpState};
+use crate::http::{require, ApiError, ApiResult, HttpState};
 use crate::prims::{Actor, ModelCheck, PrimError, PrimFields, PrimSeed};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use cartopolis_core::permissions::Permission;
 use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurface};
 use glam::Vec3;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -325,7 +326,7 @@ async fn get_capacity(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ContentInstall)?;
     let usage = state.world.read().await.capacity();
     Ok(Json(json!({
         "prims_used": usage.prims_used,
@@ -339,7 +340,7 @@ async fn list_prims(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ContentInstall)?;
     let w = state.world.read().await;
     // Source is left out here on purpose: a hundred prims' worth of Luau is not
     // what "list the prims" means, and the single-prim route has it.
@@ -360,7 +361,7 @@ async fn get_prim(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<PrimView>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ContentInstall)?;
     let (prim, scripted) = {
         let w = state.world.read().await;
         let prim = w.prim(id).cloned().ok_or_else(not_found)?;
@@ -379,7 +380,7 @@ async fn create_prim(
     headers: HeaderMap,
     Json(spec): Json<PrimSpec>,
 ) -> ApiResult<(StatusCode, Json<PrimView>)> {
-    let (_, who) = require_admin(&state, &headers)?;
+    let (_, who) = require(&state, &headers, Permission::ContentInstall)?;
     let operator = Actor::server();
     let created = create(&state, &operator, &spec).await?;
     tracing::info!(%who, prim_id = created.id, "prim authored");
@@ -459,7 +460,7 @@ async fn update_prim(
     Path(id): Path<i64>,
     Json(spec): Json<PrimSpec>,
 ) -> ApiResult<Json<PrimView>> {
-    let (_, who) = require_admin(&state, &headers)?;
+    let (_, who) = require(&state, &headers, Permission::ContentInstall)?;
     if let Some(s) = &spec.shape {
         check_shape(s)?;
     }
@@ -500,7 +501,7 @@ async fn delete_prim(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    let (_, who) = require_admin(&state, &headers)?;
+    let (_, who) = require(&state, &headers, Permission::ContentInstall)?;
     // The row, the script, the VM, the world's copy and every client's, in that
     // order — `PrimService::delete`.
     match state.prims.delete(&Actor::server(), id).await {
@@ -524,7 +525,7 @@ async fn put_script(
     Path(id): Path<i64>,
     Json(body): Json<ScriptBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (_, who) = require_admin(&state, &headers)?;
+    let (_, who) = require(&state, &headers, Permission::ContentInstall)?;
     let scripted = store_script(&state, &Actor::server(), id, Some(&body.source)).await?;
     tracing::info!(%who, prim_id = id, scripted, "prim script stored");
     // A compile error arrives asynchronously, as a `ScriptOutput` on the wire —
@@ -602,10 +603,12 @@ async fn export_content(
 ) -> ApiResult<Json<ContentDocument>> {
     let (principal, username) = crate::http::require_session(&state, &headers)?;
     let wants_others = q.all || q.owner.is_some();
-    if wants_others && !crate::http::is_caller_admin(&state, principal)? {
+    if wants_others
+        && !crate::http::caller_permissions(&state, principal)?.has(Permission::ContentInstall)
+    {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
-            "exporting another account's build needs an admin".into(),
+            "exporting another account's build needs the content_install permission".into(),
         ));
     }
 
@@ -666,7 +669,8 @@ async fn transfer_content(
     if body.prims.is_empty() {
         return Err(bad("name at least one prim to transfer"));
     }
-    let admin = crate::http::is_caller_admin(&state, principal)?;
+    // Re-homing anybody's build is editing anybody's prims.
+    let admin = crate::http::caller_permissions(&state, principal)?.has(Permission::PrimEditAny);
     let to = crate::http::with_db(&state, |c| crate::db::enabled_account_id(c, &body.to))?
         .ok_or_else(|| {
             ApiError(
@@ -745,9 +749,10 @@ async fn import_content(
 
     // The importer, as an account: what they import is theirs, in the database
     // and in the world's own map both (`SimWorld::may_edit`), so they can edit it
-    // straight away. Not an admin here even if they are one — an import builds
-    // only what it creates, and needs no override for that.
-    let importer = Actor::account(principal.to_string(), false);
+    // straight away. With their own permissions, so a role that may not build
+    // cannot build by import either.
+    let perms = crate::http::caller_permissions(&state, principal)?;
+    let importer = Actor::with_permissions(principal.to_string(), perms);
     let mut created = Vec::new();
     for spec in &doc.prims {
         // Straight through `create`, so an imported prim is checked exactly as
@@ -774,7 +779,7 @@ async fn list_content(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ContentInstall)?;
     let packs: Vec<serde_json::Value> = crate::content::packs()
         .iter()
         .map(|p| {
@@ -799,7 +804,7 @@ async fn install_content(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (_, who) = require_admin(&state, &headers)?;
+    let (_, who) = require(&state, &headers, Permission::ContentInstall)?;
     let pack = crate::content::pack(&name).ok_or_else(|| {
         ApiError(
             StatusCode::NOT_FOUND,
@@ -952,6 +957,7 @@ async fn store_script(
             PrimError::NotYours(id) => ApiError(StatusCode::FORBIDDEN, crate::prims::not_yours(id)),
             PrimError::Refused(message) => bad(message),
             PrimError::Storage(message) => crate::http::internal(anyhow::anyhow!(message)),
+            PrimError::Forbidden(message) => ApiError(StatusCode::FORBIDDEN, message),
         })
 }
 

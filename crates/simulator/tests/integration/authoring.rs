@@ -1430,3 +1430,240 @@ async fn a_kick_into_the_north_goal_is_called_a_goal() {
     assert!(call.contains("north end"), "{call}");
     assert!(call.contains("North 0 – 1 South"), "{call}");
 }
+
+// ---------------------------------------------------------------------------
+// Roles and permissions (`docs/notes/permissions.md`)
+// ---------------------------------------------------------------------------
+
+/// The id of an account, from the operator's list.
+async fn account_id(handle: &SimHandle, admin: &str, username: &str) -> String {
+    let (status, body) = api(
+        "GET",
+        format!("{}/api/admin/accounts", base(handle)),
+        Some(admin.to_string()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    body["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["username"] == username)
+        .unwrap_or_else(|| panic!("no account {username}: {body}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Give `username` a role holding `permissions`, as an operator does from the
+/// web UI.
+async fn grant(handle: &SimHandle, admin: &str, username: &str, role: &str, permissions: &[&str]) {
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/admin/roles", base(handle)),
+        Some(admin.to_string()),
+        Some(serde_json::json!({ "id": role, "name": role, "permissions": permissions })),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let id = account_id(handle, admin, username).await;
+    let (status, body) = api(
+        "PUT",
+        format!("{}/api/admin/accounts/{id}/roles", base(handle)),
+        Some(admin.to_string()),
+        Some(serde_json::json!({ "roles": [role] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A role widens what one account may do, and it takes effect at the account's
+/// next sign-in — the freshness the wire has always had.
+#[tokio::test]
+async fn a_role_lets_one_account_edit_anybodys_prims() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let lamp = build(&mut walker, "Walkers lamp", LAT, LNG).await;
+
+    let mut meddler = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
+    let refused = try_rename(&mut meddler, lamp, "Mine now").await;
+    assert_eq!(refused.map(|r| r.0), Some(403));
+
+    grant(&handle, &admin, "meddler", "caretaker", &["prim_edit_any"]).await;
+    let mut meddler = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
+    assert_eq!(try_rename(&mut meddler, lamp, "Tidied").await, None);
+}
+
+/// Narrowing the player role narrows every account at once, and the refusal
+/// says it is the account's permissions, not somebody else's prim.
+#[tokio::test]
+async fn narrowing_the_player_role_stops_everyone_building() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let (status, body) = api(
+        "PATCH",
+        format!("{}/api/admin/roles/player", base(&handle)),
+        Some(admin.clone()),
+        Some(serde_json::json!({ "permissions": ["prim_edit_own"] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let msg = NetMessage::CreatePrim {
+        request_id: 5,
+        name: "nope".into(),
+        position: glam::Vec3::new(0.0, 2.0, 0.0),
+        rotation: glam::Vec3::ZERO,
+        scale: glam::Vec3::ONE,
+        color: [0.5, 0.5, 0.5],
+        texture_id: None,
+        shape: "box".into(),
+        surface: cartopolis_core::PrimSurface::default(),
+        geometry: cartopolis_core::PrimGeometry::default(),
+        geo: GeoAnchor {
+            latitude: LAT,
+            longitude: LNG,
+        },
+        particles: None,
+        model: None,
+    };
+    walker
+        .send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    let (code, message) = recv_until(&mut walker, "a refusal", |m| match m {
+        NetMessage::ServerError {
+            request_id: 5,
+            code,
+            message,
+        } => Some((code, message)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(code, 403);
+    assert!(message.contains("may not build"), "{message}");
+}
+
+/// Ask for a prim's script, as the editor does when it opens.
+async fn ask_script(c: &mut Client, prim_id: i64) {
+    let msg = NetMessage::GetPrimScript {
+        request_id: 9,
+        prim_id,
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+}
+
+/// Without `script_read_any`, a script is its owner's to read.
+#[tokio::test]
+async fn a_script_is_private_without_script_read_any() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let (status, _) = api(
+        "PATCH",
+        format!("{}/api/admin/roles/player", base(&handle)),
+        Some(admin.clone()),
+        Some(serde_json::json!({
+            "permissions": ["prim_create", "prim_edit_own", "script_edit_own"]
+        })),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let lamp = build(&mut walker, "Secret lamp", LAT, LNG).await;
+    set_script(&mut walker, lamp, "function on_touch() say('hi') end").await;
+
+    let mut meddler = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
+    ask_script(&mut meddler, lamp).await;
+    let answer = recv_until(&mut meddler, "an answer", |m| match m {
+        NetMessage::ServerError {
+            request_id: 9,
+            code,
+            ..
+        } => Some(Err(code)),
+        NetMessage::PrimScript { source, .. } => Some(Ok(source)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(answer, Err(403));
+
+    ask_script(&mut walker, lamp).await;
+    let mine = recv_until(&mut walker, "the source", |m| match m {
+        NetMessage::PrimScript { source, .. } => Some(source),
+        _ => None,
+    })
+    .await;
+    assert!(mine.contains("say('hi')"));
+}
+
+/// A role may manage accounts, but not make anybody an admin — or that role
+/// would be a way to become one — and the operator UI opens to it.
+#[tokio::test]
+async fn managing_accounts_is_not_making_admins() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+
+    // A plain player is no operator: the admin login answers as for a wrong
+    // password.
+    let (status, _) = api(
+        "POST",
+        format!("{}/api/admin/login", base(&handle)),
+        None,
+        Some(serde_json::json!({"username": "walker", "password": "walkerpw"})),
+    )
+    .await;
+    assert_eq!(status, 401);
+
+    grant(&handle, &admin, "walker", "desk", &["accounts_manage"]).await;
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/admin/login", base(&handle)),
+        None,
+        Some(serde_json::json!({"username": "walker", "password": "walkerpw"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let desk = body["token"].as_str().unwrap().to_string();
+
+    let (status, me) = api(
+        "GET",
+        format!("{}/api/admin/me", base(&handle)),
+        Some(desk.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(me["admin"], false);
+    assert!(me["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p == "accounts_manage"));
+
+    let walker_id = account_id(&handle, &desk, "walker").await;
+    let (status, _) = api(
+        "PATCH",
+        format!("{}/api/admin/accounts/{walker_id}", base(&handle)),
+        Some(desk.clone()),
+        Some(serde_json::json!({ "admin": true })),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a role that manages accounts made itself admin"
+    );
+
+    // Nor may it give itself more: roles are their own permission.
+    let (status, _) = api(
+        "POST",
+        format!("{}/api/admin/roles", base(&handle)),
+        Some(desk),
+        Some(serde_json::json!({"id": "all", "name": "All", "permissions": ["roles_manage"]})),
+    )
+    .await;
+    assert_eq!(status, 403);
+}

@@ -63,15 +63,19 @@ const NewAccount = () => {
                     value={password}
                 />
             </label>
-            <label class="check">
-                <input
-                    checked={admin}
-                    disabled={busy}
-                    onChange={(e) => setAdmin((e.target as HTMLInputElement).checked)}
-                    type="checkbox"
-                />
-                Can administer accounts
-            </label>
+            {/* Who is an admin is an admin's call; the server refuses it from
+                anybody a role merely lets manage accounts. */}
+            {$s.me.admin && (
+                <label class="check">
+                    <input
+                        checked={admin}
+                        disabled={busy}
+                        onChange={(e) => setAdmin((e.target as HTMLInputElement).checked)}
+                        type="checkbox"
+                    />
+                    Admin (every permission)
+                </label>
+            )}
             <div class="row-actions" style="margin-top:14px">
                 <button class="primary" disabled={!valid || busy} type="submit">
                     {busy ? 'Creating…' : 'Create'}

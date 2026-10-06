@@ -38,6 +38,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use bytes::{Bytes, BytesMut};
+use cartopolis_core::permissions::{Permission, PermissionSet};
 use futures_util::{Sink, Stream};
 use serde::Deserialize;
 use serde_json::json;
@@ -127,6 +128,8 @@ pub fn router(state: HttpState) -> Router {
         // same reason the authoring surface is: one listener, one token, one
         // reverse-proxy prefix to configure.
         .merge(crate::library::routes())
+        // Roles and who holds them (`docs/notes/permissions.md`).
+        .merge(crate::roles::routes())
         .merge(crate::videos::routes())
         .merge(crate::pictures::routes())
         .with_state(state)
@@ -611,47 +614,54 @@ fn check_username(username: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// The caller's principal, if they presented a live token *and* the account
-/// behind it is an enabled admin right now.
+/// Whether a principal is an enabled admin *right now* — the flag itself, which
+/// only matters now for who may make or unmake an admin (`admin_only`) and for
+/// what the web UI shows; every other decision is a permission ([`require`]).
+pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<bool> {
+    with_db(state, |c| auth::is_admin(c, principal))
+}
+
+/// What a principal may do *right now* (`roles::effective`).
 ///
-/// Every admin route begins here. Both halves matter: the token proves who, and
-/// the database says whether that person may still do this — so revoking the flag
-/// or disabling the account takes effect on the next request rather than at token
-/// expiry.
-pub(crate) fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
-    let token = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .ok_or(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "sign in first".to_string(),
-        ))?;
-    let (principal, username) = state.sessions.resolve(token).ok_or(ApiError(
-        StatusCode::UNAUTHORIZED,
-        "that session has expired".to_string(),
-    ))?;
-    if !is_caller_admin(state, principal)? {
+/// Read per request rather than carried in the session: the token proves who,
+/// and the database says what that person may still do — so taking a role away
+/// or disabling the account takes effect on the next request rather than at
+/// token expiry.
+pub(crate) fn caller_permissions(state: &HttpState, principal: Uuid) -> ApiResult<PermissionSet> {
+    with_db(state, |c| crate::roles::effective(c, principal))
+}
+
+/// The caller's principal, if they presented a live token and their roles hold
+/// `p` right now (`docs/notes/permissions.md`). Every operator route begins
+/// here; the refusal names what was missing.
+pub(crate) fn require(
+    state: &HttpState,
+    headers: &HeaderMap,
+    p: Permission,
+) -> ApiResult<(Uuid, String)> {
+    let (principal, username) = require_session(state, headers)?;
+    if !caller_permissions(state, principal)?.has(p) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
-            "that account may not administer this server".into(),
+            format!(
+                "that account may not do this here ({}: {})",
+                p.slug(),
+                p.label().to_lowercase()
+            ),
         ));
     }
     Ok((principal, username))
 }
 
-/// Whether a principal is an enabled admin *right now*.
-///
-/// Split out of [`require_admin`] because some routes need the answer without
-/// requiring it: `/api/content/export` and `/api/content/transfer` are open to
-/// any signed-in account and merely reach *further* for an admin, and the model
-/// library lets an admin remove what somebody else shared. They ask rather than
-/// demand — and all of them ask here, so "is this an admin?" has one answer on
-/// the HTTP surface.
-pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<bool> {
-    with_db(state, |c| auth::is_admin(c, principal))
+/// Whether an account has anything to do in the operator web UI: a permission
+/// from the server group, or the building override. Who may sign in there.
+#[must_use]
+pub(crate) fn is_operator(perms: PermissionSet) -> bool {
+    perms.iter().any(|p| {
+        p.group() == cartopolis_core::permissions::PermissionGroup::Server
+            || p == Permission::BuildingOverride
+            || p == Permission::BuildingDesignAny
+    })
 }
 
 /// Run a closure with the SQLite connection, mapping a poisoned lock to a 500.
@@ -727,10 +737,11 @@ async fn login(
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let principal = check_password_login(&state, &body).await?;
-    // Authenticated, but the API is admin-only: a player's correct password gets
-    // the same answer as a wrong one, so this endpoint cannot be used to tell
-    // which usernames exist.
-    if !is_caller_admin(&state, principal)? {
+    // Authenticated, but the API is for operators — an admin, or an account a
+    // role gives something to run (`is_operator`): a player's correct password
+    // gets the same answer as a wrong one, so this endpoint cannot be used to
+    // tell which usernames exist.
+    if !is_operator(caller_permissions(&state, principal)?) {
         return Err(ApiError(
             StatusCode::UNAUTHORIZED,
             "wrong username or password".into(),
@@ -780,11 +791,21 @@ async fn me(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, username) = require_admin(&state, &headers)?;
+    let (principal, username) = require_session(&state, &headers)?;
+    let perms = caller_permissions(&state, principal)?;
+    if !is_operator(perms) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "that account may not administer this server".into(),
+        ));
+    }
+    // `permissions` is what the web UI shows tabs by and what atlas checks
+    // `pipeline_run` and `building_override` against.
     Ok(Json(json!({
         "principal": principal,
         "username": username,
-        "admin": true,
+        "admin": is_caller_admin(&state, principal)?,
+        "permissions": perms.slugs(),
     })))
 }
 
@@ -792,9 +813,25 @@ async fn list_accounts(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::AccountsManage)?;
     let accounts = with_db(&state, auth::list_accounts)?;
-    Ok(Json(json!({ "accounts": accounts })))
+    // Beside the rows rather than in them: `AccountRow` is pinned field for field
+    // to the web UI's `Account` type, and a role is not a column of the account.
+    let roles = with_db(&state, crate::roles::all_account_roles)?;
+    Ok(Json(json!({ "accounts": accounts, "roles": roles })))
+}
+
+/// Refuse a change that only an admin may make: anything to an admin's account,
+/// and granting or revoking the flag itself. A role that may manage accounts is
+/// otherwise a way to make yourself an admin, or to lock the admins out.
+fn admin_only(state: &HttpState, caller: Uuid, why: bool) -> ApiResult<()> {
+    if why && !is_caller_admin(state, caller)? {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "only an admin may change an admin's account or who is an admin".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -810,7 +847,8 @@ async fn create_account(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> ApiResult<Response> {
-    require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::AccountsManage)?;
+    admin_only(&state, caller, body.admin)?;
     check_username(&body.username)?;
     check_password(&body.password)?;
 
@@ -857,9 +895,10 @@ async fn update_account(
     headers: HeaderMap,
     Json(body): Json<UpdateRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (caller, _) = require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::AccountsManage)?;
     let target = with_db(&state, |c| auth::get_account(c, &id))?
         .ok_or(ApiError(StatusCode::NOT_FOUND, "no such account".into()))?;
+    admin_only(&state, caller, target.admin || body.admin.is_some())?;
 
     // Refuse anything that would remove the last way in. Checked before the write
     // rather than repaired after it — there is no repair from a server with no
@@ -913,7 +952,7 @@ async fn activate_account(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (caller, _) = require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::AccountsManage)?;
     let outcome = with_db_mut(&state, |c| registration::activate(c, &id))?;
     let (username, email) = match outcome {
         registration::Activate::Activated { username, email } => (username, email),
@@ -945,7 +984,7 @@ async fn remove_account(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
-    let (caller, _) = require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::AccountsManage)?;
     if caller.to_string() == id {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -954,6 +993,7 @@ async fn remove_account(
     }
     let target = with_db(&state, |c| auth::get_account(c, &id))?
         .ok_or(ApiError(StatusCode::NOT_FOUND, "no such account".into()))?;
+    admin_only(&state, caller, target.admin)?;
     if target.admin && !target.disabled {
         let admins = with_db(&state, auth::enabled_admin_count)?;
         if admins <= 1 {
@@ -987,7 +1027,7 @@ async fn remove_account(
 /// The caller's principal, if they presented a live token. **No admin check** —
 /// this is a player acting on their own account.
 ///
-/// The distinction from [`require_admin`] is the whole security model of these
+/// The distinction from [`require`] is the whole security model of these
 /// three routes: everything they do is scoped to the principal this returns, so
 /// there is no id in any request body that could name somebody else's claim.
 pub(crate) fn require_session(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
@@ -1094,7 +1134,7 @@ async fn claim_building(
     headers: HeaderMap,
     Json(body): Json<ClaimRequest>,
 ) -> ApiResult<Response> {
-    let (principal, username) = require_session(&state, &headers)?;
+    let (principal, username) = require(&state, &headers, Permission::BuildingClaim)?;
     claims_open(&state)?;
 
     let municipality = state.config.claim_municipality.clone();
@@ -1212,14 +1252,22 @@ async fn building_access(
 ) -> ApiResult<Json<serde_json::Value>> {
     let (principal, username) = require_session(&state, &headers)?;
     let admin = is_caller_admin(&state, principal)?;
+    let perms = caller_permissions(&state, principal)?;
     let row = with_db(&state, |c| buildings::ownership(c, &pand))?;
     let owner = with_db(&state, |c| buildings::owner_of(c, &pand))?
         .is_some_and(|p| p == principal.to_string());
+    // Atlas believes this answer for designs and for exterior overrides, so the
+    // roles decide here: an owner draws their own building's inside with
+    // `building_design_own`, anybody's with `building_design_any`; replacing the
+    // outside is `building_override` alone, whoever owns the building.
+    let can_edit = (owner && perms.has(Permission::BuildingDesignOwn))
+        || perms.has(Permission::BuildingDesignAny);
     Ok(Json(json!({
         "username": username,
         "admin": admin,
         "owner": owner,
-        "can_edit": owner || admin,
+        "can_edit": can_edit,
+        "can_override": perms.has(Permission::BuildingOverride),
         "owned_by": row.and_then(|r| r.username),
     })))
 }
@@ -1231,7 +1279,7 @@ async fn list_claims(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ReportsTriage)?;
     let owned = with_db(&state, buildings::list)?;
     Ok(Json(json!({ "buildings": owned })))
 }
@@ -1241,7 +1289,7 @@ async fn release_claim(
     Path(pand): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
-    let (caller, _) = require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::ReportsTriage)?;
     if !with_db(&state, |c| buildings::release_building(c, &pand))? {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
@@ -1269,7 +1317,7 @@ async fn list_reports(
     headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<ReportQuery>,
 ) -> ApiResult<Json<Vec<crate::db::ReportRow>>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::ReportsTriage)?;
     let rows = with_db(&state, |c| {
         crate::db::list_reports(c, !q.all, q.limit.unwrap_or(200))
     })?;
@@ -1297,7 +1345,7 @@ async fn resolve_report(
     headers: HeaderMap,
     Json(body): Json<ResolveReport>,
 ) -> ApiResult<StatusCode> {
-    let (caller, _) = require_admin(&state, &headers)?;
+    let (caller, _) = require(&state, &headers, Permission::ReportsTriage)?;
     let ok = with_db(&state, |c| {
         crate::db::resolve_report(c, id, &body.resolution)
     })?;

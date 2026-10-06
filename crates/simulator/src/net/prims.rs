@@ -15,8 +15,8 @@ use std::time::Instant;
 
 /// A player building something. The model is checked against the store (a hash
 /// this server does not hold is refused rather than stored), and the builder
-/// becomes the owner. Every refusal goes back as a `ServerError` 400, the path a
-/// failed create has always used.
+/// becomes the owner. A refusal by the account's roles is a 403; every other
+/// refusal a 400, the path a failed create has always used.
 pub(super) async fn on_create<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
     request_id: u32,
@@ -30,12 +30,50 @@ pub(super) async fn on_create<T: FrameTransport>(
     match created {
         Ok(_) => tracing::debug!(request_id, "prim created and broadcast"),
         Err(e) => {
+            let code = if matches!(e, PrimError::Forbidden(_)) {
+                403
+            } else {
+                400
+            };
             let message = e.to_string();
-            ctx.send(&server_error(request_id, 400, message.clone()))
+            ctx.send(&server_error(request_id, code, message.clone()))
                 .await?;
             tracing::warn!(request_id, error = %message, "prim creation failed");
         }
     }
+    Ok(())
+}
+
+/// Tell the client an operation on an existing prim did not happen.
+///
+/// A refusal on permission — the prim is somebody else's, or the account's roles
+/// do not allow the operation — goes back as a 403 **with the prim's truth**,
+/// because the client applied the edit before it asked (`refuse_and_correct`).
+/// Anything else is a plain `ServerError`.
+async fn refuse<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    prim_id: i64,
+    e: PrimError,
+    what: &str,
+) -> anyhow::Result<()> {
+    let message = e.to_string();
+    match e {
+        PrimError::NotYours(_) | PrimError::Forbidden(_) => {
+            let truth = ctx.world.read().await.prim(prim_id).cloned();
+            refuse_and_correct(&mut ctx.framed, request_id, truth, message.clone()).await?;
+        }
+        PrimError::NotFound(_) | PrimError::Storage(_) | PrimError::Refused(_) => {
+            let code = match e {
+                PrimError::NotFound(_) => 404,
+                PrimError::Storage(_) => 500,
+                _ => 400,
+            };
+            ctx.send(&server_error(request_id, code, message.clone()))
+                .await?;
+        }
+    }
+    tracing::warn!(request_id, prim_id, error = %message, "{what} refused");
     Ok(())
 }
 
@@ -56,22 +94,12 @@ pub(super) async fn on_update<T: FrameTransport>(
         .await;
     match updated {
         Ok(_) => tracing::debug!(request_id, prim_id, "prim updated and broadcast"),
-        Err(PrimError::NotYours(_)) => {
-            let truth = ctx.world.read().await.prim(prim_id).cloned();
-            refuse_and_correct(&mut ctx.framed, request_id, prim_id, truth).await?;
-        }
-        Err(e) => {
-            let message = e.to_string();
-            ctx.send(&server_error(request_id, 404, message.clone()))
-                .await?;
-            tracing::warn!(request_id, prim_id, error = %message, "prim update failed");
-        }
+        Err(e) => refuse(ctx, request_id, prim_id, e, "prim update").await?,
     }
     Ok(())
 }
 
-/// Start or stop a clip on a prim (protocol 28). A refusal because the prim is
-/// somebody else's is answered with the prim's truth, as an edit's is.
+/// Start or stop a clip on a prim (protocol 28).
 pub(super) async fn on_set_video<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
     request_id: u32,
@@ -84,21 +112,7 @@ pub(super) async fn on_set_video<T: FrameTransport>(
         .await
     {
         Ok(_) => tracing::debug!(request_id, prim_id, "prim video set and broadcast"),
-        Err(PrimError::NotYours(_)) => {
-            let truth = ctx.world.read().await.prim(prim_id).cloned();
-            refuse_and_correct(&mut ctx.framed, request_id, prim_id, truth).await?;
-        }
-        Err(e) => {
-            let code = match e {
-                PrimError::NotFound(_) => 404,
-                PrimError::Storage(_) => 500,
-                PrimError::Refused(_) | PrimError::NotYours(_) => 400,
-            };
-            let message = e.to_string();
-            ctx.send(&server_error(request_id, code, message.clone()))
-                .await?;
-            tracing::warn!(request_id, prim_id, error = %message, "prim video refused");
-        }
+        Err(e) => refuse(ctx, request_id, prim_id, e, "prim video").await?,
     }
     Ok(())
 }
@@ -116,21 +130,7 @@ pub(super) async fn on_set_physical<T: FrameTransport>(
             physical,
             "prim physics set and broadcast"
         ),
-        Err(PrimError::NotYours(_)) => {
-            let truth = ctx.world.read().await.prim(prim_id).cloned();
-            refuse_and_correct(&mut ctx.framed, request_id, prim_id, truth).await?;
-        }
-        Err(e) => {
-            let code = match e {
-                PrimError::NotFound(_) => 404,
-                PrimError::Storage(_) => 500,
-                PrimError::Refused(_) | PrimError::NotYours(_) => 400,
-            };
-            let message = e.to_string();
-            ctx.send(&server_error(request_id, code, message.clone()))
-                .await?;
-            tracing::warn!(request_id, prim_id, error = %message, "prim physics refused");
-        }
+        Err(e) => refuse(ctx, request_id, prim_id, e, "prim physics").await?,
     }
     Ok(())
 }
@@ -142,30 +142,30 @@ pub(super) async fn on_delete<T: FrameTransport>(
 ) -> anyhow::Result<()> {
     match ctx.prims.delete(&ctx.actor, prim_id).await {
         Ok(()) => tracing::debug!(request_id, prim_id, "prim deleted and broadcast"),
-        Err(PrimError::NotYours(_)) => {
-            let truth = ctx.world.read().await.prim(prim_id).cloned();
-            refuse_and_correct(&mut ctx.framed, request_id, prim_id, truth).await?;
-        }
-        Err(e) => {
-            let code = match e {
-                PrimError::NotFound(_) => 404,
-                PrimError::Storage(_) => 500,
-                PrimError::Refused(_) | PrimError::NotYours(_) => 400,
-            };
-            let message = e.to_string();
-            ctx.send(&server_error(request_id, code, message.clone()))
-                .await?;
-            tracing::warn!(request_id, prim_id, error = %message, "prim deletion failed");
-        }
+        Err(e) => refuse(ctx, request_id, prim_id, e, "prim deletion").await?,
     }
     Ok(())
 }
 
+/// Send a prim's script to the editor that asked — if this account may read it:
+/// its own prim's always, anybody's with `script_read_any` (or `script_edit_any`).
+/// It used to go to any connected client that asked for any prim.
 pub(super) async fn on_get_script<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
     request_id: u32,
     prim_id: i64,
 ) -> anyhow::Result<()> {
+    let allowed = ctx.actor.may_read_script(&*ctx.world.read().await, prim_id);
+    if !allowed {
+        ctx.send(&server_error(
+            request_id,
+            403,
+            "this account may not read that prim's script".to_string(),
+        ))
+        .await?;
+        tracing::debug!(request_id, prim_id, "script read refused");
+        return Ok(());
+    }
     let source = ctx
         .prims
         .script_source(prim_id)

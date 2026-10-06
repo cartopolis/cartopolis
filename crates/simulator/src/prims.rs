@@ -45,7 +45,8 @@ use crate::scripting::ScriptHandle;
 use crate::state::{DirtyBatch, SimWorld};
 use bytes::Bytes;
 use cartopolis_core::{
-    encode_app_frame, GeoAnchor, NetMessage, ParticleEffect, PrimDto, PrimGeometry, PrimSurface,
+    encode_app_frame, GeoAnchor, NetMessage, ParticleEffect, Permission, PermissionSet, PrimDto,
+    PrimGeometry, PrimSurface,
 };
 use glam::Vec3;
 use rusqlite::Connection;
@@ -54,26 +55,42 @@ use tokio::sync::{broadcast, RwLock};
 
 /// Who is asking, as far as a prim is concerned.
 ///
-/// The wire builds one per connection at the handshake — which is where
-/// `is_admin` is read, once, for the reason `net::handle_connection` gives — and
-/// the authoring API builds one per request.
+/// The wire builds one per connection at the handshake — which is where its
+/// permissions are read, once, for the reason `net::handle_connection` gives —
+/// and the authoring API builds one per request.
 #[derive(Debug, Clone)]
 pub struct Actor {
     /// The account, as the string `prims.owner` stores. `None` is the server
     /// itself: an operator authoring through the admin API, or a content pack.
     pub principal: Option<String>,
-    /// May override the per-prim owner check.
-    pub is_admin: bool,
+    /// What this actor may do (`roles::effective`; `docs/notes/permissions.md`).
+    pub perms: PermissionSet,
 }
 
 impl Actor {
-    /// A signed-in account.
+    /// A signed-in account holding these permissions.
     #[must_use]
-    pub fn account(principal: impl Into<String>, is_admin: bool) -> Self {
+    pub fn with_permissions(principal: impl Into<String>, perms: PermissionSet) -> Self {
         Self {
             principal: Some(principal.into()),
-            is_admin,
+            perms,
         }
+    }
+
+    /// A signed-in account that is an admin (every permission) or holds the
+    /// player role's defaults — the shape the tests and the old flag knew.
+    #[must_use]
+    pub fn account(principal: impl Into<String>, is_admin: bool) -> Self {
+        let perms = if is_admin {
+            PermissionSet::all()
+        } else {
+            cartopolis_core::permissions::ALL
+                .iter()
+                .copied()
+                .filter(|p| p.player_default())
+                .collect()
+        };
+        Self::with_permissions(principal, perms)
     }
 
     /// The server building on its own behalf. What it makes is owned by nobody,
@@ -82,19 +99,43 @@ impl Actor {
     pub fn server() -> Self {
         Self {
             principal: None,
-            is_admin: true,
+            perms: PermissionSet::all(),
         }
     }
 
-    /// May this actor change or delete `prim_id`? The rule itself is
-    /// [`SimWorld::may_edit`]'s; this only supplies the actor's side of it.
+    #[must_use]
+    pub fn can(&self, p: Permission) -> bool {
+        self.perms.has(p)
+    }
+
+    fn principal_str(&self) -> &str {
+        self.principal.as_deref().unwrap_or_default()
+    }
+
+    /// May this actor change or delete `prim_id`? Its own with
+    /// [`Permission::PrimEditOwn`], anybody's — and the server's — with
+    /// [`Permission::PrimEditAny`]. The ownership half is [`SimWorld::owns`].
     #[must_use]
     pub fn may_edit(&self, world: &SimWorld, prim_id: i64) -> bool {
-        world.may_edit(
-            prim_id,
-            self.principal.as_deref().unwrap_or_default(),
-            self.is_admin,
-        )
+        self.can(Permission::PrimEditAny)
+            || (self.can(Permission::PrimEditOwn) && world.owns(prim_id, self.principal_str()))
+    }
+
+    /// May this actor write `prim_id`'s script? The same rule over the script
+    /// permissions. A script can move, rename and delete its prim, so writing
+    /// one is never less than editing it, and the role decides who may do which.
+    #[must_use]
+    pub fn may_script(&self, world: &SimWorld, prim_id: i64) -> bool {
+        self.can(Permission::ScriptEditAny)
+            || (self.can(Permission::ScriptEditOwn) && world.owns(prim_id, self.principal_str()))
+    }
+
+    /// May this actor read `prim_id`'s script source?
+    #[must_use]
+    pub fn may_read_script(&self, world: &SimWorld, prim_id: i64) -> bool {
+        self.can(Permission::ScriptReadAny)
+            || self.can(Permission::ScriptEditAny)
+            || world.owns(prim_id, self.principal_str())
     }
 }
 
@@ -124,6 +165,9 @@ pub enum PrimError {
     /// The database failed. Not the caller's fault, and not something they can
     /// fix by asking differently.
     Storage(String),
+    /// The actor's roles do not allow this (`docs/notes/permissions.md`). The
+    /// message is written to be shown to the person who asked.
+    Forbidden(String),
 }
 
 impl std::fmt::Display for PrimError {
@@ -131,7 +175,9 @@ impl std::fmt::Display for PrimError {
         match self {
             Self::NotFound(id) => write!(f, "prim {id} not found"),
             Self::NotYours(id) => f.write_str(&not_yours(*id)),
-            Self::Refused(message) | Self::Storage(message) => f.write_str(message),
+            Self::Refused(message) | Self::Storage(message) | Self::Forbidden(message) => {
+                f.write_str(message)
+            }
         }
     }
 }
@@ -289,6 +335,11 @@ impl PrimService {
     where
         F: FnOnce(&PrimDto) -> Result<PrimFields, String> + Send + 'static,
     {
+        if !actor.can(Permission::PrimCreate) {
+            return Err(PrimError::Forbidden(
+                "this account may not build prims on this server".into(),
+            ));
+        }
         self.world
             .write()
             .await
@@ -384,6 +435,11 @@ impl PrimService {
         {
             let w = self.world.read().await;
             editable(&w, actor, prim_id)?;
+            if !actor.can(Permission::PrimVideo) {
+                return Err(PrimError::Forbidden(
+                    "this account may not play videos on prims".into(),
+                ));
+            }
         }
         let written = db::call(&self.conn, move |c| -> Result<PrimDto, PrimError> {
             let video = match video {
@@ -438,6 +494,11 @@ impl PrimService {
         {
             let w = self.world.read().await;
             let prim = editable(&w, actor, prim_id)?;
+            if !actor.can(Permission::PrimPhysical) {
+                return Err(PrimError::Forbidden(
+                    "this account may not make prims physical".into(),
+                ));
+            }
             if physical
                 && !prim.physical
                 && w.physical_count() >= crate::physics::MAX_PHYSICAL_PRIMS
@@ -541,7 +602,7 @@ impl PrimService {
         // puts the flag back.
         let was_scripted = {
             let mut w = self.world.write().await;
-            editable(&w, actor, prim_id)?;
+            scriptable(&w, actor, prim_id)?;
             if running {
                 w.can_add_script(prim_id).map_err(PrimError::Refused)?;
             }
@@ -653,9 +714,29 @@ impl PrimService {
 fn editable(w: &SimWorld, actor: &Actor, prim_id: i64) -> Result<PrimDto, PrimError> {
     let prim = w.prim(prim_id).ok_or(PrimError::NotFound(prim_id))?;
     if !actor.may_edit(w, prim_id) {
-        return Err(PrimError::NotYours(prim_id));
+        return Err(refusal(w, actor, prim_id, "change prims"));
     }
     Ok(prim.clone())
+}
+
+/// The prim, if it exists and the actor may write its script.
+fn scriptable(w: &SimWorld, actor: &Actor, prim_id: i64) -> Result<PrimDto, PrimError> {
+    let prim = w.prim(prim_id).ok_or(PrimError::NotFound(prim_id))?;
+    if !actor.may_script(w, prim_id) {
+        return Err(refusal(w, actor, prim_id, "write scripts"));
+    }
+    Ok(prim.clone())
+}
+
+/// Why an actor may not touch a prim: it is somebody else's, or it is theirs
+/// and their roles do not allow `what` at all — two different answers, because
+/// "it belongs to somebody else" told to its own builder is a lie.
+fn refusal(w: &SimWorld, actor: &Actor, prim_id: i64, what: &str) -> PrimError {
+    if w.owns(prim_id, actor.principal.as_deref().unwrap_or_default()) {
+        PrimError::Forbidden(format!("this account may not {what} on this server"))
+    } else {
+        PrimError::NotYours(prim_id)
+    }
 }
 
 /// Insert a prim and give it its initial state, in one transaction.

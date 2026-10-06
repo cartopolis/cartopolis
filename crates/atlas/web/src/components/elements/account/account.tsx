@@ -4,6 +4,7 @@ import type {Account as AccountRow} from '@/types'
 
 import {$s} from '@/app'
 import {activateAccount, deleteAccount, updateAccount} from '@/lib/accounts'
+import {loadRoles, may, rolesOf, setAccountRoles} from '@/lib/roles'
 import {formatTimestamp} from '@/lib/utils'
 
 interface Props {
@@ -22,6 +23,11 @@ export const Account = ({account}: Props) => {
 
     const open = $s.editing === account.id
     const isSelf = account.id === $s.profile.principal
+    const held = rolesOf(account.id)
+    const [roles, setRoles] = useState<string[]>(held)
+    // Only an admin may change an admin's account or who is an admin; the server
+    // refuses it from anybody else, so the buttons are not offered.
+    const mayTouch = $s.me.admin || !account.admin
 
     const act = async (fn: () => Promise<boolean>) => {
         setBusy(true)
@@ -34,7 +40,12 @@ export const Account = ({account}: Props) => {
         $s.editing = open ? null : account.id
         setConfirming(false)
         setPassword('')
+        setRoles(held)
+        if (!open && may('roles_manage') && !$s.roles.length) {
+            void loadRoles()
+        }
     }
+    const rolesChanged = roles.slice().sort().join(',') !== held.slice().sort().join(',')
 
     const resetPassword = async () => {
         if (password.length < 8) {
@@ -53,6 +64,11 @@ export const Account = ({account}: Props) => {
             <div class="account-main">
                 <span class="account-name">{account.username}</span>
                 {account.admin && <span class="tag admin">admin</span>}
+                {held.map((r) => (
+                    <span class="tag" key={r}>
+                        {$s.roles.find((x) => x.id === r)?.name ?? r}
+                    </span>
+                ))}
                 {account.disabled && <span class="tag disabled">disabled</span>}
                 {/*
                   * Its own tag rather than the `disabled` one. They are different
@@ -78,6 +94,52 @@ export const Account = ({account}: Props) => {
 
             {open && (
                 <div class="account-edit">
+                    {may('roles_manage') && (
+                        <>
+                            <div class="account-roles">
+                                {$s.roles
+                                    .filter((r) => !r.built_in)
+                                    .map((r) => (
+                                        <label class="check" key={r.id}>
+                                            <input
+                                                checked={roles.includes(r.id)}
+                                                disabled={busy}
+                                                onChange={() =>
+                                                    setRoles(
+                                                        roles.includes(r.id)
+                                                            ? roles.filter((x) => x !== r.id)
+                                                            : [...roles, r.id],
+                                                    )
+                                                }
+                                                type="checkbox"
+                                            />
+                                            {r.name}
+                                        </label>
+                                    ))}
+                                {!$s.roles.some((r) => !r.built_in) && (
+                                    <span class="hint">No roles besides Player yet — make one on the Roles tab.</span>
+                                )}
+                            </div>
+                            {rolesChanged && (
+                                <div class="row-actions">
+                                    <button
+                                        class="primary"
+                                        disabled={busy}
+                                        onClick={() =>
+                                            act(() => setAccountRoles(account.id, account.username, roles))
+                                        }
+                                        type="button"
+                                    >
+                                        Save roles
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    )}
+                    {!mayTouch ? (
+                        <p class="hint">Only an admin can change an admin's account.</p>
+                    ) : (
+                    <>
                     <label class="field">
                         <span>New password</span>
                         <input
@@ -113,21 +175,23 @@ export const Account = ({account}: Props) => {
                         >
                             {account.disabled ? 'Enable' : 'Disable'}
                         </button>
-                        <button
-                            disabled={busy}
-                            onClick={() =>
-                                act(() =>
-                                    updateAccount(
-                                        account.id,
-                                        {admin: !account.admin},
-                                        `${account.admin ? 'Demoted' : 'Promoted'} ${account.username}`,
-                                    ),
-                                )
-                            }
-                            type="button"
-                        >
-                            {account.admin ? 'Remove admin' : 'Make admin'}
-                        </button>
+                        {$s.me.admin && (
+                            <button
+                                disabled={busy}
+                                onClick={() =>
+                                    act(() =>
+                                        updateAccount(
+                                            account.id,
+                                            {admin: !account.admin},
+                                            `${account.admin ? 'Demoted' : 'Promoted'} ${account.username}`,
+                                        ),
+                                    )
+                                }
+                                type="button"
+                            >
+                                {account.admin ? 'Remove admin' : 'Make admin'}
+                            </button>
+                        )}
                         {confirming ? (
                             <>
                                 <button
@@ -163,6 +227,8 @@ export const Account = ({account}: Props) => {
                         Disabling stops the next sign-in; someone already connected stays connected until they
                         disconnect.
                     </p>
+                    </>
+                    )}
                 </div>
             )}
         </li>

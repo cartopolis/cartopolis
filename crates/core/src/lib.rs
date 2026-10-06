@@ -6,6 +6,7 @@ pub mod model_limits;
 pub mod moderation;
 pub mod motion;
 pub mod particles;
+pub mod permissions;
 pub mod picture_limits;
 pub mod placeholders;
 pub mod point;
@@ -26,6 +27,7 @@ pub use particles::{
     ParticleEffect, MAX_PARTICLES, MAX_PARTICLE_GRAVITY, MAX_PARTICLE_LIFE_S, MAX_PARTICLE_SIZE,
     MAX_PARTICLE_SPEED,
 };
+pub use permissions::{Permission, PermissionSet};
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, CallMember, CallTrack, ChatScope,

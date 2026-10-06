@@ -28,6 +28,22 @@ pub struct Principal {
     #[serde(default)]
     pub principal: serde_json::Value,
     pub username: String,
+    /// An admin holds every permission.
+    #[serde(default)]
+    pub admin: bool,
+    /// The slugs of `cartopolis_core::permissions` this account holds
+    /// (`docs/notes/permissions.md`). Absent from a simulator older than roles,
+    /// which only ever answered for admins — so absent with `admin` set is all.
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+impl Principal {
+    /// Whether this account may do `p`.
+    #[must_use]
+    pub fn may(&self, p: cartopolis_core::permissions::Permission) -> bool {
+        self.admin || self.permissions.iter().any(|s| s == p.slug())
+    }
 }
 
 /// What the simulator says a session may do with one building
@@ -41,6 +57,10 @@ pub struct Access {
     pub owner: bool,
     #[serde(default)]
     pub can_edit: bool,
+    /// May replace the building's outside (`building_override`). Absent from a
+    /// simulator older than roles: no.
+    #[serde(default)]
+    pub can_override: bool,
     /// Whose building it is, if anybody's.
     #[serde(default)]
     pub owned_by: Option<String>,
@@ -205,6 +225,8 @@ mod tests {
             Ok((token == "good").then(|| Principal {
                 principal: serde_json::json!(1),
                 username: "jeroen".into(),
+                admin: true,
+                permissions: Vec::new(),
             }))
         }
     }

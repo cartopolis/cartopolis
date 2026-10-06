@@ -411,14 +411,12 @@ impl Drop for AvatarGuard {
 async fn refuse_and_correct<T: FrameTransport>(
     framed: &mut T,
     request_id: u32,
-    prim_id: i64,
     truth: Option<cartopolis_core::PrimDto>,
+    message: String,
 ) -> anyhow::Result<()> {
     framed
         .send(Bytes::from(encode_app_frame(&server_error(
-            request_id,
-            403,
-            crate::prims::not_yours(prim_id),
+            request_id, 403, message,
         ))?))
         .await?;
     if let Some(prim) = truth {
@@ -473,7 +471,7 @@ impl RateGates {
 
 /// Everything one connection carries between messages, handed to every handler.
 ///
-/// The identity fields are fixed at the handshake. `actor.is_admin` in particular
+/// The identity fields are fixed at the handshake. `actor.perms` in particular
 /// is read **once**, there, rather than per edit, which is the same freshness
 /// `disabled` already has: `Sessions` is keyed by token with no principal index,
 /// so revoking either takes effect on the next `ClientHello` (see `http`'s module
@@ -488,8 +486,8 @@ struct ConnCtx<T> {
     scripts: crate::scripting::ScriptHandle,
     calls: Option<crate::calls::CallsHandle>,
     prims: crate::prims::PrimService,
-    /// Who this connection is to the prim service: the account and its admin
-    /// flag.
+    /// Who this connection is to the prim service: the account and what its
+    /// roles allow.
     actor: crate::prims::Actor,
     principal: uuid::Uuid,
     /// `principal` as the string the database keys accounts by.
@@ -583,13 +581,13 @@ pub async fn handle_connection<T: FrameTransport>(
     };
     let session_token = sessions.issue(principal, &username);
 
-    // Whether this connection may override the per-prim owner check (see
-    // `ConnCtx`'s note on why this is read once).
-    let is_admin = db::call(&conn, move |c| crate::auth::is_admin(c, principal))
+    // What this connection may do (`roles::effective`; see `ConnCtx`'s note on
+    // why this is read once). A database error grants nothing.
+    let perms = db::call(&conn, move |c| crate::roles::effective(c, principal))
         .await
         .ok()
-        .and_then(|admin| admin.ok())
-        .unwrap_or(false);
+        .and_then(|p| p.ok())
+        .unwrap_or_default();
     let principal_key = principal.to_string();
 
     let avatar_id = {
@@ -663,7 +661,7 @@ pub async fn handle_connection<T: FrameTransport>(
         scripts,
         calls,
         prims,
-        actor: crate::prims::Actor::account(principal_key.clone(), is_admin),
+        actor: crate::prims::Actor::with_permissions(principal_key.clone(), perms),
         principal,
         principal_key,
         display_name,

@@ -2,6 +2,7 @@ import type {Account, OwnedBuilding} from '@/types'
 
 import {$s, api, notifier, store} from '@/app'
 import {ApiError} from '@/lib/api'
+import {loadMe, may} from '@/lib/roles'
 
 /**
  * Every mutation the GUI can make, in one place.
@@ -33,9 +34,12 @@ export async function signIn(username: string, password: string): Promise<boolea
             {password, username},
         )
         $s.profile = {principal: result.principal, token: result.token, username: result.username}
+        await loadMe()
         $s.signedIn = true
         store.save()
-        await loadAccounts()
+        if (may('accounts_manage')) {
+            await loadAccounts()
+        }
         return true
     } catch (e) {
         report(e, 'Could not sign in')
@@ -62,8 +66,11 @@ export async function signOut() {
 export async function loadAccounts() {
     $s.loading = true
     try {
-        const result = await api.get<{accounts: Account[]}>('/api/admin/accounts')
+        const result = await api.get<{accounts: Account[]; roles?: Record<string, string[]>}>(
+            '/api/admin/accounts',
+        )
         $s.accounts = result.accounts
+        $s.accountRoles = Object.entries(result.roles ?? {}).map(([id, roles]) => ({id, roles}))
     } catch (e) {
         report(e, 'Could not load accounts')
     } finally {

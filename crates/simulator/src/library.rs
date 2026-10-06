@@ -39,7 +39,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::assets;
-use crate::http::{internal, require_admin, require_session, ApiError, ApiResult, HttpState};
+use crate::http::{internal, require, require_session, ApiError, ApiResult, HttpState};
+use cartopolis_core::permissions::Permission;
 
 /// The routes, mounted by `http::router` alongside the authoring surface.
 ///
@@ -661,7 +662,7 @@ async fn unshare_item(
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
     let (principal, username) = require_session(&state, &headers)?;
-    let admin = crate::http::is_caller_admin(&state, principal)?;
+    let admin = crate::http::caller_permissions(&state, principal)?.has(Permission::LibraryManage);
     let gone = with_conn(&state, |conn| {
         let Some(item) = read_item(conn, principal, id)? else {
             return Ok(false);
@@ -779,7 +780,7 @@ async fn set_placeholder(
     Path(kind): Path<String>,
     Json(body): Json<PlaceholderBody>,
 ) -> ApiResult<Json<PlaceholderModel>> {
-    let (_principal, username) = require_admin(&state, &headers)?;
+    let (_principal, username) = require(&state, &headers, Permission::LibraryManage)?;
     if !cartopolis_core::placeholders::is_placeholder_kind(&kind) {
         return Err(bad(format!(
             "{kind} is not a street object this server draws — one of: {}",
@@ -856,7 +857,7 @@ async fn clear_placeholder(
     headers: HeaderMap,
     Path(kind): Path<String>,
 ) -> ApiResult<StatusCode> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::LibraryManage)?;
     with_conn(&state, |conn| {
         conn.execute(
             "DELETE FROM placeholder_models WHERE kind = ?1",
@@ -927,7 +928,7 @@ async fn admin_list_library(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<CuratorEntry>>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::LibraryManage)?;
     let entries = with_conn(&state, |conn| {
         let entries = read_entries(conn, true)?;
         entries
@@ -982,7 +983,7 @@ async fn curate_entry(
     Path(hash): Path<String>,
     Json(patch): Json<CuratePatch>,
 ) -> ApiResult<Json<LibraryEntry>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::LibraryManage)?;
     if !assets::is_hash(&hash) {
         return Err(ApiError(StatusCode::NOT_FOUND, "no such model".into()));
     }
@@ -1037,7 +1038,7 @@ async fn admin_list_assets(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<StoredAsset>>> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::LibraryManage)?;
     let rows = with_conn(&state, |conn| {
         let mut stmt = conn.prepare(
             "SELECT a.hash, a.byte_size, a.triangles, a.nodes, a.textures, a.largest_texture,
@@ -1080,7 +1081,7 @@ async fn admin_forget_asset(
     headers: HeaderMap,
     Path(hash): Path<String>,
 ) -> ApiResult<StatusCode> {
-    require_admin(&state, &headers)?;
+    require(&state, &headers, Permission::LibraryManage)?;
     if !assets::is_hash(&hash) {
         return Err(ApiError(StatusCode::NOT_FOUND, "no such model".into()));
     }

@@ -1,13 +1,16 @@
 import type {
     Account,
+    AccountRoles,
     AdminState,
     OwnedBuilding,
     LibraryEntry,
     Notification,
+    PermissionInfo,
     PipelineCoverage,
     PipelineJob,
     PipelineLogLine,
     PlaceholderModel,
+    Role,
     StoredAsset,
 } from '@/types'
 
@@ -23,7 +26,16 @@ import type {
  */
 export const persistentState: AdminState = {
     accounts: [],
+    accountRoles: [] as AccountRoles[],
     adminTab: 'accounts',
+    /*
+     * None of the three below is persisted: what an operator may do is the
+     * server's to say on every load, and a role grid from localStorage would
+     * show permissions another operator has since taken away.
+     */
+    me: {admin: false, permissions: []},
+    permissionCatalogue: [],
+    roles: [],
     autopilot: null,
     claims: [],
     editing: null,
@@ -82,7 +94,11 @@ export const persistentState: AdminState = {
  */
 export const volatileState: Partial<AdminState> = {
     accounts: [] as Account[],
+    accountRoles: [] as AccountRoles[],
     adminTab: 'accounts',
+    me: {admin: false, permissions: []},
+    permissionCatalogue: [] as PermissionInfo[],
+    roles: [] as Role[],
     autopilot: null,
     claims: [] as OwnedBuilding[],
     editing: null,
