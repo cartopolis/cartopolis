@@ -59,8 +59,9 @@ const LEAF: [f32; 4] = [0.02, 0.03, 0.085, 1.0];
 const PLAIN_UV: [f32; 2] = [0.0, -0.5];
 
 /// UV0.y of a wall face with no painted windows: a 1 cm bay, which the shader
-/// reads as "too short for a window" and leaves as brick.
-const WINDOWLESS_UV_Y: f32 = 1.0;
+/// reads as "too short for a window" and leaves as brick. The same marker the
+/// imported models carry ([`crate::systems::building_windows::WINDOWLESS_UV`]).
+const WINDOWLESS_UV_Y: f32 = crate::systems::building_windows::WINDOWLESS_UV[1];
 
 /// One opening in the facade, in the building's world frame.
 #[derive(Clone, Copy, Debug)]

@@ -453,7 +453,14 @@ impl Mesh {
         }
     }
 
-    fn element(self, plane: &Plane, pand: &str, part: u32, class: &str) -> Option<Element> {
+    fn element(
+        self,
+        plane: &Plane,
+        pand: &str,
+        part: u32,
+        class: &str,
+        rgb: [u8; 3],
+    ) -> Option<Element> {
         if self.t.is_empty() {
             return None;
         }
@@ -470,9 +477,170 @@ impl Mesh {
             id: Id(pand.into()),
             p,
             part,
+            rgb: Some(rgb),
             t: self.t,
         })
     }
+
+    /// A level rectangle in pitch coordinates (`along`, `across`), `h` up.
+    fn rect(&mut self, pitch: &Pitch, a: [f64; 2], c: [f64; 2], h: f64) {
+        let p = |al: f64, ac: f64| {
+            let en = pitch.en(al, ac);
+            [en[0], en[1], h]
+        };
+        self.quad(
+            p(a[0], c[0]),
+            p(a[1], c[0]),
+            p(a[1], c[1]),
+            p(a[0], c[1]),
+            true,
+        );
+    }
+
+    /// A painted line from one pitch point to another, `w` wide.
+    fn line(&mut self, pitch: &Pitch, from: [f64; 2], to: [f64; 2], w: f64, h: f64) {
+        let d = [to[0] - from[0], to[1] - from[1]];
+        let l = len(d);
+        if l < 1e-9 {
+            return;
+        }
+        let n = [-d[1] / l * w / 2.0, d[0] / l * w / 2.0];
+        let p = |q: [f64; 2], s: f64| {
+            let en = pitch.en(q[0] + n[0] * s, q[1] + n[1] * s);
+            [en[0], en[1], h]
+        };
+        self.quad(p(from, -1.0), p(to, -1.0), p(to, 1.0), p(from, 1.0), true);
+    }
+
+    /// A painted arc about `centre`, radius `r`, from angle `a0` to `a1`
+    /// (radians, 0 along the pitch).
+    fn arc(&mut self, pitch: &Pitch, centre: [f64; 2], r: f64, a0: f64, a1: f64, w: f64, h: f64) {
+        let steps = ((a1 - a0).abs() * r / 0.6).ceil().max(2.0) as usize;
+        let pt = |a: f64| [centre[0] + r * a.cos(), centre[1] + r * a.sin()];
+        for i in 0..steps {
+            let t0 = a0 + (a1 - a0) * i as f64 / steps as f64;
+            let t1 = a0 + (a1 - a0) * (i + 1) as f64 / steps as f64;
+            self.line(pitch, pt(t0), pt(t1), w, h);
+        }
+    }
+}
+
+// ── Colours: all sRGB, and all assumptions but the roof ──────────────────────
+
+/// The roof, white as the aerial photograph shows it.
+const ROOF_RGB: [u8; 3] = [232, 232, 226];
+/// Concrete: the terraces, the aisles, the walls between the gates.
+const CONCRETE_RGB: [u8; 3] = [150, 150, 146];
+/// The outer wall.
+const FACADE_RGB: [u8; 3] = [92, 96, 101];
+/// The seats, in the club's green. Under the roof, so no survey has seen them.
+const SEAT_RGB: [u8; 3] = [0, 122, 61];
+/// The grass: mowing stripes, and the darker strip round the pitch.
+const STRIPE_LIGHT_RGB: [u8; 3] = [92, 152, 64];
+const STRIPE_DARK_RGB: [u8; 3] = [72, 130, 50];
+const SURROUND_RGB: [u8; 3] = [62, 112, 46];
+const LINE_RGB: [u8; 3] = [242, 242, 236];
+
+// ── The pitch and the seats ──────────────────────────────────────────────────
+
+/// Mowing stripes across the length of the pitch.
+const STRIPES: usize = 18;
+/// Painted lines: 12 cm, as the Laws of the Game allow.
+const LINE_W: f64 = 0.12;
+/// Heights of the grass, stripes and lines. Centimetres apart so no two of them
+/// are ever the same depth; above the map's own ground so neither is the map.
+const SURROUND_H: f64 = 0.04;
+const STRIPE_H: f64 = 0.05;
+const LINE_H: f64 = 0.07;
+/// A seat: how far back on its row it starts, and how high it stands.
+const SEAT_SET_BACK_M: f64 = 0.3;
+const SEAT_HEIGHT_M: f64 = 0.45;
+/// Every this-many slices is a stair instead of seats.
+const AISLE_EVERY: usize = 6;
+
+/// The pitch: a darker surround to the front of the stands, the playing area in
+/// mowing stripes, and the markings — touchlines, goal lines, halfway line,
+/// centre circle and spot, both penalty and goal areas, penalty spots and arcs,
+/// and the corner arcs. Elements that nothing collides with (`IfcSlab`).
+fn pitch_surface(pitch: &Pitch) -> Vec<(Mesh, [u8; 3])> {
+    let (l, w) = (pitch.half_length, pitch.half_width);
+    let (gl, gw) = (l + APRON_M, w + APRON_M);
+    // The surround is a frame, not a sheet under the stripes: two surfaces
+    // centimetres apart over the same ground is a depth fight at any range.
+    let mut surround = Mesh::default();
+    surround.rect(pitch, [-gl, gl], [-gw, -w], SURROUND_H);
+    surround.rect(pitch, [-gl, gl], [w, gw], SURROUND_H);
+    surround.rect(pitch, [-gl, -l], [-w, w], SURROUND_H);
+    surround.rect(pitch, [l, gl], [-w, w], SURROUND_H);
+
+    let (mut light, mut dark) = (Mesh::default(), Mesh::default());
+    let band = 2.0 * l / STRIPES as f64;
+    for i in 0..STRIPES {
+        let a0 = -l + band * i as f64;
+        let m = if i % 2 == 0 { &mut light } else { &mut dark };
+        m.rect(pitch, [a0, a0 + band], [-w, w], STRIPE_H);
+    }
+
+    let mut lines = Mesh::default();
+    let h = LINE_H;
+    let corners = [[-l, -w], [l, -w], [l, w], [-l, w]];
+    for i in 0..4 {
+        lines.line(pitch, corners[i], corners[(i + 1) % 4], LINE_W, h);
+    }
+    lines.line(pitch, [0.0, -w], [0.0, w], LINE_W, h);
+    lines.arc(
+        pitch,
+        [0.0, 0.0],
+        9.15,
+        0.0,
+        std::f64::consts::TAU,
+        LINE_W,
+        h,
+    );
+    lines.arc(pitch, [0.0, 0.0], 0.15, 0.0, std::f64::consts::TAU, 0.3, h);
+    for end in [-1.0, 1.0] {
+        let line = end * l;
+        // Penalty area 16.5 m deep, 40.32 m wide; goal area 5.5 m by 18.32 m.
+        for (depth, half) in [(16.5, 20.16), (5.5, 9.16)] {
+            let inner = line - end * depth;
+            lines.line(pitch, [line, -half], [inner, -half], LINE_W, h);
+            lines.line(pitch, [inner, -half], [inner, half], LINE_W, h);
+            lines.line(pitch, [inner, half], [line, half], LINE_W, h);
+        }
+        // Penalty spot at 11 m; the arc is the part of a 9.15 m circle round it
+        // outside the penalty area.
+        let spot = [line - end * 11.0, 0.0];
+        lines.arc(pitch, spot, 0.15, 0.0, std::f64::consts::TAU, 0.3, h);
+        let half_angle = ((16.5 - 11.0) / 9.15f64).acos();
+        let facing = if end > 0.0 { std::f64::consts::PI } else { 0.0 };
+        lines.arc(
+            pitch,
+            spot,
+            9.15,
+            facing - half_angle,
+            facing + half_angle,
+            LINE_W,
+            h,
+        );
+        // Corner arcs, 1 m, turning into the pitch.
+        for side in [-1.0f64, 1.0] {
+            // From the direction back along the goal line to the one back along
+            // the touchline: the quarter that lies on the pitch.
+            let along_in = 0.0f64.atan2(-end);
+            let across_in = (-side).atan2(0.0);
+            let (mut a0, mut a1) = (along_in.min(across_in), along_in.max(across_in));
+            if a1 - a0 > std::f64::consts::PI {
+                (a0, a1) = (a1, a0 + std::f64::consts::TAU);
+            }
+            lines.arc(pitch, [line, side * w], 1.0, a0, a1, LINE_W, h);
+        }
+    }
+    vec![
+        (surround, SURROUND_RGB),
+        (light, STRIPE_LIGHT_RGB),
+        (dark, STRIPE_DARK_RGB),
+        (lines, LINE_RGB),
+    ]
 }
 
 fn round(v: f64, dp: i32) -> f64 {
@@ -525,12 +693,15 @@ pub fn build(pitch: &Pitch, bowl: &Bowl, pand: &str) -> Vec<Element> {
         .collect();
     let mut out = Vec::new();
     let mut part = 0u32;
-    let mut push = |out: &mut Vec<Element>, mesh: Mesh, class: &str| {
-        if let Some(e) = mesh.element(&pitch.plane, pand, part, class) {
+    let mut push = |out: &mut Vec<Element>, mesh: Mesh, class: &str, rgb: [u8; 3]| {
+        if let Some(e) = mesh.element(&pitch.plane, pand, part, class, rgb) {
             out.push(e);
             part += 1;
         }
     };
+    for (mesh, rgb) in pitch_surface(pitch) {
+        push(&mut out, mesh, "IfcSlab", rgb);
+    }
     for k in 0..n {
         let (a, b) = (&s[k], &s[(k + 1) % n]);
         // The roof runs over the gates too: it is overhead, and not solid.
@@ -559,7 +730,7 @@ pub fn build(pitch: &Pitch, bowl: &Bowl, pand: &str) -> Vec<Element> {
             at(pitch, a, ai, a.inner_h),
             false,
         );
-        push(&mut out, roof, "IfcRoof");
+        push(&mut out, roof, "IfcRoof", ROOF_RGB);
         if gate[k] {
             continue;
         }
@@ -583,14 +754,45 @@ pub fn build(pitch: &Pitch, bowl: &Bowl, pand: &str) -> Vec<Element> {
                 false,
             );
         }
+        // The seats: a block on the back of every row, in the seat colour, except
+        // where this slice is a stair. Nothing collides with them — the terrace
+        // under them already does.
+        let mut seats = Mesh::default();
+        if k % AISLE_EVERY != 0 {
+            // `pa[1 + 2i]` and `pa[2 + 2i]` are row i's tread, front and back.
+            for i in 0..rows {
+                let (fa, ba) = (pa[1 + 2 * i], pa[2 + 2 * i]);
+                let (fb, bb) = (pb[1 + 2 * i], pb[2 + 2 * i]);
+                let (sa, sb) = (fa.0 + SEAT_SET_BACK_M, fb.0 + SEAT_SET_BACK_M);
+                let (ta, tb) = (fa.1 + SEAT_HEIGHT_M, fb.1 + SEAT_HEIGHT_M);
+                seats.quad(
+                    at(pitch, a, sa, fa.1),
+                    at(pitch, b, sb, fb.1),
+                    at(pitch, b, sb, tb),
+                    at(pitch, a, sa, ta),
+                    false,
+                );
+                seats.quad(
+                    at(pitch, a, sa, ta),
+                    at(pitch, b, sb, tb),
+                    at(pitch, b, bb.0, tb),
+                    at(pitch, a, ba.0, ta),
+                    false,
+                );
+            }
+        }
+        push(&mut out, seats, "IfcFurnishingElement", SEAT_RGB);
+
         // The outer wall, ground to roof.
-        stand.quad(
+        let mut facade = Mesh::default();
+        facade.quad(
             at(pitch, a, a.back, 0.0),
             at(pitch, b, b.back, 0.0),
             at(pitch, b, b.back, lift(b.back_h)),
             at(pitch, a, a.back, lift(a.back_h)),
             false,
         );
+        push(&mut out, facade, "IfcWall", FACADE_RGB);
         // Beside a gate the slice's open side is closed, row by row.
         for (side, prof, other) in [(a, &pa, gate[(k + n - 1) % n]), (b, &pb, gate[(k + 1) % n])] {
             if !other {
@@ -614,7 +816,7 @@ pub fn build(pitch: &Pitch, bowl: &Bowl, pand: &str) -> Vec<Element> {
                 false,
             );
         }
-        push(&mut out, stand, "IfcWall");
+        push(&mut out, stand, "IfcWall", CONCRETE_RGB);
 
         // The lower ring outside the outer wall, where the survey found one.
         let ring = (a.ring_h + b.ring_h) / 2.0;
@@ -645,7 +847,7 @@ pub fn build(pitch: &Pitch, bowl: &Bowl, pand: &str) -> Vec<Element> {
                     );
                 }
             }
-            push(&mut out, m, "IfcWall");
+            push(&mut out, m, "IfcWall", FACADE_RGB);
         }
     }
     out

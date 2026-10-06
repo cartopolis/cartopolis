@@ -125,6 +125,10 @@ pub struct Element {
     /// exactly as the JSON parse does not, so the consumer's validation sees the
     /// same triangles whichever format they came in.
     pub t: Vec<(u32, u32, u32, u8)>,
+    /// The element's own colour, sRGB, on an imported or generated model only
+    /// (`lod3`). `None` paints it with the building's palette, as every shell is.
+    /// JSON only: the binary format never carries it and decodes it as `None`.
+    pub rgb: Option<[u8; 3]>,
 }
 
 /// The quantisation grid: steps per degree of latitude/longitude and steps per
@@ -537,6 +541,7 @@ pub fn decode(bytes: &[u8]) -> Result<Cell, DecodeError> {
             class,
             p,
             t,
+            rgb: None,
         });
     }
     if [&meta, &lat, &lng, &h, &tri].iter().any(|r| r.left() != 0) {
@@ -588,6 +593,7 @@ mod tests {
                 (53.2270101, 6.5550102, 12.07),
             ],
             t: vec![(0, 1, 2, 1)],
+            rgb: None,
         };
         Cell {
             elements: vec![a, b],
@@ -729,6 +735,7 @@ mod tests {
                 class: String::new(),
                 p: vec![(53.0, 6.0, 0.0); 4],
                 t: vec![(0, 1, 2, 0), (2, 3, 0, 0)],
+                rgb: None,
             }],
             pands: vec![],
         };

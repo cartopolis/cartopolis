@@ -536,6 +536,9 @@ struct Bldg {
     /// everywhere below: a shell is one solid per building and collides as a
     /// footprint, a model is many elements and collides only on its walls.
     class: String,
+    /// A model element's own colour, sRGB (`lod3` only); `None` takes the
+    /// building's palette.
+    rgb: Option<[u8; 3]>,
 }
 
 /// One parsed cell file: its elements, and — for an imported-model cell — the
@@ -2232,6 +2235,19 @@ fn build_lod22_from_body(
                 fact.map_or(0, |f| f.uses),
                 fact.map_or(0, |f| f.units),
             );
+            // A model part that says what colour it is gets that colour on every
+            // face; the dated palette is for parts that do not say.
+            let (wall, roof_tile) = match b.rgb {
+                Some(c) => {
+                    let lin = crate::systems::scatter::srgb_to_linear_f32([
+                        f32::from(c[0]) / 255.0,
+                        f32::from(c[1]) / 255.0,
+                        f32::from(c[2]) / 255.0,
+                    ]);
+                    (lin, lin)
+                }
+                None => (wall, roof_tile),
+            };
             let wall = [wall[0], wall[1], wall[2], lit];
             let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
 
@@ -2587,6 +2603,7 @@ fn cell_file(cell: cartopolis_geo::lod22_cell::Cell) -> CellFile {
                 p,
                 t,
                 class: el.class,
+                rgb: el.rgb,
             });
         }
     }

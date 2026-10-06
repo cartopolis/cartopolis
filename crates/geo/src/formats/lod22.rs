@@ -47,6 +47,11 @@ pub struct Element {
     /// Which solid of a split pand; written only when non-zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub part: u32,
+    /// The element's own colour, sRGB 0–255, on a model only (`lod3`). Absent
+    /// from every shell cell, which therefore reads and writes byte for byte as
+    /// before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<[u8; 3]>,
     #[serde(default)]
     pub t: Vec<Tri>,
 }
@@ -133,6 +138,7 @@ impl From<&lod22_cell::Element> for Element {
             id: Id(e.id.clone()),
             p: e.p.clone(),
             part: e.part,
+            rgb: e.rgb,
             t: e.t.iter().map(|&(i, j, k, rf)| Tri(i, j, k, rf)).collect(),
         }
     }
@@ -145,6 +151,7 @@ impl From<Element> for lod22_cell::Element {
             part: e.part,
             class: e.class,
             p: e.p,
+            rgb: e.rgb,
             t: e.t
                 .into_iter()
                 .map(|Tri(i, j, k, rf)| (i, j, k, rf))
@@ -220,6 +227,7 @@ mod tests {
                         (53.226_234_5, 6.554_107_2, 3.7),
                     ],
                     t: vec![(0, 1, 2, 1), (2, 1, 0, 0)],
+                    rgb: None,
                 },
                 lod22_cell::Element {
                     id: "0014100010904219".into(),
@@ -231,6 +239,7 @@ mod tests {
                         (53.2001, 6.5, 123.45),
                     ],
                     t: vec![(0, 1, 2, 0)],
+                    rgb: None,
                 },
             ],
             pands: Vec::new(),
