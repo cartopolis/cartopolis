@@ -17,6 +17,7 @@
     <symbol id="cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></symbol>
     <symbol id="nav" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></symbol>
     <symbol id="check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol>
+    <symbol id="logopin" viewBox="158 44 64 72"><path d="M190 47 C 175.05 47 162.7 58.05 162.7 73 C 162.7 91.85 190 112 190 112 C 190 112 217.3 91.85 217.3 73 C 217.3 58.05 204.95 47 190 47 Z" fill="#FD6012" stroke="#F2EFEA" stroke-width="5"/><circle cx="190" cy="73" r="8.45" fill="#F2EFEA"/></symbol>
   </defs>
 </svg>
 </head>
@@ -195,7 +196,7 @@ This adds three things: <i>Route</i> on everything in a chat, a suggested place 
       <div class="bubble" style="left:12px;top:300px;background:var(--raised);border:none"><div class="who">Sanne</div>Somewhere in between?</div>
       <div class="meetcard new" style="left:12px;top:372px;width:330px">
         <div class="img" style="background:url(shots/chatworld.png) -40px -300px">
-          <div class="dest" style="left:165px;top:66px"><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="stem"></div></div>
+          <div class="dest" style="left:165px;top:66px"><svg class="lpin"><use href="#logopin"/></svg></div>
         </div>
         <div class="body"><b><svg class="i" style="vertical-align:-3px"><use href="#cal"/></svg> Meet at the Vismarkt</b><span>Today 19:00 · about halfway for both · suggested by Sanne</span>
           <div class="who2">
@@ -221,7 +222,7 @@ This adds three things: <i>Route</i> on everything in a chat, a suggested place 
         <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 404" stroke="#0A0E10" stroke-width="10" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 404" stroke="#3E8EDE" stroke-width="5.5" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity=".75"/>
       </svg>
-      <div class="dest new" style="left:228px;top:410px"><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="stem"></div><div class="name">Vismarkt · 19:00</div></div>
+      <div class="dest new" style="left:228px;top:410px"><svg class="lpin"><use href="#logopin"/></svg><div class="name">Vismarkt · 19:00</div></div>
       <div class="gpsdot new" style="left:120px;top:600px"><div class="ring"><div class="core"></div></div><div class="name">You <b>· 6 min · bike</b></div></div>
       <div class="gpsdot new" style="left:330px;top:262px"><div class="ring"><div class="core"></div></div><div class="name">Sanne <b>· 4 min</b></div></div>
       <div class="sharepill" style="top:132px"><svg class="i"><use href="#nav"/></svg>Sharing with Sanne until you arrive</div>
@@ -231,7 +232,7 @@ This adds three things: <i>Route</i> on everything in a chat, a suggested place 
       <div class="chatline new" style="left:16px;top:818px"><b>Sanne</b>On the way <span class="dim small">· 4 min</span></div>
     </div>
     <h3><span>J</span>On the way, in the chat's World view <em class="new">new</em></h3>
-    <ul><li>Both routes in today's blue, the meeting place as v4's white pin, each person as v4's blue real-location dot with their time left.</li>
+    <ul><li>Both routes in today's blue, the meeting place as the logo's pin, each person as v4's blue real-location dot with their time left.</li>
         <li>The share is v4's: it started when you said you were going and <b>ends on arrival</b>, which posts "arrived".</li>
         <li>In driver mode, v4's <i>Let someone know when you'll arrive</i> (screen 8) is the same message for a trip that isn't a meet-up.</li></ul>
   </div>
