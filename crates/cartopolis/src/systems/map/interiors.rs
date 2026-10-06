@@ -184,6 +184,9 @@ pub fn update_interiors(
         ids.sort_unstable();
         let mut h = std::collections::hash_map::DefaultHasher::new();
         ids.hash(&mut h);
+        // A building override switched to `interior: none` (or back) changes
+        // which of these get rooms without changing the candidates.
+        crate::systems::lod3::manifest_revision().hash(&mut h);
         h.finish()
     };
     interiors.facts_len = facts.len();
