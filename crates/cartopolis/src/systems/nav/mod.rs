@@ -14,3 +14,4 @@ pub mod route_ahead;
 pub mod traffic;
 pub mod transit_live;
 pub mod transit_vehicles;
+pub mod walk_guide;

@@ -26,6 +26,7 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::navigation::RouteState>()
             .watch_stream::<systems::navigation::RouteState>()
             .init_resource::<systems::driver::DriverState>()
+            .init_resource::<systems::walk_guide::WalkGuide>()
             .init_resource::<systems::locate::LocateTracking>()
             .init_resource::<systems::route_ahead::RouteAhead>()
             .init_resource::<systems::traffic::DriveNetwork>();
@@ -54,6 +55,9 @@ impl Plugin for NavPlugin {
                     .before(systems::private_chat::drive_private_chats),
                 systems::geo_nav::drive_geocode,
                 systems::navigation::drive_route_geocoding,
+                // A route to a person moves with their shared location. After
+                // the request that may have just started following them.
+                systems::navigation::follow_shared_location.after(systems::geo_nav::drive_geocode),
             )
                 .in_set(ClientPhase::Input),
         )
@@ -118,6 +122,15 @@ impl Plugin for NavPlugin {
                     .after(systems::driver::drive_driver_mode)
                     .after(avatar::handle_avatar_movement)
                     .before(systems::free_camera::camera_controls),
+                // Walking a route in the world (`systems::walk_guide`): measured
+                // from where the avatar just moved to, and before the solver for
+                // the same reason the drive tick is — a reroute it asks for is
+                // picked up the same frame. Its steering is read by next frame's
+                // movement, one frame of latency on a hands-off walk.
+                systems::walk_guide::drive_walk_guide
+                    .after(systems::driver::drive_driver_mode)
+                    .after(avatar::handle_avatar_movement)
+                    .before(systems::navigation::drive_route_solver),
             )
                 .in_set(ClientPhase::Move),
         )
@@ -155,6 +168,7 @@ impl Plugin for NavPlugin {
                 systems::driver::render_driver_hud
                     .after(systems::ui::render_main_menu)
                     .after(systems::route_ahead::drive_route_ahead),
+                systems::walk_guide::render_walk_guide.after(systems::ui::render_main_menu),
                 // Transit in-world rendering. Both run after the camera has moved
                 // this frame: boards billboard toward it, vehicles interpolate
                 // relative to it.

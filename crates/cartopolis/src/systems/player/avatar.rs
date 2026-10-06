@@ -1878,6 +1878,42 @@ pub struct AgentWalk {
     pub gait: locomotion::Gait,
 }
 
+/// A travel wish from "Walk me there": the avatar following a planned walking
+/// route by itself (`systems::walk_guide`).
+///
+/// The same shape and the same rules as [`AgentWalk`] — a world direction,
+/// rewritten every frame by its steerer, and anybody at the keys wins — but a
+/// resource of its own, because each steerer zeroes its slot on every frame it is
+/// *not* walking, and two of them sharing one would cancel each other.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
+pub struct RouteWalk {
+    /// Unit travel direction on world XZ, or zero for "not walking".
+    pub dir: Vec3,
+    pub gait: locomotion::Gait,
+}
+
+/// The two travel wishes that come from no person: an agent's walk and a walk
+/// along a route. One parameter because [`handle_avatar_movement`] is at Bevy's
+/// sixteen.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SteeredWalks<'w> {
+    agent: Res<'w, AgentWalk>,
+    route: Res<'w, RouteWalk>,
+}
+
+impl SteeredWalks<'_> {
+    /// The wish to follow when nobody is at the controls: the agent's if it is
+    /// walking, else the route's.
+    fn wish(&self) -> Option<(Vec3, locomotion::Gait)> {
+        [
+            (self.agent.dir, self.agent.gait),
+            (self.route.dir, self.route.gait),
+        ]
+        .into_iter()
+        .find(|(dir, _)| dir.length_squared() > 1e-8)
+    }
+}
+
 pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -1886,7 +1922,7 @@ pub fn handle_avatar_movement(
     // this is last frame's push: a constant frame of latency on a held
     // translation control, not jitter.
     osd: Res<crate::systems::map_osd::OsdInput>,
-    agent: Res<AgentWalk>,
+    steered: SteeredWalks,
     time: Res<Time>,
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -2018,13 +2054,13 @@ pub fn handle_avatar_movement(
         avatar_state.gait.speed()
     } else if from_person {
         locomotion::speed_for_throttle(throttle)
-    } else if agent.dir.length_squared() > 1e-8 {
-        // Nobody at the controls: an agent's walk. Its gait is the avatar's gait
-        // for the frame, so the clip and the speed agree the way they do when
-        // somebody holds Shift.
-        wish = agent.dir;
-        avatar_state.gait = agent.gait;
-        agent.gait.speed()
+    } else if let Some((dir, gait)) = steered.wish() {
+        // Nobody at the controls: an agent's walk, or a walk along a route. Its
+        // gait is the avatar's gait for the frame, so the clip and the speed
+        // agree the way they do when somebody holds Shift.
+        wish = dir;
+        avatar_state.gait = gait;
+        gait.speed()
     } else {
         locomotion::speed_for_throttle(throttle)
     };

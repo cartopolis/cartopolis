@@ -244,6 +244,9 @@ pub struct RouteRequest {
     /// [`Endpoint::To`] — the place card's "Route from" is the one caller that
     /// plans *away* from a found place.
     pub end: Endpoint,
+    /// A person sharing their location in a private chat, as `(chat key,
+    /// username)`: the destination follows them ([`RouteState::following`]).
+    pub person: Option<(String, String)>,
 }
 
 #[derive(Resource)]
@@ -400,6 +403,19 @@ impl GeoNavState {
             lat,
             lng,
             end: Endpoint::To,
+            person: None,
+        });
+    }
+
+    /// Ask for a route to a person sharing their location in a private chat. The
+    /// destination then follows them as their shares arrive.
+    pub fn route_to_person(&mut self, channel: &str, who: &str, lat: f64, lng: f64) {
+        self.route_request = Some(RouteRequest {
+            label: who.to_string(),
+            lat,
+            lng,
+            end: Endpoint::To,
+            person: Some((channel.to_string(), who.to_string())),
         });
     }
 
@@ -411,6 +427,7 @@ impl GeoNavState {
             lat,
             lng,
             end: Endpoint::From,
+            person: None,
         });
     }
 
@@ -1313,6 +1330,8 @@ fn apply_route_request(nav: &mut GeoNavState, route: &mut RouteState, panel: &mu
     } else {
         route.set_endpoint_named(req.end, label, req.lat, req.lng);
     }
+    // After the endpoint, which clears any person the route followed before.
+    route.following = req.person;
     // The start fills itself in: opening the panel runs `default_start`, which is
     // where "here" is defined. Same contract as the map's "Route to here".
     *panel = RightPanel::Route;

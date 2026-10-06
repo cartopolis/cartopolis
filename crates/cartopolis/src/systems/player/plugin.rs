@@ -22,6 +22,8 @@ impl Plugin for PlayerPlugin {
             // What an agent driving this client asked for (`systems::mcp`); read
             // beside the on-screen controls by `avatar::handle_avatar_movement`.
             .init_resource::<avatar::AgentWalk>()
+            // "Walk me there" (`systems::walk_guide`), read beside it.
+            .init_resource::<avatar::RouteWalk>()
             .init_resource::<systems::gizmo::GizmoState>()
             .init_resource::<systems::picking::PrimClick>()
             .init_resource::<systems::collision::BuildingColliders>()

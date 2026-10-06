@@ -1703,7 +1703,7 @@ impl ShotHarness {
                 || self.ui_for(i).iter().any(|u| {
                     matches!(
                         u.as_str(),
-                        "all" | "avatar" | "appearance" | "sit" | "driver" | "firstperson"
+                        "all" | "avatar" | "appearance" | "sit" | "driver" | "walk" | "firstperson"
                     )
                 })
         })
@@ -2108,6 +2108,7 @@ const UI_ELEMENTS: &[&str] = &[
     "bookmarks",
     "route",
     "driver",
+    "walk",
     "search",
     "place",
     "settings",
@@ -2162,6 +2163,7 @@ pub fn open_scripted_ui(
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut route: ResMut<crate::systems::navigation::RouteState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
+    mut walk: ResMut<crate::systems::walk_guide::WalkGuide>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut cards: ScriptedCards,
     mut store: ResMut<crate::systems::user_store::UserStore>,
@@ -2367,7 +2369,16 @@ pub fn open_scripted_ui(
     // chrome). `CARTO_ROUTE_FROM` / `CARTO_ROUTE_TO` ("lat,lng") override the pair, so
     // a specific route can be reproduced headlessly for debugging (the `CARTO_*` env
     // convention).
-    if want("route") || want("driver") {
+    // `--ui walk`: walking the seeded route in the world (`systems::walk_guide`),
+    // armed for the same reason driver mode is — the route still has to solve.
+    // On foot, so the line and the times are the walking ones.
+    if want("walk") {
+        route.mode = crate::systems::routing::TravelMode::Foot;
+        walk.arm(false);
+    } else {
+        walk.stop();
+    }
+    if want("route") || want("driver") || want("walk") {
         let seed = |var: &str, default: (f64, f64)| {
             std::env::var(var)
                 .ok()

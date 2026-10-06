@@ -863,7 +863,7 @@ impl DriverState {
 /// Equirectangular rather than haversine on purpose: over the tens of metres
 /// between consecutive route vertices the two agree to well under a millimetre,
 /// and this is called for every vertex of the route on every frame.
-fn metres_between(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(crate) fn metres_between(a: [f64; 2], b: [f64; 2]) -> f64 {
     let mid = (a[0] + b[0]) * 0.5;
     let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
     let dy = (b[0] - a[0]) * 110_540.0;
@@ -946,7 +946,7 @@ pub fn nearest_on_polyline(points: &[[f64; 2]], cum: &[f64], at: [f64; 2]) -> (f
 ///
 /// Pure over the measured geometry so the arithmetic that produces the bottom bar
 /// is testable without a camera, a window, or a fix.
-fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress {
+pub(crate) fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress {
     let (along, off) = nearest_on_polyline(&geom.points, &geom.cum, at);
     let remaining_m = (geom.total_m - along).max(0.0);
     // Time is scaled from the planner's own answer rather than from the current
@@ -1324,7 +1324,7 @@ pub fn drive_driver_mode(
 /// forwards, and doing it this way round means the snapped marker sits at exactly
 /// the distance the card is counting down from, rather than at a second, nearly
 /// equal projection of its own.
-fn point_along(geom: &RouteGeom, along: f64) -> Option<([f64; 2], [f64; 2])> {
+pub(crate) fn point_along(geom: &RouteGeom, along: f64) -> Option<([f64; 2], [f64; 2])> {
     if geom.points.len() < 2 {
         return None;
     }
@@ -2677,7 +2677,7 @@ const REROUTE_AMBER: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x5A, 0x0C);
 /// coarsens with distance — the last hundred metres in tens, the rest of a
 /// kilometre in fifties — and stops naming a distance at all inside [`NOW_M`],
 /// where "10 m" describes a turn you are already taking.
-fn countdown(m: f64) -> String {
+pub(crate) fn countdown(m: f64) -> String {
     if m <= NOW_M {
         return "Now".to_string();
     }

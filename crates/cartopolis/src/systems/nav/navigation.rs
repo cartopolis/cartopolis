@@ -36,6 +36,7 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::http;
+use crate::platform::location::LocationWatch;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
@@ -218,6 +219,9 @@ pub enum SolveStatus {
 struct SolveJob {
     seq: u64,
     result: Result<Route, RouteError>,
+    /// The same endpoints routed for the other travel modes, over the same graph
+    /// ([`other_modes`]). Empty when the solve failed or the corridor was staged.
+    others: Vec<Route>,
 }
 
 /// The route planner's state.
@@ -227,6 +231,20 @@ pub struct RouteState {
     pub to: Waypoint,
     pub mode: TravelMode,
     pub route: Option<Route>,
+    /// Every mode's route between the current endpoints, the selected one
+    /// included, as far as they were solved ([`other_modes`]).
+    ///
+    /// This is what puts a time on every mode chip, and what makes switching
+    /// mode free: the corridor and the graph are the same for all three, so one
+    /// fetch answers all of them and a tap on Bike swaps a route in rather than
+    /// starting a solve. Cleared with the route by [`Self::invalidate`].
+    pub by_mode: Vec<Route>,
+    /// The destination is a person sharing their location in a private chat, as
+    /// `(chat key, username)`, and moves with them ([`follow_shared_location`]).
+    ///
+    /// Dropped by anything else that sets the destination, so a route to Sanne
+    /// that is then pointed at a café stops chasing Sanne.
+    pub following: Option<(String, String)>,
     /// The route the display keeps using while a replacement is being solved.
     ///
     /// Only [`Self::reroute_from`] fills it, and that is the point: an ordinary
@@ -290,6 +308,8 @@ impl Default for RouteState {
             to: Waypoint::default(),
             mode: TravelMode::default(),
             route: None,
+            by_mode: Vec::new(),
+            following: None,
             held: None,
             status: SolveStatus::Idle,
             picking: None,
@@ -348,6 +368,7 @@ impl RouteState {
             self.route = None;
             self.generation = self.generation.wrapping_add(1);
         }
+        self.by_mode.clear();
         // A held route outlives an invalidate only when the same call put it there
         // ([`Self::reroute_from`] assigns *after* this runs). Everything else — a
         // cleared endpoint, a swap, Clear — means the drawn line is no longer an
@@ -392,6 +413,42 @@ impl RouteState {
         self.held = previous;
     }
 
+    /// Switch travel mode: swap in the route already solved for it, or ask for a
+    /// solve when there is none.
+    ///
+    /// The swap keeps `solved_for` pointing at the new mode, so the solver sees
+    /// nothing to do; the generation bump is what redraws the line.
+    pub fn select_mode(&mut self, mode: TravelMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        let ready = self.by_mode.iter().find(|r| r.mode == mode).cloned();
+        match (ready, self.solved_for) {
+            (Some(r), Some((from, to, _))) => {
+                self.route = Some(r);
+                self.held = None;
+                self.solved_for = Some((from, to, mode));
+                self.status = SolveStatus::Idle;
+                self.generation = self.generation.wrapping_add(1);
+            }
+            _ => {
+                // Only the search re-runs — `solve` reuses the cached graph.
+                self.solved_for = None;
+                self.status = SolveStatus::Idle;
+            }
+        }
+    }
+
+    /// The solved duration for `mode` between the current endpoints, if any.
+    #[must_use]
+    pub fn duration_for(&self, mode: TravelMode) -> Option<f64> {
+        self.by_mode
+            .iter()
+            .find(|r| r.mode == mode)
+            .map(|r| r.duration_s)
+    }
+
     /// Ask the panel to resolve this endpoint from a map click.
     fn pick_on_map(&mut self, end: Endpoint) {
         self.picking = Some(end);
@@ -408,6 +465,9 @@ impl RouteState {
     /// drawn under a new destination labelled with raw coordinates.
     pub fn set_endpoint_at(&mut self, end: Endpoint, lat: f64, lng: f64) {
         self.picking = None;
+        if end == Endpoint::To {
+            self.following = None;
+        }
         self.waypoint_mut(end)
             .set(format!("{PICKED_PREFIX}{lat:.5}, {lng:.5}"), (lat, lng));
         self.invalidate();
@@ -430,8 +490,22 @@ impl RouteState {
         lng: f64,
     ) {
         self.picking = None;
+        if end == Endpoint::To {
+            self.following = None;
+        }
         self.waypoint_mut(end).set(label.into(), (lat, lng));
         self.invalidate();
+    }
+
+    /// Move the destination to where the person it follows is now, keeping the
+    /// current route on screen until the new one lands — [`Self::reroute_from`]'s
+    /// other half, for the end that moves when the destination is a person.
+    pub fn retarget(&mut self, lat: f64, lng: f64) {
+        let previous = self.route.take();
+        let label = std::mem::take(&mut self.to.label);
+        self.to.set(label, (lat, lng));
+        self.invalidate();
+        self.held = previous;
     }
 
     /// Default the start to the user's current position when it is empty.
@@ -458,6 +532,47 @@ impl RouteState {
 pub const HERE_LABEL: &str = "My position";
 
 // ─── Geocoding the endpoint fields ───────────────────────────────────────────
+
+/// How far a followed person has to move before the route is re-solved to them.
+///
+/// A share arrives at most every 10 s and only after 15 m of movement
+/// (`private_chat::share_due`), so a smaller number would re-solve on every
+/// update of somebody walking toward you; at 50 m the line still ends where they
+/// are, give or take a building.
+const FOLLOW_RESOLVE_M: f64 = 50.0;
+
+/// Keep a route to a person pointed at them: when their shared location has
+/// moved [`FOLLOW_RESOLVE_M`] from the destination, the destination moves too.
+///
+/// When their share ends, the route stays where they last were — that is still
+/// the best answer anyone has, and they may well be standing there.
+pub fn follow_shared_location(
+    mut route: ResMut<RouteState>,
+    chat: Res<crate::systems::chat::ChatState>,
+) {
+    let Some((channel, who)) = route.following.as_ref() else {
+        return;
+    };
+    let Some(l) = chat
+        .locations
+        .iter()
+        .find(|l| &l.channel == channel && &l.from == who)
+    else {
+        return;
+    };
+    let Some(to) = route.to.coord else {
+        return;
+    };
+    let moved = crate::systems::driver::metres_between([to.0, to.1], [l.latitude, l.longitude]);
+    if moved > FOLLOW_RESOLVE_M {
+        let (lat, lng) = (l.latitude, l.longitude);
+        tracing::info!(
+            moved_m = moved,
+            "the person being routed to moved; re-solving"
+        );
+        route.retarget(lat, lng);
+    }
+}
 
 /// Poll finished lookups and fire the debounced next one, for both fields.
 ///
@@ -627,6 +742,7 @@ pub fn drive_route_solver(
         if job.seq == route.seq {
             match job.result {
                 Ok(r) => {
+                    route.by_mode = std::iter::once(r.clone()).chain(job.others).collect();
                     tracing::info!(
                         distance_m = r.distance_m,
                         duration_s = r.duration_s,
@@ -736,7 +852,7 @@ pub fn drive_route_solver(
     IoTaskPool::get()
         .spawn(async move {
             match fetch_corridor(from, to, &template, &progress, &cache).await {
-                Err(e) => publish_solve(&sink, seq, Err(e)),
+                Err(e) => publish_solve(&sink, seq, Err(e), Vec::new()),
                 Ok(input) => {
                     // Somebody tapped for this and is watching a spinner, so it
                     // goes ahead of the map cells — behind only the basemap.
@@ -745,7 +861,12 @@ pub fn drive_route_solver(
                         crate::platform::workers::NEAR,
                         Box::new(move || {
                             let result = build_and_search(input, from, to, mode, &cache);
-                            publish_solve(&sink, seq, result);
+                            let others = if result.is_ok() {
+                                other_modes(&cache, from, to, mode)
+                            } else {
+                                Vec::new()
+                            };
+                            publish_solve(&sink, seq, result, others);
                         }),
                     );
                 }
@@ -803,10 +924,48 @@ pub(crate) fn solve_detached(
 
 /// Hand a finished solve to the main thread. Stamped with the request's `seq` so a
 /// result the user has already superseded is discarded rather than drawn.
-fn publish_solve(sink: &Mutex<Option<SolveJob>>, seq: u64, result: Result<Route, RouteError>) {
+fn publish_solve(
+    sink: &Mutex<Option<SolveJob>>,
+    seq: u64,
+    result: Result<Route, RouteError>,
+    others: Vec<Route>,
+) {
     if let Ok(mut g) = sink.lock() {
-        *g = Some(SolveJob { seq, result });
+        *g = Some(SolveJob {
+            seq,
+            result,
+            others,
+        });
     }
+}
+
+/// Route the same endpoints for every travel mode but `solved`, over the graph
+/// the solve just left in the cache.
+///
+/// Only over a direct corridor. A staged one is a coarse long-haul graph with a
+/// street-level patch at each end, and walking or cycling a few hundred
+/// kilometres is not a question the chips need to answer — nor one worth an A*
+/// over the whole coarse graph at walking speed, whose heuristic is too weak to
+/// prune anything. A mode with no route (a motorway-only corridor on foot) is
+/// simply absent, and its chip shows no time.
+fn other_modes(
+    cache: &GraphCache,
+    from: (f64, f64),
+    to: (f64, f64),
+    solved: TravelMode,
+) -> Vec<Route> {
+    let graph = cache.lock().ok().and_then(|g| match g.as_ref() {
+        Some((_, RouteGraphs::Direct(graph))) => Some(graph.clone()),
+        _ => None,
+    });
+    let Some(graph) = graph else {
+        return Vec::new();
+    };
+    TravelMode::ALL
+        .into_iter()
+        .filter(|m| *m != solved)
+        .filter_map(|m| graph.route(from, to, m).ok())
+        .collect()
 }
 
 /// How many corridor tiles are fetched at once.
@@ -1678,17 +1837,54 @@ fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
 /// one control with three positions. Icon *and* word — the picture is what is
 /// read at a glance, over and over, and the words are short enough to keep
 /// beside it.
-fn mode_chips(ui: &mut egui::Ui, current: TravelMode, reserved: f32, actions: &mut PanelActions) {
+fn mode_chips(ui: &mut egui::Ui, route: &RouteState, reserved: f32, actions: &mut PanelActions) {
     let n = TravelMode::ALL.len() as f32;
     let gap = ui.spacing().item_spacing.x;
     let width = ((ui.available_width() - reserved - (n - 1.0) * gap) / n).max(36.0);
     let size = egui::vec2(width, theme::row_height());
     for mode in TravelMode::ALL {
-        let selected = current == mode;
-        let label = format!("{}  {}", icons::travel_mode(mode), mode.label());
-        if theme::chip_sized(ui, &label, selected, size).clicked() && !selected {
+        let selected = route.mode == mode;
+        if theme::chip_sized(
+            ui,
+            &chip_label(mode, route.duration_for(mode)),
+            selected,
+            size,
+        )
+        .on_hover_text(mode.label())
+        .clicked()
+            && !selected
+        {
             actions.mode = Some(mode);
         }
+    }
+}
+
+/// A mode chip's words: the mode's time once it is known, its name until then.
+///
+/// The time *is* the comparison the chips exist for — three times side by side
+/// say "walk it" or "take the bike" at a glance — and the icon already names the
+/// mode, so the word gives way to the number rather than sharing a narrow chip.
+fn chip_label(mode: TravelMode, duration_s: Option<f64>) -> String {
+    match duration_s {
+        Some(s) => format!("{}  {}", icons::travel_mode(mode), format_duration(s)),
+        None => format!("{}  {}", icons::travel_mode(mode), mode.label()),
+    }
+}
+
+/// What Start does for a mode — its word, or what is missing for it.
+///
+/// Walking happens in the world (`systems::walk_guide`), so it needs the avatar,
+/// which only a session has. Riding and driving are navigation along a real road
+/// with the device in your hand: driver mode follows the position fix, and on a
+/// device with no location source it would be narrating an avatar nobody is
+/// moving — so the button says what is missing instead.
+fn start_action(mode: TravelMode, gps: bool, avatar: bool) -> Result<&'static str, &'static str> {
+    match mode {
+        TravelMode::Foot if avatar => Ok("Walk"),
+        TravelMode::Foot => Err("Sign in to walk it"),
+        TravelMode::Bike if gps => Ok("Ride"),
+        TravelMode::Car if gps => Ok("Drive"),
+        TravelMode::Bike | TravelMode::Car => Err("Needs a GPS position"),
     }
 }
 
@@ -1700,6 +1896,9 @@ pub fn render_route_sheet(
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
+    mut walk_guide: ResMut<crate::systems::walk_guide::WalkGuide>,
+    mut camera_state: ResMut<crate::resources::CameraState>,
+    bodies: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -1771,7 +1970,7 @@ pub fn render_route_sheet(
                 // what a sensible destination even is.
                 ui.horizontal(|ui| {
                     let reserved = theme::close_button_size() + ui.spacing().item_spacing.x;
-                    mode_chips(ui, route.mode, reserved, &mut actions);
+                    mode_chips(ui, &route, reserved, &mut actions);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         close = theme::close_button(ui).clicked();
                     });
@@ -1830,7 +2029,13 @@ pub fn render_route_sheet(
 
                 if route.route.is_some() {
                     ui.add_space(8.0);
-                    action_row(ui, &mut actions);
+                    action_row(
+                        ui,
+                        route.mode,
+                        LocationWatch::available(),
+                        !bodies.is_empty(),
+                        &mut actions,
+                    );
                 }
             });
         });
@@ -1840,11 +2045,20 @@ pub fn render_route_sheet(
         route.sheet = d;
     }
     let drive = actions.drive;
+    let walk = actions.walk;
     apply_actions(actions, &mut route, &mut nav, here);
     // Driving takes the whole screen over, so the planner that started it gets out
     // of the way — the turn list is on the manoeuvre card now.
     if drive && route.route.is_some() {
+        walk_guide.stop();
         driver.enter();
+        *right_panel = RightPanel::None;
+    }
+    // Walking keeps the world and puts the camera behind the avatar; the planner
+    // goes for the same reason.
+    if let (Some(auto), true) = (walk, route.route.is_some()) {
+        walk_guide.start(auto);
+        camera_state.mode = crate::resources::CameraMode::Avatar;
         *right_panel = RightPanel::None;
     }
     if close {
@@ -1904,21 +2118,67 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState) {
 /// `drive_route_solver` now does it on the solve and the button is gone. A
 /// control whose only job is to finish an action the app could have finished
 /// itself is a control that should not be on a phone's bottom sheet.
-fn action_row(ui: &mut egui::Ui, actions: &mut PanelActions) {
+fn action_row(
+    ui: &mut egui::Ui,
+    mode: TravelMode,
+    gps: bool,
+    avatar: bool,
+    actions: &mut PanelActions,
+) {
     ui.horizontal(|ui| {
         if ui.button("Clear").clicked() {
             actions.clear = true;
         }
+        // Walking yourself is the secondary act beside being walked there.
+        if mode == TravelMode::Foot
+            && avatar
+            && ui
+                .button("Walk")
+                .on_hover_text("Walk it yourself, with the route drawn in the street")
+                .clicked()
+        {
+            actions.walk = Some(false);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let width = ui.available_width().max(START_MIN_WIDTH_PTS);
-            if theme::primary_button_sized(ui, &format!("{}  Start", icons::PLAY), width)
-                .on_hover_text(
-                    "Follow this route: strip the map, lock the camera \
-                     behind the arrow, and show the next turn",
-                )
-                .clicked()
-            {
-                actions.drive = true;
+            match start_action(mode, gps, avatar) {
+                Ok(_) if mode == TravelMode::Foot => {
+                    if theme::primary_button_sized(
+                        ui,
+                        &format!("{}  Walk me there", icons::PLAY),
+                        width,
+                    )
+                    .on_hover_text("The avatar follows the route; any key takes over")
+                    .clicked()
+                    {
+                        actions.walk = Some(true);
+                    }
+                }
+                Ok(verb) => {
+                    if theme::primary_button_sized(ui, &format!("{}  {verb}", icons::PLAY), width)
+                        .on_hover_text("Follow this route and show the next turn")
+                        .clicked()
+                    {
+                        actions.drive = true;
+                    }
+                }
+                Err(missing) => {
+                    let icon = if mode == TravelMode::Foot {
+                        icons::WALK
+                    } else {
+                        icons::HERE
+                    };
+                    ui.add_enabled_ui(false, |ui| {
+                        theme::primary_button_sized(ui, &format!("{icon}  {missing}"), width)
+                    })
+                    .response
+                    .on_disabled_hover_text(if mode == TravelMode::Foot {
+                        "Walking happens in the world, as your avatar, which needs a session."
+                    } else {
+                        "Riding and driving follow this device's position, and it has no \
+                         location source. Plan here and read the turns; navigate on a phone."
+                    });
+                }
             }
         });
     });
@@ -1964,6 +2224,9 @@ struct PanelActions {
     clear: bool,
     /// Start driving the solved route (`systems::driver`).
     drive: bool,
+    /// Start walking it in the world (`systems::walk_guide`); `true` is "Walk me
+    /// there".
+    walk: Option<bool>,
     mode: Option<TravelMode>,
     goto_step: Option<usize>,
     /// Endpoint set to the current position.
@@ -2237,10 +2500,18 @@ fn apply_actions(
     here: Option<(f64, f64)>,
 ) {
     if let Some(mode) = actions.mode {
-        route.mode = mode;
-        // Only the search re-runs — `solve` reuses the cached graph.
-        route.solved_for = None;
-        route.status = SolveStatus::Idle;
+        route.select_mode(mode);
+    }
+    // Any hand on the destination field, or a swap or Clear, is a different
+    // destination from the person being followed.
+    let touched_to = [
+        actions.edited,
+        actions.cleared,
+        actions.chose.as_ref().map(|c| c.0),
+    ]
+    .contains(&Some(Endpoint::To));
+    if touched_to || actions.swap || actions.clear {
+        route.following = None;
     }
     if let Some(end) = actions.edited {
         let _ = end;

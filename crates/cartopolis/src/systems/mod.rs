@@ -75,7 +75,7 @@ pub use map::{
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
-    transit_vehicles,
+    transit_vehicles, walk_guide,
 };
 #[cfg(target_os = "android")]
 pub use net::push;

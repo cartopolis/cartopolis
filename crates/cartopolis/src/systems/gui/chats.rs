@@ -615,6 +615,11 @@ struct Actions {
     share: Option<(String, u64)>,
     stop_share: Option<String>,
     show_location: Option<(f64, f64, String)>,
+    /// Plan a route to a point: `(lat, lng, name)`.
+    route_to: Option<(f64, f64, String)>,
+    /// Plan a route to a person sharing their location, which follows them:
+    /// `(chat key, username, lat, lng)`.
+    route_to_person: Option<(String, String, f64, f64)>,
     block: Option<String>,
     unblock: Option<String>,
     report: Option<(String, Option<String>)>,
@@ -1512,8 +1517,16 @@ fn bubble(
     // A place is its own card, not a bubble with a card inside it.
     if let (Some(point), Some(n)) = (&line.point, number) {
         ui.with_layout(layout, |ui| {
-            if point_card(ui, point, n, &line.body, mine, max_w).clicked() {
-                act.go_to = Some(point.clone());
+            match point_card(ui, point, n, &line.body, mine, max_w) {
+                Some(CardHit::Open) => act.go_to = Some(point.clone()),
+                Some(CardHit::Route) => {
+                    act.route_to = Some((
+                        point.latitude,
+                        point.longitude,
+                        point.name.clone().unwrap_or_else(|| line.body.clone()),
+                    ));
+                }
+                None => {}
             }
         });
         return;
@@ -1711,7 +1724,7 @@ fn point_card(
     caption: &str,
     mine: bool,
     max_w: f32,
-) -> egui::Response {
+) -> Option<CardHit> {
     // `.pt`: 258 wide, raised, a 112 tall picture, then the name and caption,
     // with the speaker's corner tucked in like a bubble's.
     let w = max_w.min(258.0);
@@ -1832,17 +1845,26 @@ fn point_card(
     if let Some(g) = sub_g {
         p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::TEXT_DIM);
     }
-    // The first mockup's "Open in world" (`.card .go`): the card's one action,
-    // brand orange across its width. The whole card answers the tap; the
-    // button is what says so.
-    let go = egui::Rect::from_min_max(
+    // The first mockup's "Open in world" (`.card .go`) in brand orange, and
+    // beside it Route, in chat-world v4's button row (`.btnrow`): a point is a
+    // place to look at *and* a place to go. The whole card still answers a tap
+    // with Open in world; only the Route button routes.
+    let row = egui::Rect::from_min_max(
         egui::pos2(rect.left() + 12.0, rect.bottom() - 12.0 - GO_H),
         egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0),
     );
+    let route_w = (row.width() * 0.42).min(104.0);
+    let go = egui::Rect::from_min_max(
+        row.min,
+        egui::pos2(row.right() - route_w - 8.0, row.bottom()),
+    );
+    let route = egui::Rect::from_min_max(egui::pos2(row.right() - route_w, row.top()), row.max);
+    let pointer = resp.hover_pos();
+    let on_route = pointer.is_some_and(|p| route.contains(p));
     p.rect_filled(
         go,
         egui::CornerRadius::same(10),
-        if resp.hovered() {
+        if resp.hovered() && !on_route {
             egui::Color32::from_rgb(0xFF, 0x7A, 0x33)
         } else {
             theme::BRAND
@@ -1857,6 +1879,24 @@ fn point_card(
         ],
         6.0,
     );
+    p.rect_filled(
+        route,
+        egui::CornerRadius::same(10),
+        if on_route {
+            theme::SURFACE_HOVER.gamma_multiply(1.4)
+        } else {
+            theme::SURFACE_HOVER
+        },
+    );
+    centred_row(
+        &p,
+        route,
+        &[
+            (icons::ROUTE.to_string(), 15.0, theme::TEXT),
+            ("Route".to_string(), 13.5, theme::TEXT),
+        ],
+        6.0,
+    );
     if resp.hovered() {
         p.rect_stroke(
             rect,
@@ -1865,8 +1905,32 @@ fn point_card(
             egui::StrokeKind::Inside,
         );
     }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Look from where it was sent")
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if on_route {
+            "Plan a route there"
+        } else {
+            "Look from where it was sent"
+        });
+    resp.clicked().then(|| {
+        if resp
+            .interact_pointer_pos()
+            .is_some_and(|p| route.contains(p))
+        {
+            CardHit::Route
+        } else {
+            CardHit::Open
+        }
+    })
+}
+
+/// Which of a point card's two actions a tap asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CardHit {
+    /// Look from where it was sent.
+    Open,
+    /// Plan a route there.
+    Route,
 }
 
 /// The open chat's text field, its "+" menu and its location sharing.
@@ -1907,6 +1971,13 @@ fn composer(
                 );
                 if theme::action_button(ui, "Show").clicked() {
                     act.show_location = Some((l.latitude, l.longitude, l.from.clone()));
+                }
+                if theme::action_button(ui, format!("{}  Route", icons::ROUTE))
+                    .on_hover_text("Plan a route to them; it follows them as they move")
+                    .clicked()
+                {
+                    act.route_to_person =
+                        Some((key.to_string(), l.from.clone(), l.latitude, l.longitude));
                 }
             });
         }
@@ -2215,6 +2286,14 @@ fn apply(
         nav.pending_label = Some(who);
         nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(lat, lng, None));
         *right_panel = RightPanel::None;
+    }
+    // Route: the planner opens on the destination (`geo_nav::RouteRequest`),
+    // which replaces this panel in the right-hand slot.
+    if let Some((lat, lng, name)) = act.route_to {
+        nav.route_to(name, lat, lng);
+    }
+    if let Some((key, who, lat, lng)) = act.route_to_person {
+        nav.route_to_person(&key, &who, lat, lng);
     }
     if let Some(online) = online {
         for (name, on) in [(act.block, true), (act.unblock, false)] {
