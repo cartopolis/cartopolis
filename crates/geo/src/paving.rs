@@ -41,7 +41,7 @@
 //! where a nominal-width OSM carriageway laps over a surveyed pavement, the
 //! tarmac wins, which is also what it looks like from the pavement.
 
-use crate::flat_fill::{build_flat_fills, FlatFill};
+use crate::flat_fill::{build_flat_fills, FlatFill, Shade};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
 
 /// A surveyed paved surface, in tile-local metres.
@@ -360,12 +360,23 @@ pub fn far_rgb(kind: PavingKind, material: Option<PavingMaterial>, measured: Opt
 /// twice, and were not kept in two copies.
 #[must_use]
 pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
-    let fills: Vec<FlatFill<'_>> = areas
+    // Kerbs and worn edges along the surveyed boundaries, cut out of the
+    // surfaces they belong to (`paving_edges`).
+    let pieces = crate::paving_edges::refine(areas);
+    let fills: Vec<FlatFill<'_>> = pieces
         .iter()
-        .map(|a| FlatFill {
-            rings: &a.rings,
-            rgb: a.measured.unwrap_or_else(|| area_rgb(a.kind, a.material)),
-            pattern: area_pattern(a.kind, a.material),
+        .map(|p| {
+            let a = &p.area;
+            FlatFill {
+                rings: &a.rings,
+                rgb: a.measured.unwrap_or_else(|| area_rgb(a.kind, a.material)),
+                pattern: area_pattern(a.kind, a.material),
+                shade: (p.edge == Some(crate::paving_edges::EdgeKind::Worn)).then(|| Shade {
+                    lines: &p.shade_from,
+                    toward: crate::paving_edges::WORN_RGB,
+                    width: crate::paving_edges::WORN_M,
+                }),
+            }
         })
         .collect();
     build_flat_fills(&fills, SurfaceGroup::Paving, max_bytes)
@@ -524,6 +535,7 @@ mod tests {
                 rings: &built_rings,
                 rgb: 0,
                 pattern: 0,
+                shade: None,
             }],
             SurfaceGroup::Built,
             None,

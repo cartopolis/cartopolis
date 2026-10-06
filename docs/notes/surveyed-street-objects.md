@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [surveyed.rs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
-updated: 2026-09-24
+triggers: [surveyed.rs, paving_edges.rs, kerb, kerbs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
+updated: 2026-10-06
 ---
 
 # Streets that were actually surveyed
@@ -270,6 +270,30 @@ laid in asphalt or in brick — `asfalt` being the commonest thing the survey sa
 about one. Letting the material speak there would turn the most recognisable
 surface in the country grey along every street. The price is the occasional
 genuinely grey cycle path drawn red, which is much the cheaper error.
+
+## Kerbs and worn edges come from the boundaries, not from a register (2026-10-06)
+
+The BGT has no kerbs in it — `weginrichtingselement_lijn` is all `molgoot` — but
+it is a partition, so the line between a pavement and the street beside it *is*
+surveyed. `cartopolis_geo::paving_edges` reads that line: where a raised surface
+(footway, island, verge, steps) borders a street, road or parking bay, a 15 cm
+kerbstone band is cut out of the raised side; where hard paving borders surveyed
+green (verge, or a grass or planting material), a 35 cm band is cut out and
+shaded per vertex from soil at the line to the paving's own tone. Not along a
+`woonerf` (level by design) or a driveway (dropped kerb). Which side is outside
+is **probed**, not taken from the winding — the doors' lesson.
+
+Measured on cell 14/8490/5321 (central Groningen, 4,919 surfaces): 7,660 pieces,
+~66 km of kerb and ~10 km of worn edge, **0.7 s on a debug build** on the mesh
+worker. The plan of the bus station there lines up with the aerial photo: every
+platform kerbed all round, no kerb where pavement meets cycle path.
+`paving_edges::real_cell::plan_of_a_real_cell` (ignored) redraws that plan from
+any cell file.
+
+Two things are deliberately not done yet. The bands are **flat**: a kerb is a
+pale line at grade, because raising it means lifting the pavement off the ground
+stack. And the worn edge only sees **BGT** green — a pavement beside an OSM park
+fill gets none, because that fill is not in the list the pass reads.
 
 ## What is not read, and why
 

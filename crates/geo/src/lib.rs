@@ -66,6 +66,7 @@ pub mod moorings;
 pub mod nav_marks;
 pub mod parking;
 pub mod paving;
+pub mod paving_edges;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not
 // exist in a shipped build, and nothing outside the suite reads it.
 #[cfg(any(test, feature = "perf"))]

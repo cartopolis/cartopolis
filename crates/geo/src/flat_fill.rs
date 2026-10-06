@@ -20,6 +20,17 @@ pub(crate) struct FlatFill<'a> {
     /// what every fill carried before, so a fill with no pattern is unchanged.
     /// See `paving::PavingMaterial::pattern`.
     pub pattern: u8,
+    /// A tone the fill fades into towards some lines, per vertex: `rgb` at
+    /// `width` metres from them and beyond, `toward` on them. The worn edge of
+    /// paving against green (`paving_edges`). A band cut to `width` has its
+    /// vertices on both sides of it, so the fade spans exactly the band.
+    pub shade: Option<Shade<'a>>,
+}
+
+pub(crate) struct Shade<'a> {
+    pub lines: &'a [Vec<[f32; 2]>],
+    pub toward: u32,
+    pub width: f32,
 }
 
 /// What one triangle costs to upload, in the units the frame budget is in.
@@ -75,8 +86,22 @@ pub(crate) fn build_flat_fills(
                 out.push(std::mem::replace(&mut buf, Buf::new(group)).finish());
             }
         }
-        let mut tint = srgb_to_linear(fill.rgb);
-        tint[3] = 1.0 + f32::from(fill.pattern);
+        let mut own = srgb_to_linear(fill.rgb);
+        own[3] = 1.0 + f32::from(fill.pattern);
+        let toward = fill.shade.as_ref().map(|s| srgb_to_linear(s.toward));
+        let tint = |p: [f32; 3]| -> [f32; 4] {
+            let (Some(shade), Some(to)) = (&fill.shade, toward) else {
+                return own;
+            };
+            let d = crate::paving_edges::distance_to(shade.lines, [p[0], p[2]]);
+            let t = (1.0 - d / shade.width).clamp(0.0, 1.0);
+            [
+                own[0] + (to[0] - own[0]) * t,
+                own[1] + (to[1] - own[1]) * t,
+                own[2] + (to[2] - own[2]) * t,
+                own[3],
+            ]
+        };
         // Unshared vertices per triangle. A shared-vertex mesh would be smaller,
         // but every surface here is flat and faces up, so there is no shading to
         // gain from sharing and the winding fix below needs to own its corners.
@@ -91,13 +116,13 @@ pub(crate) fn build_flat_fills(
             let cross = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
             let base = buf.positions.len() as u32;
             if cross < 0.0 {
-                buf.push(a, tint);
-                buf.push(b, tint);
-                buf.push(c, tint);
+                buf.push(a, tint(a));
+                buf.push(b, tint(b));
+                buf.push(c, tint(c));
             } else {
-                buf.push(a, tint);
-                buf.push(c, tint);
-                buf.push(b, tint);
+                buf.push(a, tint(a));
+                buf.push(c, tint(c));
+                buf.push(b, tint(b));
             }
             buf.indices.extend([base, base + 1, base + 2]);
         }
