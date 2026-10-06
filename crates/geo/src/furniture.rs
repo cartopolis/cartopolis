@@ -1415,6 +1415,10 @@ pub struct SurveyedLine {
     pub height_m: Option<f32>,
 }
 
+/// Half the width of a kerbstone, so its box covers the band
+/// `paving_edges::KERB_M` wide.
+pub const KERB_HALF_M: f32 = crate::paving_edges::KERB_M / 2.0;
+
 /// The three linear forms. Mirrors `LINE_KINDS` in atlas's `pipeline/bgt.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -1430,6 +1434,10 @@ pub enum LineKind {
     /// is the ground at its line and its measured height is the face *below*
     /// that, so only the side where the ground or the water drops away shows.
     Quay,
+    /// A kerbstone along a surveyed pavement edge (`paving_edges::kerb_lines`).
+    /// **Not on the wire**: the BGT has no kerbs, so this is never parsed, only
+    /// derived from the boundary between a raised surface and a carriageway.
+    Kerb,
 }
 
 impl LineKind {
@@ -1469,6 +1477,11 @@ impl LineKind {
             Self::Hedge => (1.1, 0.35, Tone::Foliage),
             // Only ever drawn at a measured height (atlas gates the type on one).
             Self::Quay => (0.9, 0.12, Tone::Stone),
+            // Standing 10 cm proud of the carriageway, the top face exactly over
+            // the flat kerb band `paving_edges` cuts out of the pavement. The
+            // pavement itself stays at grade: lifting it would bury the verge's
+            // grass and sink every lamppost and bench standing on it.
+            Self::Kerb => (0.10, KERB_HALF_M, Tone::Roof),
         }
     }
 }

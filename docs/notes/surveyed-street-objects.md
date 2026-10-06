@@ -290,10 +290,16 @@ platform kerbed all round, no kerb where pavement meets cycle path.
 `paving_edges::real_cell::plan_of_a_real_cell` (ignored) redraws that plan from
 any cell file.
 
-Two things are deliberately not done yet. The bands are **flat**: a kerb is a
-pale line at grade, because raising it means lifting the pavement off the ground
-stack. And the worn edge only sees **BGT** green — a pavement beside an OSM park
-fill gets none, because that fill is not in the list the pass reads.
+**The kerb stands 10 cm proud as a stone, not as a step.** `kerb_lines` returns
+the same runs moved half a kerb onto the raised side, and `map_geometry` meshes
+them as `LineKind::Kerb` boxes with the walls — exactly over the flat band, never
+as colliders. Lifting the pavement itself was rejected: it would bury the
+verge's grass blades and sink every lamppost and bench standing on it, and put
+the paving off its rung on the ground stack. So from the road side a kerb reads
+right, and from the pavement it is a 10 cm lip it should not be.
+
+One thing is deliberately not done yet: the worn edge only sees **BGT** green —
+a pavement beside an OSM park fill gets none, because that fill is not in the list the pass reads.
 
 ## What is not read, and why
 

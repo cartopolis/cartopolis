@@ -1804,6 +1804,20 @@ fn spawn_geometry_task(
                                             }
                                         }
                                         cell_places.surveyed.2 = lines.len();
+                                        // …and the kerbstones, standing along the
+                                        // surveyed edge between a pavement and the
+                                        // street (`paving_edges::kerb_lines`).
+                                        // Meshed with the walls, never colliders:
+                                        // a kerb is something you step over.
+                                        lines.extend(
+                                            cartopolis_geo::paving_edges::kerb_lines(&paved)
+                                                .into_iter()
+                                                .map(|points| furniture::SurveyedLine {
+                                                    points,
+                                                    kind: furniture::LineKind::Kerb,
+                                                    height_m: None,
+                                                }),
+                                        );
                                         // A measured wall stands on its lower
                                         // side (`build_line_meshes_footed`): the
                                         // ground or water a metre or two either

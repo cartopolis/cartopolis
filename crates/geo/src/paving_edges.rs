@@ -320,6 +320,55 @@ fn split(
     (run(OverlayRule::Intersect), run(OverlayRule::Difference))
 }
 
+/// The kerbstones to stand up along this cell's surveyed kerb lines: the same
+/// runs [`refine`] cuts its kerb bands along, moved half a kerb onto the raised
+/// side so a box of [`KERB_M`] width sits exactly over its band.
+///
+/// The inward side is probed per segment, for the reason the module note gives.
+#[must_use]
+pub fn kerb_lines(areas: &[PavedArea]) -> Vec<Vec<[f32; 2]>> {
+    let grid = Grid::build(areas);
+    let half = KERB_M / 2.0;
+    let mut out = Vec::new();
+    for (i, area) in areas.iter().enumerate() {
+        let (kerbs, _) = runs(i, area, areas, &grid);
+        for line in kerbs {
+            // Each segment's unit normal into the surface.
+            let normals: Vec<[f32; 2]> = line
+                .windows(2)
+                .map(|w| {
+                    let len = dist(w[0], w[1]).max(1e-6);
+                    let n = [-(w[1][1] - w[0][1]) / len, (w[1][0] - w[0][0]) / len];
+                    let m = lerp(w[0], w[1], 0.5);
+                    let probe = [m[0] + n[0] * 0.05, m[1] + n[1] * 0.05];
+                    if contains(&area.rings, probe) {
+                        n
+                    } else {
+                        [-n[0], -n[1]]
+                    }
+                })
+                .collect();
+            if normals.is_empty() {
+                continue;
+            }
+            // Each point moves along the mean of the normals either side of it.
+            let moved = line
+                .iter()
+                .enumerate()
+                .map(|(k, p)| {
+                    let a = normals[k.saturating_sub(1).min(normals.len() - 1)];
+                    let b = normals[k.min(normals.len() - 1)];
+                    let (sx, sz) = (a[0] + b[0], a[1] + b[1]);
+                    let l = (sx * sx + sz * sz).sqrt().max(1e-6);
+                    [p[0] + sx / l * half, p[1] + sz / l * half]
+                })
+                .collect();
+            out.push(moved);
+        }
+    }
+    out
+}
+
 /// How far `p` lies from the nearest of `lines`, metres.
 #[must_use]
 pub fn distance_to(lines: &[Vec<[f32; 2]>], p: [f32; 2]) -> f32 {
@@ -499,6 +548,27 @@ mod tests {
             assert!(pieces.iter().any(|p| p.area.kind == PavingKind::Street
                 && p.edge.is_none()
                 && (area(&p.area.rings) - 140.0).abs() < 1e-3));
+        }
+    }
+
+    /// The kerbstone runs along the street edge half a kerb onto the pavement,
+    /// whichever way the ring winds.
+    #[test]
+    fn the_kerbstone_stands_on_the_pavement_side() {
+        for flip in [false, true] {
+            let mut pavement = rect(PavingKind::Footway, 0.0, 0.0, 20.0, 3.0);
+            if flip {
+                pavement.rings[0].reverse();
+            }
+            let street = rect(PavingKind::Street, 0.0, 3.0, 20.0, 10.0);
+            let lines = kerb_lines(&[pavement, street]);
+            assert_eq!(lines.len(), 1, "flip={flip}");
+            for p in &lines[0] {
+                assert!(
+                    (p[1] - (3.0 - KERB_M / 2.0)).abs() < 1e-3,
+                    "flip={flip}: {p:?}"
+                );
+            }
         }
     }
 
