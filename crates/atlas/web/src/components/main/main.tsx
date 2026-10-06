@@ -19,6 +19,7 @@ import {Overrides} from '@/components/pages/overrides/overrides'
 import {Roles} from '@/components/pages/roles/roles'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
+import {requestedPand} from '@/lib/overrides'
 import {may, visibleTabs} from '@/lib/roles'
 import {ADMIN, PLAYER_PATHS} from '@/lib/base'
 
@@ -35,6 +36,10 @@ const AdminView = (_props: RoutableProps) => {
     useEffect(() => {
         if ($s.signedIn && !$s.accounts.length && may('accounts_manage')) {
             void loadAccounts()
+        }
+        // Sent here from the viewer's building card to replace one building.
+        if ($s.signedIn && requestedPand() && may('building_override')) {
+            $s.adminTab = 'overrides'
         }
     }, [$s.signedIn])
 

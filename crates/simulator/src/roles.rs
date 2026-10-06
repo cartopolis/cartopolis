@@ -6,8 +6,11 @@
 //!
 //! Read from the database at the point of the decision, not carried in a session,
 //! for the reason `auth::is_admin` gives: a revoked role takes effect on the next
-//! request, not when somebody's token happens to expire. The wire is the one
-//! exception and says so (`net::handle_connection` reads it at the handshake).
+//! request, not when somebody's token happens to expire. A connection holds its
+//! answer for the length of the session instead, and is told when it changes:
+//! every route here that changes a permission ends in [`refresh_grants`], which
+//! updates the connection's own gate and sends its client
+//! `NetMessage::Permissions`.
 
 use std::collections::BTreeMap;
 
@@ -428,6 +431,26 @@ async fn post_role(
     Ok((StatusCode::CREATED, Json(json!({ "roles": roles }))))
 }
 
+/// Re-read what every connected account may do and tell the ones whose answer
+/// changed (`NetMessage::Permissions`, through `ChatHub::publish_grants`).
+///
+/// Called after anything that can change a permission — a role's grants, a
+/// role deleted, an account's roles, its admin or disabled flag. It re-reads
+/// every *connected* account rather than working out which ones the edit
+/// touched: an edit to Player touches everybody, and the set is the people
+/// online, not the accounts table. A read that fails leaves that account as it
+/// was, which is the answer it had a moment ago.
+pub(crate) fn refresh_grants(state: &HttpState) {
+    for account in state.chat.granted_accounts() {
+        let Ok(principal) = Uuid::parse_str(&account) else {
+            continue;
+        };
+        if let Ok(now) = with_db(state, |c| effective(c, principal)) {
+            state.chat.publish_grants(&account, now);
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RolePatch {
     #[serde(default)]
@@ -454,6 +477,7 @@ async fn patch_role(
     })?
     .map_err(refused)?;
     tracing::info!(%who, role = %id, "role changed");
+    refresh_grants(&state);
     let roles = with_db(&state, list_roles)?;
     Ok(Json(json!({ "roles": roles })))
 }
@@ -466,6 +490,7 @@ async fn remove_role(
     let (_, who) = require(&state, &headers, Permission::RolesManage)?;
     with_db_mut(&state, |c| delete_role(c, &id))?.map_err(refused)?;
     tracing::info!(%who, role = %id, "role deleted");
+    refresh_grants(&state);
     let roles = with_db(&state, list_roles)?;
     Ok(Json(json!({ "roles": roles })))
 }
@@ -486,6 +511,7 @@ async fn put_account_roles(
     let (_, who) = require(&state, &headers, Permission::RolesManage)?;
     with_db_mut(&state, |c| set_account_roles(c, &id, &body.roles))?.map_err(refused)?;
     tracing::info!(%who, account = %id, roles = ?body.roles, "account roles set");
+    refresh_grants(&state);
     let roles = with_db(&state, |c| account_roles(c, &id))?;
     Ok(Json(json!({ "roles": roles })))
 }

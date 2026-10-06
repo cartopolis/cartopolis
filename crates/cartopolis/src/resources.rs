@@ -1751,6 +1751,18 @@ pub struct AuthIdentity {
     /// Why the last account-deletion attempt was refused (wrong password, last
     /// admin). Cleared when the Account tab next asks.
     pub delete_error: Option<String>,
+    /// What the server says this account may do, by permission slug
+    /// (`NetMessage::Permissions`, resent when an operator changes its roles).
+    /// It decides what the client *offers* — the server checks every one itself.
+    pub permissions: Vec<String>,
+}
+
+impl AuthIdentity {
+    /// Whether the signed-in account holds a permission. Always `false` offline.
+    #[must_use]
+    pub fn may(&self, p: cartopolis_core::permissions::Permission) -> bool {
+        self.permissions.iter().any(|s| s == p.slug())
+    }
 }
 
 /// `request_id` the client stamps on [`cartopolis_core::NetMessage::DeleteAccount`].

@@ -164,6 +164,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "physical prims — PrimDto.physical, SetPrimPhysical to switch it, and PrimMotion: where the simulator's rigid-body step has moved each physical prim, a compact pose + velocity per body instead of a PrimUpsert per tick (docs/notes/physical-prims.md)",
     },
+    ProtocolRevision {
+        version: 35,
+        adr: "",
+        summary: "permissions — Permissions, the account's granted permission slugs, sent after the handshake and again whenever its roles change, so a client offers what the server would allow (docs/notes/permissions.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -251,6 +256,7 @@ pub enum MessageKind {
     PrimSound = 69,
     SetPrimPhysical = 70,
     PrimMotion = 71,
+    Permissions = 72,
 }
 
 impl MessageKind {
@@ -327,6 +333,7 @@ impl MessageKind {
             69 => Some(Self::PrimSound),
             70 => Some(Self::SetPrimPhysical),
             71 => Some(Self::PrimMotion),
+            72 => Some(Self::Permissions),
             _ => None,
         }
     }
@@ -1303,6 +1310,14 @@ pub enum NetMessage {
     /// times a second; a body is ~50 bytes. A body that has come to rest is sent
     /// once more with `resting` set, and then not until it moves again.
     PrimMotion { tick: u64, bodies: Vec<PrimBody> },
+    /// Server: what this account may do (`cartopolis_core::permissions`, by
+    /// slug) — sent after the handshake and again whenever an operator changes
+    /// a role, the account's roles or its admin flag, so a client's buttons
+    /// follow the server's own gate without a reconnect. Slugs rather than a
+    /// bit set so a permission added later is an unknown string to an older
+    /// client, not a misread bit. The server enforces every one of these
+    /// itself; this only decides what a client offers.
+    Permissions { granted: Vec<String> },
 }
 
 /// One physical prim's pose and velocity ([`NetMessage::PrimMotion`]).
@@ -1679,6 +1694,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::PrimSound { .. } => MessageKind::PrimSound,
         NetMessage::SetPrimPhysical { .. } => MessageKind::SetPrimPhysical,
         NetMessage::PrimMotion { .. } => MessageKind::PrimMotion,
+        NetMessage::Permissions { .. } => MessageKind::Permissions,
     }
 }
 
@@ -2222,7 +2238,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 70] = [
+        const ALL: [MessageKind; 71] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2293,6 +2309,7 @@ mod tests {
             PrimSound,
             SetPrimPhysical,
             PrimMotion,
+            Permissions,
         ];
         for k in ALL {
             assert_eq!(
@@ -2306,7 +2323,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(PrimMotion as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(Permissions as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

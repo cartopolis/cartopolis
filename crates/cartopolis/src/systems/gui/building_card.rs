@@ -67,6 +67,16 @@ pub(crate) fn floor_plan_url(id: &str, footprint: &[(f64, f64)]) -> String {
     )
 }
 
+/// The atlas web UI's Overrides tab with this building filled in
+/// (`docs/notes/building-models.md`): where an operator replaces its shell with
+/// a model, or restores it.
+pub(crate) fn override_url(id: &str) -> String {
+    format!(
+        "{}/admin?override={id}",
+        crate::systems::place_link::WEB_ORIGIN
+    )
+}
+
 /// Draw the card for the selected building.
 pub fn render_building_card(
     egui: Res<EguiManager>,
@@ -78,6 +88,7 @@ pub fn render_building_card(
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
+    identity: Res<crate::resources::AuthIdentity>,
 ) {
     let Some(id) = selection.selected.clone() else {
         return;
@@ -160,6 +171,24 @@ pub fn render_building_card(
                         .clicked()
                     {
                         open = Some(floor_plan_url(&id, &fact.footprint));
+                    }
+                    // Only for an account the server lets replace buildings; it
+                    // says so after sign-in and again when its roles change.
+                    if identity.may(cartopolis_core::permissions::Permission::BuildingOverride)
+                        && ui
+                            .add_enabled(
+                                open_url_supported(),
+                                egui::Button::new(format!(
+                                    "Replace with a model {}",
+                                    icons::OPEN_EXTERNAL
+                                )),
+                            )
+                            .on_hover_text(
+                                "Open this building in the Overrides tab, to put a model in its place",
+                            )
+                            .clicked()
+                    {
+                        open = Some(override_url(&id));
                     }
                 });
                 ui.add_space(4.0);
@@ -463,5 +492,23 @@ mod tests {
     fn the_viewer_url_carries_the_id_verbatim() {
         // Leading zeros are load-bearing: they name the municipality.
         assert!(bag_viewer_url("0014100010903891").ends_with("=0014100010903891"));
+    }
+
+    #[test]
+    fn the_override_link_names_the_building_the_web_ui_reads() {
+        // `requestedPand` in the web UI's lib/overrides.ts reads `override`.
+        assert_eq!(
+            override_url("0014100010953806"),
+            "https://cartopolis.org/admin?override=0014100010953806"
+        );
+    }
+
+    #[test]
+    fn only_a_granted_account_may_replace_buildings() {
+        use cartopolis_core::permissions::Permission;
+        let mut who = crate::resources::AuthIdentity::default();
+        assert!(!who.may(Permission::BuildingOverride));
+        who.permissions = vec!["prim_create".into(), "building_override".into()];
+        assert!(who.may(Permission::BuildingOverride));
     }
 }

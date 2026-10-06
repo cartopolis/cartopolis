@@ -980,6 +980,10 @@ pub fn apply_network_snapshot(
             NetMessage::BlockedList { usernames } => {
                 auth.chat.blocked = usernames;
             }
+            NetMessage::Permissions { granted } => {
+                tracing::info!(?granted, "this account's permissions");
+                auth.identity.permissions = granted;
+            }
             NetMessage::ReportAck { accepted, .. } => {
                 auth.chat.notice = Some(crate::systems::chat::ChatNotice {
                     text: if accepted {

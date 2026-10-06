@@ -550,6 +550,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallDeclined { .. }
             | NetMessage::PrimSound { .. }
             | NetMessage::PrimMotion { .. }
+            | NetMessage::Permissions { .. }
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }

@@ -290,6 +290,13 @@ pub(crate) async fn broadcast_capacity(
     }
 }
 
+/// What an account may do, as its client is told it.
+fn permissions_message(perms: cartopolis_core::permissions::PermissionSet) -> NetMessage {
+    NetMessage::Permissions {
+        granted: perms.slugs().into_iter().map(str::to_string).collect(),
+    }
+}
+
 fn capacity_message(usage: &crate::state::CapacityUsage) -> NetMessage {
     NetMessage::WorldCapacity {
         prims_used: usage.prims_used,
@@ -471,11 +478,11 @@ impl RateGates {
 
 /// Everything one connection carries between messages, handed to every handler.
 ///
-/// The identity fields are fixed at the handshake. `actor.perms` in particular
-/// is read **once**, there, rather than per edit, which is the same freshness
-/// `disabled` already has: `Sessions` is keyed by token with no principal index,
-/// so revoking either takes effect on the next `ClientHello` (see `http`'s module
-/// note). One rule, not two.
+/// The identity fields are fixed at the handshake. `actor.perms` is read there
+/// and then kept current by `grants` rather than re-read per edit (`UpdatePrim`
+/// arrives at the gizmo's drag rate): an operator changing a role reaches every
+/// connected account through `roles::refresh_grants`, which updates this copy
+/// and tells the client (`NetMessage::Permissions`).
 struct ConnCtx<T> {
     framed: T,
     world: Arc<RwLock<SimWorld>>,
@@ -589,6 +596,8 @@ pub async fn handle_connection<T: FrameTransport>(
         .and_then(|p| p.ok())
         .unwrap_or_default();
     let principal_key = principal.to_string();
+    // Kept current for the rest of the session (`roles::refresh_grants`).
+    let mut grants = chat.watch_grants(&principal_key, perms);
 
     let avatar_id = {
         let mut w = world.write().await;
@@ -674,6 +683,7 @@ pub async fn handle_connection<T: FrameTransport>(
         push_endpoint: None,
     };
 
+    ctx.send(&permissions_message(perms)).await?;
     ctx.send(&NetMessage::BlockedList { usernames: blocked })
         .await?;
     // Contacts: this connection's own list, and "online" to the contacts who can
@@ -787,6 +797,17 @@ pub async fn handle_connection<T: FrameTransport>(
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // An operator changed what this account may do. Both halves at once:
+            // the gate this connection's edits are checked against, and the
+            // client's copy, which decides what it offers.
+            Ok(()) = grants.changed() => {
+                let now = *grants.borrow_and_update();
+                ctx.actor.perms = now;
+                if let Err(e) = ctx.send(&permissions_message(now)).await {
+                    outcome = Err(e);
+                    break;
                 }
             }
             chat_frame = chat_rx.recv() => {

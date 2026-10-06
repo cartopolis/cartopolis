@@ -30,6 +30,7 @@ use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use cartopolis_core::permissions::PermissionSet;
 use glam::Vec3;
 use tokio::sync::mpsc;
 
@@ -138,6 +139,11 @@ impl Client {
 #[derive(Default)]
 pub struct ChatHub {
     clients: Mutex<HashMap<u64, Client>>,
+    /// What each connected account may do, one watch per account that every
+    /// connection signed in as it subscribes to. Here because this hub is the
+    /// one thing both the connections and the HTTP routes that change roles
+    /// already share (`roles::refresh_grants`).
+    grants: Mutex<HashMap<String, tokio::sync::watch::Sender<PermissionSet>>>,
 }
 
 /// Lock the hub, surviving poisoning. `connected_ids` runs inside the tick loop,
@@ -216,6 +222,50 @@ impl ChatHub {
             if c.device == Some(device) {
                 c.enqueue(*id, Lane::Text, frame.clone());
             }
+        }
+    }
+
+    /// Subscribe a new connection to its account's permissions, recording
+    /// `now` (just read from the database) as the current value. Another
+    /// connection of the same account is told too if `now` differs from what it
+    /// holds — it is the newer reading.
+    pub fn watch_grants(
+        &self,
+        account: &str,
+        now: PermissionSet,
+    ) -> tokio::sync::watch::Receiver<PermissionSet> {
+        let mut grants = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tx = grants
+            .entry(account.to_string())
+            .or_insert_with(|| tokio::sync::watch::channel(now).0);
+        tx.send_if_modified(|held| std::mem::replace(held, now) != now);
+        tx.subscribe()
+    }
+
+    /// The accounts with a connection watching their permissions — the ones a
+    /// role change has to be re-read for. Drops accounts nobody watches any more.
+    pub fn granted_accounts(&self) -> Vec<String> {
+        let mut grants = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        grants.retain(|_, tx| tx.receiver_count() > 0);
+        grants.keys().cloned().collect()
+    }
+
+    /// Tell every connection of `account` what it may do now. Nothing is sent
+    /// when nothing changed, so republishing everyone after any role edit is
+    /// cheap.
+    pub fn publish_grants(&self, account: &str, now: PermissionSet) {
+        let grants = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(tx) = grants.get(account) {
+            tx.send_if_modified(|held| std::mem::replace(held, now) != now);
         }
     }
 

@@ -1478,8 +1478,9 @@ async fn grant(handle: &SimHandle, admin: &str, username: &str, role: &str, perm
     assert_eq!(status, 200, "{body}");
 }
 
-/// A role widens what one account may do, and it takes effect at the account's
-/// next sign-in — the freshness the wire has always had.
+/// A role widens what one account may do, and it reaches a connection that is
+/// already open: the client is told (`Permissions`) and the connection's own
+/// gate follows, with no reconnect.
 #[tokio::test]
 async fn a_role_lets_one_account_edit_anybodys_prims() {
     let (handle, _dir) = server().await;
@@ -1492,8 +1493,53 @@ async fn a_role_lets_one_account_edit_anybodys_prims() {
     assert_eq!(refused.map(|r| r.0), Some(403));
 
     grant(&handle, &admin, "meddler", "caretaker", &["prim_edit_any"]).await;
-    let mut meddler = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
+    let granted = recv_until(&mut meddler, "the new permissions", |m| match m {
+        NetMessage::Permissions { granted } if granted.iter().any(|p| p == "prim_edit_any") => {
+            Some(granted)
+        }
+        _ => None,
+    })
+    .await;
+    assert!(granted.iter().any(|p| p == "prim_create"), "{granted:?}");
     assert_eq!(try_rename(&mut meddler, lamp, "Tidied").await, None);
+
+    // And back: taking the role away closes the gate on the same connection.
+    let id = account_id(&handle, &admin, "meddler").await;
+    let (status, body) = api(
+        "PUT",
+        format!("{}/api/admin/accounts/{id}/roles", base(&handle)),
+        Some(admin.clone()),
+        Some(serde_json::json!({ "roles": [] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    recv_until(&mut meddler, "the narrowed permissions", |m| match m {
+        NetMessage::Permissions { granted } if !granted.iter().any(|p| p == "prim_edit_any") => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    let refused = try_rename(&mut meddler, lamp, "Mine again").await;
+    assert_eq!(refused.map(|r| r.0), Some(403));
+}
+
+/// A signed-in client is told what it may do, so it can offer only that.
+#[tokio::test]
+async fn a_client_is_told_its_permissions_at_sign_in() {
+    let (handle, _dir) = server().await;
+    let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let granted = recv_until(&mut walker, "permissions", |m| match m {
+        NetMessage::Permissions { granted } => Some(granted),
+        _ => None,
+    })
+    .await;
+    // The player role: building, but not replacing buildings.
+    assert!(granted.iter().any(|p| p == "prim_create"), "{granted:?}");
+    assert!(
+        !granted.iter().any(|p| p == "building_override"),
+        "{granted:?}"
+    );
 }
 
 /// Narrowing the player role narrows every account at once, and the refusal

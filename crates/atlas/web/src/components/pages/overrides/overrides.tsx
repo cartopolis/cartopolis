@@ -3,7 +3,15 @@ import {useEffect, useState} from 'preact/hooks'
 import type {BuildingOverride} from '@/types'
 
 import {$s} from '@/app'
-import {deleteOverride, loadOverrides, pandOf, saveOverride, uploadModel, validPand} from '@/lib/overrides'
+import {
+    deleteOverride,
+    loadOverrides,
+    pandOf,
+    requestedPand,
+    saveOverride,
+    uploadModel,
+    validPand,
+} from '@/lib/overrides'
 
 const COLLISION: {value: BuildingOverride['collision']; label: string}[] = [
     {label: 'Every part (each one a solid block)', value: 'parts'},
@@ -111,7 +119,7 @@ const OverrideCard = ({o}: {o: BuildingOverride}) => {
     const set = (patch: Partial<BuildingOverride['placement']>) => setPlacement({...placement, ...patch})
 
     return (
-        <li class="account role">
+        <li class="account role" id={`override-${o.pand}`}>
             <div class="account-main">
                 <span class="account-name">{o.name}</span>
                 <span class="tag">{o.source.kind === 'stadium' ? 'generated stadium' : 'uploaded model'}</span>
@@ -260,8 +268,9 @@ const OverrideCard = ({o}: {o: BuildingOverride}) => {
 }
 
 const NewOverride = () => {
-    const [open, setOpen] = useState(false)
-    const [text, setText] = useState('')
+    // Arriving from the viewer's building card opens the form on that building.
+    const [open, setOpen] = useState(() => requestedPand() !== '')
+    const [text, setText] = useState(requestedPand)
     const pand = pandOf(text)
     const exists = ($s.overrides ?? []).some((o) => o.pand === pand)
 
@@ -313,7 +322,13 @@ const NewOverride = () => {
  */
 export const Overrides = () => {
     useEffect(() => {
-        void loadOverrides()
+        void loadOverrides().then(() => {
+            // A building that already has an override: go to its card instead.
+            const pand = requestedPand()
+            if (pand) {
+                document.getElementById(`override-${pand}`)?.scrollIntoView({block: 'start'})
+            }
+        })
     }, [])
 
     return (

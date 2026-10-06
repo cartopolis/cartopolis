@@ -32,9 +32,26 @@ permissions through **roles** an operator edits in the web UI's Roles tab
 ## Freshness
 
 HTTP reads the account's permissions per request (`http::caller_permissions`),
-so taking a role away works on the next call. The game connection reads them
-**once at sign-in** (`net::handle_connection`), the same freshness `disabled`
-has always had: a change applies to the next sign-in in the game.
+so taking a role away works on the next call.
+
+The game connection reads them at sign-in. It keeps that copy rather than
+reading the database per edit, because `UpdatePrim` arrives at the gizmo's
+drag rate. Since protocol 35 the copy is **kept current**:
+- Every route that can change a permission ends in `roles::refresh_grants`:
+  - a role's grants;
+  - a role deleted;
+  - an account's roles;
+  - its admin or disabled flag.
+- `refresh_grants` re-reads every connected account. It doesn't work out which
+  accounts the edit touched, because an edit to Player touches all of them.
+- The answer goes through a per-account watch in `ChatHub`. Each connection of
+  that account updates its own gate and sends its client
+  `NetMessage::Permissions`, the granted slugs.
+
+The client uses that list (`AuthIdentity::may`) only to decide what to offer —
+for example, the building card's "Replace with a model" button, shown only with
+`building_override`. Disabling an account empties its permissions at once, but
+the session itself stays open until the next handshake.
 
 ## Two permissions are trust, not features
 

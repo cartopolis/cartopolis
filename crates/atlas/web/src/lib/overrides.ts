@@ -29,6 +29,17 @@ export function pandOf(text: string): string {
     return text.trim().replace(/^NL\.IMBAG\.Pand\./i, '')
 }
 
+/**
+ * The building the viewer's building card sent this page for
+ * (`/admin?override=<pand>`), or `''`. The card shows its "Replace with a
+ * model" button only to accounts that hold `building_override`, so arriving
+ * here with one is the start of that task.
+ */
+export function requestedPand(search = window.location.search): string {
+    const pand = pandOf(new URLSearchParams(search).get('override') ?? '')
+    return validPand(pand) ? pand : ''
+}
+
 export interface OverrideEdit {
     collision?: BuildingOverride['collision']
     interior?: BuildingOverride['interior']

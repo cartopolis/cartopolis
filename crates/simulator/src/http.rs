@@ -935,6 +935,9 @@ async fn update_account(
         with_db(&state, |c| auth::set_admin(c, &id, admin))?;
     }
 
+    if body.admin.is_some() || body.disabled.is_some() {
+        crate::roles::refresh_grants(&state);
+    }
     let account = with_db(&state, |c| auth::get_account(c, &id))?;
     tracing::info!(%caller, target = %id, "account updated");
     Ok(Json(json!({ "account": account })))
