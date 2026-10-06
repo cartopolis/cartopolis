@@ -314,7 +314,7 @@ a pavement beside an OSM park fill gets none, because that fill is not in the li
   `kademuur` — are dropped on purpose. They are retaining structures at the
   water's edge, and drawing them as walls would stand a metre of masonry along
   every canal in the city, on the side the map already draws as a bank.
-- `slagboom`, `fietsenrek`, `hectometerpaal` and the traffic-signal posts are
+- `slagboom`, `hectometerpaal` and the traffic-signal posts are
   real and surveyed, and there is no form here that is honestly them. The rule the
   furniture table and the tree scatter already follow — an unstyled thing beats a
   wrongly styled one — applies to a data source as much as to a tag.
