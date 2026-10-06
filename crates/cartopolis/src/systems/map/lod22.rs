@@ -584,7 +584,12 @@ type DatedCount = (usize, usize);
 /// dark rectangle at the foot of a wall, and "there are none" and "I am not
 /// looking at one" are indistinguishable from any camera. Chasing that difference
 /// with viewpoints is how an afternoon goes.
-type DoorCount = usize;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DoorCount {
+    doors: usize,
+    /// Buildings given a scaffold (`scaffolding`), counted for the same reason.
+    scaffolds: usize,
+}
 
 /// Each drawn shell's BAG id and what its geometry measures. See [`ShellMeasure`]
 /// and [`shell_stats`] — this is the only place in the client that knows how tall
@@ -798,7 +803,12 @@ impl Lod22Buildings {
 
     /// Doors drawn across the loaded cells. See [`DoorCount`].
     pub fn doors(&self) -> usize {
-        self.doors.values().sum()
+        self.doors.values().map(|d| d.doors).sum()
+    }
+
+    /// Buildings drawn with a scaffold across the loaded cells.
+    pub fn scaffolds(&self) -> usize {
+        self.doors.values().map(|d| d.scaffolds).sum()
     }
 
     /// Every material this lane draws with — the shells' and the imported models'.
@@ -1850,6 +1860,10 @@ fn build_lod22_from_body(
     // How many drawn buildings the BAG join reached, and how many were drawn.
     let mut dated = (0usize, 0usize);
     let mut drawn_doors = 0usize;
+    // Scaffolds wait for every outline in the cell, which is what tells a street
+    // wall from a party wall (`scaffolding`).
+    let mut outlines = crate::systems::scaffolding::Outlines::default();
+    let mut scaffolds_pending: Vec<crate::systems::scaffolding::Pending> = Vec::new();
     // How tall each drawn shell is, for `systems::interiors` to divide into
     // storeys. Measured here because this is the only lane that ever sees the
     // height: it arrives on the vertices, is baked into a merged mesh, and is
@@ -1921,6 +1935,8 @@ fn build_lod22_from_body(
             blng,
             fact.and_then(|f| f.year),
         );
+        // The register says it is being renovated or built (`scaffolding`).
+        let works = fact.is_some_and(|f| crate::systems::scaffolding::wants_scaffold(f.status));
         // Alpha is not opacity here — the material is opaque and `alpha_discard`
         // flattens it — it is the per-building night-occupancy scale the window
         // shader reads out of `base_color.a`, the same free channel
@@ -1942,14 +1958,19 @@ fn build_lod22_from_body(
         };
         let lit = crate::systems::building_windows::pack_facade(
             crate::systems::building_windows::Facade {
+                // A building with work going on at it is mostly empty after
+                // dark, whatever it is for.
                 occupancy: crate::systems::osm_buildings::night_lit_scale(
                     fact.map_or(0, |f| f.uses),
                     fact.map_or(0, |f| f.units),
-                ),
+                ) * if works { 0.4 } else { 1.0 },
                 shop: fact
                     .is_some_and(|f| f.uses & crate::systems::building_facts::uses::SHOP != 0),
                 era: crate::systems::building_windows::era(fact.and_then(|f| f.year)),
                 eave_m,
+                condition: fact.map_or(crate::systems::building_windows::Condition::Kept, |f| {
+                    crate::systems::building_windows::condition(f.status)
+                }),
             },
         );
         let wall = [wall[0], wall[1], wall[2], lit];
@@ -2014,6 +2035,7 @@ fn build_lod22_from_body(
         } else {
             crate::systems::collision::convex_hull_xz(world_xz.clone())
         };
+        outlines.push(&outline);
         // The walls as flat faces, each entrance placed on one of them
         // (`building_windows::WallFaces`). Done before the collider below so
         // the opening it leaves is where the door is drawn — within the snap
@@ -2138,6 +2160,12 @@ fn build_lod22_from_body(
                 );
             }
         }
+        if design.is_none() && detail == load_control::Detail::Near && works {
+            scaffolds_pending.push(crate::systems::scaffolding::Pending::new(
+                &faces.faces,
+                base,
+            ));
+        }
         if design.is_none() && detail == load_control::Detail::Near {
             for (face, _) in placed.iter().filter_map(|p| p.0.map(|i| (i, p.1))) {
                 let face = &faces.faces[face];
@@ -2221,6 +2249,19 @@ fn build_lod22_from_body(
             "lod22: skipped buildings standing in a covered tunnel's trench"
         );
     }
+    let mut drawn_scaffolds = 0usize;
+    for pending in &scaffolds_pending {
+        let mut any = false;
+        for i in crate::systems::scaffolding::choose(&pending.faces, &outlines) {
+            any |= crate::systems::scaffolding::push(
+                &mut buf,
+                &pending.faces[i],
+                pending.base,
+                Vec2::new(ox, oz),
+            );
+        }
+        drawn_scaffolds += usize::from(any);
+    }
     // …and now the models, element by element. They share the palette and the
     // ground datum with the shells and differ in three ways: the whole model is
     // one building rather than one element being one, only its wall-like elements
@@ -2301,16 +2342,17 @@ fn build_lod22_from_body(
             .into_iter()
             .map(|m| (m, true)),
     );
-    Ok(
-        (!pieces.is_empty()).then_some((
-            grid_cell,
-            pieces,
-            footprints,
-            dated,
-            drawn_doors,
-            heights,
-        )),
-    )
+    Ok((!pieces.is_empty()).then_some((
+        grid_cell,
+        pieces,
+        footprints,
+        dated,
+        DoorCount {
+            doors: drawn_doors,
+            scaffolds: drawn_scaffolds,
+        },
+        heights,
+    )))
 }
 
 /// What a building's shell measures: how tall it is, how much roof it has, and

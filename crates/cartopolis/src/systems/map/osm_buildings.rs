@@ -2250,6 +2250,12 @@ impl MeshData {
         self
     }
 
+    /// The vertices written so far, for tests that check where geometry went.
+    #[cfg(test)]
+    pub(crate) fn positions(&self) -> &[[f32; 3]] {
+        &self.positions
+    }
+
     /// Lift every vertex pushed from now on by `base` metres — the measured ground
     /// under the building about to be written (`systems::terrain`).
     ///

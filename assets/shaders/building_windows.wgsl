@@ -309,7 +309,10 @@ const DOOR_H: f32 = 2.1;
 /// pane in a designed facade (`lod22_facade`): all glass, no handle.
 fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
     if uv.y > -0.75 {
-        (*pbr_input).material.perceptual_roughness = 0.7;
+        // UV0.x = 1 is a scaffold's galvanised tube (`scaffolding`).
+        let metal = f32(uv.x > 0.5);
+        (*pbr_input).material.perceptual_roughness = mix(0.7, 0.45, metal);
+        (*pbr_input).material.metallic = 0.7 * metal;
         return;
     }
     let style = floor(uv.x / 10.0);
@@ -394,6 +397,50 @@ fn shop_through_glass(pm: vec2<f32>, hs: vec2<f32>, along: f32) -> vec3<f32> {
     let racks = 0.7 + 0.6 * value_noise(vec2<f32>(along / 0.55, 3.0));
     let lights = mix(0.9, 1.5, smoothstep(0.4, 0.95, pm.y / max(hs.y, 0.1)));
     return vec3<f32>(0.1, 0.09, 0.075) * racks * lights;
+}
+
+// ─── Neglect ─────────────────────────────────────────────────────────────────
+//
+// A building the register lists as out of use, or as waiting for demolition
+// (`building_windows::Condition`, carried in the occupancy's unused top). It is
+// dark at night, its ground floor is boarded, some of the windows above it too,
+// a shop's window is whitewashed from the inside the way an empty shop in the
+// Netherlands says so, and the walls carry the grime nobody is washing off. The
+// register's word only: no other building is aged by this.
+
+/// Weathered plywood over an opening, in pane-local metres: 1.22 m sheets with
+/// a darker seam between them and a grain running up them.
+fn boarded(pm: vec2<f32>, hs: vec2<f32>, r: f32) -> vec3<f32> {
+    // Fresh boards are yellow-brown; a year out in the rain greys them.
+    let age = fract(r * 5.3);
+    let ply = mix(vec3<f32>(0.32, 0.22, 0.11), vec3<f32>(0.19, 0.18, 0.16), age);
+    let grain = 0.9 + 0.1 * value_noise(vec2<f32>(pm.x / 0.04, pm.y / 0.9));
+    let seam_y = abs(fract((pm.y + hs.y) / 1.22 + 0.5) - 0.5) * 1.22;
+    let seam = mix(0.6, 1.0, smoothstep(0.004, 0.012, seam_y));
+    return ply * grain * seam;
+}
+
+/// What boarded windows average to at range.
+const BOARD_MEAN: vec3<f32> = vec3<f32>(0.24, 0.19, 0.13);
+
+/// A shop window whitewashed from the inside: swirls of chalk on the glass.
+fn whitewashed(pm: vec2<f32>, along: f32) -> vec3<f32> {
+    let swirl = value_noise(vec2<f32>(along / 0.3, pm.y / 0.3))
+        + 0.5 * value_noise(vec2<f32>(along / 0.11, pm.y / 0.11));
+    return mix(vec3<f32>(0.6, 0.6, 0.56), vec3<f32>(0.4, 0.4, 0.37), swirl * 0.5);
+}
+
+/// A neglected wall's grime: damp rising from the foot in a ragged line, and
+/// dirt streaked down it by the rain. `neglect` is 1 vacant, 2 condemned;
+/// `fade` takes the streaks out below a pixel.
+fn grimed(c: vec3<f32>, u: f32, v: f32, neglect: f32, fade: f32) -> vec3<f32> {
+    let rise = (0.5 + 0.5 * value_noise(vec2<f32>(u / 1.3, 0.5))) * mix(0.8, 1.5, neglect - 1.0);
+    let damp = 1.0 - smoothstep(rise * 0.5, rise, v);
+    var out = mix(c, c * vec3<f32>(0.5, 0.56, 0.46), damp * 0.75);
+    let streak = smoothstep(0.55, 0.9, value_noise(vec2<f32>(u / 0.45, v / 7.0)));
+    out = out * (1.0 - (0.2 + 0.1 * neglect) * streak * fade);
+    // …and the whole wall a little duller than a kept one.
+    return out * mix(0.92, 0.85, neglect - 1.0);
 }
 
 /// How far to tilt the normal on a window frame's bevel, as (along the wall,
@@ -578,9 +625,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // occupancy, a shop, its era and its eaves (`building_windows::Facade`
     // packs it; the tests there pin the layout). Alpha 1.0 is code 0, which is
     // "nothing known", and every branch below falls back to the old look on it.
+    // The 1/32 is the interpolation margin `building_windows::Facade` describes.
     let packed = pbr_input.material.base_color.a;
-    let code_f = max(floor(packed / 4.0), 0.0);
-    let occupancy_raw = packed - 4.0 * code_f;
+    let code_f = max(floor((packed + 1.0 / 32.0) / 4.0), 0.0);
+    let occupancy_packed = max(packed - 4.0 * code_f, 0.0);
+    // 3 is vacant and 3.5 condemned, past anything a kept building is lit by.
+    let neglect = select(0.0, select(1.0, 2.0, occupancy_packed > 3.25), occupancy_packed > 2.75);
+    let neglected = neglect > 0.5;
+    let occupancy_raw = select(occupancy_packed, 0.0, neglected);
     let code = u32(code_f);
     let eave = f32(code >> 4u) * 0.2;
     let era = (code >> 1u) & 7u;
@@ -670,6 +722,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             base_and_cornice(pbr_input.material.base_color.rgb, v, eave, era, gutter_px * GUTTER_M),
             pbr_input.material.base_color.a,
         );
+        if neglected {
+            pbr_input.material.base_color = vec4<f32>(
+                grimed(pbr_input.material.base_color.rgb, along, v, neglect, 1.0 - clamp(px * 0.8, 0.0, 1.0)),
+                pbr_input.material.base_color.a,
+            );
+        }
 
         // The pane, sized by the building's era and centred in its cell. Written
         // as a half-width test either side of the middle so the window keeps its
@@ -787,11 +845,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // glass, with what hangs in the window — curtains, a blind — or, in a
         // shop, the lit shop. The sky it reflects is the lighting's job
         // (`GLASS_REFLECTANCE`), and it only shows over something this dark.
-        let interior = select(
+        var interior = select(
             room_through_glass(pm, hs, r),
             shop_through_glass(pm, hs, along),
             shop_front,
         ) * look.z;
+        // A neglected building: an empty room behind the glass, a whitewashed
+        // shop window, and boards over the ground floor and over some of the
+        // windows above it — more of them once it is waiting to come down.
+        let boards = neglected && !shop_front
+            && (on_ground || fract(r * 17.3) < select(0.2, 0.55, neglect > 1.5));
+        let board_k = f32(boards);
+        if neglected {
+            interior = select(GLASS_BASE * 0.7, whitewashed(pm, along), shop_front) * look.z;
+        }
         var wall_col = pbr_input.material.base_color.rgb;
         // Sill and lintel sit on the wall around the opening.
         wall_col = mix(wall_col, SILL_COLOUR, look.w * detail);
@@ -799,9 +866,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var glazed = mix(interior, frame_col, look.y);
         // At range the pane is only its coverage, the way it always was.
         glazed = mix(glazed, mix(GLASS_BASE, plain * glow.z, 0.3), blur);
+        // Boards cover the frame and the glass alike.
+        glazed = mix(glazed, mix(boarded(pm, hs, r), BOARD_MEAN, blur), board_k);
+        // The glass's share of the opening: none where it is boarded.
+        let glass = pane * (1.0 - board_k);
         // A frame's inner edge is bevelled down to the glass: tilt the normal
         // there so it catches the light like a moulding rather than a stripe.
-        let bevel = frame_bevel(pm, hs, era, shop_front) * detail * pane;
+        let bevel = frame_bevel(pm, hs, era, shop_front) * detail * glass;
         let t3 = vec3<f32>(tangent.x, 0.0, tangent.y);
         pbr_input.N = normalize(pbr_input.N + t3 * bevel.x + vec3<f32>(0.0, bevel.y, 0.0));
         pbr_input.material.base_color = vec4<f32>(
@@ -862,12 +933,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.material.perceptual_roughness = mix(
             pbr_input.material.perceptual_roughness,
             GLASS_ROUGHNESS,
-            pane,
+            glass,
         );
         pbr_input.material.reflectance = mix(
             pbr_input.material.reflectance,
             vec3<f32>(GLASS_REFLECTANCE),
-            pane,
+            glass,
         );
     } else if n.y > 0.0 && !door_part {
         var tone = 1.0;

@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_facts.rs, bag_attributes.py, 3dbag_lod22.py, bag.ts, lod22.ts, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
-updated: 2026-10-05
+triggers: [building_facts.rs, scaffolding.rs, scaffold, vacant, bag_attributes.py, 3dbag_lod22.py, bag.ts, lod22.ts, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
+updated: 2026-10-06
 ---
 
 # The building id, and what the Dutch registers hang off it
@@ -144,6 +144,26 @@ ask at any time.
   the BAG is refreshed far more often, so this is the one case where the two
   disagree and the register is certainly right. A permit is not a demolition and
   an empty building is still a building; nothing weaker qualifies.
+- **Work in progress and neglect are drawn from the status** (2026-10-06,
+  `systems::scaffolding`, `building_windows::Condition`). `Renovation` and
+  `UnderConstruction` get a scaffold — tubes and boards built into the cell mesh
+  on a `Near` cell, on the walls carrying a door, or the longest outside wall when
+  the register places none — and their windows mostly dark at night. `OutOfUse` and
+  `DemolitionPermit` get a dark building, a boarded ground floor (more boards
+  above it once demolition is permitted), a whitewashed shop window and grime on
+  the walls. Measured over Groningen's four central z14 cells on 2026-10-06: 31
+  renovations, 56 under construction, 2 demolition permits and **no** out-of-use
+  building at all, so the scaffolds are what anybody will see. Three things are
+  load-bearing. **Party walls are found by measurement**: a pand's solid includes
+  the walls it shares, so a wall only takes a scaffold if a step 1.2 m off it lands
+  outside every outline in the cell — a building across a cell edge is not seen,
+  which can put a scaffold against a neighbour there. **The condition costs no
+  bit**: the shader never lit past occupancy 2 and `night_lit_scale` tops out
+  under 1.5, so occupancy 3 and 3.5 say vacant and condemned and the alpha does not
+  grow; the decode adds 1/32 before its floor so an inexactly interpolated 0 cannot
+  borrow from the code. **The scaffold is "not a wall" to the shader** because it
+  carries the doorway parts' negative UV0.y; UV0.x = 1 on those parts asks for
+  metal. `building_scaffolds` in `--dump-state` counts the buildings given one.
 - **The "where am I" readout** (`interact::bag_address` → the status HUD).
   `InteractState::address` had been written every frame since the interact layer
   was built and drawn nowhere; it is drawn now.
@@ -155,7 +175,8 @@ request is made, and a second pass over the WFS to add a column is not.
 
 Unconsumed today: per-unit floor areas beyond the readout, `units` beyond its
 small lift to the window lighting, postcodes beyond the readout, and every
-`BuildingStatus` other than the two that suppress a building.
+`BuildingStatus` other than the six above (the two that suppress a building, the
+two that scaffold one and the two that board one up).
 
 Not built at all, in rough order of value:
 

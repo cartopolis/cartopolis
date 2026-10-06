@@ -116,6 +116,15 @@ pub const BLOCK_PERIOD: f32 = 16.0;
 /// exact in an `f32`'s 24 bits. **Code 0 is "nothing known"**, and `1.0` —
 /// what every building off the BAG, and the OSM lane, has always carried —
 /// decodes to occupancy 1 and code 0, which is exactly the old look.
+///
+/// The [`Condition`] rides in the occupancy's unused top: the shader never lit
+/// past an occupancy of 2 and `night_lit_scale` tops out under 1.5, so a kept
+/// building's occupancy is clamped to 2.5 and 3 and 3.5 say "vacant" and
+/// "condemned" — no new bit, and no larger alpha. Both sit a quarter clear of
+/// their neighbours, so the GPU's inexact interpolation of three equal values
+/// cannot move one into the other. The decode adds 1/32 before taking the
+/// floor for the same reason: an occupancy of exactly 0 interpolated a hair
+/// low would otherwise borrow from the code and read as a different building.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Facade {
     /// `osm_buildings::night_lit_scale`.
@@ -126,6 +135,34 @@ pub struct Facade {
     pub era: u8,
     /// Height of its eaves above its own base, when the shell was measured.
     pub eave_m: Option<f32>,
+    /// Whether anybody is looking after it ([`condition`]).
+    pub condition: Condition,
+}
+
+/// What the register says about a building's upkeep, as the facade shows it.
+///
+/// A vacant building is dark at night, its ground floor boarded and its walls
+/// grimier; a condemned one (a demolition permit granted) more so. Both are the
+/// register's word, never a guess from anything else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Condition {
+    #[default]
+    Kept,
+    /// *Buiten gebruik*: standing, and out of use.
+    Vacant,
+    /// *Sloopvergunning verleend*: waiting to come down.
+    Condemned,
+}
+
+/// The facade's [`Condition`] for a register status.
+#[must_use]
+pub fn condition(status: crate::systems::building_facts::BuildingStatus) -> Condition {
+    use crate::systems::building_facts::BuildingStatus as S;
+    match status {
+        S::OutOfUse => Condition::Vacant,
+        S::DemolitionPermit => Condition::Condemned,
+        _ => Condition::Kept,
+    }
 }
 
 /// The shader's window style for a construction year: 1 before 1920 (tall,
@@ -144,11 +181,18 @@ pub fn era(year: Option<u16>) -> u8 {
 
 const EAVE_STEP_M: f32 = 0.2;
 const EAVE_MAX_STEPS: u32 = 511;
+/// The occupancy values that carry a [`Condition`]. See [`Facade`].
+const VACANT_OCCUPANCY: f32 = 3.0;
+const CONDEMNED_OCCUPANCY: f32 = 3.5;
 
 /// See [`Facade`].
 #[must_use]
 pub fn pack_facade(f: Facade) -> f32 {
-    let occupancy = (f.occupancy.clamp(0.0, 3.9375) * 16.0).round() / 16.0;
+    let occupancy = match f.condition {
+        Condition::Kept => (f.occupancy.clamp(0.0, 2.5) * 16.0).round() / 16.0,
+        Condition::Vacant => VACANT_OCCUPANCY,
+        Condition::Condemned => CONDEMNED_OCCUPANCY,
+    };
     let eave = f.eave_m.map_or(0, |e| {
         ((e / EAVE_STEP_M).round().max(1.0) as u32).min(EAVE_MAX_STEPS)
     });
@@ -159,15 +203,23 @@ pub fn pack_facade(f: Facade) -> f32 {
 /// The shader's decode, mirrored for the tests that pin the two together.
 #[cfg(test)]
 fn unpack_facade(a: f32) -> Facade {
-    let code = (a / 4.0).floor();
-    let occupancy = a - 4.0 * code;
+    let code = ((a + 1.0 / 32.0) / 4.0).floor();
+    let raw = (a - 4.0 * code).max(0.0);
     let code = code as u32;
     let eave = code >> 4;
+    let (occupancy, condition) = if raw > 3.25 {
+        (0.0, Condition::Condemned)
+    } else if raw > 2.75 {
+        (0.0, Condition::Vacant)
+    } else {
+        (raw, Condition::Kept)
+    };
     Facade {
         occupancy,
         shop: code & 1 == 1,
         era: ((code >> 1) & 7) as u8,
         eave_m: (eave > 0).then(|| eave as f32 * EAVE_STEP_M),
+        condition,
     }
 }
 
@@ -204,6 +256,8 @@ pub struct WallFace {
     pub len: f32,
     /// Lowest point of the face above the building's base.
     pub low: f32,
+    /// Highest point of the face above the building's base.
+    pub high: f32,
     /// Where along the face its door stands, snapped to [`DOOR_STEP_M`].
     pub door: Option<f32>,
     bay: f32,
@@ -299,6 +353,7 @@ impl WallFaces {
                     u0: f32::MAX,
                     len: f32::MIN,
                     low: f32::MAX,
+                    high: f32::MIN,
                     door: None,
                     bay: bay_target,
                 });
@@ -312,6 +367,7 @@ impl WallFaces {
                 face.u0 = face.u0.min(u);
                 face.len = face.len.max(u);
                 face.low = face.low.min(p.y);
+                face.high = face.high.max(p.y);
             }
             of_triangle.push(Some(idx));
         }
@@ -593,6 +649,47 @@ mod tests {
         assert_eq!(super::unpack_facade(1.0), none);
     }
 
+    /// A vacant or condemned building survives the alpha channel on the largest
+    /// code there is, and so does an occupancy of 0 a hair under its packing —
+    /// the GPU interpolates three equal values inexactly.
+    #[test]
+    fn a_condition_survives_the_alpha_channel() {
+        use super::Condition;
+        for condition in [Condition::Kept, Condition::Vacant, Condition::Condemned] {
+            for occupancy in [0.0, 1.4375] {
+                let f = super::Facade {
+                    occupancy,
+                    shop: true,
+                    era: 4,
+                    eave_m: Some(102.2),
+                    condition,
+                };
+                let a = super::pack_facade(f);
+                for wobble in [-0.02, 0.0, 0.02] {
+                    let back = super::unpack_facade(a + wobble);
+                    assert_eq!(back.condition, condition, "{f:?} at {wobble}");
+                    assert_eq!((back.shop, back.era), (true, 4), "{f:?} at {wobble}");
+                    if condition == Condition::Kept {
+                        assert!((back.occupancy - occupancy).abs() < 0.05, "{back:?}");
+                    } else {
+                        assert_eq!(back.occupancy, 0.0, "a vacant building is dark");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_registers_word_makes_a_building_vacant() {
+        use super::{condition, Condition};
+        use crate::systems::building_facts::BuildingStatus as S;
+        assert_eq!(condition(S::OutOfUse), Condition::Vacant);
+        assert_eq!(condition(S::DemolitionPermit), Condition::Condemned);
+        for s in [S::InUse, S::Renovation, S::UnderConstruction, S::Unknown] {
+            assert_eq!(condition(s), Condition::Kept);
+        }
+    }
+
     #[test]
     fn a_facade_survives_the_alpha_channel() {
         for f in [
@@ -601,12 +698,14 @@ mod tests {
                 shop: true,
                 era: 1,
                 eave_m: Some(9.4),
+                condition: super::Condition::Kept,
             },
             super::Facade {
                 occupancy: 0.25,
                 shop: false,
                 era: 4,
                 eave_m: Some(102.2),
+                condition: super::Condition::Kept,
             },
         ] {
             let back = super::unpack_facade(super::pack_facade(f));

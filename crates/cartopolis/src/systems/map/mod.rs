@@ -56,6 +56,8 @@ pub mod particles;
 pub mod placeholder_models;
 pub mod prim_sound;
 pub mod roof_colours;
+// Scaffolding on the buildings the register says are being worked on.
+pub mod scaffolding;
 // The clip player is a thread of its own, which the browser build does not have.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod prim_video;
