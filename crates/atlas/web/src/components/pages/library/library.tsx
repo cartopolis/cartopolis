@@ -494,6 +494,8 @@ const StreetObjects = () => {
     // Only what has actually been published: a placeholder pointing at a model
     // nobody can fetch is a street with nothing in it.
     const usable = $s.library.filter((entry) => entry.visibility !== 'hidden')
+    // The one row whose upload form is open, if any.
+    const [uploadingFor, setUploadingFor] = useState('')
 
     return (
         <>
@@ -533,7 +535,16 @@ const StreetObjects = () => {
                                         </option>
                                     ))}
                                 </select>
+                                <button
+                                    onClick={() => setUploadingFor(uploadingFor === kind ? '' : kind)}
+                                    type="button"
+                                >
+                                    {uploadingFor === kind ? 'Cancel' : 'Upload…'}
+                                </button>
                             </div>
+                            {uploadingFor === kind && (
+                                <StreetUpload kind={kind} onDone={() => setUploadingFor('')} />
+                            )}
                             {current && (
                                 <div class="account-meta">
                                     {/*
@@ -589,5 +600,82 @@ const StreetObjects = () => {
                 })}
             </ul>
         </>
+    )
+}
+
+/** Where a street object's model is filed in the library. */
+const STREET_CATEGORY: Record<string, string> = {
+    bicycle: 'vehicles',
+    boat: 'vehicles',
+    car: 'vehicles',
+    houseboat: 'vehicles',
+    person: 'other',
+    yacht: 'vehicles',
+}
+
+/**
+ * Upload a model straight into one street object: it is stored, shared and set
+ * as that object's model in one go, at scale 1 and no turn.
+ *
+ * It is always shared, because a street object is drawn on every client and a
+ * model nobody else can fetch is a street with nothing in it — which is also why
+ * "something else" is not offered as a licence here: that one can never be
+ * shared. The general form above still takes those.
+ */
+const StreetUpload = ({kind, onDone}: {kind: string; onDone: () => void}) => {
+    const [file, setFile] = useState<File | null>(null)
+    const [licence, setLicence] = useState('own')
+    const [attribution, setAttribution] = useState('')
+    const [busy, setBusy] = useState(false)
+    const label = PLACEHOLDER_LABELS[kind] ?? kind
+
+    return (
+        <div class="account-meta">
+            <input
+                accept={UPLOAD_ACCEPT}
+                onChange={(e) => setFile((e.target as HTMLInputElement).files?.[0] ?? null)}
+                type="file"
+            />
+            <select
+                onChange={(e) => setLicence((e.target as HTMLSelectElement).value)}
+                value={licence}
+            >
+                <option value="own">I made it</option>
+                <option value="cc0">CC0 — public domain</option>
+                <option value="cc-by">CC BY — credit required</option>
+            </select>
+            {licence === 'cc-by' && (
+                <input
+                    onInput={(e) => setAttribution((e.target as HTMLInputElement).value)}
+                    placeholder="Credit line"
+                    type="text"
+                    value={attribution}
+                />
+            )}
+            <button
+                disabled={busy || !file || (licence === 'cc-by' && attribution.trim() === '')}
+                onClick={() => {
+                    if (!file) return
+                    setBusy(true)
+                    void uploadModel(file, {
+                        attribution,
+                        category: STREET_CATEGORY[kind] ?? 'furniture',
+                        licence,
+                        name: modelNameFromFile(file.name),
+                        share: true,
+                    })
+                        .then((asset) =>
+                            asset ? setPlaceholder(kind, {asset, scale: 1, yaw_offset: 0}) : false,
+                        )
+                        .then((ok) => {
+                            setBusy(false)
+                            if (ok) onDone()
+                        })
+                }}
+                type="button"
+            >
+                {busy ? 'Uploading…' : `Use for ${label.toLowerCase()}`}
+            </button>
+        </div>
     )
 }

@@ -182,6 +182,8 @@ export const PLACEHOLDER_KINDS = [
     'traffic-light',
     'yacht',
     'houseboat',
+    'bike-rack',
+    'toilet',
 ] as const
 
 /** What each slug is, in the words a person would use for it. */
@@ -204,6 +206,8 @@ export const PLACEHOLDER_LABELS: Record<string, string> = {
     'traffic-light': 'Traffic light',
     yacht: 'Yacht in a marina',
     houseboat: 'Houseboat',
+    'bike-rack': 'Bike rack',
+    toilet: 'Public toilet',
 }
 
 /** What this server draws its street objects with, or nothing for the default. */
@@ -290,6 +294,8 @@ export function modelNameFromFile(fileName: string): string {
 /**
  * Upload a model from here, and publish it in the same breath.
  *
+ * Answers the stored file's hash, or `null` when it failed (already reported).
+ *
  * The same route a player's client posts to (`POST /api/assets`), not an admin
  * one — uploading is an ordinary account's act and an operator is an ordinary
  * account with a flag. What this surface adds is that a curator is usually
@@ -303,7 +309,7 @@ export function modelNameFromFile(fileName: string): string {
 export async function uploadModel(
     file: File,
     meta: {attribution: string; category: string; licence: string; name: string; share: boolean},
-): Promise<boolean> {
+): Promise<null | string> {
     const query = new URLSearchParams({
         attribution: meta.attribution,
         licence: meta.licence,
@@ -311,7 +317,7 @@ export async function uploadModel(
     })
     try {
         const bytes = await file.arrayBuffer()
-        const item = await api.upload<{id: number}>(
+        const item = await api.upload<{asset: string; id: number}>(
             `/api/assets?${query.toString()}`,
             bytes,
             // The server decides the form from the bytes (`assets::repack_gltf`),
@@ -330,10 +336,10 @@ export async function uploadModel(
         await loadLibrary()
         await loadLibraryAssets()
         notifier.success(`Uploaded ${meta.name || file.name}`)
-        return true
+        return item.asset
     } catch (e) {
         report(e, 'Could not upload that model')
-        return false
+        return null
     }
 }
 
