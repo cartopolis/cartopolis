@@ -99,3 +99,12 @@ svg.i { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.
 .chatline { font-size:14px; color:var(--text); }
 .chatline b { color:var(--accent); font-weight:400; margin-right:6px; }
 .solid { background:rgba(23,22,21,.97); }
+/* a chat's point on its World view, as place_pins::point_pin paints it */
+.ppin { position:absolute; display:flex; flex-direction:column; align-items:center; transform:translate(-50%,-100%); z-index:5; }
+.ppin .head { display:flex; align-items:center; gap:7px; height:30px; padding:0 10px 0 4px; border-radius:14px; background:var(--cream); color:var(--ink); font-size:12.5px; box-shadow:0 6px 16px rgba(0,0,0,.35); white-space:nowrap; }
+.ppin .n { width:22px; height:22px; border-radius:50%; background:var(--ink); color:var(--cream); font-size:12px; display:grid; place-items:center; }
+.ppin .stem { width:2px; height:16px; background:var(--cream); }
+.ppin .dot { width:8px; height:8px; border-radius:50%; background:var(--cream); border:2px solid var(--ink); box-sizing:content-box; }
+.ppin.sm .head { height:22px; font-size:11px; padding:0 8px 0 3px; gap:5px; border-radius:11px; }
+.ppin.sm .n { width:16px; height:16px; font-size:10px; }
+.ppin.sm .stem { height:10px; }
