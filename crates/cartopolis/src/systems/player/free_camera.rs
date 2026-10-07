@@ -1395,1135 +1395,37 @@ pub fn camera_controls(
         camera_state.pan_offset = None;
     }
 
-    match camera_state.mode {
-        CameraMode::Avatar => {
-            // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
-            // Plus the seat: sitting slides the *model* off the avatar's own
-            // position by up to a metre (`AvatarState::seat_shift`), and a camera
-            // that kept framing the position would spend the sit looking at the
-            // pavement beside the bench.
-            let avatar_pos = avatar_state.display_position + avatar_state.seat_shift();
-
-            // Driver mode owns the rig (`systems::driver`): distance, tilt and
-            // azimuth are written from the map orientation every frame, so the
-            // wheel, the drag *and* the third-person zoom clamp are all skipped —
-            // the clamp tops out at 25 m, a quarter of the chase distance a
-            // navigation view needs, and would drag it back in every frame.
-            let locked = camera_state.drive_locked;
-            if locked {
-                // Driver mode owns the rig and draws its own marker in place of
-                // the avatar; there is no first person inside it, and leaving the
-                // flag set would hide the avatar behind the arrow for the rest of
-                // the drive.
-                camera_state.first_person = false;
-            } else {
-                // Proportional wheel zoom by notch *sign* — robust to line- vs
-                // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
-                // others; scaling it directly made one notch jump tens of metres). Sane
-                // range for a ~1.8 m avatar; scroll in/out from the default.
-                //
-                // Accumulated as a *wish* rather than written straight to
-                // `distance`, because the interesting part of this gesture is what
-                // it asks for past the end of the range: the clamp used to absorb
-                // that silently, and it is now the signal that the user wants to
-                // come closer than third person can.
-                let mut wish = camera_state.distance;
-                for event in mouse_wheel_events.read() {
-                    if event.y != 0.0 {
-                        let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
-                        wish *= factor;
-                    }
-                }
-                // Pinch is the wheel's continuous twin: spreading the fingers
-                // pulls the avatar closer, exactly as scrolling in does.
-                if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
-                    wish /= touch.pinch;
-                }
-                // …and the on-screen pair is the wheel's *held* twin, for the
-                // hand that only has one thumb free (`systems::map_osd`).
-                wish *= osd_zoom_factor(osd.zoom, delta_time);
-
-                // Asking to get closer than the closest third-person framing is
-                // the gesture: step inside the avatar rather than absorb the last
-                // part of it into the clamp. One notch back out leaves again.
-                let was_first_person = camera_state.first_person;
-                camera_state.first_person =
-                    first_person_after_zoom(camera_state.first_person, camera_state.distance, wish);
-                if was_first_person && !camera_state.first_person {
-                    // First person looks much further up and down than a boom can
-                    // be swung (`FIRST_PERSON_PITCH_MAX`), so a tilt carried out
-                    // of it unchanged would leave the third-person camera parked
-                    // outside its own range — hanging almost directly overhead —
-                    // until the next drag happened to clamp it. Bring it back on
-                    // the frame the boom returns.
-                    camera_state.pitch = camera_state
-                        .pitch
-                        .clamp(-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5);
-                }
-                camera_state.distance = wish.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
-            }
-            let first_person = camera_state.first_person;
-            // The phone aims the view only from inside the head, and only while
-            // the locate button is lit — `locate::track_device_pose` decides that
-            // and writes the rotation; this is its consumer.
-            let device_rotation = if first_person {
-                camera_state.device_rotation
-            } else {
-                None
-            };
-
-            // How far the view may tilt. First person looks nearly all the way up
-            // and down; the third-person clamp stops short of both because the
-            // boom would swing under the pavement or overhead.
-            let (pitch_min, pitch_max) = if first_person {
-                (-FIRST_PERSON_PITCH_MAX, FIRST_PERSON_PITCH_MAX)
-            } else {
-                (-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5)
-            };
-
-            // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
-            //
-            // …and suppressed while the device is aiming the camera. Everywhere
-            // else a drag is allowed to fight the compass and be eased back (the
-            // rotate-follow rig's documented behaviour), but here the view *is*
-            // the phone's own attitude: a drag could only push the picture off the
-            // thing the phone is pointed at, and the sensor would drag it back the
-            // same frame. Zooming out is the way to take the camera back.
-            let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
-                || keyboard_input.pressed(KeyCode::ControlRight);
-            if locked
-                || device_rotation.is_some()
-                || gizmo_state.active_axis.is_some()
-                || egui_manager.ctx.egui_wants_pointer_input()
-                || ctrl
-            {
-                camera_state.pan_offset = None;
-                cursor_moved_events.clear();
-            } else if mouse_input.pressed(MouseButton::Left) {
-                for event in cursor_moved_events.read() {
-                    if let Some(last_pos) = camera_state.pan_offset {
-                        let delta = event.position - last_pos;
-                        if delta != Vec2::ZERO {
-                            // Manually orbiting drops follow-and-rotate — the phone-map
-                            // convention: dragging the map yourself stops it following
-                            // your heading.
-                            camera_state.follow_rotate = false;
-                        }
-                        camera_state.azimuth -= delta.x * 0.005;
-                        camera_state.pitch -= delta.y * 0.005;
-                        camera_state.pitch = camera_state.pitch.clamp(pitch_min, pitch_max);
-                    }
-                    camera_state.pan_offset = Some(event.position);
-                }
-            } else if mouse_input.just_released(MouseButton::Left) {
-                camera_state.pan_offset = None;
-            }
-
-            // Touch: one finger orbits (the left-drag above), two fingers twist
-            // the azimuth. Nearly the mouse's gate — a finger egui has claimed
-            // holds a pointer button down, so `egui_wants_pointer_input()`
-            // answers for it too — but routed through `ui_blocked`, because that
-            // one boolean cannot answer for two fingers at once: the whole point
-            // of the on-screen stick is that you hold it *while* turning the
-            // view, and while it is held egui wants the pointer for as long as
-            // the thumb rests there (`systems::touch`).
-            if !locked
-                && device_rotation.is_none()
-                && gizmo_state.active_axis.is_none()
-                && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
-            {
-                if touch.drag != Vec2::ZERO {
-                    camera_state.follow_rotate = false;
-                    camera_state.azimuth -= touch.drag.x * 0.005;
-                    camera_state.pitch =
-                        (camera_state.pitch - touch.drag.y * 0.005).clamp(pitch_min, pitch_max);
-                }
-                if touch.twist != 0.0 {
-                    camera_state.follow_rotate = false;
-                    camera_state.azimuth -= touch.twist;
-                }
-            }
-
-            // Follow-and-rotate (the GPS button, pressed in this mode): glue the camera behind the
-            // avatar's heading so it swings around as the avatar turns. The avatar's
-            // render yaw `face` is authoritative in every run mode (the movement
-            // systems write `Quat::from_rotation_y(face)` each frame), so read it off
-            // the avatar transform rather than the mode-specific yaw fields. The camera
-            // sits directly behind when `azimuth ≡ face + π` (its look direction then
-            // equals the avatar's facing). Ease along the shortest arc so a turn glides.
-            if camera_state.follow_rotate && device_rotation.is_none() {
-                // The compass wins when there is one (`systems::locate` writes it
-                // while the phone is being tracked); otherwise the avatar's own
-                // facing, as before. Same convention, so this is a choice of
-                // source and not a second code path.
-                //
-                // Skipped outright while the device is aiming the camera: there
-                // the phone's whole attitude is the answer, and easing the azimuth
-                // toward a bearing derived from the same sensor would be two rigs
-                // turning one view.
-                let heading = camera_state.follow_heading;
-                if let Ok((_, avatar_tf)) = avatar_cells.single() {
-                    let face =
-                        heading.unwrap_or_else(|| avatar_tf.rotation.to_euler(EulerRot::YXZ).0);
-                    let target = face + std::f32::consts::PI;
-                    let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
-                    if d > std::f32::consts::PI {
-                        d -= std::f32::consts::TAU;
-                    }
-                    // The compass gets the faster of the two rates — see
-                    // [`COMPASS_ROTATE_RATE`] for why the two targets deserve
-                    // different treatment rather than one shared number.
-                    let rate = if heading.is_some() {
-                        COMPASS_ROTATE_RATE
-                    } else {
-                        FOLLOW_ROTATE_RATE
-                    };
-                    let a = 1.0 - (-rate * delta_time).exp();
-                    // Snap the last sliver so azimuth (and thus the whole follow rig)
-                    // actually settles when standing still, instead of creeping toward
-                    // the target forever and pinning the floating-origin propagation.
-                    camera_state.azimuth += if d.abs() < 1e-3 { d } else { d * a };
-                }
-            }
-
-            // The device aims the camera: read the rig's own angles back out of
-            // its rotation, so everything downstream of them — the avatar's
-            // facing, and the third-person view a zoom-out returns to — stays in
-            // step with where the phone is pointed. The rotation itself is what
-            // the camera is given below; these are derived from it and never the
-            // other way round.
-            if let Some(rot) = device_rotation {
-                let forward = rot * Vec3::NEG_Z;
-                let flat = Vec2::new(forward.x, forward.z);
-                // A phone pointed at the sky or at its own feet is looking along
-                // the one direction that has no bearing. Hold the last one rather
-                // than let the azimuth spin through the pole — the picture is
-                // taken from the rotation and is unaffected either way, so this
-                // only decides which way the avatar is left facing.
-                if flat.length_squared() > 1e-6 {
-                    camera_state.azimuth = (-flat.x).atan2(-flat.y);
-                }
-                camera_state.pitch =
-                    (-forward.y.clamp(-1.0, 1.0).asin()).clamp(pitch_min, pitch_max);
-            }
-
-            // Calculate camera position. The eye height is held out of the boom:
-            // the boom is what shortens when a wall gets between the camera and
-            // the avatar, and scaling the eye offset with it would sink the view
-            // into the pavement as it came in.
-            let horizontal_distance = camera_state.distance * camera_state.pitch.cos();
-            let vertical_offset = camera_state.distance * camera_state.pitch.sin();
-            let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
-            let boom = Vec3::new(
-                camera_state.azimuth.sin() * horizontal_distance,
-                vertical_offset,
-                camera_state.azimuth.cos() * horizontal_distance,
-            );
-
-            // Pull the boom in when a facade would come between the camera and the
-            // avatar. The test is a sight line from the head to where the boom
-            // ends, against each footprint *at the height the line passes it* —
-            // so a high, steep view looks over a roof and a low one is stopped by
-            // the wall, at any altitude. It was gated off above 15 m while the
-            // footprints had no height, which is also why the camera could sit
-            // inside any building the avatar flew past.
-            let mut boom_scale = 1.0_f32;
-            if !locked && !first_person && rig.layers.buildings_enabled && !rig.colliders.is_empty()
-            {
-                if let Ok((cell, _)) = avatar_cells.single() {
-                    let base = Vec2::new(
-                        cell.x as f32 * WORLD_CELL_EDGE,
-                        cell.z as f32 * WORLD_CELL_EDGE,
-                    );
-                    let from = base + Vec2::new(avatar_pos.x, avatar_pos.z);
-                    let to = from + Vec2::new(boom.x, boom.z);
-                    let head_y = avatar_pos.y + eye.y;
-                    if let Some(t) =
-                        rig.colliders
-                            .segment_fraction(from, head_y, to, head_y + boom.y)
-                    {
-                        boom_scale = (t - CAMERA_COLLIDE_MARGIN).clamp(CAMERA_COLLIDE_MIN, 1.0);
-                    }
-                }
-            }
-            // Ease the boom rather than snapping it. Coming *in* is urgent — the
-            // wall is already in shot — so it is much the faster of the two; going
-            // back out is eased hard, or every doorway the avatar passes makes the
-            // camera lunge.
-            let ease = if boom_scale < rig.smoothing.boom {
-                1.0 - (-CAMERA_COLLIDE_IN_RATE * delta_time).exp()
-            } else {
-                1.0 - (-CAMERA_COLLIDE_OUT_RATE * delta_time).exp()
-            };
-            rig.smoothing.boom += (boom_scale - rig.smoothing.boom) * ease;
-            if (boom_scale - rig.smoothing.boom).abs() < 1e-3 {
-                rig.smoothing.boom = boom_scale;
-            }
-
-            // A landing shortens the eye height for a moment: the camera keeps
-            // travelling down for an instant after the avatar has stopped, which is
-            // what makes an arrival read as having weight. Scaled by the impact
-            // speed, so stepping off a kerb is not the same event as falling off a
-            // roof.
-            if avatar_state.landing_impact > 0.0 {
-                rig.smoothing.dip = (avatar_state.landing_impact / motion::TERMINAL_FALL_SPEED
-                    * CAMERA_DIP_MAX)
-                    .min(CAMERA_DIP_MAX)
-                    .max(rig.smoothing.dip);
-            }
-            rig.smoothing.dip *= (-CAMERA_DIP_RECOVERY * delta_time).exp();
-            if rig.smoothing.dip < 1e-3 {
-                rig.smoothing.dip = 0.0;
-            }
-
-            // First person has no boom at all: the eye *is* the avatar's, so the
-            // offset is the head height and the landing dip, which is the one part
-            // of the rig that still means something from inside.
-            let camera_offset = if first_person {
-                Vec3::Y * (FIRST_PERSON_EYE_HEIGHT - rig.smoothing.dip)
-            } else {
-                eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip
-            };
-
-            // Lead the rig by exactly the lag its own ease will introduce
-            // (`FOLLOW_LEAD_MAX`), so the avatar sits where the boom puts it at a
-            // walk and at 600 m/s alike. Only the *eye* leads — `look_world`
-            // below still aims at the avatar's real position, so the framing
-            // moves and the subject does not.
-            // Driver mode is exempt, as it is from the speed-coupled FOV: its rig
-            // is written from the map orientation every frame and it already aims
-            // ahead of the vehicle by a deliberate amount
-            // (`CameraState::drive_lookahead`). Leading it as well would compose
-            // two framings nobody chose together.
-            // First person is exempt for a third reason: the lead exists to cancel
-            // the follow ease's lag, and there is no ease to cancel when the eye
-            // is glued to the head. Leading it would put the camera in front of
-            // the avatar and look back through it.
-            let lead = if locked || first_person {
-                Vec3::ZERO
-            } else {
-                (avatar_state.velocity / FOLLOW_RATE).clamp_length_max(FOLLOW_LEAD_MAX)
-            };
-            let mut target_position = avatar_pos + camera_offset + lead;
-
-            // Prevent camera from going below ground
-            let min_height = MIN_CAMERA_HEIGHT;
-            if target_position.y < min_height {
-                target_position.y = min_height;
-            }
-
-            // Place the rig in *absolute* space rather than lerping the raw
-            // `Transform.translation`. The avatar's `display_position` is local to
-            // the avatar's `GridCell`; the camera, being the big_space floating
-            // origin, can sit in a completely different cell (Orbit pushes it far).
-            // Working through world metres — pivot the follow on the avatar's cell,
-            // split the result back to a cell — is what makes "switch back to
-            // Follow" reliably re-frame the avatar instead of stranding the camera a
-            // grid cell away (the old code only rewrote `translation`, never the
-            // cell). geo_nav's teleport uses the same avatar-cell convention.
-            let avatar_cell = avatar_cells.single().map(|(c, _)| *c).unwrap_or(prev_cell);
-            let avatar_origin = cell_origin(&avatar_cell);
-            let target_world = avatar_origin + target_position.as_dvec3();
-            let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
-            let new_world = if first_person {
-                // No ease from inside the head. The follow lerp exists to keep a
-                // boom from snapping about as its subject moves; applied to the
-                // eye itself it is the view sliding behind your own steps, which
-                // reads as motion sickness rather than as smoothing. The avatar's
-                // `display_position` is already smoothed on its own account
-                // (online interpolation, the terrain lift), so what this tracks is
-                // not jittery to begin with.
-                camera_state.avatar_initialized = true;
-                target_world
-            } else if camera_state.avatar_initialized {
-                // Framerate-independent follow smoothing, in world space.
-                let cam_alpha = 1.0 - (-FOLLOW_RATE * delta_time).exp();
-                let w = cam_world.lerp(target_world, cam_alpha as f64);
-                // Snap once essentially settled, else an asymptotic lerp keeps the
-                // camera transform changing by a hair while standing still — which
-                // fires `Changed<Transform>` on the floating origin every frame, and
-                // that is what the write-back guard at the top of this function
-                // exists to avoid.
-                if w.distance_squared(target_world) < 1e-6 {
-                    target_world
-                } else {
-                    w
-                }
-            } else {
-                // Entering Follow: snap straight onto the avatar (the reposition).
-                camera_state.avatar_initialized = true;
-                target_world
-            };
-            // The last word on where the lens is: a sight line from the head to the
-            // position the ease has actually arrived at, cut short at the first
-            // wall. The boom test above only sees the *target*; the camera lags it
-            // (and leads the avatar by its velocity), so on a turn or at flight
-            // speed it cuts across corners and through facades the target never
-            // touched. Resolved against the eased position rather than folded into
-            // the ease, so it cannot be smoothed back through the wall.
-            let new_world = if !locked
-                && !first_person
-                && rig.layers.buildings_enabled
-                && !rig.colliders.is_empty()
-            {
-                let head = avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT).as_dvec3();
-                let ray = new_world - head;
-                let len = ray.length() as f32;
-                if len > CAMERA_HEAD_MIN_M {
-                    let base = Vec2::new(avatar_origin.x as f32, avatar_origin.z as f32);
-                    let plan = |v: bevy::math::DVec3| {
-                        base + Vec2::new(
-                            (v.x - avatar_origin.x) as f32,
-                            (v.z - avatar_origin.z) as f32,
-                        )
-                    };
-                    let head_y = (head.y - avatar_origin.y) as f32;
-                    let end_y = (new_world.y - avatar_origin.y) as f32;
-                    match rig
-                        .colliders
-                        .segment_fraction(plan(head), head_y, plan(new_world), end_y)
-                    {
-                        Some(t) => {
-                            let keep = (t - CAMERA_WALL_CLEARANCE_M / len)
-                                .max(CAMERA_HEAD_MIN_M / len)
-                                .min(1.0);
-                            head + ray * f64::from(keep)
-                        }
-                        None => new_world,
-                    }
-                } else {
-                    new_world
-                }
-            } else {
-                new_world
-            };
-            let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-            let (new_cell, local) = grid.translation_to_grid(new_world);
-            camera_cell = new_cell;
-            camera_transform.translation = local;
-            if first_person {
-                // `look_at` cannot express this view: the eye and the subject are
-                // the same point, so there is no target to aim at — the direction
-                // is the state, not a consequence of it.
-                //
-                // The device's rotation is used whole when there is one, roll
-                // included. That is the difference between a view that turns with
-                // the phone and one that *is* the phone: tip it and the horizon
-                // tips with it, which is what makes a building stay put on screen
-                // while the hand holding it moves. Without a device it is the same
-                // two angles the boom was built from, so crossing the threshold
-                // keeps looking exactly where it was looking.
-                camera_transform.rotation = device_rotation.unwrap_or_else(|| {
-                    Quat::from_euler(
-                        EulerRot::YXZ,
-                        camera_state.azimuth,
-                        -camera_state.pitch,
-                        0.0,
-                    )
-                });
-            } else {
-                // Driver mode aims down the road rather than at the vehicle, which
-                // is what puts the arrow in the lower third of the frame instead of
-                // dead centre (`CameraState::drive_lookahead`). The camera itself
-                // stays where the rig put it — only the look target moves. Taken as
-                // a world-XZ vector rather than a distance along this camera's
-                // forward: in a north-up drive those two point in different
-                // directions, and the forward one aims north while you drive south.
-                // Zero outside driver mode, so no branch on the mode is needed —
-                // and driver mode never reaches the arm above, having cleared
-                // `first_person` as it took the rig.
-                let aim = camera_state.drive_lookahead;
-                let ahead = Vec3::new(aim.x, 0.0, aim.y);
-                let look_world =
-                    avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
-                camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
-            }
-
-            // Widen the lens with speed. Driver mode is exempt: its rig is written
-            // from the map orientation every frame and a breathing FOV under a
-            // north-up navigation view reads as a glitch, not as pace.
-            let want_fov = if locked {
-                FOLLOW_FOV_BASE
-            } else {
-                let t = (avatar_state.ground_speed / crate::systems::locomotion::RUN_SPEED)
-                    .clamp(0.0, 1.0);
-                FOLLOW_FOV_BASE + FOLLOW_FOV_SPRINT_GAIN * t
-            };
-            rig.smoothing.fov +=
-                (want_fov - rig.smoothing.fov) * (1.0 - (-FOLLOW_FOV_RATE * delta_time).exp());
-            if (want_fov - rig.smoothing.fov).abs() < 1e-4 {
-                rig.smoothing.fov = want_fov;
-            }
-            set_fov(&mut projection, rig.smoothing.fov);
-        }
-        CameraMode::Free => {
-            // Free camera mode - simple FPS style
-            // On entry, either restore the last fly pose (return to where you left
-            // Fly, since Orbit/Follow clobber the shared camera transform) or, the
-            // first time ever, keep the current position and seed the look from the
-            // live view so there's no jump.
-            if !camera_state.free_initialized {
-                if let Some((cell, translation, rotation)) = camera_state.free_saved {
-                    camera_cell = cell;
-                    camera_transform.translation = translation;
-                    camera_state.free_camera_rotation = rotation;
-                } else {
-                    let euler = camera_transform.rotation.to_euler(EulerRot::YXZ);
-                    camera_state.free_camera_rotation = Vec2::new(euler.1, euler.0);
-                }
-                camera_state.free_initialized = true;
-            }
-            let mut rotation_delta = Vec2::ZERO;
-
-            // Mouse look (left mouse button — right is reserved for context menu).
-            // Suppressed while egui, gizmo, or Ctrl has the pointer.
-            let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
-                || keyboard_input.pressed(KeyCode::ControlRight);
-            if gizmo_state.active_axis.is_some()
-                || egui_manager.ctx.egui_wants_pointer_input()
-                || ctrl
-            {
-                camera_state.pan_offset = None;
-                cursor_moved_events.clear();
-            } else if mouse_input.pressed(MouseButton::Left) {
-                for event in cursor_moved_events.read() {
-                    if let Some(last_pos) = camera_state.pan_offset {
-                        let delta = event.position - last_pos;
-                        rotation_delta.x += delta.x;
-                        rotation_delta.y += delta.y;
-                    }
-                    camera_state.pan_offset = Some(event.position);
-                }
-            } else {
-                camera_state.pan_offset = None;
-            }
-
-            // Touch look: one finger is the mouse-look drag. The two-finger
-            // gestures fly instead, and are handled with the keys below. Through
-            // `ui_blocked` rather than egui's bare verdict, so the thumb on the
-            // fly stick does not also veto the finger turning the view.
-            let touch_owns_pointer = gizmo_state.active_axis.is_none()
-                && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input());
-            if touch_owns_pointer {
-                rotation_delta += touch.drag;
-            }
-
-            // Update rotation from mouse input
-            if rotation_delta.length() > 0.0 {
-                camera_state.free_camera_rotation.y -= rotation_delta.x * MOUSE_SENSITIVITY;
-                camera_state.free_camera_rotation.x -= rotation_delta.y * MOUSE_SENSITIVITY;
-                camera_state.free_camera_rotation.x = camera_state
-                    .free_camera_rotation
-                    .x
-                    .max(-std::f32::consts::PI / 2.0 + 0.1)
-                    .min(std::f32::consts::PI / 2.0 - 0.1);
-            }
-
-            // Apply rotation
-            let rotation_quat = Quat::from_euler(
-                EulerRot::YXZ,
-                camera_state.free_camera_rotation.y,
-                camera_state.free_camera_rotation.x,
-                0.0,
-            );
-            camera_transform.rotation = rotation_quat;
-
-            // Movement - calculate forward/right from rotation, keep vertical independent
-            let forward = rotation_quat * -Vec3::Z;
-            let right = rotation_quat * Vec3::X;
-
-            // Flatten to horizontal plane for WASD movement
-            // `normalize_or_zero`, not `normalize`: at a pitch of exactly ±90°
-            // the horizontal projection is the zero vector, and a NaN here
-            // poisons the transform and every metric derived from it for the
-            // rest of the run. The pose paths clamp the pitch (`CameraPose::
-            // apply`), so this is the belt to that suspender.
-            let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-            let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
-
-            let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft)
-                || keyboard_input.pressed(KeyCode::ShiftRight)
-            {
-                FREE_CAMERA_SPEED_FAST
-            } else {
-                FREE_CAMERA_SPEED
-            };
-            // Speed rides altitude. Read it geocentrically (`GlobeState::altitude_m`) —
-            // the local `y` is only altitude near the anchor and goes negative on the
-            // far side of the globe, where a y-based scale would collapse to the
-            // ground speed exactly where the distances are largest.
-            let altitude = globe.altitude_m(&camera_cell, &camera_transform) as f32;
-            let speed = fly_speed(base_speed, altitude);
-
-            let mut move_direction = Vec3::ZERO;
-
-            if keyboard_input.pressed(KeyCode::KeyW) {
-                move_direction += forward_horizontal;
-            }
-            if keyboard_input.pressed(KeyCode::KeyS) {
-                move_direction -= forward_horizontal;
-            }
-            if keyboard_input.pressed(KeyCode::KeyA) {
-                move_direction -= right_horizontal;
-            }
-            if keyboard_input.pressed(KeyCode::KeyD) {
-                move_direction += right_horizontal;
-            }
-
-            // Vertical movement — ALWAYS world-space, never affects rotation.
-            // E up, Q down: the editor flycam convention (Unreal, Unity, Godot,
-            // Blender), and *only* those two. Space used to be a second "up",
-            // which made the vertical axis read as three keys with one of them
-            // duplicated and left the most reachable key on the board spent on an
-            // alias; it is a discrete verb now (see `avatar::handle_avatar_movement`).
-            // Shift is the speed boost and *only* that — it used to also mean
-            // "down, if no WASD is held", so holding it to cross a city dropped you
-            // out of the sky the moment you let go of W. Ctrl, the obvious
-            // alternative, isn't available: `EguiManager::ui_owns_keyboard` reads
-            // any Ctrl press as a UI chord.
-            if keyboard_input.pressed(KeyCode::KeyE) {
-                move_direction += Vec3::Y;
-            }
-            if keyboard_input.pressed(KeyCode::KeyQ) {
-                move_direction -= Vec3::Y;
-            }
-
-            // Suppress keyboard-driven movement while the UI owns the keyboard (text
-            // field focused or a Ctrl chord like Ctrl+Shift+A).
-            if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
-                move_direction = Vec3::ZERO;
-            }
-
-            // Touch flight: the on-screen stick and climb pair
-            // (`systems::map_osd`), which stand in for WASD and E/Q. They join
-            // `move_direction` rather than nudging the translation, so the same
-            // accelerate/glide curve applies and a released control coasts to a
-            // stop instead of stopping dead.
-            //
-            // **This used to be the two-finger gestures, and they are gone on
-            // purpose.** Pinch was W/S and the two-finger drag was A/D + E/Q,
-            // with only the *sign* of each read — so the smallest deliberate
-            // spread was a full-speed press of W held for as long as the fingers
-            // stayed down, and the one gesture whose meaning is settled
-            // everywhere else in this client (pinch = zoom) meant something
-            // different in this one mode. The stick's magnitude is kept instead
-            // (below), which is the whole difference between steering and
-            // pointing.
-            move_direction += forward_horizontal * osd.fly.y + right_horizontal * osd.fly.x;
-            move_direction += Vec3::Y * osd.climb;
-
-            // The keys steer a velocity, not the translation: it chases the wish on
-            // an exponential approach (frame-rate independent), so a release glides
-            // to a stop instead of the camera stopping dead mid-flight. Braking is
-            // deliberately slower than accelerating — the glide is the point, and a
-            // symmetric curve makes the start feel mushy to get it.
-            //
-            // The throttle is what makes a half-pushed stick fly at half speed.
-            // A key contributes a unit vector, so a single key is throttle 1 and
-            // any combination of them saturates at 1 — i.e. the keyboard behaves
-            // exactly as it did before the stick existed.
-            let throttle = move_direction.length().min(1.0);
-            let wish = if throttle > 0.0 {
-                move_direction.normalize() * speed * throttle
-            } else {
-                Vec3::ZERO
-            };
-            let tau = if wish == Vec3::ZERO {
-                FREE_DECEL_TAU
-            } else {
-                FREE_ACCEL_TAU
-            };
-            let blend = 1.0 - (-delta_time / tau).exp();
-            let mut velocity =
-                camera_state.free_velocity + (wish - camera_state.free_velocity) * blend;
-            if wish == Vec3::ZERO
-                && velocity.length_squared() <= (speed * FREE_REST_FRACTION).powi(2)
-            {
-                velocity = Vec3::ZERO;
-            }
-            camera_state.free_velocity = velocity;
-            if velocity != Vec3::ZERO {
-                camera_transform.translation += velocity * delta_time;
-            }
-
-            // Prevent going below ground — including the measured ground, or flying
-            // low over the Veluwe puts the camera inside the hill.
-            let ground = crate::grid::anchored_xz(&camera_cell, camera_transform.translation);
-            let ground_height = terrain.ground_at(ground.x, ground.y);
-            let min_height = ground_height + MIN_CAMERA_HEIGHT;
-            let lift = ground_lift(
-                camera_cell.y as f64,
-                camera_transform.translation.y,
-                min_height,
-            );
-            if lift > 0.0 {
-                camera_transform.translation.y += lift;
-                // Kill the downward glide at the floor, or a coast into the ground
-                // keeps pressing against the clamp long after the key is released.
-                camera_state.free_velocity.y = camera_state.free_velocity.y.max(0.0);
-            }
-
-            // Remember this pose so re-entering Fly returns here.
-            camera_state.free_saved = Some((
-                camera_cell,
-                camera_transform.translation,
-                camera_state.free_camera_rotation,
-            ));
-        }
-        CameraMode::Orbit => {
-            // "Earth" mode: a Google-Earth-style orbit. Near the ground it pivots
-            // a fixed ground point (left-drag pans, middle/Ctrl+left rotates+tilts,
-            // wheel zooms). Zoom out far enough and it hands off to the space tier
-            // (ADR-025): the pivot becomes the Earth's centre and left-drag spins
-            // the whole globe. The altitude drives map LOD, so pulling back
-            // coarsens the imagery and, past the show altitude, reveals the planet.
-
-            // On entry, seed the ground focus/distance/angles from wherever the
-            // camera was looking, so switching modes doesn't jump the view.
-            if !camera_state.orbit_initialized {
-                let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
-                let forward = (camera_transform.rotation * Vec3::NEG_Z).as_dvec3();
-                // Intersect the view ray with the ground plane (y = 0); if the
-                // camera looks level or up, drop the focus straight below it.
-                let focus = if forward.y < -1e-3 {
-                    let t = cam_world.y / -forward.y;
-                    let hit = cam_world + forward * t;
-                    DVec3::new(hit.x, 0.0, hit.z)
-                } else {
-                    DVec3::new(cam_world.x, 0.0, cam_world.z)
-                };
-                let offset = cam_world - focus;
-                let dist = offset
-                    .length()
-                    .clamp(ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE);
-                camera_state.orbit_focus = focus;
-                camera_state.orbit_distance = dist;
-                camera_state.orbit_distance_target = dist;
-                camera_state.orbit_yaw = (offset.x).atan2(offset.z) as f32;
-                camera_state.orbit_pitch = ((offset.y / dist).clamp(-1.0, 1.0) as f32)
-                    .asin()
-                    .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
-                camera_state.orbit_space = false;
-                camera_state.orbit_initialized = true;
-            }
-
-            let center = globe.center_local.as_dvec3();
-            let radius = globe.radius as f64;
-
-            // Surface↔space handoff. Reparameterise about the new pivot from the
-            // unchanged camera world position, so the camera does not move; the
-            // zoom target carries over as a ratio so an in-flight glide continues
-            // smoothly through the transition.
-            if globe.ready {
-                let cam_world = if camera_state.orbit_space {
-                    center + camera_state.orbit_dir * camera_state.orbit_distance
-                } else {
-                    camera_state.orbit_focus
-                        + spherical_offset(
-                            camera_state.orbit_yaw,
-                            camera_state.orbit_pitch,
-                            camera_state.orbit_distance,
-                        )
-                };
-                let alt = (cam_world - center).length() - radius;
-                if !camera_state.orbit_space && alt > SPACE_ENTER_ALT {
-                    let off = cam_world - center;
-                    let d = off.length();
-                    let ratio = camera_state.orbit_distance_target / camera_state.orbit_distance;
-                    camera_state.orbit_space = true;
-                    camera_state.orbit_distance = d;
-                    camera_state.orbit_distance_target = d * ratio;
-                    // Carry the current orientation up into the space tier: the
-                    // direction from the Earth's centre, plus the heading that
-                    // reproduces the camera's present up, so the view doesn't jump.
-                    camera_state.orbit_dir = off / d;
-                    let up = (camera_transform.rotation * Vec3::Y).as_dvec3();
-                    camera_state.orbit_heading = globe_heading(
-                        camera_state.orbit_dir,
-                        globe.north_axis_local().as_dvec3(),
-                        up,
-                    );
-                    camera_state.orbit_up = up;
-                } else if camera_state.orbit_space && alt < SPACE_EXIT_ALT {
-                    // How far the descent point is from the home anchor (origin).
-                    let horiz = (cam_world.x * cam_world.x + cam_world.z * cam_world.z).sqrt();
-                    if horiz > REANCHOR_DISTANCE && camera_state.reanchor_request.is_none() {
-                        // Descending onto a different part of the globe: re-anchor
-                        // the world to the sub-point (handled by a teleport next
-                        // frame) rather than snapping to the home plane far away.
-                        let dir = (cam_world - center).normalize_or_zero().as_vec3();
-                        let (slat, slng) = crate::systems::globe::sub_point(
-                            globe.anchor_lat,
-                            globe.anchor_lng,
-                            dir,
-                        );
-                        camera_state.reanchor_request = Some((slat, slng, alt.max(SPACE_EXIT_ALT)));
-                        // Stay in space this frame; the teleport repositions us.
-                    } else if horiz <= REANCHOR_DISTANCE {
-                        // Near home: hand back to the ground-focus orbit as before.
-                        let focus = DVec3::new(cam_world.x, 0.0, cam_world.z);
-                        let off = cam_world - focus;
-                        let d = off.length().max(ORBIT_MIN_DISTANCE);
-                        let ratio =
-                            camera_state.orbit_distance_target / camera_state.orbit_distance;
-                        camera_state.orbit_space = false;
-                        camera_state.orbit_focus = focus;
-                        camera_state.orbit_distance = d;
-                        camera_state.orbit_distance_target = (d * ratio).max(ORBIT_MIN_DISTANCE);
-                        camera_state.orbit_yaw = off.x.atan2(off.z) as f32;
-                        camera_state.orbit_pitch = ((off.y / d).clamp(-1.0, 1.0) as f32)
-                            .asin()
-                            .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
-                    }
-                }
-            }
-            let space = camera_state.orbit_space;
-
-            // Gather drag deltas, split by gesture. In space, left-drag spins the
-            // globe (rotate); on the surface it pans the map, and rotate is on the
-            // middle button or Ctrl+left. Suppressed while egui/gizmo owns pointer.
-            let mut rot_delta = Vec2::ZERO;
-            let mut pan_delta = Vec2::ZERO;
-            // Space tier only: horizontal drag of the "turn the view" gesture,
-            // which spins the compass rather than the planet.
-            let mut heading_delta = 0.0_f32;
-            if gizmo_state.active_axis.is_some()
-                || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
-            {
-                camera_state.pan_offset = None;
-                cursor_moved_events.clear();
-            } else {
-                let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
-                    || keyboard_input.pressed(KeyCode::ControlRight);
-                // Google Earth's split: plain drag moves you over the planet,
-                // middle-drag (or Ctrl+drag) turns the *view* — compass heading in
-                // space, yaw/tilt on the surface. In space that keeps plain
-                // left-drag as "grab the globe and spin it" with north still up.
-                let turning = mouse_input.pressed(MouseButton::Middle)
-                    || (ctrl && mouse_input.pressed(MouseButton::Left));
-                let rotating = turning || (space && mouse_input.pressed(MouseButton::Left));
-                let panning = !rotating && !space && mouse_input.pressed(MouseButton::Left);
-                if rotating || panning {
-                    for event in cursor_moved_events.read() {
-                        if let Some(last) = camera_state.pan_offset {
-                            let delta = event.position - last;
-                            if turning && space {
-                                heading_delta += delta.x;
-                            } else if rotating {
-                                rot_delta += delta;
-                            } else {
-                                pan_delta += delta;
-                            }
-                        }
-                        camera_state.pan_offset = Some(event.position);
-                    }
-                } else {
-                    camera_state.pan_offset = None;
-                    cursor_moved_events.clear();
-                }
-
-                // Touch, mapped onto the same three deltas so everything below
-                // — sensitivity, the north lock, the auto-tilt floor — applies
-                // unchanged. The split follows the phone map convention rather
-                // than the mouse one: one finger is the *plain* drag (pan on the
-                // surface, spin the globe in space), and the turn/tilt gesture
-                // that the mouse puts on the middle button is the two-finger
-                // twist and the two-finger vertical drag.
-                //
-                // Only `two_drag.y` is used: a twist that isn't perfectly
-                // centred moves the centroid sideways, so a horizontal reading
-                // would double-count every rotation as a pan.
-                //
-                // The twist divides by `ORBIT_ROT_SENS` so the multiplication
-                // by it below cancels: a twist is measured in radians and lands
-                // as that many radians of view rotation, 1:1 with the fingers,
-                // while a drag stays in points and keeps the mouse's tuning.
-                if touch.pair() {
-                    if space {
-                        heading_delta += touch.twist / ORBIT_ROT_SENS;
-                    } else {
-                        rot_delta.x += touch.twist / ORBIT_ROT_SENS;
-                        rot_delta.y += touch.two_drag.y;
-                    }
-                } else if space {
-                    rot_delta += touch.drag;
-                } else {
-                    pan_delta += touch.drag;
-                }
-            }
-
-            // Wheel zoom: exponential toward/away from the pivot; clamps differ by
-            // tier (ground metres vs orbit distance from the Earth centre).
-            let (min_d, max_d) = if space {
-                // Down to the surface (alt 0); the exit handoff fires at
-                // SPACE_EXIT_ALT well before the camera reaches it.
-                (radius, ORBIT_MAX_DISTANCE_SPACE)
-            } else {
-                (ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE)
-            };
-            // The wheel moves a *target*; the camera glides toward it below, so
-            // zoom reads as a smooth fly instead of a per-notch height jump.
-            for event in mouse_wheel_events.read() {
-                let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
-                camera_state.orbit_distance_target = zoom_orbit_target(
-                    camera_state.orbit_distance_target,
-                    factor,
-                    space,
-                    radius,
-                    (min_d, max_d),
-                );
-            }
-            // Pinch is the wheel without notches: the ratio the fingers moved
-            // apart by *is* the factor, so spreading them by half brings the
-            // ground half as close. Sharing `zoom_orbit_target` with the wheel is
-            // what keeps the space tier's "a step is a fraction of the altitude,
-            // not of the Earth's radius" rule applying to the fingers too.
-            if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
-                camera_state.orbit_distance_target = zoom_orbit_target(
-                    camera_state.orbit_distance_target,
-                    1.0 / touch.pinch as f64,
-                    space,
-                    radius,
-                    (min_d, max_d),
-                );
-            }
-            // The on-screen pair, for the hand that cannot spare a second finger
-            // (`systems::map_osd`). Through the same `zoom_orbit_target`, so it
-            // inherits the space tier's "a step is a fraction of the altitude"
-            // rule along with the wheel and the pinch.
-            if osd.zoom != 0.0 {
-                camera_state.orbit_distance_target = zoom_orbit_target(
-                    camera_state.orbit_distance_target,
-                    f64::from(osd_zoom_factor(osd.zoom, delta_time)),
-                    space,
-                    radius,
-                    (min_d, max_d),
-                );
-            }
-            let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
-            let old_d = camera_state.orbit_distance;
-            camera_state.orbit_distance =
-                (old_d + (camera_state.orbit_distance_target - old_d) * glide).clamp(min_d, max_d);
-            // Per-frame zoom fraction (< 1 while flying in), which also paces the
-            // cursor homing so it tracks the glide rather than the wheel notches.
-            let zoom_factor = camera_state.orbit_distance / old_d;
-
-            // Zoom-toward-cursor (space): scrolling in homes the orbit onto the
-            // point under the cursor — cast the cursor ray onto the sphere and
-            // pull the pivot direction toward the hit by the zoom fraction. This
-            // is how you dive back to a specific spot on the globe (centre-locked
-            // zoom made re-finding a place nearly impossible).
-            if space && zoom_factor < 0.999 && !egui_manager.ctx.egui_wants_pointer_input() {
-                let cursor_hit = windows
-                    .iter()
-                    .next()
-                    .and_then(|w| w.cursor_position())
-                    .zip(cam_render.single().ok())
-                    .and_then(|(cursor, (cam, cam_gt))| {
-                        // Proven ray construction (same call picking uses). The ray
-                        // is in render space — world shifted by the camera's grid
-                        // cell — so shift the sphere centre instead of the ray.
-                        let ray = cam.viewport_to_world(cam_gt, cursor).ok()?;
-                        let center_render = center - cell_origin(&camera_cell);
-                        let origin = ray.origin.as_dvec3();
-                        let dir = ray.direction.as_vec3().as_dvec3();
-                        let oc = origin - center_render;
-                        let b = oc.dot(dir);
-                        let disc = b * b - (oc.length_squared() - radius * radius);
-                        if disc < 0.0 {
-                            return None; // cursor misses the globe
-                        }
-                        let t = -b - disc.sqrt();
-                        // Direction from the centre is translation-invariant, so
-                        // it's valid in the world frame too.
-                        (t > 0.0).then(|| (origin + dir * t - center_render).normalize())
-                    });
-                if let Some(hit_dir) = cursor_hit {
-                    // Pull the orbit toward the cursor point at the pace of the
-                    // glide. Only the direction moves — up is re-derived from
-                    // north below, so zooming never rolls the view.
-                    let blend = ((1.0 - zoom_factor) * 1.5).clamp(0.0, 0.5);
-                    camera_state.orbit_dir =
-                        camera_state.orbit_dir.lerp(hit_dir, blend).normalize();
-                }
-            }
-
-            // Compass lock: the view is *held* north-up, so the turn gesture is
-            // inert and the ease below is re-armed every frame.
-            let north_lock = camera_state.orbit_north_lock;
-
-            // Space: turn the view (compass heading) without moving the camera.
-            if space && heading_delta != 0.0 && !north_lock {
-                camera_state.orbit_heading -= heading_delta * ORBIT_ROT_SENS;
-                camera_state.orbit_north_reset = false;
-            }
-
-            // Apply rotation. Space: grab-and-spin the globe — horizontal drag
-            // rotates the orbit about the screen-up axis, vertical about
-            // screen-right, so the ground follows the cursor on both axes. Up is
-            // re-derived from north below rather than rotated along, so the
-            // horizon stays level and the view never rolls off north by itself.
-            // Surface: the yaw/pitch turntable as before.
-            if rot_delta != Vec2::ZERO {
-                if space {
-                    // Grab-the-globe: scale radians-per-pixel so the ground under
-                    // the cursor tracks the drag at any distance. Two regimes,
-                    // take whichever is smaller:
-                    //  - near: the visible ground patch subtends ~fov·(alt/R) of
-                    //    central angle, so rotation shrinks with altitude (the old
-                    //    far-field-only formula stayed too fast in the mid-range);
-                    //  - far: the whole globe spans 2·asin(R/d) of the view, so a
-                    //    full-window drag sweeps about one globe-height.
-                    let h = windows.iter().next().map(|w| w.height()).unwrap_or(800.0);
-                    let fov = match &*projection {
-                        Projection::Perspective(p) => p.fov,
-                        _ => std::f32::consts::FRAC_PI_4,
-                    };
-                    let d = camera_state.orbit_distance;
-                    let near_arc = fov * (((d - radius) / radius).max(0.0) as f32);
-                    let far_arc = 2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
-                    let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
-                    // Compass locked: spin about the true polar axis (north pinned
-                    // up, longitude-only horizontal, latitude clamped short of the
-                    // pole) instead of the screen-relative grab-the-globe rotate,
-                    // so the view can no longer be carried around the poles.
-                    camera_state.orbit_dir = if north_lock {
-                        globe_spin_polar(
-                            camera_state.orbit_dir,
-                            globe.north_axis_local().as_dvec3(),
-                            rot_delta,
-                            sens,
-                        )
-                    } else {
-                        globe_spin(
-                            camera_state.orbit_dir,
-                            globe.north_axis_local().as_dvec3(),
-                            camera_state.orbit_up,
-                            rot_delta,
-                            sens,
-                        )
-                    };
-                } else {
-                    if !north_lock {
-                        camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
-                    }
-                    camera_state.orbit_pitch = (camera_state.orbit_pitch
-                        + rot_delta.y * ORBIT_ROT_SENS)
-                        .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
-                }
-            }
-
-            // Compass "north up" reset. Eases the view back to north without
-            // moving the pivot: on the surface, yaw → the nearest multiple of a
-            // full turn; in space, heading → 0. Any manual rotate this frame
-            // cancels it (grabbing the globe wins) — unless the compass is
-            // locked, in which case the ease is re-armed instead, so spinning
-            // the globe can never carry the poles off vertical.
-            if rot_delta != Vec2::ZERO && !north_lock {
-                camera_state.orbit_north_reset = false;
-            }
-            if north_lock {
-                camera_state.orbit_north_reset = true;
-            }
-            if camera_state.orbit_north_reset {
-                let k = (1.0 - (-NORTH_RESET_RATE * delta_time).exp()).clamp(0.0, 1.0);
-                if space {
-                    // Take the short way round: a heading of 350° eases to 360°,
-                    // not backwards through 180°.
-                    let tau = std::f32::consts::TAU;
-                    let target = (camera_state.orbit_heading / tau).round() * tau;
-                    camera_state.orbit_heading += (target - camera_state.orbit_heading) * k;
-                    if (target - camera_state.orbit_heading).abs() < 1e-4 {
-                        camera_state.orbit_heading = 0.0;
-                        camera_state.orbit_north_reset = false;
-                    }
-                } else {
-                    let target = (camera_state.orbit_yaw / std::f32::consts::TAU).round()
-                        * std::f32::consts::TAU;
-                    camera_state.orbit_yaw += (target - camera_state.orbit_yaw) * k;
-                    if (target - camera_state.orbit_yaw).abs() < 1e-3 {
-                        camera_state.orbit_yaw = target;
-                        camera_state.orbit_north_reset = false;
-                    }
-                }
-            }
-
-            // Google-Earth-style auto-tilt (surface orbit): pulling back raises a
-            // pitch floor toward top-down on a log ramp (2 km → 60 km), so zoom-out
-            // always lifts you *over* the map instead of leaving the camera parked
-            // at a grazing angle staring at the horizon/atmosphere. Tilting freely
-            // is still allowed up close, where oblique views are useful.
-            if !space {
-                let t = ((camera_state.orbit_distance / 2_000.0).ln()
-                    / (60_000.0f64 / 2_000.0).ln())
-                .clamp(0.0, 1.0) as f32;
-                let floor = ORBIT_PITCH_MIN + (1.30 - ORBIT_PITCH_MIN) * t;
-                if camera_state.orbit_pitch < floor {
-                    camera_state.orbit_pitch = floor;
-                }
-            }
-
-            let (yaw, pitch) = (camera_state.orbit_yaw, camera_state.orbit_pitch);
-            let offset = spherical_offset(yaw, pitch, camera_state.orbit_distance);
-
-            // Pan (surface only): grab-and-drag the ground — the map follows the
-            // cursor on BOTH axes. The basis comes straight from the orbit yaw
-            // (exact even at near-nadir tilt, where a flattened camera-forward
-            // degenerates): `fwd_flat` is the horizontal camera→focus direction,
-            // i.e. "screen-up on the ground".
-            if pan_delta != Vec2::ZERO {
-                let (sy, cy) = (camera_state.orbit_yaw.sin(), camera_state.orbit_yaw.cos());
-                let fwd_flat = Vec3::new(-sy, 0.0, -cy);
-                let right = Vec3::new(cy, 0.0, -sy);
-                let scale = (camera_state.orbit_distance * ORBIT_PAN_FACTOR) as f32;
-                // Drag right → rig moves left → content follows the cursor right;
-                // drag down → rig moves screen-up on the ground → content slides
-                // down. (The vertical axis used to move the rig the other way —
-                // grab horizontally but inverted vertically, which is why panning
-                // felt "vice versa" up close while the space globe felt right.)
-                let shift = right * (-pan_delta.x * scale) + fwd_flat * (pan_delta.y * scale);
-                camera_state.orbit_focus += shift.as_dvec3();
-                camera_state.orbit_focus.y = 0.0;
-            }
-
-            // Place the camera: pivot + offset → big_space cell + local, then look
-            // at the pivot (ground focus, or the Earth centre in space). In space
-            // the up vector is derived fresh from the planet's north axis and the
-            // heading, so the horizon is level by construction — no drift to
-            // re-orthonormalize away, and no pole lock either (the sub-camera
-            // latitude is held short of the pole by `globe_spin`).
-            let (pivot, cam_world, look_up) = if space {
-                let dir = camera_state.orbit_dir;
-                let up = globe_up(
-                    dir,
-                    globe.north_axis_local().as_dvec3(),
-                    camera_state.orbit_heading,
-                    camera_state.orbit_up,
-                );
-                camera_state.orbit_up = up;
-                (
-                    center,
-                    center + dir * camera_state.orbit_distance,
-                    up.as_vec3(),
-                )
-            } else {
-                (
-                    camera_state.orbit_focus,
-                    camera_state.orbit_focus + offset,
-                    Vec3::Y,
-                )
-            };
-            let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-            let (new_cell, local) = grid.translation_to_grid(cam_world);
-            camera_cell = new_cell;
-            camera_transform.translation = local;
-            let pivot_local = (pivot - cell_origin(&new_cell)).as_vec3();
-            camera_transform.look_at(pivot_local, look_up);
-
-            // Earth now holds a real pose; re-entering restores it instead of
-            // reseeding from the current view (see `enter_mode`).
-            camera_state.orbit_has_pose = true;
-        }
+    // One function per mode. Each borrows what it needs out of `ModeCtx`, works on
+    // the working copies above, and returns; nothing here returns early, so the
+    // depth range and the write-back below run after every mode.
+    let mode = camera_state.mode;
+    let ctx = ModeCtx {
+        keyboard_input: &keyboard_input,
+        mouse_input: &mouse_input,
+        cursor_moved_events: &mut cursor_moved_events,
+        mouse_wheel_events: &mut mouse_wheel_events,
+        touch: &touch,
+        osd: &osd,
+        rig: &mut rig,
+        camera_state: &mut camera_state,
+        avatar_state: &avatar_state,
+        delta_time,
+        gizmo_state: &gizmo_state,
+        egui_manager: &egui_manager,
+        globe: &globe,
+        window: windows.iter().next(),
+        cam_render: cam_render.single().ok(),
+        avatar: avatar_cells.single().ok(),
+        terrain: &terrain,
+        camera_transform: &mut camera_transform,
+        camera_cell: &mut camera_cell,
+        projection: &mut projection,
+        prev_cell,
+    };
+    match mode {
+        CameraMode::Avatar => follow_mode(ctx),
+        CameraMode::Free => fly_mode(ctx),
+        CameraMode::Orbit => earth_mode(ctx),
     }
 
     // Depth range for the space tier — applied in EVERY camera mode, not just
@@ -2574,6 +1476,1214 @@ pub fn camera_controls(
     if camera_cell != prev_cell {
         *camera_cell_mut = camera_cell;
     }
+}
+
+/// What a camera mode works on: `camera_controls`' parameters, borrowed, plus the
+/// working copies of the camera's cell and transform it writes back afterwards.
+/// One struct rather than twenty arguments to each mode function.
+///
+/// The three read-only queries are passed as what the modes read of them — the
+/// window, the camera's render components, the avatar's cell and transform —
+/// rather than as queries: each is a `single()`/first-item read with no side
+/// effect, so reading it up front is the same answer, and it keeps the system's
+/// per-parameter lifetimes out of this struct. Each reader and the rig carry
+/// lifetimes of their own for the same reason.
+struct ModeCtx<'a, 'cw, 'cs, 'ww, 'ws, 'rw, 'rs, 'p> {
+    keyboard_input: &'a ButtonInput<KeyCode>,
+    mouse_input: &'a ButtonInput<MouseButton>,
+    cursor_moved_events: &'a mut MessageReader<'cw, 'cs, CursorMoved>,
+    mouse_wheel_events: &'a mut MessageReader<'ww, 'ws, bevy::input::mouse::MouseWheel>,
+    touch: &'a crate::systems::touch::TouchGestures,
+    osd: &'a crate::systems::map_osd::OsdInput,
+    rig: &'a mut FollowRig<'rw, 'rs>,
+    camera_state: &'a mut CameraState,
+    avatar_state: &'a AvatarState,
+    delta_time: f32,
+    gizmo_state: &'a GizmoState,
+    egui_manager: &'a EguiManager,
+    globe: &'a crate::systems::globe::GlobeState,
+    /// The first window, as `windows.iter().next()` answered it.
+    window: Option<&'a Window>,
+    /// The free camera's render components, as `cam_render.single().ok()`.
+    cam_render: Option<(&'a Camera, &'a GlobalTransform)>,
+    /// The avatar's cell and transform, as `avatar_cells.single().ok()`.
+    avatar: Option<(&'a GridCell, &'a Transform)>,
+    terrain: &'a crate::systems::terrain::TerrainField,
+    camera_transform: &'a mut Transform,
+    camera_cell: &'a mut GridCell,
+    projection: &'a mut Mut<'p, Projection>,
+    /// The camera's cell as the frame began — Follow's fallback when there is
+    /// no avatar to pivot on.
+    prev_cell: GridCell,
+}
+
+/// Follow mode (`CameraMode::Avatar`): the third-person rig behind the avatar,
+/// first person inside its head, and driver mode's chase camera.
+fn follow_mode(ctx: ModeCtx) {
+    let ModeCtx {
+        keyboard_input,
+        mouse_input,
+        cursor_moved_events,
+        mouse_wheel_events,
+        touch,
+        osd,
+        rig,
+        camera_state,
+        avatar_state,
+        delta_time,
+        gizmo_state,
+        egui_manager,
+        avatar,
+        camera_transform,
+        camera_cell,
+        projection,
+        prev_cell,
+        ..
+    } = ctx;
+    // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
+    // Plus the seat: sitting slides the *model* off the avatar's own
+    // position by up to a metre (`AvatarState::seat_shift`), and a camera
+    // that kept framing the position would spend the sit looking at the
+    // pavement beside the bench.
+    let avatar_pos = avatar_state.display_position + avatar_state.seat_shift();
+
+    // Driver mode owns the rig (`systems::driver`): distance, tilt and
+    // azimuth are written from the map orientation every frame, so the
+    // wheel, the drag *and* the third-person zoom clamp are all skipped —
+    // the clamp tops out at 25 m, a quarter of the chase distance a
+    // navigation view needs, and would drag it back in every frame.
+    let locked = camera_state.drive_locked;
+    if locked {
+        // Driver mode owns the rig and draws its own marker in place of
+        // the avatar; there is no first person inside it, and leaving the
+        // flag set would hide the avatar behind the arrow for the rest of
+        // the drive.
+        camera_state.first_person = false;
+    } else {
+        // Proportional wheel zoom by notch *sign* — robust to line- vs
+        // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
+        // others; scaling it directly made one notch jump tens of metres). Sane
+        // range for a ~1.8 m avatar; scroll in/out from the default.
+        //
+        // Accumulated as a *wish* rather than written straight to
+        // `distance`, because the interesting part of this gesture is what
+        // it asks for past the end of the range: the clamp used to absorb
+        // that silently, and it is now the signal that the user wants to
+        // come closer than third person can.
+        let mut wish = camera_state.distance;
+        for event in mouse_wheel_events.read() {
+            if event.y != 0.0 {
+                let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
+                wish *= factor;
+            }
+        }
+        // Pinch is the wheel's continuous twin: spreading the fingers
+        // pulls the avatar closer, exactly as scrolling in does.
+        if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+            wish /= touch.pinch;
+        }
+        // …and the on-screen pair is the wheel's *held* twin, for the
+        // hand that only has one thumb free (`systems::map_osd`).
+        wish *= osd_zoom_factor(osd.zoom, delta_time);
+
+        // Asking to get closer than the closest third-person framing is
+        // the gesture: step inside the avatar rather than absorb the last
+        // part of it into the clamp. One notch back out leaves again.
+        let was_first_person = camera_state.first_person;
+        camera_state.first_person =
+            first_person_after_zoom(camera_state.first_person, camera_state.distance, wish);
+        if was_first_person && !camera_state.first_person {
+            // First person looks much further up and down than a boom can
+            // be swung (`FIRST_PERSON_PITCH_MAX`), so a tilt carried out
+            // of it unchanged would leave the third-person camera parked
+            // outside its own range — hanging almost directly overhead —
+            // until the next drag happened to clamp it. Bring it back on
+            // the frame the boom returns.
+            camera_state.pitch = camera_state
+                .pitch
+                .clamp(-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5);
+        }
+        camera_state.distance = wish.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
+    }
+    let first_person = camera_state.first_person;
+    // The phone aims the view only from inside the head, and only while
+    // the locate button is lit — `locate::track_device_pose` decides that
+    // and writes the rotation; this is its consumer.
+    let device_rotation = if first_person {
+        camera_state.device_rotation
+    } else {
+        None
+    };
+
+    // How far the view may tilt. First person looks nearly all the way up
+    // and down; the third-person clamp stops short of both because the
+    // boom would swing under the pavement or overhead.
+    let (pitch_min, pitch_max) = if first_person {
+        (-FIRST_PERSON_PITCH_MAX, FIRST_PERSON_PITCH_MAX)
+    } else {
+        (-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5)
+    };
+
+    // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
+    //
+    // …and suppressed while the device is aiming the camera. Everywhere
+    // else a drag is allowed to fight the compass and be eased back (the
+    // rotate-follow rig's documented behaviour), but here the view *is*
+    // the phone's own attitude: a drag could only push the picture off the
+    // thing the phone is pointed at, and the sensor would drag it back the
+    // same frame. Zooming out is the way to take the camera back.
+    let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
+        || keyboard_input.pressed(KeyCode::ControlRight);
+    if locked
+        || device_rotation.is_some()
+        || gizmo_state.active_axis.is_some()
+        || egui_manager.ctx.egui_wants_pointer_input()
+        || ctrl
+    {
+        camera_state.pan_offset = None;
+        cursor_moved_events.clear();
+    } else if mouse_input.pressed(MouseButton::Left) {
+        for event in cursor_moved_events.read() {
+            if let Some(last_pos) = camera_state.pan_offset {
+                let delta = event.position - last_pos;
+                if delta != Vec2::ZERO {
+                    // Manually orbiting drops follow-and-rotate — the phone-map
+                    // convention: dragging the map yourself stops it following
+                    // your heading.
+                    camera_state.follow_rotate = false;
+                }
+                camera_state.azimuth -= delta.x * 0.005;
+                camera_state.pitch -= delta.y * 0.005;
+                camera_state.pitch = camera_state.pitch.clamp(pitch_min, pitch_max);
+            }
+            camera_state.pan_offset = Some(event.position);
+        }
+    } else if mouse_input.just_released(MouseButton::Left) {
+        camera_state.pan_offset = None;
+    }
+
+    // Touch: one finger orbits (the left-drag above), two fingers twist
+    // the azimuth. Nearly the mouse's gate — a finger egui has claimed
+    // holds a pointer button down, so `egui_wants_pointer_input()`
+    // answers for it too — but routed through `ui_blocked`, because that
+    // one boolean cannot answer for two fingers at once: the whole point
+    // of the on-screen stick is that you hold it *while* turning the
+    // view, and while it is held egui wants the pointer for as long as
+    // the thumb rests there (`systems::touch`).
+    if !locked
+        && device_rotation.is_none()
+        && gizmo_state.active_axis.is_none()
+        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+    {
+        if touch.drag != Vec2::ZERO {
+            camera_state.follow_rotate = false;
+            camera_state.azimuth -= touch.drag.x * 0.005;
+            camera_state.pitch =
+                (camera_state.pitch - touch.drag.y * 0.005).clamp(pitch_min, pitch_max);
+        }
+        if touch.twist != 0.0 {
+            camera_state.follow_rotate = false;
+            camera_state.azimuth -= touch.twist;
+        }
+    }
+
+    // Follow-and-rotate (the GPS button, pressed in this mode): glue the camera behind the
+    // avatar's heading so it swings around as the avatar turns. The avatar's
+    // render yaw `face` is authoritative in every run mode (the movement
+    // systems write `Quat::from_rotation_y(face)` each frame), so read it off
+    // the avatar transform rather than the mode-specific yaw fields. The camera
+    // sits directly behind when `azimuth ≡ face + π` (its look direction then
+    // equals the avatar's facing). Ease along the shortest arc so a turn glides.
+    if camera_state.follow_rotate && device_rotation.is_none() {
+        // The compass wins when there is one (`systems::locate` writes it
+        // while the phone is being tracked); otherwise the avatar's own
+        // facing, as before. Same convention, so this is a choice of
+        // source and not a second code path.
+        //
+        // Skipped outright while the device is aiming the camera: there
+        // the phone's whole attitude is the answer, and easing the azimuth
+        // toward a bearing derived from the same sensor would be two rigs
+        // turning one view.
+        let heading = camera_state.follow_heading;
+        if let Some((_, avatar_tf)) = avatar {
+            let face = heading.unwrap_or_else(|| avatar_tf.rotation.to_euler(EulerRot::YXZ).0);
+            let target = face + std::f32::consts::PI;
+            let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
+            if d > std::f32::consts::PI {
+                d -= std::f32::consts::TAU;
+            }
+            // The compass gets the faster of the two rates — see
+            // [`COMPASS_ROTATE_RATE`] for why the two targets deserve
+            // different treatment rather than one shared number.
+            let rate = if heading.is_some() {
+                COMPASS_ROTATE_RATE
+            } else {
+                FOLLOW_ROTATE_RATE
+            };
+            let a = 1.0 - (-rate * delta_time).exp();
+            // Snap the last sliver so azimuth (and thus the whole follow rig)
+            // actually settles when standing still, instead of creeping toward
+            // the target forever and pinning the floating-origin propagation.
+            camera_state.azimuth += if d.abs() < 1e-3 { d } else { d * a };
+        }
+    }
+
+    // The device aims the camera: read the rig's own angles back out of
+    // its rotation, so everything downstream of them — the avatar's
+    // facing, and the third-person view a zoom-out returns to — stays in
+    // step with where the phone is pointed. The rotation itself is what
+    // the camera is given below; these are derived from it and never the
+    // other way round.
+    if let Some(rot) = device_rotation {
+        let forward = rot * Vec3::NEG_Z;
+        let flat = Vec2::new(forward.x, forward.z);
+        // A phone pointed at the sky or at its own feet is looking along
+        // the one direction that has no bearing. Hold the last one rather
+        // than let the azimuth spin through the pole — the picture is
+        // taken from the rotation and is unaffected either way, so this
+        // only decides which way the avatar is left facing.
+        if flat.length_squared() > 1e-6 {
+            camera_state.azimuth = (-flat.x).atan2(-flat.y);
+        }
+        camera_state.pitch = (-forward.y.clamp(-1.0, 1.0).asin()).clamp(pitch_min, pitch_max);
+    }
+
+    // Calculate camera position. The eye height is held out of the boom:
+    // the boom is what shortens when a wall gets between the camera and
+    // the avatar, and scaling the eye offset with it would sink the view
+    // into the pavement as it came in.
+    let horizontal_distance = camera_state.distance * camera_state.pitch.cos();
+    let vertical_offset = camera_state.distance * camera_state.pitch.sin();
+    let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
+    let boom = Vec3::new(
+        camera_state.azimuth.sin() * horizontal_distance,
+        vertical_offset,
+        camera_state.azimuth.cos() * horizontal_distance,
+    );
+
+    // Pull the boom in when a facade would come between the camera and the
+    // avatar. The test is a sight line from the head to where the boom
+    // ends, against each footprint *at the height the line passes it* —
+    // so a high, steep view looks over a roof and a low one is stopped by
+    // the wall, at any altitude. It was gated off above 15 m while the
+    // footprints had no height, which is also why the camera could sit
+    // inside any building the avatar flew past.
+    let mut boom_scale = 1.0_f32;
+    if !locked && !first_person && rig.layers.buildings_enabled && !rig.colliders.is_empty() {
+        if let Some((cell, _)) = avatar {
+            let base = Vec2::new(
+                cell.x as f32 * WORLD_CELL_EDGE,
+                cell.z as f32 * WORLD_CELL_EDGE,
+            );
+            let from = base + Vec2::new(avatar_pos.x, avatar_pos.z);
+            let to = from + Vec2::new(boom.x, boom.z);
+            let head_y = avatar_pos.y + eye.y;
+            if let Some(t) = rig
+                .colliders
+                .segment_fraction(from, head_y, to, head_y + boom.y)
+            {
+                boom_scale = (t - CAMERA_COLLIDE_MARGIN).clamp(CAMERA_COLLIDE_MIN, 1.0);
+            }
+        }
+    }
+    // Ease the boom rather than snapping it. Coming *in* is urgent — the
+    // wall is already in shot — so it is much the faster of the two; going
+    // back out is eased hard, or every doorway the avatar passes makes the
+    // camera lunge.
+    let ease = if boom_scale < rig.smoothing.boom {
+        1.0 - (-CAMERA_COLLIDE_IN_RATE * delta_time).exp()
+    } else {
+        1.0 - (-CAMERA_COLLIDE_OUT_RATE * delta_time).exp()
+    };
+    rig.smoothing.boom += (boom_scale - rig.smoothing.boom) * ease;
+    if (boom_scale - rig.smoothing.boom).abs() < 1e-3 {
+        rig.smoothing.boom = boom_scale;
+    }
+
+    // A landing shortens the eye height for a moment: the camera keeps
+    // travelling down for an instant after the avatar has stopped, which is
+    // what makes an arrival read as having weight. Scaled by the impact
+    // speed, so stepping off a kerb is not the same event as falling off a
+    // roof.
+    if avatar_state.landing_impact > 0.0 {
+        rig.smoothing.dip = (avatar_state.landing_impact / motion::TERMINAL_FALL_SPEED
+            * CAMERA_DIP_MAX)
+            .min(CAMERA_DIP_MAX)
+            .max(rig.smoothing.dip);
+    }
+    rig.smoothing.dip *= (-CAMERA_DIP_RECOVERY * delta_time).exp();
+    if rig.smoothing.dip < 1e-3 {
+        rig.smoothing.dip = 0.0;
+    }
+
+    // First person has no boom at all: the eye *is* the avatar's, so the
+    // offset is the head height and the landing dip, which is the one part
+    // of the rig that still means something from inside.
+    let camera_offset = if first_person {
+        Vec3::Y * (FIRST_PERSON_EYE_HEIGHT - rig.smoothing.dip)
+    } else {
+        eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip
+    };
+
+    // Lead the rig by exactly the lag its own ease will introduce
+    // (`FOLLOW_LEAD_MAX`), so the avatar sits where the boom puts it at a
+    // walk and at 600 m/s alike. Only the *eye* leads — `look_world`
+    // below still aims at the avatar's real position, so the framing
+    // moves and the subject does not.
+    // Driver mode is exempt, as it is from the speed-coupled FOV: its rig
+    // is written from the map orientation every frame and it already aims
+    // ahead of the vehicle by a deliberate amount
+    // (`CameraState::drive_lookahead`). Leading it as well would compose
+    // two framings nobody chose together.
+    // First person is exempt for a third reason: the lead exists to cancel
+    // the follow ease's lag, and there is no ease to cancel when the eye
+    // is glued to the head. Leading it would put the camera in front of
+    // the avatar and look back through it.
+    let lead = if locked || first_person {
+        Vec3::ZERO
+    } else {
+        (avatar_state.velocity / FOLLOW_RATE).clamp_length_max(FOLLOW_LEAD_MAX)
+    };
+    let mut target_position = avatar_pos + camera_offset + lead;
+
+    // Prevent camera from going below ground
+    let min_height = MIN_CAMERA_HEIGHT;
+    if target_position.y < min_height {
+        target_position.y = min_height;
+    }
+
+    // Place the rig in *absolute* space rather than lerping the raw
+    // `Transform.translation`. The avatar's `display_position` is local to
+    // the avatar's `GridCell`; the camera, being the big_space floating
+    // origin, can sit in a completely different cell (Orbit pushes it far).
+    // Working through world metres — pivot the follow on the avatar's cell,
+    // split the result back to a cell — is what makes "switch back to
+    // Follow" reliably re-frame the avatar instead of stranding the camera a
+    // grid cell away (the old code only rewrote `translation`, never the
+    // cell). geo_nav's teleport uses the same avatar-cell convention.
+    let avatar_cell = avatar.map(|(c, _)| *c).unwrap_or(prev_cell);
+    let avatar_origin = cell_origin(&avatar_cell);
+    let target_world = avatar_origin + target_position.as_dvec3();
+    let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
+    let new_world = if first_person {
+        // No ease from inside the head. The follow lerp exists to keep a
+        // boom from snapping about as its subject moves; applied to the
+        // eye itself it is the view sliding behind your own steps, which
+        // reads as motion sickness rather than as smoothing. The avatar's
+        // `display_position` is already smoothed on its own account
+        // (online interpolation, the terrain lift), so what this tracks is
+        // not jittery to begin with.
+        camera_state.avatar_initialized = true;
+        target_world
+    } else if camera_state.avatar_initialized {
+        // Framerate-independent follow smoothing, in world space.
+        let cam_alpha = 1.0 - (-FOLLOW_RATE * delta_time).exp();
+        let w = cam_world.lerp(target_world, cam_alpha as f64);
+        // Snap once essentially settled, else an asymptotic lerp keeps the
+        // camera transform changing by a hair while standing still — which
+        // fires `Changed<Transform>` on the floating origin every frame, and
+        // that is what the write-back guard at the top of this function
+        // exists to avoid.
+        if w.distance_squared(target_world) < 1e-6 {
+            target_world
+        } else {
+            w
+        }
+    } else {
+        // Entering Follow: snap straight onto the avatar (the reposition).
+        camera_state.avatar_initialized = true;
+        target_world
+    };
+    // The last word on where the lens is: a sight line from the head to the
+    // position the ease has actually arrived at, cut short at the first
+    // wall. The boom test above only sees the *target*; the camera lags it
+    // (and leads the avatar by its velocity), so on a turn or at flight
+    // speed it cuts across corners and through facades the target never
+    // touched. Resolved against the eased position rather than folded into
+    // the ease, so it cannot be smoothed back through the wall.
+    let new_world =
+        if !locked && !first_person && rig.layers.buildings_enabled && !rig.colliders.is_empty() {
+            let head = avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT).as_dvec3();
+            let ray = new_world - head;
+            let len = ray.length() as f32;
+            if len > CAMERA_HEAD_MIN_M {
+                let base = Vec2::new(avatar_origin.x as f32, avatar_origin.z as f32);
+                let plan = |v: bevy::math::DVec3| {
+                    base + Vec2::new(
+                        (v.x - avatar_origin.x) as f32,
+                        (v.z - avatar_origin.z) as f32,
+                    )
+                };
+                let head_y = (head.y - avatar_origin.y) as f32;
+                let end_y = (new_world.y - avatar_origin.y) as f32;
+                match rig
+                    .colliders
+                    .segment_fraction(plan(head), head_y, plan(new_world), end_y)
+                {
+                    Some(t) => {
+                        let keep = (t - CAMERA_WALL_CLEARANCE_M / len)
+                            .max(CAMERA_HEAD_MIN_M / len)
+                            .min(1.0);
+                        head + ray * f64::from(keep)
+                    }
+                    None => new_world,
+                }
+            } else {
+                new_world
+            }
+        } else {
+            new_world
+        };
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+    let (new_cell, local) = grid.translation_to_grid(new_world);
+    *camera_cell = new_cell;
+    camera_transform.translation = local;
+    if first_person {
+        // `look_at` cannot express this view: the eye and the subject are
+        // the same point, so there is no target to aim at — the direction
+        // is the state, not a consequence of it.
+        //
+        // The device's rotation is used whole when there is one, roll
+        // included. That is the difference between a view that turns with
+        // the phone and one that *is* the phone: tip it and the horizon
+        // tips with it, which is what makes a building stay put on screen
+        // while the hand holding it moves. Without a device it is the same
+        // two angles the boom was built from, so crossing the threshold
+        // keeps looking exactly where it was looking.
+        camera_transform.rotation = device_rotation.unwrap_or_else(|| {
+            Quat::from_euler(
+                EulerRot::YXZ,
+                camera_state.azimuth,
+                -camera_state.pitch,
+                0.0,
+            )
+        });
+    } else {
+        // Driver mode aims down the road rather than at the vehicle, which
+        // is what puts the arrow in the lower third of the frame instead of
+        // dead centre (`CameraState::drive_lookahead`). The camera itself
+        // stays where the rig put it — only the look target moves. Taken as
+        // a world-XZ vector rather than a distance along this camera's
+        // forward: in a north-up drive those two point in different
+        // directions, and the forward one aims north while you drive south.
+        // Zero outside driver mode, so no branch on the mode is needed —
+        // and driver mode never reaches the arm above, having cleared
+        // `first_person` as it took the rig.
+        let aim = camera_state.drive_lookahead;
+        let ahead = Vec3::new(aim.x, 0.0, aim.y);
+        let look_world =
+            avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
+        camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
+    }
+
+    // Widen the lens with speed. Driver mode is exempt: its rig is written
+    // from the map orientation every frame and a breathing FOV under a
+    // north-up navigation view reads as a glitch, not as pace.
+    let want_fov = if locked {
+        FOLLOW_FOV_BASE
+    } else {
+        let t = (avatar_state.ground_speed / crate::systems::locomotion::RUN_SPEED).clamp(0.0, 1.0);
+        FOLLOW_FOV_BASE + FOLLOW_FOV_SPRINT_GAIN * t
+    };
+    rig.smoothing.fov +=
+        (want_fov - rig.smoothing.fov) * (1.0 - (-FOLLOW_FOV_RATE * delta_time).exp());
+    if (want_fov - rig.smoothing.fov).abs() < 1e-4 {
+        rig.smoothing.fov = want_fov;
+    }
+    set_fov(projection, rig.smoothing.fov);
+}
+
+/// Fly mode (`CameraMode::Free`): an editor-style fly camera.
+fn fly_mode(ctx: ModeCtx) {
+    let ModeCtx {
+        keyboard_input,
+        mouse_input,
+        cursor_moved_events,
+        touch,
+        osd,
+        camera_state,
+        delta_time,
+        gizmo_state,
+        egui_manager,
+        globe,
+        terrain,
+        camera_transform,
+        camera_cell,
+        ..
+    } = ctx;
+    // Free camera mode - simple FPS style
+    // On entry, either restore the last fly pose (return to where you left
+    // Fly, since Orbit/Follow clobber the shared camera transform) or, the
+    // first time ever, keep the current position and seed the look from the
+    // live view so there's no jump.
+    if !camera_state.free_initialized {
+        if let Some((cell, translation, rotation)) = camera_state.free_saved {
+            *camera_cell = cell;
+            camera_transform.translation = translation;
+            camera_state.free_camera_rotation = rotation;
+        } else {
+            let euler = camera_transform.rotation.to_euler(EulerRot::YXZ);
+            camera_state.free_camera_rotation = Vec2::new(euler.1, euler.0);
+        }
+        camera_state.free_initialized = true;
+    }
+    let mut rotation_delta = Vec2::ZERO;
+
+    // Mouse look (left mouse button — right is reserved for context menu).
+    // Suppressed while egui, gizmo, or Ctrl has the pointer.
+    let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
+        || keyboard_input.pressed(KeyCode::ControlRight);
+    if gizmo_state.active_axis.is_some() || egui_manager.ctx.egui_wants_pointer_input() || ctrl {
+        camera_state.pan_offset = None;
+        cursor_moved_events.clear();
+    } else if mouse_input.pressed(MouseButton::Left) {
+        for event in cursor_moved_events.read() {
+            if let Some(last_pos) = camera_state.pan_offset {
+                let delta = event.position - last_pos;
+                rotation_delta.x += delta.x;
+                rotation_delta.y += delta.y;
+            }
+            camera_state.pan_offset = Some(event.position);
+        }
+    } else {
+        camera_state.pan_offset = None;
+    }
+
+    // Touch look: one finger is the mouse-look drag. The two-finger
+    // gestures fly instead, and are handled with the keys below. Through
+    // `ui_blocked` rather than egui's bare verdict, so the thumb on the
+    // fly stick does not also veto the finger turning the view.
+    let touch_owns_pointer = gizmo_state.active_axis.is_none()
+        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input());
+    if touch_owns_pointer {
+        rotation_delta += touch.drag;
+    }
+
+    // Update rotation from mouse input
+    if rotation_delta.length() > 0.0 {
+        camera_state.free_camera_rotation.y -= rotation_delta.x * MOUSE_SENSITIVITY;
+        camera_state.free_camera_rotation.x -= rotation_delta.y * MOUSE_SENSITIVITY;
+        camera_state.free_camera_rotation.x = camera_state
+            .free_camera_rotation
+            .x
+            .max(-std::f32::consts::PI / 2.0 + 0.1)
+            .min(std::f32::consts::PI / 2.0 - 0.1);
+    }
+
+    // Apply rotation
+    let rotation_quat = Quat::from_euler(
+        EulerRot::YXZ,
+        camera_state.free_camera_rotation.y,
+        camera_state.free_camera_rotation.x,
+        0.0,
+    );
+    camera_transform.rotation = rotation_quat;
+
+    // Movement - calculate forward/right from rotation, keep vertical independent
+    let forward = rotation_quat * -Vec3::Z;
+    let right = rotation_quat * Vec3::X;
+
+    // Flatten to horizontal plane for WASD movement
+    // `normalize_or_zero`, not `normalize`: at a pitch of exactly ±90°
+    // the horizontal projection is the zero vector, and a NaN here
+    // poisons the transform and every metric derived from it for the
+    // rest of the run. The pose paths clamp the pitch (`CameraPose::
+    // apply`), so this is the belt to that suspender.
+    let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
+
+    let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft)
+        || keyboard_input.pressed(KeyCode::ShiftRight)
+    {
+        FREE_CAMERA_SPEED_FAST
+    } else {
+        FREE_CAMERA_SPEED
+    };
+    // Speed rides altitude. Read it geocentrically (`GlobeState::altitude_m`) —
+    // the local `y` is only altitude near the anchor and goes negative on the
+    // far side of the globe, where a y-based scale would collapse to the
+    // ground speed exactly where the distances are largest.
+    let altitude = globe.altitude_m(&camera_cell, &camera_transform) as f32;
+    let speed = fly_speed(base_speed, altitude);
+
+    let mut move_direction = Vec3::ZERO;
+
+    if keyboard_input.pressed(KeyCode::KeyW) {
+        move_direction += forward_horizontal;
+    }
+    if keyboard_input.pressed(KeyCode::KeyS) {
+        move_direction -= forward_horizontal;
+    }
+    if keyboard_input.pressed(KeyCode::KeyA) {
+        move_direction -= right_horizontal;
+    }
+    if keyboard_input.pressed(KeyCode::KeyD) {
+        move_direction += right_horizontal;
+    }
+
+    // Vertical movement — ALWAYS world-space, never affects rotation.
+    // E up, Q down: the editor flycam convention (Unreal, Unity, Godot,
+    // Blender), and *only* those two. Space used to be a second "up",
+    // which made the vertical axis read as three keys with one of them
+    // duplicated and left the most reachable key on the board spent on an
+    // alias; it is a discrete verb now (see `avatar::handle_avatar_movement`).
+    // Shift is the speed boost and *only* that — it used to also mean
+    // "down, if no WASD is held", so holding it to cross a city dropped you
+    // out of the sky the moment you let go of W. Ctrl, the obvious
+    // alternative, isn't available: `EguiManager::ui_owns_keyboard` reads
+    // any Ctrl press as a UI chord.
+    if keyboard_input.pressed(KeyCode::KeyE) {
+        move_direction += Vec3::Y;
+    }
+    if keyboard_input.pressed(KeyCode::KeyQ) {
+        move_direction -= Vec3::Y;
+    }
+
+    // Suppress keyboard-driven movement while the UI owns the keyboard (text
+    // field focused or a Ctrl chord like Ctrl+Shift+A).
+    if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
+        move_direction = Vec3::ZERO;
+    }
+
+    // Touch flight: the on-screen stick and climb pair
+    // (`systems::map_osd`), which stand in for WASD and E/Q. They join
+    // `move_direction` rather than nudging the translation, so the same
+    // accelerate/glide curve applies and a released control coasts to a
+    // stop instead of stopping dead.
+    //
+    // **This used to be the two-finger gestures, and they are gone on
+    // purpose.** Pinch was W/S and the two-finger drag was A/D + E/Q,
+    // with only the *sign* of each read — so the smallest deliberate
+    // spread was a full-speed press of W held for as long as the fingers
+    // stayed down, and the one gesture whose meaning is settled
+    // everywhere else in this client (pinch = zoom) meant something
+    // different in this one mode. The stick's magnitude is kept instead
+    // (below), which is the whole difference between steering and
+    // pointing.
+    move_direction += forward_horizontal * osd.fly.y + right_horizontal * osd.fly.x;
+    move_direction += Vec3::Y * osd.climb;
+
+    // The keys steer a velocity, not the translation: it chases the wish on
+    // an exponential approach (frame-rate independent), so a release glides
+    // to a stop instead of the camera stopping dead mid-flight. Braking is
+    // deliberately slower than accelerating — the glide is the point, and a
+    // symmetric curve makes the start feel mushy to get it.
+    //
+    // The throttle is what makes a half-pushed stick fly at half speed.
+    // A key contributes a unit vector, so a single key is throttle 1 and
+    // any combination of them saturates at 1 — i.e. the keyboard behaves
+    // exactly as it did before the stick existed.
+    let throttle = move_direction.length().min(1.0);
+    let wish = if throttle > 0.0 {
+        move_direction.normalize() * speed * throttle
+    } else {
+        Vec3::ZERO
+    };
+    let tau = if wish == Vec3::ZERO {
+        FREE_DECEL_TAU
+    } else {
+        FREE_ACCEL_TAU
+    };
+    let blend = 1.0 - (-delta_time / tau).exp();
+    let mut velocity = camera_state.free_velocity + (wish - camera_state.free_velocity) * blend;
+    if wish == Vec3::ZERO && velocity.length_squared() <= (speed * FREE_REST_FRACTION).powi(2) {
+        velocity = Vec3::ZERO;
+    }
+    camera_state.free_velocity = velocity;
+    if velocity != Vec3::ZERO {
+        camera_transform.translation += velocity * delta_time;
+    }
+
+    // Prevent going below ground — including the measured ground, or flying
+    // low over the Veluwe puts the camera inside the hill.
+    let ground = crate::grid::anchored_xz(&camera_cell, camera_transform.translation);
+    let ground_height = terrain.ground_at(ground.x, ground.y);
+    let min_height = ground_height + MIN_CAMERA_HEIGHT;
+    let lift = ground_lift(
+        camera_cell.y as f64,
+        camera_transform.translation.y,
+        min_height,
+    );
+    if lift > 0.0 {
+        camera_transform.translation.y += lift;
+        // Kill the downward glide at the floor, or a coast into the ground
+        // keeps pressing against the clamp long after the key is released.
+        camera_state.free_velocity.y = camera_state.free_velocity.y.max(0.0);
+    }
+
+    // Remember this pose so re-entering Fly returns here.
+    camera_state.free_saved = Some((
+        *camera_cell,
+        camera_transform.translation,
+        camera_state.free_camera_rotation,
+    ));
+}
+
+/// Earth mode (`CameraMode::Orbit`): the ground orbit, and the globe orbit it
+/// hands off to in space.
+fn earth_mode(ctx: ModeCtx) {
+    let ModeCtx {
+        keyboard_input,
+        mouse_input,
+        cursor_moved_events,
+        mouse_wheel_events,
+        touch,
+        osd,
+        camera_state,
+        delta_time,
+        gizmo_state,
+        egui_manager,
+        globe,
+        window,
+        cam_render,
+        camera_transform,
+        camera_cell,
+        projection,
+        ..
+    } = ctx;
+    // "Earth" mode: a Google-Earth-style orbit. Near the ground it pivots
+    // a fixed ground point (left-drag pans, middle/Ctrl+left rotates+tilts,
+    // wheel zooms). Zoom out far enough and it hands off to the space tier
+    // (ADR-025): the pivot becomes the Earth's centre and left-drag spins
+    // the whole globe. The altitude drives map LOD, so pulling back
+    // coarsens the imagery and, past the show altitude, reveals the planet.
+
+    // On entry, seed the ground focus/distance/angles from wherever the
+    // camera was looking, so switching modes doesn't jump the view.
+    if !camera_state.orbit_initialized {
+        let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
+        let forward = (camera_transform.rotation * Vec3::NEG_Z).as_dvec3();
+        // Intersect the view ray with the ground plane (y = 0); if the
+        // camera looks level or up, drop the focus straight below it.
+        let focus = if forward.y < -1e-3 {
+            let t = cam_world.y / -forward.y;
+            let hit = cam_world + forward * t;
+            DVec3::new(hit.x, 0.0, hit.z)
+        } else {
+            DVec3::new(cam_world.x, 0.0, cam_world.z)
+        };
+        let offset = cam_world - focus;
+        let dist = offset
+            .length()
+            .clamp(ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE);
+        camera_state.orbit_focus = focus;
+        camera_state.orbit_distance = dist;
+        camera_state.orbit_distance_target = dist;
+        camera_state.orbit_yaw = (offset.x).atan2(offset.z) as f32;
+        camera_state.orbit_pitch = ((offset.y / dist).clamp(-1.0, 1.0) as f32)
+            .asin()
+            .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
+        camera_state.orbit_space = false;
+        camera_state.orbit_initialized = true;
+    }
+
+    let center = globe.center_local.as_dvec3();
+    let radius = globe.radius as f64;
+
+    // Surface↔space handoff. Reparameterise about the new pivot from the
+    // unchanged camera world position, so the camera does not move; the
+    // zoom target carries over as a ratio so an in-flight glide continues
+    // smoothly through the transition.
+    if globe.ready {
+        let cam_world = if camera_state.orbit_space {
+            center + camera_state.orbit_dir * camera_state.orbit_distance
+        } else {
+            camera_state.orbit_focus
+                + spherical_offset(
+                    camera_state.orbit_yaw,
+                    camera_state.orbit_pitch,
+                    camera_state.orbit_distance,
+                )
+        };
+        let alt = (cam_world - center).length() - radius;
+        if !camera_state.orbit_space && alt > SPACE_ENTER_ALT {
+            let off = cam_world - center;
+            let d = off.length();
+            let ratio = camera_state.orbit_distance_target / camera_state.orbit_distance;
+            camera_state.orbit_space = true;
+            camera_state.orbit_distance = d;
+            camera_state.orbit_distance_target = d * ratio;
+            // Carry the current orientation up into the space tier: the
+            // direction from the Earth's centre, plus the heading that
+            // reproduces the camera's present up, so the view doesn't jump.
+            camera_state.orbit_dir = off / d;
+            let up = (camera_transform.rotation * Vec3::Y).as_dvec3();
+            camera_state.orbit_heading = globe_heading(
+                camera_state.orbit_dir,
+                globe.north_axis_local().as_dvec3(),
+                up,
+            );
+            camera_state.orbit_up = up;
+        } else if camera_state.orbit_space && alt < SPACE_EXIT_ALT {
+            // How far the descent point is from the home anchor (origin).
+            let horiz = (cam_world.x * cam_world.x + cam_world.z * cam_world.z).sqrt();
+            if horiz > REANCHOR_DISTANCE && camera_state.reanchor_request.is_none() {
+                // Descending onto a different part of the globe: re-anchor
+                // the world to the sub-point (handled by a teleport next
+                // frame) rather than snapping to the home plane far away.
+                let dir = (cam_world - center).normalize_or_zero().as_vec3();
+                let (slat, slng) =
+                    crate::systems::globe::sub_point(globe.anchor_lat, globe.anchor_lng, dir);
+                camera_state.reanchor_request = Some((slat, slng, alt.max(SPACE_EXIT_ALT)));
+                // Stay in space this frame; the teleport repositions us.
+            } else if horiz <= REANCHOR_DISTANCE {
+                // Near home: hand back to the ground-focus orbit as before.
+                let focus = DVec3::new(cam_world.x, 0.0, cam_world.z);
+                let off = cam_world - focus;
+                let d = off.length().max(ORBIT_MIN_DISTANCE);
+                let ratio = camera_state.orbit_distance_target / camera_state.orbit_distance;
+                camera_state.orbit_space = false;
+                camera_state.orbit_focus = focus;
+                camera_state.orbit_distance = d;
+                camera_state.orbit_distance_target = (d * ratio).max(ORBIT_MIN_DISTANCE);
+                camera_state.orbit_yaw = off.x.atan2(off.z) as f32;
+                camera_state.orbit_pitch = ((off.y / d).clamp(-1.0, 1.0) as f32)
+                    .asin()
+                    .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
+            }
+        }
+    }
+    let space = camera_state.orbit_space;
+
+    // Gather drag deltas, split by gesture. In space, left-drag spins the
+    // globe (rotate); on the surface it pans the map, and rotate is on the
+    // middle button or Ctrl+left. Suppressed while egui/gizmo owns pointer.
+    let mut rot_delta = Vec2::ZERO;
+    let mut pan_delta = Vec2::ZERO;
+    // Space tier only: horizontal drag of the "turn the view" gesture,
+    // which spins the compass rather than the planet.
+    let mut heading_delta = 0.0_f32;
+    if gizmo_state.active_axis.is_some()
+        || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+    {
+        camera_state.pan_offset = None;
+        cursor_moved_events.clear();
+    } else {
+        let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
+            || keyboard_input.pressed(KeyCode::ControlRight);
+        // Google Earth's split: plain drag moves you over the planet,
+        // middle-drag (or Ctrl+drag) turns the *view* — compass heading in
+        // space, yaw/tilt on the surface. In space that keeps plain
+        // left-drag as "grab the globe and spin it" with north still up.
+        let turning = mouse_input.pressed(MouseButton::Middle)
+            || (ctrl && mouse_input.pressed(MouseButton::Left));
+        let rotating = turning || (space && mouse_input.pressed(MouseButton::Left));
+        let panning = !rotating && !space && mouse_input.pressed(MouseButton::Left);
+        if rotating || panning {
+            for event in cursor_moved_events.read() {
+                if let Some(last) = camera_state.pan_offset {
+                    let delta = event.position - last;
+                    if turning && space {
+                        heading_delta += delta.x;
+                    } else if rotating {
+                        rot_delta += delta;
+                    } else {
+                        pan_delta += delta;
+                    }
+                }
+                camera_state.pan_offset = Some(event.position);
+            }
+        } else {
+            camera_state.pan_offset = None;
+            cursor_moved_events.clear();
+        }
+
+        // Touch, mapped onto the same three deltas so everything below
+        // — sensitivity, the north lock, the auto-tilt floor — applies
+        // unchanged. The split follows the phone map convention rather
+        // than the mouse one: one finger is the *plain* drag (pan on the
+        // surface, spin the globe in space), and the turn/tilt gesture
+        // that the mouse puts on the middle button is the two-finger
+        // twist and the two-finger vertical drag.
+        //
+        // Only `two_drag.y` is used: a twist that isn't perfectly
+        // centred moves the centroid sideways, so a horizontal reading
+        // would double-count every rotation as a pan.
+        //
+        // The twist divides by `ORBIT_ROT_SENS` so the multiplication
+        // by it below cancels: a twist is measured in radians and lands
+        // as that many radians of view rotation, 1:1 with the fingers,
+        // while a drag stays in points and keeps the mouse's tuning.
+        if touch.pair() {
+            if space {
+                heading_delta += touch.twist / ORBIT_ROT_SENS;
+            } else {
+                rot_delta.x += touch.twist / ORBIT_ROT_SENS;
+                rot_delta.y += touch.two_drag.y;
+            }
+        } else if space {
+            rot_delta += touch.drag;
+        } else {
+            pan_delta += touch.drag;
+        }
+    }
+
+    // Wheel zoom: exponential toward/away from the pivot; clamps differ by
+    // tier (ground metres vs orbit distance from the Earth centre).
+    let (min_d, max_d) = if space {
+        // Down to the surface (alt 0); the exit handoff fires at
+        // SPACE_EXIT_ALT well before the camera reaches it.
+        (radius, ORBIT_MAX_DISTANCE_SPACE)
+    } else {
+        (ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE)
+    };
+    // The wheel moves a *target*; the camera glides toward it below, so
+    // zoom reads as a smooth fly instead of a per-notch height jump.
+    for event in mouse_wheel_events.read() {
+        let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
+        camera_state.orbit_distance_target = zoom_orbit_target(
+            camera_state.orbit_distance_target,
+            factor,
+            space,
+            radius,
+            (min_d, max_d),
+        );
+    }
+    // Pinch is the wheel without notches: the ratio the fingers moved
+    // apart by *is* the factor, so spreading them by half brings the
+    // ground half as close. Sharing `zoom_orbit_target` with the wheel is
+    // what keeps the space tier's "a step is a fraction of the altitude,
+    // not of the Earth's radius" rule applying to the fingers too.
+    if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+        camera_state.orbit_distance_target = zoom_orbit_target(
+            camera_state.orbit_distance_target,
+            1.0 / touch.pinch as f64,
+            space,
+            radius,
+            (min_d, max_d),
+        );
+    }
+    // The on-screen pair, for the hand that cannot spare a second finger
+    // (`systems::map_osd`). Through the same `zoom_orbit_target`, so it
+    // inherits the space tier's "a step is a fraction of the altitude"
+    // rule along with the wheel and the pinch.
+    if osd.zoom != 0.0 {
+        camera_state.orbit_distance_target = zoom_orbit_target(
+            camera_state.orbit_distance_target,
+            f64::from(osd_zoom_factor(osd.zoom, delta_time)),
+            space,
+            radius,
+            (min_d, max_d),
+        );
+    }
+    let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
+    let old_d = camera_state.orbit_distance;
+    camera_state.orbit_distance =
+        (old_d + (camera_state.orbit_distance_target - old_d) * glide).clamp(min_d, max_d);
+    // Per-frame zoom fraction (< 1 while flying in), which also paces the
+    // cursor homing so it tracks the glide rather than the wheel notches.
+    let zoom_factor = camera_state.orbit_distance / old_d;
+
+    // Zoom-toward-cursor (space): scrolling in homes the orbit onto the
+    // point under the cursor — cast the cursor ray onto the sphere and
+    // pull the pivot direction toward the hit by the zoom fraction. This
+    // is how you dive back to a specific spot on the globe (centre-locked
+    // zoom made re-finding a place nearly impossible).
+    if space && zoom_factor < 0.999 && !egui_manager.ctx.egui_wants_pointer_input() {
+        let cursor_hit = window
+            .and_then(|w| w.cursor_position())
+            .zip(cam_render)
+            .and_then(|(cursor, (cam, cam_gt))| {
+                // Proven ray construction (same call picking uses). The ray
+                // is in render space — world shifted by the camera's grid
+                // cell — so shift the sphere centre instead of the ray.
+                let ray = cam.viewport_to_world(cam_gt, cursor).ok()?;
+                let center_render = center - cell_origin(&camera_cell);
+                let origin = ray.origin.as_dvec3();
+                let dir = ray.direction.as_vec3().as_dvec3();
+                let oc = origin - center_render;
+                let b = oc.dot(dir);
+                let disc = b * b - (oc.length_squared() - radius * radius);
+                if disc < 0.0 {
+                    return None; // cursor misses the globe
+                }
+                let t = -b - disc.sqrt();
+                // Direction from the centre is translation-invariant, so
+                // it's valid in the world frame too.
+                (t > 0.0).then(|| (origin + dir * t - center_render).normalize())
+            });
+        if let Some(hit_dir) = cursor_hit {
+            // Pull the orbit toward the cursor point at the pace of the
+            // glide. Only the direction moves — up is re-derived from
+            // north below, so zooming never rolls the view.
+            let blend = ((1.0 - zoom_factor) * 1.5).clamp(0.0, 0.5);
+            camera_state.orbit_dir = camera_state.orbit_dir.lerp(hit_dir, blend).normalize();
+        }
+    }
+
+    // Compass lock: the view is *held* north-up, so the turn gesture is
+    // inert and the ease below is re-armed every frame.
+    let north_lock = camera_state.orbit_north_lock;
+
+    // Space: turn the view (compass heading) without moving the camera.
+    if space && heading_delta != 0.0 && !north_lock {
+        camera_state.orbit_heading -= heading_delta * ORBIT_ROT_SENS;
+        camera_state.orbit_north_reset = false;
+    }
+
+    // Apply rotation. Space: grab-and-spin the globe — horizontal drag
+    // rotates the orbit about the screen-up axis, vertical about
+    // screen-right, so the ground follows the cursor on both axes. Up is
+    // re-derived from north below rather than rotated along, so the
+    // horizon stays level and the view never rolls off north by itself.
+    // Surface: the yaw/pitch turntable as before.
+    if rot_delta != Vec2::ZERO {
+        if space {
+            // Grab-the-globe: scale radians-per-pixel so the ground under
+            // the cursor tracks the drag at any distance. Two regimes,
+            // take whichever is smaller:
+            //  - near: the visible ground patch subtends ~fov·(alt/R) of
+            //    central angle, so rotation shrinks with altitude (the old
+            //    far-field-only formula stayed too fast in the mid-range);
+            //  - far: the whole globe spans 2·asin(R/d) of the view, so a
+            //    full-window drag sweeps about one globe-height.
+            let h = window.map(|w| w.height()).unwrap_or(800.0);
+            let fov = match &**projection {
+                Projection::Perspective(p) => p.fov,
+                _ => std::f32::consts::FRAC_PI_4,
+            };
+            let d = camera_state.orbit_distance;
+            let near_arc = fov * (((d - radius) / radius).max(0.0) as f32);
+            let far_arc = 2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
+            let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
+            // Compass locked: spin about the true polar axis (north pinned
+            // up, longitude-only horizontal, latitude clamped short of the
+            // pole) instead of the screen-relative grab-the-globe rotate,
+            // so the view can no longer be carried around the poles.
+            camera_state.orbit_dir = if north_lock {
+                globe_spin_polar(
+                    camera_state.orbit_dir,
+                    globe.north_axis_local().as_dvec3(),
+                    rot_delta,
+                    sens,
+                )
+            } else {
+                globe_spin(
+                    camera_state.orbit_dir,
+                    globe.north_axis_local().as_dvec3(),
+                    camera_state.orbit_up,
+                    rot_delta,
+                    sens,
+                )
+            };
+        } else {
+            if !north_lock {
+                camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
+            }
+            camera_state.orbit_pitch = (camera_state.orbit_pitch + rot_delta.y * ORBIT_ROT_SENS)
+                .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
+        }
+    }
+
+    // Compass "north up" reset. Eases the view back to north without
+    // moving the pivot: on the surface, yaw → the nearest multiple of a
+    // full turn; in space, heading → 0. Any manual rotate this frame
+    // cancels it (grabbing the globe wins) — unless the compass is
+    // locked, in which case the ease is re-armed instead, so spinning
+    // the globe can never carry the poles off vertical.
+    if rot_delta != Vec2::ZERO && !north_lock {
+        camera_state.orbit_north_reset = false;
+    }
+    if north_lock {
+        camera_state.orbit_north_reset = true;
+    }
+    if camera_state.orbit_north_reset {
+        let k = (1.0 - (-NORTH_RESET_RATE * delta_time).exp()).clamp(0.0, 1.0);
+        if space {
+            // Take the short way round: a heading of 350° eases to 360°,
+            // not backwards through 180°.
+            let tau = std::f32::consts::TAU;
+            let target = (camera_state.orbit_heading / tau).round() * tau;
+            camera_state.orbit_heading += (target - camera_state.orbit_heading) * k;
+            if (target - camera_state.orbit_heading).abs() < 1e-4 {
+                camera_state.orbit_heading = 0.0;
+                camera_state.orbit_north_reset = false;
+            }
+        } else {
+            let target =
+                (camera_state.orbit_yaw / std::f32::consts::TAU).round() * std::f32::consts::TAU;
+            camera_state.orbit_yaw += (target - camera_state.orbit_yaw) * k;
+            if (target - camera_state.orbit_yaw).abs() < 1e-3 {
+                camera_state.orbit_yaw = target;
+                camera_state.orbit_north_reset = false;
+            }
+        }
+    }
+
+    // Google-Earth-style auto-tilt (surface orbit): pulling back raises a
+    // pitch floor toward top-down on a log ramp (2 km → 60 km), so zoom-out
+    // always lifts you *over* the map instead of leaving the camera parked
+    // at a grazing angle staring at the horizon/atmosphere. Tilting freely
+    // is still allowed up close, where oblique views are useful.
+    if !space {
+        let t = ((camera_state.orbit_distance / 2_000.0).ln() / (60_000.0f64 / 2_000.0).ln())
+            .clamp(0.0, 1.0) as f32;
+        let floor = ORBIT_PITCH_MIN + (1.30 - ORBIT_PITCH_MIN) * t;
+        if camera_state.orbit_pitch < floor {
+            camera_state.orbit_pitch = floor;
+        }
+    }
+
+    let (yaw, pitch) = (camera_state.orbit_yaw, camera_state.orbit_pitch);
+    let offset = spherical_offset(yaw, pitch, camera_state.orbit_distance);
+
+    // Pan (surface only): grab-and-drag the ground — the map follows the
+    // cursor on BOTH axes. The basis comes straight from the orbit yaw
+    // (exact even at near-nadir tilt, where a flattened camera-forward
+    // degenerates): `fwd_flat` is the horizontal camera→focus direction,
+    // i.e. "screen-up on the ground".
+    if pan_delta != Vec2::ZERO {
+        let (sy, cy) = (camera_state.orbit_yaw.sin(), camera_state.orbit_yaw.cos());
+        let fwd_flat = Vec3::new(-sy, 0.0, -cy);
+        let right = Vec3::new(cy, 0.0, -sy);
+        let scale = (camera_state.orbit_distance * ORBIT_PAN_FACTOR) as f32;
+        // Drag right → rig moves left → content follows the cursor right;
+        // drag down → rig moves screen-up on the ground → content slides
+        // down. (The vertical axis used to move the rig the other way —
+        // grab horizontally but inverted vertically, which is why panning
+        // felt "vice versa" up close while the space globe felt right.)
+        let shift = right * (-pan_delta.x * scale) + fwd_flat * (pan_delta.y * scale);
+        camera_state.orbit_focus += shift.as_dvec3();
+        camera_state.orbit_focus.y = 0.0;
+    }
+
+    // Place the camera: pivot + offset → big_space cell + local, then look
+    // at the pivot (ground focus, or the Earth centre in space). In space
+    // the up vector is derived fresh from the planet's north axis and the
+    // heading, so the horizon is level by construction — no drift to
+    // re-orthonormalize away, and no pole lock either (the sub-camera
+    // latitude is held short of the pole by `globe_spin`).
+    let (pivot, cam_world, look_up) = if space {
+        let dir = camera_state.orbit_dir;
+        let up = globe_up(
+            dir,
+            globe.north_axis_local().as_dvec3(),
+            camera_state.orbit_heading,
+            camera_state.orbit_up,
+        );
+        camera_state.orbit_up = up;
+        (
+            center,
+            center + dir * camera_state.orbit_distance,
+            up.as_vec3(),
+        )
+    } else {
+        (
+            camera_state.orbit_focus,
+            camera_state.orbit_focus + offset,
+            Vec3::Y,
+        )
+    };
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+    let (new_cell, local) = grid.translation_to_grid(cam_world);
+    *camera_cell = new_cell;
+    camera_transform.translation = local;
+    let pivot_local = (pivot - cell_origin(&new_cell)).as_vec3();
+    camera_transform.look_at(pivot_local, look_up);
+
+    // Earth now holds a real pose; re-entering restores it instead of
+    // reseeding from the current view (see `enter_mode`).
+    camera_state.orbit_has_pose = true;
 }
 
 /// Take the avatar's own model out of shot while the camera is inside its head,
