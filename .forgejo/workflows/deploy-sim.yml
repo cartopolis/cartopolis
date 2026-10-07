@@ -99,6 +99,52 @@ jobs:
               --create-admin smoketest
           echo "startup + migrations ok"
 
+      # The smoke test above migrates an *empty* database, which proves the
+      # migrations run and says nothing about whether they agree with the live
+      # one. They can disagree: this workflow deploys any ref, so the live schema
+      # can hold a V<n> that this ref names differently (divergent) or does not
+      # have at all (missing), and refinery refuses to start on either — after the
+      # swap, so `Restart=always` crash-loops it. That took the public simulator
+      # down for ten minutes on 2026-08-29
+      # (docs/notes/migration-numbers-are-claimed-by-a-deploy.md). So migrate a
+      # *copy* of the live database with the new binary first; failing here
+      # leaves the old binary serving.
+      #
+      # A plain copy, because the image has no sqlite3 for `.backup`: the WAL is
+      # copied beside the main file and replayed on open. A write landing
+      # mid-copy can tear it, which shows up as "malformed" rather than as a
+      # refinery error, so that one case is retried once on a fresh copy.
+      - name: Migrate a copy of the live database
+        run: |
+          live=/publish/data/world.db
+          if [ ! -f "$live" ]; then
+            echo "no live database at $live — nothing to check against"
+            exit 0
+          fi
+          attempt() {
+            rm -rf /tmp/livecopy && mkdir -p /tmp/livecopy
+            cp "$live" /tmp/livecopy/world.db
+            [ -f "$live-wal" ] && cp "$live-wal" /tmp/livecopy/world.db-wal
+            CARTO_ADMIN_PASSWORD=smoke-test-not-a-real-password \
+              ./target/sim-release/simulator \
+                --database-path /tmp/livecopy/world.db \
+                --create-admin smoketest-live-copy 2>&1 | tee /tmp/livecopy.log
+            return "${PIPESTATUS[0]}"
+          }
+          if ! attempt; then
+            if grep -qi "malformed" /tmp/livecopy.log; then
+              echo "torn copy — retrying once"
+              attempt || { rm -rf /tmp/livecopy; exit 1; }
+            else
+              rm -rf /tmp/livecopy
+              echo "::error::this ref's migrations do not agree with the live database — not publishing. See docs/notes/migration-numbers-are-claimed-by-a-deploy.md"
+              exit 1
+            fi
+          fi
+          # It holds every account's row; do not leave it in the job container.
+          rm -rf /tmp/livecopy
+          echo "live schema + this ref's migrations ok"
+
       # Written to a temporary name and moved into place: a copy that is
       # interrupted half-way leaves a truncated file, and `Restart=always` would
       # then loop on it. `mv` within one filesystem is atomic.

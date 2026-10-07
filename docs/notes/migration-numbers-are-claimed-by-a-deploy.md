@@ -1,7 +1,7 @@
 ---
 topic: migration-numbers-are-claimed-by-a-deploy
 triggers: [refinery, migrations, "V1", "add a migration", deploy-sim, "refinery migrate", "divergent", "MissingVersion", world.db, schema]
-updated: 2026-08-29
+updated: 2026-10-07
 ---
 
 # A migration number is claimed by a deploy, not by a merge
@@ -62,3 +62,20 @@ Read the live history, not the directory listing:
 A gap in the on-disk numbering is fine — `refinery` applies whatever it finds
 with a version above the current one, so a fresh database is happy with
 `1..10, 13, 14`. Two files sharing a number never is.
+
+## What now catches it (2026-10-07)
+
+Two guards, one at each end, because the clash can be made at either:
+
+- **Landing.** `merge-to-main` runs `.claude/skills/finish-branch/check-numbers.ts`
+  before it rebases. It refuses a branch that added a `Vnn__` main has since
+  added as something else, and — when `ssh host` works — one whose `Vnn__`
+  disagrees with the live `refinery_schema_history` or sits below its highest
+  version. The same script checks `PROTOCOL_HISTORY` revisions and
+  `MessageKind` numbers, which collide the same way.
+- **Deploy.** `deploy-sim.yml` migrates a *copy* of the live database with the
+  new binary before publishing it. Divergent or missing fails the job there, and
+  the old binary keeps serving instead of crash-looping.
+
+Neither stops somebody deploying an unmerged branch; they make the cost of
+having done so a refused landing or a refused deploy, not an outage.
