@@ -346,15 +346,106 @@ mod phone {
         LOST.store(false, Ordering::Relaxed);
         // SAFETY: `open` and `pump` follow Camera2's documented call order and
         // `Held` owns every handle until it is dropped here.
-        let result = unsafe { open().and_then(|(held, turn)| pump(shared, &held, turn)) };
+        let result = unsafe {
+            open(true).and_then(|(held, lens)| pump(shared, &held, lens.orientation_deg))
+        };
         if let Err(e) = result {
             fail(e);
         }
     }
 
-    /// Pick a camera, open it, and start it streaming into an image reader.
-    /// Returns the handles and how far to turn each picture.
-    unsafe fn open() -> Result<(Held, u32), String> {
+    /// The **back** camera as timestamped greyscale frames, for the
+    /// high-precision mode (`platform::precise_sensors`): `on_lens` once
+    /// with what the camera says about itself, then `on_frame(t_ns, width,
+    /// height, luma)` for every frame until `stop`. Blocks; run it on a thread
+    /// of its own.
+    ///
+    /// Greyscale because the localiser matches edges and tracks corners, and
+    /// colour is three times the bytes for neither; the Y plane of
+    /// `YUV_420_888` *is* the greyscale image, so this is a copy and not a
+    /// conversion. Frames are not turned: the lens's own orientation is in the
+    /// `Lens`, and turning would move the principal point the intrinsics name.
+    ///
+    /// Shares the device-lost flag with the call camera, so a call and a
+    /// capture at once would each see the other's loss — two cameras open at
+    /// once is not something either path supports.
+    pub fn run_back_gray(
+        stop: &AtomicBool,
+        on_lens: impl FnOnce(cartopolis_core::lens::Lens),
+        mut on_frame: impl FnMut(i64, u32, u32, Vec<u8>),
+    ) -> Result<(), String> {
+        match crate::platform::android::ensure_permission(
+            crate::platform::android::PERM_CAMERA,
+            stop,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err("Camera access was refused. High precision needs the \
+                            camera; it can be allowed in the system settings for \
+                            this app."
+                    .into())
+            }
+            Err(e) => return Err(format!("Camera: {e}")),
+        }
+        LOST.store(false, Ordering::Relaxed);
+        // SAFETY: as `run`: Camera2's documented call order, every handle owned
+        // by `Held` until it drops at the end of this block.
+        unsafe {
+            let (held, lens) = open(false)?;
+            on_lens(lens);
+            while !stop.load(Ordering::Relaxed) {
+                if LOST.load(Ordering::Relaxed) {
+                    return Err("The camera was taken by another app".into());
+                }
+                let mut image = null_mut();
+                if sys::AImageReader_acquireLatestImage(held.reader, &mut image)
+                    != sys::media_status_t::AMEDIA_OK
+                    || image.is_null()
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                let mut t_ns = 0i64;
+                sys::AImage_getTimestamp(image, &mut t_ns);
+                let frame = read_luma(image);
+                sys::AImage_delete(image);
+                if let Some((w, h, luma)) = frame {
+                    on_frame(t_ns, w, h, luma);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Plane 0 of a `YUV_420_888` image, tightly packed (the row stride
+    /// dropped).
+    unsafe fn read_luma(image: *mut sys::AImage) -> Option<(u32, u32, Vec<u8>)> {
+        let (mut w, mut h) = (0, 0);
+        sys::AImage_getWidth(image, &mut w);
+        sys::AImage_getHeight(image, &mut h);
+        let (mut data, mut len, mut row) = (null_mut(), 0, 0);
+        let good = sys::AImage_getPlaneData(image, 0, &mut data, &mut len)
+            == sys::media_status_t::AMEDIA_OK
+            && sys::AImage_getPlaneRowStride(image, 0, &mut row) == sys::media_status_t::AMEDIA_OK
+            && !data.is_null()
+            && w > 0
+            && h > 0;
+        if !good {
+            return None;
+        }
+        let (w, h, row) = (w as usize, h as usize, row as usize);
+        let plane = std::slice::from_raw_parts(data, len as usize);
+        let mut out = Vec::with_capacity(w * h);
+        for y in 0..h {
+            out.extend_from_slice(plane.get(y * row..y * row + w)?);
+        }
+        Some((w as u32, h as u32, out))
+    }
+
+    /// Pick a camera (the front one for a call, the back one for a capture),
+    /// open it, and start it streaming into an image reader. Returns the
+    /// handles and what the camera says about itself.
+    unsafe fn open(front: bool) -> Result<(Held, cartopolis_core::lens::Lens), String> {
         let mut held = Held {
             manager: sys::ACameraManager_create(),
             device: null_mut(),
@@ -368,8 +459,8 @@ mod phone {
         if held.manager.is_null() {
             return Err("Camera: no camera service".into());
         }
-        let (id, turn) = choose(held.manager)?;
-        tracing::info!(camera = %id.to_string_lossy(), turn, "opening the camera");
+        let (id, lens) = choose(held.manager, front)?;
+        tracing::info!(camera = %id.to_string_lossy(), ?lens, "opening the camera");
 
         let format = sys::AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888.0 as i32;
         if sys::AImageReader_new(ASK.0, ASK.1, format, 3, &mut held.reader)
@@ -450,14 +541,15 @@ mod phone {
             ),
             "starting the stream",
         )?;
-        Ok((held, turn))
+        Ok((held, lens))
     }
 
-    /// The front camera if there is one, else the first; and its sensor's
-    /// orientation.
+    /// The camera facing the wanted way if there is one, else the first; and
+    /// what it reports about its lens.
     unsafe fn choose(
         manager: *mut sys::ACameraManager,
-    ) -> Result<(std::ffi::CString, u32), String> {
+        want_front: bool,
+    ) -> Result<(std::ffi::CString, cartopolis_core::lens::Lens), String> {
         let mut list = null_mut();
         ok(
             sys::ACameraManager_getCameraIdList(manager, &mut list),
@@ -467,7 +559,7 @@ mod phone {
             .map(|i| CStr::from_ptr(*(*list).cameraIds.add(i)).to_owned())
             .collect();
         sys::ACameraManager_deleteCameraIdList(list);
-        let mut best: Option<(std::ffi::CString, u32, bool)> = None;
+        let mut best: Option<(std::ffi::CString, cartopolis_core::lens::Lens, bool)> = None;
         for id in ids {
             let mut meta = null_mut();
             if sys::ACameraManager_getCameraCharacteristics(manager, id.as_ptr(), &mut meta)
@@ -484,24 +576,61 @@ mod phone {
                 && entry.count > 0
                 && u32::from(*entry.data.u8_)
                     == sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_FRONT.0;
-            let turn = if sys::ACameraMetadata_getConstEntry(
-                meta,
-                sys::acamera_metadata_tag::ACAMERA_SENSOR_ORIENTATION.0,
-                &mut entry,
-            ) == sys::camera_status_t::ACAMERA_OK
-                && entry.count > 0
-            {
-                (*entry.data.i32_).rem_euclid(360) as u32
-            } else {
-                0
-            };
+            let lens = read_lens(meta);
             sys::ACameraMetadata_free(meta);
-            if best.as_ref().is_none_or(|b| front && !b.2) {
-                best = Some((id, turn, front));
+            let wanted = front == want_front;
+            // The first camera facing the wanted way: on a phone with several
+            // back cameras the first listed is the main one.
+            if best.as_ref().is_none_or(|b| wanted && b.2 != want_front) {
+                best = Some((id, lens, front));
             }
         }
-        best.map(|(id, turn, _)| (id, turn))
+        best.map(|(id, lens, _)| (id, lens))
             .ok_or_else(|| "No camera on this device".into())
+    }
+
+    /// What a camera's characteristics say about its lens, for the localiser.
+    /// Every tag is optional on Android, and a missing one is `None` rather
+    /// than a guess.
+    unsafe fn read_lens(meta: *const sys::ACameraMetadata) -> cartopolis_core::lens::Lens {
+        let entry = |tag: sys::acamera_metadata_tag| {
+            let mut e = std::mem::zeroed::<sys::ACameraMetadata_const_entry>();
+            (sys::ACameraMetadata_getConstEntry(meta, tag.0, &mut e)
+                == sys::camera_status_t::ACAMERA_OK
+                && e.count > 0)
+                .then_some(e)
+        };
+        let floats = |tag, n: usize| {
+            entry(tag)
+                .filter(|e| e.count as usize >= n)
+                .map(|e| std::slice::from_raw_parts(e.data.f, n).to_vec())
+        };
+        use sys::acamera_metadata_tag as Tag;
+        cartopolis_core::lens::Lens {
+            intrinsics: floats(Tag::ACAMERA_LENS_INTRINSIC_CALIBRATION, 5)
+                .map(|v| [v[0], v[1], v[2], v[3], v[4]]),
+            distortion: floats(Tag::ACAMERA_LENS_DISTORTION, 5)
+                .map(|v| [v[0], v[1], v[2], v[3], v[4]]),
+            pose_rotation: floats(Tag::ACAMERA_LENS_POSE_ROTATION, 4)
+                .map(|v| [v[0], v[1], v[2], v[3]]),
+            pose_translation: floats(Tag::ACAMERA_LENS_POSE_TRANSLATION, 3)
+                .map(|v| [v[0], v[1], v[2]]),
+            pose_reference: entry(Tag::ACAMERA_LENS_POSE_REFERENCE).map(|e| *e.data.u8_),
+            active_array: entry(Tag::ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                .filter(|e| e.count >= 4)
+                .map(|e| {
+                    let v = std::slice::from_raw_parts(e.data.i32_, 4);
+                    [v[0], v[1], v[2], v[3]]
+                }),
+            orientation_deg: entry(Tag::ACAMERA_SENSOR_ORIENTATION)
+                .map_or(0, |e| (*e.data.i32_).rem_euclid(360) as u32),
+            realtime_timestamps: entry(Tag::ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE).is_some_and(
+                |e| {
+                    u32::from(*e.data.u8_)
+                        == sys::acamera_metadata_enum_acamera_sensor_info_timestamp_source::ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME.0
+                },
+            ),
+        }
     }
 
     /// Take pictures until told to stop or the camera goes away.
@@ -558,6 +687,9 @@ mod phone {
         I420::from_planes(w as u32, h as u32, plane(0)?, plane(1)?, plane(2)?)
     }
 }
+
+#[cfg(target_os = "android")]
+pub use phone::run_back_gray;
 
 /// A picture of the person themselves as RGBA, at most `max_width` wide:
 /// **mirrored**, as a mirror shows you. What is sent is not mirrored (the

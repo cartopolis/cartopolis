@@ -230,12 +230,21 @@ pub enum LocateState {
 /// hover on a phone, and this is the platform the feature exists for. So
 /// [`GpsQuality::caption`] repeats the essential word or two under the button,
 /// where a thumb can see it without pressing anything.
+///
+/// **A long press (or a right-click) opens the button's menu**, which holds the
+/// one switch it has: High precision, the camera mode
+/// (`systems::high_precision`). `high` is that switch, flipped in place;
+/// `high_status` is what the mode is doing, and replaces the GPS caption while
+/// there is something to say. A long touch also reports `clicked()`, so the
+/// toggle is guarded with `!long_touched()` the way `bookmarks::place_row` is.
 fn locate_overlay(
     ctx: &egui::Context,
     top: f32,
     state: LocateState,
     gps: GpsQuality,
     hover: &str,
+    high: &mut bool,
+    high_status: Option<&str>,
 ) -> bool {
     let mut clicked = false;
     let on = matches!(state, LocateState::Tracking);
@@ -300,11 +309,34 @@ fn locate_overlay(
             // other report this button can make is in `hover`, and a touch device
             // has no hover. Under the disc rather than beside it, so the column
             // keeps its single centre line (`column_x`).
-            if let Some(caption) = gps.caption().filter(|_| on) {
+            let caption = high_status
+                .map(str::to_owned)
+                .or_else(|| gps.caption().filter(|_| on));
+            if let Some(caption) = caption {
                 halo_text(p, egui::pos2(c.x, c.y + face.radius + 8.0), &caption, tone);
             }
-            resp.clone().on_hover_text(hover);
-            clicked = resp.clicked();
+            let resp = resp.on_hover_text(hover);
+            clicked = resp.clicked() && !resp.long_touched();
+            resp.context_menu(|ui| {
+                let available = crate::systems::high_precision::HighPrecision::available();
+                ui.add_enabled_ui(available, |ui| {
+                    if theme::checkbox(ui, high, "High precision (camera)").changed() {
+                        ui.close();
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(if available {
+                        "Pins your position down to centimetres with the back camera \
+                         and the buildings around you. The positioning itself is not \
+                         built yet; Developer tools ▸ Precision shows what the \
+                         sensors report."
+                    } else {
+                        "Needs a phone's camera and motion sensors."
+                    })
+                    .size(theme::SIZE_CHIP)
+                    .color(theme::TEXT_DIM),
+                );
+            });
         });
     clicked
 }
@@ -601,6 +633,7 @@ pub fn render_map_controls(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
     chat: Res<crate::systems::chat::ChatState>,
+    mut high: ResMut<crate::systems::high_precision::HighPrecision>,
 ) {
     // A chat's World view has the top of the screen for its header, as the
     // design draws it (`chats::render_chat_world`).
@@ -743,13 +776,21 @@ pub fn render_map_controls(
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        if locate_overlay(
+        let high_status = high.status();
+        let mut high_on = high.on;
+        let toggled = locate_overlay(
             egui.ctx(),
             column + theme::OSD_GAP,
             state,
             tracking.gps,
             &hover,
-        ) {
+            &mut high_on,
+            high_status.as_deref(),
+        );
+        if high_on != high.on {
+            high.on = high_on;
+        }
+        if toggled {
             match state {
                 // Recenter, in the view the user is already in. The button used to
                 // force Follow on the way in, which made "where am I" a one-way
@@ -761,6 +802,9 @@ pub fn render_map_controls(
                 LocateState::Tracking => {
                     camera_state.follow_rotate = false;
                     tracking.exit();
+                    // The camera mode rides on the button's fixes; switching
+                    // the button off ends it too.
+                    high.on = false;
                 }
             }
         }

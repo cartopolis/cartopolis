@@ -2,7 +2,7 @@
 
 pub mod error;
 pub mod geo;
-
+pub mod lens;
 pub mod model_limits;
 pub mod moderation;
 pub mod motion;

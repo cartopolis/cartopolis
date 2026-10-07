@@ -1304,6 +1304,68 @@ fn share_text_inner(
     })
 }
 
+/// Put `text` on the system clipboard (`ClipboardManager.setPrimaryClip`), for
+/// `utils::clipboard::set_text` — so a developer log or a place link can be
+/// copied on the phone and pasted into a chat.
+///
+/// Through the *application* context, like [`share_text`]: it is a binder call
+/// that needs no window, so any thread attached to the JVM may make it. Android
+/// 10+ only lets an app *read* the clipboard while focused; writing is allowed,
+/// and Android 13+ shows its own "copied" toast.
+pub fn copy_text(label: &str, text: &str) -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame::<_, _, Fail>(8, |env| {
+        let app_ctx = env
+            .call_method(
+                &activity,
+                "getApplicationContext",
+                "()Landroid/content/Context;",
+                &[],
+            )?
+            .l()?;
+        let service: JObject = env.new_string("clipboard")?.into();
+        let manager = env
+            .call_method(
+                &app_ctx,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Err(Fail("no clipboard service".into()));
+        }
+        let label: JObject = env.new_string(label)?.into();
+        let text: JObject = env.new_string(text)?.into();
+        let clip = env
+            .call_static_method(
+                "android/content/ClipData",
+                "newPlainText",
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                &[JValue::Object(&label), JValue::Object(&text)],
+            )?
+            .l()?;
+        env.call_method(
+            &manager,
+            "setPrimaryClip",
+            "(Landroid/content/ClipData;)V",
+            &[JValue::Object(&clip)],
+        )?;
+        Ok(())
+    });
+    match result {
+        Ok(()) => Ok(()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
 /// The number of trailing log lines [`own_logcat`] asks logd for.
 ///
 /// **Raised from 600 on 2026-08-14, because 600 covered fifteen seconds.** The

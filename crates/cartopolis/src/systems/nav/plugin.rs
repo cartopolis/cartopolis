@@ -28,6 +28,8 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::driver::DriverState>()
             .init_resource::<systems::walk_guide::WalkGuide>()
             .init_resource::<systems::locate::LocateTracking>()
+            .init_resource::<systems::high_precision::HighPrecision>()
+            .init_resource::<systems::high_precision::HighPrecisionLog>()
             .init_resource::<systems::route_ahead::RouteAhead>()
             .init_resource::<systems::traffic::DriveNetwork>();
 
@@ -128,6 +130,10 @@ impl Plugin for NavPlugin {
                     .after(systems::driver::drive_driver_mode)
                     .after(avatar::handle_avatar_movement)
                     .before(systems::free_camera::camera_controls),
+                // The camera mode on the locate button: after the button's own
+                // tick, so the fix and heading it records are this frame's.
+                systems::high_precision::drive_high_precision
+                    .after(systems::locate::track_device_pose),
                 // Walking a route in the world (`systems::walk_guide`): measured
                 // from where the avatar just moved to, and before the solver for
                 // the same reason the drive tick is — a reroute it asks for is

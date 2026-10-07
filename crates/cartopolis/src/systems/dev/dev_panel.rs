@@ -77,10 +77,18 @@ pub enum DevTab {
     View,
     Profiler,
     Switches,
+    /// The high-precision mode's log (`systems::high_precision`), to copy.
+    Precision,
 }
 
 impl DevTab {
-    pub const ALL: [Self; 4] = [Self::Frame, Self::View, Self::Profiler, Self::Switches];
+    pub const ALL: [Self; 5] = [
+        Self::Frame,
+        Self::View,
+        Self::Profiler,
+        Self::Switches,
+        Self::Precision,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -89,6 +97,7 @@ impl DevTab {
             Self::View => "View",
             Self::Profiler => "Profiler",
             Self::Switches => "Switches",
+            Self::Precision => "Precision",
         }
     }
 }
@@ -175,6 +184,7 @@ pub fn render_dev_panel(
     view: DevView,
     mut copied_at: Local<Option<Instant>>,
     mut cache: Local<CensusCache>,
+    mut precision_log: ResMut<crate::systems::high_precision::HighPrecisionLog>,
 ) {
     if !dev.open {
         return;
@@ -247,6 +257,7 @@ pub fn render_dev_panel(
                     }
                     DevTab::Profiler => profiler_tab(ui, &readouts.diagnostics),
                     DevTab::Switches => switches_tab(ui, &mut edited),
+                    DevTab::Precision => precision_tab(ui, &mut precision_log),
                 });
         });
     if edited != *prefs {
@@ -691,6 +702,38 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
 /// cable, an `adb` and a machine that is not the phone — and the Adreno sky bug
 /// spent four days with its own instrument built and unreachable by the person
 /// holding the device.
+/// The high-precision mode's log: what its sensors reported, as text to copy
+/// off the phone and paste into a chat. Long-press the locate button ▸ High
+/// precision to fill it.
+fn precision_tab(ui: &mut egui::Ui, log: &mut crate::systems::high_precision::HighPrecisionLog) {
+    if log.is_empty() {
+        theme::note(
+            ui,
+            "Nothing yet. Long-press the locate button and switch on High precision; \
+             what the camera and sensors report is written here every few seconds.",
+        );
+        return;
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Copy").clicked() {
+            crate::utils::clipboard::set_text(&log.text());
+        }
+        if ui.button("Clear").clicked() {
+            log.clear();
+        }
+    });
+    egui::ScrollArea::vertical()
+        .max_height(320.0)
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(log.text())
+                    .monospace()
+                    .size(theme::SIZE_CHIP),
+            );
+        });
+}
+
 fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
     use crate::resources::DebugSwitches;
 
@@ -877,6 +920,7 @@ mod tests {
             DevTab::View,
             DevTab::Profiler,
             DevTab::Switches,
+            DevTab::Precision,
         ] {
             assert!(DevTab::ALL.contains(&tab), "{tab:?} is not in the tab row");
             assert!(!tab.label().is_empty());

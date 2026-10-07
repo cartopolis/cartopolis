@@ -7,6 +7,9 @@ pub use plugin::NavPlugin;
 
 pub mod driver;
 pub mod geo_nav;
+// The camera mode on the locate button: today, the sensor capture the camera
+// localiser is to be developed against.
+pub mod high_precision;
 pub mod locate;
 pub mod meetup;
 pub mod navigation;

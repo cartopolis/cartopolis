@@ -60,17 +60,21 @@ mod imp {
     //! `getPrimaryClip`), which has to happen on a thread attached to the JVM and
     //! therefore wants the same async shape the web arm has.
     //!
-    //! Left as an honest no-op rather than half-wired, because neither half is
-    //! reachable in a useful way on the Phase-1 build: paste feeds the address bar,
-    //! which cannot be typed into without a soft keyboard
-    //! (`docs/notes/android-build.md`), and copy is the dev panel's "copy as
-    //! preset" — a button that hands you a `[[shot]]` block for `docs/shots.toml`,
-    //! i.e. for a workstation. Both go in with the JNI, together.
+    //! **Copy is wired, paste is not.** Copy goes through
+    //! `platform::android::copy_text` (2026-10-07), because the developer tools'
+    //! logs are meant to be copied on the phone and pasted into a chat — the
+    //! high-precision log first. Paste stays `None`: it feeds fields that need a
+    //! soft keyboard to be useful, and Android 10+ refuses a clipboard read from
+    //! an app that is not focused, which a JNI call from a worker can trip.
     pub fn get_text() -> Option<String> {
         None
     }
 
-    pub fn set_text(_text: &str) {}
+    pub fn set_text(text: &str) {
+        if let Err(e) = crate::platform::android::copy_text("Cartopolis", text) {
+            tracing::warn!(error = %e, "clipboard copy failed");
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

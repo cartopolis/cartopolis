@@ -40,6 +40,8 @@ pub mod location;
 pub mod model_file;
 pub mod orientation;
 pub mod photo;
+// Compiled everywhere so its holders need no `cfg`; it captures on Android only.
+pub mod precise_sensors;
 pub mod storage;
 pub mod stream;
 pub mod warm;

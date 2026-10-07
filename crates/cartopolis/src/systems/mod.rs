@@ -75,6 +75,7 @@ pub use map::{
     sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tunnels,
     vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
+pub use nav::high_precision;
 pub use nav::{
     driver, geo_nav, locate, meetup, navigation, place_link, route_ahead, traffic, transit_live,
     transit_vehicles, walk_guide,
