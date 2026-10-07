@@ -39,12 +39,7 @@
 //! the one place the Graphics settings reach the camera, and [`update_sun_rays`]
 //! writes where the sun is on screen every frame.
 
-use bevy::core_pipeline::fullscreen_material::FullscreenMaterial;
 use bevy::prelude::*;
-use bevy::render::extract_component::ExtractComponent;
-use bevy::render::render_resource::ShaderType;
-use bevy::render::sync_component::SyncComponent;
-use bevy::shader::ShaderRef;
 
 use crate::components::FreeCamera;
 use crate::systems::sky::SunLight;
@@ -59,45 +54,10 @@ const STRENGTH: f32 = 1.1;
 /// hard cut at the edge would pop as the camera turns.
 const OFFSCREEN_FADE: f32 = 1.8;
 
-/// The pass's uniform, and the marker that turns it on for a camera.
-///
-/// Laid out for WGSL as `SunRays` in `sun_rays.wgsl`: keep the two in step.
-#[derive(Component, Default, Clone, Copy, ShaderType)]
-pub struct SunRays {
-    /// Where the sun is in the frame, 0..1 with y down (it may lie outside).
-    pub sun_uv: Vec2,
-    /// 0 skips the pass's work entirely: sun behind the camera, under the
-    /// horizon, or too far off screen.
-    pub strength: f32,
-    /// Width over height, so the shader's falloff around the sun is round.
-    pub aspect: f32,
-    /// The sunlight's colour, brightest channel 1.
-    pub tint: Vec4,
-}
-
-impl SyncComponent for SunRays {
-    type Target = Self;
-}
-
-/// Extracted only while there are beams to draw. The pass is a full read and write of
-/// the frame whatever `strength` says, and `strength` is 0 at night, with the sun
-/// behind the camera, or with it far off screen — most frames. With nothing in the
-/// render world, bevy drops the pass for that view.
-impl ExtractComponent for SunRays {
-    type QueryData = &'static Self;
-    type QueryFilter = ();
-    type Out = Self;
-
-    fn extract_component(rays: &Self) -> Option<Self> {
-        (rays.strength > 0.0).then_some(*rays)
-    }
-}
-
-impl FullscreenMaterial for SunRays {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/sun_rays.wgsl".into()
-    }
-}
+// The pass's uniform and its `FullscreenMaterial` impl live in
+// `cartopolis_materials`, so that Bevy's plugin code for it is generated there
+// rather than in this crate.
+pub use cartopolis_materials::sun_rays::SunRays;
 
 /// Write where the sun is on screen, and whether it can cast beams at all.
 ///

@@ -2327,6 +2327,7 @@ dependencies = [
  "cartopolis_core",
  "cartopolis_e2ee",
  "cartopolis_geo",
+ "cartopolis_materials",
  "cartopolis_mcp",
  "cartopolis_simulator",
  "clap",
@@ -2482,6 +2483,15 @@ dependencies = [
  "tiny-skia 0.12.0",
  "tracing",
  "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "cartopolis_materials"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "bevy_image",
+ "cartopolis_core",
 ]
 
 [[package]]

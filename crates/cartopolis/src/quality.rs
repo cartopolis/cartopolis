@@ -859,6 +859,13 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREFERRED: Mutex<Option<&'static str>> = Mutex::new(None);
 
 fn install(budget: Budget) {
+    // The cloud deck's phone variant is a shader def chosen when its pipeline is
+    // specialised (`cartopolis_materials::sky::CloudMaterial`), and that crate
+    // cannot read this budget, so it is told here. `install` runs from `init`, at
+    // the top of `run()` before the `App` and therefore before any pipeline
+    // exists, and from `select` on every preset swap — the two moments
+    // `is_phone()` could change its answer.
+    cartopolis_materials::sky::set_low_clouds(budget.tier == Tier::Phone);
     BUDGET.store(Box::into_raw(Box::new(budget)), Ordering::Release);
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
@@ -982,6 +989,9 @@ pub fn budget() -> &'static Budget {
                 theirs
             }
         };
+        // The same notice `install` gives, for the budget resolved here instead.
+        // SAFETY: as below — `ptr` came from `Box::into_raw` and is never freed.
+        cartopolis_materials::sky::set_low_clouds(unsafe { &*ptr }.tier == Tier::Phone);
     }
     // SAFETY: every pointer ever stored in `BUDGET` came from `Box::into_raw` and
     // is never freed — a swap leaks the old one on purpose (see `BUDGET`).

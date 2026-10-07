@@ -1,0 +1,46 @@
+# The client's custom render materials: the types, their `Material` /
+# `MaterialExtension` impls, and the one plugin that registers all of them.
+#
+# It is a separate crate for a measured reason, not tidiness. Bevy's
+# `MaterialPlugin` machinery is generic over the material type, so every
+# `MaterialPlugin::<M>` registered inside `cartopolis` was monomorphised there —
+# about 1.5 % of the client's generated LLVM IR per material, ~24 % in all
+# (`cargo llvm-lines`, 2026-10-07). Instantiated here instead, that code is
+# generated once per change to this crate rather than once per client build and
+# again for the client's `cfg(test)` build. See docs/notes/client-build-cost.md.
+#
+# The rule that keeps it that way: only the types, their derives and their
+# material impls live here. Systems, resources and helpers that *use* them stay
+# in `cartopolis`, which re-exports each type from the module it used to live in.
+[package]
+name = "cartopolis_materials"
+version.workspace = true
+edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
+
+[lib]
+name = "cartopolis_materials"
+path = "src/lib.rs"
+# Same reason as cartopolis's: rustdoc does not receive .cargo/config.toml's
+# `rustflags`, so a doc-test would build without target-cpu=x86-64-v3.
+doctest = false
+
+[dependencies]
+# Declared exactly as `cartopolis` declares it, workspace entry and the Linux
+# `wayland` feature below alike. A different feature set here would resolve to a
+# second build of the whole Bevy stack whenever this crate is built on its own.
+bevy.workspace = true
+# Not used directly. The client declares it for its `zstd_rust` feature, and
+# without that feature the workspace's Bevy features leave `bevy_image` with zstd
+# support and no backend, a `compile_error!` — so this crate built on its own
+# (`-p cartopolis_materials`) did not compile until it named it too.
+bevy_image.workspace = true
+# `ParticleEffect`, which `ParticleMaterial::from_effect` reads.
+cartopolis_core = { path = "../core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { workspace = true, features = ["wayland"] }
+
+[lints]
+workspace = true

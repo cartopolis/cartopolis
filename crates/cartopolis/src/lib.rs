@@ -4,7 +4,6 @@ use bevy::light::DirectionalLightShadowMap;
 // in favour of `tracing_subscriber`, Android reconfigures it. See `run`.
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::log::LogPlugin;
-use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
@@ -800,41 +799,14 @@ fn run_client() {
         .add_plugins(systems::pipeline_health::PipelineHealthPlugin)
         // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
         // PbrPlugin); it's attached as a component to the camera in setup_camera.
-        .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
-        .add_plugins(MaterialPlugin::<sky::StarFieldMaterial>::default())
-        .add_plugins(MaterialPlugin::<sky::MoonMaterial>::default())
-        .add_plugins(MaterialPlugin::<sky::HorizonHazeMaterial>::default())
-        // The sky for adapters that cannot run the atmosphere above (its module
-        // header has the whole story). The plugin is added unconditionally — the
-        // shell is only spawned on the runs that need it.
-        .add_plugins(MaterialPlugin::<systems::sky_dome::SkyDomeMaterial>::default())
-        .add_plugins(MaterialPlugin::<sky::CloudMaterial>::default())
-        // Sunbeams: a full-screen pass on the camera, switched by `render_features`.
-        .add_plugins(
-            bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin::<
-                systems::sun_rays::SunRays,
-            >::default(),
-        )
-        .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
-        .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
-        .add_plugins(MaterialPlugin::<systems::particles::ParticleMaterial>::default())
-        .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
-        // The basemap and the ground surfaces, carrying the half-metre residual slope
-        // the geometry is too coarse to hold (`systems::ground_detail`).
-        .add_plugins(MaterialPlugin::<systems::ground_detail::GroundMaterial>::default())
-        // The LoD2.2 buildings' walls, with the window pattern on them
-        // (`systems::building_windows`).
-        .add_plugins(MaterialPlugin::<systems::building_windows::BuildingMaterial>::default())
-        // The far building tier's own material: the same `StandardMaterial`, plus a
-        // vertex stage that takes the outermost ring down into the map rather than
-        // ending the city at a cell edge (`systems::building_fade`).
-        .add_plugins(MaterialPlugin::<systems::building_fade::FarBuildingMaterial>::default())
-        .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
-        // Roads and their casings. The ladder that decides which of two
-        // overlapping ribbons is on top rides in a vertex attribute, so the road
-        // groups need a pipeline that declares it (`systems::road_depth`).
-        .add_plugins(MaterialPlugin::<systems::road_depth::RoadMaterial>::default())
-        .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
+        //
+        // Every custom material's `MaterialPlugin`, plus the sunbeams'
+        // `FullscreenMaterialPlugin`, in the order they were registered here before
+        // they moved. They live in `cartopolis_materials` because Bevy's
+        // per-material plugin code is monomorphised wherever the plugin is named,
+        // and here it was about a quarter of this crate's generated LLVM IR
+        // (docs/notes/client-build-cost.md).
+        .add_plugins(cartopolis_materials::MaterialsPlugin)
         // The launch's own state: resources `lib.rs` defines, or whose value comes
         // from the command line, the user store or the render budget. Everything a
         // systems group owns is initialised by that group's plugin below.
