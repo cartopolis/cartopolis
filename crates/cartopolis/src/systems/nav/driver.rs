@@ -1112,7 +1112,8 @@ pub fn drive_driver_mode(
                 gz,
                 &mut avatar_state,
                 &mut avatars,
-                if fix_is_new { online.as_deref() } else { None },
+                online.as_deref(),
+                fix_is_new,
             );
         }
         driver.snap_pending = false;
@@ -1421,11 +1422,11 @@ impl DriverState {
 /// lands (`network::adopt_local_pose`). The echo — or the two-second timeout —
 /// clears it, so a lost message costs one fix rather than the rest of the trip.
 ///
-/// `online` is `Some` only on the frame a *new* fix arrived, and that is the
-/// caller's job rather than this function's because only the caller knows. Both
+/// The message goes only on the frame a *new* fix arrived (`fix_is_new`), and
+/// telling which frame that is is the caller's job because only the caller knows. Both
 /// of them re-apply the latest fix every frame — `LocationWatch::latest` answers
 /// with the last value it was given, not with an event — so a session passed in
-/// unconditionally would put sixty teleports a second on a wire that refuses
+/// on every frame would put sixty teleports a second on a wire that refuses
 /// intents closer together than 50 ms. One placement per report is what makes it
 /// an unrated message rather than a stream, which is also why the sim does not
 /// rate-limit teleports.
@@ -1440,15 +1441,28 @@ pub(crate) fn place_avatar(
     avatar_state: &mut AvatarState,
     avatars: &mut Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
     online: Option<&OnlineSession>,
+    fix_is_new: bool,
 ) {
     let (cell, local) = placement(wx, wz, avatar_state.position.y);
+    // Online, `position` is the sim's flat plane and what is drawn stands on the
+    // measured ground (`avatar::smooth_online_avatar_display` adds the lifts).
+    // Writing the flat position as the display dropped the avatar — and the
+    // follow camera with it — to the flat plane on every frame this ran last,
+    // and back up on every frame the smoother did: a vertical stutter over any
+    // relief. Offline the transform already carries the ground (`position.y` is
+    // the lifted height `placement` keeps), so there is nothing to add.
+    let display = if online.is_some() {
+        local + Vec3::Y * (avatar_state.terrain_lift + avatar_state.floor_lift)
+    } else {
+        local
+    };
     if let Ok((mut c, mut tf)) = avatars.single_mut() {
         *c = cell;
-        tf.translation = local;
+        tf.translation = display;
     }
     avatar_state.position = local;
-    avatar_state.display_position = local;
-    if let Some(sess) = online {
+    avatar_state.display_position = display;
+    if let Some(sess) = online.filter(|_| fix_is_new) {
         sess.send(
             "device fix",
             cartopolis_core::NetMessage::Teleport {

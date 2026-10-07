@@ -117,18 +117,28 @@ impl Plugin for NavPlugin {
                 // starts driving is acted on in the same frame it was captured.
                 // …and before the solver, so a reroute it asks for on leaving the
                 // route is picked up in the same frame rather than a frame late.
+                //
+                // After the online display smoother too, and this one and the next
+                // are the same rule: both write the avatar's displayed position
+                // from a GPS fix, and so does `smooth_online_avatar_display`. Left
+                // unordered, Bevy ran them either way round from frame to frame,
+                // and on the frames the smoother went last it pulled the avatar —
+                // and the follow camera — back toward the sim's echo of the
+                // previous fix: the irregular camera stutter while using GPS.
                 systems::driver::drive_driver_mode
                     .after(systems::navigation::render_route_sheet)
                     .after(avatar::handle_avatar_movement)
+                    .after(avatar::smooth_online_avatar_display)
                     .before(systems::navigation::drive_route_solver),
                 // Device tracking (`systems::locate`) — the locate button's own
                 // mode, and the smaller sibling of the drive above. After the
                 // drive tick, which is what declares driver mode active and so
                 // decides which of the two owns the avatar this frame; before the
-                // camera, which is what consumes the heading it writes.
+                // camera, which is what consumes the device rotation it writes.
                 systems::locate::track_device_pose
                     .after(systems::driver::drive_driver_mode)
                     .after(avatar::handle_avatar_movement)
+                    .after(avatar::smooth_online_avatar_display)
                     .before(systems::free_camera::camera_controls),
                 // The camera mode on the locate button: after the button's own
                 // tick, so the fix and heading it records are this frame's.

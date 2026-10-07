@@ -1594,25 +1594,13 @@ pub struct CameraState {
     /// Follow-and-rotate (Organic-Maps style): while true *and* in Avatar mode, the
     /// follow camera's [`Self::azimuth`] tracks the avatar's facing yaw, so the
     /// camera stays behind the avatar and swings with it like a chase cam. Armed
-    /// by the GPS/locate button *while already in Avatar mode* — the button takes
-    /// no camera mode of its own, and this rig is the Follow camera's, so in Fly
-    /// and Earth there is nothing for it to turn. Cleared when the user manually
+    /// by Tab, and by the locate button in Avatar mode on a platform with no
+    /// compass. Where a compass exists the locate button leaves it alone: the
+    /// phone turns the view only from first person
+    /// ([`Self::device_rotation`]). Cleared when the user manually
     /// left-drags to orbit (matching OM, where touching the map drops the
     /// rotate-follow).
     pub follow_rotate: bool,
-    /// What [`Self::follow_rotate`] should aim at, when something other than the
-    /// avatar's own facing knows better: a world-XZ yaw in the same convention as
-    /// the avatar's render yaw, so the two are interchangeable at the one site
-    /// that consumes them.
-    ///
-    /// Written by [`crate::systems::locate`] from the device compass, and `None`
-    /// otherwise — which is the identity here, so nothing has to branch on
-    /// whether a phone is being tracked. It exists because the avatar's facing is
-    /// the wrong signal for "which way is the user pointing the phone": that yaw
-    /// is a smoothed function of the keys held and the camera azimuth, so feeding
-    /// the compass into it would fight the movement systems for the same field and
-    /// leave the view turning after the phone had stopped.
-    pub follow_heading: Option<f32>,
     /// Follow mode, zoomed all the way in: the camera sits *at* the avatar's eyes
     /// instead of on a boom behind them, and the avatar's own model is hidden.
     ///
@@ -1635,10 +1623,10 @@ pub struct CameraState {
     /// straight up or down, and it carries the roll, which is what keeps a tilted
     /// phone's horizon tilted the same way on screen.
     ///
-    /// Distinct from [`Self::follow_heading`], which is the same sensor reduced to
-    /// a bearing for the third-person chase rig. Both exist because the two views
-    /// ask different questions of it: a map turns under a level phone, and a
-    /// first-person view is aimed by one held up.
+    /// This is the only way the device's attitude reaches the camera. The third-
+    /// person rig used to be turned by the compass bearing too, and magnetometer
+    /// noise swung the whole boom about while walking; since 2026-10-07 the phone
+    /// turns the view only from inside the head.
     pub device_rotation: Option<Quat>,
     /// Driver mode holds the chase rig itself (`systems::driver`): while this is
     /// set, the Follow camera ignores the wheel and the rotate-drag, and takes its
@@ -1703,7 +1691,6 @@ impl Default for CameraState {
             orbit_north_reset: false,
             orbit_north_lock: false,
             follow_rotate: false,
-            follow_heading: None,
             first_person: false,
             device_rotation: None,
             drive_locked: false,

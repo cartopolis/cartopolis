@@ -341,17 +341,6 @@ pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
 /// on screen, so a fast rig here would whip the whole view round on every change
 /// of direction.
 const FOLLOW_ROTATE_RATE: f32 = 8.0;
-/// …and how fast it swings round to a **compass** bearing.
-///
-/// Twice as fast, because the target is a different kind of thing. A compass
-/// bearing is not a smoothed consequence of the keys held — it is the user's own
-/// hand, already gyro-fused by the platform, and the picture is expected to
-/// follow it the way the view out of a window does. At 8/s the map trailed a
-/// phone turned briskly by an eighth of a turn and took most of a second to
-/// settle, which reads as the compass being slow rather than as the view being
-/// smooth. Still an ease and not an assignment: sensor noise about a held bearing
-/// would otherwise be a shimmer across the whole map.
-const COMPASS_ROTATE_RATE: f32 = 16.0;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
 /// exponential so the step scales with altitude, like Google Earth. Kept gentle —
 /// the glide (`ZOOM_GLIDE_RATE`) supplies the sense of speed, so per-notch this
@@ -1687,40 +1676,28 @@ fn follow_mode(ctx: ModeCtx) {
         }
     }
 
-    // Follow-and-rotate (the GPS button, pressed in this mode): glue the camera behind the
-    // avatar's heading so it swings around as the avatar turns. The avatar's
-    // render yaw `face` is authoritative in every run mode (the movement
-    // systems write `Quat::from_rotation_y(face)` each frame), so read it off
-    // the avatar transform rather than the mode-specific yaw fields. The camera
-    // sits directly behind when `azimuth ≡ face + π` (its look direction then
-    // equals the avatar's facing). Ease along the shortest arc so a turn glides.
+    // Follow-and-rotate (Tab, or the locate button on a platform with no
+    // compass): glue the camera behind the avatar's heading so it swings around
+    // as the avatar turns. The avatar's render yaw `face` is authoritative in
+    // every run mode (the movement systems write `Quat::from_rotation_y(face)`
+    // each frame), so read it off the avatar transform rather than the
+    // mode-specific yaw fields. The camera sits directly behind when
+    // `azimuth ≡ face + π` (its look direction then equals the avatar's facing).
+    // Ease along the shortest arc so a turn glides.
+    //
+    // The compass does not turn this rig: in third person the device's heading
+    // moves nothing (`systems::locate`), and from inside the head the device's
+    // whole attitude is the view, which is why this is skipped while
+    // `device_rotation` is set.
     if camera_state.follow_rotate && device_rotation.is_none() {
-        // The compass wins when there is one (`systems::locate` writes it
-        // while the phone is being tracked); otherwise the avatar's own
-        // facing, as before. Same convention, so this is a choice of
-        // source and not a second code path.
-        //
-        // Skipped outright while the device is aiming the camera: there
-        // the phone's whole attitude is the answer, and easing the azimuth
-        // toward a bearing derived from the same sensor would be two rigs
-        // turning one view.
-        let heading = camera_state.follow_heading;
         if let Some((_, avatar_tf)) = avatar {
-            let face = heading.unwrap_or_else(|| avatar_tf.rotation.to_euler(EulerRot::YXZ).0);
+            let face = avatar_tf.rotation.to_euler(EulerRot::YXZ).0;
             let target = face + std::f32::consts::PI;
             let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
             if d > std::f32::consts::PI {
                 d -= std::f32::consts::TAU;
             }
-            // The compass gets the faster of the two rates — see
-            // [`COMPASS_ROTATE_RATE`] for why the two targets deserve
-            // different treatment rather than one shared number.
-            let rate = if heading.is_some() {
-                COMPASS_ROTATE_RATE
-            } else {
-                FOLLOW_ROTATE_RATE
-            };
-            let a = 1.0 - (-rate * delta_time).exp();
+            let a = 1.0 - (-FOLLOW_ROTATE_RATE * delta_time).exp();
             // Snap the last sliver so azimuth (and thus the whole follow rig)
             // actually settles when standing still, instead of creeping toward
             // the target forever and pinning the floating-origin propagation.

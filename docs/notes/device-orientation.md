@@ -1,7 +1,7 @@
 ---
 topic: device-orientation
 triggers: [orientation.rs, locate.rs, "compass", "magnetometer", "heading", "bearing", "deviceorientation", "webkitCompassHeading", "ASensorManager", "rotation vector", "screen.orientation", "locate button", "track my position", "gps", "6dof", "first person", "point the phone at"]
-updated: 2026-09-17
+updated: 2026-10-07
 ---
 
 # The compass: which way the *screen* is pointing
@@ -14,7 +14,7 @@ in a way that looks plausible on a desk and is wrong in the hand.
 
 **Since 2026-09-17 the seam carries a whole rotation, not a bearing** — see §5,
 which is where "point the phone at a building and see that building" lives. The
-bearing is still there and is still what the map arrow and the chase rig read;
+bearing is still there and is still what the map arrow reads;
 it is derived from the rotation now (`DeviceAttitude::bearing_deg`) rather than
 reported beside it.
 
@@ -98,35 +98,28 @@ Android arm checks the norm and recomputes.
 
 ## 4. Design decisions in the client
 
-**The compass writes `CameraState::follow_heading`, not the avatar's yaw.** The
-avatar's facing is a smoothed function of the keys held and the camera azimuth
-(`avatar::advance_facing`); feeding a compass into it would put two writers on one
-field and leave the view turning after the phone had stopped. `follow_heading` is
-an `Option` consumed at the single site in `free_camera` that already turned the
-follow camera, so the compass is a *choice of source* and not a second code path.
+**In third person the compass turns nothing** (2026-10-07, at the user's
+request). It used to: `locate` wrote the bearing into a `follow_heading` the
+chase rig eased its azimuth toward, held `follow_rotate` on against drags, and
+turned the avatar with it. On a phone in the hand that read as the camera
+stuttering and moving irregularly — magnetometer noise, and the bearing's lurch
+whenever the phone tipped, swung the whole boom about under a walk. So
+`follow_heading` and its faster `COMPASS_ROTATE_RATE` were removed rather than
+damped: the third-person view stays where the user put it, and the compass is
+read in third person only for the button's caption. Rotating the view with the
+phone is a first-person thing (§5).
 
-**The avatar turns with the phone, not just the camera.** The follow camera sits
-*behind* the avatar, so turning only the camera orbits the model — the marker for
-"me" then points somewhere I am not, which is worse than not turning at all. The
-same yaw goes to `AvatarState::facing_yaw`, but **only while standing still**:
-`avatar::handle_avatar_movement` turns the avatar toward where it is *travelling*,
-and that is the right answer whenever there is a walk input (the on-screen stick
-is on the same phone the compass is). Overwriting it every frame would leave the
-avatar walking sideways with the run clip playing.
+In first person the avatar's facing follows the *view*
+(`locate::facing_from_view`), so the body faces where you were looking when you
+zoom back out — but **only while standing still**: `avatar::handle_avatar_movement`
+turns the avatar toward where it is *travelling*, and that is the right answer
+whenever there is a walk input (the on-screen stick is on the same phone the
+compass is). A test pins `facing_from_view` against the compass convention for a
+level phone, because a sign slip faces the avatar plausibly and wrongly.
 
-In first person that yaw comes from where the camera is *looking*
-(`locate::facing_from_view`) rather than from the bearing of screen-up, for §5's
-reason: the two agree for a phone held level and only one of them means anything
-for a phone held upright. They are pinned against each other by a test, because
-two writers of one field that disagree by a tilt would turn the avatar as the
-phone was raised, and no picture of either view alone would show it.
-
-**While a compass is reporting, `follow_rotate` is held rather than set.**
-`free_camera` clears that flag on a rotate-drag, and a compass mode that switched
-itself off the first time a thumb brushed the screen would read as broken. The
-drag still turns the view; it is eased back. On a platform with **no** compass
-(every desktop) the old behaviour stands — a drag drops the rotate-follow, and
-that ends the tracking, because there the button *is* the old follow-and-rotate.
+On a platform with **no** compass (every desktop) the button is still the old
+follow-and-rotate: arriving in Follow arms `follow_rotate`, which turns with the
+avatar's own facing, a drag drops it, and dropping it ends the tracking.
 
 **The button's cycle went from three states to two** (2026-08-15, at the user's
 request). The old middle rung followed the avatar without turning with it; on a
@@ -141,12 +134,10 @@ of Fly and Earth: you pressed it to see your position and lost the view you were
 in to get it. Tracking is a *position* verb, so it now runs in whichever mode is
 on and moves the camera instead of the switcher. Two things follow.
 
-The **heading half stays Avatar-only**, and not as a simplification: the
-rotate-follow rig is the Follow camera's, so in Fly and Earth there is nothing for
-a bearing to turn, and arming `follow_rotate` behind those modes would leave it
-set, waiting to swing the view for whoever switched back. The compass is still
-read and still reported in the button's caption there — what it says the device
-answers does not depend on what is consuming it.
+The **heading half stays first-person-in-Follow only**: Fly and Earth hold views
+the user placed by hand, and third person has a boom the phone cannot aim (above).
+The compass is still read and still reported in the button's caption everywhere —
+what it says the device answers does not depend on what is consuming it.
 
 The **position half snaps once and then follows by delta**
 (`locate::tracked_ground_offset`). The press is the "take me there", so the first
@@ -205,8 +196,8 @@ rotation is built from the same `azimuth`/`pitch` the boom was, and
 `stepping_inside_keeps_looking_the_same_way` pins that they produce the same
 direction.
 
-**A drag cannot fight this one.** Everywhere else a rotate-drag is allowed to
-overrule the compass and be eased back (§4). Here the view *is* the phone's
+**A drag cannot fight this one.** In third person a rotate-drag simply turns the
+view, since nothing else is turning it (§4). Here the view *is* the phone's
 attitude, so a drag could only push the picture off the thing the phone is pointed
 at and be dragged back the same frame. Zooming out is how the camera is taken
 back.

@@ -9,11 +9,12 @@
 //!   "here". Online it is written *and sent* — the sim owns the avatar's
 //!   translation, so a fix kept to this client was erased by the next snapshot
 //!   and the button did nothing at all on a server (`driver::place_avatar`);
-//! - the **heading** turns the view, by handing the follow camera a yaw to aim at
-//!   ([`CameraState::follow_heading`]) instead of the avatar's own facing — and
-//!   turns the avatar with it, because the camera sits *behind* the avatar and
-//!   turning only the camera orbits the model, leaving the marker for "me"
-//!   pointing somewhere I am not.
+//! - the **heading** aims the view, but **only from first person**: there the
+//!   phone's whole attitude is the camera ([`CameraState::device_rotation`]), so
+//!   pointing the phone at a building puts that building on screen. In third
+//!   person the compass moves nothing — it used to swing the chase boom round to
+//!   the bearing, and sensor noise moved the whole camera irregularly under a
+//!   walk (removed 2026-10-07, at the user's request).
 //!
 //! **The button does not choose a camera mode.** It used to force
 //! [`CameraMode::Avatar`] on the way in and stand down the moment the mode was
@@ -22,10 +23,9 @@
 //! Tracking is a *position* verb, so it now runs in whatever mode is on and moves
 //! the camera rather than the switcher — Fly keeps its altitude and its look over
 //! the fix, Earth re-centres its ground focus on it, Follow does what it always
-//! did. Only the heading is mode-specific, and only because it has to be: the
-//! rotate-follow rig ([`CameraState::follow_rotate`]) is the Follow camera's, so
-//! outside Avatar mode there is nothing for a compass bearing to turn and the
-//! view is left exactly where the user pointed it.
+//! did. Only the heading is mode-specific: it aims the view from first person in
+//! Follow and nowhere else, so every other view is left exactly where the user
+//! pointed it.
 //!
 //! **Position tracking snaps once and then follows by delta.** Pressing the
 //! button is the "take me there" event, so the first fix places the camera
@@ -64,14 +64,10 @@
 //! press twice for it is a worse default than the state it skips — which is still
 //! reachable, signed in, from Tab and the mode disc.
 //!
-//! **Turning the phone must not be a fight.** While a compass is reporting, the
-//! follow-and-rotate flag is *held* rather than merely set: `free_camera` clears
-//! it whenever the user rotate-drags the map, and a compass mode that switched
-//! itself off the first time a thumb brushed the screen would read as broken. The
-//! drag still turns the view — it is simply eased back to where the phone is
-//! pointing, which is the honest answer to "what happens if I fight the compass".
-//! On a platform with no compass at all (every desktop) the old behaviour stands:
-//! a drag drops the rotate-follow, and dropping it ends the tracking.
+//! **The compass turns nothing in third person.** On a platform with no compass
+//! at all (every desktop) the button is the old follow-and-rotate: arriving in
+//! Follow arms [`CameraState::follow_rotate`], which turns with the avatar's own
+//! facing, a drag drops it, and dropping it ends the tracking.
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -94,24 +90,21 @@ use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, T
 /// `+X`, so a bearing `b` is the ground direction `(sin b, −cos b)`. Setting the
 /// two equal gives `az = −b`, hence `yaw = π − b`.
 ///
-/// Radians in, radians out. Worth its own function and its own test: it is one
-/// subtraction, and every way of getting it wrong (a sign, a missing `π`) turns
-/// into a map that reads plausibly and points somewhere else.
-#[must_use]
-pub fn yaw_from_bearing(bearing_rad: f32) -> f32 {
+/// Test-only since the compass stopped turning the third-person view: it is the
+/// independent statement of the world's compass convention that
+/// [`facing_from_view`] is checked against.
+#[cfg(test)]
+fn yaw_from_bearing(bearing_rad: f32) -> f32 {
     (std::f32::consts::PI - bearing_rad).rem_euclid(std::f32::consts::TAU)
 }
 
 /// How fast the first-person view eases onto the device's attitude, per second
 /// (exponential).
 ///
-/// Faster than [`crate::systems::free_camera`]'s compass rate, which is itself
-/// twice the avatar-chase rate, and for the next step of the same argument: the
-/// chase rig is following a smoothed consequence of the keys held, the compass is
-/// following the user's hand at arm's length through a map, and this *is* the
-/// user's hand — the picture is a window, and a window that lags is a fault in the
-/// glass. Still an ease rather than an assignment, because magnetometer noise
-/// about a held attitude would otherwise shimmer the whole view.
+/// Fast, because this *is* the user's hand — the picture is a window, and a
+/// window that lags is a fault in the glass. Still an ease rather than an
+/// assignment, because magnetometer noise about a held attitude would otherwise
+/// shimmer the whole view.
 const DEVICE_VIEW_RATE: f32 = 24.0;
 
 /// Whether the device's own attitude is what aims the camera this frame.
@@ -132,10 +125,10 @@ pub fn device_aims_the_view(camera_state: &CameraState) -> bool {
 /// or `None` when the view is too close to vertical for the question to have an
 /// answer.
 ///
-/// The same convention and the same number as [`yaw_from_bearing`] for a level
-/// phone — pinned by a test, because the two are the only writers of
-/// `AvatarState::facing_yaw` on this path and a disagreement between them would
-/// turn the avatar a different way depending on how far the phone was tipped.
+/// The same convention and the same number as the compass bearing of screen-up
+/// for a level phone — pinned by a test against an independent statement of
+/// that convention, because a sign slip here faces the avatar plausibly and
+/// wrongly.
 #[must_use]
 fn facing_from_view(forward: Vec3) -> Option<f32> {
     let flat = Vec2::new(forward.x, forward.z);
@@ -223,11 +216,10 @@ pub struct LocateTracking {
     /// this one and would swing by a whole fix's worth on *every* frame if it
     /// were handed the raw pair instead.
     display_geo: Option<(f64, f64)>,
-    /// Was the camera in Avatar mode last frame? The rotate-follow rig is armed
-    /// on the *transition* into it, so switching to Follow with the button lit
-    /// turns the view exactly as pressing the button there would have — while a
-    /// rotate-drag can still drop the rig (and, where there is no compass, end
-    /// the tracking) without this re-arming it the frame after.
+    /// Was the camera in Avatar mode last frame? On a platform with no compass
+    /// the rotate-follow rig is armed on the *transition* into it, so a
+    /// rotate-drag can still drop the rig, and end the tracking, without this
+    /// re-arming it the frame after.
     in_follow: bool,
     watch: Option<LocationWatch>,
     compass: Option<OrientationWatch>,
@@ -863,15 +855,11 @@ pub fn track_device_pose(
     }
     if !tracking.active {
         // The identity. Cleared on the way out — including an exit caused by
-        // driver mode taking over — so the follow camera is never left aimed at a
-        // heading nothing is updating any more. Guarded on it being set, because
-        // touching `ResMut<CameraState>` is what marks the resource changed and
-        // this system runs every frame of a session that never taps the button.
-        if camera_state.follow_heading.is_some() {
-            camera_state.follow_heading = None;
-        }
-        // The same identity for the first-person view, and the same guard. This is
-        // the "only when GPS is on" half of the gate: switching the button off
+        // driver mode taking over — so the camera is never left aimed by a sensor
+        // nothing is reading any more. Guarded on it being set, because touching
+        // `ResMut<CameraState>` is what marks the resource changed and this system
+        // runs every frame of a session that never taps the button. This is the
+        // "only when GPS is on" half of the gate: switching the button off
         // hands the camera straight back to the drag and the chase rig, from
         // wherever the phone had last pointed it.
         if camera_state.device_rotation.is_some() {
@@ -945,7 +933,8 @@ pub fn track_device_pose(
                 gz,
                 &mut avatar_state,
                 &mut avatars,
-                if fix_is_new { online.as_deref() } else { None },
+                online.as_deref(),
+                fix_is_new,
             );
             // Where that put the avatar, in absolute world metres — recorded in
             // every mode, not only the two that read it below. Recording it only
@@ -991,34 +980,25 @@ pub fn track_device_pose(
     tracking.heading = heading;
     tracking.error = error;
 
-    // Only the Follow camera has a rotate sub-state to hand a bearing to. In Fly
-    // and Earth the view direction is the user's own — a bearing there would spin
-    // a camera nobody asked to turn, and `follow_rotate` would sit set behind the
-    // mode waiting to surprise whoever switched back. Reported heading is still
-    // read above, because the button's caption says what the compass answers
-    // whether or not anything is consuming it.
+    // The heading turns the view **only from inside the head**. In third person it
+    // used to swing the chase boom round to the compass bearing, and magnetometer
+    // noise — plus the sensor's lurch whenever the phone tipped — moved the whole
+    // camera irregularly under a walk; the user asked for it to stop (2026-10-07).
+    // So outside first person the compass is read for the button's caption and
+    // for nothing else, and the third-person view stays where the user put it.
     let in_follow = camera_state.mode == CameraMode::Avatar;
-    // Arriving in Follow with the button lit arms the rig, which is what makes
-    // "the rotation is kept in sync in Avatar mode" true however the mode was
-    // reached — the button's own press, Tab, or the mode disc. On the transition
-    // only: held every frame it would be a view the rotate-drag cannot escape,
-    // and on a platform with no compass that drag is the documented way to stop.
-    if in_follow && !tracking.in_follow {
+    // Arriving in Follow with the button lit arms the rotate-follow rig — but only
+    // on a platform with no compass at all, where the button *is* the old
+    // follow-and-rotate and that rig turns with the avatar's own facing, never
+    // with a sensor. On the transition only: held every frame it would be a view
+    // the rotate-drag cannot escape, and that drag is the documented way to stop.
+    if in_follow && !tracking.in_follow && !OrientationWatch::available() {
         camera_state.follow_rotate = true;
     }
     tracking.in_follow = in_follow;
-    if !in_follow {
-        if camera_state.follow_heading.is_some() {
-            camera_state.follow_heading = None;
-        }
-        if camera_state.device_rotation.is_some() {
-            camera_state.device_rotation = None;
-        }
-        return;
-    }
 
     match heading {
-        Some(h) => {
+        Some(h) if device_aims_the_view(&camera_state) => {
             // ── The device aims the camera, but only from inside the head ──
             //
             // Three conditions, and each is load-bearing. **First person**,
@@ -1032,74 +1012,55 @@ pub fn track_device_pose(
             // of the two that makes a building on screen the building in front of
             // them. And **a live report**, which is the `Some` arm itself.
             //
-            // Written as an eased rotation rather than an assignment, for the
-            // reason `COMPASS_ROTATE_RATE` gives about its own target: sensor noise
+            // Written as an eased rotation rather than an assignment: sensor noise
             // about a held attitude is a shimmer across the whole picture. Slerped
             // rather than eased per angle, because the thing being smoothed is a
             // rotation — three independently-wrapped angles would take the long way
             // round the pole on the frame a phone is tipped past vertical.
-            if device_aims_the_view(&camera_state) {
-                let want = h.camera_rotation();
-                let a = 1.0 - (-DEVICE_VIEW_RATE * time.delta_secs()).exp();
-                // The hand-over swings rather than cuts. On the first frame there
-                // is no previous device rotation to ease from, so it starts from
-                // the rig's own angles — which is exactly where the camera is
-                // looking right now, `free_camera` having just built the view from
-                // them. Snapping instead would cut to wherever the phone happened
-                // to be aimed, and the two can easily be half a turn apart: the
-                // gesture that gets you here is a zoom, which says nothing about
-                // which way you are holding the phone.
-                let have = camera_state.device_rotation.unwrap_or_else(|| {
-                    Quat::from_euler(
-                        EulerRot::YXZ,
-                        camera_state.azimuth,
-                        -camera_state.pitch,
-                        0.0,
-                    )
-                });
-                camera_state.device_rotation = Some(have.slerp(want, a));
-            } else if camera_state.device_rotation.is_some() {
-                camera_state.device_rotation = None;
-            }
+            let want = h.camera_rotation();
+            let a = 1.0 - (-DEVICE_VIEW_RATE * time.delta_secs()).exp();
+            // The hand-over swings rather than cuts. On the first frame there
+            // is no previous device rotation to ease from, so it starts from
+            // the rig's own angles — which is exactly where the camera is
+            // looking right now, `free_camera` having just built the view from
+            // them. Snapping instead would cut to wherever the phone happened
+            // to be aimed, and the two can easily be half a turn apart: the
+            // gesture that gets you here is a zoom, which says nothing about
+            // which way you are holding the phone.
+            let have = camera_state.device_rotation.unwrap_or_else(|| {
+                Quat::from_euler(
+                    EulerRot::YXZ,
+                    camera_state.azimuth,
+                    -camera_state.pitch,
+                    0.0,
+                )
+            });
+            let rotation = have.slerp(want, a);
+            camera_state.device_rotation = Some(rotation);
 
-            // Held, not set — see the module note on why a drag must not end this.
-            camera_state.follow_rotate = true;
-            #[allow(clippy::cast_possible_truncation)]
-            let bearing = (h.bearing_deg() as f32).to_radians();
-            let yaw = yaw_from_bearing(bearing);
-            camera_state.follow_heading = Some(yaw);
-            // The avatar turns with the phone too, and it has to: the camera is
-            // *behind* the avatar, so turning only the camera orbits the model and
-            // the marker for "me" ends up pointing somewhere I am not. This is the
-            // same yaw and the same convention `free_camera` reads, so the two
-            // cannot disagree.
-            //
-            // Only while standing still. `avatar::handle_avatar_movement` turns
-            // the avatar toward where it is *travelling*, which is the right
-            // answer whenever there is a walk input — the on-screen stick is
-            // reachable on the same phone this compass is on — and overwriting it
-            // every frame would leave the avatar walking sideways with the run
-            // clip playing.
-            //
-            // From inside the head the *view* direction is the facing, not the
-            // bearing of screen-up: they are the same number for a phone held
-            // level and reading the map, and the bearing is meaningless for one
-            // held upright and pointed at a building, which is the pose first
-            // person is used in. `facing_from_view` answers `None` for a phone
-            // aimed at the sky or the pavement — there is no facing in a vertical
-            // line — and the avatar keeps the one it had.
+            // The avatar's facing follows the view, so the body you are standing
+            // in faces where you are looking when you zoom back out. Only while
+            // standing still: `avatar::handle_avatar_movement` turns the avatar
+            // toward where it is *travelling*, which is the right answer whenever
+            // there is a walk input — the on-screen stick is reachable on the same
+            // phone — and overwriting it every frame would leave the avatar
+            // walking sideways with the run clip playing. `facing_from_view`
+            // answers `None` for a phone aimed at the sky or the pavement — there
+            // is no facing in a vertical line — and the avatar keeps the one it had.
             if !avatar_state.is_walking {
-                let face = camera_state
-                    .device_rotation
-                    .and_then(|r| facing_from_view(r * Vec3::NEG_Z))
-                    .unwrap_or(yaw);
-                avatar_state.facing_yaw = face;
+                if let Some(face) = facing_from_view(rotation * Vec3::NEG_Z) {
+                    avatar_state.facing_yaw = face;
+                }
+            }
+        }
+        Some(_) => {
+            // A compass is reporting but nothing is consuming it: third person, or
+            // Fly and Earth, whose views the user placed by hand.
+            if camera_state.device_rotation.is_some() {
+                camera_state.device_rotation = None;
             }
         }
         None => {
-            if camera_state.follow_heading.is_some() {
-                camera_state.follow_heading = None;
-            }
             if camera_state.device_rotation.is_some() {
                 camera_state.device_rotation = None;
             }
@@ -1108,7 +1069,7 @@ pub fn track_device_pose(
             // clears `follow_rotate` in `free_camera`, and that ends the tracking.
             // Where a compass *does* exist this must not fire: it would end the
             // mode during the seconds before the first sample arrives.
-            if !OrientationWatch::available() && !camera_state.follow_rotate {
+            if in_follow && !OrientationWatch::available() && !camera_state.follow_rotate {
                 tracking.exit();
             }
         }
@@ -1143,12 +1104,10 @@ mod tests {
 
     /// The two writers of the avatar's facing on this path must agree.
     ///
-    /// Third person derives it from the compass bearing of screen-up; first
-    /// person derives it from where the camera is looking, because a phone held
-    /// upright has no meaningful screen-up bearing. For a phone held *level* the
-    /// two describe the same thing, so they have to produce the same number — a
-    /// disagreement would turn the avatar as the phone was tipped, which no
-    /// picture of either view on its own would reveal.
+    /// First person derives the facing from where the camera is looking. For a
+    /// phone held *level* that must be the compass bearing of screen-up, stated
+    /// independently by `yaw_from_bearing` — a sign slip in either would face the
+    /// avatar plausibly and wrongly.
     #[test]
     fn both_ways_of_facing_the_avatar_agree_for_a_level_phone() {
         for deg in [0.0_f64, 45.0, 137.0, 270.0, 359.0] {
