@@ -997,32 +997,21 @@ fn rebuild_cell(
     lod.stream.forget(&c);
 }
 
-/// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
-pub fn update_lod22(
-    mut commands: Commands,
-    mut lod: ResMut<Lod22Buildings>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<BuildingMaterial>>,
-    stream: Res<MapStream>,
-    camera: AnchoredCamera,
-    bigspace: Query<Entity, With<BigSpace>>,
-    globe: Res<GlobeState>,
-    time: Res<Time>,
-    mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
-    mut osm: ResMut<crate::systems::osm_buildings::OsmBuildings>,
-    terrain: Res<crate::systems::terrain::TerrainField>,
-    tile_url: Res<crate::resources::OsmTileUrlTemplate>,
+// `update_lod22`'s phases take `colliders`, `osm`, `meshes` and `materials` as
+// `&mut ResMut<_>` rather than as the resources, so each is dereferenced mutably
+// exactly where the code did when it was inline — change detection sees the
+// same writes.
+
+/// The cells that have to be rebuilt this frame, and why: a re-anchor, a new
+/// terrain field, the BAG and model coverage answers, a building design.
+fn retear_stale_cells(
+    mut lod: &mut Lod22Buildings,
+    mut colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    stream: &MapStream,
+    terrain: &crate::systems::terrain::TerrainField,
+    (clat, clng, base_zoom): (f64, f64, u32),
+    now: f64,
 ) {
-    let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
-        return;
-    };
-
-    // Free retired cells at MAX_DESPAWNS_PER_FRAME, ahead of every early return
-    // below: a re-anchor at ground level must keep clearing even if the camera then
-    // climbs into space and the streamer freezes.
-    lod.stream.drain_despawns(&mut commands);
-    let now = time.elapsed_secs_f64();
-
     // Re-anchor (ADR-025): tear down and re-establish at the new origin. The
     // teardown goes through the shared despawn queue rather than freeing 25 merged
     // meshes in one frame, which is what it used to do; `CellStream::reset` orphans
@@ -1173,6 +1162,42 @@ pub fn update_lod22(
         lod.live.clear();
         lod.retained.clear();
     }
+}
+
+/// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
+pub fn update_lod22(
+    mut commands: Commands,
+    mut lod: ResMut<Lod22Buildings>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+    stream: Res<MapStream>,
+    camera: AnchoredCamera,
+    bigspace: Query<Entity, With<BigSpace>>,
+    globe: Res<GlobeState>,
+    time: Res<Time>,
+    mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
+    mut osm: ResMut<crate::systems::osm_buildings::OsmBuildings>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    tile_url: Res<crate::resources::OsmTileUrlTemplate>,
+) {
+    let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
+        return;
+    };
+
+    // Free retired cells at MAX_DESPAWNS_PER_FRAME, ahead of every early return
+    // below: a re-anchor at ground level must keep clearing even if the camera then
+    // climbs into space and the streamer freezes.
+    lod.stream.drain_despawns(&mut commands);
+    let now = time.elapsed_secs_f64();
+
+    retear_stale_cells(
+        &mut lod,
+        &mut colliders,
+        &stream,
+        &terrain,
+        (clat, clng, base_zoom),
+        now,
+    );
 
     // The Layers panel's 3DBAG toggle: on the off-edge, tear down like a
     // re-anchor — retire the meshes (through the shared queue, at the per-frame
@@ -1301,6 +1326,64 @@ pub fn update_lod22(
     });
     use crate::platform::fetch_gate::ring_distance;
 
+    restore_held_cell(
+        &mut commands,
+        &mut lod,
+        &mut materials,
+        &mut colliders,
+        &mut osm,
+        &terrain,
+        root,
+        &to_request,
+        (clat, clng, base_zoom),
+    );
+
+    for c in to_request {
+        let rank = ring_distance(c, ccx, ccy);
+        lod.stream.request_ranked(c, rank, now);
+    }
+
+    dispatch_jobs(
+        &mut lod,
+        &stream,
+        &terrain,
+        &tile_url,
+        now,
+        (ccx, ccy),
+        (ax, ay, z, lat),
+    );
+    apply_results(
+        &mut lod,
+        &mut colliders,
+        &terrain,
+        now,
+        (clat, clng, base_zoom),
+    );
+    spawn_admitted_pieces(
+        &mut commands,
+        &mut lod,
+        &mut meshes,
+        &mut materials,
+        &mut osm,
+        root,
+    );
+    retire_out_of_range(&mut lod, &mut colliders, (ccx, ccy));
+    update_shadow_lod(&mut commands, &mut lod, (ccx, ccy));
+}
+
+/// Re-spawn one cell held in memory instead of fetching and meshing it again.
+#[allow(clippy::too_many_arguments)]
+fn restore_held_cell(
+    commands: &mut Commands,
+    mut lod: &mut Lod22Buildings,
+    mut materials: &mut ResMut<Assets<BuildingMaterial>>,
+    colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    osm: &mut ResMut<crate::systems::osm_buildings::OsmBuildings>,
+    terrain: &crate::systems::terrain::TerrainField,
+    root: Entity,
+    to_request: &[(i64, i64)],
+    (clat, clng, base_zoom): (f64, f64, u32),
+) {
     // Re-spawn one held cell, nearest first, before anything is queued for it.
     //
     // **One per frame, matching [`MAX_BUILDS_PER_FRAME`].** A restore uploads
@@ -1371,11 +1454,19 @@ pub fn update_lod22(
             );
         }
     }
+}
 
-    for c in to_request {
-        let rank = ring_distance(c, ccx, ccy);
-        lod.stream.request_ranked(c, rank, now);
-    }
+/// Start a fetch-and-mesh job for each queued cell the stream will dispatch.
+fn dispatch_jobs(
+    lod: &mut Lod22Buildings,
+    stream: &MapStream,
+    terrain: &crate::systems::terrain::TerrainField,
+    tile_url: &crate::resources::OsmTileUrlTemplate,
+    now: f64,
+    (ccx, ccy): (i64, i64),
+    (ax, ay, z, lat): (i64, i64, u32, f64),
+) {
+    use crate::platform::fetch_gate::ring_distance;
 
     // Dispatch queued cells up to the concurrency cap: each becomes a detached
     // fetch+mesh task (ADR-033 seam) pushing to the sink — no OS thread.
@@ -1510,7 +1601,16 @@ pub fn update_lod22(
             })
             .detach();
     }
+}
 
+/// Take the cells the workers have finished, while no cell is mid-application.
+fn apply_results(
+    lod: &mut Lod22Buildings,
+    colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    terrain: &crate::systems::terrain::TerrainField,
+    now: f64,
+    (clat, clng, base_zoom): (f64, f64, u32),
+) {
     // Apply completed cells — one cell in application at a time, and its pieces
     // land **one ledger admission each, across frames**.
     //
@@ -1586,7 +1686,18 @@ pub fn update_lod22(
             }
         }
     }
+}
 
+/// Spawn the pieces of the cell in application that this frame's upload ledger
+/// admits.
+fn spawn_admitted_pieces(
+    commands: &mut Commands,
+    mut lod: &mut Lod22Buildings,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    mut materials: &mut ResMut<Assets<BuildingMaterial>>,
+    osm: &mut ResMut<crate::systems::osm_buildings::OsmBuildings>,
+    root: Entity,
+) {
     // Drain the cell in application: spawn the pieces the frame's ledger admits,
     // park the rest for the next frame.
     if let Some(mut partial) = lod.partial.take() {
@@ -1653,7 +1764,15 @@ pub fn update_lod22(
             lod.partial = Some(partial);
         }
     }
+}
 
+/// Retire the cells that have left the ring, holding each whole one in memory
+/// if there is room.
+fn retire_out_of_range(
+    lod: &mut Lod22Buildings,
+    colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    (ccx, ccy): (i64, i64),
+) {
     // Despawn cells out of range (one cell of hysteresis); re-entry re-requests,
     // served from the disk cache.
     let stale: Vec<(i64, i64)> = lod
@@ -1718,7 +1837,10 @@ pub fn update_lod22(
             );
         }
     }
+}
 
+/// Switch shadow casting on the cells that crossed `SHADOW_RADIUS`.
+fn update_shadow_lod(commands: &mut Commands, lod: &mut Lod22Buildings, (ccx, ccy): (i64, i64)) {
     // Shadow LOD: cells within SHADOW_RADIUS cast shadows, the rest don't. Only act
     // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
     // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
