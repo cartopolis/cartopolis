@@ -855,7 +855,10 @@ const DECK_EDGE_BISECTIONS: u32 = 12;
 /// ends just off a deck is ordinary in a generalised tile. Every segment is probed
 /// each [`DECK_PROBE_M`], and a change of owner between two probes is bisected to
 /// the edge as before.
-fn split_by_deck(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<(Option<usize>, Vec<[f32; 2]>)> {
+pub(super) fn split_by_deck(
+    points: &[[f32; 2]],
+    decks: &[BridgeDeck],
+) -> Vec<(Option<usize>, Vec<[f32; 2]>)> {
     let mut runs: Vec<(Option<usize>, Vec<[f32; 2]>)> = Vec::new();
     let Some(&first) = points.first() else {
         return runs;

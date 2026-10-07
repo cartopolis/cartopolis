@@ -550,7 +550,7 @@ pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
 /// cannot jump, a canal a boat uses, a stream with a bank. Widths are the drawn
 /// width of the *channel*, not a survey — Shortbread carries no width, so this is
 /// the same kind of nominal figure [`road_width_m`] uses for a street.
-fn water_line_half_width_m(kind: &str) -> Option<f32> {
+pub(super) fn water_line_half_width_m(kind: &str) -> Option<f32> {
     Some(
         match kind {
             "river" => 14.0,

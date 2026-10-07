@@ -2,8 +2,6 @@
 //! mentions water or rail, and whether the bytes are a raster image rather
 //! than an MVT at all.
 
-use super::*;
-
 /// The layers whose presence means the cell holds water of any kind:
 /// [`WATER_LAYERS`] plus `water_lines`, which is drawn as a ribbon rather than
 /// filled and so is deliberately not in that list.
@@ -87,6 +85,7 @@ pub fn looks_like_raster(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vector_tiles::{synth, TileData};
 
     // A real z14 tile over Groningen, from the VersaTiles Shortbread source
     // (now self-hosted at tiles.cartopolis.org; the archive is identical).

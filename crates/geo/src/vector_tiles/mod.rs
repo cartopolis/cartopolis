@@ -53,12 +53,12 @@ mod tile;
 mod water;
 
 pub use bridges::*;
-pub use geometry::*;
+pub(crate) use geometry::*;
 pub use labels::*;
 pub use ladder::*;
 pub use landcover::*;
 pub use raster::*;
-pub use ribbon::*;
+pub(crate) use ribbon::*;
 pub use roads::*;
 pub use sniff::*;
 pub use surfaces::*;

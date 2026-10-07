@@ -1,8 +1,6 @@
 //! Plane geometry shared by every tessellator here: clipping rings and polylines to the tile
 //! square, earcut triangulation, and upward-facing triangle winding.
 
-use super::*;
-
 /// Clip one ring to the square `[0, extent]²` (Sutherland–Hodgman), returning it
 /// **open** — no repeated last point — with consecutive duplicates dropped.
 ///
@@ -23,7 +21,7 @@ use super::*;
 /// zero-width connectors along the seam rather than a fold. Those degenerate into
 /// zero-area triangles, which cost a little raster time and are invisible — the
 /// trade the clamp was reaching for.
-fn clip_ring(points: &[[f32; 2]], extent: f32) -> Vec<[f32; 2]> {
+pub(super) fn clip_ring(points: &[[f32; 2]], extent: f32) -> Vec<[f32; 2]> {
     // Each pass clips against one half-plane of the square, feeding the next.
     let mut ring: Vec<[f32; 2]> = points.to_vec();
     // Rings arrive closed; the walk below re-closes implicitly via the modulo.
@@ -131,7 +129,7 @@ pub(crate) fn clipped_rings(
 /// Twice the signed area of a closed ring — positive counter-clockwise in the
 /// tile's (x east, y south) frame. Only the sign and the ordering of magnitudes
 /// are used, so the factor of two is left in.
-fn ring_area(ring: &[[f32; 2]]) -> f32 {
+pub(super) fn ring_area(ring: &[[f32; 2]]) -> f32 {
     let mut acc = 0.0f32;
     for i in 0..ring.len() {
         let a = ring[i];
@@ -145,7 +143,13 @@ fn ring_area(ring: &[[f32; 2]]) -> f32 {
 /// supplies. Ground geometry is single-sided and every surface here faces up, so
 /// the winding is derived rather than reasoned about at each call site (the same
 /// rule [`tessellate_polygon`] applies to its earcut output).
-fn push_triangle_up(positions: &[[f32; 3]], indices: &mut Vec<u32>, a: u32, b: u32, c: u32) {
+pub(super) fn push_triangle_up(
+    positions: &[[f32; 3]],
+    indices: &mut Vec<u32>,
+    a: u32,
+    b: u32,
+    c: u32,
+) {
     let (pa, pb, pc) = (
         positions[a as usize],
         positions[b as usize],

@@ -30,7 +30,7 @@ const STUB_PLAIN_U: (f32, f32) = (0.06, 0.16);
 
 /// How far a [`SurfaceGroup::RoadCasing`] ribbon reaches past its fill on each
 /// side, in metres — a kerb-and-verge band, not a second road.
-const ROAD_CASING_M: f32 = 0.75;
+pub(super) const ROAD_CASING_M: f32 = 0.75;
 
 /// Miter limit: how far a join may push the **outer** corner out relative to the
 /// half-width before it is bevelled off instead. Unbounded miters spike to
@@ -122,7 +122,7 @@ pub(crate) fn drawn_half_width(kind: &str) -> Option<f32> {
 
 /// One road arriving at one node, as [`street_nodes`] records it.
 #[derive(Clone, Copy)]
-struct NodeArm {
+pub(super) struct NodeArm {
     /// Which feature this is, so a road never treats itself as a junction.
     feature: usize,
     /// Half the carriageway width, in metres.
@@ -176,7 +176,7 @@ fn fillet_units(line: &[geo_types::Coord<f32>], i: usize, half_units: f32) -> f3
     corner_cut(l_in, l_out, cos.acos(), half_units)
 }
 
-fn street_nodes(features: &[Feature], scale: f32) -> HashMap<(i32, i32), Vec<NodeArm>> {
+pub(super) fn street_nodes(features: &[Feature], scale: f32) -> HashMap<(i32, i32), Vec<NodeArm>> {
     let mut nodes: HashMap<(i32, i32), Vec<NodeArm>> = HashMap::new();
     for (fi, feature) in features.iter().enumerate() {
         let Some((class, half)) = drawn_street(feature) else {
@@ -286,7 +286,7 @@ const JUNCTION_SIN: f32 = 0.5;
 /// instead of a flap of tarmac reaching into the field beyond it (nothing else
 /// meets there, so the fold starts and finishes at `0.0`), and a **collinear
 /// continuation** keeps its markings running through — see [`MERGE_SIN`].
-fn junction_extent(
+pub(super) fn junction_extent(
     nodes: &HashMap<(i32, i32), Vec<NodeArm>>,
     end: [f32; 2],
     feature_index: usize,
@@ -350,7 +350,7 @@ const CONTINUATION_COS: f32 = 0.77;
 /// is being crossed, not joined), only one of the same class and width can
 /// (grafting a 4 m service road onto a 22 m motorway is not a continuation), and
 /// only one leaving in roughly the direction this one is pointing.
-fn continuation(
+pub(super) fn continuation(
     nodes: &HashMap<(i32, i32), Vec<NodeArm>>,
     end: [f32; 2],
     feature_index: usize,
@@ -384,15 +384,15 @@ fn continuation(
 /// construction — a street that continues through a node has no notch there for
 /// a stub to fill, so [`tessellate_roads`] never asks for both.
 #[derive(Clone, Copy, Default)]
-struct EndJoin {
+pub(super) struct EndJoin {
     /// Metres of junction stub past the end, from [`junction_extent`]: how far
     /// this road has to run *into* whatever it meets there. Zero at a dead end,
     /// at a tile border and wherever `cont` is set.
-    extend: f32,
+    pub(super) extend: f32,
     /// The feature that continues this road past the end, from
     /// [`continuation`]: the direction it leaves in and its first segment's
     /// length. The end is mitred into it instead of butt-capped.
-    cont: Option<([f32; 2], f32)>,
+    pub(super) cont: Option<([f32; 2], f32)>,
 }
 
 /// Below this turn there is no corner worth rounding: the kink is finer than the
@@ -593,7 +593,7 @@ fn round_corners(pts: &[[f32; 2]], half: f32) -> Vec<[f32; 2]> {
 /// closure is watertight; only `v` wraps, and one texture discontinuity
 /// somewhere on a loop is unavoidable unless its length happens to be a whole
 /// number of texture repeats.
-fn ribbon(
+pub(super) fn ribbon(
     points: &[[f32; 2]],
     half: f32,
     y: f32,
@@ -950,9 +950,9 @@ fn ribbon(
 /// geometry about to be drawn — rather than a separate description of where that
 /// geometry is, which is one fewer thing that can disagree.
 #[derive(Default)]
-struct RibbonEdges {
-    contours: Vec<Vec<[f32; 2]>>,
-    sides: [Vec<[f32; 2]>; 2],
+pub(super) struct RibbonEdges {
+    pub(super) contours: Vec<Vec<[f32; 2]>>,
+    pub(super) sides: [Vec<[f32; 2]>; 2],
 }
 
 /// Lay a road's kerb band: the strip of [`ROAD_CASING_M`] outside each edge of
@@ -979,7 +979,7 @@ struct RibbonEdges {
 /// (see `road_base_material`), so the texture coordinates here only have to
 /// exist.
 #[allow(clippy::too_many_arguments)]
-fn kerb_band(
+pub(super) fn kerb_band(
     points: &[[f32; 2]],
     half: f32,
     tex_len_m: f32,

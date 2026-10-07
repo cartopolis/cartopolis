@@ -1,4 +1,3 @@
-
 /// A base-128 varint.
 pub fn varint(mut value: u64) -> Vec<u8> {
     let mut out = Vec::new();

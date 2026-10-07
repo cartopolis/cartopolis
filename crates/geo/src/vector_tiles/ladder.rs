@@ -125,7 +125,7 @@ pub fn road_rung_ceiling() -> f32 {
 /// [`SurfaceGroup::depth_rung`], and every way the two could disagree was a bug
 /// (see [`road_rung`]). `depth_rung` gives every road group one shared value now,
 /// so this is the only thing in the tree that orders the classes.
-fn road_class_rank(class: RoadClass) -> u32 {
+pub(super) fn road_class_rank(class: RoadClass) -> u32 {
     match class {
         RoadClass::Path => 0,
         RoadClass::Minor => 1,
@@ -237,7 +237,7 @@ pub(crate) fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: 
 /// It settles a road's kerb against *its own* tarmac and nothing wider than
 /// that: which of two **different** roads' surfaces wins is [`cut_band`]'s, and
 /// this rung is only the tie-break inside a band.
-fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
+pub(super) fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
     if bridge {
         // A deck's kerb rides with the deck, under its own fills.
         return ROAD_LAYERS - BRIDGE_LAYERS;
@@ -276,7 +276,7 @@ fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
 /// point of expressing this as a band rather than as a "may block" predicate: an
 /// asymmetric rule where a kerb outranks a carriageway that outranks the kerb
 /// cuts both out of the ground they share and leaves a hole in the road.
-fn cut_band(group: SurfaceGroup) -> u32 {
+pub(super) fn cut_band(group: SurfaceGroup) -> u32 {
     match group {
         SurfaceGroup::Road(RoadClass::Rail) => 2,
         SurfaceGroup::Road(RoadClass::Path) => 0,
@@ -303,7 +303,7 @@ fn road_band(width_m: f32) -> u32 {
 /// Tie-break seed for one linestring: a mix of its endpoint coordinates, so two
 /// crossing lines almost never share a rung even when they share a feature (a
 /// merged `MultiLineString`), a width band and a tile.
-fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
+pub(super) fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
     let mut h: u64 = 0x9E37_79B9_7F4A_7C15;
     for v in [head[0], head[1], tail[0], tail[1]] {
         h ^= u64::from(v.to_bits());
@@ -381,7 +381,7 @@ impl TieLine {
 /// near one another. That costs a little colour diversity and never correctness.
 /// O(n²) over the lines of one tile — 95 street features on the fixture, so a
 /// few thousand box tests against a ~121 ms raster.
-fn assign_road_ties(
+pub(super) fn assign_road_ties(
     features: &[Feature],
     scale: f32,
 ) -> std::collections::HashMap<(usize, usize), u32> {

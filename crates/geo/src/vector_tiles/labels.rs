@@ -146,7 +146,7 @@ fn simplify_polyline(points: &[[f32; 2]], min_step: f32) -> Vec<[f32; 2]> {
     out
 }
 
-fn polyline_len(points: &[[f32; 2]]) -> f32 {
+pub(super) fn polyline_len(points: &[[f32; 2]]) -> f32 {
     points
         .windows(2)
         .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))

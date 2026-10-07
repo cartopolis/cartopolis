@@ -1,4 +1,3 @@
-
 use super::*;
 
 pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {

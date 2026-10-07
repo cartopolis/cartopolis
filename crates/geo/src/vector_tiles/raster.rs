@@ -35,7 +35,7 @@ enum Draw {
 /// image and those meshes agree at the ring edge too. That grouping is also why
 /// `bare_rock` and `scree` are here: the mesh drew them as sand while this image
 /// fell through to the grass default.
-const LAND_KINDS: &[(&str, u32)] = &[
+pub(super) const LAND_KINDS: &[(&str, u32)] = &[
     ("forest", palette::FOREST),
     ("wood", palette::FOREST),
     ("grass", palette::GRASS),
@@ -175,7 +175,7 @@ pub(crate) fn layer_of(feature: &Feature) -> i64 {
     }
 }
 
-fn shader(rgb: u32) -> Shader<'static> {
+pub(super) fn shader(rgb: u32) -> Shader<'static> {
     Shader::SolidColor(tiny_skia::Color::from_rgba8(
         ((rgb >> 16) & 0xFF) as u8,
         ((rgb >> 8) & 0xFF) as u8,
@@ -1233,7 +1233,12 @@ fn area_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
 /// a fillable area at all. Callers that only want to *know* that (the shore
 /// field, deciding whether a tile contains water) would otherwise have to call
 /// `area_path` themselves and throw the path away, building every ring twice.
-fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &Transform) -> bool {
+pub(super) fn fill_geometry(
+    pixmap: &mut Pixmap,
+    paint: &Paint,
+    geom: &Geometry<f32>,
+    t: &Transform,
+) -> bool {
     if let Some(path) = area_path(geom) {
         // Counted like the paint loop's appends: scan conversion barely
         // allocates, so an allocation budget is blind to it; the geometry

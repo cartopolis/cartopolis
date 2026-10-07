@@ -1,4 +1,3 @@
-
 /// Land nothing more is known about — and, at globe zooms, all land. A dry
 /// khaki rather than paper white, so the planet reads as ground.
 pub const PAPER: u32 = 0xA0_9A_80;
