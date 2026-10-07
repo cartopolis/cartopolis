@@ -2601,6 +2601,47 @@ pub fn update_map_surfaces(
     let ccx = (f64::from(world_x) / f64::from(tile_m) + fcx).floor() as i64;
     let ccy = (f64::from(world_z) / f64::from(tile_m) + fcy).floor() as i64;
 
+    let wanted = retire_outside_ring(&mut surfaces, &mut stores, (ccx, ccy));
+    dispatch_cells(
+        &mut surfaces,
+        &stream,
+        &terrain,
+        &wanted,
+        &template,
+        wants,
+        bgt_revision,
+        (ccx, ccy),
+        (fcx, fcy),
+        tile_m,
+        now,
+    );
+    upload_finished_cells(
+        &mut commands,
+        &mut surfaces,
+        &mut meshes,
+        &mut mats,
+        &mut stores,
+        &stream,
+        &terrain,
+        &sea_state,
+        &veg_lod,
+        &furniture_lod,
+        &wanted,
+        wants,
+        (fcx, fcy),
+        tile_m,
+        root,
+        now,
+    );
+}
+
+/// Step 1 of a frame of surface streaming: the ring of cells the camera wants,
+/// with every loaded cell outside it retired.
+fn retire_outside_ring(
+    mut surfaces: &mut MapSurfaces,
+    mut stores: &mut CellStores,
+    (ccx, ccy): Cell,
+) -> HashSet<Cell> {
     // 1. Retire cells that fell outside the ring.
     let wanted: HashSet<Cell> = (-CELL_RADIUS..=CELL_RADIUS)
         .flat_map(|b| (-CELL_RADIUS..=CELL_RADIUS).map(move |a| (a, b)))
@@ -2615,7 +2656,25 @@ pub fn update_map_surfaces(
     for c in stale {
         retire_cell(&mut surfaces, &mut stores, c);
     }
+    wanted
+}
 
+/// Step 2: queue the ring's missing cells and dispatch as many as the stream
+/// allows, once the coverage answers they bake in are known.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_cells(
+    surfaces: &mut MapSurfaces,
+    stream: &MapStream,
+    terrain: &TerrainField,
+    wanted: &HashSet<Cell>,
+    template: &String,
+    wants: DetailWants,
+    bgt_revision: (u32, u32),
+    (ccx, ccy): Cell,
+    (fcx, fcy): (f64, f64),
+    tile_m: f32,
+    now: f64,
+) {
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
     // SURFACE_MAX_IN_FLIGHT concurrent. Unqueued cells are re-evaluated next frame as
     // slots free (the `requested` set already de-dups), so nothing is dropped.
@@ -2623,7 +2682,7 @@ pub fn update_map_surfaces(
     // neighbours here *and* may spend the global `fetch_gate`'s near reserve — the
     // ground under your feet is not allowed to queue behind a far building cell
     // from another streamer that happened to run first this frame.
-    for c in &wanted {
+    for c in wanted {
         if !surfaces.loaded.contains_key(c) {
             let rank = crate::platform::fetch_gate::ring_distance(*c, ccx, ccy);
             surfaces.stream.request_ranked(*c, rank, now);
@@ -2683,7 +2742,29 @@ pub fn update_map_surfaces(
             surfaces.stream.live(),
         );
     }
+}
 
+/// Step 3: spawn the cells the workers have finished, as many as this frame's
+/// cap and upload ledger admit.
+#[allow(clippy::too_many_arguments)]
+fn upload_finished_cells(
+    commands: &mut Commands,
+    surfaces: &mut MapSurfaces,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    mats: &mut SurfaceMaterials,
+    stores: &mut CellStores,
+    stream: &MapStream,
+    terrain: &TerrainField,
+    sea_state: &WaterSeaState,
+    veg_lod: &VegetationLod,
+    furniture_lod: &FurnitureLod,
+    wanted: &HashSet<Cell>,
+    wants: DetailWants,
+    (fcx, fcy): (f64, f64),
+    tile_m: f32,
+    root: Entity,
+    now: f64,
+) {
     // 3. Upload finished tessellations, capped per frame and byte-bounded by the
     // shared `stream_ledger` (a planted cell's canopy meshes are the second
     // largest thing on the startup frame after a LoD2.2 cell); the rest go back
