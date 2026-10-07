@@ -159,11 +159,13 @@ pub fn cell_bridges(site: &str, cell: &Cell) -> CellBridges {
     let json = |path: String| -> Option<serde_json::Value> {
         serde_json::from_slice(&get(&format!("{site}/{path}"))?).ok()
     };
-    if let Some(v) = json(format!("decks/{}/{}/{}.json", cell.z, cell.x, cell.y)) {
-        let published: Vec<&Vec<serde_json::Value>> = v["decks"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|d| d.as_array()).collect())
-            .unwrap_or_default();
+    if let Some(published) = get(&format!(
+        "{site}/decks/{}/{}/{}.json",
+        cell.z, cell.x, cell.y
+    ))
+    .and_then(|b| cartopolis_geo::formats::decks::parse_slice(&b).ok())
+    .map(|c| c.decks)
+    {
         let tol = 1.0 / tile_m;
         for (i, deck) in cell.decks.iter().enumerate() {
             let c = [
@@ -173,23 +175,15 @@ pub fn cell_bridges(site: &str, cell: &Cell) -> CellBridges {
             out.decks[i] = published
                 .iter()
                 .find(|d| {
-                    let at = |k: usize| d.get(k).and_then(serde_json::Value::as_f64).unwrap_or(9.0);
-                    (at(0) as f32 - c[0]).abs() < tol && (at(1) as f32 - c[1]).abs() < tol
+                    (d.at[0] as f32 - c[0]).abs() < tol && (d.at[1] as f32 - c[1]).abs() < tol
                 })
                 .map(|d| DeckMeasure {
-                    height: d.get(2).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32,
-                    top: d
-                        .get(3)
-                        .and_then(serde_json::Value::as_f64)
-                        .map(|t| t as f32),
+                    height: d.height as f32,
+                    top: d.top.map(|t| t as f32),
                     profile: d
-                        .get(4)
-                        .and_then(serde_json::Value::as_array)
-                        .and_then(|p| {
-                            let w: Option<Vec<f64>> =
-                                p.iter().map(serde_json::Value::as_f64).collect();
-                            DeckProfile::from_wire(&w?, f64::from(tile_m))
-                        }),
+                        .profile
+                        .as_deref()
+                        .and_then(|w| DeckProfile::from_wire(w, f64::from(tile_m))),
                 });
         }
     }

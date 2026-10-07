@@ -159,27 +159,15 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<AtlasDeck
         breaker: None,
         timeout: None,
         parse: |text| {
-            let v: serde_json::Value = serde_json::from_str(text).ok()?;
-            let decks = v
-                .get("decks")?
-                .as_array()?
-                .iter()
-                .filter_map(|d| {
-                    let d = d.as_array()?;
-                    Some(AtlasDeck {
-                        at: [d.first()?.as_f64()? as f32, d.get(1)?.as_f64()? as f32],
-                        height: d.get(2)?.as_f64()? as f32,
-                        top: d
-                            .get(3)
-                            .and_then(serde_json::Value::as_f64)
-                            .map(|v| v as f32),
-                        profile: d.get(4).and_then(|p| {
-                            p.as_array()?
-                                .iter()
-                                .map(serde_json::Value::as_f64)
-                                .collect()
-                        }),
-                    })
+            let cell = cartopolis_geo::formats::decks::parse(text).ok()?;
+            let decks = cell
+                .decks
+                .into_iter()
+                .map(|d| AtlasDeck {
+                    at: [d.at[0] as f32, d.at[1] as f32],
+                    height: d.height as f32,
+                    top: d.top.map(|v| v as f32),
+                    profile: d.profile,
                 })
                 .collect();
             Some(Some(decks))
