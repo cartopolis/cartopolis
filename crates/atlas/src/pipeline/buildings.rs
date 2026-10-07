@@ -18,6 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::osm_buildings::{self, LatLon, Tags};
 use serde_json::{json, Value};
 
@@ -262,17 +263,16 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             },
         )?;
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": "3DBAG WFS BAG3D:lod12",
-            "bbox_rd": ctx.bbox,
-            "cells": covered,
-            "building_count": total_out,
-        }),
+        &Manifest::new(CACHE_ZOOM, covered)
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "3DBAG WFS BAG3D:lod12",
+                ctx.bbox,
+            )
+            .with("building_count", total_out),
     )?;
     ctx.log(format!(
         "done: {total_out} buildings from {total_in} features across {n_cells} z{CACHE_ZOOM} cells (matched={})",

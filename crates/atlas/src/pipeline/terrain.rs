@@ -15,8 +15,8 @@
 //! (2026-09-24). Two tiles wanting the same sheet share one download
 //! (`crate::ahn6`).
 
+use cartopolis_geo::formats::coverage::{CellRef, Manifest};
 use cartopolis_geo::terrain_tile::DENSE_GRID;
-use serde_json::json;
 
 use super::rd::wgs84_bbox;
 use super::{in_order, Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
@@ -142,19 +142,20 @@ pub fn run_graded(
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    ctx.write_json(
+    let n_measured = measured.len();
+    ctx.write_coverage(
         "terrain/coverage.json",
-        &json!({
-            "attribution": ATTRIBUTION,
-            "bbox_rd": ctx.bbox,
-            "cells": measured,
-            "graded": graded,
-            "graded_stamp": stamp,
-            "name": ctx.name,
-            "source": "PDOK AHN WCS dtm_05m, cut to z14 tiles at 513 samples",
-            "tile_count": measured.len(),
-            "zoom": ZOOM,
-        }),
+        &Manifest {
+            graded: Some(graded.iter().copied().map(CellRef::from).collect()),
+            graded_stamp: Some(stamp),
+            ..Manifest::new(ZOOM, measured.iter().copied()).described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "PDOK AHN WCS dtm_05m, cut to z14 tiles at 513 samples",
+                ctx.bbox,
+            )
+        }
+        .with("tile_count", n_measured),
     )?;
     Ok(DatasetResult {
         cells: measured.len(),

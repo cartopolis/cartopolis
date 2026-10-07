@@ -26,7 +26,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use cartopolis_geo::formats::brp as wire;
-use serde_json::{json, Value};
+use cartopolis_geo::formats::coverage::Manifest;
+use serde_json::Value;
 
 use super::geom::{lat_lng_rings, polygon_rings, ring_area, round, M_PER_DEG};
 use super::http::{get_json, query};
@@ -332,19 +333,18 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         };
         ctx.write_doc(&cell_path("brp", *cell), &doc)?;
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "brp/coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": "RVO BRP Gewaspercelen via PDOK OGC API",
-            "bbox_rd": ctx.bbox,
-            "year": year,
-            "categories": CATEGORIES,
-            "cells": sorted_cells(cells.keys().copied()),
-            "parcel_count": n_parcels,
-        }),
+        &Manifest::new(CACHE_ZOOM, sorted_cells(cells.keys().copied()))
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "RVO BRP Gewaspercelen via PDOK OGC API",
+                ctx.bbox,
+            )
+            .with("year", year)
+            .with("categories", &CATEGORIES[..])
+            .with("parcel_count", n_parcels),
     )?;
     ctx.log(format!(
         "done: {n_parcels} parcels across {} cells; {ditches} landscape elements (ditches) and {slivers} slivers left \
@@ -364,6 +364,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 mod tests {
     use super::super::geom::Pt;
     use super::*;
+    use serde_json::json;
 
     fn feature(category: &str, code: Value, rings: Vec<Vec<Pt>>) -> Value {
         json!({

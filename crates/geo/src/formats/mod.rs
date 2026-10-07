@@ -32,6 +32,7 @@
 pub mod bag;
 pub mod bgt;
 pub mod brp;
+pub mod coverage;
 pub mod decks;
 pub mod dikes;
 pub mod lod22;

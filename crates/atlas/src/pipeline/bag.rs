@@ -21,8 +21,9 @@
 use std::collections::{HashMap, HashSet};
 
 use cartopolis_geo::formats::bag::{self, Address, Berth, Building};
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::LatLng;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::geom::{
     geom_coords, point_in_rings, polygon_rings, ring_area, rings_of, round, simplify, Pt,
@@ -858,21 +859,20 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             )?;
         }
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "bag/coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": "Kadaster BAG via PDOK WFS",
-            "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(done.iter().copied()),
-            "building_count": n_bld,
-            "address_count": n_adr,
-            "berth_count": n_bth,
-            "monument_count": n_mon,
-            "districts": districts,
-        }),
+        &Manifest::new(CACHE_ZOOM, sorted_cells(done.iter().copied()))
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "Kadaster BAG via PDOK WFS",
+                ctx.bbox,
+            )
+            .with("building_count", n_bld)
+            .with("address_count", n_adr)
+            .with("berth_count", n_bth)
+            .with("monument_count", n_mon)
+            .with("districts", districts.clone()),
     )?;
     ctx.log(format!(
         "done: {n_bld} buildings, {n_adr} addresses, {n_bth} berths, {n_mon} monuments, {n_dis} buildings in \
@@ -895,6 +895,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn uses_are_a_bitmask_and_unknown_words_say_nothing() {

@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::dikes as wire;
 use serde_json::{json, Value};
 
@@ -463,25 +464,27 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             },
         )?;
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "dikes/coverage.json",
-        &json!({
-            "name": ctx.name,
+        &Manifest {
             // The run: the client keys its cache of these cells on it, so a
             // re-run (the one that added `crests`) is never read from an old copy.
-            "stamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": "IMWA Keringen via PDOK OGC API",
-            "bbox_rd": ctx.bbox,
-            "kinds": DIKE_KINDS,
-            "categories": DIKE_CATEGORIES,
-            "cells": sorted_cells(cells.keys().copied()),
-            "line_count": n_lines,
-            "piece_count": n_pieces,
-        }),
+            stamp: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            ),
+            ..Manifest::new(CACHE_ZOOM, sorted_cells(cells.keys().copied())).described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "IMWA Keringen via PDOK OGC API",
+                ctx.bbox,
+            )
+        }
+        .with("kinds", &DIKE_KINDS[..])
+        .with("categories", &DIKE_CATEGORIES[..])
+        .with("line_count", n_lines)
+        .with("piece_count", n_pieces),
     )?;
     let breakdown: Vec<String> = kinds.iter().map(|(k, v)| format!("{v} {k}")).collect();
     ctx.log(format!(

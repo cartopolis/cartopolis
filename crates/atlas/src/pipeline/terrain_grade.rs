@@ -1694,14 +1694,16 @@ fn write_road_heights(ctx: &Ctx, roads: &HashMap<(i64, i64), RoadHeights>) -> Ou
         cells.push([x, y]);
     }
     cells.sort_unstable();
-    ctx.write_json(
+    ctx.write_coverage(
         "roads/coverage.json",
-        &serde_json::json!({
-            "attribution": "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0; © OpenStreetMap contributors",
-            "cells": cells,
-            "name": ctx.name,
-            "zoom": 14,
-        }),
+        &cartopolis_geo::formats::coverage::Manifest {
+            attribution: Some(
+                "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0; © OpenStreetMap contributors"
+                    .into(),
+            ),
+            name: Some(ctx.name.clone()),
+            ..cartopolis_geo::formats::coverage::Manifest::new(14, cells)
+        },
     )
 }
 
@@ -1774,14 +1776,13 @@ fn write_decks(
         cells.push([x, y]);
     }
     cells.sort_unstable();
-    ctx.write_json(
+    ctx.write_coverage(
         "decks/coverage.json",
-        &serde_json::json!({
-            "attribution": "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0",
-            "cells": cells,
-            "name": ctx.name,
-            "zoom": 14,
-        }),
+        &cartopolis_geo::formats::coverage::Manifest {
+            attribution: Some("AHN (Rijkswaterstaat / Het Waterschapshuis), CC0".into()),
+            name: Some(ctx.name.clone()),
+            ..cartopolis_geo::formats::coverage::Manifest::new(14, cells)
+        },
     )
 }
 

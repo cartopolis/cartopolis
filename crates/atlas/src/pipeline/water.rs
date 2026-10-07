@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::water as wire;
 use serde_json::{json, Value};
 
@@ -206,17 +207,16 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     for (cell, rings) in written {
         ctx.write_doc(&cell_path("water", cell), &wire::Cell { rings })?;
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "water/coverage.json",
-        &json!({
-            "attribution": ATTRIBUTION,
-            "bbox_rd": ctx.bbox,
-            "cells": covered,
-            "name": ctx.name,
-            "ring_count": n_rings,
-            "source": "Kadaster 3D basisvoorziening (Waterdeel_vlak)",
-            "zoom": CACHE_ZOOM,
-        }),
+        &Manifest::new(CACHE_ZOOM, covered)
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "Kadaster 3D basisvoorziening (Waterdeel_vlak)",
+                ctx.bbox,
+            )
+            .with("ring_count", n_rings),
     )?;
     ctx.log(format!(
         "{n_rings} waterringen, {n_placements} plaatsingen over {} cellen",

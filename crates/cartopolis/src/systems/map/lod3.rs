@@ -121,25 +121,21 @@ async fn fetch_manifest() -> Option<Manifest> {
 /// Read a manifest. A cell is `[x, y, stamp]`, or `[x, y]` from a host older
 /// than stamps, which reads as stamp 0 — cached for ever, as it always was.
 fn parse_manifest(bytes: &[u8]) -> Manifest {
-    #[derive(serde::Deserialize)]
-    struct Raw {
-        zoom: u32,
-        #[serde(default)]
-        cells: Vec<Vec<i64>>,
-        #[serde(default)]
-        no_interior: Vec<String>,
-        #[serde(default)]
-        attribution: Option<String>,
-    }
-    match serde_json::from_slice::<Raw>(bytes) {
-        Ok(m) if m.zoom == LOD3_ZOOM => Manifest {
+    match cartopolis_geo::formats::coverage::parse_slice(bytes) {
+        Ok(m) if m.zoom == Some(LOD3_ZOOM) => Manifest {
             cells: m
                 .cells
                 .iter()
-                .filter(|c| c.len() >= 2)
-                .map(|c| ((c[0], c[1]), c.get(2).copied().unwrap_or(0).max(0) as u64))
+                .map(|c| (c.xy(), c.stamp.unwrap_or(0)))
                 .collect(),
-            no_interior: m.no_interior.into_iter().collect(),
+            // The overrides' own key (`atlas::overrides::manifest_extra`).
+            no_interior: m
+                .extra
+                .get("no_interior")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             attribution: m.attribution,
         },
         Ok(_) => Manifest::default(),

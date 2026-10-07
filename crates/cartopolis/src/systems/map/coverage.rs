@@ -395,52 +395,25 @@ async fn fetch(sub: &str, zoom: u32) -> Option<(Manifest, Option<String>)> {
 /// that is not one reads as the empty answer, which latches: the host gave it,
 /// and asking again would get the same.
 fn parse(url: &str, text: &str, zoom: u32) -> Manifest {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
-        tracing::warn!(%url, "coverage is not JSON");
-        return Manifest::empty(zoom);
-    };
-    let zoom = json
-        .get("zoom")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(u64::from(zoom)) as u32;
-    let attribution = json
-        .get("attribution")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let cell_set = |key: &str| {
-        let mut cells = HashSet::new();
-        if let Some(arr) = json.get(key).and_then(serde_json::Value::as_array) {
-            for cell in arr {
-                if let Some(pair) = cell.as_array() {
-                    if let (Some(x), Some(y)) = (
-                        pair.first().and_then(serde_json::Value::as_i64),
-                        pair.get(1).and_then(serde_json::Value::as_i64),
-                    ) {
-                        cells.insert((x, y));
-                    }
-                }
-            }
+    let json = match cartopolis_geo::formats::coverage::parse(text) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(%url, error = %e, "coverage is not a manifest");
+            return Manifest::empty(zoom);
         }
-        cells
     };
-    let cells = cell_set("cells");
-    let graded = cell_set("graded");
-    let graded_stamp = json
-        .get("graded_stamp")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let stamp = json
-        .get("stamp")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
     Manifest {
-        zoom,
-        cells,
-        attribution,
-        graded,
-        graded_stamp,
-        stamp,
+        zoom: json.zoom.unwrap_or(zoom),
+        cells: json.cell_set().collect(),
+        attribution: json.attribution.unwrap_or_default(),
+        graded: json
+            .graded
+            .unwrap_or_default()
+            .iter()
+            .map(cartopolis_geo::formats::coverage::CellRef::xy)
+            .collect(),
+        graded_stamp: json.graded_stamp.unwrap_or(0),
+        stamp: json.stamp.unwrap_or(0),
     }
 }
 

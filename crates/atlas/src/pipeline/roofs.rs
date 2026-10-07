@@ -41,6 +41,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::roofs::{Cell as RoofCell, Material, Roof, Surface};
 use cartopolis_geo::lod22_cell::{self, Element};
 use image::RgbImage;
@@ -882,17 +883,16 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         }
     }
 
-    ctx.write_json(
+    ctx.write_coverage(
         "roofs/coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": format!("PDOK luchtfotorgb {}", layer()),
-            "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(written.iter().copied()),
-            "building_count": measured,
-        }),
+        &Manifest::new(CACHE_ZOOM, sorted_cells(written.iter().copied()))
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                format!("PDOK luchtfotorgb {}", layer()),
+                ctx.bbox,
+            )
+            .with("building_count", measured),
     )?;
     ctx.log(format!(
         "done: {measured} roofs ({pitched} pitched, {flat} flat) across {} cells",

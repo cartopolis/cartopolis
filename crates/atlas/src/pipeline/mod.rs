@@ -271,6 +271,18 @@ impl Ctx {
         self.write_bytes(relative, &body)
     }
 
+    /// Write a dataset's `coverage.json` (`cartopolis_geo::formats::coverage`),
+    /// the same atomic way. Keys come out sorted, as the `json!` manifests did.
+    pub fn write_coverage(
+        &self,
+        relative: &str,
+        manifest: &cartopolis_geo::formats::coverage::Manifest,
+    ) -> Outcome<()> {
+        let body = cartopolis_geo::formats::coverage::to_vec(manifest)
+            .map_err(|e| PipelineError::Failed(format!("{relative}: {e}")))?;
+        self.write_bytes(relative, &body)
+    }
+
     /// Write a binary file, and a `.gz` of it beside it, the same atomic way
     /// [`Self::write_json`] writes JSON.
     ///

@@ -18,6 +18,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cartopolis_geo::formats::coverage;
+
 /// Write a file by rename, never in place, so a client fetching while somebody
 /// saves gets the old file or the new one and never half of each.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -43,13 +45,11 @@ pub fn now_ms() -> u64 {
 pub fn read_cells(manifest: &Path) -> BTreeMap<(i64, i64), u64> {
     std::fs::read(manifest)
         .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("cells").cloned())
-        .and_then(|c| serde_json::from_value::<Vec<Vec<i64>>>(c).ok())
+        .and_then(|b| coverage::parse_slice(&b).ok())
+        .map(|m| m.cells)
         .unwrap_or_default()
         .into_iter()
-        .filter(|c| c.len() >= 2)
-        .map(|c| ((c[0], c[1]), c.get(2).copied().unwrap_or(0).max(0) as u64))
+        .map(|c| (c.xy(), c.stamp.unwrap_or(0)))
         .collect()
 }
 
@@ -97,11 +97,20 @@ pub fn write_manifest(
     cells: &BTreeMap<(i64, i64), u64>,
     extra: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
-    let listed: Vec<(i64, i64, u64)> = cells.iter().map(|(&(x, y), &r)| (x, y, r)).collect();
-    let mut manifest = extra;
-    manifest.insert("zoom".into(), zoom.into());
-    manifest.insert("cells".into(), serde_json::to_value(listed)?);
-    write_atomic(manifest_path, &serde_json::to_vec(&manifest)?)
+    let mut extra = extra;
+    // This function's own keys win over anything the caller passed under them.
+    extra.remove("zoom");
+    extra.remove("cells");
+    let manifest = coverage::Manifest {
+        zoom: Some(zoom),
+        cells: cells
+            .iter()
+            .map(|(&(x, y), &r)| coverage::CellRef::stamped(x, y, r))
+            .collect(),
+        extra,
+        ..coverage::Manifest::default()
+    };
+    write_atomic(manifest_path, &coverage::to_vec(&manifest)?)
 }
 
 #[cfg(test)]

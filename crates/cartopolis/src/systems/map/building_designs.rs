@@ -107,15 +107,12 @@ async fn fetch_manifest() -> Option<HashMap<(i64, i64), u64>> {
 }
 
 fn parse_manifest(bytes: &[u8]) -> HashMap<(i64, i64), u64> {
-    #[derive(serde::Deserialize)]
-    struct Manifest {
-        zoom: u32,
-        cells: Vec<(i64, i64, u64)>,
-    }
-    match serde_json::from_slice::<Manifest>(bytes) {
-        Ok(m) if m.zoom == DESIGN_ZOOM => {
-            m.cells.into_iter().map(|(x, y, r)| ((x, y), r)).collect()
-        }
+    match cartopolis_geo::formats::coverage::parse_slice(bytes) {
+        Ok(m) if m.zoom == Some(DESIGN_ZOOM) => m
+            .cells
+            .into_iter()
+            .map(|c| (c.xy(), c.stamp.unwrap_or(0)))
+            .collect(),
         Ok(_) => HashMap::new(),
         Err(e) => {
             tracing::warn!("building designs manifest unreadable: {e}");

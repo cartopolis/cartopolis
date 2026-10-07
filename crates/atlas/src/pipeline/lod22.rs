@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::lod22_cell;
 use serde_json::{json, Value};
 
@@ -505,18 +506,17 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     for (cell, bin) in &cells {
         write_cell(ctx, *cell, bin)?;
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "lod22/coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "lod": "2.2",
-            "attribution": ATTRIBUTION,
-            "source": "3DBAG CityJSON LoD2.2",
-            "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(cells.keys().copied()),
-            "building_count": total,
-        }),
+        &Manifest::new(CACHE_ZOOM, sorted_cells(cells.keys().copied()))
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "3DBAG CityJSON LoD2.2",
+                ctx.bbox,
+            )
+            .with("lod", "2.2")
+            .with("building_count", total),
     )?;
     ctx.log(format!(
         "done: {total} LoD2.2 buildings across {} cells",

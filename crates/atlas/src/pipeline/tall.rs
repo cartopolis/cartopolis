@@ -36,8 +36,9 @@
 use std::time::Duration;
 
 use cartopolis_core::world::lat_lng_to_tile;
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::tall;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::http;
 use super::rd::wgs84_bbox;
@@ -212,17 +213,16 @@ fn extract(ctx: &Ctx, endpoint: &str, get: &Get<'_>, backoff: Duration) -> Outco
             "no cell could be fetched from {endpoint}; the coverage was left as it was"
         )));
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "tall/coverage.json",
-        &json!({
-            "attribution": ATTRIBUTION,
-            "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(written.iter().copied()),
-            "name": ctx.name,
-            "source": "OpenStreetMap via Overpass",
-            "structure_count": structures,
-            "zoom": tall::ZOOM,
-        }),
+        &Manifest::new(tall::ZOOM, sorted_cells(written.iter().copied()))
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "OpenStreetMap via Overpass",
+                ctx.bbox,
+            )
+            .with("structure_count", structures),
     )?;
     ctx.log(format!(
         "{structures} hoge bouwwerken over {} cellen, {failed} mislukt",
@@ -237,6 +237,7 @@ fn extract(ctx: &Ctx, endpoint: &str, get: &Get<'_>, backoff: Duration) -> Outco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};

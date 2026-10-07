@@ -26,6 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cartopolis_geo::formats::bgt::{self, Line, Surface};
+use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::LatLng;
 use serde_json::{json, Value};
 
@@ -653,29 +654,28 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             )?;
         }
     }
-    ctx.write_json(
+    ctx.write_coverage(
         "bgt/coverage.json",
-        &json!({
-            "name": ctx.name,
-            "zoom": CACHE_ZOOM,
-            "attribution": ATTRIBUTION,
-            "source": "Kadaster BGT via PDOK download API",
-            "bbox_rd": ctx.bbox,
-            "kinds": PROP_KINDS,
-            "line_kinds": LINE_KINDS,
-            "surface_kinds": SURFACE_KINDS,
-            "surface_materials": SURFACE_MATERIALS,
-            "bridge_parts": BRIDGE_PARTS,
-            "cells": covered,
-            "tree_count": n_trees,
-            "prop_count": n_props,
-            "line_count": n_lines,
+        &Manifest::new(CACHE_ZOOM, covered)
+            .described(
+                ctx.name.as_str(),
+                ATTRIBUTION,
+                "Kadaster BGT via PDOK download API",
+                ctx.bbox,
+            )
+            .with("kinds", &PROP_KINDS[..])
+            .with("line_kinds", &LINE_KINDS[..])
+            .with("surface_kinds", &SURFACE_KINDS[..])
+            .with("surface_materials", &SURFACE_MATERIALS[..])
+            .with("bridge_parts", &BRIDGE_PARTS[..])
+            .with("tree_count", n_trees)
+            .with("prop_count", n_props)
+            .with("line_count", n_lines)
             // How much of the boundary layer carries a real measurement, so "the
             // walls look wrong" has a number attached.
-            "measured_line_count": n_measured,
-            "surface_count": n_surf,
-            "bridge_count": n_bridges,
-        }),
+            .with("measured_line_count", n_measured)
+            .with("surface_count", n_surf)
+            .with("bridge_count", n_bridges),
     )?;
     ctx.log(format!(
         "done: {n_trees} surveyed trees, {n_props} street objects, {n_lines} fences, walls and hedges, {n_surf} \

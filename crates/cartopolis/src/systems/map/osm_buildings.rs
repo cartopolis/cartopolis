@@ -285,38 +285,16 @@ fn parse_coverage(sub: &str, text: &str) -> Coverage {
     if text.is_empty() {
         return empty;
     }
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(json) = cartopolis_geo::formats::coverage::parse(text) else {
         // The host answered, with something we cannot read. Retrying would ask the
         // same question and get the same answer, so this one does latch.
         tracing::warn!(sub, "3DBAG coverage is not JSON; using OSM buildings");
         return empty;
     };
-    let zoom = json
-        .get("zoom")
-        .and_then(|z| z.as_u64())
-        .unwrap_or(CACHE_ZOOM as u64) as u32;
-    let attribution = json
-        .get("attribution")
-        .and_then(|a| a.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let mut cells = HashSet::new();
-    if let Some(arr) = json.get("cells").and_then(|c| c.as_array()) {
-        for cell in arr {
-            if let Some(pair) = cell.as_array() {
-                if let (Some(x), Some(y)) = (
-                    pair.first().and_then(|v| v.as_i64()),
-                    pair.get(1).and_then(|v| v.as_i64()),
-                ) {
-                    cells.insert((x, y));
-                }
-            }
-        }
-    }
     Coverage {
-        zoom,
-        cells,
-        attribution,
+        zoom: json.zoom.unwrap_or(CACHE_ZOOM),
+        cells: json.cell_set().collect(),
+        attribution: json.attribution.unwrap_or_default(),
     }
 }
 
