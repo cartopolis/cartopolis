@@ -391,6 +391,19 @@ Function-level, nothing written here is big: the largest are `drive_capture`
 and `update_lod22` (~5k). Splitting long functions is a readability change, not a
 build one.
 
+**The materials moved (2026-10-07).** `crates/materials` (`cartopolis_materials`)
+now holds the seventeen material types, their impls and one `MaterialsPlugin`
+the client adds; the client re-exports each type from its old path. Measured the
+same way on the same day, the client's IR went from **6,858,394 lines (182,009
+functions) to 4,852,439 (129,226)** — 29% less, a bit more than the 24% above
+because main had grown since that count. `cartopolis_materials` on its own is
+2,090,327 lines (56,258 functions) — about the 2.0 million the client lost —
+generated only when that crate changes. It is a path dependency, so the
+workspace's `package."*"` profile builds it at opt-level 3 like Bevy. One trap found on
+the way: built alone (`-p cartopolis_materials`), the workspace's Bevy features
+turn on zstd in `bevy_image` with no backend, which is a `compile_error!` — the
+crate has to name `bevy_image` with `zstd_rust` the way the client does.
+
 ## Cranelift for the client crate: tried, not settled (2026-10-07)
 
 `[profile.dev.package.cartopolis] codegen-backend = "cranelift"` — Cranelift for

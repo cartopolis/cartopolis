@@ -319,7 +319,7 @@ config) reads the TypeScript through `cartopolis_core::ts_mirror` and fails when
 the fields differ. Change an account field and change it there too. `docs/notes/hosted-simulator.md` has the
 deployment.
 
-This is a **Cargo workspace** with eleven crates:
+This is a **Cargo workspace** with twelve crates:
 
 | Crate | Role | Notable deps |
 |-------|------|-------------|
@@ -333,6 +333,7 @@ This is a **Cargo workspace** with eleven crates:
 | `cartopolis` | Bevy 0.19 client; rendering, ECS systems, UI | Bevy 0.19 + `big_space` (path dep), `egui` 0.35 |
 | `cartopolis_android` | The Android app: a `cdylib` owning `android_main`, plus `AndroidManifest.xml` and `build-apk.sh`. **Both its dependencies are target-gated**, so off Android the crate is empty — 8.4 s and a 4.3 MB artifact in a workspace build, not the second full static link of Bevy that a `cdylib` on `cartopolis`'s own `[lib]` would cost. "Empty" is not free and cannot be: a cdylib links std regardless. It also means `cargo check --workspace` proves nothing about the crate, which is why CI checks it for `aarch64-linux-android` separately. `docs/notes/android-build.md` | Bevy 0.19 + `cartopolis`, on `cfg(target_os = "android")` only |
 | `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server (`systems::dev::mcp`): the listener, the bearer check, the rmcp `#[tool]` surface, and the job protocol and tool arguments that cross its channel to the ECS. Split out so the async/tower generic code is not compiled inside the client crate. **Nothing here may depend on `bevy` or `cartopolis`**; the client re-exports it as `mcp::server` and wraps what must be a `Resource`. The client depends on it on the desktop predicate only — the same one `build.rs` sets the `mcp` cfg on | `rmcp`, `axum`, `tokio` — **no Bevy** |
+| `cartopolis_materials` (`crates/materials`) | The client's custom render materials — the types, their `Material`/`MaterialExtension` impls and `MaterialsPlugin`, which registers all of them. Split out because each `MaterialPlugin::<M>` was ~1.5 % of the client's generated IR (`docs/notes/client-build-cost.md`). **Only types and their material impls live here, and nothing here may depend on `cartopolis`**; the client re-exports each type from its old path (`systems::water::WaterMaterial`, …) and keeps every system that uses them | Bevy 0.19 (declared exactly as the client declares it), `cartopolis_core` |
 | `big_space` | **Vendored fork** of `big_space` 0.10 ported to Bevy 0.19 (floating-origin transform propagation, ADR-019). Upstream tops out at Bevy 0.18, so we keep a copy under `crates/big_space` and advance it on each Bevy bump — re-sync the vendored transform-propagation code (`bevy_compat.rs`) against Bevy when upgrading. | Bevy sub-crates |
 
 ### Client (`cartopolis`) — Bevy ECS layout
