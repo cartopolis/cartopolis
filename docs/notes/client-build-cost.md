@@ -391,6 +391,45 @@ Function-level, nothing written here is big: the largest are `drive_capture`
 and `update_lod22` (~5k). Splitting long functions is a readability change, not a
 build one.
 
+## Cranelift for the client crate: tried, not settled (2026-10-07)
+
+`[profile.dev.package.cartopolis] codegen-backend = "cranelift"` — Cranelift for
+our crate, LLVM at opt-level 3 for every dependency — is Bevy's own fast-compile
+recipe, and nothing here had tried it. Three attempts in the agent container,
+all against the same nightly with LLVM as the control, none of them on a quiet
+machine (four other agents were building):
+
+| | LLVM | Cranelift |
+|---|---|---|
+| client crate from scratch, deps warm | 243 s | 362 s |
+| edit one client file, rebuild — three in a row per backend | 127 / 298 / 160 s | 100 / 267 / 144 s |
+| the same, alternating backends edit by edit (5 pairs) | 216–261 s | 92–248 s |
+
+The spread inside each row is as big as the difference between them, and the
+alternating run is not even comparable with the others: an unalternated LLVM
+rebuild once took 39 s, so switching backends between builds is itself causing
+extra recompilation. **So there is no number here to act on**, in either
+direction. What the attempts did establish:
+
+- **It needs `--features scalar-fallback`.** Cranelift does not honour
+  `-C target-cpu=x86-64-v3`, so `cfg(target_feature = "avx2")` is false in the
+  client and `simd_baseline.rs` refuses to compile — which is the guard working.
+  The feature only switches the guard off in `cartopolis`; dependencies stay on
+  LLVM with AVX2, so tiny-skia's rasteriser is unaffected.
+- **The binary starts** (`--help`), so nothing in the client is beyond it.
+- **It needs a nightly with the `rustc-codegen-cranelift-preview` component**,
+  which the container's root-owned toolchain cannot be given from inside. A
+  private one works and touches nothing shared:
+  `RUSTUP_HOME=/home/agent/cargo-target/cranelift-rustup rustup toolchain install nightly-2026-08-06 --profile minimal --component rustc-codegen-cranelift-preview`
+  (605 MB, on the build volume, not the near-full root disk). Run it with
+  `-Zcodegen-backend --config 'profile.dev.package.cartopolis.codegen-backend="cranelift"'`
+  and its **own** `CARGO_TARGET_DIR`, or the nightly rebuilds a slot's whole
+  dependency graph.
+
+To settle it: one quiet machine, one target directory per backend, five edits
+each, not interleaved. A workstation answer would transfer, since the question
+is a ratio.
+
 ## Not measured
 
 Whether a cold full build is dominated by Bevy itself — it certainly is, and no
