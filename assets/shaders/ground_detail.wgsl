@@ -437,5 +437,48 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+
+    // The underground layer looks through the ground (`systems::sewers`). A
+    // screen door, not a blend: the ground stays opaque and keeps writing depth,
+    // so the ground stack's depth ladder is untouched and nothing has to be
+    // sorted — a pixel is either ground or a hole. Every sheet of the stack draws
+    // the same pattern at the same pixels, so a hole goes through all of them at
+    // once rather than opening onto the clipmap level underneath.
+    //
+    // At the very end, after every derivative and texture sample, because a
+    // `discard` before them would put them in non-uniform control flow. Only in
+    // this variant (`ground_detail::GroundKey`): the statement's mere presence
+    // costs early depth testing.
+#ifdef GROUND_SEE_THROUGH
+    let horizontal = length(in.world_position.xz - view_bindings::view.world_position.xz);
+    let open = SEE_THROUGH * (1.0 - smoothstep(SEE_THROUGH_NEAR_M, SEE_THROUGH_FAR_M, horizontal));
+    let cell = vec2<u32>(in.position.xy) % vec2<u32>(4u);
+    if bayer4(cell.x, cell.y) < open {
+        discard;
+    }
+#endif
     return out;
 }
+
+#ifdef GROUND_SEE_THROUGH
+// How much of the ground opens near the camera. Over half, because the
+// pipes are the point; under all of it, because a street you cannot see is
+// a street you cannot place them in.
+const SEE_THROUGH: f32 = 0.6;
+// Horizontal metres from the camera over which the ground closes again, so
+// the far city reads as a city and the opening reads as looking down.
+const SEE_THROUGH_NEAR_M: f32 = 250.0;
+const SEE_THROUGH_FAR_M: f32 = 450.0;
+
+// A 4×4 ordered-dither threshold in [0, 1): the pattern with the most even
+// spread of holes at every density.
+fn bayer4(x: u32, y: u32) -> f32 {
+    var m = array<f32, 16>(
+        0.0, 8.0, 2.0, 10.0,
+        12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0,
+        15.0, 7.0, 13.0, 5.0,
+    );
+    return (m[y * 4u + x] + 0.5) / 16.0;
+}
+#endif

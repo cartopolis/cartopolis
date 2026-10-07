@@ -70,10 +70,10 @@ pub use map::{
     globe_ocean, globe_weather, grass, ground_detail, ground_probe, height, interiors,
     light_shafts, load_control, load_timing, lod22, lod22_facade, lod3, map_geometry, map_stream,
     model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
-    render_features, render_scale, rendering, road_depth, roof_colours, scaffolding, sky, sky_bake,
-    sky_dome, stream_ledger, stream_watch, street_detail, street_furniture, street_labels,
-    sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tunnels,
-    vegetation, water, water_levels, weather, wet_surfaces, world_places,
+    render_features, render_scale, rendering, road_depth, roof_colours, scaffolding, sewers, sky,
+    sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
+    street_labels, sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader,
+    tile_source, tunnels, vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
 pub use nav::high_precision;
 pub use nav::{

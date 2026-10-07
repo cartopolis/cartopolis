@@ -56,6 +56,8 @@ use bevy::render::render_resource::{
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
+use crate::systems::ground_detail::GroundKey;
+
 /// The road ladder rung this vertex draws on — `SurfaceMesh::rungs`.
 ///
 /// Constant across a ribbon, so it interpolates to itself and every fragment of
@@ -87,6 +89,8 @@ pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 /// process. The clipmap cross-fade's three (103–105) are here for that reason alone; a
 /// road is never a clipmap tile, so they are never written and `lod.w` stays 0.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+// A bare name: the derive parses an identifier and silently drops a path.
+#[bind_group_data(GroundKey)]
 pub struct RoadDepthExtension {
     /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
     /// w: strength, `0.0` when there is no tier to read.
@@ -113,6 +117,17 @@ pub struct RoadDepthExtension {
     /// reason, and never read on a road for the same `water_sea.z`.
     #[storage(108, read_only, visibility(fragment))]
     pub clouds: Handle<ShaderBuffer>,
+    /// The ground's screen-door variant (`ground_detail::GroundKey`), so a road
+    /// opens onto what is under it exactly where the pavement beside it does.
+    pub see_through: bool,
+}
+
+impl From<&RoadDepthExtension> for GroundKey {
+    fn from(e: &RoadDepthExtension) -> Self {
+        Self {
+            see_through: e.see_through,
+        }
+    }
 }
 
 impl Default for RoadDepthExtension {
@@ -128,6 +143,7 @@ impl Default for RoadDepthExtension {
             // whose storage buffer does not exist never prepares, and draws
             // nothing (`sky::CLOUD_FIELD_BUFFER`).
             clouds: crate::systems::sky::CLOUD_FIELD_BUFFER,
+            see_through: false,
         }
     }
 }
@@ -153,8 +169,11 @@ impl MaterialExtension for RoadDepthExtension {
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialExtensionKey<Self>,
+        key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        // The fragment variant first: it is harmless on a prepass descriptor,
+        // whose fragment stage is bevy's and never reads the def.
+        crate::systems::ground_detail::specialize_ground(descriptor, key.bind_group_data);
         // **This hook runs for the prepass too, and must do nothing there.**
         //
         // Bevy calls the material's `specialize` from `PrepassPipelineSpecializer`

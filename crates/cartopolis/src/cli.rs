@@ -200,6 +200,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) aerial: bool,
 
+    /// Switch the **sewers** layer on for this run (`systems::sewers`): the
+    /// municipal sewer network drawn at its depth, and the ground near the
+    /// camera opened to show it. Opt-in for the reason `--aerial` is — it
+    /// changes how the ground looks.
+    #[arg(long)]
+    pub(crate) sewers: bool,
+
     /// Beside every capture, write the aerial photograph of the ground it looks
     /// at — `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB with the camera and the
     /// point it is aimed at drawn on (`systems::aerial_reference`). The check a

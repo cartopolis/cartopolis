@@ -283,6 +283,10 @@ pub struct LayerPrefs {
     /// to draw and therefore nothing to pay for.
     #[serde(default = "yes")]
     pub flood_defences: bool,
+    /// The sewers, and the opened ground (`systems::sewers`). Off unless asked
+    /// for: it changes how the ground looks.
+    #[serde(default)]
+    pub sewers: bool,
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,

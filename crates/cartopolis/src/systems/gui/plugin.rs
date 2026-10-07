@@ -16,6 +16,8 @@ pub struct GuiPlugin {
     /// `data/user.json`, which `apply_prefs` does after this). The measured
     /// ground needs no such switch any more — it is always on.
     pub aerial: bool,
+    /// `--sewers`, for the same reason.
+    pub sewers: bool,
 }
 
 impl Plugin for GuiPlugin {
@@ -32,6 +34,7 @@ impl Plugin for GuiPlugin {
             .insert_resource({
                 let mut layers = systems::data_layers::DataLayers::default();
                 layers.aerial_enabled = self.aerial;
+                layers.sewers = self.sewers;
                 layers
             })
             .watch_stream::<systems::data_layers::DataLayers>()

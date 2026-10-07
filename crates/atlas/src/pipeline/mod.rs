@@ -32,6 +32,7 @@ pub mod lod22;
 pub mod models;
 pub mod rd;
 pub mod roofs;
+pub mod sewers;
 pub mod tall;
 pub mod terrain;
 pub mod terrain_grade;
@@ -543,6 +544,16 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "dikes/coverage.json",
         typical_minutes: 1,
         run: dikes::run,
+    },
+    Dataset {
+        id: "sewers",
+        label: "Sewers (GWSW)",
+        description: "The municipal sewer network — pipes and manholes, with how deep each \
+                      lies — from the GWSW registers PDOK republishes. Drawn under the street \
+                      when the Map menu's Sewers layer is on.",
+        coverage: "sewers/coverage.json",
+        typical_minutes: 1,
+        run: sewers::run,
     },
     Dataset {
         id: "bgt",

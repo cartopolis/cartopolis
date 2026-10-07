@@ -963,7 +963,10 @@ fn run_client() {
         },
         systems::nav::NavPlugin,
         systems::player::PlayerPlugin,
-        systems::gui::GuiPlugin { aerial: cli.aerial },
+        systems::gui::GuiPlugin {
+            aerial: cli.aerial,
+            sewers: cli.sewers,
+        },
         systems::dev::DevPlugin,
     ));
 

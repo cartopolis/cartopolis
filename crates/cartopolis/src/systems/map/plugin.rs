@@ -103,6 +103,8 @@ impl Plugin for MapPlugin {
             .watch_stream::<systems::street_detail::StreetDetail>()
             .init_resource::<systems::tall_structures::TallStructures>()
             .watch_stream::<systems::tall_structures::TallStructures>()
+            .init_resource::<systems::sewers::Sewers>()
+            .watch_stream::<systems::sewers::Sewers>()
             .init_resource::<systems::height::HeightLayer>()
             .init_resource::<systems::terrain_tiles::TerrainTiles>()
             .init_resource::<systems::water_levels::WaterLevels>()
@@ -472,6 +474,18 @@ impl Plugin for MapPlugin {
                     // nothing.
                     systems::atmosphere_patch::patch_atmosphere_shader,
                 ),
+            )
+                .in_set(ClientPhase::Stream),
+        );
+
+        // The sewers, and the opened ground they are seen through
+        // (`systems::sewers`). A call of its own because the tuple above is full.
+        app.add_systems(
+            Update,
+            (
+                systems::sewers::update_sewers,
+                systems::sewers::apply_ground_see_through,
+                systems::sewers::follow_backdrop,
             )
                 .in_set(ClientPhase::Stream),
         );
