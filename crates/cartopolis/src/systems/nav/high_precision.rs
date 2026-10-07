@@ -16,14 +16,24 @@
 //! `false` until a pose is actually held: a mode that claimed centimetres it
 //! does not have would make every hand-sensing script lie.
 //!
-//! It turns the locate button on with it: the GNSS fix and the compass are the
-//! box the matcher searches, and they are the button's.
+//! It holds a GNSS and a compass subscription of its own, beside the locate
+//! button's (the providers are shared, so the radio is not opened twice): the
+//! fix and the heading are the box the matcher searches, and the button's
+//! tracking stands down whenever there is no avatar — offline, or for the
+//! moment a backgrounded app's session is torn down — which on the first phone
+//! log left the mode with no GNSS and no compass after a trip to another app.
+//!
+//! **Android takes the camera from any app that goes to the background**, so a
+//! camera loss is normal and the mode starts the sensors again
+//! ([`CAMERA_RETRY_S`] later) rather than staying dark until it is toggled.
 
 use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
 use crate::platform::gnss_raw::{self, RawGnss, RawStats};
+use crate::platform::location::LocationWatch;
+use crate::platform::orientation::OrientationWatch;
 use crate::platform::precise_sensors::{Counts, MotionKind, Sensors};
 use crate::systems::locate::LocateTracking;
 use crate::systems::prim_hand::PreciseHand;
@@ -34,11 +44,18 @@ pub struct HighPrecision {
     /// Asked for. The sensors follow it in [`drive_high_precision`].
     pub on: bool,
     sensors: Option<Sensors>,
-    /// Seconds since the sensors started, and the counts at the last log line,
-    /// for rates.
-    running_s: f32,
-    last_line_s: f32,
+    /// The mode's own GNSS and compass (see the module note).
+    location: Option<LocationWatch>,
+    compass: Option<OrientationWatch>,
+    /// When the sensors started, and the wall-clock time and counts at the last
+    /// log line, for rates. Wall clock, not Bevy's `Time`: that one clamps a
+    /// long frame to a quarter second, so a stalled or backgrounded app read as
+    /// a burst of impossible rates (40 frames/s, 925 gyro events/s).
+    started: Option<web_time::Instant>,
+    last_line_at: Option<web_time::Instant>,
     last_counts: Counts,
+    /// When to start the sensors again after Android took the camera.
+    retry_at: Option<web_time::Instant>,
     logged_lens: bool,
     logged_error: bool,
     /// The newest frame's size and brightness, for the log.
@@ -59,12 +76,13 @@ pub struct HighPrecision {
     gyro_gap_ms: f64,
     /// The raw GNSS measurements under the fix (`platform::gnss_raw`): whether
     /// this phone reports usable carrier phase is the first question RTK asks.
+    /// Kept across a camera restart — it is not the camera's.
     gnss: Option<RawGnss>,
     gnss_stats: RawStats,
     gnss_status: i32,
     /// When the listener was last asked to start, and the last refusal logged,
     /// so a missing permission is said once rather than every second.
-    gnss_try_s: f32,
+    gnss_try_at: Option<web_time::Instant>,
     gnss_refusal: Option<String>,
 }
 
@@ -78,6 +96,9 @@ impl HighPrecision {
     /// One line under the locate button saying what the mode is doing.
     #[must_use]
     pub fn status(&self) -> Option<String> {
+        if self.on && self.sensors.is_none() && self.retry_at.is_some() {
+            return Some("High precision · getting the camera back".into());
+        }
         let sensors = self.sensors.as_ref()?;
         if let Some(e) = sensors.error() {
             return Some(e);
@@ -206,9 +227,34 @@ fn utc_now() -> String {
     format!("{:02}:{:02}:{:02}", day / 3600, day / 60 % 60, day % 60)
 }
 
+/// How long after losing the camera the mode asks for it again. Long enough
+/// not to fight whatever took it on every frame; short enough that coming back
+/// to the app finds the camera running.
+const CAMERA_RETRY_S: f32 = 2.0;
+
+impl HighPrecision {
+    /// Start (or restart) the sensors, resetting what the log measures.
+    fn start_sensors(&mut self) {
+        let now = web_time::Instant::now();
+        self.sensors = Some(Sensors::start());
+        self.started = Some(now);
+        self.last_line_at = Some(now);
+        self.last_counts = Counts::default();
+        self.logged_lens = false;
+        self.logged_error = false;
+        self.last_frame = None;
+        self.frame_age_ms = None;
+        self.gyro_peak = 0.0;
+        self.accel_sum = 0.0;
+        self.accel_n = 0;
+        self.last_gyro_t = None;
+        self.gyro_gap_ms = 0.0;
+        self.retry_at = None;
+    }
+}
+
 /// Run the sensors while the switch is on, and keep the log.
 pub fn drive_high_precision(
-    time: Res<Time>,
     mut high: ResMut<HighPrecision>,
     mut log: ResMut<HighPrecisionLog>,
     mut tracking: ResMut<LocateTracking>,
@@ -223,22 +269,15 @@ pub fn drive_high_precision(
         return;
     }
     let high = &mut *high;
-    match (high.on, high.sensors.is_some()) {
+    let now = web_time::Instant::now();
+    let running = high.sensors.is_some() || high.retry_at.is_some();
+    match (high.on, running) {
         (true, false) => {
+            // The map follows too, where there is an avatar to move.
             tracking.enter();
-            high.sensors = Some(Sensors::start());
-            high.running_s = 0.0;
-            high.last_line_s = 0.0;
-            high.last_counts = Counts::default();
-            high.logged_lens = false;
-            high.logged_error = false;
-            high.last_frame = None;
-            high.frame_age_ms = None;
-            high.gyro_peak = 0.0;
-            high.accel_sum = 0.0;
-            high.accel_n = 0;
-            high.last_gyro_t = None;
-            high.gyro_gap_ms = 0.0;
+            high.location = Some(LocationWatch::start());
+            high.compass = Some(OrientationWatch::start());
+            high.start_sensors();
             log.note(format!(
                 "on · {}",
                 crate::platform::precise_sensors::device_name()
@@ -246,7 +285,7 @@ pub fn drive_high_precision(
             high.gnss = Some(RawGnss::new());
             high.gnss_stats = RawStats::default();
             high.gnss_status = -1;
-            high.gnss_try_s = f32::NEG_INFINITY;
+            high.gnss_try_at = None;
             high.gnss_refusal = None;
             if let Some(chip) = RawGnss::hardware() {
                 log.note(format!("gnss chip · {chip}"));
@@ -254,13 +293,27 @@ pub fn drive_high_precision(
         }
         (false, true) => {
             high.sensors = None;
+            high.location = None;
+            high.compass = None;
+            high.retry_at = None;
             high.gnss = None;
             log.note("off");
         }
         _ => {}
     }
+    // Android took the camera: let go of everything and ask again shortly.
+    if high.sensors.as_ref().is_some_and(Sensors::camera_lost) {
+        high.sensors = None;
+        high.retry_at = Some(now + std::time::Duration::from_secs_f32(CAMERA_RETRY_S));
+        log.note(format!(
+            "camera taken by Android (another app, or the app in the background) · retrying in {CAMERA_RETRY_S:.0} s"
+        ));
+    }
+    if high.on && high.retry_at.is_some_and(|at| now >= at) {
+        high.start_sensors();
+        log.note("camera restarted");
+    }
     if let Some(sensors) = &high.sensors {
-        high.running_s += time.delta_secs();
         if let Some(e) = sensors.error().filter(|_| !high.logged_error) {
             high.logged_error = true;
             log.note(format!("error · {e}"));
@@ -278,8 +331,8 @@ pub fn drive_high_precision(
         // and dropped.
         if let Some(frame) = sensors.take_frame() {
             high.last_frame = Some((frame.width, frame.height, frame.mean()));
-            let now = crate::platform::precise_sensors::now_ns();
-            high.frame_age_ms = Some((now - frame.t_ns) as f64 / 1e6);
+            let taken_off = crate::platform::precise_sensors::now_ns();
+            high.frame_age_ms = Some((taken_off - frame.t_ns) as f64 / 1e6);
         }
         for m in sensors.drain_motion() {
             let [x, y, z] = m.xyz;
@@ -303,8 +356,11 @@ pub fn drive_high_precision(
         // (the location permission may still be being asked) and count what it
         // delivered. A second is ample: the chip reports one epoch a second.
         if let Some(gnss) = &mut high.gnss {
-            if high.running_s - high.gnss_try_s >= 1.0 {
-                high.gnss_try_s = high.running_s;
+            if high
+                .gnss_try_at
+                .is_none_or(|at| (now - at).as_secs_f32() >= 1.0)
+            {
+                high.gnss_try_at = Some(now);
                 if let Err(why) = gnss.ensure_started() {
                     if high.gnss_refusal.as_deref() != Some(why.as_str()) {
                         log.note(format!("raw gnss not started · {why}"));
@@ -328,16 +384,18 @@ pub fn drive_high_precision(
             }
         }
 
-        let span = high.running_s - high.last_line_s;
-        if span >= LOG_EVERY_S {
-            let now = sensors.counts();
+        let since = high.last_line_at.map_or(0.0, |at| (now - at).as_secs_f32());
+        if since >= LOG_EVERY_S {
+            let span = since;
+            let running_s = high.started.map_or(0.0, |at| (now - at).as_secs_f32());
+            let counts = sensors.counts();
             let rate = |a: u64, b: u64| (a - b) as f32 / span;
             let mut line = format!(
                 "t+{:.0}s · camera {:.1}/s · accel {:.0}/s · gyro {:.0}/s",
-                high.running_s,
-                rate(now.frames, high.last_counts.frames),
-                rate(now.accel, high.last_counts.accel),
-                rate(now.gyro, high.last_counts.gyro),
+                running_s,
+                rate(counts.frames, high.last_counts.frames),
+                rate(counts.accel, high.last_counts.accel),
+                rate(counts.gyro, high.last_counts.gyro),
             );
             if let Some((w, h, mean)) = high.last_frame {
                 line.push_str(&format!(" · frame {w}×{h} brightness {mean:.0}"));
@@ -357,14 +415,14 @@ pub fn drive_high_precision(
             high.gyro_peak = 0.0;
             high.accel_sum = 0.0;
             high.accel_n = 0;
-            match tracking.last_fix() {
+            match high.location.as_ref().and_then(LocationWatch::latest) {
                 Some(f) => line.push_str(&format!(
                     " · gnss {:.6},{:.6} ±{:.1} m",
                     f.lat, f.lng, f.accuracy_m
                 )),
                 None => line.push_str(" · gnss none"),
             }
-            match tracking.heading {
+            match high.compass.as_ref().and_then(OrientationWatch::latest) {
                 Some(h) => line.push_str(&format!(
                     " · compass {:.0}°{}",
                     h.bearing_deg(),
@@ -385,8 +443,8 @@ pub fn drive_high_precision(
                 }
                 high.gnss_stats = RawStats::default();
             }
-            high.last_counts = now;
-            high.last_line_s = high.running_s;
+            high.last_counts = counts;
+            high.last_line_at = Some(now);
         }
     }
     log.save();

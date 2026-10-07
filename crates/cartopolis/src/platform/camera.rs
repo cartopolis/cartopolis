@@ -15,6 +15,13 @@
 //! front camera, asked for at runtime like the microphone.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// What a camera that Android took away reports: another app opened it, or the
+/// app went to the background, which on Android revokes the camera. The
+/// high-precision mode matches on it to restart rather than give up
+/// (`platform::precise_sensors::Sensors::camera_lost`).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub const CAMERA_TAKEN: &str = "The camera was taken by another app";
 use std::sync::{Arc, Mutex};
 
 use cartopolis_calls::video::{self, I420};
@@ -395,7 +402,7 @@ mod phone {
             on_lens(lens);
             while !stop.load(Ordering::Relaxed) {
                 if LOST.load(Ordering::Relaxed) {
-                    return Err("The camera was taken by another app".into());
+                    return Err(super::CAMERA_TAKEN.into());
                 }
                 let mut image = null_mut();
                 if sys::AImageReader_acquireLatestImage(held.reader, &mut image)
@@ -637,7 +644,7 @@ mod phone {
     unsafe fn pump(shared: &Arc<Shared>, held: &Held, turn: u32) -> Result<(), String> {
         while !shared.stop.load(Ordering::Relaxed) {
             if LOST.load(Ordering::Relaxed) {
-                return Err("The camera was taken by another app".into());
+                return Err(super::CAMERA_TAKEN.into());
             }
             let mut image = null_mut();
             if sys::AImageReader_acquireLatestImage(held.reader, &mut image)

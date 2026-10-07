@@ -290,13 +290,6 @@ impl LocateTracking {
         self.display_geo = Some((fix.lat, fix.lng));
     }
 
-    /// The newest GNSS fix in hand, if any — for the high-precision capture,
-    /// which records every fix the button has.
-    #[must_use]
-    pub fn last_fix(&self) -> Option<GpsFix> {
-        self.last_fix
-    }
-
     /// Stop tracking and drop both subscriptions.
     pub fn exit(&mut self) {
         if !self.active {

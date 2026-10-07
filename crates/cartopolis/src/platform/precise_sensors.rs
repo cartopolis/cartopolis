@@ -71,6 +71,9 @@ const MAX_MOTION_KEPT: usize = 4_000;
 #[derive(Default)]
 struct Shared {
     error: Mutex<Option<String>>,
+    /// Android took the camera away (another app, or the app went to the
+    /// background) — the one failure worth starting again from.
+    camera_lost: AtomicBool,
     stop: AtomicBool,
     lens: Mutex<Option<Lens>>,
     frame: Mutex<Option<Frame>>,
@@ -142,12 +145,20 @@ pub fn now_ns() -> i64 {
     }
 }
 
-/// The phone's model, for the mode's log (`ro.product.model`).
+/// The phone's maker and model, for the mode's log (`ro.product.manufacturer`,
+/// `ro.product.model`).
 #[must_use]
 pub fn device_name() -> String {
     #[cfg(target_os = "android")]
     {
-        crate::platform::android::system_property("ro.product.model").unwrap_or_default()
+        let prop = |k| crate::platform::android::platform_property(k).unwrap_or_default();
+        format!(
+            "{} {}",
+            prop("ro.product.manufacturer"),
+            prop("ro.product.model")
+        )
+        .trim()
+        .to_string()
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -198,6 +209,9 @@ impl Sensors {
                     },
                 );
                 if let Err(e) = result {
+                    if e == crate::platform::camera::CAMERA_TAKEN {
+                        shared.camera_lost.store(true, Ordering::Relaxed);
+                    }
                     shared.fail(e);
                 }
             });
@@ -221,6 +235,14 @@ impl Sensors {
     #[must_use]
     pub fn error(&self) -> Option<String> {
         self.shared.error.lock().unwrap().clone()
+    }
+
+    /// Whether Android took the camera away — which it does to every app that
+    /// goes to the background. A new [`Sensors`] gets it back; a refused
+    /// permission or a missing gyroscope does not come back that way.
+    #[must_use]
+    pub fn camera_lost(&self) -> bool {
+        self.shared.camera_lost.load(Ordering::Relaxed)
     }
 
     /// What the camera said about its lens, once it has opened.

@@ -169,17 +169,25 @@ fn activity() -> JObject<'static> {
 /// value is `Some("")` here and is filtered by the callers, exactly as the
 /// environment path filters an empty variable.
 pub fn system_property(name: &str) -> Option<String> {
-    // `PROP_VALUE_MAX`, from `<sys/system_properties.h>`. Not re-exported by the
-    // `libc` crate, so it is written out with its source rather than guessed.
-    const PROP_VALUE_MAX: usize = 92;
-
     // The name mapping lives in `lib.rs`, not here, for one reason: it is the half
     // that can be wrong *silently* — a name that maps to a property nobody sets
     // reads as "off" forever — and a test beside it here would never run. This
     // module is `cfg(target_os = "android")`, no CI lane builds Android tests, and
     // `cargo check` does not compile `cfg(test)` at all (CLAUDE.md). So the pure
     // half sits on the native lane where `cargo test -p cartopolis` reaches it.
-    let key = crate::android_property_name(name);
+    platform_property(&crate::android_property_name(name))
+}
+
+/// A system property read by its own name, `ro.product.model` and the like —
+/// unlike [`system_property`], which maps a `CARTO_*` switch name onto the
+/// app's `debug.carto.*` namespace first. The high-precision log read the
+/// phone's model through that one and got `debug.carto.ro.product.model`, i.e.
+/// nothing, which is why this exists beside it.
+pub fn platform_property(key: &str) -> Option<String> {
+    // `PROP_VALUE_MAX`, from `<sys/system_properties.h>`. Not re-exported by the
+    // `libc` crate, so it is written out with its source rather than guessed.
+    const PROP_VALUE_MAX: usize = 92;
+
     let key = std::ffi::CString::new(key).ok()?;
     let mut buf = [0u8; PROP_VALUE_MAX];
     // SAFETY: `key` is a NUL-terminated C string that outlives the call, and `buf`
