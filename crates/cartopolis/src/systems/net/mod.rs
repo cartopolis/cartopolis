@@ -15,6 +15,8 @@ pub mod call_tones;
 pub mod calls;
 /// Pictures in private chats: encrypted, stored on the server, opened here.
 pub mod chat_pictures;
+/// The app leaving the screen and coming back (registered by `ShellPlugin`).
+pub mod lifecycle;
 pub mod network;
 pub mod private_chat;
 /// Where the simulator wakes this phone when the app is closed (UnifiedPush).

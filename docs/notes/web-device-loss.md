@@ -25,7 +25,7 @@ spec and Chrome's guidance say the application's job is to expect `device.lost`
 and get a new device. Bevy cannot re-request a device mid-run; the page-level
 equivalent is a reload, and that is what the client now does.
 
-## The policy (`lib.rs::exit_on_halt`, wasm arm)
+## The policy (`render_halt.rs::exit_on_halt`, wasm arm)
 
 The native halt policy's whole rationale is Vulkan: a stranded swapchain
 semaphore, pool-thread aborts, an `ANativeWindow` mid-teardown. None of it

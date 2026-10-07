@@ -59,7 +59,7 @@ avatar spawned at startup and never despawned, so `--offline` put a body on the
 map with no sim behind it — nothing owned its position, nobody else could see
 it, and the Follow camera that is its whole point was already refused
 (`free_camera::follow_available`). Offline is the streamed map and a camera.
-`lib::sync_local_avatar` spawns it with a session and `session::teardown` takes
+`local_avatar::sync_local_avatar` spawns it with a session and `session::teardown` takes
 it away. The one exception is the shot harness, which is always offline and has
 to photograph the avatar: `ShotHarness::wants_avatar` reads what each shot
 already says it is of (`--shot-mode avatar`, `--ui sit`, `--ui driver`) rather

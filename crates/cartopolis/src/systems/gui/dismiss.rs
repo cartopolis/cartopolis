@@ -367,3 +367,50 @@ mod tests {
         assert_eq!(s.innermost(), Some(Rung::RightPanel));
     }
 }
+
+/// Android's back gesture, which until now did nothing at all.
+///
+/// Under NativeActivity the key is delivered to the app and consumed there, so a
+/// user who swipes back — the first thing every Android user reaches for to
+/// dismiss something — got no response, and the only way out of a full-screen
+/// panel was to find its close button. Back now unwinds the same stack Escape
+/// does on the desktop, innermost first: leave driver mode, then close the open
+/// panel, and only quit when there is nothing left to dismiss.
+///
+/// Quitting last is the part worth stating. Android's convention is that back
+/// from the root screen leaves the app, and an app that refuses to is a worse
+/// citizen than one that exits when you meant to close a panel — but a map client
+/// that quits on the first back press while a panel is open would be unusable.
+pub fn handle_back_gesture(
+    keys: Res<ButtonInput<KeyCode>>,
+    egui: Res<EguiManager>,
+    mut dismissable: Dismissable,
+    mut exit: MessageWriter<AppExit>,
+) {
+    // `BrowserBack` is what winit maps Android's back key to. Desktop keyboards
+    // can carry the same key, and doing the same thing there is right anyway.
+    if !keys.just_pressed(KeyCode::BrowserBack) {
+        return;
+    }
+    // **Back is Escape plus one rung.** This used to walk its own three-step
+    // ladder — keyboard, driver, panel — while Escape walked a different and
+    // mostly broken one, so the app's two dismissal gestures disagreed about
+    // what dismissing meant: Back unwound panels and Escape could not, Escape
+    // left driver mode from under an open dialog and Back would not. There is
+    // one ladder now (`systems::dismiss`), and the *only* difference between the
+    // two gestures is this last rung, which is why it is the only thing written
+    // here.
+    let text_focused = egui.ctx.text_edit_focused();
+    if dismissable.dismiss_innermost(text_focused).is_none() {
+        // On the phone the last rung is "to the background", not "quit": quitting
+        // ends the process there, so coming back was a cold start that had
+        // forgotten the tab, the open chat and any call (`move_task_to_back`).
+        #[cfg(target_os = "android")]
+        {
+            let _ = &mut exit;
+            crate::platform::android::move_task_to_back();
+        }
+        #[cfg(not(target_os = "android"))]
+        exit.write(AppExit::Success);
+    }
+}

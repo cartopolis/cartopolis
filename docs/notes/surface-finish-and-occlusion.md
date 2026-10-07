@@ -124,7 +124,7 @@ location 8). Applied to the prepass — which compiles *bevy's* vertex shader,
 since `prepass_vertex_shader` is deliberately left at the default — that leaves
 bevy's shader with an input nothing supplies. The result is `RenderPipeline with
 'pbr_prepass_pipeline' label is invalid` at `Queue::submit`, which
-`lib.rs::handle_render_error` halts the renderer on: the app draws nothing for
+`render_halt.rs::handle_render_error` halts the renderer on: the app draws nothing for
 the rest of the process.
 
 So **any `specialize` that rewrites the vertex layout must return early for the

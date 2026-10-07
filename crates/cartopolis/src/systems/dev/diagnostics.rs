@@ -11,7 +11,7 @@
 //! failing device in their hand.
 //!
 //! So the report goes out through the share sheet, the way
-//! [`crate::offer_last_crash`] already sends a panic. The difference is only *when*:
+//! [`crate::crash::offer_last_crash`] already sends a panic. The difference is only *when*:
 //! that one fires on the launch after a crash, and this one fires when asked. A
 //! run that is *working wrongly* never crashes, and until now it produced nothing
 //! a user could send.

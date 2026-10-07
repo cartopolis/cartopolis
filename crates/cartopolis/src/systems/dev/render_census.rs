@@ -1,7 +1,7 @@
 //! What the renderer was actually asked to draw: draw calls and triangles, split
 //! by the streamer that produced them.
 //!
-//! One walk of every `Mesh3d`, two readers. `lib.rs::log_render_cost` writes it to
+//! One walk of every `Mesh3d`, two readers. [`log_render_cost`] writes it to
 //! a periodic log line; `shot_harness::drive_capture` writes it into
 //! [`crate::systems::shot_harness::ShotMetrics`], where it reaches the `shot state`
 //! line, `--csv`, `--dump-state` and `--expect` at once. It used to exist only in
@@ -126,4 +126,40 @@ impl RenderCensus<'_, '_> {
             }
         })
     }
+}
+
+/// The periodic half of [`systems::render_census`] — the same walk the shot
+/// harness makes per capture, on a five-second timer.
+///
+/// Both the walk and the phone gate are deliberate. Resolving every `Mesh3d`
+/// handle into `Assets<Mesh>` is a real hitch on a dense scene, so it is throttled
+/// rather than run per frame; and the gate is a `run_if` at registration rather
+/// than an early return here, because a return does not save the query — Bevy
+/// still matches the census's seven-component `Query` against every archetype the
+/// streamers create.
+///
+/// The phone *does* get it on request, which is the part that changed. Gating it
+/// off entirely meant the numbers the phone budget is a set of predictions about
+/// (`docs/notes/wasm-performance.md`) were the ones the phone could never report,
+/// and a scripted capture cannot stand in — Android has no CLI. `CARTO_RENDER_COST`
+/// goes through `env_flag`, so on a device it is `adb shell setprop
+/// debug.carto.render_cost 1` against the shipped APK, no rebuild.
+pub fn log_render_cost(time: Res<Time<Real>>, mut next: Local<f32>, census: RenderCensus) {
+    *next -= time.delta_secs();
+    if *next > 0.0 {
+        return;
+    }
+    *next = 5.0;
+    let c = census.counts();
+    tracing::info!(
+        draws = c.draws,
+        ktris_total = c.tris_total / 1000,
+        ktris_shadow = c.tris_shadow / 1000,
+        shadow_casters = c.shadow_casters,
+        ktris_buildings = c.tris_buildings / 1000,
+        ktris_lod22 = c.tris_lod22 / 1000,
+        ktris_tiles = c.tris_tiles / 1000,
+        ktris_globe = c.tris_globe / 1000,
+        "render cost",
+    );
 }

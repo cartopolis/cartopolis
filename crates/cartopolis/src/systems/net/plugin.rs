@@ -87,7 +87,7 @@ impl Plugin for NetPlugin {
                 // the same frame the avatar appears.
                 systems::session::keep_avatar_across_reconnect
                     .after(systems::session::drive_session)
-                    .after(crate::attach_avatar_to_bigspace)
+                    .after(crate::systems::local_avatar::attach_avatar_to_bigspace)
                     .before(systems::geo_nav::apply_teleport),
                 // Voice capture. Two systems rather than one because the *other*
                 // writer of `talk_held` is the chat panel's Hold-to-talk button,

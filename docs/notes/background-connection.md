@@ -117,7 +117,7 @@ retained with it, and the socket in `network.rs`'s own thread never notices —
 that is the ordinary case and the one the feature is for. Android may instead
 destroy the activity outright: under memory pressure, with the developer option
 "Don't keep activities", or when the back gesture writes `AppExit`
-(`lib.rs::handle_back_gesture`) and the glue answers by calling
+(`dismiss.rs::handle_back_gesture`) and the glue answers by calling
 `ANativeActivity_finish`. In each of those the *process* used to stay, because
 this service was holding it up.
 

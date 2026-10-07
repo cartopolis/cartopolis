@@ -85,7 +85,7 @@ impl Plugin for NavPlugin {
                     // the query and moved only the camera. Bevy inserts the sync
                     // point that makes the deferred insert visible because this
                     // ordering is explicit.
-                    .after(crate::attach_avatar_to_bigspace)
+                    .after(crate::systems::local_avatar::attach_avatar_to_bigspace)
                     .before(systems::free_camera::camera_controls),
             )
                 .in_set(ClientPhase::Anchor),

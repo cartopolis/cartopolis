@@ -10,6 +10,8 @@ pub mod collision;
 pub mod free_camera;
 pub mod gizmo;
 pub mod interact;
+/// The local avatar's existence (registered by `ShellPlugin`).
+pub mod local_avatar;
 pub mod locomotion;
 pub mod picking;
 pub mod prim_geo;

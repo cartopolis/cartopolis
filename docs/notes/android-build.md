@@ -120,7 +120,7 @@ not a duplicate of the log, either — logd's buffer is a ring and this client i
 chatty, so by the time somebody notices, scrolls and taps, the lines that
 explain it may already have rolled out.
 
-`lib.rs`'s `parse_cli()` hands Android a fixed configuration — **no flags**. It
+`cli.rs`'s `parse_cli()` hands Android a fixed configuration — **no flags**. It
 cannot call `Cli::parse()`: a NativeActivity process is started by the zygote, so
 the `argv` Rust captured belongs to `app_process` and is full of flags clap has
 never heard of — and clap's response to an unknown flag is `exit(2)`, i.e. the
@@ -738,7 +738,7 @@ without. A pause/resume is the ordinary way for an Android app to lose its
 surface, and a system dialog is the ordinary way to be paused, so *any* GPU error
 that a dialog provoked cost the entire session.
 
-`lib.rs::handle_render_error` answered by kind for a fortnight: `DeviceLost` — the
+`render_halt.rs::handle_render_error` answered by kind for a fortnight: `DeviceLost` — the
 error wgpu delivers through its own device-lost callback, and the one that is
 plausibly transient — rebuilt the renderer through `RenderCreation::Automatic`,
 twice at most, while `Validation` and `OutOfMemory` halted (they recur the instant

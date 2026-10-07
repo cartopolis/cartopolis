@@ -330,7 +330,7 @@ pub fn render_chat_bubbles(
     // Where every speaker on screen is standing. Remote avatars are spawned as
     // plain root entities (`network::sync_remote_avatar_entities`), so their
     // translation is already the absolute sim position; the local avatar is in
-    // the grid (`lib.rs::attach_avatar_to_bigspace`) and needs its cell added.
+    // the grid (`local_avatar::attach_avatar_to_bigspace`) and needs its cell added.
     //
     // Both are read as absolute metres and differenced against the camera, which
     // is exact while the cells are near zero — where an online session lives,

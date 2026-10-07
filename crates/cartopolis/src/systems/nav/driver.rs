@@ -4290,3 +4290,16 @@ mod tests {
         assert_eq!(glide.advance((60.0, 40.0), true, t, dt), (60.0, 40.0));
     }
 }
+
+/// Mirror the user's guidance preference into driver mode.
+///
+/// `DriverState` owns the flag the cue system reads, because that system runs
+/// deep inside the driving tick and taking a second resource there would push it
+/// over Bevy's system-parameter limit. So the preference is copied in rather than
+/// read through.
+pub fn sync_guidance_pref(prefs: Res<crate::resources::AppPrefs>, mut driver: ResMut<DriverState>) {
+    if !prefs.is_changed() {
+        return;
+    }
+    driver.cues = GuidanceSound(prefs.voice_guidance);
+}

@@ -18,7 +18,7 @@ Validation Error
       Texture with 'egui_texid_Managed(3)' label has been destroyed
 ```
 
-`lib.rs::handle_render_error` halts the renderer on `Validation` (by design —
+`render_halt.rs::handle_render_error` halts the renderer on `Validation` (by design —
 validation errors recur), so the app keeps running with the picture frozen at the
 last frame it drew. Nothing else is logged. On a phone that is indistinguishable
 from a hang.

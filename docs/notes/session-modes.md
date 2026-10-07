@@ -131,7 +131,7 @@ in. `session::teardown` and `session::connect` are written as a pair for that
 reason — anything one installs, the other removes.
 
 **The local avatar goes with the session**, and is spawned by
-`lib::sync_local_avatar` when one comes up. It used to be spawned at startup and
+`local_avatar::sync_local_avatar` when one comes up. It used to be spawned at startup and
 never despawned, so offline left a body on the map with no sim behind it:
 nothing owned its position, nobody else could see it, and the Follow camera that
 is its whole point was already refused (`free_camera::follow_available`). Offline

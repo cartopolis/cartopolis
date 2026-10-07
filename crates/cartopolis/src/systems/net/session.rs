@@ -776,7 +776,7 @@ fn teardown(
     // despawned, so leaving a session left you standing on the map as a body with
     // no sim behind it: nothing owned its position, nothing else could see it,
     // and it was the one thing on screen still claiming there was a world to be
-    // in. Offline is the map and the camera. `lib::sync_local_avatar` is the
+    // in. Offline is the map and the camera. `local_avatar::sync_local_avatar` is the
     // counterpart that brings it back when a session does, and it is also what a
     // scripted capture asks for when it is photographing the avatar.
     //
