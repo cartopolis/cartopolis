@@ -97,6 +97,9 @@ pub struct Interiors {
     /// The cut the set was built with (`cutaway::Cutaway`): which building is
     /// being looked into and the storey above which it is not drawn.
     cut: Option<(Arc<str>, usize)>,
+    /// The building the avatar was in when the set was built: the only one
+    /// (besides the cut) whose interior is drawn.
+    inside: Option<Arc<str>>,
     /// Interiors standing, for `--dump-state`.
     rooms: usize,
     /// Of which drawn by somebody rather than generated.
@@ -159,7 +162,11 @@ pub fn update_interiors(
     let redesigned = interiors.designs_revision != designs_revision;
     let cut = cutaway.cut();
     let recut = interiors.cut != cut;
-    if !(moved || restreamed || reanchored || redesigned || recut) {
+    // Read from the set already standing, which is the set the avatar walked in
+    // through: entering or leaving a building redraws the set the same frame.
+    let inside = floors.building_at(here).cloned();
+    let reentered = interiors.inside != inside;
+    if !(moved || restreamed || reanchored || redesigned || recut || reentered) {
         return;
     }
     let mut candidates = facts.near(lat, lng, f64::from(INTERIOR_RADIUS));
@@ -190,13 +197,14 @@ pub fn update_interiors(
         h.finish()
     };
     interiors.facts_len = facts.len();
-    if !(moved || reanchored || redesigned || recut)
+    if !(moved || reanchored || redesigned || recut || reentered)
         && candidates_digest == interiors.candidates_digest
     {
         return;
     }
     interiors.candidates_digest = candidates_digest;
     interiors.cut = cut.clone();
+    interiors.inside = inside.clone();
     interiors.built_at = Some(here);
     interiors.anchor_generation = stream.anchor_generation;
     interiors.designs_revision = designs_revision;
@@ -284,7 +292,20 @@ pub fn update_interiors(
                 walls.push(fp.with_extent(base + seg.bottom, base + seg.top));
             }
         }
-        buf.append(&compiled, &to_world);
+        // **Drawn only from inside.** Every building near the avatar gets its
+        // floors, flights and wall colliders, so it can be walked into; only the
+        // one the avatar is in, or the one being looked into, is drawn. The rooms
+        // are laid out from the register's outline and divided by the shell's
+        // 70th-percentile roof height, and neither promises to stay inside the
+        // shell: a flight against an outline wall stands outside a facade the
+        // shell draws further in, and the upper slabs of a building with a low
+        // wing come up through its roof. Facing the walls inward hid the walls
+        // and nothing else. Seen from inside, the building is glass
+        // (`building_select`), so there is no shell for them to poke through.
+        let drawn = inside.as_deref() == Some(id) || storey_cut.is_some();
+        if drawn {
+            buf.append(&compiled, &to_world);
+        }
         if stored.is_some() {
             designed += 1;
         }

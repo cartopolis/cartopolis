@@ -133,9 +133,16 @@ Three things are load-bearing:
   opens at.** They have to be the same points: a room whose wall crossed its own
   door would seal the avatar in behind a surface they had just walked through.
 
-Nothing here is double-sided. Walls face in, floor up, ceiling down — so from
-outside a room is invisible and costs no fill, which is its state for all but a
-few seconds of a session.
+Nothing here is double-sided. Walls face in, floor up, ceiling down — but that
+hid only the walls. **An interior is drawn only for the building the avatar is
+in, or the one opened with Look inside** (2026-10-07); every other building near
+the avatar keeps its floors, flights and wall colliders and draws nothing. Facing
+inward was not enough because the rooms come from the register's outline and the
+storey count from the shell's 70th-percentile roof, and neither stays inside the
+shell: on the Grote Markt a flight against an outline wall stood outside a facade
+the shell draws further in, and the upper slabs of a building with a low wing came
+up through its roof. From inside, the building is glass (`building_select`), so
+there is no shell left for the interior to poke through.
 
 ## A footprint is solid or hollow, and a wall is crossed, not entered
 
