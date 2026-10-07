@@ -1480,53 +1480,8 @@ fn spawn_geometry_task(
                             // from an atlas that predates the land — the tile's own
                             // runs are solved on flat land (`unmeasured_profiles`)
                             // and stood on the level of the land around each point.
-                            let profiles: Vec<Option<cartopolis_geo::tunnels::Profile>> =
-                                match (road_heights.as_ref(), ground.as_ref()) {
-                                    (Some(h), Some((g, _)))
-                                        if !h.land.is_empty()
-                                            || !runs.iter().any(|r| r.level < 0) =>
-                                    {
-                                        use crate::systems::terrain::MeasuredGround as _;
-                                        let datum = g.datum_m();
-                                        runs.iter()
-                                            .map(|r| {
-                                                let (road, land) =
-                                                    (h.runs.get(&r.key)?, h.land.get(&r.key)?);
-                                                (road.len() == r.points.len()
-                                                    && land.len() == r.points.len())
-                                                .then(|| cartopolis_geo::tunnels::Profile {
-                                                    road: road.iter().map(|y| y - datum).collect(),
-                                                    land: land.iter().map(|y| y - datum).collect(),
-                                                    walls: h
-                                                        .walls
-                                                        .get(&r.key)
-                                                        .filter(|w| w.len() == r.points.len())
-                                                        .cloned()
-                                                        .unwrap_or_default(),
-                                                })
-                                            })
-                                            .collect()
-                                    }
-                                    _ => {
-                                        let mut profiles =
-                                            cartopolis_geo::tunnels::unmeasured_profiles(&runs);
-                                        if let Some((g, origin)) = ground.as_ref() {
-                                            for (r, p) in runs.iter().zip(profiles.iter_mut()) {
-                                                let Some(p) = p else { continue };
-                                                for (k, q) in r.points.iter().enumerate() {
-                                                    let land = g.lid_level(
-                                                        origin.x + q[0],
-                                                        origin.y + q[1],
-                                                        cartopolis_geo::tunnels::DATUM_M,
-                                                    );
-                                                    p.road[k] += land;
-                                                    p.land[k] += land;
-                                                }
-                                            }
-                                        }
-                                        profiles
-                                    }
-                                };
+                            let profiles =
+                                tunnel_profiles(&runs, road_heights.as_ref(), ground.as_ref());
                             let tunnels = cartopolis_geo::tunnels::build_structures(
                                 &runs,
                                 &profiles,
@@ -2050,43 +2005,13 @@ fn spawn_geometry_task(
                                 ));
                             }
                             lap.mark("furniture");
-                            // …and so do the two layers this tile was decoding
-                            // and dropping outright (`docs/notes/vector-tile-unused-layers.md`).
-                            match places::extract_pois(&tile, tile_m) {
-                                Ok(p) => cell_places.pois = p,
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "poi extraction failed");
-                                }
-                            }
-                            // The drivable network for ambient traffic, off the
-                            // same `streets` layer the ribbons and the routing
-                            // graph are built from (`systems::traffic`).
-                            match cartopolis_geo::traffic::extract_drive_lines(
+                            labels = extract_cell_places(
                                 &tile,
                                 tile_m,
+                                cell,
                                 &sunken_ways,
-                            ) {
-                                Ok(lines) => cell_places.drive_lines = lines,
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "drive line extraction failed");
-                                }
-                            }
-                            match places::extract_addresses(&tile, tile_m) {
-                                Ok(a) => cell_places.addresses = a,
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "address extraction failed");
-                                }
-                            }
-                            // Street names ride the same fetch too: they are read
-                            // from a layer of the very same tile, and parsing them
-                            // here means the label renderer never touches an MVT
-                            // body on the frame loop (`systems::street_labels`).
-                            match vector_tiles::extract_street_labels(&tile, tile_m) {
-                                Ok(l) => labels = l,
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
-                                }
-                            }
+                                &mut cell_places,
+                            );
                             lap.mark("extract");
                             // The water meshes carry no notion of where the bank
                             // is (earcut only ever emits boundary vertices), so
@@ -2165,45 +2090,16 @@ fn spawn_geometry_task(
                         meshes.retain(|m| !is_flat_ground(m.group));
                     }
                 }
-                let mut placed = false;
-                if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground.as_ref()) {
-                    // Only this cell's own tunnels, where the main thread would have
-                    // seen whichever neighbours had happened to land first. A tile
-                    // carries a buffer past its edge, so a bore near the boundary is
-                    // in both cells' features.
-                    let mut tunnels = crate::systems::tunnels::Tunnels::default();
-                    tunnels.insert_cell(
-                        cell,
-                        *origin,
-                        CellTunnels {
-                            tunnels: cell_tunnels.clone(),
-                            openings: cell_openings.clone(),
-                        },
-                    );
-                    for sm in meshes.iter_mut() {
-                        stand_on_terrain(
-                            sm.group,
-                            &mut sm.positions,
-                            &mut sm.indices,
-                            &mut sm.uvs,
-                            &mut sm.normals,
-                            &mut sm.colors,
-                            &mut sm.rungs,
-                            *origin,
-                            ground,
-                            &tunnels,
-                            levels.as_deref(),
-                        );
-                    }
-                    if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
-                        meshes.push(walls);
-                    }
-                    placed = true;
-                }
-                // The boats, at the heights they were built at.
-                if let Some(meshes) = outcome.as_mut() {
-                    meshes.append(&mut floating);
-                }
+                let placed = stand_cell_on_ground(
+                    &mut outcome,
+                    ground.as_ref(),
+                    cell,
+                    &cell_tunnels,
+                    &cell_openings,
+                    levels.as_deref(),
+                    tile_m,
+                    &mut floating,
+                );
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
                 tracing::debug!(
@@ -2243,6 +2139,163 @@ fn spawn_geometry_task(
             }));
         })
         .detach();
+}
+
+/// The height profile of every street run in a cell, for the tunnels and cuttings
+/// `build_structures` makes of the ones below ground: atlas's solved heights where
+/// it published them, otherwise the runs solved on flat land and stood on the
+/// level of the land around each point. A stage of [`spawn_geometry_task`]'s
+/// worker.
+fn tunnel_profiles(
+    runs: &[cartopolis_geo::road_levels::StreetRun],
+    road_heights: Option<&cartopolis_geo::road_levels::RoadHeights>,
+    ground: Option<&(crate::systems::terrain::GroundPlacement, Vec2)>,
+) -> Vec<Option<cartopolis_geo::tunnels::Profile>> {
+    match (road_heights, ground) {
+        (Some(h), Some((g, _))) if !h.land.is_empty() || !runs.iter().any(|r| r.level < 0) => {
+            use crate::systems::terrain::MeasuredGround as _;
+            let datum = g.datum_m();
+            runs.iter()
+                .map(|r| {
+                    let (road, land) = (h.runs.get(&r.key)?, h.land.get(&r.key)?);
+                    (road.len() == r.points.len() && land.len() == r.points.len()).then(|| {
+                        cartopolis_geo::tunnels::Profile {
+                            road: road.iter().map(|y| y - datum).collect(),
+                            land: land.iter().map(|y| y - datum).collect(),
+                            walls: h
+                                .walls
+                                .get(&r.key)
+                                .filter(|w| w.len() == r.points.len())
+                                .cloned()
+                                .unwrap_or_default(),
+                        }
+                    })
+                })
+                .collect()
+        }
+        _ => {
+            let mut profiles = cartopolis_geo::tunnels::unmeasured_profiles(runs);
+            if let Some((g, origin)) = ground {
+                for (r, p) in runs.iter().zip(profiles.iter_mut()) {
+                    let Some(p) = p else { continue };
+                    for (k, q) in r.points.iter().enumerate() {
+                        let land = g.lid_level(
+                            origin.x + q[0],
+                            origin.y + q[1],
+                            cartopolis_geo::tunnels::DATUM_M,
+                        );
+                        p.road[k] += land;
+                        p.land[k] += land;
+                    }
+                }
+            }
+            profiles
+        }
+    }
+}
+
+/// The cell's points of interest, drivable network, addresses and street names,
+/// read out of the tile [`spawn_geometry_task`]'s worker already parsed. Returns
+/// the street names; the rest go into `cell_places`.
+fn extract_cell_places(
+    tile: &vector_tiles::TileData,
+    tile_m: f32,
+    cell: Cell,
+    sunken_ways: &[cartopolis_geo::tunnels::SunkenWay],
+    cell_places: &mut CellPlaces,
+) -> Vec<StreetLabelLine> {
+    let mut labels = Vec::new();
+    // …and so do the two layers this tile was decoding
+    // and dropping outright (`docs/notes/vector-tile-unused-layers.md`).
+    match places::extract_pois(tile, tile_m) {
+        Ok(p) => cell_places.pois = p,
+        Err(e) => {
+            tracing::warn!(cell = ?cell, error = %e, "poi extraction failed");
+        }
+    }
+    // The drivable network for ambient traffic, off the
+    // same `streets` layer the ribbons and the routing
+    // graph are built from (`systems::traffic`).
+    match cartopolis_geo::traffic::extract_drive_lines(tile, tile_m, sunken_ways) {
+        Ok(lines) => cell_places.drive_lines = lines,
+        Err(e) => {
+            tracing::warn!(cell = ?cell, error = %e, "drive line extraction failed");
+        }
+    }
+    match places::extract_addresses(tile, tile_m) {
+        Ok(a) => cell_places.addresses = a,
+        Err(e) => {
+            tracing::warn!(cell = ?cell, error = %e, "address extraction failed");
+        }
+    }
+    // Street names ride the same fetch too: they are read
+    // from a layer of the very same tile, and parsing them
+    // here means the label renderer never touches an MVT
+    // body on the frame loop (`systems::street_labels`).
+    match vector_tiles::extract_street_labels(tile, tile_m) {
+        Ok(l) => labels = l,
+        Err(e) => {
+            tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
+        }
+    }
+    labels
+}
+
+/// Stand a finished cell's meshes on the measured ground, when there is a field,
+/// and add the boats at the heights they were built at. Whether the meshes were
+/// placed is what the main thread reads to skip placing them itself. A stage of
+/// [`spawn_geometry_task`]'s worker.
+#[allow(clippy::too_many_arguments)]
+fn stand_cell_on_ground(
+    outcome: &mut Option<Vec<SurfaceMesh>>,
+    ground: Option<&(crate::systems::terrain::GroundPlacement, Vec2)>,
+    cell: Cell,
+    cell_tunnels: &[cartopolis_geo::tunnels::Tunnel],
+    cell_openings: &[Vec<[f32; 2]>],
+    levels: Option<&cartopolis_geo::road_levels::LevelMap>,
+    tile_m: f32,
+    floating: &mut Vec<SurfaceMesh>,
+) -> bool {
+    let mut placed = false;
+    if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground) {
+        // Only this cell's own tunnels, where the main thread would have
+        // seen whichever neighbours had happened to land first. A tile
+        // carries a buffer past its edge, so a bore near the boundary is
+        // in both cells' features.
+        let mut tunnels = crate::systems::tunnels::Tunnels::default();
+        tunnels.insert_cell(
+            cell,
+            *origin,
+            CellTunnels {
+                tunnels: cell_tunnels.to_vec(),
+                openings: cell_openings.to_vec(),
+            },
+        );
+        for sm in meshes.iter_mut() {
+            stand_on_terrain(
+                sm.group,
+                &mut sm.positions,
+                &mut sm.indices,
+                &mut sm.uvs,
+                &mut sm.normals,
+                &mut sm.colors,
+                &mut sm.rungs,
+                *origin,
+                ground,
+                &tunnels,
+                levels,
+            );
+        }
+        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
+            meshes.push(walls);
+        }
+        placed = true;
+    }
+    // The boats, at the heights they were built at.
+    if let Some(meshes) = outcome.as_mut() {
+        meshes.append(floating);
+    }
+    placed
 }
 
 impl crate::systems::stream_watch::StreamBusy for MapSurfaces {
