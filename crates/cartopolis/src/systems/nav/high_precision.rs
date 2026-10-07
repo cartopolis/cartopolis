@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
+use crate::platform::gnss_raw::{self, RawGnss, RawStats};
 use crate::platform::precise_sensors::{Counts, MotionKind, Sensors};
 use crate::systems::locate::LocateTracking;
 use crate::systems::prim_hand::PreciseHand;
@@ -56,6 +57,15 @@ pub struct HighPrecision {
     /// in ms: a tracker integrates them, so a gap is motion nobody measured.
     last_gyro_t: Option<i64>,
     gyro_gap_ms: f64,
+    /// The raw GNSS measurements under the fix (`platform::gnss_raw`): whether
+    /// this phone reports usable carrier phase is the first question RTK asks.
+    gnss: Option<RawGnss>,
+    gnss_stats: RawStats,
+    gnss_status: i32,
+    /// When the listener was last asked to start, and the last refusal logged,
+    /// so a missing permission is said once rather than every second.
+    gnss_try_s: f32,
+    gnss_refusal: Option<String>,
 }
 
 impl HighPrecision {
@@ -233,9 +243,18 @@ pub fn drive_high_precision(
                 "on · {}",
                 crate::platform::precise_sensors::device_name()
             ));
+            high.gnss = Some(RawGnss::new());
+            high.gnss_stats = RawStats::default();
+            high.gnss_status = -1;
+            high.gnss_try_s = f32::NEG_INFINITY;
+            high.gnss_refusal = None;
+            if let Some(chip) = RawGnss::hardware() {
+                log.note(format!("gnss chip · {chip}"));
+            }
         }
         (false, true) => {
             high.sensors = None;
+            high.gnss = None;
             log.note("off");
         }
         _ => {}
@@ -277,6 +296,35 @@ pub fn drive_high_precision(
                     high.accel_sum += len;
                     high.accel_n += 1;
                 }
+            }
+        }
+
+        // Raw GNSS: once a second, start the listener if it is not running
+        // (the location permission may still be being asked) and count what it
+        // delivered. A second is ample: the chip reports one epoch a second.
+        if let Some(gnss) = &mut high.gnss {
+            if high.running_s - high.gnss_try_s >= 1.0 {
+                high.gnss_try_s = high.running_s;
+                if let Err(why) = gnss.ensure_started() {
+                    if high.gnss_refusal.as_deref() != Some(why.as_str()) {
+                        log.note(format!("raw gnss not started · {why}"));
+                        high.gnss_refusal = Some(why);
+                    }
+                }
+                match gnss.drain() {
+                    Ok(batch) => high
+                        .gnss_stats
+                        .add(&batch, crate::platform::precise_sensors::now_ns()),
+                    Err(e) => log.note(format!("raw gnss · {e}")),
+                }
+                let status = gnss.status();
+                if status != high.gnss_status && status >= 0 {
+                    log.note(format!(
+                        "raw gnss listener · {}",
+                        gnss_raw::status_text(status)
+                    ));
+                }
+                high.gnss_status = status;
             }
         }
 
@@ -327,6 +375,16 @@ pub fn drive_high_precision(
                 None => line.push_str(" · compass none"),
             }
             log.note(line);
+            if let Some(gnss) = high.gnss.as_ref().filter(|g| g.running()) {
+                match high.gnss_stats.line(span) {
+                    Some(raw) => log.note(raw),
+                    None => log.note(format!(
+                        "raw · nothing arrived · listener {}",
+                        gnss_raw::status_text(gnss.status())
+                    )),
+                }
+                high.gnss_stats = RawStats::default();
+            }
             high.last_counts = now;
             high.last_line_s = high.running_s;
         }

@@ -1,6 +1,6 @@
 ---
 topic: high-precision mode (camera localisation)
-triggers: [high_precision, HighPrecision, HighPrecisionLog, precise_sensors, run_back_gray, "lens.rs", Pinhole, PreciseHand, "camera localiser", "visual localisation", VIO, "lens intrinsics", LENS_INTRINSIC_CALIBRATION, CLOCK_BOOTTIME, copy_text, "Developer tools ▸ Precision"]
+triggers: [high_precision, HighPrecision, HighPrecisionLog, precise_sensors, run_back_gray, "lens.rs", Pinhole, PreciseHand, "camera localiser", "visual localisation", VIO, "lens intrinsics", LENS_INTRINSIC_CALIBRATION, CLOCK_BOOTTIME, copy_text, "Developer tools ▸ Precision", gnss_raw, GnssRaw, RawGnss, RawStats, "raw GNSS", "carrier phase", accumulatedDeltaRange, RTK, NTRIP, NLGEO2018]
 updated: 2026-10-07
 ---
 
@@ -31,8 +31,27 @@ GNSS alone is 2–5 m off in a city and the compass 5–15°; that is enough to 
 3. **Set `prim_hand::PreciseHand::active`** while a pose is held; that is the
    switch every hand-sensing script reads (`precise = true`).
 
-Expected: 10–30 cm absolute where buildings are in view, centimetres relative
-over seconds. Netherlands only (3DBAG), daylight, buildings in frame.
+Expected, revised after a literature pass (2026-10-07): **metres to decimetres
+absolute, millimetres to centimetres relative over seconds.** Published
+model-to-image localisation against LoD1/LoD2 city models reaches 1–3 m and
+1–3° at street level, and nobody reports centimetres; the map itself bounds it
+anyway — BAG footprints are ±30 cm, 3DBAG LoD2.2 roofs under 9 cm RMSE for 75 %
+of buildings and under 31 cm for 95 %. What the outline match is strong at is
+**heading** (a distant roofline fixes yaw to under a degree) and cross-street
+position. The original estimate here was "10–30 cm absolute", which was a hope.
+Netherlands only (3DBAG), daylight, buildings in frame.
+
+**The theremin needs relative precision, not absolute.** Its pitch is 36
+semitones over 55 cm (`theremin.lua`), about 1.5 cm a semitone, so playing in
+tune wants millimetre-steady tracking and under ~1.5 cm of drift over a phrase.
+An absolute error of 30 cm only shifts every note by the same amount, which a
+player corrects by ear as on a real one; a correction arriving *mid-phrase* is
+what ruins it. So the design to build towards is: visual-inertial tracking for
+the relative pose, the slow sources (GNSS, compass, outline match) placing that
+track on the map, and **no global correction applied to a hand while it is
+playing** — re-anchor between phrases. Height is the terrain field plus a
+per-session phone height (zero-velocity updates bound the drift), not GNSS,
+whose height is 2–3× worse than its horizontal and on this phone was ~10 m off.
 
 **ARCore was considered and not used (2026-10-07).** It does exactly the
 tracking half, but it is a Java AAR that wants Gradle, which this APK
@@ -86,8 +105,61 @@ matcher can be developed against rendered views of the city from known poses
 confirmation turns up something a log cannot explain, a frame recording is the
 tool to bring back — as a developer switch, not in the menu.
 
+## Raw GNSS (2026-10-07)
+
+Under the location fix Android exposes the chip's raw measurements: a code
+range per satellite and frequency (metres of noise) and the **carrier phase**
+(`accumulatedDeltaRangeMeters`: millimetres of noise and an unknown whole
+number of ~19 cm waves, which differencing against a nearby reference station
+resolves — RTK). Whether a phone reports usable phase is a property of its
+chip and driver, Snapdragon's record is mixed, and no capability flag says so:
+only counting `ADR_STATE_VALID` at runtime does. So the mode **measures it
+before anything is built on it.**
+
+- `GnssRaw.java` registers a `GnssMeasurementsEvent.Callback` (a framework
+  subclass, hence Java) with **full tracking** (`GnssMeasurementRequest`,
+  API 31+) — with duty cycling on, the chip's clock jumps between bursts and
+  every jump is a phase break, so the test would measure the power saver. It
+  packs each measurement into 21 longs; `platform::gnss_raw` reads them back
+  (`RawMeasurement::from_row` — the layout is shared and must change on both
+  sides) and `RawStats` tallies them.
+- The log gets the chip name and the platform's capability flags once (from
+  API 34 these include a carrier-phase flag — a claim, which is why the counts
+  below are the answer), then every 5 s a `raw ·` line: epochs/s,
+  satellites per constellation, and per band (L1/E1, L5/E5a) the satellite
+  count, mean C/N0, the share with a known transmit time (usable for a code
+  range), the share with valid phase, the share valid *and* unbroken, slips,
+  resets, and the share of valid phase with the half-cycle ambiguity resolved.
+  Also clock discontinuities (should stay 0 under full tracking) and how old a
+  measurement is when the app reads it.
+- Nothing is solved yet and nothing is stored beyond those counts.
+
+What the numbers would buy, from the literature: phone RTK with a base a few
+km away is decimetres while walking in a benign street, 1–2 m among tall
+buildings; phone code-only solutions (the Smartphone Decimeter Challenge) are
+~1 m at best. With a phone's own antenna an ambiguity *fix* is intermittent;
+the phase is still worth having for velocity and for smoothing the code range.
+
+**Corrections are free here.** Kadaster/NSGI run an anonymous NTRIP caster —
+`ntrip.kadaster.nl:2101` (443 with TLS), user name an e-mail address, RTCM 3.3
+MSM — and one of its stations, `GRZC00NLD`, is on the Zernike Campus, 2–3 km
+from the Grote Markt. Hourly and high-rate RINEX for post-processing is on
+nsgi.nl. (NETPOS network RTK is for Kadaster/Rijkswaterstaat and contractors
+only; 06-GPS is commercial.) Galileo HAS's free ~20 cm corrections are on E6,
+which phones do not track, so they would have to be fetched and applied here.
+
+**GNSS height is ellipsoidal (ETRS89), the terrain is NAP**: subtract the
+NLGEO2018 quasi-geoid, about 41 m in Groningen (PROJ grid
+`nl_nsgi_nlgeo2018.tif`; Android's `getMslAltitudeMeters` uses a global geoid
+and is coarser). Over a city centre one sampled value will do.
+
+Licences, if a solver is ported rather than written: RTKLIB and demo5 are
+BSD-2; the Rust `gnss-rtk` crate is AGPL in current versions, which rules it
+out for the app; `rinex` is MPL-2.0.
+
 ## Not verified
 
-None of it has run on a device: there is no Android runtime in the development
-container, and the emulator cannot run this app. The Android code compiles
+None of it has run on a device, the raw GNSS listener included: there is no
+Android runtime in the development container, and the emulator cannot run this
+app. The Android code compiles
 (`cargo check -p cartopolis_android --target aarch64-linux-android`).

@@ -32,6 +32,9 @@ pub mod audio;
 pub mod camera;
 pub mod cell_source;
 pub mod fetch_gate;
+// The raw GNSS measurements under the location fix, for the high-precision
+// mode. Compiled everywhere so its holders need no `cfg`; Android only.
+pub mod gnss_raw;
 pub mod http;
 // A call's video encoded by the phone's own codecs (`MediaCodec`).
 #[cfg(target_os = "android")]

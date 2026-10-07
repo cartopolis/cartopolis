@@ -3095,3 +3095,103 @@ pub fn push_endpoint() -> Option<String> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Raw GNSS measurements (`GnssRaw.java`, `platform::gnss_raw`)
+// ---------------------------------------------------------------------------
+
+const GNSS_RAW_BINARY: &str = "eu.garage44.cartopolis.GnssRaw";
+
+/// Run one static call on `GnssRaw`, with the attach, the frame and the
+/// exception clearing every call here needs.
+fn with_gnss_raw<T>(
+    what: &str,
+    call: impl for<'l> FnOnce(&mut JNIEnv<'l>, &JClass<'l>, &JObject) -> Result<T, Fail>,
+) -> Result<T, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach_current_thread: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, GNSS_RAW_BINARY)?;
+        call(env, &class, &activity)
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("GnssRaw.{what}: {msg}")
+    })
+}
+
+/// Register the measurement listener, with full tracking where the platform
+/// has it. `Ok(Some(why))` is the listener saying no — usually that the
+/// location permission has not been granted yet — and is worth asking again.
+pub fn gnss_raw_start() -> Result<Option<String>, String> {
+    with_gnss_raw("start", |env, class, activity| {
+        let why = env
+            .call_static_method(
+                class,
+                "start",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        if why.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(env.get_string(&JString::from(why))?.into()))
+    })
+}
+
+pub fn gnss_raw_stop() {
+    let result = with_gnss_raw("stop", |env, class, activity| {
+        env.call_static_method(
+            class,
+            "stop",
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(activity)],
+        )?;
+        Ok(())
+    });
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "could not stop the GNSS measurement listener");
+    }
+}
+
+/// Every row the listener packed since the last call, flat
+/// (`GnssRaw.STRIDE` longs per measurement).
+pub fn gnss_raw_drain() -> Result<Vec<i64>, String> {
+    with_gnss_raw("drain", |env, class, _| {
+        let array = env.call_static_method(class, "drain", "()[J", &[])?.l()?;
+        let array = jni::objects::JLongArray::from(array);
+        let len = env.get_array_length(&array)?;
+        #[allow(clippy::cast_sign_loss)]
+        let mut out = vec![0i64; len as usize];
+        env.get_long_array_region(&array, 0, &mut out)?;
+        Ok(out)
+    })
+}
+
+/// `GnssMeasurementsEvent.Callback`'s last status, or -1 before it gave one.
+pub fn gnss_raw_status() -> i32 {
+    with_gnss_raw("status", |env, class, _| {
+        Ok(env.call_static_method(class, "status", "()I", &[])?.i()?)
+    })
+    .unwrap_or(-1)
+}
+
+/// The GNSS chip's name and hardware year, as the platform reports them.
+pub fn gnss_hardware() -> Option<String> {
+    with_gnss_raw("hardware", |env, class, activity| {
+        let name = env
+            .call_static_method(
+                class,
+                "hardware",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        Ok(env.get_string(&JString::from(name))?.into())
+    })
+    .ok()
+}
