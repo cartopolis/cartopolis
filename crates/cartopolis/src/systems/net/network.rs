@@ -681,7 +681,6 @@ pub fn apply_network_snapshot(
     mut texture_lib: ResMut<TextureLibrary>,
     mut texture_cache: ResMut<PrimTextureCache>,
     mut images: ResMut<Assets<Image>>,
-    online: Option<Res<OnlineSession>>,
     mut auth: AuthWriteback,
 ) {
     let Some(mb) = mailbox else {
@@ -881,23 +880,9 @@ pub fn apply_network_snapshot(
                 }
             }
             NetMessage::TextureCatalog { textures } => {
+                // The list only: each texture is fetched when something wants
+                // it (`PrimTextureCache::want`), not all of them now.
                 texture_lib.entries = textures.clone();
-                if let Some(sess) = online.as_ref() {
-                    for entry in &textures {
-                        if !texture_cache.handles.contains_key(&entry.id)
-                            && !texture_cache.pending.contains(&entry.id)
-                        {
-                            texture_cache.pending.insert(entry.id.clone());
-                            sess.send(
-                                "texture request",
-                                NetMessage::TextureRequest {
-                                    request_id: 0,
-                                    texture_id: entry.id.clone(),
-                                },
-                            );
-                        }
-                    }
-                }
                 tracing::info!(count = textures.len(), "texture catalog received");
             }
             NetMessage::TextureData {
@@ -1318,6 +1303,50 @@ fn decode_png_to_image(png_bytes: &[u8]) -> Option<Image> {
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         crate::systems::rendering::repeat_linear_sampler(),
     ))
+}
+
+/// How many texture requests may be unanswered at once. Each answer is a whole
+/// image decoded on the main thread and uploaded with its mip chain, so a small
+/// number spreads a picker full of tiles over many frames instead of one.
+const MAX_TEXTURES_IN_FLIGHT: usize = 2;
+
+/// Sends the texture requests `PrimTextureCache::want` has queued, a few at a
+/// time, and queues the texture of every prim that wears one it does not have.
+pub fn request_wanted_textures(
+    online: Option<Res<OnlineSession>>,
+    mut texture_cache: ResMut<PrimTextureCache>,
+    prims: Query<&Prim, Changed<Prim>>,
+) {
+    for prim in &prims {
+        if let Some(id) = prim.texture_id.as_deref() {
+            texture_cache.want(id);
+        }
+    }
+    let Some(sess) = online else {
+        // No link: whatever was on its way will never be answered. Put it back
+        // at the front, or the in-flight cap stays full for the next session.
+        let lost: Vec<String> = texture_cache.pending.drain().collect();
+        for id in lost {
+            texture_cache.queue.push_front(id);
+        }
+        return;
+    };
+    while texture_cache.pending.len() < MAX_TEXTURES_IN_FLIGHT {
+        let Some(id) = texture_cache.queue.pop_front() else {
+            break;
+        };
+        if texture_cache.handles.contains_key(&id) {
+            continue;
+        }
+        texture_cache.pending.insert(id.clone());
+        sess.send(
+            "texture request",
+            NetMessage::TextureRequest {
+                request_id: 0,
+                texture_id: id,
+            },
+        );
+    }
 }
 
 /// Creates egui thumbnail handles for any texture in the library that doesn't have one yet.
@@ -1840,5 +1869,36 @@ mod tests {
             ws_url("https://sim.example/carto/ws", true, "page.example"),
             "wss://sim.example/carto/ws"
         );
+    }
+
+    /// Textures are fetched a few at a time, never as a catalogue: asking for
+    /// every one at sign-in uploaded 202 images in a burst and hung the GPU.
+    #[test]
+    fn textures_are_requested_a_few_at_a_time() {
+        let mut app = App::new();
+        app.init_resource::<PrimTextureCache>();
+        app.add_systems(Update, request_wanted_textures);
+        let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
+        app.insert_resource(OnlineSession { intent_tx });
+        {
+            let mut cache = app.world_mut().resource_mut::<PrimTextureCache>();
+            for id in ["a", "b", "c", "d", "a"] {
+                cache.want(id);
+            }
+            assert_eq!(cache.queue.len(), 4, "a texture is queued once");
+        }
+        app.update();
+        let mut sent = Vec::new();
+        while let Ok(NetMessage::TextureRequest { texture_id, .. }) = rx.try_recv() {
+            sent.push(texture_id);
+        }
+        assert_eq!(sent, ["a", "b"]);
+
+        // The link drops: the two unanswered requests go back to the front.
+        app.world_mut().remove_resource::<OnlineSession>();
+        app.update();
+        let cache = app.world().resource::<PrimTextureCache>();
+        assert!(cache.pending.is_empty());
+        assert_eq!(cache.queue.len(), 4);
     }
 }

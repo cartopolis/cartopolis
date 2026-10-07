@@ -1022,10 +1022,32 @@ pub struct TextureLibrary {
 }
 
 /// Client-side cache of decoded texture images, keyed by texture id.
+///
+/// Textures are fetched **on demand**, never as a catalogue: a prim that wears
+/// one, or a picker tile on screen, calls [`Self::want`], and
+/// `network::request_wanted_textures` sends a few requests at a time. Fetching
+/// the whole catalogue at sign-in (as this once did) uploads every image in
+/// one burst — 202 of them hung the GPU five seconds after sign-in.
 #[derive(Resource, Default)]
 pub struct PrimTextureCache {
     pub handles: HashMap<String, Handle<Image>>,
+    /// Requested and not yet answered.
     pub pending: HashSet<String>,
+    /// Wanted and not yet requested, oldest first.
+    pub queue: std::collections::VecDeque<String>,
+}
+
+impl PrimTextureCache {
+    /// Ask for a texture. Cheap to call every frame: a texture already held,
+    /// on its way or queued is left alone.
+    pub fn want(&mut self, id: &str) {
+        if !self.handles.contains_key(id)
+            && !self.pending.contains(id)
+            && !self.queue.iter().any(|q| q == id)
+        {
+            self.queue.push_back(id.to_string());
+        }
+    }
 }
 
 /// Context menu state for prim interaction (right-click menus)

@@ -54,6 +54,7 @@ impl Plugin for NetPlugin {
             Update,
             (
                 network::apply_network_snapshot,
+                network::request_wanted_textures.after(network::apply_network_snapshot),
                 network::create_egui_texture_handles.after(network::apply_network_snapshot),
                 // After the network system has sorted this frame's private-chat
                 // traffic into the inbox it drains.

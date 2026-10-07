@@ -986,6 +986,7 @@ pub fn render_edit_dialog(
     mut edit_dialog: ResMut<EditDialogState>,
     mut game_state: ResMut<GameState>,
     texture_lib: Res<TextureLibrary>,
+    mut texture_cache: ResMut<PrimTextureCache>,
     mut gizmo_state: ResMut<crate::systems::gizmo::GizmoState>,
 ) {
     if !edit_dialog.visible {
@@ -1605,12 +1606,18 @@ pub fn render_edit_dialog(
                                                 resp.clicked()
                                             } else {
                                                 // Fallback text tile while egui handle is pending.
-                                                ui.add_sized(
+                                                let resp = ui.add_sized(
                                                     [72.0, 72.0],
                                                     egui::Button::new(&entry.name)
                                                         .selected(selected),
-                                                )
-                                                .clicked()
+                                                );
+                                                // Fetched once scrolled into view, so
+                                                // opening the picker is not a request
+                                                // for the whole catalogue.
+                                                if ui.is_rect_visible(resp.rect) {
+                                                    texture_cache.want(&entry.id);
+                                                }
+                                                resp.clicked()
                                             };
                                             ui.label(
                                                 egui::RichText::new(&entry.name)
