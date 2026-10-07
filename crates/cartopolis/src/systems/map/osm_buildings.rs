@@ -1217,6 +1217,68 @@ pub fn update_buildings(
         ay + (world_z / tile_m).round() as i64,
     );
 
+    request_detail_patch(
+        &mut osm,
+        &mut colliders,
+        &tunnels,
+        &terrain,
+        center,
+        (ax, ay, z),
+        tile_m,
+        (world_x, world_z),
+        cam_altitude,
+    );
+
+    let Ok(root) = bigspace.single() else {
+        return;
+    };
+
+    stream_far_cells(
+        &mut commands,
+        &mut osm,
+        &mut meshes,
+        &mut fade_materials,
+        &time,
+        &terrain,
+        &tunnels,
+        &lod22,
+        root,
+        center,
+        (ax, ay, z, lat),
+    );
+
+    apply_detail_patch(
+        &mut commands,
+        &mut osm,
+        &mut meshes,
+        &mut materials,
+        &mut colliders,
+        &terrain,
+        root,
+        (ax, ay, z),
+        tile_m,
+    );
+}
+
+// `update_buildings`' phases take `colliders`, `meshes` and the material stores
+// as `&mut ResMut<_>` rather than as the resources, so each is dereferenced
+// mutably exactly where the code did when it was inline — change detection sees
+// the same writes.
+
+/// Start a detail-patch fetch when the camera has drifted far enough, and drop
+/// the patch over LoD2.2 territory.
+#[allow(clippy::too_many_arguments)]
+fn request_detail_patch(
+    osm: &mut OsmBuildings,
+    colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    tunnels: &crate::systems::tunnels::Tunnels,
+    terrain: &crate::systems::terrain::TerrainField,
+    center: (i64, i64),
+    (ax, ay, z): (i64, i64, u32),
+    tile_m: f32,
+    (world_x, world_z): (f32, f32),
+    cam_altitude: f32,
+) {
     // A 3DBAG toggle flip — or the coverage manifests resolving — invalidates
     // the standing patch: its building set was baked under the other setting
     // (covered cells filtered out, or present), so waiting for the drift
@@ -1412,11 +1474,23 @@ pub fn update_buildings(
             })
             .detach();
     }
+}
 
-    let Ok(root) = bigspace.single() else {
-        return;
-    };
-
+/// The far LOD ring: queue, dispatch, apply and retire `CACHE_ZOOM` cells.
+#[allow(clippy::too_many_arguments)]
+fn stream_far_cells(
+    commands: &mut Commands,
+    osm: &mut OsmBuildings,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    fade_materials: &mut ResMut<Assets<crate::systems::building_fade::FarBuildingMaterial>>,
+    time: &Time,
+    terrain: &Res<crate::systems::terrain::TerrainField>,
+    tunnels: &Res<crate::systems::tunnels::Tunnels>,
+    lod22: &crate::systems::lod22::Lod22Buildings,
+    root: Entity,
+    center: (i64, i64),
+    (ax, ay, z, lat): (i64, i64, u32, f64),
+) {
     // --- Far LOD cells: stream one CACHE_ZOOM cell at a time (like map tiles) ---
     {
         // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
@@ -1742,7 +1816,22 @@ pub fn update_buildings(
             osm.far_tdbag.forget(&cell);
         }
     }
+}
 
+/// Apply a finished detail patch, as many pieces as this frame's upload ledger
+/// admits.
+#[allow(clippy::too_many_arguments)]
+fn apply_detail_patch(
+    mut commands: &mut Commands,
+    mut osm: &mut OsmBuildings,
+    mut meshes: &mut ResMut<Assets<Mesh>>,
+    mut materials: &mut ResMut<Assets<StandardMaterial>>,
+    colliders: &mut ResMut<crate::systems::collision::BuildingColliders>,
+    terrain: &crate::systems::terrain::TerrainField,
+    root: Entity,
+    (ax, ay, z): (i64, i64, u32),
+    tile_m: f32,
+) {
     // --- Detail patch: apply a completed fetch+build, piece-wise ---
     //
     // The patch is the largest single thing this client finalises, and its
