@@ -1032,509 +1032,14 @@ pub fn render_edit_dialog(
             ui.separator();
 
             match edit_dialog.active_tab {
-                // ── Basics tab ──────────────────────────────────────────────
-                0 => {
-                    use crate::systems::gizmo::GizmoMode;
-                    egui::Grid::new("edit_grid")
-                        .num_columns(2)
-                        .spacing([8.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.label("Name");
-                            ui.text_edit_singleline(&mut edit_dialog.name);
-                            ui.end_row();
-
-                            ui.label("Tool");
-                            ui.horizontal(|ui| {
-                                ui.radio_value(
-                                    &mut gizmo_state.mode,
-                                    GizmoMode::Translate,
-                                    "Move (T)",
-                                );
-                                ui.radio_value(
-                                    &mut gizmo_state.mode,
-                                    GizmoMode::Rotate,
-                                    "Rotate (R)",
-                                );
-                                ui.radio_value(
-                                    &mut gizmo_state.mode,
-                                    GizmoMode::Scale,
-                                    "Scale (S)",
-                                );
-                            });
-                            ui.end_row();
-
-                            // Physical (protocol 34): its own message, like Video,
-                            // so it applies at once rather than on Save, and only to
-                            // a prim the server already has.
-                            if !edit_dialog.is_new {
-                                ui.label("Physical");
-                                let mut on = edit_dialog.physical;
-                                if crate::systems::theme::checkbox(
-                                    ui,
-                                    &mut on,
-                                    "Falls, bounces and can be pushed",
-                                )
-                                .changed()
-                                {
-                                    edit_dialog.physical = on;
-                                    edit_dialog.physical_request = Some(on);
-                                }
-                                ui.end_row();
-                            }
-                        });
-                }
-                // ── Shape tab ───────────────────────────────────────────────
-                1 => {
-                    egui::Grid::new("object_grid")
-                        .num_columns(2)
-                        .spacing([8.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label("Building block type");
-                            egui::ComboBox::from_id_salt("shape_combo")
-                                .selected_text(shape_display_name(&edit_dialog.shape))
-                                .show_ui(ui, |ui| {
-                                    for (key, label) in SHAPES {
-                                        ui.selectable_value(
-                                            &mut edit_dialog.shape,
-                                            key.to_string(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-                        });
-
-                    ui.separator();
-
-                    // Position / Size / Rotation
-                    egui::Grid::new("transform_grid")
-                        .num_columns(4)
-                        .spacing([4.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label("Position (meters)");
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.position[0])
-                                    .prefix("X ")
-                                    .speed(0.1),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.position[1])
-                                    .prefix("Y ")
-                                    .speed(0.1),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.position[2])
-                                    .prefix("Z ")
-                                    .speed(0.1),
-                            );
-                            ui.end_row();
-
-                            ui.label("Size (meters)");
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.scale[0])
-                                    .prefix("X ")
-                                    .speed(0.1)
-                                    .range(0.001..=f32::MAX),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.scale[1])
-                                    .prefix("Y ")
-                                    .speed(0.1)
-                                    .range(0.001..=f32::MAX),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.scale[2])
-                                    .prefix("Z ")
-                                    .speed(0.1)
-                                    .range(0.001..=f32::MAX),
-                            );
-                            ui.end_row();
-
-                            ui.label("Rotation (degrees)");
-                            let mut rot_x = edit_dialog.rotation[0].to_degrees();
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut rot_x)
-                                        .prefix("X ")
-                                        .speed(1.0)
-                                        .suffix("°"),
-                                )
-                                .changed()
-                            {
-                                edit_dialog.rotation[0] = rot_x.to_radians();
-                            }
-                            let mut rot_y = edit_dialog.rotation[1].to_degrees();
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut rot_y)
-                                        .prefix("Y ")
-                                        .speed(1.0)
-                                        .suffix("°"),
-                                )
-                                .changed()
-                            {
-                                edit_dialog.rotation[1] = rot_y.to_radians();
-                            }
-                            let mut rot_z = edit_dialog.rotation[2].to_degrees();
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut rot_z)
-                                        .prefix("Z ")
-                                        .speed(1.0)
-                                        .suffix("°"),
-                                )
-                                .changed()
-                            {
-                                edit_dialog.rotation[2] = rot_z.to_radians();
-                            }
-                            ui.end_row();
-                        });
-
-                    ui.separator();
-
-                    // Path Cut Begin and End
-                    ui.label("Path cut begin and end");
-                    ui.horizontal(|ui| {
-                        let pce = edit_dialog.path_cut_end;
-                        let pcb = edit_dialog.path_cut_begin;
-                        ui.label("B");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.path_cut_begin)
-                                .speed(0.005)
-                                .range(0.0..=pce)
-                                .min_decimals(3)
-                                .max_decimals(3),
-                        );
-                        ui.label("E");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.path_cut_end)
-                                .speed(0.005)
-                                .range(pcb..=1.0)
-                                .min_decimals(3)
-                                .max_decimals(3),
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Hollow (stored 0–0.95, displayed 0–95)
-                    ui.label("Hollow");
-                    let mut hollow_pct = edit_dialog.hollow * 100.0;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut hollow_pct)
-                                .speed(0.5)
-                                .range(0.0..=95.0)
-                                .min_decimals(1)
-                                .max_decimals(1),
-                        )
-                        .changed()
-                    {
-                        edit_dialog.hollow = hollow_pct / 100.0;
-                    }
-
-                    ui.add_space(4.0);
-
-                    // Twist Begin and End (degrees, −360..360)
-                    ui.label("Twist begin and end");
-                    ui.horizontal(|ui| {
-                        ui.label("B");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.twist_begin)
-                                .speed(1.0)
-                                .range(-360.0..=360.0)
-                                .suffix("°"),
-                        );
-                        ui.label("E");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.twist_end)
-                                .speed(1.0)
-                                .range(-360.0..=360.0)
-                                .suffix("°"),
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Taper (−1..1 per axis)
-                    ui.label("Taper");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.taper_x)
-                                .prefix("X ")
-                                .speed(0.01)
-                                .range(-1.0..=1.0)
-                                .max_decimals(2),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.taper_y)
-                                .prefix("Y ")
-                                .speed(0.01)
-                                .range(-1.0..=1.0)
-                                .max_decimals(2),
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Top Shear (−0.5..0.5 per axis)
-                    ui.label("Top shear");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.top_shear_x)
-                                .prefix("X ")
-                                .speed(0.01)
-                                .range(-0.5..=0.5)
-                                .max_decimals(2),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.top_shear_y)
-                                .prefix("Y ")
-                                .speed(0.01)
-                                .range(-0.5..=0.5)
-                                .max_decimals(2),
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Slice Begin and End (trims the path 0..1, begin ≤ end)
-                    ui.label("Slice begin and end");
-                    ui.horizontal(|ui| {
-                        let sb = edit_dialog.warp.slice_begin;
-                        let se = edit_dialog.warp.slice_end;
-                        ui.label("B");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.slice_begin)
-                                .speed(0.005)
-                                .range(0.0..=se)
-                                .min_decimals(3)
-                                .max_decimals(3),
-                        );
-                        ui.label("E");
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.warp.slice_end)
-                                .speed(0.005)
-                                .range(sb..=1.0)
-                                .min_decimals(3)
-                                .max_decimals(3),
-                        );
-                    });
-                }
-                // ── Surface tab ─────────────────────────────────────────────
-                _ => {
-                    egui::Grid::new("texture_grid")
-                        .num_columns(2)
-                        .spacing([8.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.label("Color");
-                            let mut srgb = [
-                                (edit_dialog.color[0] * 255.0) as u8,
-                                (edit_dialog.color[1] * 255.0) as u8,
-                                (edit_dialog.color[2] * 255.0) as u8,
-                            ];
-                            if ui.color_edit_button_srgb(&mut srgb).changed() {
-                                edit_dialog.color = [
-                                    srgb[0] as f32 / 255.0,
-                                    srgb[1] as f32 / 255.0,
-                                    srgb[2] as f32 / 255.0,
-                                ];
-                            }
-                            ui.end_row();
-
-                            // Video (protocol 28): its own message, not part of the
-                            // save — so only for a prim that already exists, and
-                            // only where a clip can be chosen and played.
-                            if !edit_dialog.is_new && crate::systems::map::prim_video_available() {
-                                ui.label("Video");
-                                ui.horizontal(|ui| {
-                                    ui.label(if edit_dialog.playing_video {
-                                        "Playing"
-                                    } else {
-                                        "None"
-                                    });
-                                    if crate::platform::model_file::is_available()
-                                        && ui.button("Choose video…").clicked()
-                                    {
-                                        edit_dialog.video_action =
-                                            Some(crate::resources::VideoAction::Choose);
-                                    }
-                                    if edit_dialog.playing_video && ui.button("Stop").clicked() {
-                                        edit_dialog.video_action =
-                                            Some(crate::resources::VideoAction::Stop);
-                                    }
-                                    if let Some(note) = &edit_dialog.video_note {
-                                        ui.label(
-                                            egui::RichText::new(note.as_str())
-                                                .small()
-                                                .color(crate::systems::theme::TEXT_DIM),
-                                        );
-                                    }
-                                })
-                                .response
-                                .on_hover_text(cartopolis_core::video_limits::VIDEO_FORMAT_HINT);
-                                ui.end_row();
-                            }
-
-                            ui.label("Texture");
-                            ui.horizontal(|ui| {
-                                ui.label(edit_dialog.texture_id.as_deref().unwrap_or("None"));
-                                if !texture_lib.entries.is_empty() && ui.button("Pick…").clicked()
-                                {
-                                    edit_dialog.texture_picker_open =
-                                        !edit_dialog.texture_picker_open;
-                                }
-                                if edit_dialog.texture_id.is_some() && ui.button("Clear").clicked()
-                                {
-                                    edit_dialog.texture_id = None;
-                                }
-                            });
-                            ui.end_row();
-
-                            // Transparency (SL "Transparency %": 0 = opaque, higher = more see-through).
-                            ui.label("Transparency");
-                            let mut transparency = (1.0 - edit_dialog.surface.alpha) * 100.0;
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut transparency)
-                                        .speed(0.5)
-                                        .range(0.0..=100.0)
-                                        .suffix(" %")
-                                        .max_decimals(1),
-                                )
-                                .changed()
-                            {
-                                edit_dialog.surface.alpha =
-                                    (1.0 - transparency / 100.0).clamp(0.0, 1.0);
-                            }
-                            ui.end_row();
-
-                            // Glow (0–1; emissive surface glow).
-                            ui.label("Glow");
-                            ui.add(
-                                egui::DragValue::new(&mut edit_dialog.surface.glow)
-                                    .speed(0.01)
-                                    .range(0.0..=1.0)
-                                    .max_decimals(2),
-                            );
-                            ui.end_row();
-
-                            ui.label("Full bright");
-                            crate::systems::theme::checkbox(
-                                ui,
-                                &mut edit_dialog.surface.full_bright,
-                                "",
-                            );
-                            ui.end_row();
-                        });
-
-                    ui.separator();
-
-                    // Repeats Per Face (tiling count per axis, with optional flip).
-                    ui.label("Repeats per face");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.surface.repeat_u)
-                                .prefix("U ")
-                                .speed(0.05)
-                                .range(0.0..=100.0)
-                                .max_decimals(3),
-                        );
-                        crate::systems::theme::checkbox(
-                            ui,
-                            &mut edit_dialog.surface.flip_u,
-                            "Flip",
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.surface.repeat_v)
-                                .prefix("V ")
-                                .speed(0.05)
-                                .range(0.0..=100.0)
-                                .max_decimals(3),
-                        );
-                        crate::systems::theme::checkbox(
-                            ui,
-                            &mut edit_dialog.surface.flip_v,
-                            "Flip",
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Texture rotation (degrees, −360..360).
-                    ui.label("Rotation (degrees)");
-                    ui.add(
-                        egui::DragValue::new(&mut edit_dialog.surface.rotation)
-                            .speed(1.0)
-                            .range(-360.0..=360.0)
-                            .suffix("°"),
-                    );
-
-                    ui.add_space(4.0);
-
-                    // Repeats Per Meter: derives per-face repeats from object size on Apply.
-                    ui.label("Repeats per metre");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.repeats_per_meter)
-                                .speed(0.05)
-                                .range(0.0..=10.0)
-                                .max_decimals(3),
-                        );
-                        if ui.button("Apply").clicked() && edit_dialog.repeats_per_meter > 0.0 {
-                            let rpm = edit_dialog.repeats_per_meter;
-                            edit_dialog.surface.repeat_u = rpm * edit_dialog.scale[0];
-                            edit_dialog.surface.repeat_v = rpm * edit_dialog.scale[1];
-                        }
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Texture offset (fraction of a repeat).
-                    ui.label("Offset");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.surface.offset_u)
-                                .prefix("U ")
-                                .speed(0.005)
-                                .range(-1.0..=1.0)
-                                .max_decimals(3),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut edit_dialog.surface.offset_v)
-                                .prefix("V ")
-                                .speed(0.005)
-                                .range(-1.0..=1.0)
-                                .max_decimals(3),
-                        );
-                    });
-                }
+                0 => basics_tab(ui, &mut edit_dialog, &mut gizmo_state),
+                1 => shape_tab(ui, &mut edit_dialog),
+                _ => surface_tab(ui, &mut edit_dialog, &texture_lib),
             }
 
             ui.separator();
 
-            // Dialog buttons — always visible regardless of active tab
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    game_state.pending_prim_save = Some(edit_dialog.clone());
-                    edit_dialog.visible = false;
-                    game_state.editing_prim_id = None;
-                }
-
-                if ui.button("Cancel").clicked() {
-                    push_revert(&mut game_state, &edit_dialog);
-                    edit_dialog.visible = false;
-                    game_state.editing_prim_id = None;
-                }
-
-                if !edit_dialog.is_new && ui.button("Delete").clicked() {
-                    if let Some(id) = edit_dialog.prim_id {
-                        game_state.prims_to_delete.push(id);
-                    }
-                    edit_dialog.visible = false;
-                    game_state.editing_prim_id = None;
-                }
-            });
+            dialog_buttons(ui, &mut edit_dialog, &mut game_state);
         });
 
     if !dialog_open {
@@ -1544,6 +1049,506 @@ pub fn render_edit_dialog(
         game_state.editing_prim_id = None;
     }
 
+    render_texture_picker(
+        &mut egui,
+        &mut edit_dialog,
+        &texture_lib,
+        &mut texture_cache,
+    );
+}
+
+// The tab and section helpers below take the system's `ResMut`s by reference
+// rather than the resources themselves, so each one dereferences mutably exactly
+// where the code did when it was inline — change detection sees the same writes.
+
+/// The object editor's Basics tab: name, gizmo tool, physics.
+fn basics_tab(
+    ui: &mut egui::Ui,
+    edit_dialog: &mut ResMut<EditDialogState>,
+    gizmo_state: &mut ResMut<crate::systems::gizmo::GizmoState>,
+) {
+    use crate::systems::gizmo::GizmoMode;
+    egui::Grid::new("edit_grid")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut edit_dialog.name);
+            ui.end_row();
+
+            ui.label("Tool");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Translate, "Move (T)");
+                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Rotate, "Rotate (R)");
+                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Scale, "Scale (S)");
+            });
+            ui.end_row();
+
+            // Physical (protocol 34): its own message, like Video,
+            // so it applies at once rather than on Save, and only to
+            // a prim the server already has.
+            if !edit_dialog.is_new {
+                ui.label("Physical");
+                let mut on = edit_dialog.physical;
+                if crate::systems::theme::checkbox(ui, &mut on, "Falls, bounces and can be pushed")
+                    .changed()
+                {
+                    edit_dialog.physical = on;
+                    edit_dialog.physical_request = Some(on);
+                }
+                ui.end_row();
+            }
+        });
+}
+
+/// The object editor's Shape tab: block type, transform, and the path and
+/// warp parameters.
+fn shape_tab(ui: &mut egui::Ui, edit_dialog: &mut ResMut<EditDialogState>) {
+    egui::Grid::new("object_grid")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Building block type");
+            egui::ComboBox::from_id_salt("shape_combo")
+                .selected_text(shape_display_name(&edit_dialog.shape))
+                .show_ui(ui, |ui| {
+                    for (key, label) in SHAPES {
+                        ui.selectable_value(&mut edit_dialog.shape, key.to_string(), *label);
+                    }
+                });
+            ui.end_row();
+        });
+
+    ui.separator();
+
+    // Position / Size / Rotation
+    egui::Grid::new("transform_grid")
+        .num_columns(4)
+        .spacing([4.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Position (meters)");
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.position[0])
+                    .prefix("X ")
+                    .speed(0.1),
+            );
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.position[1])
+                    .prefix("Y ")
+                    .speed(0.1),
+            );
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.position[2])
+                    .prefix("Z ")
+                    .speed(0.1),
+            );
+            ui.end_row();
+
+            ui.label("Size (meters)");
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.scale[0])
+                    .prefix("X ")
+                    .speed(0.1)
+                    .range(0.001..=f32::MAX),
+            );
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.scale[1])
+                    .prefix("Y ")
+                    .speed(0.1)
+                    .range(0.001..=f32::MAX),
+            );
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.scale[2])
+                    .prefix("Z ")
+                    .speed(0.1)
+                    .range(0.001..=f32::MAX),
+            );
+            ui.end_row();
+
+            ui.label("Rotation (degrees)");
+            let mut rot_x = edit_dialog.rotation[0].to_degrees();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut rot_x)
+                        .prefix("X ")
+                        .speed(1.0)
+                        .suffix("°"),
+                )
+                .changed()
+            {
+                edit_dialog.rotation[0] = rot_x.to_radians();
+            }
+            let mut rot_y = edit_dialog.rotation[1].to_degrees();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut rot_y)
+                        .prefix("Y ")
+                        .speed(1.0)
+                        .suffix("°"),
+                )
+                .changed()
+            {
+                edit_dialog.rotation[1] = rot_y.to_radians();
+            }
+            let mut rot_z = edit_dialog.rotation[2].to_degrees();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut rot_z)
+                        .prefix("Z ")
+                        .speed(1.0)
+                        .suffix("°"),
+                )
+                .changed()
+            {
+                edit_dialog.rotation[2] = rot_z.to_radians();
+            }
+            ui.end_row();
+        });
+
+    ui.separator();
+
+    // Path Cut Begin and End
+    ui.label("Path cut begin and end");
+    ui.horizontal(|ui| {
+        let pce = edit_dialog.path_cut_end;
+        let pcb = edit_dialog.path_cut_begin;
+        ui.label("B");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.path_cut_begin)
+                .speed(0.005)
+                .range(0.0..=pce)
+                .min_decimals(3)
+                .max_decimals(3),
+        );
+        ui.label("E");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.path_cut_end)
+                .speed(0.005)
+                .range(pcb..=1.0)
+                .min_decimals(3)
+                .max_decimals(3),
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // Hollow (stored 0–0.95, displayed 0–95)
+    ui.label("Hollow");
+    let mut hollow_pct = edit_dialog.hollow * 100.0;
+    if ui
+        .add(
+            egui::DragValue::new(&mut hollow_pct)
+                .speed(0.5)
+                .range(0.0..=95.0)
+                .min_decimals(1)
+                .max_decimals(1),
+        )
+        .changed()
+    {
+        edit_dialog.hollow = hollow_pct / 100.0;
+    }
+
+    ui.add_space(4.0);
+
+    // Twist Begin and End (degrees, −360..360)
+    ui.label("Twist begin and end");
+    ui.horizontal(|ui| {
+        ui.label("B");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.twist_begin)
+                .speed(1.0)
+                .range(-360.0..=360.0)
+                .suffix("°"),
+        );
+        ui.label("E");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.twist_end)
+                .speed(1.0)
+                .range(-360.0..=360.0)
+                .suffix("°"),
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // Taper (−1..1 per axis)
+    ui.label("Taper");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.taper_x)
+                .prefix("X ")
+                .speed(0.01)
+                .range(-1.0..=1.0)
+                .max_decimals(2),
+        );
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.taper_y)
+                .prefix("Y ")
+                .speed(0.01)
+                .range(-1.0..=1.0)
+                .max_decimals(2),
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // Top Shear (−0.5..0.5 per axis)
+    ui.label("Top shear");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.top_shear_x)
+                .prefix("X ")
+                .speed(0.01)
+                .range(-0.5..=0.5)
+                .max_decimals(2),
+        );
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.top_shear_y)
+                .prefix("Y ")
+                .speed(0.01)
+                .range(-0.5..=0.5)
+                .max_decimals(2),
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // Slice Begin and End (trims the path 0..1, begin ≤ end)
+    ui.label("Slice begin and end");
+    ui.horizontal(|ui| {
+        let sb = edit_dialog.warp.slice_begin;
+        let se = edit_dialog.warp.slice_end;
+        ui.label("B");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.slice_begin)
+                .speed(0.005)
+                .range(0.0..=se)
+                .min_decimals(3)
+                .max_decimals(3),
+        );
+        ui.label("E");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.warp.slice_end)
+                .speed(0.005)
+                .range(sb..=1.0)
+                .min_decimals(3)
+                .max_decimals(3),
+        );
+    });
+}
+
+/// The object editor's Surface tab: colour, video, texture and its mapping.
+fn surface_tab(
+    ui: &mut egui::Ui,
+    edit_dialog: &mut ResMut<EditDialogState>,
+    texture_lib: &TextureLibrary,
+) {
+    egui::Grid::new("texture_grid")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Color");
+            let mut srgb = [
+                (edit_dialog.color[0] * 255.0) as u8,
+                (edit_dialog.color[1] * 255.0) as u8,
+                (edit_dialog.color[2] * 255.0) as u8,
+            ];
+            if ui.color_edit_button_srgb(&mut srgb).changed() {
+                edit_dialog.color = [
+                    srgb[0] as f32 / 255.0,
+                    srgb[1] as f32 / 255.0,
+                    srgb[2] as f32 / 255.0,
+                ];
+            }
+            ui.end_row();
+
+            // Video (protocol 28): its own message, not part of the
+            // save — so only for a prim that already exists, and
+            // only where a clip can be chosen and played.
+            if !edit_dialog.is_new && crate::systems::map::prim_video_available() {
+                ui.label("Video");
+                ui.horizontal(|ui| {
+                    ui.label(if edit_dialog.playing_video {
+                        "Playing"
+                    } else {
+                        "None"
+                    });
+                    if crate::platform::model_file::is_available()
+                        && ui.button("Choose video…").clicked()
+                    {
+                        edit_dialog.video_action = Some(crate::resources::VideoAction::Choose);
+                    }
+                    if edit_dialog.playing_video && ui.button("Stop").clicked() {
+                        edit_dialog.video_action = Some(crate::resources::VideoAction::Stop);
+                    }
+                    if let Some(note) = &edit_dialog.video_note {
+                        ui.label(
+                            egui::RichText::new(note.as_str())
+                                .small()
+                                .color(crate::systems::theme::TEXT_DIM),
+                        );
+                    }
+                })
+                .response
+                .on_hover_text(cartopolis_core::video_limits::VIDEO_FORMAT_HINT);
+                ui.end_row();
+            }
+
+            ui.label("Texture");
+            ui.horizontal(|ui| {
+                ui.label(edit_dialog.texture_id.as_deref().unwrap_or("None"));
+                if !texture_lib.entries.is_empty() && ui.button("Pick…").clicked() {
+                    edit_dialog.texture_picker_open = !edit_dialog.texture_picker_open;
+                }
+                if edit_dialog.texture_id.is_some() && ui.button("Clear").clicked() {
+                    edit_dialog.texture_id = None;
+                }
+            });
+            ui.end_row();
+
+            // Transparency (SL "Transparency %": 0 = opaque, higher = more see-through).
+            ui.label("Transparency");
+            let mut transparency = (1.0 - edit_dialog.surface.alpha) * 100.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut transparency)
+                        .speed(0.5)
+                        .range(0.0..=100.0)
+                        .suffix(" %")
+                        .max_decimals(1),
+                )
+                .changed()
+            {
+                edit_dialog.surface.alpha = (1.0 - transparency / 100.0).clamp(0.0, 1.0);
+            }
+            ui.end_row();
+
+            // Glow (0–1; emissive surface glow).
+            ui.label("Glow");
+            ui.add(
+                egui::DragValue::new(&mut edit_dialog.surface.glow)
+                    .speed(0.01)
+                    .range(0.0..=1.0)
+                    .max_decimals(2),
+            );
+            ui.end_row();
+
+            ui.label("Full bright");
+            crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.full_bright, "");
+            ui.end_row();
+        });
+
+    ui.separator();
+
+    // Repeats Per Face (tiling count per axis, with optional flip).
+    ui.label("Repeats per face");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.surface.repeat_u)
+                .prefix("U ")
+                .speed(0.05)
+                .range(0.0..=100.0)
+                .max_decimals(3),
+        );
+        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_u, "Flip");
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.surface.repeat_v)
+                .prefix("V ")
+                .speed(0.05)
+                .range(0.0..=100.0)
+                .max_decimals(3),
+        );
+        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_v, "Flip");
+    });
+
+    ui.add_space(4.0);
+
+    // Texture rotation (degrees, −360..360).
+    ui.label("Rotation (degrees)");
+    ui.add(
+        egui::DragValue::new(&mut edit_dialog.surface.rotation)
+            .speed(1.0)
+            .range(-360.0..=360.0)
+            .suffix("°"),
+    );
+
+    ui.add_space(4.0);
+
+    // Repeats Per Meter: derives per-face repeats from object size on Apply.
+    ui.label("Repeats per metre");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.repeats_per_meter)
+                .speed(0.05)
+                .range(0.0..=10.0)
+                .max_decimals(3),
+        );
+        if ui.button("Apply").clicked() && edit_dialog.repeats_per_meter > 0.0 {
+            let rpm = edit_dialog.repeats_per_meter;
+            edit_dialog.surface.repeat_u = rpm * edit_dialog.scale[0];
+            edit_dialog.surface.repeat_v = rpm * edit_dialog.scale[1];
+        }
+    });
+
+    ui.add_space(4.0);
+
+    // Texture offset (fraction of a repeat).
+    ui.label("Offset");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.surface.offset_u)
+                .prefix("U ")
+                .speed(0.005)
+                .range(-1.0..=1.0)
+                .max_decimals(3),
+        );
+        ui.add(
+            egui::DragValue::new(&mut edit_dialog.surface.offset_v)
+                .prefix("V ")
+                .speed(0.005)
+                .range(-1.0..=1.0)
+                .max_decimals(3),
+        );
+    });
+}
+
+/// Save, Cancel and Delete, under every tab.
+fn dialog_buttons(
+    ui: &mut egui::Ui,
+    edit_dialog: &mut ResMut<EditDialogState>,
+    mut game_state: &mut ResMut<GameState>,
+) {
+    // Dialog buttons — always visible regardless of active tab
+    ui.horizontal(|ui| {
+        if ui.button("Save").clicked() {
+            game_state.pending_prim_save = Some(edit_dialog.clone());
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+
+        if ui.button("Cancel").clicked() {
+            push_revert(&mut game_state, &edit_dialog);
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+
+        if !edit_dialog.is_new && ui.button("Delete").clicked() {
+            if let Some(id) = edit_dialog.prim_id {
+                game_state.prims_to_delete.push(id);
+            }
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+    });
+}
+
+/// The texture library picker the Surface tab opens.
+fn render_texture_picker(
+    egui: &mut ResMut<EguiManager>,
+    edit_dialog: &mut ResMut<EditDialogState>,
+    texture_lib: &TextureLibrary,
+    texture_cache: &mut ResMut<PrimTextureCache>,
+) {
     // Texture picker window — the editor's chrome, for the same reason the editor
     // has it: two windows opened from one another, one themed and one stock, look
     // like two applications.
