@@ -45,7 +45,6 @@ use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::roofs::{Cell as RoofCell, Material, Roof, Surface};
 use cartopolis_geo::lod22_cell::{self, Element};
 use image::RgbImage;
-use serde_json::json;
 
 use super::http::{get_parsed_with, query};
 use super::rd::wgs84_bbox;

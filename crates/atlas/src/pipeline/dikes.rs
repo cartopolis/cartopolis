@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::dikes as wire;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::geom::{round, Pt, M_PER_DEG};
 use super::http::{get_json, query};
