@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
-triggers: [slow build, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld]
-updated: 2026-09-16
+triggers: [slow build, llvm-lines, cranelift, MaterialPlugin, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld]
+updated: 2026-10-07
 ---
 
 # Where the client's build time actually goes
@@ -346,6 +346,50 @@ confirms the "`-p` and `--workspace` keep artifact sets that coexist" rule in
 reason this repo's build commands say to prefer the workspace-scoped form. Use
 `-p` when you mean to *narrow the work*; do not use it expecting a faster answer
 from a warm slot, because for the client it is twenty times slower.
+
+## What the code generation is spent on (2026-10-07)
+
+The 41% above had never been broken down by *what* is being generated. Measured
+with `cargo llvm-lines -p cartopolis --lib` (nightly-2026-08-06, the dev profile,
+which llvm-lines forces to one codegen unit), which counts the LLVM IR each
+function contributes — a count, not a timing, so it does not depend on how busy
+the box was. Total: **7.25 million lines from 201,380 functions.** Grouped by the
+generic arguments they were instantiated with:
+
+| what | share of the client's IR |
+|---|---|
+| **custom materials** — Bevy's render/asset machinery instantiated once per `Material`/`MaterialExtension` type | **~24%**, ~1.5% *each* × 16 types |
+| Bevy ECS system and query plumbing (`get_param`, `run`, `init_access`, …) | ~28% (overlaps the row above) |
+| the editor-access server's web stack (`rmcp`, `axum`, `hyper`, `tower`) | **9.7%** |
+| serde | 7.1% |
+| tokio | 3.5% |
+| egui | 2.6% |
+| functions actually written in `cartopolis`, by name | 12% — the largest single one is 0.2% |
+
+The two bold rows are the actionable ones, because both are generic code
+instantiated with a type defined in this crate, so moving the *instantiation*
+moves the cost — unlike moving plain functions, which was measured above at
+~0.4 s.
+
+- **The materials.** `GroundDetailExtension`, `BuildingFade`, `RoadDepthExtension`,
+  `BuildingWindows`, `GrassExtension`, `GlobeCloudMaterial`, `GlobeOcean`,
+  `CloudMaterial`, `SkyDomeMaterial`, `WaterExtension`, `HorizonHazeMaterial`,
+  `DepthAlways`, `RainMaterial`, `StarFieldMaterial`, `MoonMaterial`,
+  `ParticleMaterial` each cost 1.44–1.60%. It is `MaterialPlugin::<M>`'s
+  pipeline specialisation, preparation and extraction systems, and the async
+  asset-loading futures under them. If the types and the `add_plugins(MaterialPlugin::<M>)`
+  calls lived in a crate below the client — one plugin function the client calls —
+  that quarter of the IR would be generated when *that* crate builds and never on
+  a client edit, a client from-scratch build, or the `cfg(test)` build of the
+  client lib, which generates it all a second time. The systems that *use* the
+  materials stay where they are; they name the types, not the plugin.
+- **The editor-access server** — `systems/dev/mcp/server.rs`, being moved to a
+  crate of its own (`refactor/mcp-server-crate`) for this reason.
+
+Function-level, nothing written here is big: the largest are `drive_capture`
+(9.5k lines), one closure of `spawn_geometry_task` (6.7k), `mcp::agent::settle`
+and `update_lod22` (~5k). Splitting long functions is a readability change, not a
+build one.
 
 ## Not measured
 
