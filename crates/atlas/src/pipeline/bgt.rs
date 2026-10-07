@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use cartopolis_geo::formats::bgt::{self, Line, Surface};
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::LatLng;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::bgt_extract::Extract;
 use super::bv3d::separation_heights_for;
@@ -755,6 +755,7 @@ fn collect_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Every point form lands on the position the client reads it at. `ix`
     /// answers 0 for a name it does not find, so a form missing from the table

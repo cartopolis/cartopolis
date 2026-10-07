@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::water as wire;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::bv3d::{for_each_block, CityJson};
 use super::geom::{ring_area, round, simplify, Pt};
@@ -231,6 +231,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Two triangles sharing an edge are one square outline; the shared edge is
     /// interior because its reverse is present.

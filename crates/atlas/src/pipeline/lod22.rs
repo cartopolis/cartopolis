@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::lod22_cell;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::geom::round;
 use super::http::{get_json_with, get_maybe_gzipped_json, get_text, query};
@@ -531,6 +531,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn pand_ids_keep_their_leading_zeros_and_split_the_part() {

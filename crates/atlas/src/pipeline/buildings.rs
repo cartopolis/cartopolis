@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::osm_buildings::{self, LatLon, Tags};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::http::{get_json_with, query};
 use super::rd::rd_to_lat_lng;
@@ -287,6 +287,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_slanted_roof_becomes_a_gable_to_the_ridge() {
