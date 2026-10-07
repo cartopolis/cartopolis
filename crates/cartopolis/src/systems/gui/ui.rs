@@ -746,7 +746,7 @@ pub fn render_context_menu(
     mut store: ResMut<crate::systems::user_store::UserStore>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
     camera_state: Res<crate::resources::CameraState>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
+    camera: crate::grid::AnchoredCamera,
 ) {
     use crate::resources::RightPanel;
     use crate::systems::navigation::Endpoint;
@@ -757,9 +757,7 @@ pub fn render_context_menu(
 
     // Read before the menu closure, which already borrows half the world: this is
     // one number, and taking the query in there as well buys nothing.
-    let camera_altitude = camera.single().ok().map(|(cell, tf)| {
-        cell.y as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.y as f64
-    });
+    let camera_altitude = camera.world_position_f64().map(|world| world.y);
 
     // Position the context menu where the click landed. `screen_pos` came from
     // `Window::cursor_position` (picking), so it is in window points and needs

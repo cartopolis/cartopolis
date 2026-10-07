@@ -11,9 +11,7 @@ use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use bevy::math::DVec3;
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 
 const MARQUEE_DRAG_THRESHOLD_PX: f32 = 4.0;
 
@@ -25,8 +23,7 @@ const MARQUEE_DRAG_THRESHOLD_PX: f32 = 4.0;
 pub struct PrimPickWorld<'w, 's> {
     /// The camera's floating-origin cell — the main `cameras` query has no
     /// `GridCell`.
-    cameras:
-        Query<'w, 's, (&'static GridCell, &'static Transform), With<crate::components::FreeCamera>>,
+    cameras: crate::grid::AnchoredCamera<'w, 's>,
     anchor: Res<'w, crate::resources::MapAnchor>,
     online: Option<Res<'w, crate::resources::OnlineSession>>,
     /// Whether this frame's press is a finger's — see `EguiManager::owns_click`.
@@ -279,22 +276,17 @@ pub fn prim_picking(
 /// `(lat, lng)` where the cursor ray meets the ground plane, or `None` when there
 /// is no anchor, no camera, or the ray points at the sky.
 fn map_geo_at(
-    cameras: &Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
+    cameras: &crate::grid::AnchoredCamera,
     ray_dir: Vec3,
     map_anchor: &crate::resources::MapAnchor,
 ) -> Option<(f64, f64)> {
     let anchor = map_anchor.geo?;
-    let (cell, tf) = cameras.single().ok()?;
+    let (cell, tf) = cameras.get()?;
     let dir = ray_dir.as_dvec3();
     if dir.y > -1e-4 {
         return None; // at or above the horizon — no ground hit
     }
-    let edge = f64::from(crate::grid::WORLD_CELL_EDGE);
-    let cam_world = DVec3::new(
-        cell.x as f64 * edge + f64::from(tf.translation.x),
-        cell.y as f64 * edge + f64::from(tf.translation.y),
-        cell.z as f64 * edge + f64::from(tf.translation.z),
-    );
+    let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);
     let hit = cam_world + dir * (cam_world.y / -dir.y);
     Some(crate::systems::geo_nav::world_to_lat_lng(
         anchor, hit.x, hit.z,

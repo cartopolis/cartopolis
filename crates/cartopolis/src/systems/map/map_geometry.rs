@@ -23,8 +23,8 @@
 //! default, or the VersaTiles satellite layer) this module does nothing at all.
 
 use crate::components::MapSurface;
-use crate::components::{FreeCamera, FurnitureSurface, VegetationSurface};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::components::{FurnitureSurface, VegetationSurface};
+use crate::grid::{anchored_xz, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +34,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
-use big_space::prelude::{BigSpace, Grid, GridCell};
+use big_space::prelude::{BigSpace, Grid};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
@@ -2398,8 +2398,7 @@ pub fn update_map_surfaces(
     mut mats: SurfaceMaterials,
     stream: Res<MapStream>,
     tile_url: Res<OsmTileUrlTemplate>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    bigspace: Query<Entity, With<BigSpace>>,
+    view: CameraAndRoot,
     globe: Res<GlobeState>,
     sea_state: Res<WaterSeaState>,
     veg_lod: Res<VegetationLod>,
@@ -2434,10 +2433,10 @@ pub fn update_map_surfaces(
     let Some((clat, clng, _base_zoom)) = stream.geo_anchor() else {
         return;
     };
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = view.camera.get() else {
         return;
     };
-    let Ok(root) = bigspace.single() else {
+    let Ok(root) = view.root.single() else {
         return;
     };
 
@@ -2595,8 +2594,10 @@ pub fn update_map_surfaces(
 
     let tile_m = tile_to_meters(GEOMETRY_ZOOM, clat) as f32;
     let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, GEOMETRY_ZOOM);
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
+    let Vec2 {
+        x: world_x,
+        y: world_z,
+    } = anchored_xz(cell, tf.translation);
     let ccx = (f64::from(world_x) / f64::from(tile_m) + fcx).floor() as i64;
     let ccy = (f64::from(world_z) / f64::from(tile_m) + fcy).floor() as i64;
 

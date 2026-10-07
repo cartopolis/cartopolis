@@ -52,8 +52,7 @@
 
 use bevy::prelude::*;
 
-use crate::components::FreeCamera;
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::{anchored_xz, AnchoredCamera};
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
@@ -364,22 +363,13 @@ fn build_floors(base: &[f32], n: usize, sample_m: f32) -> Vec<FloorLevel> {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct FieldClock<'w, 's> {
     time: Res<'w, Time>,
-    camera: Query<
-        'w,
-        's,
-        (&'static big_space::prelude::GridCell, &'static Transform),
-        With<FreeCamera>,
-    >,
+    camera: AnchoredCamera<'w, 's>,
 }
 
 impl FieldClock<'_, '_> {
     /// The camera in the anchored world-XZ frame.
     fn camera_xz(&self) -> Option<Vec2> {
-        let (cell, tf) = self.camera.single().ok()?;
-        Some(Vec2::new(
-            cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x,
-            cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z,
-        ))
+        self.camera.world_xz()
     }
 }
 
@@ -2690,7 +2680,7 @@ pub fn update_fine_terrain(
     stream: Res<MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
 ) {
     if !field.is_ready() {
         field.clear_fine();
@@ -2700,7 +2690,7 @@ pub fn update_fine_terrain(
         field.clear_fine();
         return;
     };
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     // Freeze from orbit, like every other streamer. Half-metre ground is not a question
@@ -2709,10 +2699,7 @@ pub fn update_fine_terrain(
     if globe.altitude_m(cell, tf) as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
-    let cam = Vec2::new(
-        cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x,
-        cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z,
-    );
+    let cam = anchored_xz(cell, tf.translation);
     // A re-anchor moves the origin these metres are counted from, so the tier describes
     // the wrong ground the instant it happens.
     //

@@ -39,7 +39,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::anchored_position_f64;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{lat_lng_to_world, GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
@@ -210,12 +210,7 @@ pub fn render_place_pins(
         return; // panels have taken the screen (compact layout)
     }
 
-    let edge = WORLD_CELL_EDGE as f64;
-    let cam_world = DVec3::new(
-        cam_cell.x as f64 * edge + cam_tf.translation.x as f64,
-        cam_cell.y as f64 * edge + cam_tf.translation.y as f64,
-        cam_cell.z as f64 * edge + cam_tf.translation.z as f64,
-    );
+    let cam_world = anchored_position_f64(cam_cell, cam_tf.translation);
     let in_space = globe.in_space(cam_cell, cam_tf);
     // The camera basis to project through, rebuilt from *this* frame's `Transform`.
     //
@@ -390,11 +385,7 @@ pub fn render_place_pins(
             chat_people::latest_mine(&chat, &key),
             local.single(),
         ) {
-            let foot = DVec3::new(
-                cell.x as f64 * edge + tf.translation.x as f64,
-                cell.y as f64 * edge + tf.translation.y as f64,
-                cell.z as f64 * edge + tf.translation.z as f64,
-            ) - cam_world;
+            let foot = anchored_position_f64(cell, tf.translation) - cam_world;
             if let Ok(screen) = cam.world_to_viewport(&cam_view, (foot + head_up).as_vec3()) {
                 let over = to_ui(screen);
                 if map_rect.contains(over) {
@@ -759,7 +750,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grid::WORLD_SWITCH_THRESHOLD;
+    use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
     use big_space::prelude::Grid;
 
     /// The silhouette has to be convex — `Shape::convex_polygon` renders a

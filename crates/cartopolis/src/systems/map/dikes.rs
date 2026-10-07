@@ -46,7 +46,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::cell_ring;
@@ -55,7 +55,6 @@ use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::tdbag_url;
-use big_space::prelude::GridCell;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
 /// Fixed cache/streaming zoom — the one the extractor bins into.
@@ -362,7 +361,7 @@ async fn fetch_dike_text(cx: i64, cy: i64) -> Result<String, String> {
 pub fn update_dikes(
     mut dikes: ResMut<Dikes>,
     stream: Res<MapStream>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     globe: Res<GlobeState>,
     time: Res<Time>,
 ) {
@@ -389,7 +388,7 @@ pub fn update_dikes(
     let (ax, ay, z, lat) = dikes.anchor.expect("set just above");
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     // Freeze from orbit, like every other cell streamer: the ring would otherwise

@@ -1351,7 +1351,7 @@ pub fn update_globe_visibility(
 /// albedo, so anything that arrives early puts a step in the middle of a climb.
 pub fn update_globe_albedo(
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
+    camera: crate::grid::AnchoredCamera,
     mut albedo: ResMut<GlobeSurfaceAlbedo>,
     mut gloss: ResMut<GlobeOceanGloss>,
     tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<GlobeSurfaceMaterial>), With<GlobeMesh>>,
@@ -1361,7 +1361,7 @@ pub fn update_globe_albedo(
     // spread over frames (see below), so it has to remember where it was.
     mut cursor: Local<usize>,
 ) {
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let space = globe.space_factor(cell, tf);
@@ -1748,11 +1748,7 @@ pub fn update_globe_tiles(
     }
 
     // ── Quadtree selection (throttled; skipped near the ground) ─────────────
-    let cam = DVec3::new(
-        cell.x as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.x as f64,
-        cell.y as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.y as f64,
-        cell.z as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.z as f64,
-    );
+    let cam = crate::grid::anchored_position_f64(cell, tf.translation);
     let altitude = (cam - earth_c).length() - globe.radius as f64;
     if altitude < QT_MIN_ALT {
         return; // keep loaded tiles (hidden) for an instant return to space

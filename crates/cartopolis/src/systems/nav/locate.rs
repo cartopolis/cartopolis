@@ -557,12 +557,7 @@ pub fn render_locate_arrow(
     let ui_scale = egui.ui_scale();
     let ctx = egui.ctx_mut().clone();
 
-    let edge = WORLD_CELL_EDGE as f64;
-    let cam_world = DVec3::new(
-        cam_cell.x as f64 * edge + cam_tf.translation.x as f64,
-        cam_cell.y as f64 * edge + cam_tf.translation.y as f64,
-        cam_cell.z as f64 * edge + cam_tf.translation.z as f64,
-    );
+    let cam_world = crate::grid::anchored_position_f64(cam_cell, cam_tf.translation);
     let in_space = globe.in_space(cam_cell, cam_tf);
     // This frame's camera basis, rebuilt from `Transform` rather than read off
     // `GlobalTransform` — big_space propagates in `PostUpdate` while this runs in

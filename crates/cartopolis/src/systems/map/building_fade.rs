@@ -69,7 +69,6 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
-use crate::components::FreeCamera;
 use crate::systems::ground_detail::GridCellOrigin;
 
 /// The ground height this vertex's building stands on, in the same frame as its
@@ -205,14 +204,14 @@ pub fn ring_uniform(centre: Vec2, origin: Vec2, cell_m: f32, radius: i64, on: bo
 /// building's height at once.
 pub fn update_building_fade(
     mut materials: ResMut<Assets<FarBuildingMaterial>>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<FreeCamera>>,
+    camera: crate::grid::AnchoredCamera,
     origin: Res<GridCellOrigin>,
     stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     if materials.is_empty() {
         return;
     }
-    let Ok((cell, tf)) = camera.single() else {
+    let Some(centre) = camera.world_xz() else {
         return;
     };
     let Some((clat, _, _)) = stream.geo_anchor() else {
@@ -221,10 +220,6 @@ pub fn update_building_fade(
     let cell_m =
         cartopolis_core::world::tile_to_meters(crate::systems::osm_buildings::CACHE_ZOOM, clat)
             as f32;
-    let centre = Vec2::new(
-        cell.x as f32 * crate::grid::WORLD_CELL_EDGE + tf.translation.x,
-        cell.z as f32 * crate::grid::WORLD_CELL_EDGE + tf.translation.z,
-    );
     let ring = ring_uniform(
         centre,
         origin.0,

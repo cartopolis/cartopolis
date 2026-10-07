@@ -63,7 +63,6 @@ pub use cartopolis_mcp::protocol::{
 pub use cartopolis_mcp::server;
 
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use std::collections::VecDeque;
@@ -71,7 +70,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, FrameStats, MapAnchor};
 use crate::systems::globe::GlobeState;
 use crate::systems::shot_harness::{ShotHarness, ShotProgress, ShotSpec, StreamWatch};
@@ -487,7 +486,7 @@ pub fn pump(
     mut harness: ResMut<ShotHarness>,
     progress: Res<ShotProgress>,
     watch: StreamWatch,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     cam_state: Res<CameraState>,
     anchor: Res<MapAnchor>,
     globe: Res<GlobeState>,
@@ -750,7 +749,7 @@ fn default_out(index: usize) -> PathBuf {
 fn push_view(
     harness: &mut ShotHarness,
     req: &ViewRequest,
-    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: &AnchoredCamera,
     cam_state: &CameraState,
     anchor: &MapAnchor,
     globe: &GlobeState,
@@ -799,12 +798,12 @@ fn push_view(
 
 /// The camera's position on Earth, and how high it is over the ground there.
 fn where_now(
-    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: &AnchoredCamera,
     anchor: &MapAnchor,
     globe: &GlobeState,
 ) -> Option<(f64, f64, f64)> {
     let geo = anchor.geo?;
-    let (cell, tf) = camera.single().ok()?;
+    let (cell, tf) = camera.get()?;
     let (lat, lng) = crate::systems::geo_nav::camera_geo(geo, globe, cell, tf);
     Some((lat, lng, globe.altitude_m(cell, tf)))
 }
@@ -812,7 +811,7 @@ fn where_now(
 #[allow(clippy::too_many_arguments)]
 fn measure_state(
     watch: &StreamWatch,
-    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: &AnchoredCamera,
     cam_state: &CameraState,
     anchor: &MapAnchor,
     globe: &GlobeState,
@@ -823,8 +822,7 @@ fn measure_state(
     let (lat, lng, altitude_m) = where_now(camera, anchor, globe).unwrap_or((0.0, 0.0, 0.0));
     let (pitch, yaw) = cam_state.free_camera_rotation.into();
     let (in_space, space_factor) = camera
-        .single()
-        .ok()
+        .get()
         .map(|(cell, tf)| (globe.in_space(cell, tf), globe.space_factor(cell, tf)))
         .unwrap_or((false, 0.0));
     WorldState {

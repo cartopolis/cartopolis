@@ -34,9 +34,9 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use big_space::prelude::GridCell;
 
-use crate::components::{FreeCamera, StreamTileReady};
+use crate::components::StreamTileReady;
+use crate::grid::AnchoredCamera;
 use crate::resources::AuthIdentity;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::globe::GlobeState;
@@ -361,7 +361,7 @@ pub fn boot_splash(
     globe: Res<GlobeState>,
     session: Res<SessionState>,
     identity: Res<AuthIdentity>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     tiles_ready: Query<(), With<StreamTileReady>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -375,8 +375,8 @@ pub fn boot_splash(
     // answer there: the startup restore has not run, so the flat streamer is what
     // is about to fill the screen.
     let in_space = camera
-        .single()
-        .is_ok_and(|(cell, tf)| globe.in_space(cell, tf));
+        .get()
+        .is_some_and(|(cell, tf)| globe.in_space(cell, tf));
     let signin = signin_caption(&session, identity.username.as_deref());
     let progress = loading(&stream, &globe, in_space, tiles_ready.iter().count());
 

@@ -47,7 +47,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::StreetLabelSign;
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -377,7 +377,7 @@ pub fn update_street_labels(
     store: Res<StreetLabelStore>,
     layers: Res<DataLayers>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -385,7 +385,7 @@ pub fn update_street_labels(
     terrain: Res<crate::systems::terrain::TerrainField>,
     mut placed_query: SignQuery,
 ) {
-    let Ok((cam_cell, cam_tf)) = camera.single() else {
+    let Some((cam_cell, cam_tf)) = camera.get() else {
         return;
     };
     let alt = globe.altitude_m(cam_cell, cam_tf) as f32;

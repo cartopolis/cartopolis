@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use cartopolis_geo::traffic::{DriveLine, Flow, Uses};
 
 use crate::components::{FreeCamera, HideInSpace};
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::{anchored_xz, AnchoredCamera};
 
 /// How many cars exist. Fixed for the life of the process.
 ///
@@ -859,7 +859,7 @@ pub fn drive_traffic(
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     grids: Query<&Grid, With<BigSpace>>,
     mut cars: Query<
         (
@@ -889,14 +889,11 @@ pub fn drive_traffic(
         AgentKind::Car => show_cars,
         AgentKind::Walker => show_people,
     };
-    let (Ok((cam_cell, cam_tf)), Ok(grid)) = (camera.single(), grids.single()) else {
+    let (Some((cam_cell, cam_tf)), Ok(grid)) = (camera.get(), grids.single()) else {
         return;
     };
     // The camera's absolute world XZ, which is the frame the network is in.
-    let cam = Vec2::new(
-        cam_cell.x as f32 * WORLD_CELL_EDGE + cam_tf.translation.x,
-        cam_cell.z as f32 * WORLD_CELL_EDGE + cam_tf.translation.z,
-    );
+    let cam = anchored_xz(cam_cell, cam_tf.translation);
     let too_high = cam_tf.translation.y > TRAFFIC_HIDE_ALT;
     if too_high {
         for (.., mut vis) in &mut cars {

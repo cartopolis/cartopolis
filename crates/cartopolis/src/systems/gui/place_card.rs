@@ -24,9 +24,8 @@
 //! than closing it — the place survives a trip through the Route panel.
 
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
@@ -76,7 +75,7 @@ pub fn render_place_card(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     globe: Res<crate::systems::globe::GlobeState>,
     map_anchor: Res<crate::resources::MapAnchor>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     camera_state: Res<CameraState>,
     mut saved_at: Local<Option<Instant>>,
 ) {
@@ -113,7 +112,7 @@ pub fn render_place_card(
         return;
     }
 
-    let cam = camera.single().ok();
+    let cam = camera.get();
     let viewer = cam
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| geo_nav::camera_geo(anchor, &globe, cell, tf));

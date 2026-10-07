@@ -17,7 +17,7 @@
 //! with an identifying User-Agent.
 
 use crate::components::FreeCamera;
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use web_time::Instant;
@@ -869,12 +869,7 @@ pub fn camera_geo(
     cell: &GridCell,
     tf: &Transform,
 ) -> (f64, f64) {
-    let edge = WORLD_CELL_EDGE as f64;
-    let cam = DVec3::new(
-        cell.x as f64 * edge + tf.translation.x as f64,
-        cell.y as f64 * edge + tf.translation.y as f64,
-        cell.z as f64 * edge + tf.translation.z as f64,
-    );
+    let cam = anchored_position_f64(cell, tf.translation);
     if globe.in_space(cell, tf) {
         let dir = (cam - globe.center_local.as_dvec3())
             .normalize_or_zero()
@@ -1861,7 +1856,7 @@ pub fn render_search_panel(
     mut nav: ResMut<GeoNavState>,
     keyboard: Res<ButtonInput<KeyCode>>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     map_anchor: Res<crate::resources::MapAnchor>,
     // Home and the two view actions came here from the app menu, and they bring
     // their two resources with them: the saved Home lives in `user.json`, and
@@ -1894,7 +1889,7 @@ pub fn render_search_panel(
 
     // Where the camera is on Earth, for the hits' "how far away is this" line —
     // and, with the altitude beside it, for the two view actions at the foot.
-    let cam = camera.single().ok();
+    let cam = camera.get();
     let viewer = cam
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
@@ -2000,14 +1995,14 @@ pub fn answer_view_requests(
     mut chat: ResMut<crate::systems::chat::ChatState>,
     nav: Res<GeoNavState>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     if chat.view_requests.is_empty() {
         return;
     }
     let requests = std::mem::take(&mut chat.view_requests);
-    let (Ok((cell, tf)), Some(anchor)) = (camera.single(), map_anchor.geo) else {
+    let (Some((cell, tf)), Some(anchor)) = (camera.get(), map_anchor.geo) else {
         chat.notice = Some(crate::systems::chat::ChatNotice {
             text: "There is no view to send yet.".into(),
             error: true,
@@ -2223,7 +2218,7 @@ pub fn apply_teleport(
             // local surface, and it is deliberately clear of head height.
             CameraMode::Free => {
                 let altitude = free_teleport_altitude(target_alt, || {
-                    cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64
+                    anchored_position_f64(&cell, tf.translation).y
                 });
                 let (new_cell, local) = grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;

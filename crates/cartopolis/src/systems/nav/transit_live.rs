@@ -37,7 +37,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, GridCell};
 
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE};
 use crate::platform::http;
 use crate::systems::data_layers::{DataLayers, PoiInstance, LAYER_DEFS, TRANSIT_LAYER};
 
@@ -214,7 +214,7 @@ pub fn poll_transit_live(
     mut live: ResMut<TransitLive>,
     mut clock: ResMut<WorldClock>,
     dl: Res<DataLayers>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
 ) {
     // Fold in completed fetches.
     let done: Vec<FetchResult> = live
@@ -251,7 +251,7 @@ pub fn poll_transit_live(
     {
         return;
     }
-    let Ok((cam_cell, cam_tf)) = camera.single() else {
+    let Some((cam_cell, cam_tf)) = camera.get() else {
         return;
     };
     let mut codes: Vec<(f32, String)> = Vec::new();
@@ -306,13 +306,13 @@ pub fn update_transit_boards(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     mut quads: Query<&mut Transform, (With<BoardQuad>, Without<FreeCamera>)>,
 ) {
     let live = live.as_mut();
     let enabled = dl.layers[TRANSIT_LAYER].enabled;
-    let Ok((cam_cell, cam_tf)) = camera.single() else {
+    let Some((cam_cell, cam_tf)) = camera.get() else {
         return;
     };
     let Ok(root) = bigspace.single() else {

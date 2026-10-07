@@ -154,12 +154,7 @@ pub struct DevReadouts<'w, 's> {
 #[derive(SystemParam)]
 pub struct DevView<'w, 's> {
     globe: Res<'w, crate::systems::globe::GlobeState>,
-    camera: Query<
-        'w,
-        's,
-        (&'static big_space::prelude::GridCell, &'static Transform),
-        With<crate::components::FreeCamera>,
-    >,
+    camera: crate::grid::AnchoredCamera<'w, 's>,
     map_anchor: Res<'w, crate::resources::MapAnchor>,
     /// The avatar's street address, from the BAG. It used to be drawn in the
     /// status readout over the map and nowhere else; that readout is gone
@@ -755,7 +750,7 @@ struct ViewFix {
 
 impl DevView<'_, '_> {
     fn fix(&self) -> Option<ViewFix> {
-        let ((cell, tf), anchor) = self.camera.single().ok().zip(self.map_anchor.geo)?;
+        let ((cell, tf), anchor) = self.camera.get().zip(self.map_anchor.geo)?;
         let (lat, lng) = crate::systems::geo_nav::camera_geo(anchor, &self.globe, cell, tf);
         // (yaw, pitch, roll) — the same decomposition free_camera uses to seed its
         // look angles from the live view, so a pasted preset reproduces this exact

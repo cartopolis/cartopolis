@@ -32,7 +32,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -972,7 +972,7 @@ pub fn update_data_layers(
     stream: Res<crate::systems::map_stream::MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
     time: Res<Time>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     tile_url: Res<OsmTileUrlTemplate>,
@@ -1041,7 +1041,7 @@ pub fn update_data_layers(
     let (ax, ay, z, lat) = dl.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let Ok(root) = bigspace.single() else {
@@ -1856,13 +1856,13 @@ impl ToggleWants {
 pub fn feature_toggles_changed(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     stream: Res<crate::systems::map_stream::MapStream>,
     mut last: Local<Option<ToggleWants>>,
 ) -> bool {
     let want = ToggleWants::of(
         &dl,
-        camera_in_space(&globe, camera.single().ok()),
+        camera_in_space(&globe, camera.get()),
         stream.occlusion_revision,
     );
     // `None` on the first evaluation, so the sweep always runs once — which is
@@ -1892,7 +1892,7 @@ pub fn feature_toggles_changed(
 pub fn apply_feature_toggles(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
     // The two building sources are separate entity types with their own panel
     // checkboxes, so they get separate queries (the `Without`s prove the two
@@ -1951,7 +1951,7 @@ pub fn apply_feature_toggles(
 
     let want = ToggleWants::of(
         &dl,
-        camera_in_space(&globe, camera.single().ok()),
+        camera_in_space(&globe, camera.get()),
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
@@ -2032,7 +2032,7 @@ fn map_tile_want(want: &ToggleWants, ready: bool, backstop: bool, occluded: bool
 pub fn apply_feature_toggles_to_new(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut osm_meshes: Query<
         &mut Visibility,
         (
@@ -2077,7 +2077,7 @@ pub fn apply_feature_toggles_to_new(
 ) {
     let want = ToggleWants::of(
         &dl,
-        camera_in_space(&globe, camera.single().ok()),
+        camera_in_space(&globe, camera.get()),
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {

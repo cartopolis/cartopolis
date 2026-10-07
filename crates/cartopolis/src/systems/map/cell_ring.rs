@@ -15,10 +15,10 @@
 //! fractional anchor tile with `floor` rather than from the rounded base-zoom
 //! tile, and `map_stream` / `globe` are LOD pyramids rather than square rings.
 
-use bevy::prelude::Transform;
+use bevy::prelude::{Transform, Vec2};
 use big_space::prelude::GridCell;
 
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::anchored_xz;
 use crate::platform::fetch_gate;
 use crate::platform::stream::CellStream;
 
@@ -26,8 +26,10 @@ use crate::platform::stream::CellStream;
 /// camera's anchored world position in whole tiles of `tile_m` metres, rounded.
 #[must_use]
 pub fn camera_tile(anchor: (i64, i64), tile_m: f32, cell: &GridCell, tf: &Transform) -> (i64, i64) {
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
+    let Vec2 {
+        x: world_x,
+        y: world_z,
+    } = anchored_xz(cell, tf.translation);
     (
         anchor.0 + (world_x / tile_m).round() as i64,
         anchor.1 + (world_z / tile_m).round() as i64,

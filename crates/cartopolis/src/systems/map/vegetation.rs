@@ -7,9 +7,8 @@
 
 use crate::components::VegetationSurface;
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
 use crate::systems::scatter::{mix, mix_rgb, srgb_to_linear_rgb, TREE_FADE_END, TREE_FADE_START};
@@ -75,11 +74,11 @@ pub fn update_vegetation_lod(
     mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut veg: Query<&mut Visibility, With<VegetationSurface>>,
     mut last: Local<Option<(f32, bool)>>,
 ) {
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let alt = globe.altitude_m(cell, tf) as f32;

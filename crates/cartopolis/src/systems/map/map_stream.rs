@@ -11,7 +11,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_xz, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -1754,8 +1754,10 @@ pub fn update_map_stream(
     };
 
     // Camera world position (tile centres are derived from it at every zoom).
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
+    let Vec2 {
+        x: world_x,
+        y: world_z,
+    } = anchored_xz(cell, tf.translation);
 
     // Each level's centre tile under the camera — no longer what decides the
     // desired set (`select_tiles` does), but still what the fetch rank's near band

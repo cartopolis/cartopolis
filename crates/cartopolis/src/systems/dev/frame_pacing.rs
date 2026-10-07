@@ -5,7 +5,6 @@
 //! `lib.rs`.
 
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 use std::time::Duration;
 
 use crate::env_flag;
@@ -677,7 +676,7 @@ pub(crate) fn frame_time_watchdog(
     materials: Res<Assets<StandardMaterial>>,
     uploads: Res<systems::upload_meter::UploadMeter>,
     globe: Res<systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
+    camera: crate::grid::AnchoredCamera,
     mut census: Local<f32>,
 ) {
     // NB: RenderDiagnosticsPlugin (per-pass GPU timestamp queries) was tried here
@@ -688,7 +687,7 @@ pub(crate) fn frame_time_watchdog(
     let ms = time.delta_secs() * 1000.0;
     if ms > 250.0 {
         let altitude_m = camera
-            .single()
+            .get()
             .map(|(cell, tf)| globe.altitude_m(cell, tf))
             .unwrap_or(f64::NAN);
         tracing::warn!(

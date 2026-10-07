@@ -45,10 +45,9 @@
 use crate::resources::MapAnchor;
 
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 use serde::{Deserialize, Serialize};
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::resources::CameraState;
 use crate::systems::geo_nav::{camera_geo, CameraPose, GeoNavState, Teleport};
 
@@ -1248,7 +1247,7 @@ pub fn autosave_user_store(
     prefs: Res<crate::resources::AppPrefs>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
-    cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    cameras: AnchoredCamera,
     dl: Res<crate::systems::data_layers::DataLayers>,
     dev: Res<crate::resources::DevPanelState>,
     weather: Res<crate::systems::weather::WeatherState>,
@@ -1280,7 +1279,7 @@ pub fn autosave_user_store(
     // clear sky to what the user actually set.
     store.data.sky = Some(dl.sky_prefs(&dev, &weather));
 
-    if let (Some(anchor), Ok((cell, tf))) = (map_anchor.geo, cameras.single()) {
+    if let (Some(anchor), Some((cell, tf))) = (map_anchor.geo, cameras.get()) {
         // Both through the shared camera fix (`camera_geo` / `altitude_m`): the
         // flat-frame lat/lng and the local `y` are only meaningful below the
         // space tier, and storing them from orbit is what saved a mid-ocean

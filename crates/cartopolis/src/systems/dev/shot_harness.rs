@@ -2885,8 +2885,7 @@ pub fn aim_scripted_camera(
     };
     let (tx, tz) = crate::systems::geo_nav::lat_lng_to_world(geo, target[0], target[1]);
     let (tx, tz) = (tx as f32, tz as f32);
-    let here = tf.translation()
-        + Vec3::new(cell.x as f32, cell.y as f32, cell.z as f32) * crate::grid::WORLD_CELL_EDGE;
+    let here = crate::grid::anchored_position(cell, tf.translation());
     let to = Vec3::new(tx, terrain.at(tx, tz), tz) - here;
     if to.length_squared() < 1.0 {
         return;
@@ -3661,8 +3660,7 @@ pub fn drive_capture(
         // origin, so its own `GlobalTransform` is near zero and the grid cell is
         // the whole of its position — the same conversion `building_select` makes
         // to turn a click into a place.
-        let cam_world = tf.translation
-            + Vec3::new(cell.x as f32, cell.y as f32, cell.z as f32) * crate::grid::WORLD_CELL_EDGE;
+        let cam_world = crate::grid::anchored_position(cell, tf.translation);
         let fwd = tf.forward();
         let aim = (fwd.y < -1e-3 && cam_world.y > 0.0).then(|| {
             let t = cam_world.y / -fwd.y;

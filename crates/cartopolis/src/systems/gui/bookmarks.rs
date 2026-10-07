@@ -34,16 +34,14 @@
 //! which is the alternative egui documents for this; it paints no ghost at the
 //! cursor, so [`drag_ghost`] does.
 
-use crate::components::FreeCamera;
 use crate::resources::MapAnchor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
-use big_space::prelude::GridCell;
 
-use crate::grid::WORLD_CELL_EDGE;
+use crate::grid::AnchoredCamera;
 use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
@@ -441,7 +439,7 @@ pub fn render_bookmarks_panel(
     mut store: ResMut<UserStore>,
     mut nav: ResMut<GeoNavState>,
     camera_state: Res<CameraState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     map_anchor: Res<MapAnchor>,
 ) {
@@ -463,14 +461,11 @@ pub fn render_bookmarks_panel(
 
     // Current location + view, for the per-place "update to here" action.
     let current = camera
-        .single()
-        .ok()
+        .world_position_f64()
         .zip(map_anchor.geo)
-        .map(|((cell, tf), anchor)| {
-            let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
-            let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
-            let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
-            let alt = cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64;
+        .map(|(world, anchor)| {
+            let (lat, lng) = world_to_lat_lng(anchor, world.x, world.z);
+            let alt = world.y;
             (lat, lng, alt, CameraPose::capture(&camera_state))
         });
 

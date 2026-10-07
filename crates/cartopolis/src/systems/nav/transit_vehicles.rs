@@ -38,7 +38,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{VehicleBox, VehicleLabel};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_xz, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -232,7 +232,7 @@ pub fn poll_transit_vehicles(
     dl: Res<DataLayers>,
     globe: Res<GlobeState>,
     stream: Res<MapStream>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
 ) {
     // Re-anchor: the flat frame moved, so the frame-relative track is stale.
     // In-flight/queued fixes are absolute lat/lng and re-fold correctly.
@@ -314,7 +314,7 @@ pub fn poll_transit_vehicles(
     if tv.in_flight || !dl.live_vehicles_visible() {
         return;
     }
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     if globe.altitude_m(cell, tf) > MAX_ALT {
@@ -411,7 +411,7 @@ pub fn update_transit_vehicles(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     mut boxes: Query<(&mut Transform, &mut GridCell), (With<VehicleBox>, Without<FreeCamera>)>,
     mut labels: Query<
@@ -424,7 +424,7 @@ pub fn update_transit_vehicles(
 
     // Hide everything when the layer is off, we are in space, or there is no
     // camera — despawn is fine, the set is small and bounded.
-    let cam = camera.single().ok();
+    let cam = camera.get();
     let layer_on = dl.live_vehicles_visible();
     let hidden = !layer_on || cam.is_none_or(|(c, t)| globe.in_space(c, t));
     if hidden {
@@ -451,10 +451,7 @@ pub fn update_transit_vehicles(
     let now = clock.now_unix;
 
     // Camera position in the flat world frame.
-    let cam_flat = Vec2::new(
-        cam_cell.x as f32 * WORLD_CELL_EDGE + cam_tf.translation.x,
-        cam_cell.z as f32 * WORLD_CELL_EDGE + cam_tf.translation.z,
-    );
+    let cam_flat = anchored_xz(cam_cell, cam_tf.translation);
 
     // Split the resource into disjoint field borrows: the target list below
     // holds references into `vehicles` while `entities`/`labels` are mutated.

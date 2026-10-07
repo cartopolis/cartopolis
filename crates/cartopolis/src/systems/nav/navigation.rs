@@ -22,7 +22,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::RouteVisual;
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1356,12 +1356,7 @@ pub fn handle_route_map_pick(
     // Only the *direction* comes from the ray: its origin is the camera in render
     // space, which is the same point `cell` + `tf` name absolutely — adding both
     // would count the in-cell offset twice.
-    let edge = f64::from(WORLD_CELL_EDGE);
-    let cam_world = DVec3::new(
-        cell.x as f64 * edge + f64::from(tf.translation.x),
-        cell.y as f64 * edge + f64::from(tf.translation.y),
-        cell.z as f64 * edge + f64::from(tf.translation.z),
-    );
+    let cam_world = anchored_position_f64(cell, tf.translation);
     let hit = cam_world + dir * (cam_world.y / -dir.y);
     let (lat, lng) = world_to_lat_lng(anchor, hit.x, hit.z);
 
@@ -1396,7 +1391,7 @@ pub fn update_route_visuals(
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
     globe: Res<GlobeState>,
-    cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    cameras: AnchoredCamera,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1415,7 +1410,7 @@ pub fn update_route_visuals(
     // How wide the line is drawn is part of what is baked into the mesh, so the
     // altitude band belongs in the redraw key beside the ground revisions — see
     // `route_width_scale` for why it is a band and not the altitude itself.
-    let width_scale = cameras.single().map_or(1.0, |(cell, tf)| {
+    let width_scale = cameras.get().map_or(1.0, |(cell, tf)| {
         route_width_scale(globe.altitude_m(cell, tf) as f32)
     });
     let key = (
@@ -2004,7 +1999,7 @@ pub fn render_route_sheet(
     bodies: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     map_anchor: Res<MapAnchor>,
 ) {
     if !right_panel.is(RightPanel::Route) {
@@ -2018,8 +2013,7 @@ pub fn render_route_sheet(
 
     // Where "My position" resolves to — the same definition the HUD reads out.
     let here = camera
-        .single()
-        .ok()
+        .get()
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
 

@@ -30,8 +30,8 @@
 //! what trips the Intel iGPU's command-buffer timeout (`VK_ERROR_DEVICE_LOST`, see
 //! CLAUDE.md).
 
-use crate::components::{FreeCamera, HideInSpace};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::components::HideInSpace;
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -1004,7 +1004,7 @@ pub fn update_lod22(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
     stream: Res<MapStream>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<GlobeState>,
     time: Res<Time>,
@@ -1222,7 +1222,7 @@ pub fn update_lod22(
     let (ax, ay, z, lat) = lod.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     // Freeze from orbit (same as map streaming / buildings), using geocentric

@@ -58,7 +58,6 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::components::{Avatar, FreeCamera, RemoteAvatar};
-use crate::grid::WORLD_CELL_EDGE;
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{person_menu, ChatState, PersonAction, ReportDraft};
 use crate::systems::egui_manager::EguiManager;
@@ -316,14 +315,8 @@ pub fn render_chat_bubbles(
         return;
     }
 
-    let edge = WORLD_CELL_EDGE as f64;
-    let cell_world = |cell: &GridCell, tf: &Transform| {
-        DVec3::new(
-            cell.x as f64 * edge + tf.translation.x as f64,
-            cell.y as f64 * edge + tf.translation.y as f64,
-            cell.z as f64 * edge + tf.translation.z as f64,
-        )
-    };
+    let cell_world =
+        |cell: &GridCell, tf: &Transform| crate::grid::anchored_position_f64(cell, tf.translation);
     let cam_world = cell_world(cam_cell, cam_tf);
     let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
 

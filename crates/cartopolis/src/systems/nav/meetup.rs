@@ -17,12 +17,11 @@
 //!   chat, so nobody has to remember to stop sharing.
 
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 use std::sync::{Arc, Mutex};
 
 use cartopolis_core::point::{Meetup, Point};
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate};
 use crate::systems::chat::ChatState;
 use crate::systems::driver::{metres_between, point_along, DriverState, RouteGeom};
@@ -94,15 +93,14 @@ pub struct Pending {
 pub fn answer_meetup_requests(
     mut chat: ResMut<ChatState>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     map_anchor: Res<MapAnchor>,
     tile_url: Res<OsmTileUrlTemplate>,
     time: Res<Time>,
     mut pending: Local<Vec<Pending>>,
 ) {
     let here = camera
-        .single()
-        .ok()
+        .get()
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
     for key in std::mem::take(&mut chat.meetup_requests) {

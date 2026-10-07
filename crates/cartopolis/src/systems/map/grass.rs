@@ -51,11 +51,11 @@ use bevy::prelude::*;
 use bevy::render::mesh::MeshTag;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
-use big_space::prelude::{BigSpace, Grid, GridCell};
+use big_space::prelude::{Grid, GridCell};
 use std::sync::{Arc, Mutex};
 
 use crate::components::{FreeCamera, HideInSpace};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_xz, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::terrain::TerrainField;
 use crate::systems::turf::{self, GrassArea, MaskField, PlacedArea};
@@ -654,8 +654,9 @@ pub fn update_grass(
     tunnels: Res<crate::systems::tunnels::Tunnels>,
     weather: Res<WeatherState>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    bigspace: Query<Entity, With<BigSpace>>,
+    // The camera and the `BigSpace` root as one parameter: this system is one
+    // short of Bevy's sixteen.
+    view: CameraAndRoot,
     // `Without<FreeCamera>` is not redundant with `With<GrassPatch>`: Bevy proves
     // two queries disjoint from a `Without`, never from two different `With`s, so
     // this and the camera query above conflict on `Transform`/`GridCell` at
@@ -676,20 +677,17 @@ pub fn update_grass(
     // and cannot read `DataLayers` itself.
     areas.enabled = dl.grass_enabled;
 
-    let Ok((cam_cell, cam_tf)) = camera.single() else {
+    let Some((cam_cell, cam_tf)) = view.camera.get() else {
         return;
     };
-    let Ok(root) = bigspace.single() else {
+    let Ok(root) = view.root.single() else {
         return;
     };
 
     // The camera in the anchored world-XZ frame — the same frame `map_geometry`
     // places its cell origins in, and the one the mask and the `MeshTag` lattice
     // are both measured in.
-    let cam = Vec2::new(
-        cam_cell.x as f32 * WORLD_CELL_EDGE + cam_tf.translation.x,
-        cam_cell.z as f32 * WORLD_CELL_EDGE + cam_tf.translation.z,
-    );
+    let cam = anchored_xz(cam_cell, cam_tf.translation);
     let alt = globe.altitude_m(cam_cell, cam_tf) as f32;
 
     // Drain a finished mask whatever else happens, so a rebuild that lands after

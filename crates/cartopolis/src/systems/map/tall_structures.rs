@@ -35,8 +35,7 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::components::FreeCamera;
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::cell_ring;
@@ -639,7 +638,7 @@ pub fn update_tall_structures(
     mut materials: ResMut<Assets<StandardMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     time: Res<Time>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     terrain: Res<crate::systems::terrain::TerrainField>,
@@ -672,7 +671,7 @@ pub fn update_tall_structures(
     let (ax, ay, z, lat) = ts.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let cam_altitude = globe.altitude_m(cell, tf) as f32;

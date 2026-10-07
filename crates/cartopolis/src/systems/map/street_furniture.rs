@@ -3,9 +3,8 @@
 
 use crate::components::FurnitureSurface;
 use bevy::prelude::*;
-use big_space::prelude::GridCell;
 
-use crate::components::FreeCamera;
+use crate::grid::AnchoredCamera;
 use crate::systems::furniture::{paving_base, FURNITURE_FADE_END, FURNITURE_FADE_START};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
@@ -66,11 +65,11 @@ pub fn update_furniture_lod(
     mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut furniture: Query<&mut Visibility, With<FurnitureSurface>>,
     mut last: Local<Option<(f32, bool)>>,
 ) {
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let alt = globe.altitude_m(cell, tf) as f32;

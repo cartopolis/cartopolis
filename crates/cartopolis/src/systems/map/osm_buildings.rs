@@ -19,9 +19,8 @@
 //! (relative to the anchor region tile); heights use the interim quad-to-metre
 //! scale until the real-metre frame (ADR-019) lands.
 
-use crate::components::FreeCamera;
 use crate::components::OsmBuildingMesh;
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{anchored_xz, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -1110,7 +1109,7 @@ pub fn update_buildings(
     mut fade_materials: ResMut<Assets<crate::systems::building_fade::FarBuildingMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     time: Res<Time>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
@@ -1197,7 +1196,7 @@ pub fn update_buildings(
     let tile_m = tile_to_meters(z, lat) as f32;
 
     // Camera's current tile (world position → tile offset from the anchor).
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     // Freeze the building patch from orbit (ADR-025), same as map streaming:
@@ -1209,8 +1208,10 @@ pub fn update_buildings(
     if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
+    let Vec2 {
+        x: world_x,
+        y: world_z,
+    } = anchored_xz(cell, tf.translation);
     let center = (
         ax + (world_x / tile_m).round() as i64,
         ay + (world_z / tile_m).round() as i64,

@@ -719,12 +719,7 @@ pub fn tap_avatar(
     let Ok((cam, cell, tf)) = camera.single() else {
         return;
     };
-    let edge = crate::grid::WORLD_CELL_EDGE as f64;
-    let cam_world = DVec3::new(
-        cell.x as f64 * edge + f64::from(tf.translation.x),
-        cell.y as f64 * edge + f64::from(tf.translation.y),
-        cell.z as f64 * edge + f64::from(tf.translation.z),
-    );
+    let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);
     let view = GlobalTransform::from(Transform::from_rotation(tf.rotation));
     let scale = egui.ui_scale();
     // Nearest avatar to the tap, measured at mid-body so a tap on the head or

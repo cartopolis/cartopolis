@@ -42,7 +42,9 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::{FreeCamera, VegetationSurface};
-use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{
+    anchored_xz, AnchoredCamera, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD,
+};
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::cell_ring;
@@ -1367,8 +1369,9 @@ pub fn update_street_detail(
     mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     time: Res<Time>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    bigspace: Query<Entity, With<BigSpace>>,
+    // The camera and the `BigSpace` root as one parameter: this system is one
+    // short of Bevy's sixteen.
+    view: CameraAndRoot,
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<BuildingColliders>,
     filled: crate::systems::tunnels::FilledTerrain,
@@ -1415,7 +1418,7 @@ pub fn update_street_detail(
     let (ax, ay, z, lat) = sd.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = view.camera.get() else {
         return;
     };
     let cam_altitude = globe.altitude_m(cell, tf) as f32;
@@ -1495,7 +1498,7 @@ pub fn update_street_detail(
             .detach();
     }
 
-    let Ok(root) = bigspace.single() else {
+    let Ok(root) = view.root.single() else {
         return;
     };
 
@@ -1769,7 +1772,7 @@ pub fn update_lamp_lights(
     mut commands: Commands,
     mut sd: ResMut<StreetDetail>,
     dev: Res<crate::resources::DevPanelState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     mut lights: Query<
         (
@@ -1793,7 +1796,7 @@ pub fn update_lamp_lights(
     }
     *last_run = now;
 
-    let Ok((cam_cell, cam_tf)) = camera.single() else {
+    let Some((cam_cell, cam_tf)) = camera.get() else {
         return;
     };
     let Ok(root) = bigspace.single() else {
@@ -1824,10 +1827,7 @@ pub fn update_lamp_lights(
         }
     }
 
-    let cam_world = Vec2::new(
-        cam_cell.x as f32 * WORLD_CELL_EDGE + cam_tf.translation.x,
-        cam_cell.z as f32 * WORLD_CELL_EDGE + cam_tf.translation.z,
-    );
+    let cam_world = anchored_xz(cam_cell, cam_tf.translation);
 
     // Nearest lamps within range — a partial sort over the live set.
     let mut near: Vec<(f32, Vec3)> = sd
@@ -1928,13 +1928,13 @@ pub fn update_signal_cycle(
 pub fn update_prop_fade(
     sd: Res<StreetDetail>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: AnchoredCamera,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut near_q: Query<&mut Visibility, (With<PropNear>, Without<PropFar>)>,
     mut far_q: Query<&mut Visibility, (With<PropFar>, Without<PropNear>)>,
     mut last: Local<Option<(f32, f32)>>,
 ) {
-    let Ok((cell, tf)) = camera.single() else {
+    let Some((cell, tf)) = camera.get() else {
         return;
     };
     let alt = globe.altitude_m(cell, tf) as f32;
