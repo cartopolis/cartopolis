@@ -267,24 +267,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # default feature would be dropped there by accident rather than by decision —
 # the trap `audio` documents at the top of this file.
 #
-# The SDK rather than a hand-rolled JSON-RPC handler, and the reason is the 2026
-# specification rather than convenience: sessions, SSE and *long-running tasks*
-# are in it, and a settle that takes twenty seconds is precisely a long-running
-# task. `default-features = false` drops the client half and the OAuth stack; it
-# keeps the server, the macros and the streamable-HTTP transport, whose axum,
-# hyper, tower and tokio are all already in this workspace's lock for the
-# simulator, so this is new edges rather than a new subtree.
-rmcp = { version = "3.4", default-features = false, features = [
-    "server",
-    "macros",
-    "schemars",
-    "transport-streamable-http-server",
-] }
-# The router the MCP service is mounted in, and the one middleware in front of
-# it: the bearer check. rmcp's transport *is* a `tower` service, so this is the
-# thing that holds it plus the four lines that answer 401 — and axum is already
-# compiled in this workspace for the simulator's HTTP surface.
-axum.workspace = true
+# The listener, the tool surface and the SDK (rmcp, axum, hyper, tower) are in
+# their own Bevy-free crate, `crates/mcp_server`, so that heavy async generic code
+# is compiled outside this crate; the two talk only through its job channel.
+cartopolis_mcp = { path = "../mcp_server" }
 # MCP carries an image as base64 in a JSON message, so a capture has to be
 # encoded before it can be handed over. Already in the lock under the simulator.
 base64 = "0.22"

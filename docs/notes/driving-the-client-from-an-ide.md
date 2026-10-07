@@ -1,6 +1,6 @@
 ---
 topic: tooling
-triggers: [mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
 updated: 2026-10-01
 ---
 
@@ -8,7 +8,8 @@ updated: 2026-10-01
 
 The client serves the Model Context Protocol, so an agent in an editor can fly
 its camera, photograph what it sees and read what the map is doing.
-`systems::dev::mcp` is the code; this is what the shape costs and what was
+`systems::dev::mcp` is the code (its listener and tool surface are the Bevy-free
+`cartopolis_mcp` crate, `crates/mcp_server`); this is what the shape costs and what was
 rejected on the way to it.
 
 ## On by default, and switched at runtime

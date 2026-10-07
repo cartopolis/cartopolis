@@ -368,7 +368,7 @@ impl Plugin for McpPlugin {
                 tracing::info!(listen = %cfg.listen, "mcp: headless, will serve, with the token it was given");
             }
         }
-        let auth = systems::mcp::McpAuth(std::sync::Arc::new(std::sync::RwLock::new(token)));
+        let auth = systems::mcp::McpAuth::new(token);
         let (tx, rx) = futures_channel::mpsc::unbounded();
         let headless = cfg.headless;
         // Whose chat the agent may read: the flag for this run, else what Settings

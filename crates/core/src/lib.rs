@@ -12,6 +12,7 @@ pub mod placeholders;
 pub mod point;
 pub mod protocol;
 pub mod script_api;
+pub mod shot_env;
 pub mod sounds;
 pub mod ts_mirror;
 pub mod video_limits;
@@ -39,6 +40,7 @@ pub use protocol::{
     MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
+pub use shot_env::ShotEnv;
 pub use sounds::{
     PrimSound, SoundName, DEFAULT_SOUND_RANGE_M, MAX_SOUND_RANGE_M, MIN_SOUND_RANGE_M,
 };

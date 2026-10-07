@@ -50,8 +50,17 @@
 
 pub mod agent;
 pub mod overlay;
-pub mod server;
 pub mod surroundings;
+
+/// The job protocol — what crosses the channel between that crate's server
+/// thread and [`pump`]. Defined there, since the server builds and reads it.
+pub use cartopolis_mcp::protocol::{
+    ImageFormat, Job, Reply, Request, ViewReply, ViewRequest, WorldState,
+};
+/// The listener and the tool surface live in their own Bevy-free crate
+/// (`crates/mcp_server`), so the async/tower generic code is compiled outside
+/// this one. Named `server` here as it always was.
+pub use cartopolis_mcp::server;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -65,7 +74,7 @@ use std::sync::{Arc, RwLock};
 use crate::components::FreeCamera;
 use crate::resources::{CameraState, FrameStats, MapAnchor};
 use crate::systems::globe::GlobeState;
-use crate::systems::shot_harness::{ShotEnv, ShotHarness, ShotProgress, ShotSpec, StreamWatch};
+use crate::systems::shot_harness::{ShotHarness, ShotProgress, ShotSpec, StreamWatch};
 
 /// Where a bare `--mcp-listen` binds.
 ///
@@ -85,14 +94,6 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:4750";
 /// cover: a harness that never advances at all, which would otherwise leave the
 /// editor's request hanging until the process ends.
 const JOB_TIMEOUT_S: f64 = 300.0;
-
-/// The longest edge of a returned image, unless the call asks for another.
-///
-/// A picture is the expensive part of an answer — a 1920×1080 PNG is a large
-/// fraction of a context window — and the questions this is for (is the building
-/// there, is the ground flat, did that change anything) are all legible at this
-/// size. Ask for more when the question is about pixels.
-pub const DEFAULT_MAX_EDGE: u32 = 1024;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -178,40 +179,25 @@ impl Config {
     }
 }
 
-/// The token the server checks, shared with the thread that checks it.
-///
-/// A lock rather than a copy because Settings can regenerate it while the server
-/// is running, and a regenerated token that only took effect on the next launch
-/// would not be a revocation.
-#[derive(Resource, Clone)]
-pub struct McpAuth(pub Arc<RwLock<String>>);
+/// The token the server checks, shared with the thread that checks it — as a
+/// resource. The token itself, and the comparison, are
+/// [`cartopolis_mcp::protocol::BearerToken`]; this wrapper exists because a type
+/// from another crate cannot derive `Resource` here.
+#[derive(Resource, Clone, Deref)]
+pub struct McpAuth(pub cartopolis_mcp::protocol::BearerToken);
 
 impl McpAuth {
-    pub fn set(&self, token: &str) {
-        if let Ok(mut g) = self.0.write() {
-            token.clone_into(&mut g);
-        }
-    }
-
-    /// Constant-time-ish comparison against the presented bearer.
-    ///
-    /// Equal length first, then a byte fold that does not stop early. This is a
-    /// loopback service and the realistic threat is another process on the same
-    /// machine rather than a remote timing attack, but the cost of not leaking
-    /// the prefix is four lines.
-    pub fn accepts(&self, presented: &str) -> bool {
-        let Ok(want) = self.0.read() else {
-            return false;
-        };
-        if want.is_empty() || want.len() != presented.len() {
-            return false;
-        }
-        want.bytes()
-            .zip(presented.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
+    pub fn new(token: String) -> Self {
+        Self(cartopolis_mcp::protocol::BearerToken(Arc::new(
+            RwLock::new(token),
+        )))
     }
 }
+
+/// A live listener, as a resource; see [`server::Running`], which it wraps for
+/// the same reason [`McpAuth`] wraps the token. **Dropping it stops the server.**
+#[derive(Resource)]
+pub struct Running(pub server::Running);
 
 /// Mint a token. 128 bits of v4 UUID, hex, no dashes — long enough that it is
 /// not guessable and short enough to copy off a screen.
@@ -249,7 +235,7 @@ pub fn reconcile_listener(
     prefs: Res<crate::resources::AppPrefs>,
     auth: Res<McpAuth>,
     sender: Res<JobSender>,
-    running: Option<Res<server::Running>>,
+    running: Option<Res<Running>>,
     mut trouble: ResMut<McpTrouble>,
     mut exit: MessageWriter<AppExit>,
     mut was: Local<Option<bool>>,
@@ -260,11 +246,16 @@ pub fn reconcile_listener(
     }
     *was = Some(want);
     match (want, running.is_some()) {
-        (true, false) => match server::spawn(&config, auth.clone(), sender.0.clone()) {
+        (true, false) => match server::spawn(
+            config.listen,
+            config.hosts.clone(),
+            auth.0.clone(),
+            sender.0.clone(),
+        ) {
             Ok(handle) => {
                 tracing::info!(listen = %config.listen, "mcp: serving");
                 trouble.0 = None;
-                commands.insert_resource(handle);
+                commands.insert_resource(Running(handle));
             }
             // **Fatal only when serving is the whole job.** A windowed client
             // that cannot open the socket is still a perfectly good client and
@@ -283,7 +274,7 @@ pub fn reconcile_listener(
         (false, true) => {
             tracing::info!("mcp: stopped — switched off in Settings");
             trouble.0 = None;
-            commands.remove_resource::<server::Running>();
+            commands.remove_resource::<Running>();
         }
         _ => {}
     }
@@ -297,131 +288,6 @@ pub fn reconcile_listener(
 /// again does not lose a call that was already in flight.
 #[derive(Resource)]
 pub struct JobSender(pub futures_channel::mpsc::UnboundedSender<Job>);
-
-// ---------------------------------------------------------------------------
-// The job protocol
-// ---------------------------------------------------------------------------
-
-/// A tool call, on its way from the server thread to the schedule.
-pub struct Job {
-    pub request: Request,
-    pub reply: oneshot::Sender<Reply>,
-}
-
-#[derive(Debug)]
-pub enum Request {
-    /// Everything about the world that can be answered without drawing it.
-    State,
-    /// Place the camera, wait for the world, photograph it.
-    View(Box<ViewRequest>),
-    /// Something the signed-in account does: talk, walk, build
-    /// ([`agent`]).
-    Agent(agent::AgentRequest),
-}
-
-/// One `view` / `view_here` call.
-#[derive(Debug, Clone)]
-pub struct ViewRequest {
-    pub lat: f64,
-    pub lng: f64,
-    pub alt: f64,
-    pub pitch_deg: f32,
-    pub yaw_deg: f32,
-    /// `free` (exact placement), `earth` (the orbit camera) or `avatar` (the
-    /// follow camera, framing the body).
-    pub mode: String,
-    /// Photograph from where the camera already is; see [`ShotSpec::in_place`].
-    pub in_place: bool,
-    pub settle: Option<f32>,
-    pub wait: Option<f32>,
-    pub hide_ui: Option<bool>,
-    pub env: ShotEnv,
-    /// Where the PNG is written. The reply carries the path either way, because
-    /// a file that outlives the answer is worth having: it can be opened, kept,
-    /// or diffed against the next one.
-    pub out: Option<PathBuf>,
-    pub format: ImageFormat,
-    pub max_edge: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageFormat {
-    /// The default. The map is photographic — imagery, terrain, thousands of
-    /// small surfaces — and PNG holds that badly.
-    Jpeg,
-    /// For a question about exact pixels, where the codec must not have an
-    /// opinion.
-    Png,
-}
-
-impl ImageFormat {
-    pub fn mime(self) -> &'static str {
-        match self {
-            Self::Jpeg => "image/jpeg",
-            Self::Png => "image/png",
-        }
-    }
-}
-
-pub enum Reply {
-    State(Box<WorldState>),
-    View(Box<ViewReply>),
-    Agent(Box<agent::AgentReply>),
-    /// The call could not be carried out. The string is written to be shown to
-    /// whoever asked, because it is.
-    Error(String),
-}
-
-/// What the world is doing right now, with nothing drawn.
-///
-/// The cheapest verification there is, and often the whole answer: "is the world
-/// finished, and where am I looking?" needs no picture at all.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WorldState {
-    pub lat: f64,
-    pub lng: f64,
-    pub altitude_m: f64,
-    pub pitch_deg: f32,
-    pub yaw_deg: f32,
-    pub camera_mode: String,
-    /// The map's anchor, which is the origin every world coordinate here is
-    /// measured from.
-    pub anchor: Option<[f64; 2]>,
-    /// Which map layers are still working; empty means every streamer has gone
-    /// quiet — see
-    /// [`StreamWatch::busy`](crate::systems::shot_harness::StreamWatch::busy).
-    ///
-    /// **`busy`, the same name `--dump-state` gives it**, and deliberately not a
-    /// clearer one. An agent reading `busy` from a capture's metrics and
-    /// `streaming` from this would reasonably assume they were different
-    /// measurements of different things.
-    pub busy: Vec<&'static str>,
-    pub settled: bool,
-    pub in_space: bool,
-    pub space_factor: f32,
-    pub fps: u32,
-    pub frame_ms: f32,
-    pub worst_frame_ms: f32,
-    /// How many viewpoints this client has photographed since it started.
-    pub captures: usize,
-}
-
-/// The answer to a `view`: the picture, where it was taken from, and every
-/// number the harness measured about the world in it.
-pub struct ViewReply {
-    /// The encoded image, ready to be handed over as an MCP image block. `None`
-    /// when the capture itself failed — the metrics are still worth having, and
-    /// saying which half is missing beats an error with nothing in it.
-    pub image: Option<(ImageFormat, Vec<u8>)>,
-    pub width: u32,
-    pub height: u32,
-    pub path: PathBuf,
-    /// The full `ShotMetrics` row, as `--dump-state` would write it.
-    pub metrics: Option<serde_json::Value>,
-    /// Seconds from the call arriving to the picture existing.
-    pub took_s: f64,
-    pub note: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // The bridge
@@ -524,7 +390,7 @@ impl McpBridge {
 pub struct EditorAccess<'w> {
     pub config: Option<Res<'w, Config>>,
     pub auth: Option<Res<'w, McpAuth>>,
-    pub running: Option<Res<'w, server::Running>>,
+    pub running: Option<Res<'w, Running>>,
     pub trouble: Option<Res<'w, McpTrouble>>,
     pub store: Option<ResMut<'w, crate::systems::user_store::UserStore>>,
     pub audience: Option<ResMut<'w, agent::Audience>>,
@@ -553,7 +419,7 @@ impl EditorAccess<'_> {
     pub fn serving(&self) -> Option<Serving> {
         self.config.as_deref()?;
         Some(match (&self.running, &self.trouble) {
-            (Some(running), _) => Serving::At(running.listen),
+            (Some(running), _) => Serving::At(running.0.listen),
             (None, Some(trouble)) => match &trouble.0 {
                 Some(why) => Serving::Failed(why.clone()),
                 None => Serving::Off,
@@ -1082,7 +948,7 @@ mod tests {
     /// otherwise let every caller in.
     #[test]
     fn the_token_is_compared_whole() {
-        let auth = McpAuth(Arc::new(RwLock::new(String::new())));
+        let auth = McpAuth::new(String::new());
         assert!(!auth.accepts(""), "an unset token accepts nothing");
         auth.set("0123456789abcdef");
         assert!(auth.accepts("0123456789abcdef"));

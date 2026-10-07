@@ -1,0 +1,52 @@
+[package]
+name = "cartopolis_mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# No runnable doc fence in the crate; see `cartopolis_core`'s manifest.
+doctest = false
+
+# **Bevy-free, and it must stay that way.** The server talks to the client's ECS
+# only through the job channel (`protocol::Job`), so everything here — rmcp's
+# `#[tool]` handlers, the axum router, hyper, tower and tokio — compiles outside
+# the client crate. Do not add `bevy` or `cartopolis` here.
+#
+# The client depends on this crate only on the desktop predicate its `build.rs`
+# sets the `mcp` cfg on (`crates/cartopolis/Cargo.toml` says why), so nothing
+# here is built for Android or the web.
+[dependencies]
+# `ShotEnv`, which a `view` call builds, and the script API catalogue the
+# `scripting_guide` tool lists.
+cartopolis_core = { path = "../core" }
+# The SDK rather than a hand-rolled JSON-RPC handler, and the reason is the 2026
+# specification rather than convenience: sessions, SSE and *long-running tasks*
+# are in it, and a settle that takes twenty seconds is precisely a long-running
+# task. `default-features = false` drops the client half and the OAuth stack; it
+# keeps the server, the macros and the streamable-HTTP transport, whose axum,
+# hyper, tower and tokio are all already in this workspace's lock for the
+# simulator, so this is new edges rather than a new subtree.
+rmcp = { version = "3.4", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+] }
+# The router the MCP service is mounted in, and the one middleware in front of
+# it: the bearer check. rmcp's transport *is* a `tower` service, so this is the
+# thing that holds it plus the four lines that answer 401 — and axum is already
+# compiled in this workspace for the simulator's HTTP surface.
+axum.workspace = true
+# MCP carries an image as base64 in a JSON message, so a capture has to be
+# encoded before it can be handed over. Already in the lock under the simulator.
+base64 = "0.22"
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

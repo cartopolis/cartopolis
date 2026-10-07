@@ -2,7 +2,7 @@
 //! check, and the MCP tool surface.
 //!
 //! Nothing in here touches the `World`. Every tool builds a
-//! [`Job`](super::Job), pushes it at the schedule and awaits the oneshot — so a
+//! [`Job`](crate::protocol::Job), pushes it at the schedule and awaits the oneshot — so a
 //! call that takes twenty seconds to settle is twenty seconds of one tokio task
 //! and no frames at all.
 //!
@@ -29,15 +29,17 @@ use futures_channel::mpsc::UnboundedSender;
 use futures_channel::oneshot;
 use std::sync::Arc;
 
-use super::agent::{
+use crate::args::{
     AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
     EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, LookAroundArgs, LookPrep,
     NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs, RememberArgs,
     SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
 };
-use super::agent::{PictureSend, SeePictureArgs, IMAGE_KEY};
-use super::{Config, ImageFormat, Job, McpAuth, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
-use crate::systems::shot_harness::ShotEnv;
+use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
+use crate::protocol::{
+    BearerToken, ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE,
+};
+use cartopolis_core::ShotEnv;
 
 /// Handle on the running listener; dropping it stops the server.
 /// A live listener. **Dropping it stops the server**, which is what makes the
@@ -45,9 +47,9 @@ use crate::systems::shot_harness::ShotEnv;
 /// graceful shutdown returns, the thread ends and its runtime goes with it.
 ///
 /// An ordinary `Resource` rather than a non-send one, so a system can insert and
-/// remove it through `Commands`. It holds only a `CancellationToken`; the
-/// runtime lives on the thread that is blocked on it.
-#[derive(bevy::prelude::Resource)]
+/// remove it through `Commands` (the client wraps it as `mcp::Running`, since a
+/// type from this crate cannot derive Bevy's `Resource`). It holds only a
+/// `CancellationToken`; the runtime lives on the thread that is blocked on it.
 pub struct Running {
     pub cancel: tokio_util::sync::CancellationToken,
     /// What it is serving on, for the Settings readout — which must say where an
@@ -66,9 +68,13 @@ impl Drop for Running {
 /// Binding happens **on the calling thread, before returning**, so "the port is
 /// taken" is an answer the caller gets rather than a line in a log nobody reads
 /// — which is what lets the Settings row say so.
+///
+/// `listen` and `hosts` are the client's `mcp::Config::listen` and `hosts`
+/// (`--mcp-listen`, `--mcp-host`).
 pub fn spawn(
-    config: &Config,
-    auth: McpAuth,
+    listen: std::net::SocketAddr,
+    hosts: Vec<String>,
+    auth: BearerToken,
     jobs: UnboundedSender<Job>,
 ) -> Result<Running, String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -79,13 +85,12 @@ pub fn spawn(
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
     let listener = rt
-        .block_on(tokio::net::TcpListener::bind(config.listen))
-        .map_err(|e| format!("cannot listen on {}: {e}", config.listen))?;
+        .block_on(tokio::net::TcpListener::bind(listen))
+        .map_err(|e| format!("cannot listen on {listen}: {e}"))?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let serve_cancel = cancel.clone();
-    let listen = config.listen;
-    let extra_hosts = config.hosts.clone();
+    let extra_hosts = hosts;
 
     std::thread::Builder::new()
         .name("cartopolis-mcp".into())
@@ -148,7 +153,7 @@ pub fn spawn(
 /// Reject anything without the right bearer token, before it reaches the
 /// protocol at all.
 async fn require_bearer(
-    axum::extract::State(auth): axum::extract::State<McpAuth>,
+    axum::extract::State(auth): axum::extract::State<BearerToken>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -974,7 +979,7 @@ impl Tools {
     )]
     async fn scripting_guide(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![ContentBlock::text(
-            super::agent::scripting_guide(),
+            crate::scripting_guide(),
         )]))
     }
 }

@@ -10,6 +10,7 @@ members = [
     "crates/viewer",
     "crates/cartopolis",
     "crates/cartopolis_android",
+    "crates/mcp_server",
     "crates/big_space",
 ]
 default-members = ["crates/cartopolis"]
