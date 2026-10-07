@@ -3382,25 +3382,7 @@ pub fn drive_capture(
     visuals: VisualCounts,
 ) {
     if let Some(frames) = progress.exit_in {
-        let left = frames.saturating_sub(1);
-        progress.exit_in = Some(left);
-        if left == 0 {
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::systems::aerial_reference::wait_all();
-            // The one place the harness gets to have an opinion about the world it
-            // photographed. Without `--expect` this is always Success and only a
-            // render failure can fail the run — which is exactly why a caller that
-            // cannot look at the image needs the flag.
-            if progress.unmet > 0 {
-                tracing::error!(
-                    unmet = progress.unmet,
-                    "shot harness: expectations not met — see the `shot expect failed` lines above"
-                );
-                exit.write(AppExit::error());
-            } else {
-                exit.write(AppExit::Success);
-            }
-        }
+        finish_run(frames, &mut progress, &mut exit);
         return;
     }
     // Capture landed: on to the next viewpoint, or done. The CPU pool was paused
@@ -3412,35 +3394,7 @@ pub fn drive_capture(
     // closes the one-shot `saved` flag is long consumed. See `ShotProgress::perf_hold`.
     let landed = progress.saved.swap(false, Ordering::Relaxed);
     if landed || progress.perf_release {
-        if progress.perf_hold {
-            // Measuring; hand the suite the shutter edge rather than letting it
-            // race for `saved`, which has just been consumed above.
-            progress.perf_captured = true;
-            return;
-        }
-        progress.perf_release = false;
-        crate::platform::workers::set_paused(false);
-        progress.index += 1;
-        // Reset unconditionally, including when the list has run out: a live
-        // harness is handed its next viewpoint later, and it must not arrive to
-        // find the previous one's `placed`/`fired`/`verdict` still set.
-        progress.placed = false;
-        progress.fired = false;
-        progress.retried = false;
-        progress.verdict = None;
-        progress.perf_captured = false;
-        if progress.index >= harness.shots.len() {
-            if harness.live {
-                // Park. `shot_in_progress` is false from here, so the holds let
-                // go of the camera and the client is the user's again until the
-                // next `view` call pushes a viewpoint.
-                progress.trim_metrics();
-                return;
-            }
-            // Every viewpoint captured — flush the metrics before draining to exit.
-            harness.write_metrics(&progress.metrics);
-            progress.exit_in = Some(2);
-        }
+        advance_after_capture(&harness, &mut progress);
         return;
     }
     if !progress.placed {
@@ -3460,80 +3414,223 @@ pub fn drive_capture(
         progress.frame_time_max = progress.frame_time_max.max(frame);
     }
     if progress.fired {
-        // The readback normally lands within a frame or two; don't hang forever.
-        //
-        // Budgeted from the moment it fired, and *not* as `wait + N`: the two
-        // measure unrelated things, so shortening `--wait` to capture a
-        // deliberately half-streamed world also shortened the time allowed for the
-        // readback. Measured on a software rasteriser (lavapipe, ground level,
-        // frames running 0.7–2 s): `--wait 5` gave the readback 20 s, it needed
-        // more, and the run died with `capture never completed` and no PNG — a
-        // failure invented entirely by the coupling.
-        if progress.elapsed - progress.fired_at > CAPTURE_GRACE_S {
-            // Re-fire once before giving up. A `Screenshot` gets exactly **one**
-            // frame: `bevy_render`'s `extract_screenshots` inserts `Capturing` and
-            // its own query is `Without<Capturing>`, while `prepare_screenshots`
-            // clears its prepared set every frame — so if that single frame's
-            // prepare skips the entity (an unknown render-target image, a
-            // pipeline not yet compiled) the request is dropped silently and no
-            // later frame reconsiders it. Nothing distinguishes that from a slow
-            // readback except trying again, and a second shutter costs one frame.
-            if !progress.retried {
-                progress.retried = true;
-                tracing::warn!(
-                    grace_s = CAPTURE_GRACE_S,
-                    outstanding = crate::platform::workers::outstanding(),
-                    "shot harness: no readback within the grace — re-firing the shutter once"
-                );
-                fire_capture(
-                    &mut commands,
-                    &harness,
-                    &mut progress,
-                    target.as_deref(),
-                    &mut shot_state,
-                );
-                return;
-            }
-            tracing::error!(
-                grace_s = CAPTURE_GRACE_S,
-                outstanding = crate::platform::workers::outstanding(),
-                "shot harness: capture never completed"
-            );
-            // Leaving the pool paused would strand every job parked behind this
-            // capture; the run is ending, but `AppExit` is not immediate.
-            crate::platform::workers::set_paused(false);
-            // A live harness outlives its failures. The caller still gets an
-            // answer — the metrics row is pushed at the shutter, so a capture
-            // that never read back has its numbers and only lacks its pixels —
-            // and the next `view` call is not asked to pay for this one.
-            if harness.live {
-                progress.index += 1;
-                progress.placed = false;
-                progress.fired = false;
-                progress.retried = false;
-                progress.verdict = None;
-                progress.trim_metrics();
-                return;
-            }
-            // Hand back whatever the run *did* measure, including this shot's own
-            // row — the metrics are pushed at the shutter, so a capture that never
-            // read back still has its numbers. Only the completion path used to
-            // write them, which threw the whole set away in exactly the case that
-            // needs it most: `ci.yml` catches a failed smoke run and `cat`s the
-            // dump to explain it, and got "(no dump: the run died before it
-            // captured)" for a run that had captured four of six viewpoints.
-            //
-            // Nothing measured is left as no file at all, rather than as an empty
-            // array: that is the case the CI message is already right about, and a
-            // present-but-empty dump would read as "measured, and found nothing".
-            if !progress.metrics.is_empty() {
-                harness.write_metrics(&progress.metrics);
-            }
-            exit.write(AppExit::error());
-        }
+        await_readback(
+            &mut commands,
+            &harness,
+            &mut progress,
+            target.as_deref(),
+            &mut shot_state,
+            &mut exit,
+        );
         return;
     }
 
+    if !settle_verdict(&watch, &harness, &time, &mut progress) {
+        return;
+    }
+    let verdict = progress.verdict.clone().expect("set on the branch above");
+    let settled = verdict.settled;
+
+    // Let the paused pool drain before firing, so the readback finds a free thread
+    // rather than the tail of the backlog. On a settled shot the streamers are
+    // already quiet and this passes on the first frame; on a `--wait`-capped one it
+    // is the difference between an image and `capture never completed`.
+    let outstanding = crate::platform::workers::outstanding();
+    if outstanding > 0 {
+        if progress.elapsed - verdict.at < QUIESCE_MAX_S {
+            return;
+        }
+        tracing::warn!(
+            outstanding,
+            budget_s = QUIESCE_MAX_S,
+            "shot harness: CPU pool still busy at the quiesce cap — firing anyway"
+        );
+    }
+
+    // The numbers behind the image, so a black frame can be diagnosed without
+    // re-running: a black *scene* still reports visible, rendered globe meshes.
+    // Built once and reused for the log line, the `--csv` row and the JSON dump.
+    if let Ok((cell, tf, projection, exposure, bloom, shaft_fog)) = camera.single() {
+        record_metrics(
+            ShotCamera {
+                cell,
+                tf,
+                projection,
+                exposure,
+                bloom,
+                shaft_fog,
+            },
+            &harness,
+            &mut progress,
+            &verdict,
+            settled,
+            &globe,
+            &stream,
+            &cam_state,
+            &readouts,
+            &visuals,
+        );
+    }
+
+    fire_capture(
+        &mut commands,
+        &harness,
+        &mut progress,
+        target.as_deref(),
+        &mut shot_state,
+    );
+}
+
+/// The run is over: count down the frames left before exiting, then exit with
+/// the verdict the expectations reached.
+fn finish_run(frames: u32, progress: &mut ShotProgress, exit: &mut MessageWriter<AppExit>) {
+    let left = frames.saturating_sub(1);
+    progress.exit_in = Some(left);
+    if left == 0 {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::systems::aerial_reference::wait_all();
+        // The one place the harness gets to have an opinion about the world it
+        // photographed. Without `--expect` this is always Success and only a
+        // render failure can fail the run — which is exactly why a caller that
+        // cannot look at the image needs the flag.
+        if progress.unmet > 0 {
+            tracing::error!(
+                unmet = progress.unmet,
+                "shot harness: expectations not met — see the `shot expect failed` lines above"
+            );
+            exit.write(AppExit::error());
+        } else {
+            exit.write(AppExit::Success);
+        }
+    }
+}
+
+/// A capture has landed (or a `--perf` window closed): move on to the next
+/// viewpoint, park a live harness, or start the countdown to exit.
+fn advance_after_capture(harness: &ShotHarness, progress: &mut ShotProgress) {
+    if progress.perf_hold {
+        // Measuring; hand the suite the shutter edge rather than letting it
+        // race for `saved`, which has just been consumed above.
+        progress.perf_captured = true;
+        return;
+    }
+    progress.perf_release = false;
+    crate::platform::workers::set_paused(false);
+    progress.index += 1;
+    // Reset unconditionally, including when the list has run out: a live
+    // harness is handed its next viewpoint later, and it must not arrive to
+    // find the previous one's `placed`/`fired`/`verdict` still set.
+    progress.placed = false;
+    progress.fired = false;
+    progress.retried = false;
+    progress.verdict = None;
+    progress.perf_captured = false;
+    if progress.index >= harness.shots.len() {
+        if harness.live {
+            // Park. `shot_in_progress` is false from here, so the holds let
+            // go of the camera and the client is the user's again until the
+            // next `view` call pushes a viewpoint.
+            progress.trim_metrics();
+            return;
+        }
+        // Every viewpoint captured — flush the metrics before draining to exit.
+        harness.write_metrics(&progress.metrics);
+        progress.exit_in = Some(2);
+    }
+}
+
+/// The shutter has fired and the readback has not landed: wait for it, re-fire
+/// once, or give up on the capture.
+fn await_readback(
+    mut commands: &mut Commands,
+    harness: &ShotHarness,
+    mut progress: &mut ShotProgress,
+    target: Option<&ShotTarget>,
+    mut shot_state: &mut ScreenshotState,
+    exit: &mut MessageWriter<AppExit>,
+) {
+    // The readback normally lands within a frame or two; don't hang forever.
+    //
+    // Budgeted from the moment it fired, and *not* as `wait + N`: the two
+    // measure unrelated things, so shortening `--wait` to capture a
+    // deliberately half-streamed world also shortened the time allowed for the
+    // readback. Measured on a software rasteriser (lavapipe, ground level,
+    // frames running 0.7–2 s): `--wait 5` gave the readback 20 s, it needed
+    // more, and the run died with `capture never completed` and no PNG — a
+    // failure invented entirely by the coupling.
+    if progress.elapsed - progress.fired_at > CAPTURE_GRACE_S {
+        // Re-fire once before giving up. A `Screenshot` gets exactly **one**
+        // frame: `bevy_render`'s `extract_screenshots` inserts `Capturing` and
+        // its own query is `Without<Capturing>`, while `prepare_screenshots`
+        // clears its prepared set every frame — so if that single frame's
+        // prepare skips the entity (an unknown render-target image, a
+        // pipeline not yet compiled) the request is dropped silently and no
+        // later frame reconsiders it. Nothing distinguishes that from a slow
+        // readback except trying again, and a second shutter costs one frame.
+        if !progress.retried {
+            progress.retried = true;
+            tracing::warn!(
+                grace_s = CAPTURE_GRACE_S,
+                outstanding = crate::platform::workers::outstanding(),
+                "shot harness: no readback within the grace — re-firing the shutter once"
+            );
+            fire_capture(
+                &mut commands,
+                &harness,
+                &mut progress,
+                target.as_deref(),
+                &mut shot_state,
+            );
+            return;
+        }
+        tracing::error!(
+            grace_s = CAPTURE_GRACE_S,
+            outstanding = crate::platform::workers::outstanding(),
+            "shot harness: capture never completed"
+        );
+        // Leaving the pool paused would strand every job parked behind this
+        // capture; the run is ending, but `AppExit` is not immediate.
+        crate::platform::workers::set_paused(false);
+        // A live harness outlives its failures. The caller still gets an
+        // answer — the metrics row is pushed at the shutter, so a capture
+        // that never read back has its numbers and only lacks its pixels —
+        // and the next `view` call is not asked to pay for this one.
+        if harness.live {
+            progress.index += 1;
+            progress.placed = false;
+            progress.fired = false;
+            progress.retried = false;
+            progress.verdict = None;
+            progress.trim_metrics();
+            return;
+        }
+        // Hand back whatever the run *did* measure, including this shot's own
+        // row — the metrics are pushed at the shutter, so a capture that never
+        // read back still has its numbers. Only the completion path used to
+        // write them, which threw the whole set away in exactly the case that
+        // needs it most: `ci.yml` catches a failed smoke run and `cat`s the
+        // dump to explain it, and got "(no dump: the run died before it
+        // captured)" for a run that had captured four of six viewpoints.
+        //
+        // Nothing measured is left as no file at all, rather than as an empty
+        // array: that is the case the CI message is already right about, and a
+        // present-but-empty dump would read as "measured, and found nothing".
+        if !progress.metrics.is_empty() {
+            harness.write_metrics(&progress.metrics);
+        }
+        exit.write(AppExit::error());
+    }
+}
+
+/// The settle test: has every streamer been quiet for `--settle`, or has
+/// `--wait` run out? `false` while neither; on the frame one first holds, records
+/// the verdict and the streaming account for the shot and pauses the CPU pool.
+fn settle_verdict(
+    watch: &StreamWatch,
+    harness: &ShotHarness,
+    time: &Time,
+    progress: &mut ShotProgress,
+) -> bool {
     // Settle: capture once *every* streamer has been quiet for `--settle`
     // seconds, or when `--wait` runs out (whichever comes first). Which streamers
     // that is, and why the list has to be exhaustive, is `StreamWatch`.
@@ -3573,7 +3670,7 @@ pub fn drive_capture(
             harness.wait_for(progress.index),
         );
         if progress.quiet < settle && progress.elapsed < wait {
-            return;
+            return false;
         }
         // Which arm of the test above let us through. Everything measured below
         // describes a partially streamed world when this is false.
@@ -3627,491 +3724,488 @@ pub fn drive_capture(
         // streamers do from here is invisible in this frame's image anyway.
         crate::platform::workers::set_paused(true);
     }
-    let verdict = progress.verdict.clone().expect("set on the branch above");
-    let settled = verdict.settled;
+    true
+}
 
-    // Let the paused pool drain before firing, so the readback finds a free thread
-    // rather than the tail of the backlog. On a settled shot the streamers are
-    // already quiet and this passes on the first frame; on a `--wait`-capped one it
-    // is the difference between an image and `capture never completed`.
-    let outstanding = crate::platform::workers::outstanding();
-    if outstanding > 0 {
-        if progress.elapsed - verdict.at < QUIESCE_MAX_S {
-            return;
-        }
-        tracing::warn!(
-            outstanding,
-            budget_s = QUIESCE_MAX_S,
-            "shot harness: CPU pool still busy at the quiesce cap — firing anyway"
-        );
-    }
+/// The free camera's components `record_metrics` reads, out of `drive_capture`'s
+/// camera query.
+struct ShotCamera<'a> {
+    cell: &'a GridCell,
+    tf: &'a Transform,
+    projection: &'a Projection,
+    exposure: &'a Exposure,
+    bloom: Option<&'a Bloom>,
+    shaft_fog: bool,
+}
 
-    // The numbers behind the image, so a black frame can be diagnosed without
-    // re-running: a black *scene* still reports visible, rendered globe meshes.
-    // Built once and reused for the log line, the `--csv` row and the JSON dump.
-    if let Ok((cell, tf, projection, exposure, bloom, shaft_fog)) = camera.single() {
-        let (near, far) = match projection {
-            Projection::Perspective(p) => (p.near, p.far),
-            _ => (0.0, 0.0),
-        };
-        let shot = &harness.shots[progress.index];
-        // **Where on the ground this capture is actually pointed**, in the
-        // anchored world frame the tunnels are kept in. The camera is the floating
-        // origin, so its own `GlobalTransform` is near zero and the grid cell is
-        // the whole of its position — the same conversion `building_select` makes
-        // to turn a click into a place.
-        let cam_world = crate::grid::anchored_position(cell, tf.translation);
-        let fwd = tf.forward();
-        let aim = (fwd.y < -1e-3 && cam_world.y > 0.0).then(|| {
-            let t = cam_world.y / -fwd.y;
-            Vec2::new(cam_world.x + fwd.x * t, cam_world.z + fwd.z * t)
-        });
-        // The aerial photograph of what this capture looks at, beside it
-        // (`aerial_reference`). Aimed at the ground point in the middle of the
-        // view, or — looking at the horizon — at the ground 150 m ahead.
-        #[cfg(not(target_arch = "wasm32"))]
-        if harness.aerial_reference {
-            if let Some(anchor) = readouts.map_anchor.geo {
-                let flat = Vec2::new(fwd.x, fwd.z).normalize_or_zero();
-                let target = aim.unwrap_or(Vec2::new(cam_world.x, cam_world.z) + flat * 150.0);
-                let ll = |p: Vec2| {
-                    crate::systems::geo_nav::world_to_lat_lng(
-                        anchor,
-                        f64::from(p.x),
-                        f64::from(p.y),
-                    )
-                };
-                let pose = match projection {
-                    Projection::Perspective(p) => Some(crate::systems::aerial_reference::Pose {
-                        anchor,
-                        position: cam_world.to_array(),
-                        right: tf.right().to_array(),
-                        up: tf.up().to_array(),
-                        forward: fwd.to_array(),
-                        fov_y: p.fov,
-                        size: (harness.size.x, harness.size.y),
-                        ground_y: readouts.terrain.at(target.x, target.y),
-                    }),
-                    _ => None,
-                };
-                crate::systems::aerial_reference::spawn_write(
-                    harness.path_for(progress.index),
-                    crate::systems::aerial_reference::View {
-                        camera: ll(Vec2::new(cam_world.x, cam_world.z)),
-                        aim: ll(target),
-                        pose,
-                    },
-                );
-            }
-        }
-        // Where the nearest tunnel actually goes under, as something you can type
-        // into `--at`. See `Tunnels::nearest_entrance` for why this is a
-        // reported number and not an arithmetic exercise at the call site.
-        let entrance = aim
-            .and_then(|p| readouts.tunnels.nearest_entrance(p))
-            .and_then(|(at, heading)| {
-                readouts.map_anchor.geo.map(|anchor| {
-                    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
-                        anchor,
-                        f64::from(at.x),
-                        f64::from(at.y),
-                    );
-                    (lat, lng, heading)
-                })
-            });
-        if let Some((lat, lng, heading)) = entrance {
-            tracing::info!(
-                lat = format!("{lat:.6}"),
-                lng = format!("{lng:.6}"),
-                heading_deg = format!("{heading:.0}"),
-                "tunnel entrance"
+/// Measure this shot's [`ShotMetrics`], log the `shot state` line, check the
+/// `--expect`s against it and push it onto the run's metrics.
+#[allow(clippy::too_many_arguments)]
+fn record_metrics(
+    camera: ShotCamera,
+    harness: &ShotHarness,
+    progress: &mut ShotProgress,
+    verdict: &SettleVerdict,
+    settled: bool,
+    globe: &GlobeState,
+    stream: &MapStream,
+    cam_state: &CameraState,
+    readouts: &ShotReadouts,
+    visuals: &VisualCounts,
+) {
+    let ShotCamera {
+        cell,
+        tf,
+        projection,
+        exposure,
+        bloom,
+        shaft_fog,
+    } = camera;
+    let (near, far) = match projection {
+        Projection::Perspective(p) => (p.near, p.far),
+        _ => (0.0, 0.0),
+    };
+    let shot = &harness.shots[progress.index];
+    // **Where on the ground this capture is actually pointed**, in the
+    // anchored world frame the tunnels are kept in. The camera is the floating
+    // origin, so its own `GlobalTransform` is near zero and the grid cell is
+    // the whole of its position — the same conversion `building_select` makes
+    // to turn a click into a place.
+    let cam_world = crate::grid::anchored_position(cell, tf.translation);
+    let fwd = tf.forward();
+    let aim = (fwd.y < -1e-3 && cam_world.y > 0.0).then(|| {
+        let t = cam_world.y / -fwd.y;
+        Vec2::new(cam_world.x + fwd.x * t, cam_world.z + fwd.z * t)
+    });
+    // The aerial photograph of what this capture looks at, beside it
+    // (`aerial_reference`). Aimed at the ground point in the middle of the
+    // view, or — looking at the horizon — at the ground 150 m ahead.
+    #[cfg(not(target_arch = "wasm32"))]
+    if harness.aerial_reference {
+        if let Some(anchor) = readouts.map_anchor.geo {
+            let flat = Vec2::new(fwd.x, fwd.z).normalize_or_zero();
+            let target = aim.unwrap_or(Vec2::new(cam_world.x, cam_world.z) + flat * 150.0);
+            let ll = |p: Vec2| {
+                crate::systems::geo_nav::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y))
+            };
+            let pose = match projection {
+                Projection::Perspective(p) => Some(crate::systems::aerial_reference::Pose {
+                    anchor,
+                    position: cam_world.to_array(),
+                    right: tf.right().to_array(),
+                    up: tf.up().to_array(),
+                    forward: fwd.to_array(),
+                    fov_y: p.fov,
+                    size: (harness.size.x, harness.size.y),
+                    ground_y: readouts.terrain.at(target.x, target.y),
+                }),
+                _ => None,
+            };
+            crate::systems::aerial_reference::spawn_write(
+                harness.path_for(progress.index),
+                crate::systems::aerial_reference::View {
+                    camera: ll(Vec2::new(cam_world.x, cam_world.z)),
+                    aim: ll(target),
+                    pose,
+                },
             );
         }
-        // Where the camera and its aim actually are on Earth, out of the frame the
-        // world is drawn in — not the `--at` that was asked for.
-        let geo_of = |p: Vec2| {
-            readouts
-                .map_anchor
-                .geo
-                .map_or((f64::NAN, f64::NAN), |anchor| {
-                    crate::systems::geo_nav::world_to_lat_lng(
-                        anchor,
-                        f64::from(p.x),
-                        f64::from(p.y),
-                    )
-                })
-        };
-        let camera_geo = geo_of(Vec2::new(cam_world.x, cam_world.z));
-        let aim_geo = aim.map_or((f64::NAN, f64::NAN), geo_of);
-        let nearest_tunnel = aim.and_then(|p| readouts.tunnels.nearest_tunnel(p));
-        // Walked once here rather than twice in the struct literal below: the
-        // descendant walk is the only metric that costs a traversal.
-        let avatar_counts = readouts.avatar.counts();
-        // Likewise: one walk of every mesh entity, resolving each handle into
-        // `Assets<Mesh>`. Expensive per frame, free once per capture — and this is
-        // the frame the pool is already quiesced for.
-        let render = readouts.census.counts();
-        // Likewise, and it was called three times in the struct literal below —
-        // once per column — each walking every pool.
-        let grass = readouts.grass.census();
-        // One walk of the emitters, for two columns.
-        let particles = crate::systems::particles::particle_census(&visuals.particles);
-        // Absent on a backend that keeps no allocator report; reported as zeros
-        // rather than omitted, so a CSV row never changes width.
-        let vram = readouts
-            .render_device
-            .wgpu_device()
-            .generate_allocator_report()
-            .map_or((0, 0), |r| {
-                (
-                    r.total_allocated_bytes / 1024,
-                    r.total_reserved_bytes / 1024,
-                )
-            });
-        let deck_steps = readouts.decks.approach_steps(&readouts.terrain);
-        let m = ShotMetrics {
-            shot: progress.index + 1,
-            name: shot.name.clone(),
-            lat: shot.lat,
-            lng: shot.lng,
-            camera_lat: camera_geo.0,
-            camera_lng: camera_geo.1,
-            aim_lat: aim_geo.0,
-            aim_lng: aim_geo.1,
-            settled,
-            settled_s: verdict.at,
-            busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
-            frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
-            frame_ms_max: 1000.0 * progress.frame_time_max,
-            // Patched by the capture observer once the pair's second readback
-            // lands — the row is pushed at the shutter, before any pixels exist.
-            flicker_px: 0,
-            draws: render.draws,
-            tris_total: render.tris_total,
-            tris_shadow: render.tris_shadow,
-            shadow_casters: render.shadow_casters,
-            tris_buildings: render.tris_buildings,
-            tris_lod22: render.tris_lod22,
-            tris_tiles: render.tris_tiles,
-            tris_globe: render.tris_globe,
-            worker_outstanding: progress.worker_outstanding,
-            fetch_outstanding: crate::platform::fetch_gate::outstanding(),
-            radius_bias: crate::systems::load_control::bias(),
-            tiles_occluded: stream.occluded.len(),
-            aerial_tiles: stream.aerial_tiles(),
-            alt_m: globe.altitude_m(cell, tf) as i64,
-            space_factor: globe.space_factor(cell, tf),
-            in_space: globe.in_space(cell, tf),
-            orbit_space: cam_state.orbit_space,
-            near_m: near as i64,
-            far_m: far as i64,
-            exposure_ev100: exposure.ev100,
-            // No glare means no `Bloom` component at all, and 0.0 is the honest
-            // reading for it.
-            bloom: bloom.map_or(0.0, |b| b.intensity),
-            globe_albedo: readouts.globe_albedo.0,
-            veg_factor: readouts.vegetation.factor,
-            furniture_factor: readouts.furniture.factor,
-            route_meshes: visuals.route.iter().count(),
-            route_rendered: visuals.route.iter().filter(|vv| vv.get()).count(),
-            shaft_fog,
-            shaft_volumes: visuals.shafts.iter().count(),
-            // Distance from the camera to the volume's centre, in render space.
-            // The camera is the floating origin, so its own render position is
-            // ~0 and this is just the volume's magnitude — which is the point:
-            // it is the one number that tells a cell-local translation from a
-            // render-space one without knowing either frame's convention.
-            shaft_volume_m: visuals
-                .shafts
-                .iter()
-                .map(|t| t.translation().length())
-                .fold(f32::NAN, f32::min),
-            shaft_pref: readouts.prefs.light_shafts_on(),
-            shadows_pref: readouts.prefs.shadows_on(),
-            particle_emitters: particles.0 as usize,
-            particle_quads: particles.1 as usize,
-            grass_patches: grass.0,
-            grass_slots: grass.1,
-            grass_rendered: grass.2,
-            bag_buildings: readouts.bag.len(),
-            bag_addresses: readouts.bag.addresses().count(),
-            bag_berths: readouts.bag.berths().count(),
-            surveyed_trees: readouts.places.surveyed().0,
-            municipal_trees: readouts.places.surveyed().7,
-            municipal_props: readouts.places.surveyed().8,
-            surveyed_props: readouts.places.surveyed().1,
-            surveyed_lines: readouts.places.surveyed().2,
-            surveyed_paving: readouts.places.surveyed().3,
-            crop_parcels: readouts.places.surveyed().4,
-            nav_marks: readouts.places.surveyed().5,
-            level_crossings: readouts.places.surveyed().6,
-            prop_colliders: readouts.places.props().count(),
-            flood_defences: readouts.dikes.len(),
-            flood_defences_measured: readouts.dikes.measured(),
-            tunnel_count: readouts.tunnels.tunnel_count(),
-            tunnel_road_m: readouts.tunnels.deepest_road(),
-            tunnel_meshes: visuals.tunnels.iter().count(),
-            tunnel_rendered: visuals.tunnels.iter().filter(|vv| vv.get()).count(),
-            tunnel_entrance_lat: entrance.map_or(0.0, |(lat, _, _)| lat),
-            tunnel_entrance_lng: entrance.map_or(0.0, |(_, lng, _)| lng),
-            tunnel_entrance_heading: entrance.map_or(-1.0, |(_, _, h)| h),
-            tunnel_ahead_m: nearest_tunnel.map_or(-1.0, |(d, _)| d),
-            tunnel_ahead_road_m: nearest_tunnel.map_or(0.0, |(_, y)| y),
-            basemap_open_tiles: readouts.basemap_holes.0,
-            interior_rooms: readouts.interiors.rooms(),
-            interior_storeys: readouts.interior_floors.storeys(),
-            interior_designed: readouts.interiors.designed(),
-            cutaway_storey: if readouts.cutaway.active() {
-                readouts.cutaway.storey as i32
-            } else {
-                -1
-            },
-            building_selected: readouts.building_selection.is_selected(),
-            building_indoors: readouts.building_selection.is_indoors(),
-            building_shell_meshes: visuals.shells.iter().count(),
-            building_shell_rendered: visuals.shells.iter().filter(|vv| vv.get()).count(),
-            building_doors: readouts.lod22.doors(),
-            building_scaffolds: readouts.lod22.scaffolds(),
-            building_fences: readouts.lod22.fences(),
-            lod22_dated: readouts.lod22.dated().0,
-            lod22_elements: readouts.lod22.dated().1,
-            prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
-            traffic_cars: visuals
-                .agents
-                .iter()
-                .filter(|(k, v)| {
-                    **k == crate::systems::traffic::AgentKind::Car && **v != Visibility::Hidden
-                })
-                .count(),
-            traffic_walkers: visuals
-                .agents
-                .iter()
-                .filter(|(k, v)| {
-                    **k == crate::systems::traffic::AgentKind::Walker && **v != Visibility::Hidden
-                })
-                .count(),
-            avatar_meshes: avatar_counts.0,
-            avatar_rendered: avatar_counts.1,
-            avatar_floor_m: readouts.avatar_state.floor_lift,
-            globe_entities: visuals.globe.iter().count(),
-            globe_visible: visuals
-                .globe
-                .iter()
-                .filter(|(_, v)| **v == Visibility::Visible)
-                .count(),
-            globe_rendered: visuals.globe.iter().filter(|(vv, _)| vv.get()).count(),
-            globe_tiles_loaded: globe.tiles_loaded(),
-            globe_tiles_desired: globe.tiles_desired(),
-            globe_texture_mb: globe.tile_texture_bytes() as f32 / (1024.0 * 1024.0),
-            globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
-            ground_m: readouts.height.ground_m.unwrap_or(f32::NAN),
-            height_patches: readouts.height.fetched,
-            terrain_ready: readouts.terrain.is_ready(),
-            terrain_relief_m: readouts.terrain.range_m.1 - readouts.terrain.range_m.0,
-            // The live spacing, not the constant: `quality::Budget::terrain_grid`
-            // lowers it on a handset, and a metric that reported the nominal number
-            // there would say the phone measured ground it never asked for.
-            terrain_sample_m: readouts.terrain.sample_m(),
-            terrain_graded_samples: readouts.road_mask.marked_samples(),
-            approach_abutments: readouts.terrain.approach_samples.0,
-            approach_raised: readouts.terrain.approach_samples.1,
-            deck_count: deck_steps.0,
-            decks_unapproached: deck_steps.1,
-            deck_step_max_m: deck_steps.2,
-            deck_step_mean_m: deck_steps.3,
-            deck_profiled: readouts.decks.profiled(),
-            deck_piers: readouts.decks.piers(),
-            ground_detail_ready: readouts.ground_detail.slope.is_some(),
-            ground_detail_sample_m: readouts.ground_detail.sample_m,
-            fine_terrain_ready: readouts.terrain.fine_ready(),
-            fine_terrain_sample_m: if readouts.terrain.fine_ready() {
-                crate::systems::terrain::FINE_SAMPLE_M
-            } else {
-                0.0
-            },
-            water_rings: readouts.water_levels.len(),
-            water_carved_coarse: readouts.terrain.carved_coarse,
-            water_carved_fine: readouts.terrain.carved_fine,
-            water_drop_m: readouts.terrain.water_drop_m(),
-            upload_peak_kb: readouts.uploads.peak_kb(),
-            upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
-            gpu_resident_kb: readouts.uploads.resident_kb(),
-            gpu_resident_peak_kb: readouts.uploads.peak_resident_kb(),
-            warm_tile_hits: stream.warm_stats().0,
-            warm_tile_mb: stream.warm_stats().1 as f32 / (1024.0 * 1024.0),
-            warm_cell_restores: readouts.lod22.warm_stats().0,
-            warm_cell_mb: readouts.lod22.warm_stats().1 as f32 / (1024.0 * 1024.0),
-            fetch_count: progress.fetch_window.requests,
-            fetch_errors: progress.fetch_window.errors,
-            fetch_mb: progress.fetch_window.bytes as f32 / (1024.0 * 1024.0),
-            fetch_ttfb_ms: progress.fetch_window.ttfb_us / 1000,
-            fetch_body_ms: progress.fetch_window.body_us / 1000,
-            worker_jobs: progress.worker_window.iter().map(|(_, t)| t.jobs).sum(),
-            worker_busy_ms: progress
+    }
+    // Where the nearest tunnel actually goes under, as something you can type
+    // into `--at`. See `Tunnels::nearest_entrance` for why this is a
+    // reported number and not an arithmetic exercise at the call site.
+    let entrance = aim
+        .and_then(|p| readouts.tunnels.nearest_entrance(p))
+        .and_then(|(at, heading)| {
+            readouts.map_anchor.geo.map(|anchor| {
+                let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+                    anchor,
+                    f64::from(at.x),
+                    f64::from(at.y),
+                );
+                (lat, lng, heading)
+            })
+        });
+    if let Some((lat, lng, heading)) = entrance {
+        tracing::info!(
+            lat = format!("{lat:.6}"),
+            lng = format!("{lng:.6}"),
+            heading_deg = format!("{heading:.0}"),
+            "tunnel entrance"
+        );
+    }
+    // Where the camera and its aim actually are on Earth, out of the frame the
+    // world is drawn in — not the `--at` that was asked for.
+    let geo_of = |p: Vec2| {
+        readouts
+            .map_anchor
+            .geo
+            .map_or((f64::NAN, f64::NAN), |anchor| {
+                crate::systems::geo_nav::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y))
+            })
+    };
+    let camera_geo = geo_of(Vec2::new(cam_world.x, cam_world.z));
+    let aim_geo = aim.map_or((f64::NAN, f64::NAN), geo_of);
+    let nearest_tunnel = aim.and_then(|p| readouts.tunnels.nearest_tunnel(p));
+    // Walked once here rather than twice in the struct literal below: the
+    // descendant walk is the only metric that costs a traversal.
+    let avatar_counts = readouts.avatar.counts();
+    // Likewise: one walk of every mesh entity, resolving each handle into
+    // `Assets<Mesh>`. Expensive per frame, free once per capture — and this is
+    // the frame the pool is already quiesced for.
+    let render = readouts.census.counts();
+    // Likewise, and it was called three times in the struct literal below —
+    // once per column — each walking every pool.
+    let grass = readouts.grass.census();
+    // One walk of the emitters, for two columns.
+    let particles = crate::systems::particles::particle_census(&visuals.particles);
+    // Absent on a backend that keeps no allocator report; reported as zeros
+    // rather than omitted, so a CSV row never changes width.
+    let vram = readouts
+        .render_device
+        .wgpu_device()
+        .generate_allocator_report()
+        .map_or((0, 0), |r| {
+            (
+                r.total_allocated_bytes / 1024,
+                r.total_reserved_bytes / 1024,
+            )
+        });
+    let deck_steps = readouts.decks.approach_steps(&readouts.terrain);
+    let m = ShotMetrics {
+        shot: progress.index + 1,
+        name: shot.name.clone(),
+        lat: shot.lat,
+        lng: shot.lng,
+        camera_lat: camera_geo.0,
+        camera_lng: camera_geo.1,
+        aim_lat: aim_geo.0,
+        aim_lng: aim_geo.1,
+        settled,
+        settled_s: verdict.at,
+        busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
+        frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
+        frame_ms_max: 1000.0 * progress.frame_time_max,
+        // Patched by the capture observer once the pair's second readback
+        // lands — the row is pushed at the shutter, before any pixels exist.
+        flicker_px: 0,
+        draws: render.draws,
+        tris_total: render.tris_total,
+        tris_shadow: render.tris_shadow,
+        shadow_casters: render.shadow_casters,
+        tris_buildings: render.tris_buildings,
+        tris_lod22: render.tris_lod22,
+        tris_tiles: render.tris_tiles,
+        tris_globe: render.tris_globe,
+        worker_outstanding: progress.worker_outstanding,
+        fetch_outstanding: crate::platform::fetch_gate::outstanding(),
+        radius_bias: crate::systems::load_control::bias(),
+        tiles_occluded: stream.occluded.len(),
+        aerial_tiles: stream.aerial_tiles(),
+        alt_m: globe.altitude_m(cell, tf) as i64,
+        space_factor: globe.space_factor(cell, tf),
+        in_space: globe.in_space(cell, tf),
+        orbit_space: cam_state.orbit_space,
+        near_m: near as i64,
+        far_m: far as i64,
+        exposure_ev100: exposure.ev100,
+        // No glare means no `Bloom` component at all, and 0.0 is the honest
+        // reading for it.
+        bloom: bloom.map_or(0.0, |b| b.intensity),
+        globe_albedo: readouts.globe_albedo.0,
+        veg_factor: readouts.vegetation.factor,
+        furniture_factor: readouts.furniture.factor,
+        route_meshes: visuals.route.iter().count(),
+        route_rendered: visuals.route.iter().filter(|vv| vv.get()).count(),
+        shaft_fog,
+        shaft_volumes: visuals.shafts.iter().count(),
+        // Distance from the camera to the volume's centre, in render space.
+        // The camera is the floating origin, so its own render position is
+        // ~0 and this is just the volume's magnitude — which is the point:
+        // it is the one number that tells a cell-local translation from a
+        // render-space one without knowing either frame's convention.
+        shaft_volume_m: visuals
+            .shafts
+            .iter()
+            .map(|t| t.translation().length())
+            .fold(f32::NAN, f32::min),
+        shaft_pref: readouts.prefs.light_shafts_on(),
+        shadows_pref: readouts.prefs.shadows_on(),
+        particle_emitters: particles.0 as usize,
+        particle_quads: particles.1 as usize,
+        grass_patches: grass.0,
+        grass_slots: grass.1,
+        grass_rendered: grass.2,
+        bag_buildings: readouts.bag.len(),
+        bag_addresses: readouts.bag.addresses().count(),
+        bag_berths: readouts.bag.berths().count(),
+        surveyed_trees: readouts.places.surveyed().0,
+        municipal_trees: readouts.places.surveyed().7,
+        municipal_props: readouts.places.surveyed().8,
+        surveyed_props: readouts.places.surveyed().1,
+        surveyed_lines: readouts.places.surveyed().2,
+        surveyed_paving: readouts.places.surveyed().3,
+        crop_parcels: readouts.places.surveyed().4,
+        nav_marks: readouts.places.surveyed().5,
+        level_crossings: readouts.places.surveyed().6,
+        prop_colliders: readouts.places.props().count(),
+        flood_defences: readouts.dikes.len(),
+        flood_defences_measured: readouts.dikes.measured(),
+        tunnel_count: readouts.tunnels.tunnel_count(),
+        tunnel_road_m: readouts.tunnels.deepest_road(),
+        tunnel_meshes: visuals.tunnels.iter().count(),
+        tunnel_rendered: visuals.tunnels.iter().filter(|vv| vv.get()).count(),
+        tunnel_entrance_lat: entrance.map_or(0.0, |(lat, _, _)| lat),
+        tunnel_entrance_lng: entrance.map_or(0.0, |(_, lng, _)| lng),
+        tunnel_entrance_heading: entrance.map_or(-1.0, |(_, _, h)| h),
+        tunnel_ahead_m: nearest_tunnel.map_or(-1.0, |(d, _)| d),
+        tunnel_ahead_road_m: nearest_tunnel.map_or(0.0, |(_, y)| y),
+        basemap_open_tiles: readouts.basemap_holes.0,
+        interior_rooms: readouts.interiors.rooms(),
+        interior_storeys: readouts.interior_floors.storeys(),
+        interior_designed: readouts.interiors.designed(),
+        cutaway_storey: if readouts.cutaway.active() {
+            readouts.cutaway.storey as i32
+        } else {
+            -1
+        },
+        building_selected: readouts.building_selection.is_selected(),
+        building_indoors: readouts.building_selection.is_indoors(),
+        building_shell_meshes: visuals.shells.iter().count(),
+        building_shell_rendered: visuals.shells.iter().filter(|vv| vv.get()).count(),
+        building_doors: readouts.lod22.doors(),
+        building_scaffolds: readouts.lod22.scaffolds(),
+        building_fences: readouts.lod22.fences(),
+        lod22_dated: readouts.lod22.dated().0,
+        lod22_elements: readouts.lod22.dated().1,
+        prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
+        traffic_cars: visuals
+            .agents
+            .iter()
+            .filter(|(k, v)| {
+                **k == crate::systems::traffic::AgentKind::Car && **v != Visibility::Hidden
+            })
+            .count(),
+        traffic_walkers: visuals
+            .agents
+            .iter()
+            .filter(|(k, v)| {
+                **k == crate::systems::traffic::AgentKind::Walker && **v != Visibility::Hidden
+            })
+            .count(),
+        avatar_meshes: avatar_counts.0,
+        avatar_rendered: avatar_counts.1,
+        avatar_floor_m: readouts.avatar_state.floor_lift,
+        globe_entities: visuals.globe.iter().count(),
+        globe_visible: visuals
+            .globe
+            .iter()
+            .filter(|(_, v)| **v == Visibility::Visible)
+            .count(),
+        globe_rendered: visuals.globe.iter().filter(|(vv, _)| vv.get()).count(),
+        globe_tiles_loaded: globe.tiles_loaded(),
+        globe_tiles_desired: globe.tiles_desired(),
+        globe_texture_mb: globe.tile_texture_bytes() as f32 / (1024.0 * 1024.0),
+        globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
+        ground_m: readouts.height.ground_m.unwrap_or(f32::NAN),
+        height_patches: readouts.height.fetched,
+        terrain_ready: readouts.terrain.is_ready(),
+        terrain_relief_m: readouts.terrain.range_m.1 - readouts.terrain.range_m.0,
+        // The live spacing, not the constant: `quality::Budget::terrain_grid`
+        // lowers it on a handset, and a metric that reported the nominal number
+        // there would say the phone measured ground it never asked for.
+        terrain_sample_m: readouts.terrain.sample_m(),
+        terrain_graded_samples: readouts.road_mask.marked_samples(),
+        approach_abutments: readouts.terrain.approach_samples.0,
+        approach_raised: readouts.terrain.approach_samples.1,
+        deck_count: deck_steps.0,
+        decks_unapproached: deck_steps.1,
+        deck_step_max_m: deck_steps.2,
+        deck_step_mean_m: deck_steps.3,
+        deck_profiled: readouts.decks.profiled(),
+        deck_piers: readouts.decks.piers(),
+        ground_detail_ready: readouts.ground_detail.slope.is_some(),
+        ground_detail_sample_m: readouts.ground_detail.sample_m,
+        fine_terrain_ready: readouts.terrain.fine_ready(),
+        fine_terrain_sample_m: if readouts.terrain.fine_ready() {
+            crate::systems::terrain::FINE_SAMPLE_M
+        } else {
+            0.0
+        },
+        water_rings: readouts.water_levels.len(),
+        water_carved_coarse: readouts.terrain.carved_coarse,
+        water_carved_fine: readouts.terrain.carved_fine,
+        water_drop_m: readouts.terrain.water_drop_m(),
+        upload_peak_kb: readouts.uploads.peak_kb(),
+        upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
+        gpu_resident_kb: readouts.uploads.resident_kb(),
+        gpu_resident_peak_kb: readouts.uploads.peak_resident_kb(),
+        warm_tile_hits: stream.warm_stats().0,
+        warm_tile_mb: stream.warm_stats().1 as f32 / (1024.0 * 1024.0),
+        warm_cell_restores: readouts.lod22.warm_stats().0,
+        warm_cell_mb: readouts.lod22.warm_stats().1 as f32 / (1024.0 * 1024.0),
+        fetch_count: progress.fetch_window.requests,
+        fetch_errors: progress.fetch_window.errors,
+        fetch_mb: progress.fetch_window.bytes as f32 / (1024.0 * 1024.0),
+        fetch_ttfb_ms: progress.fetch_window.ttfb_us / 1000,
+        fetch_body_ms: progress.fetch_window.body_us / 1000,
+        worker_jobs: progress.worker_window.iter().map(|(_, t)| t.jobs).sum(),
+        worker_busy_ms: progress
+            .worker_window
+            .iter()
+            .map(|(_, t)| t.busy_us)
+            .sum::<u64>()
+            / 1000,
+        worker_wait_ms: progress
+            .worker_window
+            .iter()
+            .map(|(_, t)| t.wait_us)
+            .sum::<u64>()
+            / 1000,
+        worker_threads: crate::platform::workers::worker_count(),
+        // `busy / (threads × window)`. The window is the shot's own elapsed
+        // time, which is what the worker account above was deltaed over, so
+        // the two describe the same seconds. Guarded rather than clamped: a
+        // zero-length window or an unsized pool would otherwise divide by
+        // zero and report `inf` as a performance result.
+        worker_utilisation: {
+            let threads = crate::platform::workers::worker_count().max(1) as f64;
+            let window_us = f64::from(verdict.at) * 1_000_000.0;
+            let busy_us = progress
                 .worker_window
                 .iter()
                 .map(|(_, t)| t.busy_us)
-                .sum::<u64>()
-                / 1000,
-            worker_wait_ms: progress
-                .worker_window
-                .iter()
-                .map(|(_, t)| t.wait_us)
-                .sum::<u64>()
-                / 1000,
-            worker_threads: crate::platform::workers::worker_count(),
-            // `busy / (threads × window)`. The window is the shot's own elapsed
-            // time, which is what the worker account above was deltaed over, so
-            // the two describe the same seconds. Guarded rather than clamped: a
-            // zero-length window or an unsized pool would otherwise divide by
-            // zero and report `inf` as a performance result.
-            worker_utilisation: {
-                let threads = crate::platform::workers::worker_count().max(1) as f64;
-                let window_us = f64::from(verdict.at) * 1_000_000.0;
-                let busy_us = progress
-                    .worker_window
-                    .iter()
-                    .map(|(_, t)| t.busy_us)
-                    .sum::<u64>() as f64;
-                if window_us > 0.0 {
-                    (busy_us / (threads * window_us)) as f32
-                } else {
-                    0.0
-                }
-            },
-            worker_split: progress
-                .worker_window
-                .iter()
-                .map(|(label, t)| {
-                    format!(
-                        "{label}:{}:{}:{}",
-                        t.jobs,
-                        t.busy_us / 1000,
-                        t.wait_us / 1000
-                    )
-                })
-                .collect(),
-            software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
-            vram_allocated_kb: vram.0,
-            vram_reserved_kb: vram.1,
-        };
-        // One line, but its *level* carries whether the shot is trustworthy: a
-        // capture that timed out describes a half-built world, and at INFO it
-        // looked exactly like a slow success. The macro is here so the field list
-        // isn't duplicated once per level.
-        macro_rules! shot_state {
-            ($level:ident) => {
-                tracing::$level!(
-                    shot = m.shot,
-                    name = m.name.as_deref().unwrap_or("-"),
-                    settled = m.settled,
-                    busy = m.busy.join("|"),
-                    settled_in = format!("{:.1}s", m.settled_s),
-                    frame_ms = format!("{:.1}", m.frame_ms),
-                    frame_ms_max = format!("{:.1}", m.frame_ms_max),
-                    draws = m.draws,
-                    ktris_total = m.tris_total / 1000,
-                    ktris_shadow = m.tris_shadow / 1000,
-                    shadow_casters = m.shadow_casters,
-                    worker_outstanding = m.worker_outstanding,
-                    fetch_outstanding = m.fetch_outstanding,
-                    radius_bias = m.radius_bias,
-                    tiles_occluded = m.tiles_occluded,
-                    aerial_tiles = m.aerial_tiles,
-                    alt_m = m.alt_m,
-                    space_factor = format!("{:.3}", m.space_factor),
-                    in_space = m.in_space,
-                    orbit_space = m.orbit_space,
-                    near_m = m.near_m,
-                    far_m = m.far_m,
-                    exposure_ev100 = format!("{:.2}", m.exposure_ev100),
-                    bloom = format!("{:.3}", m.bloom),
-                    globe_albedo = format!("{:.3}", m.globe_albedo),
-                    veg_factor = format!("{:.3}", m.veg_factor),
-                    furniture_factor = format!("{:.3}", m.furniture_factor),
-                    route_meshes = m.route_meshes,
-                    route_rendered = m.route_rendered,
-                    particle_emitters = m.particle_emitters,
-                    particle_quads = m.particle_quads,
-                    grass_patches = m.grass_patches,
-                    grass_slots = m.grass_slots,
-                    grass_rendered = m.grass_rendered,
-                    nav_marks = m.nav_marks,
-                    level_crossings = m.level_crossings,
-                    prop_colliders = m.prop_colliders,
-                    prop_meshes = m.prop_meshes,
-                    traffic_cars = m.traffic_cars,
-                    traffic_walkers = m.traffic_walkers,
-                    avatar_meshes = m.avatar_meshes,
-                    avatar_rendered = m.avatar_rendered,
-                    globe_entities = m.globe_entities,
-                    globe_visible = m.globe_visible,
-                    globe_rendered = m.globe_rendered,
-                    ground_m = format!("{:.2}", m.ground_m),
-                    height_patches = m.height_patches,
-                    terrain_ready = m.terrain_ready,
-                    terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
-                    terrain_sample_m = format!("{:.2}", m.terrain_sample_m),
-                    fine_terrain_ready = m.fine_terrain_ready,
-                    fine_terrain_sample_m = format!("{:.2}", m.fine_terrain_sample_m),
-                    ground_detail_ready = m.ground_detail_ready,
-                    ground_detail_sample_m = format!("{:.2}", m.ground_detail_sample_m),
-                    water_rings = m.water_rings,
-                    water_carved_coarse = m.water_carved_coarse,
-                    water_carved_fine = m.water_carved_fine,
-                    water_drop_m = format!("{:.2}", m.water_drop_m),
-                    upload_peak_kb = m.upload_peak_kb,
-                    upload_peak_asset_kb = m.upload_peak_asset_kb,
-                    gpu_resident_kb = m.gpu_resident_kb,
-                    gpu_resident_peak_kb = m.gpu_resident_peak_kb,
-                    warm_tile_hits = m.warm_tile_hits,
-                    warm_tile_mb = m.warm_tile_mb,
-                    warm_cell_restores = m.warm_cell_restores,
-                    warm_cell_mb = m.warm_cell_mb,
-                    fetch_count = m.fetch_count,
-                    fetch_errors = m.fetch_errors,
-                    fetch_mb = format!("{:.2}", m.fetch_mb),
-                    fetch_ttfb_ms = m.fetch_ttfb_ms,
-                    fetch_body_ms = m.fetch_body_ms,
-                    worker_jobs = m.worker_jobs,
-                    worker_busy_ms = m.worker_busy_ms,
-                    worker_wait_ms = m.worker_wait_ms,
-                    worker_threads = m.worker_threads,
-                    worker_util = format!("{:.2}", m.worker_utilisation),
-                    worker_split = m.worker_split.join("|"),
-                    software_renderer = m.software_renderer,
-                    "shot state"
+                .sum::<u64>() as f64;
+            if window_us > 0.0 {
+                (busy_us / (threads * window_us)) as f32
+            } else {
+                0.0
+            }
+        },
+        worker_split: progress
+            .worker_window
+            .iter()
+            .map(|(label, t)| {
+                format!(
+                    "{label}:{}:{}:{}",
+                    t.jobs,
+                    t.busy_us / 1000,
+                    t.wait_us / 1000
                 )
-            };
-        }
-        if m.settled {
-            shot_state!(info);
-        } else {
-            shot_state!(warn);
-        }
-        for e in &harness.expect {
-            // `flicker_px` does not exist until the pair's second readback lands,
-            // which is after this row is pushed — the capture observer patches
-            // the field and runs these there instead. Checking here would gate
-            // on the placeholder 0 and pass everything.
-            if e.key == "flicker_px" {
-                continue;
-            }
-            if let Err(why) = e.check(&m) {
-                progress.unmet += 1;
-                tracing::error!(shot = m.shot, expect = %e, why = %why, "shot expect failed");
-            }
-        }
-        progress.metrics.push(m);
+            })
+            .collect(),
+        software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
+        vram_allocated_kb: vram.0,
+        vram_reserved_kb: vram.1,
+    };
+    // One line, but its *level* carries whether the shot is trustworthy: a
+    // capture that timed out describes a half-built world, and at INFO it
+    // looked exactly like a slow success. The macro is here so the field list
+    // isn't duplicated once per level.
+    macro_rules! shot_state {
+        ($level:ident) => {
+            tracing::$level!(
+                shot = m.shot,
+                name = m.name.as_deref().unwrap_or("-"),
+                settled = m.settled,
+                busy = m.busy.join("|"),
+                settled_in = format!("{:.1}s", m.settled_s),
+                frame_ms = format!("{:.1}", m.frame_ms),
+                frame_ms_max = format!("{:.1}", m.frame_ms_max),
+                draws = m.draws,
+                ktris_total = m.tris_total / 1000,
+                ktris_shadow = m.tris_shadow / 1000,
+                shadow_casters = m.shadow_casters,
+                worker_outstanding = m.worker_outstanding,
+                fetch_outstanding = m.fetch_outstanding,
+                radius_bias = m.radius_bias,
+                tiles_occluded = m.tiles_occluded,
+                aerial_tiles = m.aerial_tiles,
+                alt_m = m.alt_m,
+                space_factor = format!("{:.3}", m.space_factor),
+                in_space = m.in_space,
+                orbit_space = m.orbit_space,
+                near_m = m.near_m,
+                far_m = m.far_m,
+                exposure_ev100 = format!("{:.2}", m.exposure_ev100),
+                bloom = format!("{:.3}", m.bloom),
+                globe_albedo = format!("{:.3}", m.globe_albedo),
+                veg_factor = format!("{:.3}", m.veg_factor),
+                furniture_factor = format!("{:.3}", m.furniture_factor),
+                route_meshes = m.route_meshes,
+                route_rendered = m.route_rendered,
+                particle_emitters = m.particle_emitters,
+                particle_quads = m.particle_quads,
+                grass_patches = m.grass_patches,
+                grass_slots = m.grass_slots,
+                grass_rendered = m.grass_rendered,
+                nav_marks = m.nav_marks,
+                level_crossings = m.level_crossings,
+                prop_colliders = m.prop_colliders,
+                prop_meshes = m.prop_meshes,
+                traffic_cars = m.traffic_cars,
+                traffic_walkers = m.traffic_walkers,
+                avatar_meshes = m.avatar_meshes,
+                avatar_rendered = m.avatar_rendered,
+                globe_entities = m.globe_entities,
+                globe_visible = m.globe_visible,
+                globe_rendered = m.globe_rendered,
+                ground_m = format!("{:.2}", m.ground_m),
+                height_patches = m.height_patches,
+                terrain_ready = m.terrain_ready,
+                terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
+                terrain_sample_m = format!("{:.2}", m.terrain_sample_m),
+                fine_terrain_ready = m.fine_terrain_ready,
+                fine_terrain_sample_m = format!("{:.2}", m.fine_terrain_sample_m),
+                ground_detail_ready = m.ground_detail_ready,
+                ground_detail_sample_m = format!("{:.2}", m.ground_detail_sample_m),
+                water_rings = m.water_rings,
+                water_carved_coarse = m.water_carved_coarse,
+                water_carved_fine = m.water_carved_fine,
+                water_drop_m = format!("{:.2}", m.water_drop_m),
+                upload_peak_kb = m.upload_peak_kb,
+                upload_peak_asset_kb = m.upload_peak_asset_kb,
+                gpu_resident_kb = m.gpu_resident_kb,
+                gpu_resident_peak_kb = m.gpu_resident_peak_kb,
+                warm_tile_hits = m.warm_tile_hits,
+                warm_tile_mb = m.warm_tile_mb,
+                warm_cell_restores = m.warm_cell_restores,
+                warm_cell_mb = m.warm_cell_mb,
+                fetch_count = m.fetch_count,
+                fetch_errors = m.fetch_errors,
+                fetch_mb = format!("{:.2}", m.fetch_mb),
+                fetch_ttfb_ms = m.fetch_ttfb_ms,
+                fetch_body_ms = m.fetch_body_ms,
+                worker_jobs = m.worker_jobs,
+                worker_busy_ms = m.worker_busy_ms,
+                worker_wait_ms = m.worker_wait_ms,
+                worker_threads = m.worker_threads,
+                worker_util = format!("{:.2}", m.worker_utilisation),
+                worker_split = m.worker_split.join("|"),
+                software_renderer = m.software_renderer,
+                "shot state"
+            )
+        };
     }
-
-    fire_capture(
-        &mut commands,
-        &harness,
-        &mut progress,
-        target.as_deref(),
-        &mut shot_state,
-    );
+    if m.settled {
+        shot_state!(info);
+    } else {
+        shot_state!(warn);
+    }
+    for e in &harness.expect {
+        // `flicker_px` does not exist until the pair's second readback lands,
+        // which is after this row is pushed — the capture observer patches
+        // the field and runs these there instead. Checking here would gate
+        // on the placeholder 0 and pass everything.
+        if e.key == "flicker_px" {
+            continue;
+        }
+        if let Err(why) = e.check(&m) {
+            progress.unmet += 1;
+            tracing::error!(shot = m.shot, expect = %e, why = %why, "shot expect failed");
+        }
+    }
+    progress.metrics.push(m);
 }
 
 /// Spawn the capture request for the current shot and start its readback budget.
