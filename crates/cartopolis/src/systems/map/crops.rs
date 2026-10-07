@@ -71,25 +71,17 @@ const CATEGORIES: [Option<CropCategory>; 6] = [
     None,
 ];
 
-/// One parcel on the wire: its category, its `gewascode`, and its rings as
-/// lat/lng — outer first, holes after.
-#[derive(serde::Deserialize)]
-struct WireParcel(usize, u32, Vec<Vec<(f64, f64)>>);
-
 /// One cell's crop parcels, still in lat/lng as the host sent them.
 #[derive(Clone, Debug, Default)]
 pub struct CropCell {
     pub parcels: Vec<(CropCategory, u32, Vec<Vec<(f64, f64)>>)>,
 }
 
-/// Parse a cell's crop file: `{"parcels":[[category,code,[ring,…]],…]}`.
+/// Parse a cell's crop file: `{"parcels":[[category,code,[ring,…]],…]}` — one
+/// parcel on the wire is its category, its `gewascode`, and its rings as
+/// lat/lng, outer first, holes after (`cartopolis_geo::formats::brp`).
 pub fn parse_crop_cell(text: &str) -> Result<CropCell, String> {
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        parcels: Vec<WireParcel>,
-    }
-    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let wire = cartopolis_geo::formats::brp::parse(text)?;
     // Every parcel shares one rung of the depth ladder, so two copies of one
     // polygon are a per-pixel z-fight that re-rolls with the view matrix. The
     // register serves one year with no superseded versions in it — unlike the
@@ -104,7 +96,7 @@ pub fn parse_crop_cell(text: &str) -> Result<CropCell, String> {
             // An outer ring under three points is not a parcel. The extractor
             // drops those; a truncated cache entry can produce one.
             .filter(|p| p.2.first().is_some_and(|r| r.len() >= 3))
-            .filter(|WireParcel(c, code, rings)| {
+            .filter(|(c, code, rings)| {
                 seen.insert((
                     *c,
                     *code,
@@ -118,7 +110,7 @@ pub fn parse_crop_cell(text: &str) -> Result<CropCell, String> {
                         .collect::<Vec<_>>(),
                 ))
             })
-            .filter_map(|WireParcel(c, code, rings)| {
+            .filter_map(|(c, code, rings)| {
                 // A category this build has no variant for — the reserved
                 // landscape-element position, or a position from an extractor
                 // newer than this client — drops the parcel. Clamping to the last

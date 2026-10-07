@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use cartopolis_geo::formats::brp as wire;
 use serde_json::{json, Value};
 
 use super::geom::{lat_lng_rings, polygon_rings, ring_area, round, M_PER_DEG};
@@ -179,7 +180,7 @@ fn pieces(rings: Vec<Vec<[f64; 2]>>) -> Vec<(Cell, Vec<Vec<[f64; 2]>>)> {
 
 /// One feature's parcels as `(cell, wire record)`, or the reason it is not
 /// drawn.
-fn parcels_of(feat: &Value) -> Result<Vec<(Cell, Value)>, Skip> {
+fn parcels_of(feat: &Value) -> Result<Vec<(Cell, wire::Parcel)>, Skip> {
     let props = &feat["properties"];
     let category = props["category"].as_str().unwrap_or_default();
     let Some(ci) = CATEGORIES.iter().position(|c| *c == category) else {
@@ -198,10 +199,18 @@ fn parcels_of(feat: &Value) -> Result<Vec<(Cell, Value)>, Skip> {
                 .and_then(|s| s.trim().parse().ok())
         })
         .unwrap_or(0);
+    // The client reads the code as a `u32`; one past it would fail the whole
+    // cell's parse there, so it is written as "no code" instead. The register's
+    // codes are three- and four-digit numbers.
+    let code = u32::try_from(code).unwrap_or(0);
     let mut out = Vec::new();
     for poly in polygon_rings(&feat["geometry"]) {
         for (cell, rings) in pieces(lat_lng_rings(&poly, SIMPLIFY_M, MIN_AREA_M2)) {
-            out.push((cell, json!([ci, code, rings])));
+            let rings = rings
+                .into_iter()
+                .map(|r| r.into_iter().map(|[lat, lng]| (lat, lng)).collect())
+                .collect();
+            out.push((cell, (ci, code, rings)));
         }
     }
     if out.is_empty() {
@@ -223,7 +232,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     // Held per year until the walk ends: the service serves one year today, and
     // if it ever serves two, only the newest is drawn — two years of one field
     // on one rung of the depth ladder is a z-fight.
-    let mut by_year: BTreeMap<i64, HashMap<Cell, Vec<Value>>> = BTreeMap::new();
+    let mut by_year: BTreeMap<i64, HashMap<Cell, Vec<wire::Parcel>>> = BTreeMap::new();
     let mut seen_categories: BTreeMap<String, usize> = BTreeMap::new();
     let (mut total, mut ditches, mut unknown, mut slivers) = (0usize, 0usize, 0usize, 0usize);
 
@@ -313,12 +322,15 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             year.unwrap_or(0)
         ));
     }
-    let cells = year.and_then(|y| by_year.remove(&y)).unwrap_or_default();
+    let mut cells = year.and_then(|y| by_year.remove(&y)).unwrap_or_default();
 
     let mut n_parcels = 0usize;
-    for (cell, parcels) in &cells {
+    for (cell, parcels) in &mut cells {
         n_parcels += parcels.len();
-        ctx.write_json(&cell_path("brp", *cell), &json!({ "parcels": parcels }))?;
+        let doc = wire::Cell {
+            parcels: std::mem::take(parcels),
+        };
+        ctx.write_doc(&cell_path("brp", *cell), &doc)?;
     }
     ctx.write_json(
         "brp/coverage.json",
@@ -381,11 +393,33 @@ mod tests {
         assert_eq!(parcels.len(), 1);
         let (cell, rec) = &parcels[0];
         assert_eq!(*cell, lat_lng_to_cell(53.2505, 6.5005));
-        assert_eq!(rec[0], 1);
-        assert_eq!(rec[1], 2014);
-        let outer = rec[2][0].as_array().unwrap();
+        assert_eq!(rec.0, 1);
+        assert_eq!(rec.1, 2014);
+        let outer = &rec.2[0];
         assert_eq!(outer.len(), 4, "open ring, corners only");
-        assert_eq!(outer[0], json!([53.25, 6.5]), "lat before lng");
+        assert_eq!(outer[0], (53.25, 6.5), "lat before lng");
+    }
+
+    /// The typed record serialises to exactly what `json!([ci, code, rings])`
+    /// did, so cells already on the host and the ones written now read alike.
+    #[test]
+    fn a_parcel_is_written_byte_for_byte_as_before() {
+        let parcels =
+            parcels_of(&feature("Bouwland", json!(2014), vec![field(6.5, 53.25)])).unwrap();
+        let (_, rec) = &parcels[0];
+        let rings: Vec<Vec<[f64; 2]>> = rec
+            .2
+            .iter()
+            .map(|r| r.iter().map(|&(lat, lng)| [lat, lng]).collect())
+            .collect();
+        let old = json!({ "parcels": [json!([rec.0, u64::from(rec.1), rings])] });
+        let new = wire::Cell {
+            parcels: vec![rec.clone()],
+        };
+        assert_eq!(
+            cartopolis_geo::formats::to_vec(&new).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
     }
 
     #[test]
@@ -435,7 +469,7 @@ mod tests {
         let mut total = 0.0;
         for (cell, rec) in &parcels {
             let [_, _, w, e] = cell_bounds(*cell);
-            let outer: Vec<[f64; 2]> = serde_json::from_value(rec[2][0].clone()).unwrap();
+            let outer: Vec<[f64; 2]> = rec.2[0].iter().map(|&(lat, lng)| [lat, lng]).collect();
             assert!(
                 outer.iter().all(|p| p[1] >= w - 1e-7 && p[1] <= e + 1e-7),
                 "{cell:?} holds ground outside itself"
@@ -470,15 +504,15 @@ mod tests {
         let parcels = parcels_of(&feature("Bouwland", json!(259), vec![outer, hole])).unwrap();
         let west_piece = parcels.iter().find(|(c, _)| *c == (cx, cy)).unwrap();
         let east_piece = parcels.iter().find(|(c, _)| *c == (cx + 1, cy)).unwrap();
-        assert_eq!(west_piece.1[2].as_array().unwrap().len(), 2);
-        assert_eq!(east_piece.1[2].as_array().unwrap().len(), 1);
+        assert_eq!(west_piece.1 .2.len(), 2);
+        assert_eq!(east_piece.1 .2.len(), 1);
     }
 
     #[test]
     fn a_crop_code_sent_as_text_still_reads() {
         let parcels =
             parcels_of(&feature("Bouwland", json!("233"), vec![field(6.5, 53.25)])).unwrap();
-        assert_eq!(parcels[0].1[1], 233);
+        assert_eq!(parcels[0].1 .1, 233);
     }
 
     /// The client's `CATEGORIES` is positional; these are its positions.

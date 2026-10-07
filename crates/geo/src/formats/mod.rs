@@ -31,6 +31,7 @@
 
 pub mod bag;
 pub mod bgt;
+pub mod brp;
 pub mod dikes;
 pub mod lod22;
 pub mod osm_buildings;
