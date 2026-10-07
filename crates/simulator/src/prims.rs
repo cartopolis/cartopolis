@@ -696,7 +696,7 @@ impl PrimService {
         tokio::spawn(async move { this.flush().await })
     }
 
-    fn broadcast(&self, msg: &NetMessage) {
+    pub(crate) fn broadcast(&self, msg: &NetMessage) {
         match encode_app_frame(msg) {
             Ok(frame) => {
                 let _ = self.tx_snap.send(Bytes::from(frame));

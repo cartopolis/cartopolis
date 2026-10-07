@@ -42,6 +42,21 @@ impl Plugin for MapPlugin {
             Update,
             systems::prim_sound::play_prim_sounds.after(systems::network::apply_network_snapshot),
         );
+        // Hands near prims, and prim tones (protocol 36). The hand is reported
+        // after the camera has moved, so it is this frame's.
+        app.init_resource::<systems::prim_hand::HandReports>()
+            .init_resource::<systems::prim_hand::PreciseHand>()
+            .add_systems(
+                Update,
+                systems::prim_hand::report_hands
+                    .after(systems::free_camera::camera_controls)
+                    .after(systems::network::apply_network_snapshot),
+            );
+        #[cfg(feature = "audio")]
+        app.add_systems(
+            Update,
+            systems::prim_tone::drive_prim_tones.after(systems::network::apply_network_snapshot),
+        );
         #[cfg(feature = "audio")]
         app.add_systems(Startup, systems::prim_sound::setup_prim_sounds)
             .add_systems(

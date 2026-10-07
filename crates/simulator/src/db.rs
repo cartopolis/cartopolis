@@ -172,6 +172,10 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         sound_loop: None,
         // Protocol 34 (`V26__prim_physical.sql`).
         physical: row.get(42)?,
+        // Protocol 36. Memory only, like `sound_loop`: the script sets them
+        // again in `on_start`.
+        hand_range: 0.0,
+        tone: None,
     })
 }
 

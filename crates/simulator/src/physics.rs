@@ -843,6 +843,8 @@ mod tests {
             video: None,
             sound_loop: None,
             physical,
+            hand_range: 0.0,
+            tone: None,
         }
     }
 

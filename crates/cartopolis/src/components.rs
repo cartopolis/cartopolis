@@ -57,6 +57,20 @@ pub struct Prim {
     pub physical: bool,
 }
 
+/// The prim's script wants the hands within this many metres (protocol 36,
+/// `sense_hands`); `systems::prim_hand` reports this client's to it. Its own
+/// component so that a prim script can be read without touching `Prim`,
+/// whose every change rebuilds the mesh.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SensesHands(pub f32);
+
+/// The tone a prim's script is sounding (protocol 36), played by
+/// `systems::prim_tone`. A component of its own rather than a field on
+/// [`Prim`], because a script following a hand changes it twenty times a
+/// second and a change to `Prim` rebuilds the prim's mesh.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SoundingTone(pub Option<cartopolis_core::ToneSpec>);
+
 /// The last pose the simulator sent for a physical prim
 /// (`NetMessage::PrimMotion`), and where it is being drawn on the way there.
 ///

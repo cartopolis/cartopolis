@@ -1,0 +1,76 @@
+---
+topic: hands near a prim, and tones
+triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA]
+updated: 2026-10-07
+---
+
+# Hands near a prim, and tones
+
+Two generic script features (protocol 36), added so a theremin could be built
+**as a script** rather than as an engine feature:
+
+- `sense_hands(range_m)` / `on_hand(avatar_id, name, x, y, z, precise)` — the
+  script asks for hands within `range_m` (at most 5 m) of its prim, and every
+  client in range reports its user's hand: metres from the prim's centre in the
+  prim's own frame (turned with it, not scaled), up to 20 Hz per prim.
+- `set_tone{pitch, gain?, voice?, glide?, vibrato?, range?}` / `stop_tone()` —
+  a synthesised tone (sine, organ, saw, square) every client in range plays.
+
+The engine maps nothing to pitch or volume and decides nothing about who
+plays. `crates/simulator/content/theremin.lua` (the `theremin` content pack)
+takes the first hand to arrive as its player, ignores everybody else's until
+the player's stops arriving for a second, turns the hand's distance to a rod
+and to a loop into `set_tone` calls, and shows who is playing in its name.
+
+## Decisions, and what lost
+
+**Walk up and play, not take hold (2026-10-07).** A version where you pressed
+E to *hold* the prim (`set_holdable`, `on_hold`, a "holding" tag) was built
+and dropped: the engine was deciding who plays, which a script can do in ten
+lines, and a real theremin is played by bringing a hand near it.
+
+**An `instrument{}` call that declared antennas and mappings was built before
+that and rejected.** It was faster — the player's client evaluated the mapping
+and synthesised the tone with no network in the loop — but it put an
+instrument into the engine. The price of the generic version is latency: the
+hand goes to the simulator, the script runs on its next tick (20 Hz), and the
+tone comes back — on the order of 100–150 ms from hand to ear, against ~20 ms
+for an instrument that feels immediate. `glide` hides the steps between
+updates. **Not measured on a device yet.** If it is too slow, the way back is
+to run the same script handler on the player's client, not to re-introduce a
+mapping in the engine.
+
+**High precision is the consent.** A hand report is a precise position report,
+and nobody agrees to send one by walking past a prim, so a client reports
+hands only while its user has the high-precision tracking mode on (camera
+tracking against the 3DBAG building models, toggled from the GPS button —
+where the phone's pose *is* the view, so the camera position is the hand).
+Until that mode exists `prim_hand::PreciseHand::active` stays false and
+nothing is reported, except under `CARTO_HAND_FROM_CAMERA=1`, a developer
+switch that lets a desktop camera stand in and reports it `precise = false`.
+The 5 m ceiling on `sense_hands` is the same argument: past arm's reach and a
+few steps a hand is a location.
+
+**The server checks the range; the script decides the rest.** A hand outside
+the prim's `hand_range` (plus 25 cm for a client a tick behind) is dropped, and
+the per-connection bucket allows 100 reports a second.
+
+**A tone is its own message (`PrimTone`), not a `PrimUpsert`.** A script
+following a hand sets it 20 times a second; a whole prim per change would make
+every client rebuild the prim's mesh. On the client the tone and the hand
+range are components of their own (`SoundingTone`, `SensesHands`) for the same
+reason — writing `Prim` triggers the rebuild. `PrimDto::tone` still carries it
+for a client that arrives mid-tone. The tick loop sends one `PrimTone` per
+prim per tick, the last one set.
+
+**Hands coalesce in the script queue, per person.** A hand is a level: a
+newer one replaces the same person's still waiting, so a slow handler plays
+where the hand is now, not a backlog — and one busy hand cannot hide another.
+
+**Smoothing is the synthesiser's, per sample.** The main thread writes target
+pitch and gain into atomics; the audio thread glides toward them
+(log-frequency at the script's `glide`, at least 4 ms; 15 ms on gain).
+Stepping a sink volume per frame zippers a pure tone.
+
+Hand range and tone are memory-only, like `sound_loop`: a restart runs
+`on_start` again.

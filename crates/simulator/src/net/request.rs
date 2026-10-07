@@ -124,6 +124,9 @@ pub enum ClientRequest {
         request_id: u32,
         prim_id: i64,
     },
+    HandPose {
+        pose: cartopolis_core::HandPose,
+    },
     VoiceFrame {
         scope: ChatScope,
         seq: u32,
@@ -374,6 +377,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 request_id,
                 prim_id,
             },
+            NetMessage::HandPose { pose } => Self::HandPose { pose },
             NetMessage::VoiceFrame {
                 scope,
                 seq,
@@ -549,6 +553,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallRoster { .. }
             | NetMessage::CallDeclined { .. }
             | NetMessage::PrimSound { .. }
+            | NetMessage::PrimTone { .. }
             | NetMessage::PrimMotion { .. }
             | NetMessage::Permissions { .. }
             | NetMessage::ContactsState { .. }

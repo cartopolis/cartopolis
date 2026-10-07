@@ -393,3 +393,54 @@ async fn a_script_can_end_its_own_prim() {
     .await;
     assert_eq!(used, 0, "the prim's slot should have been given back");
 }
+
+/// A hand near a prim that senses hands reaches its script, and the tone the
+/// script sets in answer reaches everybody — the whole loop the theremin is
+/// built on, across two connections.
+#[tokio::test]
+async fn a_hand_near_a_prim_becomes_a_tone_everybody_hears() {
+    let (handle, _dir) = start_sim().await;
+    let addr = handle.local_addr.to_string();
+    let mut player = connect_auth(&addr).await;
+    let prim_id = create_prim(&mut player).await;
+    send(
+        &mut player,
+        &NetMessage::SetPrimScript {
+            request_id: 2,
+            prim_id,
+            source: "function on_start() sense_hands(2) end \
+                     function on_hand(id, name, x, y, z, precise) set_tone{ pitch = 200 + x * 100 } end"
+                .into(),
+        },
+    )
+    .await;
+    // Clients learn which prims want hands from the prim itself.
+    recv_until(&mut player, "the hand range", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.id == prim_id && prim.hand_range == 2.0 => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let mut listener = connect_auth(&addr).await;
+    let hand = |x: f32| NetMessage::HandPose {
+        pose: cartopolis_core::HandPose {
+            prim_id,
+            offset: [x, 0.0, 0.0],
+            precise: true,
+        },
+    };
+    // Out of range first: the script never hears it, so the first tone the
+    // listener hears is the in-range hand's.
+    send(&mut player, &hand(10.0)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut player, &hand(1.0)).await;
+    let pitch = recv_until(&mut listener, "the tone", |m| match m {
+        NetMessage::PrimTone {
+            prim_id: id,
+            tone: Some(t),
+        } if id == prim_id => Some(t.pitch_hz),
+        _ => None,
+    })
+    .await;
+    assert!((pitch - 300.0).abs() < 1e-3, "{pitch}");
+}

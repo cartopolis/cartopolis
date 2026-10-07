@@ -55,7 +55,7 @@ const MARKT_LNG: f64 = 6.5665;
 /// Every pack this build carries.
 #[must_use]
 pub fn packs() -> Vec<Pack> {
-    vec![firebird(), football()]
+    vec![firebird(), football(), theremin()]
 }
 
 /// One pack by name.
@@ -349,6 +349,86 @@ fn football() -> Pack {
     }
 }
 
+/// Where the theremin's cabinet stands: the north side of the Grote Markt, a
+/// few paces from the beacon so the two do not crowd one another.
+const THEREMIN_AT: (f64, f64) = (53.21952, 6.56655);
+/// Height of the cabinet's centre — waist high, played standing.
+const THEREMIN_CABINET_Y: f32 = 1.0;
+/// The two antennas, metres from the cabinet's centre (east, up, south). The
+/// same numbers are `ROD` and `LOOP` in `theremin.lua`; a test holds them
+/// together, because the rod you see and the rod you play must be one rod.
+const THEREMIN_ROD: [f32; 3] = [0.35, 0.45, 0.0];
+const THEREMIN_LOOP: [f32; 3] = [-0.4, 0.05, 0.0];
+
+/// A theremin you play with your hand: a cabinet on a stand, with its pitch rod
+/// and volume loop. Everything that makes it an instrument is `theremin.lua`,
+/// built on `sense_hands`, `on_hand` and `set_tone`.
+///
+/// The rod and the loop are prims of their own, placed where the cabinet's
+/// script measures the hand against — they are what the player reaches for,
+/// and antennas nobody can see are antennas nobody can learn.
+fn theremin() -> Pack {
+    let (lat, lng) = THEREMIN_AT;
+    let (_, per_lng) = cartopolis_core::degree_scale_m(lat);
+    // East of the cabinet by `east` metres. The cabinet is not turned, so its
+    // own +x is east and an antenna offset is a longitude offset.
+    let east = |m: f32| lng + f64::from(m) / per_lng;
+    let part =
+        |name: &str, shape: &str, x: f32, y: f32, scale: [f32; 3], color: [f32; 3]| PrimSpec {
+            name: Some(name.into()),
+            shape: Some(shape.into()),
+            latitude: Some(lat),
+            longitude: Some(east(x)),
+            altitude: Some(y),
+            scale: Some(scale),
+            color: Some(color),
+            ..PrimSpec::default()
+        };
+    let brass = [0.78, 0.62, 0.32];
+    Pack {
+        name: "theremin",
+        summary: "A theremin on the Grote Markt that one person at a time picks up \
+                  and plays with their hand, heard by everybody near it.",
+        prims: vec![
+            PrimSpec {
+                script: Some(include_str!("../content/theremin.lua").into()),
+                ..part(
+                    "Theremin",
+                    "box",
+                    0.0,
+                    THEREMIN_CABINET_Y,
+                    [0.6, 0.25, 0.3],
+                    [0.28, 0.16, 0.09],
+                )
+            },
+            part(
+                "Theremin stand",
+                "cylinder",
+                0.0,
+                THEREMIN_CABINET_Y / 2.0 - 0.06,
+                [0.06, THEREMIN_CABINET_Y - 0.12, 0.06],
+                [0.1, 0.1, 0.1],
+            ),
+            part(
+                "Theremin pitch rod",
+                "cylinder",
+                THEREMIN_ROD[0],
+                THEREMIN_CABINET_Y + THEREMIN_ROD[1],
+                [0.02, 0.6, 0.02],
+                brass,
+            ),
+            part(
+                "Theremin volume loop",
+                "torus",
+                THEREMIN_LOOP[0],
+                THEREMIN_CABINET_Y + THEREMIN_LOOP[1],
+                [0.25, 0.04, 0.25],
+                brass,
+            ),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +481,19 @@ mod tests {
                     prim.name
                 );
             }
+        }
+    }
+
+    /// The theremin's script plays the antennas the pack drew.
+    #[test]
+    fn the_theremin_plays_the_antennas_it_shows() {
+        let source = include_str!("../content/theremin.lua");
+        let fmt = |name: &str, v: [f32; 3]| {
+            format!("local {name} = {{{:?}, {:?}, {}}}", v[0], v[1], v[2] as i32)
+        };
+        for (name, v) in [("ROD", THEREMIN_ROD), ("LOOP", THEREMIN_LOOP)] {
+            let line = fmt(name, v);
+            assert!(source.contains(&line), "theremin.lua lacks `{line}`");
         }
     }
 

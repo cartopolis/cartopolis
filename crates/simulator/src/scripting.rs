@@ -41,8 +41,9 @@
 //! space. Without that, `sandbox(true)` would make the global table read-only and
 //! every script would fail on its first `function` statement.
 
+use cartopolis_core::tone::{note_hz, Voice};
 use cartopolis_core::{
-    GeoAnchor, ParticleEffect, PrimSound, ScriptLevel, SoundName, DEFAULT_SOUND_RANGE_M,
+    GeoAnchor, ParticleEffect, PrimSound, ScriptLevel, SoundName, ToneSpec, DEFAULT_SOUND_RANGE_M,
 };
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
@@ -175,6 +176,15 @@ pub enum ScriptEvent {
         text: String,
         sender: i64,
     },
+    /// Where somebody's hand is near this prim (`sense_hands`), metres in the
+    /// prim's own frame. Coalesced per person: a script that falls behind gets
+    /// each person's newest hand, not a backlog of old ones ([`Slot::queue`]).
+    Hand {
+        avatar_id: u64,
+        avatar_name: String,
+        offset: [f32; 3],
+        precise: bool,
+    },
 }
 
 impl ScriptEvent {
@@ -185,6 +195,7 @@ impl ScriptEvent {
             Self::Touch { .. } => "on_touch",
             Self::Timer => "on_timer",
             Self::Message { .. } => "on_message",
+            Self::Hand { .. } => "on_hand",
         }
     }
 }
@@ -272,6 +283,20 @@ pub enum ScriptCommand {
         prim_id: i64,
         sound: Option<PrimSound>,
     },
+    /// Ask for the hands within `range` metres (`sense_hands`), 0 for none. A
+    /// field write on `PrimDto::hand_range`, which is how clients learn which
+    /// prims to report a hand to; already clamped.
+    SenseHands {
+        prim_id: i64,
+        range: f32,
+    },
+    /// Sound (`set_tone`) or with `None` silence (`stop_tone`) the prim's
+    /// tone. Not a field write the tick loop broadcasts as an upsert: it goes
+    /// out as `NetMessage::PrimTone`, coalesced to one per prim per tick.
+    SetTone {
+        prim_id: i64,
+        tone: Option<ToneSpec>,
+    },
     /// Delete the prim and everything of it, `die`.
     Die {
         prim_id: i64,
@@ -314,6 +339,8 @@ impl ScriptCommand {
             | Self::Say { prim_id, .. }
             | Self::PlaySound { prim_id, .. }
             | Self::SetSoundLoop { prim_id, .. }
+            | Self::SenseHands { prim_id, .. }
+            | Self::SetTone { prim_id, .. }
             | Self::Output { prim_id, .. }
             | Self::SetPhysical { prim_id, .. }
             | Self::SetVel { prim_id, .. }
@@ -763,6 +790,18 @@ impl Slot {
         {
             return;
         }
+        // A hand is a level, not an edge: only where it is *now* matters, so a
+        // newer one replaces the same person's still waiting rather than
+        // queueing behind it — or a slow handler would play a hand's movements
+        // back late. Per person, so one busy hand cannot hide another.
+        if let ScriptEvent::Hand { avatar_id, .. } = event {
+            if let Some(waiting) = self.pending.iter_mut().find(
+                |e| matches!(e, ScriptEvent::Hand { avatar_id: other, .. } if *other == avatar_id),
+            ) {
+                *waiting = event;
+                return;
+            }
+        }
         if self.pending.len() >= MAX_PENDING_EVENTS {
             match self
                 .pending
@@ -830,6 +869,19 @@ impl Slot {
                 text,
                 sender,
             }) => thread.resume((channel, text, sender)),
+            Some(ScriptEvent::Hand {
+                avatar_id,
+                avatar_name,
+                offset,
+                precise,
+            }) => thread.resume((
+                avatar_id,
+                avatar_name,
+                offset[0],
+                offset[1],
+                offset[2],
+                precise,
+            )),
             Some(_) | None => thread.resume(()),
         };
         let spent = (budget - self.fuel.load(Ordering::Relaxed)).max(0);
@@ -1261,6 +1313,31 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         })?,
     )?;
 
+    let s = shared.clone();
+    env.set(
+        "set_tone",
+        lua.create_function(move |_, rules: mlua::Table| {
+            let tone = tone_from_table(&rules)?;
+            s.push(ScriptCommand::SetTone {
+                prim_id: s.prim_id,
+                tone: Some(tone),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "stop_tone",
+        lua.create_function(move |_, ()| {
+            s.push(ScriptCommand::SetTone {
+                prim_id: s.prim_id,
+                tone: None,
+            });
+            Ok(())
+        })?,
+    )?;
+
     // ── Chat ──
 
     let s = shared.clone();
@@ -1336,6 +1413,19 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
                 Some((id, name, d)) => Ok((Some(*id), Some(name.clone()), Some(*d))),
                 None => Ok((None, None, None)),
             }
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "sense_hands",
+        lua.create_function(move |_, range: f32| {
+            let range = finite(range)?.clamp(0.0, cartopolis_core::tone::MAX_HAND_RANGE_M);
+            s.push(ScriptCommand::SenseHands {
+                prim_id: s.prim_id,
+                range,
+            });
+            Ok(())
         })?,
     )?;
 
@@ -1565,6 +1655,78 @@ fn prim_sound(
     .sanitized())
 }
 
+/// Refuse a key not in `keys`. A tone whose `vibratto = 0.5` quietly did
+/// nothing would be found by ear, which is the slowest way to find a typo.
+fn only_keys(t: &mlua::Table, what: &str, keys: &[&str]) -> mlua::Result<()> {
+    for pair in t.clone().pairs::<mlua::Value, mlua::Value>() {
+        let (k, _) = pair?;
+        let name = k
+            .as_string()
+            .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
+            .unwrap_or_default();
+        if !keys.contains(&name.as_str()) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "{what} `{name}` is not one of: {}",
+                keys.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A pitch written as a note (`"C3"`) or as hertz.
+fn pitch_value(v: mlua::Value) -> mlua::Result<f32> {
+    match v {
+        mlua::Value::Integer(i) => Ok(i as f32),
+        mlua::Value::Number(n) => finite(n as f32),
+        mlua::Value::String(s) => {
+            let text = s.to_str()?.to_string();
+            note_hz(&text).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "set_tone: pitch = \"{text}\" is not a note — write it as \"A4\", \"C#3\" or \"Eb5\", or give hertz"
+                ))
+            })
+        }
+        mlua::Value::Nil => Err(mlua::Error::RuntimeError(
+            "set_tone: needs a pitch, in hertz or as a note like \"A4\"".to_string(),
+        )),
+        _ => Err(mlua::Error::RuntimeError(
+            "set_tone: pitch must be a note like \"A4\" or a number of hertz".to_string(),
+        )),
+    }
+}
+
+/// Read `set_tone{}`'s fields. Only the pitch is required.
+fn tone_from_table(t: &mlua::Table) -> mlua::Result<ToneSpec> {
+    only_keys(
+        t,
+        "set_tone field",
+        &["pitch", "gain", "voice", "glide", "vibrato", "range"],
+    )?;
+    let d = ToneSpec::default();
+    let voice = match t.get::<Option<String>>("voice")? {
+        None => d.voice,
+        Some(v) => Voice::from_slug(&v).ok_or_else(|| {
+            mlua::Error::RuntimeError(format!(
+                "set_tone: no voice called \"{v}\" — the voices are {}",
+                Voice::catalogue()
+            ))
+        })?,
+    };
+    let num = |key: &str, fallback: f32| -> mlua::Result<f32> {
+        t.get::<Option<f32>>(key)?.map_or(Ok(fallback), finite)
+    };
+    Ok(ToneSpec {
+        voice,
+        pitch_hz: pitch_value(t.get("pitch")?)?,
+        gain: num("gain", d.gain)?,
+        glide_s: num("glide", d.glide_s)?,
+        vibrato: num("vibrato", d.vibrato)?,
+        range_m: num("range", d.range_m)?,
+    }
+    .sanitized())
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
@@ -1581,7 +1743,7 @@ fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>) {
                 slots.remove(&prim_id);
                 match Slot::compile(prim_id, &source) {
                     Ok(mut slot) => {
-                        let handlers: Vec<&str> = ["on_start", "on_touch", "on_timer"]
+                        let handlers: Vec<&str> = ["on_start", "on_touch", "on_timer", "on_hand"]
                             .into_iter()
                             .filter(|n| slot.handler(n).is_some())
                             .collect();

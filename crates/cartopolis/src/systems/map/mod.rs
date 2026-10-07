@@ -54,7 +54,9 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
+pub mod prim_hand;
 pub mod prim_sound;
+pub mod prim_tone;
 pub mod roof_colours;
 // Scaffolding on the buildings the register says are being worked on.
 pub mod scaffolding;

@@ -1000,3 +1000,166 @@ fn loop_and_stop_set_the_prims_loop() {
     assert_eq!(first.range_m, 20.0);
     assert_eq!(loops[1], None);
 }
+
+/// The tones a script sets, in order.
+fn tones(cmds: &[ScriptCommand]) -> Vec<Option<ToneSpec>> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            ScriptCommand::SetTone { tone, .. } => Some(*tone),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Pitches are hertz or a note written as a musician writes it, everything
+/// else has a default, and `stop_tone` silences.
+#[test]
+fn set_tone_reads_notes_and_fills_defaults() {
+    let mut slot = Slot::compile(
+        1,
+        "function on_start() \
+           set_tone{ pitch = 'A3' } \
+           set_tone{ pitch = 880, gain = 0.2, voice = 'square', glide = 0.2, vibrato = 0.5, range = 40 } \
+           stop_tone() end",
+    )
+    .expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let set = tones(&run_to_quiet(&mut slot, 10));
+    assert_eq!(set.len(), 3);
+    let first = set[0].expect("a tone");
+    assert!((first.pitch_hz - 220.0).abs() < 0.01);
+    assert_eq!(first.gain, ToneSpec::default().gain);
+    let second = set[1].expect("a tone");
+    assert_eq!(second.voice, Voice::Square);
+    assert_eq!(
+        (
+            second.pitch_hz,
+            second.gain,
+            second.glide_s,
+            second.vibrato,
+            second.range_m
+        ),
+        (880.0, 0.2, 0.2, 0.5, 40.0)
+    );
+    assert_eq!(set[2], None);
+}
+
+/// A typo is an error that says what was meant, never a tone that quietly
+/// ignores it — which an author would only find by ear.
+#[test]
+fn set_tone_typos_are_errors() {
+    for (source, expect) in [
+        ("set_tone{ pitch = 440, vibratto = 1 }", "vibratto"),
+        ("set_tone{ pitch = 440, voice = 'kazoo' }", "sine, organ"),
+        ("set_tone{ pitch = 'H2' }", "H2"),
+        ("set_tone{ gain = 1 }", "pitch"),
+    ] {
+        let mut slot =
+            Slot::compile(1, &format!("function on_start() {source} end")).expect("compile");
+        slot.queue(ScriptEvent::Start);
+        let out = outputs(&run_to_quiet(&mut slot, 10));
+        let error = out
+            .iter()
+            .find(|(level, _)| *level == ScriptLevel::Error)
+            .unwrap_or_else(|| panic!("{source}: expected an error, got {out:?}"));
+        assert!(error.1.contains(expect), "{source}: {}", error.1);
+    }
+}
+
+fn said(cmds: Vec<ScriptCommand>) -> Vec<String> {
+    cmds.into_iter()
+        .filter_map(|c| match c {
+            ScriptCommand::Say { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn hand(id: u64, name: &str, offset: [f32; 3]) -> ScriptEvent {
+    ScriptEvent::Hand {
+        avatar_id: id,
+        avatar_name: name.into(),
+        offset,
+        precise: true,
+    }
+}
+
+/// `sense_hands` sets the range (clamped), and `on_hand` is told whose hand
+/// it is and where.
+#[test]
+fn a_hand_reaches_the_script_with_whose_it_is() {
+    let mut slot = Slot::compile(
+        1,
+        "function on_start() sense_hands(2) sense_hands(50) end \
+         function on_hand(id, name, x, y, z, precise) \
+           say(name .. '/' .. id .. ' ' .. x .. ' ' .. y .. ' ' .. z .. ' ' .. tostring(precise)) end",
+    )
+    .expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let ranges: Vec<f32> = run_to_quiet(&mut slot, 10)
+        .into_iter()
+        .filter_map(|c| match c {
+            ScriptCommand::SenseHands { range, .. } => Some(range),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ranges, vec![2.0, cartopolis_core::tone::MAX_HAND_RANGE_M]);
+    slot.queue(hand(7, "ada", [0.5, 0.25, -1.0]));
+    assert_eq!(
+        said(run_to_quiet(&mut slot, 10)),
+        vec!["ada/7 0.5 0.25 -1 true"]
+    );
+}
+
+/// A hand is a level: a newer one replaces the same person's still waiting,
+/// so a slow handler is handed where the hand is now — and one person's hand
+/// never replaces another's.
+#[test]
+fn hands_waiting_for_the_script_coalesce_per_person() {
+    let mut slot =
+        Slot::compile(1, "function on_hand(id, name, x) say(name .. x) end").expect("compile");
+    for x in [1.0, 2.0, 3.0] {
+        slot.queue(hand(1, "a", [x, 0.0, 0.0]));
+        slot.queue(hand(2, "b", [x * 10.0, 0.0, 0.0]));
+    }
+    assert_eq!(said(run_to_quiet(&mut slot, 10)), vec!["a3", "b30"]);
+}
+
+/// The theremin pack's script, end to end: the first hand plays and a second
+/// is ignored; a hand at the rod plays the top of the range and one on the
+/// loop is silent; and a player whose hand stops arriving is let go of.
+#[test]
+fn the_theremin_script_turns_a_hand_into_a_tone() {
+    let mut slot = Slot::compile(1, include_str!("../../content/theremin.lua")).expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let started = run_to_quiet(&mut slot, 20);
+    assert!(started
+        .iter()
+        .any(|c| matches!(c, ScriptCommand::SenseHands { range, .. } if *range > 1.0)));
+
+    // Ada at the rod, far from the loop; Bob arriving after her is ignored.
+    slot.queue(hand(7, "ada", [0.35, 0.45, 0.0]));
+    slot.queue(hand(8, "bob", [-0.4, 0.05, 0.0]));
+    let set = tones(&run_to_quiet(&mut slot, 20));
+    assert_eq!(set.len(), 1, "only the player's hand plays: {set:?}");
+    let at_rod = set[0].expect("a tone");
+    assert!(
+        (at_rod.pitch_hz - 1046.5).abs() < 1.0,
+        "{}",
+        at_rod.pitch_hz
+    );
+    assert!(at_rod.gain > 0.99, "{}", at_rod.gain);
+
+    // Ada on the loop: silent.
+    slot.queue(hand(7, "ada", [-0.4, 0.05, 0.0]));
+    let on_loop = tones(&run_to_quiet(&mut slot, 20))[0].expect("a tone");
+    assert!(on_loop.gain < 0.01, "{}", on_loop.gain);
+
+    // Ada's hand stops arriving: the next timer lets her go, and Bob plays.
+    slot.shared.time.set(slot.shared.time.get() + 5.0);
+    slot.queue(ScriptEvent::Timer);
+    assert_eq!(tones(&run_to_quiet(&mut slot, 20)), vec![None]);
+    slot.queue(hand(8, "bob", [0.35, 0.45, 0.0]));
+    assert_eq!(tones(&run_to_quiet(&mut slot, 20)).len(), 1);
+    assert!(!slot.faulted);
+}

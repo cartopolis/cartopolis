@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod geo;
+
 pub mod model_limits;
 pub mod moderation;
 pub mod motion;
@@ -14,6 +15,7 @@ pub mod protocol;
 pub mod script_api;
 pub mod shot_env;
 pub mod sounds;
+pub mod tone;
 pub mod ts_mirror;
 pub mod video_limits;
 pub mod world;
@@ -44,6 +46,7 @@ pub use shot_env::ShotEnv;
 pub use sounds::{
     PrimSound, SoundName, DEFAULT_SOUND_RANGE_M, MAX_SOUND_RANGE_M, MIN_SOUND_RANGE_M,
 };
+pub use tone::{HandPose, ToneSpec};
 pub use world::{
     find_optimal_zoom, format_osm_tile_url, lat_lng_to_tile, lat_lng_to_tile_frac,
     tile_source_kind, tile_to_lat_lng, tile_to_meters, TileKey, TileSourceKind, DEFAULT_TILE_ZOOM,

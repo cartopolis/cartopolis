@@ -1,6 +1,6 @@
 use cartopolis_core::{
-    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimBody,
-    PrimDto, PrimSound, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, HandPose, NetMessage,
+    PrimBody, PrimDto, PrimSound, ToneSpec, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -138,6 +138,11 @@ pub struct SimWorld {
     /// `PrimMotion` ([`Self::take_motion`]).
     motion: Vec<PrimBody>,
 }
+
+/// How far past a prim's `hand_range` a reported hand is still accepted: the
+/// client tests the range against its own copy of the prim, which can lag the
+/// script's by a tick, and a hand on the boundary should not flicker.
+const HAND_RANGE_SLACK_M: f32 = 0.25;
 
 /// Two avatars this close count as having met (`contacts`). Twice the Here
 /// chat's say radius: close enough to have been talking, loose enough that
@@ -859,6 +864,10 @@ impl SimWorld {
         // A looping sound is never in the row at all (it is not persisted), so an
         // edit carries the one playing across rather than silencing it.
         prim.sound_loop = self.prims[pos].sound_loop;
+        // Nor is a hand range or a tone: an edit to a prim's colour must not
+        // stop it sensing hands or silence it.
+        prim.hand_range = self.prims[pos].hand_range;
+        prim.tone = self.prims[pos].tone;
         // Physics is switched in memory first and written after (a script's
         // `set_physical` reaches the row at the next flush), so memory wins here
         // as it does for `scripted`.
@@ -882,6 +891,15 @@ impl SimWorld {
         self.owners.remove(&prim_id);
         self.dirty.remove(&prim_id);
         true
+    }
+
+    /// Whether a reported hand is one the prim it names wants: the prim senses
+    /// hands, and this one is within its range.
+    #[must_use]
+    pub fn hand_in_range(&self, pose: &HandPose) -> bool {
+        self.prim(pose.prim_id).is_some_and(|p| {
+            p.hand_range > 0.0 && pose.distance() <= p.hand_range + HAND_RANGE_SLACK_M
+        })
     }
 
     /// Remove a prim now and delete its row at the next flush.
@@ -1143,6 +1161,20 @@ impl SimWorld {
                     Box::new(move |p: &mut PrimDto| p.sound_loop = sound),
                 )
             }
+            ScriptCommand::SenseHands { prim_id, range } => {
+                let range = range.clamp(0.0, cartopolis_core::tone::MAX_HAND_RANGE_M);
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.hand_range = range),
+                )
+            }
+            // Written here but broadcast by the tick loop as a `PrimTone`, not
+            // an upsert: a script following a hand sets it twenty times a second.
+            ScriptCommand::SetTone { prim_id, tone } => {
+                let pos = *self.index.get(prim_id)?;
+                self.prims[pos].tone = tone.map(ToneSpec::sanitized);
+                return None;
+            }
             ScriptCommand::SetPhysical { prim_id, on } => {
                 return match self.set_physical(*prim_id, *on) {
                     Ok(Some(p)) => {
@@ -1318,6 +1350,47 @@ mod tests {
             .expect("prim is there");
         assert!(world.replace_prim(prim.clone()));
         assert_eq!(world.prim(prim.id).unwrap().sound_loop, Some(sound));
+    }
+
+    /// A hand is accepted only for a prim that senses hands and only within its
+    /// range; an edit keeps the range and the tone; a tone is written to the
+    /// prim but is not an upsert.
+    #[test]
+    fn hands_are_taken_within_range_and_tones_survive_an_edit() {
+        use crate::scripting::ScriptCommand;
+        let (mut world, dir) = test_world();
+        let prim = stored_prim(&mut world, &dir);
+        let hand = |offset| HandPose {
+            prim_id: prim.id,
+            offset,
+            precise: true,
+        };
+        assert!(
+            !world.hand_in_range(&hand([0.3, 0.0, 0.0])),
+            "not sensing yet"
+        );
+        world
+            .apply_script_command(&ScriptCommand::SenseHands {
+                prim_id: prim.id,
+                range: 2.0,
+            })
+            .expect("prim is there");
+        assert!(world.hand_in_range(&hand([0.3, 0.0, 0.0])));
+        assert!(!world.hand_in_range(&hand([3.0, 0.0, 0.0])));
+        assert!(!world.hand_in_range(&hand([f32::NAN, 0.0, 0.0])));
+
+        let tone = ToneSpec::default();
+        assert!(world
+            .apply_script_command(&ScriptCommand::SetTone {
+                prim_id: prim.id,
+                tone: Some(tone),
+            })
+            .is_none());
+        assert_eq!(world.prim(prim.id).unwrap().tone, Some(tone));
+        assert!(world.replace_prim(prim.clone()));
+        let after = world.prim(prim.id).unwrap();
+        assert_eq!(after.tone, Some(tone), "an edit keeps the tone");
+        assert_eq!(after.hand_range, 2.0, "and the range");
     }
 
     /// A reservation counts against the budget before its row exists, so two

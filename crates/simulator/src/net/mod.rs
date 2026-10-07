@@ -36,6 +36,7 @@ mod calls;
 mod chat;
 mod contacts;
 mod e2ee;
+mod hand;
 mod moderation;
 mod prims;
 pub mod request;
@@ -453,6 +454,8 @@ struct RateGates {
     lookup: Instant,
     last_call_join: Instant,
     last_where: Instant,
+    /// The hand bucket (`hand::on_hand`, [`take_token`]).
+    hand: Instant,
 }
 
 impl RateGates {
@@ -472,6 +475,7 @@ impl RateGates {
             lookup: ago(MIN_LOOKUP_INTERVAL * LOOKUP_BURST),
             last_call_join: ago(MIN_CALL_JOIN_INTERVAL),
             last_where: ago(MIN_WHERE_INTERVAL),
+            hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
         }
     }
 }
@@ -999,6 +1003,7 @@ async fn dispatch<T: FrameTransport>(
             request_id,
             prim_id,
         } => prims::on_touch(ctx, request_id, prim_id).await,
+        ClientRequest::HandPose { pose } => hand::on_hand(ctx, pose).await,
         ClientRequest::TextureCatalogRequest => textures::on_catalog(ctx).await,
         ClientRequest::TextureRequest {
             request_id,
@@ -1289,6 +1294,7 @@ pub async fn tick_loop(
         let mut script_frames: Vec<Vec<u8>> = Vec::new();
         let mut died: Vec<i64> = Vec::new();
         let mut changed: Vec<i64> = Vec::new();
+        let mut toned: Vec<i64> = Vec::new();
         for cmd in &commands {
             // `die` is handled before the field writes, and its prim is skipped
             // by everything after: a script's last act is often a move *and* a
@@ -1312,8 +1318,28 @@ pub async fn tick_loop(
             if died.contains(&cmd.prim_id()) {
                 continue;
             }
+            if let crate::scripting::ScriptCommand::SetTone { prim_id, .. } = cmd {
+                toned.push(*prim_id);
+            }
             if w.apply_script_command(cmd).is_some() {
                 changed.push(cmd.prim_id());
+            }
+        }
+        // One `PrimTone` per prim per tick, carrying the last tone its script
+        // set: a handler following a hand may set several in one slice, and
+        // only where the tone ended up is worth sending.
+        toned.sort_unstable();
+        toned.dedup();
+        for prim_id in toned {
+            let Some(prim) = w.prim(prim_id) else {
+                continue;
+            };
+            match encode_app_frame(&NetMessage::PrimTone {
+                prim_id,
+                tone: prim.tone,
+            }) {
+                Ok(bytes) => script_frames.push(bytes),
+                Err(e) => tracing::error!("prim tone encode: {e}"),
             }
         }
         // One update per prim per tick, not one per field written. A handler that

@@ -864,6 +864,12 @@ pub fn apply_network_snapshot(
                             latitude: prim.geo.latitude,
                             longitude: prim.geo.longitude,
                         });
+                        commands.entity(entity).try_insert((
+                            crate::components::SoundingTone(
+                                prim.tone.map(cartopolis_core::ToneSpec::sanitized),
+                            ),
+                            crate::components::SensesHands(prim.hand_range),
+                        ));
                         // A full upsert is the newer word on where it is (an edit,
                         // a script's `set_geo`, physics switched off): drop the
                         // motion so it is placed from this, and the next
@@ -997,6 +1003,16 @@ pub fn apply_network_snapshot(
             }
             NetMessage::PrimSound { prim_id, sound } => {
                 auth.sounds.0.push((prim_id, sound));
+            }
+            NetMessage::PrimTone { prim_id, tone } => {
+                // Inserted, not written through `Prim`: see `SoundingTone`.
+                if let Some((e, _, _)) = prim_entities.iter().find(|(_, p, _)| p.id == prim_id) {
+                    commands
+                        .entity(e)
+                        .try_insert(crate::components::SoundingTone(
+                            tone.map(cartopolis_core::ToneSpec::sanitized),
+                        ));
+                }
             }
             NetMessage::PrimMotion { bodies, .. } => {
                 // Physical prims the simulator moved (protocol 34). Only the pose
@@ -1286,7 +1302,9 @@ fn spawn_prim_from_dto(commands: &mut Commands, p: PrimDto) {
         latitude: p.geo.latitude,
         longitude: p.geo.longitude,
     };
-    commands.spawn((prim_from_dto(&p), transform_from_dto(&p), geo));
+    let tone = crate::components::SoundingTone(p.tone.map(cartopolis_core::ToneSpec::sanitized));
+    let hands = crate::components::SensesHands(p.hand_range);
+    commands.spawn((prim_from_dto(&p), transform_from_dto(&p), geo, tone, hands));
 }
 
 fn decode_png_to_image(png_bytes: &[u8]) -> Option<Image> {

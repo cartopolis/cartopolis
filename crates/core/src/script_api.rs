@@ -117,6 +117,19 @@ pub const SCRIPT_EVENTS: &[ScriptFn] = &[
                   one is listening to.",
         group: ScriptGroup::Messaging,
     },
+    ScriptFn {
+        name: "on_hand",
+        signature: "on_hand(avatar_id, avatar_name, x, y, z, precise)",
+        summary: "Somebody's hand is near this prim (sense_hands): metres from its \
+                  centre in its own frame (turned with it, not scaled), x right, y \
+                  up, z back. Up to 20 times a second per person while their hand \
+                  is in range; only each person's newest is kept if the script \
+                  falls behind. Only people who switched on high-precision tracking \
+                  are sensed, so precise is true — false only for a developer \
+                  testing from a desktop camera. A hand that stops arriving has \
+                  left.",
+        group: ScriptGroup::Sensing,
+    },
 ];
 
 /// Every function installed into a script's environment.
@@ -305,6 +318,23 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         summary: "Stop this prim's looping sound.",
         group: ScriptGroup::Sound,
     },
+    ScriptFn {
+        name: "set_tone",
+        signature: "set_tone{pitch, gain?, voice?, glide?, vibrato?, range?}",
+        summary: "Sound a synthesised tone from this prim until stop_tone, replacing \
+                  any tone already sounding. pitch is hertz or a note (\"A4\", \"C#3\"); \
+                  gain 0–1 (default 0.5); voice: sine, organ, saw, square; glide: \
+                  seconds to slide to a new pitch (default 0.05); vibrato 0–1; heard \
+                  out to range metres (default 50). Call it as often as the tone \
+                  should change — from on_hand to follow a hand.",
+        group: ScriptGroup::Sound,
+    },
+    ScriptFn {
+        name: "stop_tone",
+        signature: "stop_tone()",
+        summary: "Silence this prim's tone.",
+        group: ScriptGroup::Sound,
+    },
     // ── Chat ──
     ScriptFn {
         name: "log",
@@ -363,6 +393,14 @@ pub const SCRIPT_API: &[ScriptFn] = &[
                   none. Measured on the ground, between the prim's geographic \
                   anchor and the avatar's — an avatar whose client has not said \
                   where it is yet is not seen.",
+        group: ScriptGroup::Sensing,
+    },
+    ScriptFn {
+        name: "sense_hands",
+        signature: "sense_hands(range_m)",
+        summary: "Ask for on_hand from everybody whose hand comes within range_m of \
+                  this prim (at most 5). sense_hands(0) stops. Not kept over a \
+                  restart, so call it in on_start.",
         group: ScriptGroup::Sensing,
     },
     // ── Messaging ──

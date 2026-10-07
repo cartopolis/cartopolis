@@ -45,6 +45,8 @@ impl Plugin for NetPlugin {
         {
             use bevy::audio::AddAudioSource;
             app.add_audio_source::<systems::voice::VoiceStream>();
+            // Prim tones' synthesiser, for the same reason.
+            app.add_audio_source::<systems::prim_tone::ToneStream>();
         }
         // Read by `run_client` right after this plugin is added: the launch's
         // session request is written into it before the first frame.

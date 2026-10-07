@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::error::ProtocolError;
 use crate::particles::ParticleEffect;
 use crate::sounds::PrimSound;
+use crate::tone::{HandPose, ToneSpec};
 
 /// One wire-protocol revision: what changed and which ADR decided it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +170,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "permissions — Permissions, the account's granted permission slugs, sent after the handshake and again whenever its roles change, so a client offers what the server would allow (docs/notes/permissions.md)",
     },
+    ProtocolRevision {
+        version: 36,
+        adr: "",
+        summary: "hands and tones — PrimDto.hand_range (a script senses hands within it) and PrimDto.tone; HandPose, where a nearby high-precision client's hand is relative to such a prim, for its script; PrimTone, the synthesised tone a script set (docs/notes/hands-and-tones.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -257,6 +263,8 @@ pub enum MessageKind {
     SetPrimPhysical = 70,
     PrimMotion = 71,
     Permissions = 72,
+    HandPose = 73,
+    PrimTone = 74,
 }
 
 impl MessageKind {
@@ -334,6 +342,8 @@ impl MessageKind {
             70 => Some(Self::SetPrimPhysical),
             71 => Some(Self::PrimMotion),
             72 => Some(Self::Permissions),
+            73 => Some(Self::HandPose),
+            74 => Some(Self::PrimTone),
             _ => None,
         }
     }
@@ -542,6 +552,17 @@ pub struct PrimDto {
     /// [`NetMessage::PrimMotion`].
     #[serde(default)]
     pub physical: bool,
+    /// The prim's script wants the hands within this many metres
+    /// (`sense_hands`, protocol 36); 0 when it wants none. Clients read it to
+    /// know which prims to report a hand to. Set only by the script and, like
+    /// `sound_loop`, not persisted.
+    #[serde(default)]
+    pub hand_range: f32,
+    /// The tone the prim's script is sounding (`set_tone`), or `None`. Here
+    /// for a client arriving while it sounds; changes arrive as
+    /// [`NetMessage::PrimTone`].
+    #[serde(default)]
+    pub tone: Option<ToneSpec>,
 }
 
 /// A video on a prim: which clip, and when it started, so everybody near it
@@ -1318,6 +1339,23 @@ pub enum NetMessage {
     /// client, not a misread bit. The server enforces every one of these
     /// itself; this only decides what a client offers.
     Permissions { granted: Vec<String> },
+
+    // ── Hands and tones (protocol 36, `docs/notes/hands-and-tones.md`) ──
+    /// Client: where this user's hand is relative to a prim whose script senses
+    /// hands, sent while the hand is within the prim's `hand_range` and the user
+    /// has high-precision tracking on — at most `tone::HAND_HZ` per prim.
+    /// Dropped when it is out of that range. Never relayed: it is input for the
+    /// prim's script (`on_hand`), which decides what it means.
+    HandPose { pose: HandPose },
+    /// Server: the tone a prim's script set (`set_tone`), or `None` when it
+    /// stopped (`stop_tone`). Its own message rather than a `PrimUpsert`
+    /// because a script following a hand sets it up to twenty times a second,
+    /// and a whole prim per change would make every client rebuild its mesh.
+    /// Sent to every connection; each measures its own distance to the prim.
+    PrimTone {
+        prim_id: i64,
+        tone: Option<ToneSpec>,
+    },
 }
 
 /// One physical prim's pose and velocity ([`NetMessage::PrimMotion`]).
@@ -1695,6 +1733,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::SetPrimPhysical { .. } => MessageKind::SetPrimPhysical,
         NetMessage::PrimMotion { .. } => MessageKind::PrimMotion,
         NetMessage::Permissions { .. } => MessageKind::Permissions,
+        NetMessage::HandPose { .. } => MessageKind::HandPose,
+        NetMessage::PrimTone { .. } => MessageKind::PrimTone,
     }
 }
 
@@ -2198,6 +2238,8 @@ mod tests {
                 range_m: 80.0,
             }),
             physical: true,
+            hand_range: 2.0,
+            tone: Some(crate::tone::ToneSpec::default()),
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();
@@ -2238,7 +2280,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 71] = [
+        const ALL: [MessageKind; 73] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2310,6 +2352,8 @@ mod tests {
             SetPrimPhysical,
             PrimMotion,
             Permissions,
+            HandPose,
+            PrimTone,
         ];
         for k in ALL {
             assert_eq!(
@@ -2323,7 +2367,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(Permissions as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(PrimTone as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is
