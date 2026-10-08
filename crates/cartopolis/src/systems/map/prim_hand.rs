@@ -12,8 +12,11 @@
 //! hand holding the phone is, to centimetres. Switching that mode on is also
 //! the consent: nothing is reported otherwise, because a hand report is a
 //! precise position report and nobody agreed to send one by walking past a
-//! prim. `CARTO_HAND_FROM_CAMERA=1` is the developer switch that lets a desktop
-//! camera stand in, reported as `precise = false` so a script can tell.
+//! prim. The developer switch — Developer tools ▸ Precision ▸ *Stand-in hand*,
+//! or `CARTO_HAND_FROM_CAMERA=1` at launch — lets something else stand in,
+//! reported as `precise = false` so a script can tell: the **avatar's hand**
+//! (chest height above it) when there is an avatar, so walking up to a
+//! theremin's rod plays it on a phone; the view otherwise, as in fly mode.
 
 use std::collections::HashMap;
 
@@ -29,8 +32,10 @@ use crate::resources::OnlineSession;
 #[derive(Resource)]
 pub struct PreciseHand {
     pub active: bool,
-    /// `CARTO_HAND_FROM_CAMERA=1`: report the camera as an imprecise hand, so a
-    /// hand-sensing script can be tried from a desktop. Read once, at startup.
+    /// Report a stand-in as an imprecise hand — the avatar's, or the view — so
+    /// a hand-sensing script can be tried before high precision positions
+    /// anything. `CARTO_HAND_FROM_CAMERA=1` sets it at launch; Developer tools
+    /// ▸ Precision switches it while the app runs.
     pub camera_stands_in: bool,
 }
 
@@ -71,6 +76,10 @@ const KEEPALIVE_S: f32 = 0.5;
 /// purpose.
 const MIN_MOVE_M: f32 = 0.001;
 
+/// How far above the avatar's feet its stand-in hand is: chest height, where a
+/// hand held out in front of you would be.
+const STAND_IN_HAND_HEIGHT_M: f32 = 1.2;
+
 /// Where `hand` is in `prim`'s own frame: turned with it, not scaled with it.
 #[must_use]
 pub fn hand_in_prim_frame(prim: &GlobalTransform, hand: Vec3) -> Vec3 {
@@ -84,16 +93,22 @@ pub fn report_hands(
     precise: Res<PreciseHand>,
     online: Option<Res<OnlineSession>>,
     camera: Query<&GlobalTransform, With<FreeCamera>>,
+    avatar: Query<&GlobalTransform, (With<crate::components::Avatar>, Without<FreeCamera>)>,
     prims: Query<(&Prim, &SensesHands, &GlobalTransform)>,
     mut reports: ResMut<HandReports>,
 ) {
     let dt = time.delta_secs();
-    let (Some(precise), Some(session), Ok(eye)) = (precise.reporting(), online, camera.single())
+    let (Some(precise), Some(session), Ok(view)) = (precise.reporting(), online, camera.single())
     else {
         reports.last.clear();
         return;
     };
-    let eye = eye.translation();
+    // With high precision the view is the phone in the hand. A stand-in is the
+    // avatar's hand where there is an avatar, the view where there is not.
+    let eye = match (precise, avatar.single()) {
+        (false, Ok(body)) => body.translation() + Vec3::Y * STAND_IN_HAND_HEIGHT_M,
+        _ => view.translation(),
+    };
     let mut near: Vec<i64> = Vec::new();
     for (prim, senses, at) in &prims {
         if senses.0 <= 0.0 {

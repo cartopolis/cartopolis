@@ -185,6 +185,7 @@ pub fn render_dev_panel(
     mut copied_at: Local<Option<Instant>>,
     mut cache: Local<CensusCache>,
     mut precision_log: ResMut<crate::systems::high_precision::HighPrecisionLog>,
+    mut precise_hand: ResMut<crate::systems::prim_hand::PreciseHand>,
 ) {
     if !dev.open {
         return;
@@ -257,7 +258,7 @@ pub fn render_dev_panel(
                     }
                     DevTab::Profiler => profiler_tab(ui, &readouts.diagnostics),
                     DevTab::Switches => switches_tab(ui, &mut edited),
-                    DevTab::Precision => precision_tab(ui, &mut precision_log),
+                    DevTab::Precision => precision_tab(ui, &mut precision_log, &mut precise_hand),
                 });
         });
     if edited != *prefs {
@@ -705,7 +706,19 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
 /// The high-precision mode's log: what its sensors reported, as text to copy
 /// off the phone and paste into a chat. Long-press the locate button ▸ High
 /// precision to fill it.
-fn precision_tab(ui: &mut egui::Ui, log: &mut crate::systems::high_precision::HighPrecisionLog) {
+fn precision_tab(
+    ui: &mut egui::Ui,
+    log: &mut crate::systems::high_precision::HighPrecisionLog,
+    hand: &mut crate::systems::prim_hand::PreciseHand,
+) {
+    theme::checkbox(ui, &mut hand.camera_stands_in, "Stand-in hand");
+    theme::note(
+        ui,
+        "Lets your avatar's hand (or the view, in fly mode) play hand-sensing \
+         objects such as a theremin before high precision can place your phone. \
+         Scripts are told it is not precise.",
+    );
+    ui.separator();
     if log.is_empty() {
         theme::note(
             ui,
