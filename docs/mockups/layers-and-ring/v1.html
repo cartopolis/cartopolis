@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v1: layers by where they are, and a ring of actions</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.row + .row { margin-top:56px; }
+.new { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:rgba(253,96,18,.18); color:#ffb48a; margin-left:4px; vertical-align:1px; }
+.today { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:#23392f; color:#9fd3b4; margin-left:4px; vertical-align:1px; }
+.world { position:absolute; inset:0; background-size:cover; }
+.space { position:absolute; inset:0; background:radial-gradient(circle at 50% 118%, #3d7fb8 0, #2a5f8f 34%, #173a5c 38%, rgba(9,20,32,.0) 39%), radial-gradient(1px 1px at 20% 30%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 70% 12%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 85% 40%, #cfe 50%, transparent 51%), radial-gradient(1px 1px at 35% 8%, #fff 50%, transparent 51%), #04070b; }
+.space .land { position:absolute; left:40px; right:40px; bottom:-60px; height:320px; border-radius:50%; background:radial-gradient(ellipse at 40% 30%, rgba(94,140,80,.75), transparent 35%), radial-gradient(ellipse at 70% 45%, rgba(170,150,100,.6), transparent 30%); }
+.sat { position:absolute; width:5px; height:5px; border-radius:50%; transform:translate(-50%,-50%); box-shadow:0 0 6px currentColor; background:currentColor; }
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.disc.on { background:var(--accent); color:var(--ink); }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+
+/* the layers sheet */
+.lsheet { position:absolute; left:0; right:0; bottom:0; top:300px; z-index:7; background:var(--surface); border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 0; }
+.lsheet .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 8px; }
+.lsheet .hd { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.lsheet .hd b { font-size:18px; color:var(--cream); font-weight:inherit; }
+.lsheet .hd .reset { margin-left:auto; font-size:12.5px; color:var(--dim); padding:3px 9px; border:1px solid var(--gline); border-radius:10px; }
+.cats { display:flex; justify-content:space-between; margin-bottom:12px; }
+.cats div { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:11px; color:var(--dim); width:56px; position:relative; }
+.cats .ic { width:46px; height:46px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); border:1px solid transparent; }
+.cats .on { color:var(--cream); }
+.cats .on .ic { background:var(--brand); color:#fff; }
+.cats .n { position:absolute; top:-3px; right:2px; min-width:17px; height:17px; border-radius:9px; background:var(--accent); color:var(--ink); font-size:10.5px; display:grid; place-items:center; padding:0 4px; }
+.sub { font-size:12px; color:var(--dim); margin:2px 0 8px; }
+.tiles { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.tile { height:88px; border-radius:16px; background:var(--raised); border:1px solid var(--gline); padding:9px 10px; display:flex; flex-direction:column; justify-content:space-between; position:relative; color:var(--text); font-size:12.5px; line-height:1.2; }
+.tile.on { background:rgba(253,96,18,.16); border-color:rgba(253,96,18,.7); color:var(--cream); }
+.tile.off-here { opacity:.5; }
+.tile .tg { position:absolute; top:8px; right:8px; width:26px; height:15px; border-radius:8px; background:var(--muted); }
+.tile .tg::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:var(--dim); }
+.tile.on .tg { background:var(--brand); }
+.tile.on .tg::after { left:13px; background:#fff; }
+.tile .nl { position:absolute; bottom:8px; right:8px; font-size:9.5px; color:var(--dim); border:1px solid var(--gline); border-radius:5px; padding:0 4px; }
+.tile .more { position:absolute; bottom:6px; right:8px; color:var(--dim); font-size:14px; letter-spacing:1px; }
+.tile .soon { position:absolute; bottom:8px; right:8px; font-size:9.5px; color:#ffb48a; }
+.basemap { display:flex; gap:8px; margin-bottom:12px; }
+.basemap div { flex:1; height:64px; border-radius:14px; border:2px solid transparent; position:relative; overflow:hidden; background-size:cover; }
+.basemap div span { position:absolute; left:6px; bottom:4px; font-size:11.5px; color:#fff; text-shadow:0 1px 3px #000; }
+.basemap .sel { border-color:var(--brand); }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.chips div { font-size:12px; padding:4px 10px 4px 8px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; gap:6px; align-items:center; color:var(--text); }
+.chips div.off { opacity:.45; }
+.chips i { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.hint { margin-top:10px; font-size:12px; color:var(--dim); display:flex; gap:6px; align-items:center; }
+
+/* the ring of actions */
+.ring { position:absolute; z-index:6; }
+.ring .b { position:absolute; width:56px; height:56px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); backdrop-filter:blur(10px); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:10px; color:var(--text); gap:1px; transform:translate(-50%,-50%); text-align:center; line-height:1.05; }
+.ring .b.p { background:var(--brand); color:#fff; border-color:transparent; }
+.ring .b.x { width:34px; height:34px; background:rgba(10,14,16,.85); color:var(--dim); }
+.ring .guide { position:absolute; width:150px; height:150px; border-radius:50%; border:1px dashed rgba(255,255,255,.18); transform:translate(-50%,-50%); }
+.pin { position:absolute; width:14px; height:14px; border-radius:50%; background:var(--brand); border:3px solid #fff; transform:translate(-50%,-50%); z-index:5; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+.ipill { position:absolute; z-index:6; transform:translateX(-50%); background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:14px; padding:7px 12px; font-size:12px; color:var(--dim); white-space:nowrap; text-align:center; }
+.ipill b { display:block; color:var(--cream); font-size:14px; font-weight:inherit; }
+.chipf { position:absolute; top:52px; left:50%; transform:translateX(-50%); z-index:6; background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:16px; padding:6px 8px 6px 12px; display:flex; gap:8px; align-items:center; font-size:12.5px; color:var(--dim); white-space:nowrap; }
+.chipf b { color:var(--cream); font-weight:inherit; }
+.chipf .x { width:22px; height:22px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); }
+table.map { border-collapse:collapse; margin-top:14px; font-size:13.5px; }
+table.map td, table.map th { padding:6px 14px 6px 0; text-align:left; vertical-align:top; border-bottom:1px solid var(--gline); }
+table.map th { color:var(--cream); font-weight:inherit; }
+table.map td:first-child { color:var(--cream); white-space:nowrap; }
+table.map td { color:var(--dim); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+  <symbol id="city" viewBox="0 0 24 24"><path d="M3 21V9l5-3v15M8 21V4l7 3v14M15 21v-9l6 2v7M2 21h20"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0 1 12 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="move" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="10" rx="2"/><path d="M4 11h16"/><circle cx="8" cy="18" r="1.6"/><circle cx="16" cy="18" r="1.6"/></symbol>
+  <symbol id="under" viewBox="0 0 24 24"><path d="M2 8h20M4 12h16M6 16h12M9 20h6"/><path d="M12 3v3"/></symbol>
+  <symbol id="orbit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-25 12 12)"/></symbol>
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h6a3 3 0 0 0 0-6h-4a3 3 0 0 1 0-6h6"/></symbol>
+  <symbol id="from" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+  <symbol id="star" viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="path" viewBox="0 0 24 24"><path d="M3 17c4-10 14-10 18 0" stroke-dasharray="2 3"/><circle cx="12" cy="9.5" r="2"/></symbol>
+  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="tree" viewBox="0 0 24 24"><path d="M12 3l6 9h-4l4 6H6l4-6H6z"/><path d="M12 18v3"/></symbol>
+  <symbol id="bench" viewBox="0 0 24 24"><path d="M3 11h18M4 15h16M6 15v4M18 15v4M5 7h14"/></symbol>
+  <symbol id="wave" viewBox="0 0 24 24"><path d="M2 14c3-3 5 3 8 0s5 3 8 0 3-1 4-1"/><path d="M4 18h16"/></symbol>
+  <symbol id="tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8" r="1.4"/></symbol>
+  <symbol id="hand" viewBox="0 0 24 24"><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6M11 11V3.5a1.5 1.5 0 0 1 3 0V11M14 11V5a1.5 1.5 0 0 1 3 0v8c0 5-3 8-7 8s-6-3-7-6l-1.5-3a1.5 1.5 0 0 1 2.6-1.4L8 14"/></symbol>
+  <symbol id="drop" viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></symbol>
+  <symbol id="plane" viewBox="0 0 24 24"><path d="M2 13l8-2 4-8h2l-2 8 6 1 2-2h1l-1 4 1 4h-1l-2-2-6 1 2 8h-2l-4-8-8-2z"/></symbol>
+  <symbol id="ship" viewBox="0 0 24 24"><path d="M3 15l2 5h14l2-5zM6 15V9h12v6M12 9V4"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.5"/><path d="M12 9v6M8 21l4-6 4 6M7 12h10"/></symbol>
+  <symbol id="bus" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="15" rx="3"/><path d="M5 11h14M8 21v-3M16 21v-3"/></symbol>
+  <symbol id="soil" viewBox="0 0 24 24"><path d="M2 7h20M2 12h20M2 17h20"/></symbol>
+  <symbol id="pipe" viewBox="0 0 24 24"><path d="M3 8h10a3 3 0 0 1 3 3v10M3 12h8a1 1 0 0 1 1 1v8"/></symbol>
+  <symbol id="quake" viewBox="0 0 24 24"><path d="M2 12h4l2-6 3 12 3-9 2 5 2-2h4"/></symbol>
+</svg>
+
+<h1>Layers by <b>where they are</b>, and a <b>ring of actions</b></h1>
+<p class="lede">Two proposals. The Layers panel today is one long list of about 40 checkboxes, three levels deep, ordered by when each layer was added. Here it becomes a sheet with six places to look: the ground, the city, places, things that move, what is under the ground, and what is in orbit. Each layer is a tile you tap. The text context menu becomes a ring of round buttons around the point you tapped, as drawn for people in chat-world v4. Nothing here is built yet; all of it is <span class="new">new</span>.</p>
+
+<div class="principles">
+  <div><h3>Grouped by where, not by source</h3><p>“Under the ground” and “in orbit” are places you can picture. “Overpass street detail” and “3DBAG” are not, so the source moves into a small line, and the <i>NL</i> badge says what only works in the Netherlands.</p></div>
+  <div><h3>A tile is one tap</h3><p>The whole tile is the switch, sized for a thumb. A tile with more inside (kinds of satellite, the eight underground layers) has <i>⋯</i>: a long press or that corner opens its options in place.</p></div>
+  <div><h3>Say when it can't be seen</h3><p>A layer that is on but cannot show from here is dimmed with the reason: satellites from the street, sewers from 20 km up. That way, ticking a layer never seems to do nothing.</p></div>
+  <div><h3>One ring, everywhere</h3><p>The same ring opens on a point on the map, a building, an object, a person or a satellite. The main action is orange and sits at the top; ✕ is in the middle where your thumb already is. On the desktop it opens at the cursor.</p></div>
+</div>
+
+<div class="row">
+
+<!-- 1. LAYERS: THE CITY -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:50% 30%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lsheet">
+    <div class="handle"></div>
+    <div class="hd"><svg class="i"><use href="#layers"/></svg><b>Layers</b><span class="reset">Reset</span></div>
+    <div class="cats">
+      <div><span class="ic"><svg class="i"><use href="#globe"/></svg></span>Map<span class="n">2</span></div>
+      <div class="on"><span class="ic"><svg class="i"><use href="#city"/></svg></span>City<span class="n">4</span></div>
+      <div><span class="ic"><svg class="i"><use href="#pin"/></svg></span>Places</div>
+      <div><span class="ic"><svg class="i"><use href="#move"/></svg></span>Moving<span class="n">1</span></div>
+      <div><span class="ic"><svg class="i"><use href="#under"/></svg></span>Under</div>
+      <div><span class="ic"><svg class="i"><use href="#orbit"/></svg></span>Orbit</div>
+    </div>
+    <div class="sub">What stands on the ground</div>
+    <div class="tiles">
+      <div class="tile on"><svg class="i"><use href="#city"/></svg>Buildings<span class="tg"></span><span class="more">⋯</span></div>
+      <div class="tile on"><svg class="i"><use href="#tree"/></svg>Trees<span class="tg"></span></div>
+      <div class="tile on"><svg class="i"><use href="#tree"/></svg>Grass<span class="tg"></span></div>
+      <div class="tile on"><svg class="i"><use href="#bench"/></svg>Street furniture<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#pin"/></svg>Street detail<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#wave"/></svg>Flood defences<span class="tg"></span><span class="nl">NL</span></div>
+    </div>
+    <div class="hint"><svg class="i s"><use href="#info"/></svg>Buildings ⋯: 3D buildings (NL, 3DBAG) · OSM buildings and windows</div>
+  </div>
+</div>
+<h2><span>1</span>Layers: the city</h2>
+<ul>
+  <li>Six round category buttons along the top; the number is how many are on in each, so you can see at a glance what is drawn without opening every group.</li>
+  <li>The 3DBAG/OSM pair moves behind <b>Buildings ⋯</b>. Most people want buildings on or off and never pick a source.</li>
+  <li>Opens as a half-height sheet over the map on a phone, and as the right panel on the desktop as today.</li>
+</ul>
+</div>
+
+<!-- 2. LAYERS: MAP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:40% 60%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lsheet">
+    <div class="handle"></div>
+    <div class="hd"><svg class="i"><use href="#layers"/></svg><b>Layers</b><span class="reset">Reset</span></div>
+    <div class="cats">
+      <div class="on"><span class="ic"><svg class="i"><use href="#globe"/></svg></span>Map<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#city"/></svg></span>City<span class="n">4</span></div>
+      <div><span class="ic"><svg class="i"><use href="#pin"/></svg></span>Places</div>
+      <div><span class="ic"><svg class="i"><use href="#move"/></svg></span>Moving<span class="n">1</span></div>
+      <div><span class="ic"><svg class="i"><use href="#under"/></svg></span>Under</div>
+      <div><span class="ic"><svg class="i"><use href="#orbit"/></svg></span>Orbit</div>
+    </div>
+    <div class="sub">The ground itself: pick one</div>
+    <div class="basemap">
+      <div class="sel" style="background:linear-gradient(135deg,#e8e2d6,#c9d8c0 40%,#a8c6d8 70%,#e8e2d6)"><span style="color:#222;text-shadow:none">Drawn map</span></div>
+      <div style="background-image:url(../chat-world/city.jpg); background-position:30% 70%; background-size:420px auto"><span>Aerial photo · NL</span></div>
+      <div style="background:#2b3438"><span>No ground</span></div>
+    </div>
+    <div class="sub">On the map</div>
+    <div class="tiles">
+      <div class="tile on"><svg class="i"><use href="#tag"/></svg>Street names<span class="tg"></span></div>
+      <div class="tile on"><svg class="i"><use href="#route"/></svg>Road markings<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#drop"/></svg>Moving water<span class="tg"></span></div>
+    </div>
+  </div>
+</div>
+<h2><span>2</span>Layers: the map</h2>
+<ul>
+  <li>Drawn map and aerial photo are one choice, not two switches. Today they are two checkboxes whose combination nobody can predict.</li>
+  <li>“Road textures” and “Water shading” are renamed after what you see. They could also move to Settings ▸ Graphics, since they are about quality, not about what is on the map.</li>
+  <li>“No ground” is the map-off state the current <i>Map</i> checkbox gives, named.</li>
+</ul>
+</div>
+
+<!-- 3. LAYERS: UNDER -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:60% 40%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lsheet">
+    <div class="handle"></div>
+    <div class="hd"><svg class="i"><use href="#layers"/></svg><b>Layers</b><span class="reset">Reset</span></div>
+    <div class="cats">
+      <div><span class="ic"><svg class="i"><use href="#globe"/></svg></span>Map<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#city"/></svg></span>City<span class="n">4</span></div>
+      <div><span class="ic"><svg class="i"><use href="#pin"/></svg></span>Places</div>
+      <div><span class="ic"><svg class="i"><use href="#move"/></svg></span>Moving<span class="n">1</span></div>
+      <div class="on"><span class="ic"><svg class="i"><use href="#under"/></svg></span>Under<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#orbit"/></svg></span>Orbit</div>
+    </div>
+    <div class="sub">Opens the ground near you · Netherlands only</div>
+    <div class="tiles">
+      <div class="tile on"><svg class="i"><use href="#pipe"/></svg>Sewers<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#soil"/></svg>Soil layers<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#under"/></svg>Boreholes<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#drop"/></svg>Groundwater<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#wave"/></svg>Heat storage wells<span class="tg"></span></div>
+      <div class="tile on"><svg class="i"><use href="#pipe"/></svg>Pipelines<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#quake"/></svg>Gas field &amp; quakes<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#drop"/></svg>Contamination<span class="tg"></span></div>
+    </div>
+  </div>
+</div>
+<h2><span>3</span>Layers: under the ground</h2>
+<ul>
+  <li>The sewers and the seven underground layers that landed today, as equals. They sit under <i>Map</i> today, which is the wrong place for things below the map.</li>
+  <li>The category says once that it is Netherlands only, instead of every row saying it.</li>
+</ul>
+</div>
+
+<!-- 4. LAYERS: ORBIT -->
+<div class="shot">
+<div class="phone">
+  <div class="space"><div class="land"></div>
+    <span class="sat" style="left:80px;top:150px;color:#ffd173"></span><span class="sat" style="left:250px;top:120px;color:#5aff73"></span><span class="sat" style="left:320px;top:200px;color:#8098cc"></span><span class="sat" style="left:150px;top:230px;color:#8098cc"></span><span class="sat" style="left:200px;top:90px;color:#ff8030"></span>
+  </div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lsheet">
+    <div class="handle"></div>
+    <div class="hd"><svg class="i"><use href="#layers"/></svg><b>Layers</b><span class="reset">Reset</span></div>
+    <div class="cats">
+      <div><span class="ic"><svg class="i"><use href="#globe"/></svg></span>Map<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#city"/></svg></span>City<span class="n">4</span></div>
+      <div><span class="ic"><svg class="i"><use href="#pin"/></svg></span>Places</div>
+      <div><span class="ic"><svg class="i"><use href="#move"/></svg></span>Moving<span class="n">1</span></div>
+      <div><span class="ic"><svg class="i"><use href="#under"/></svg></span>Under</div>
+      <div class="on"><span class="ic"><svg class="i"><use href="#orbit"/></svg></span>Orbit<span class="n">1</span></div>
+    </div>
+    <div class="sub">The whole planet, seen from space</div>
+    <div class="tiles">
+      <div class="tile on"><svg class="i"><use href="#orbit"/></svg>Satellites<span class="tg"></span><span class="more">⋯</span></div>
+      <div class="tile off-here"><svg class="i"><use href="#plane"/></svg>Flights<span class="tg"></span><span class="soon">next</span></div>
+      <div class="tile off-here"><svg class="i"><use href="#ship"/></svg>Ships<span class="tg"></span><span class="soon">later</span></div>
+    </div>
+    <div class="chips">
+      <div><i style="background:#ffd173"></i>Crewed stations</div>
+      <div><i style="background:#5aff73"></i>Navigation</div>
+      <div><i style="background:#ff8030"></i>Weather &amp; Earth</div>
+      <div class="off"><i style="background:#8098cc"></i>Starlink</div>
+      <div><i style="background:#c0c0cc"></i>Everything else</div>
+    </div>
+    <div class="hint"><svg class="i s"><use href="#info"/></svg>Satellites ⋯ open in place: tap a chip to hide that kind.</div>
+  </div>
+</div>
+<h2><span>4</span>Layers: in orbit</h2>
+<ul>
+  <li>Satellites today. Flights and ships go in the same group as they arrive (shown as placeholders here).</li>
+  <li>The kind chips double as the legend, in the colours drawn on the globe.</li>
+  <li>From the street the Satellites tile is dimmed: “Visible from space”.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="row">
+
+<!-- 5. RING ON THE MAP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="pin" style="left:196px;top:430px"></div>
+  <div class="ring" style="left:196px;top:430px">
+    <div class="guide"></div>
+    <div class="b p" style="left:0;top:-82px"><svg class="i s"><use href="#route"/></svg>Route<br>here</div>
+    <div class="b" style="left:78px;top:-25px"><svg class="i s"><use href="#star"/></svg>Save</div>
+    <div class="b" style="left:48px;top:66px"><svg class="i s"><use href="#share"/></svg>Share</div>
+    <div class="b" style="left:-48px;top:66px"><svg class="i s"><use href="#plus"/></svg>Build</div>
+    <div class="b" style="left:-78px;top:-25px"><svg class="i s"><use href="#from"/></svg>Route<br>from</div>
+    <div class="b x" style="left:0;top:0"><svg class="i s"><use href="#x"/></svg></div>
+  </div>
+  <div class="ipill" style="left:196px;top:540px"><b>Grote Markt 1</b>Groningen · 53.2194, 6.5665</div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc on"><svg class="i"><use href="#layers"/></svg></div>
+  </div>
+</div>
+<h2><span>5</span>Ring: a point on the map</h2>
+<ul>
+  <li>Today's menu entries as buttons: Route to here (main, orange), Route from here, Save this place, Create object (Build).</li>
+  <li><b>Share</b> is <span class="new">new</span>: a place link (<code>/go?place=…</code>) already exists, but there is no button for it.</li>
+  <li>The pill under it is where you tapped, so the ring never has to hold text.</li>
+</ul>
+</div>
+
+<!-- 6. RING ON AN OBJECT -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:70% 35%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div style="position:absolute;left:176px;top:400px;width:44px;height:44px;background:#8a6d4a;border:2px solid #FD9212;z-index:4;transform:rotate(8deg)"></div>
+  <div class="ring" style="left:198px;top:422px">
+    <div class="guide"></div>
+    <div class="b p" style="left:0;top:-82px"><svg class="i s"><use href="#hand"/></svg>Touch</div>
+    <div class="b" style="left:78px;top:-25px"><svg class="i s"><use href="#plus"/></svg>Edit</div>
+    <div class="b" style="left:48px;top:66px"><svg class="i s"><use href="#tag"/></svg>Script</div>
+    <div class="b" style="left:-48px;top:66px"><svg class="i s"><use href="#x"/></svg>Delete</div>
+    <div class="b" style="left:-78px;top:-25px"><svg class="i s"><use href="#cam"/></svg>Follow</div>
+    <div class="b x" style="left:0;top:0"><svg class="i s"><use href="#x"/></svg></div>
+  </div>
+  <div class="ipill" style="left:198px;top:532px"><b>Crate</b>Yours · scripted</div>
+</div>
+<h2><span>6</span>Ring: an object</h2>
+<ul>
+  <li>Same ring, the object's actions: Touch (main, when it carries a script), Edit, Script, Delete. Edit/Script/Delete only appear if you may change it, as today.</li>
+  <li><b>Follow</b> is the new camera attachment: any moving object can be followed.</li>
+</ul>
+</div>
+
+<!-- 7. RING ON A SATELLITE -->
+<div class="shot">
+<div class="phone">
+  <div class="space"><div class="land"></div>
+    <span class="sat" style="left:80px;top:150px;color:#8098cc"></span><span class="sat" style="left:320px;top:220px;color:#5aff73"></span><span class="sat" style="left:120px;top:540px;color:#8098cc"></span>
+    <svg style="position:absolute;inset:0" width="390" height="844"><path d="M-20 600 C 100 420, 260 330, 420 300" stroke="#ffd173" stroke-width="1.5" fill="none" opacity=".7"/></svg>
+    <span class="sat" style="left:196px;top:388px;color:#ffd173;width:9px;height:9px"></span>
+  </div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ring" style="left:196px;top:388px">
+    <div class="guide"></div>
+    <div class="b p" style="left:0;top:-82px"><svg class="i s"><use href="#cam"/></svg>Follow</div>
+    <div class="b" style="left:74px;top:38px"><svg class="i s"><use href="#path"/></svg>Path</div>
+    <div class="b" style="left:-74px;top:38px"><svg class="i s"><use href="#info"/></svg>More</div>
+    <div class="b x" style="left:0;top:0"><svg class="i s"><use href="#x"/></svg></div>
+  </div>
+  <div class="ipill" style="left:196px;top:500px"><b>ISS (ZARYA)</b>Crewed station · 418 km · 7.66 km/s</div>
+</div>
+<h2><span>7</span>Ring: a satellite</h2>
+<ul>
+  <li>Follow attaches the camera; Path shows the orbit for the next hour (on by default when one is picked); More opens the full card: over where, orbit period, NORAD number.</li>
+  <li>The details pill reads live, so altitude and speed change while you look.</li>
+</ul>
+</div>
+
+<!-- 8. FOLLOWING -->
+<div class="shot">
+<div class="phone">
+  <div class="space" style="background:radial-gradient(circle at 50% 150%, #4b8fc4 0, #2a6a9f 48%, #173a5c 55%, rgba(9,20,32,0) 56%), #04070b"><div class="land" style="bottom:-200px;height:520px;left:-60px;right:-60px"></div>
+    <svg style="position:absolute;inset:0" width="390" height="844"><path d="M-20 520 C 120 440, 270 430, 420 470" stroke="#ffd173" stroke-width="1.5" fill="none" opacity=".7"/></svg>
+    <span class="sat" style="left:196px;top:452px;color:#ffd173;width:10px;height:10px"></span>
+  </div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="chipf"><span>Following</span><b>ISS (ZARYA)</b><span class="x"><svg class="i s" style="width:12px;height:12px"><use href="#x"/></svg></span></div>
+  <div class="ipill" style="left:196px;top:700px">Drag to look around it · pinch to zoom</div>
+</div>
+<h2><span>8</span>Following</h2>
+<ul>
+  <li>The camera rides along 20 km away with the planet below. Drag turns around the satellite and pinch zooms, down to 200 m or out past the geostationary belt.</li>
+  <li>The chip at the top says what you follow; ✕ (or Esc) lets go and leaves you in Earth view exactly where you are.</li>
+  <li>Built so far as a general “follow this” that any layer can offer: satellites today, and later flights, ships, buses and friends.</li>
+</ul>
+</div>
+
+</div>
+
+<h2 style="color:var(--cream);margin-top:56px;font-size:20px">Where every current switch goes</h2>
+<table class="map">
+  <tr><th>Category</th><th>Layers</th></tr>
+  <tr><td>Map</td><td>Drawn map / Aerial photo (NL) / No ground (one choice) · Street names · Road markings (was “Road textures”) · Moving water (was “Water shading”)</td></tr>
+  <tr><td>City</td><td>Buildings ⋯ (3DBAG (NL), OSM buildings and windows) · Trees · Grass · Street furniture · Street detail · Flood defences (NL)</td></tr>
+  <tr><td>Places</td><td>Public transport stops ⋯ (stop kinds) · Shops ⋯ (shop kinds) · Friends</td></tr>
+  <tr><td>Moving</td><td>Traffic and People (made up from the streets, said so on the tiles) · Live buses &amp; trains (NL)</td></tr>
+  <tr><td>Under</td><td>Sewers · Soil layers · Boreholes and soundings · Groundwater · Heat storage wells · Transport pipelines · Gas field and earthquakes · Soil contamination (all NL)</td></tr>
+  <tr><td>Orbit</td><td>Satellites ⋯ (five kinds) · Flights (next) · Ships (later)</td></tr>
+</table>
+<p class="lede" style="margin-top:14px">The Life master switch goes: with Traffic, People and Live vehicles as three tiles in their own category, a fourth switch over them only adds a way for a tile to be on and still show nothing.</p>
+
+</body>
+</html>
