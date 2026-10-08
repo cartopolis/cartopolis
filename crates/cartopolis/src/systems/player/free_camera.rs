@@ -341,6 +341,100 @@ pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
 /// on screen, so a fast rig here would whip the whole view round on every change
 /// of direction.
 const FOLLOW_ROTATE_RATE: f32 = 8.0;
+
+// ── Recentring behind the direction of travel ────────────────────────────────
+/// Seconds without a camera drag before the rig starts swinging round behind
+/// the avatar by itself, and how long the swing takes to come up to strength.
+/// Cinemachine's defaults (1 s wait); taking the camera back the moment somebody
+/// has stopped turning it is the mistake the wait exists to prevent.
+const RECENTRE_WAIT_S: f32 = 1.0;
+const RECENTRE_RAMP_S: f32 = 0.6;
+/// How fast the swing closes the angle (1/s) on foot, and in flight — where the
+/// avatar covers ground fast enough that a lazy camera leaves it crossing the
+/// frame sideways.
+const RECENTRE_RATE: f32 = 1.2;
+const RECENTRE_FLIGHT_RATE: f32 = 2.5;
+/// Off-axis angles (radians) between which the swing fades out: full strength up
+/// to a sideways walk, nothing for a walk *toward* the camera, which would
+/// otherwise spin the view round every time somebody pressed S.
+const RECENTRE_FADE_FROM: f32 = 1.75; // ~100°
+const RECENTRE_FADE_TO: f32 = 2.8; // ~160°
+
+/// How much the follow camera turns this frame to come round behind travel.
+///
+/// `velocity` is the avatar's world-XZ travel; `idle_s` is how long it has been
+/// since anybody turned the camera by hand. Zero when standing, while the hands
+/// are on the camera, and for travel toward the lens.
+#[must_use]
+fn recentre_turn(azimuth: f32, velocity: Vec2, flying: bool, idle_s: f32, dt: f32) -> f32 {
+    let speed = velocity.length();
+    if speed < 0.3 || idle_s < RECENTRE_WAIT_S {
+        return 0.0;
+    }
+    // Behind the avatar is `azimuth ≡ heading + π` (see the follow-and-rotate arm).
+    let target = velocity.x.atan2(velocity.y) + std::f32::consts::PI;
+    let d = cartopolis_core::wrap_angle_pi(target - azimuth);
+    let toward_lens = crate::utils::sun::smoothstep(RECENTRE_FADE_FROM, RECENTRE_FADE_TO, d.abs());
+    let ramp = ((idle_s - RECENTRE_WAIT_S) / RECENTRE_RAMP_S).clamp(0.0, 1.0);
+    let pace = (speed / crate::systems::locomotion::WALK_SPEED).clamp(0.0, 1.0);
+    let rate = if flying {
+        RECENTRE_FLIGHT_RATE
+    } else {
+        RECENTRE_RATE
+    };
+    d * (1.0 - (-rate * ramp * pace * (1.0 - toward_lens) * dt).exp())
+}
+
+// ── Pivot height ─────────────────────────────────────────────────────────────
+/// A jump is not something the camera should ride: tracking it bobs the whole
+/// city up and down a metre for every hop. On foot and off the ground the pivot
+/// holds its height unless the avatar climbs more than this above it…
+const JUMP_HOLD_RISE_M: f32 = 2.0;
+/// …or drops more than this below it, which is a fall rather than a jump.
+const FALL_LEAD_M: f32 = 0.4;
+/// How fast the held pivot settles back onto the avatar once it is down (1/s).
+const PIVOT_RATE: f32 = 10.0;
+/// A pivot this far off the avatar has been left behind by a teleport, not by a
+/// jump, and is put back at once.
+const PIVOT_SNAP_M: f32 = 6.0;
+
+/// The height the follow rig pivots about this frame.
+#[must_use]
+fn step_pivot(pivot: f32, avatar_y: f32, flying: bool, grounded: bool, dt: f32) -> f32 {
+    if flying || (avatar_y - pivot).abs() > PIVOT_SNAP_M {
+        return avatar_y;
+    }
+    if !grounded {
+        return pivot.clamp(avatar_y - JUMP_HOLD_RISE_M, avatar_y + FALL_LEAD_M);
+    }
+    let eased = pivot + (avatar_y - pivot) * (1.0 - (-PIVOT_RATE * dt).exp());
+    if (avatar_y - eased).abs() < 1e-3 {
+        avatar_y
+    } else {
+        eased
+    }
+}
+
+// ── Pull-back with speed ─────────────────────────────────────────────────────
+/// How much longer the boom gets at speed, as a fraction of the chosen distance,
+/// and the speeds the stretch runs between. Nesky's rule: distance and field of
+/// view are one curve on one parameter — the FOV already widens to a sprint, and
+/// this carries on where it stops, so a flight is framed rather than tailgated.
+const PULLBACK_GAIN: f32 = 0.9;
+const PULLBACK_FROM: f32 = crate::systems::locomotion::RUN_SPEED;
+const PULLBACK_FULL: f32 = 80.0;
+const PULLBACK_RATE: f32 = 1.5;
+
+#[must_use]
+fn pullback_for_speed(speed: f32) -> f32 {
+    1.0 + PULLBACK_GAIN * crate::utils::sun::smoothstep(PULLBACK_FROM, PULLBACK_FULL, speed)
+}
+
+/// How far above the pivot the camera aims, as a fraction of the boom. Aiming
+/// at the chest put the avatar dead centre with as much screen spent on the
+/// pavement behind it as on the street ahead; aiming a little over the head
+/// drops it into the lower middle of the frame.
+const FRAMING_RISE: f32 = 0.08;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
 /// exponential so the step scales with altitude, like Google Earth. Kept gentle —
 /// the glide (`ZOOM_GLIDE_RATE`) supplies the sense of speed, so per-notch this
@@ -1276,6 +1370,12 @@ struct RigSmoothing {
     dip: f32,
     /// Current vertical field of view (radians).
     fov: f32,
+    /// Seconds since the camera was last turned by hand ([`recentre_turn`]).
+    idle_s: f32,
+    /// The height the rig pivots about ([`step_pivot`]); `None` until placed.
+    pivot: Option<f32>,
+    /// Current boom stretch ([`pullback_for_speed`]).
+    pullback: f32,
 }
 
 impl Default for RigSmoothing {
@@ -1284,6 +1384,9 @@ impl Default for RigSmoothing {
             boom: 1.0,
             dip: 0.0,
             fov: FOLLOW_FOV_BASE,
+            idle_s: 0.0,
+            pivot: None,
+            pullback: 1.0,
         }
     }
 }
@@ -1372,6 +1475,11 @@ pub fn camera_controls(
     // returning to Follow starts from rest instead of unwinding a stale one.
     if camera_state.mode != CameraMode::Avatar {
         rig.smoothing.fov = FOLLOW_FOV_BASE;
+        // Likewise the rest of what Follow eases: a pivot or a stretch left over
+        // from before would be unwound on return as a drift nobody caused.
+        rig.smoothing.pivot = None;
+        rig.smoothing.pullback = 1.0;
+        rig.smoothing.idle_s = 0.0;
         set_fov(&mut projection, FOLLOW_FOV_BASE);
     }
 
@@ -1534,7 +1642,9 @@ fn follow_mode(ctx: ModeCtx) {
     // position by up to a metre (`AvatarState::seat_shift`), and a camera
     // that kept framing the position would spend the sit looking at the
     // pavement beside the bench.
-    let avatar_pos = avatar_state.display_position + avatar_state.seat_shift();
+    let mut avatar_pos = avatar_state.display_position + avatar_state.seat_shift();
+    // Counted up here and zeroed wherever a hand turns the camera below.
+    rig.smoothing.idle_s += delta_time;
 
     // Driver mode owns the rig (`systems::driver`): distance, tilt and
     // azimuth are written from the map orientation every frame, so the
@@ -1595,6 +1705,19 @@ fn follow_mode(ctx: ModeCtx) {
         camera_state.distance = wish.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
     }
     let first_person = camera_state.first_person;
+    // Hold the pivot's height through a jump ([`step_pivot`]). Not from inside
+    // the head, where the eye is the avatar's own, nor in driver mode.
+    let pivot = step_pivot(
+        rig.smoothing.pivot.unwrap_or(avatar_pos.y),
+        avatar_pos.y,
+        avatar_state.is_flying,
+        avatar_state.grounded,
+        delta_time,
+    );
+    rig.smoothing.pivot = Some(pivot);
+    if !first_person && !locked {
+        avatar_pos.y = pivot;
+    }
     // The phone aims the view only from inside the head, and only while
     // the locate button is lit — `locate::track_device_pose` decides that
     // and writes the rotation; this is its consumer.
@@ -1636,6 +1759,7 @@ fn follow_mode(ctx: ModeCtx) {
             if let Some(last_pos) = camera_state.pan_offset {
                 let delta = event.position - last_pos;
                 if delta != Vec2::ZERO {
+                    rig.smoothing.idle_s = 0.0;
                     // Manually orbiting drops follow-and-rotate — the phone-map
                     // convention: dragging the map yourself stops it following
                     // your heading.
@@ -1666,12 +1790,14 @@ fn follow_mode(ctx: ModeCtx) {
     {
         if touch.drag != Vec2::ZERO {
             camera_state.follow_rotate = false;
+            rig.smoothing.idle_s = 0.0;
             camera_state.azimuth -= touch.drag.x * 0.005;
             camera_state.pitch =
                 (camera_state.pitch - touch.drag.y * 0.005).clamp(pitch_min, pitch_max);
         }
         if touch.twist != 0.0 {
             camera_state.follow_rotate = false;
+            rig.smoothing.idle_s = 0.0;
             camera_state.azimuth -= touch.twist;
         }
     }
@@ -1701,8 +1827,25 @@ fn follow_mode(ctx: ModeCtx) {
             // Snap the last sliver so azimuth (and thus the whole follow rig)
             // actually settles when standing still, instead of creeping toward
             // the target forever and pinning the floating-origin propagation.
-            camera_state.azimuth += if d.abs() < 1e-3 { d } else { d * a };
+            let turn = if d.abs() < 1e-3 { d } else { d * a };
+            camera_state.azimuth += turn;
+            camera_state.auto_yaw += turn;
         }
+    } else if !locked && !first_person && device_rotation.is_none() {
+        // Without follow-and-rotate the rig still drifts round behind the way
+        // the avatar is travelling once nobody is turning it ([`recentre_turn`]).
+        // Counted into `auto_yaw` like the chase above, so the keys go on
+        // meaning what they meant when they were pressed.
+        let travel = Vec2::new(avatar_state.velocity.x, avatar_state.velocity.z);
+        let turn = recentre_turn(
+            camera_state.azimuth,
+            travel,
+            avatar_state.is_flying,
+            rig.smoothing.idle_s,
+            delta_time,
+        );
+        camera_state.azimuth += turn;
+        camera_state.auto_yaw += turn;
     }
 
     // The device aims the camera: read the rig's own angles back out of
@@ -1729,8 +1872,21 @@ fn follow_mode(ctx: ModeCtx) {
     // the boom is what shortens when a wall gets between the camera and
     // the avatar, and scaling the eye offset with it would sink the view
     // into the pavement as it came in.
-    let horizontal_distance = camera_state.distance * camera_state.pitch.cos();
-    let vertical_offset = camera_state.distance * camera_state.pitch.sin();
+    // The boom stretches with speed ([`pullback_for_speed`]); `distance` stays
+    // what the wheel chose, so the stretch unwinds onto it when the avatar slows.
+    let want_pullback = if locked || first_person {
+        1.0
+    } else {
+        pullback_for_speed(avatar_state.velocity.length())
+    };
+    rig.smoothing.pullback +=
+        (want_pullback - rig.smoothing.pullback) * (1.0 - (-PULLBACK_RATE * delta_time).exp());
+    if (want_pullback - rig.smoothing.pullback).abs() < 1e-4 {
+        rig.smoothing.pullback = want_pullback;
+    }
+    let reach = camera_state.distance * rig.smoothing.pullback;
+    let horizontal_distance = reach * camera_state.pitch.cos();
+    let vertical_offset = reach * camera_state.pitch.sin();
     let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
     let boom = Vec3::new(
         camera_state.azimuth.sin() * horizontal_distance,
@@ -1947,7 +2103,13 @@ fn follow_mode(ctx: ModeCtx) {
         // and driver mode never reaches the arm above, having cleared
         // `first_person` as it took the rig.
         let aim = camera_state.drive_lookahead;
-        let ahead = Vec3::new(aim.x, 0.0, aim.y);
+        // Driver mode frames its own arrow and keeps its aim as it was.
+        let rise = if locked {
+            0.0
+        } else {
+            FRAMING_RISE * reach * rig.smoothing.boom
+        };
+        let ahead = Vec3::new(aim.x, rise, aim.y);
         let look_world =
             avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
         camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
@@ -2729,6 +2891,77 @@ pub fn update_first_person_avatar(
 fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
     let absolute = cell_y * WORLD_CELL_EDGE as f64 + local_y as f64;
     (min_height as f64 - absolute).max(0.0) as f32
+}
+
+#[cfg(test)]
+mod follow_feel_tests {
+    use super::*;
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    /// Walk east (+X) for `secs` with the camera starting south of the avatar
+    /// looking north, i.e. a sideways walk across the screen; answer the azimuth.
+    fn walk_sideways(idle_from: f32, secs: f32) -> f32 {
+        let dt = 1.0 / 60.0;
+        let (mut az, mut idle) = (0.0_f32, idle_from);
+        for _ in 0..(secs / dt) as usize {
+            idle += dt;
+            az += recentre_turn(az, Vec2::new(1.8, 0.0), false, idle, dt);
+        }
+        az
+    }
+
+    #[test]
+    fn a_sideways_walk_brings_the_camera_round_behind() {
+        // Behind an eastward walker is azimuth heading + π = π/2 + π ≡ -π/2.
+        let az = walk_sideways(RECENTRE_WAIT_S, 4.0);
+        let off = cartopolis_core::wrap_angle_pi(az + FRAC_PI_2).abs();
+        assert!(off < 0.15, "still {off} rad off behind after four seconds");
+    }
+
+    #[test]
+    fn the_camera_waits_for_the_hands_to_leave_it() {
+        assert_eq!(walk_sideways(0.0, RECENTRE_WAIT_S * 0.9), 0.0);
+    }
+
+    #[test]
+    fn walking_toward_the_lens_does_not_spin_the_view() {
+        // Camera at azimuth 0 sits on +Z looking toward -Z; walking +Z is
+        // walking at it.
+        let turn = recentre_turn(0.0, Vec2::new(0.0, 1.8), false, 10.0, 1.0 / 60.0);
+        assert_eq!(turn, 0.0);
+        assert_eq!(recentre_turn(PI, Vec2::ZERO, true, 10.0, 1.0 / 60.0), 0.0);
+    }
+
+    #[test]
+    fn a_jump_does_not_lift_the_pivot() {
+        let dt = 1.0 / 60.0;
+        let (mut y, mut vy, mut pivot) = (0.0_f32, motion::JUMP_SPEED, 0.0_f32);
+        let mut worst = 0.0_f32;
+        while vy > 0.0 || y > 0.0 {
+            vy -= motion::GRAVITY * dt;
+            y = (y + vy * dt).max(0.0);
+            pivot = step_pivot(pivot, y, false, y <= 0.0, dt);
+            worst = worst.max(pivot.abs());
+        }
+        assert!(worst < 1e-6, "the pivot rode the jump by {worst} m");
+    }
+
+    #[test]
+    fn a_fall_is_followed_and_flight_is_tracked() {
+        assert_eq!(step_pivot(3.0, 0.0, false, false, 0.016), FALL_LEAD_M);
+        assert_eq!(step_pivot(0.0, 3.0, true, false, 0.016), 3.0);
+        // A teleport is put right at once, not glided across.
+        assert_eq!(step_pivot(0.0, 500.0, false, true, 0.016), 500.0);
+    }
+
+    #[test]
+    fn the_boom_stretches_only_past_a_run() {
+        assert_eq!(
+            pullback_for_speed(crate::systems::locomotion::RUN_SPEED),
+            1.0
+        );
+        assert!((pullback_for_speed(500.0) - (1.0 + PULLBACK_GAIN)).abs() < 1e-6);
+    }
 }
 
 #[cfg(test)]

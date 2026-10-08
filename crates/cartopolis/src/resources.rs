@@ -1298,6 +1298,11 @@ pub struct AvatarState {
     /// that has to drop. Under the same gravity, so a storey and a kerb fall at
     /// the same rate.
     pub floor_drop_speed: f32,
+    /// The camera's `auto_yaw` when the movement input now held was pressed, and
+    /// that input's direction on screen — what keeps a recentring camera from
+    /// steering the walk it is following (`avatar::steer_azimuth`). `None` while
+    /// nothing is held.
+    pub steer_latch: Option<(f32, Vec2)>,
     /// Online client-side prediction: the world-space velocity most recently sent
     /// to the sim (after collision steering + fly scaling), replicating the sim's
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
@@ -1434,6 +1439,7 @@ impl Default for AvatarState {
             terrain_lift: 0.0,
             floor_lift: 0.0,
             floor_drop_speed: 0.0,
+            steer_latch: None,
             predicted_velocity: Vec3::ZERO,
             velocity: Vec3::ZERO,
             fly_vertical: 0.0,
@@ -1591,6 +1597,13 @@ pub struct CameraState {
     /// re-armed toward north every frame, so the polar axis stays vertical on
     /// screen no matter how the globe is spun. Toggled by clicking the compass.
     pub orbit_north_lock: bool,
+    /// Radians the follow camera has turned *by itself* (recentring behind the
+    /// avatar), accumulated for the life of the app. Movement reads keys against
+    /// the azimuth minus whatever of this accrued since the keys were pressed, so
+    /// a camera swinging round behind the avatar does not also steer it
+    /// (`avatar::handle_avatar_movement`). A running total rather than a flag,
+    /// because the reader and the writer run in different phases of the frame.
+    pub auto_yaw: f32,
     /// Follow-and-rotate (Organic-Maps style): while true *and* in Avatar mode, the
     /// follow camera's [`Self::azimuth`] tracks the avatar's facing yaw, so the
     /// camera stays behind the avatar and swings with it like a chase cam. Armed
@@ -1690,6 +1703,7 @@ impl Default for CameraState {
             reanchor_request: None,
             orbit_north_reset: false,
             orbit_north_lock: false,
+            auto_yaw: 0.0,
             follow_rotate: false,
             first_person: false,
             device_rotation: None,

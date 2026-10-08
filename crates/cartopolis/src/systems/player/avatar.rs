@@ -388,6 +388,47 @@ const ONLINE_SNAP_ERROR: f32 = 8.0;
 /// this whole band of constants exists to keep out of the picture.
 const ONLINE_SNAP_SECONDS: f32 = 1.0;
 
+/// Height above the sim's ground (m) below which the display lift follows the
+/// measured ground exactly. Above a jump's apex (`motion::JUMP_SPEED` reaches
+/// ~1.1 m) so a hop off a kerb still lands on the kerb.
+const LIFT_EXACT_BELOW_M: f32 = 1.5;
+/// Height (m) by which the lift has slowed to [`LIFT_GLIDE_RATE`].
+const LIFT_GLIDE_ABOVE_M: f32 = 25.0;
+/// How fast the lift tracks the ground just above [`LIFT_EXACT_BELOW_M`], and
+/// how slowly it drifts once the avatar is properly up (1/s).
+const LIFT_TRACK_RATE: f32 = 25.0;
+const LIFT_GLIDE_RATE: f32 = 0.3;
+/// Height (m) above which the storey state machine stops being stepped. A
+/// flier is not standing on a floor, and stepping it at altitude dropped the
+/// floor into every tunnel cut the flight passed over and left it there.
+const FLOOR_FREEZE_ABOVE_M: f32 = 2.0;
+
+/// The terrain lift to draw a flier at, given last frame's and the ground now.
+///
+/// **The ground under a flier is not something the flier moves with.** The sim
+/// is flat and the relief is added on the display side, so the lift used to be
+/// the ground height under the avatar on every frame, at any altitude: flying
+/// over the city at 300 m the avatar dropped two metres for every canal, rose
+/// for every dike, and — with the half-metre tier — shivered over kerbs, at
+/// whatever rate flight carried it across them. The follow camera aims at the
+/// avatar, so the whole view shook with it. That is the flight stutter that
+/// survived every reconciliation fix (`docs/notes/flight-at-speed.md` §8).
+///
+/// Exact on the ground and through a jump; above that the lift eases toward the
+/// ground at a rate that falls geometrically with height, so a long rise of the
+/// land is still followed and a ditch is not. A descent sweeps the rate back up
+/// on the way down, so the lift arrives exact before the feet do.
+#[must_use]
+fn airborne_lift(current: f32, ground: f32, height: f32, dt: f32) -> f32 {
+    if height <= LIFT_EXACT_BELOW_M {
+        return ground;
+    }
+    let t =
+        ((height - LIFT_EXACT_BELOW_M) / (LIFT_GLIDE_ABOVE_M - LIFT_EXACT_BELOW_M)).clamp(0.0, 1.0);
+    let rate = LIFT_TRACK_RATE * (LIFT_GLIDE_RATE / LIFT_TRACK_RATE).powf(t);
+    current + (ground - current) * (1.0 - (-rate * dt).exp())
+}
+
 /// The error beyond which the display snaps to authority instead of easing.
 ///
 /// **A fixed distance is a speed-dependent time, and that is what made fast
@@ -525,6 +566,14 @@ const MAX_TURN_RATE: f32 = 12.0;
 const FLIGHT_LEAN: f32 = 1.05; // ~60°
 const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
 const FLIGHT_LEAN_SMOOTHING: f32 = 6.0;
+/// The roll a flier takes into a turn: radians of bank per radian-per-second of
+/// turn, the most it will take, and how fast it eases. Without it a flight turn
+/// is a figure rotating on a skewer, which reads as stiff before it reads as
+/// anything else (Sky: Children of the Light shipped without a roll and that is
+/// still the complaint about its flight).
+const FLIGHT_BANK_PER_TURN: f32 = 0.3;
+const FLIGHT_BANK_MAX: f32 = 0.6; // ~35°
+const FLIGHT_BANK_SMOOTHING: f32 = 5.0;
 
 /// How long the arrival takes to play out (seconds).
 ///
@@ -628,6 +677,34 @@ pub(crate) fn travel_wish(azimuth: f32, keys: Vec3, stick: Vec2) -> (Vec3, f32) 
     // Same frame as the keys: `y` is forward (up-screen), `x` strafes right.
     let dir = camera_plane_forward(azimuth) * unit.y + camera_plane_right(azimuth) * unit.x;
     (dir.normalize_or_zero(), push.min(1.0))
+}
+
+/// How far (cosine) the held direction may turn before it counts as a new press.
+const STEER_RELATCH_COS: f32 = 0.94; // ~20°
+
+/// The camera bearing the held movement input is read against.
+///
+/// The camera's own azimuth, less whatever it has turned **by itself** since the
+/// input was pressed (`CameraState::auto_yaw`). Without that the follow camera
+/// recentring behind a sideways walk would rotate the frame the keys are read
+/// in, the avatar would turn to follow, the camera would follow that — and
+/// holding A would walk a circle (Nesky's "50 Game Camera Mistakes" #18–19). A
+/// hand on the camera still steers, since only the automatic part is held back;
+/// letting go, or changing direction by more than [`STEER_RELATCH_COS`], reads
+/// the keys against the camera as it is now.
+#[must_use]
+fn steer_azimuth(latch: &mut Option<(f32, Vec2)>, azimuth: f32, auto_yaw: f32, held: Vec2) -> f32 {
+    let Some(dir) = held.try_normalize() else {
+        *latch = None;
+        return azimuth;
+    };
+    match latch {
+        Some((mark, was)) if was.dot(dir) >= STEER_RELATCH_COS => azimuth - (auto_yaw - *mark),
+        _ => {
+            *latch = Some((auto_yaw, dir));
+            azimuth
+        }
+    }
 }
 
 /// World yaw that turns the model's forward (+Z) onto `dir` on the XZ plane, or
@@ -1323,6 +1400,8 @@ pub fn update_avatar_model_pose(
     // has to mean *finished*: counting up would have every launch open on the
     // first frame of an arrival nobody asked for.
     mut arrive_left: Local<f32>,
+    // The flight bank, and the facing it was measured from last frame.
+    mut bank: Local<(f32, f32)>,
     mut arrive_seq: Local<u32>,
 ) {
     // Advance the seat slide first, so the offset written below is this frame's.
@@ -1393,7 +1472,24 @@ pub fn update_avatar_model_pose(
         }
     }
 
-    let mut local = flight_pose(*lean, arrived);
+    // Bank from how fast the facing is turning; only a flier that is travelling.
+    let dt = time.delta_secs();
+    let turn_rate = if dt > 0.0 {
+        wrap_angle_pi(avatar_state.facing_yaw - bank.1) / dt
+    } else {
+        0.0
+    };
+    bank.1 = avatar_state.facing_yaw;
+    let want_bank = if avatar_state.is_flying && avatar_state.is_walking {
+        (-turn_rate * FLIGHT_BANK_PER_TURN).clamp(-FLIGHT_BANK_MAX, FLIGHT_BANK_MAX)
+    } else {
+        0.0
+    };
+    bank.0 += (want_bank - bank.0) * (1.0 - (-FLIGHT_BANK_SMOOTHING * dt).exp());
+    if (want_bank - bank.0).abs() < 1e-3 {
+        bank.0 = want_bank;
+    }
+    let mut local = flight_pose(*lean, bank.0, arrived);
     local.translation += seat_shift;
     for (parent, mut tf) in holders.iter_mut() {
         let owner = parent.parent();
@@ -1433,8 +1529,10 @@ const SEAT_SLIDE_SECS: f32 = 0.45;
 /// the sole of the foot and no pivot correction is needed. At `arrival >= 1` the
 /// scale is exactly [`Vec3::ONE`], so an arrival that has finished composes with
 /// the lean without leaving a residue.
-fn flight_pose(lean: f32, arrival: f32) -> Transform {
-    let rotation = Quat::from_rotation_x(lean);
+fn flight_pose(lean: f32, bank: f32, arrival: f32) -> Transform {
+    // Bank about the avatar's own forward (+Z) after the lean, so a flier lying
+    // along its travel rolls about that line.
+    let rotation = Quat::from_rotation_z(bank) * Quat::from_rotation_x(lean);
     let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
     Transform {
         translation: pivot - rotation * pivot,
@@ -1830,13 +1928,23 @@ pub fn smooth_online_avatar_display(
             is_stalled(avatar_state.snapshot_age),
             dt,
         );
-        avatar_state.terrain_lift = terrain.ground_at(flat.x, flat.z);
+        // `flat.y` is the height above the sim's ground; see `airborne_lift`.
+        avatar_state.terrain_lift = airborne_lift(
+            avatar_state.terrain_lift,
+            terrain.ground_at(flat.x, flat.z),
+            flat.y,
+            dt,
+        );
         // The storey, on top of the ground. Sampled from `flat` — the reconciled
         // sim position, which is the frame `interiors` builds its rooms in and the
         // frame `send_network_intent` resolves collision in — so the floor the
         // avatar stands on is the floor it can see and the wall it just walked
-        // through.
-        let floor = footing.step(&mut avatar_state, Vec2::new(flat.x, flat.z), dt);
+        // through. Held while the avatar is well off it (`FLOOR_FREEZE_ABOVE_M`).
+        let floor = if flat.y > FLOOR_FREEZE_ABOVE_M {
+            avatar_state.floor_lift
+        } else {
+            footing.step(&mut avatar_state, Vec2::new(flat.x, flat.z), dt)
+        };
         avatar_state.display_position = flat + Vec3::Y * (avatar_state.terrain_lift + floor);
         // What the follow camera leads by. The predicted velocity is the honest
         // answer online: it is precisely the rate `display_position` advances at
@@ -2040,7 +2148,20 @@ pub fn handle_avatar_movement(
         avatar_state.wants_jump = true;
     }
 
-    let az = camera_state.azimuth;
+    let held = {
+        let k = wish_dir_camera_relative(0.0, move_forward, move_backward, move_left, move_right);
+        if k.length_squared() > 1e-8 {
+            Vec2::new(k.x, k.z)
+        } else {
+            osd.walk
+        }
+    };
+    let az = steer_azimuth(
+        &mut avatar_state.steer_latch,
+        camera_state.azimuth,
+        camera_state.auto_yaw,
+        held,
+    );
     // The keys and the on-screen stick are one input with two shapes: a
     // direction, and how hard it is being asked for. The keyboard's throttle is
     // always 1 and its *rung* comes from the modifiers; the stick has no
@@ -2408,6 +2529,89 @@ pub fn log_avatar_draw_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A canal two metres below the quay, thirty metres across.
+    fn canal(x: f32) -> f32 {
+        if (100.0..130.0).contains(&x) {
+            -2.0
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    fn a_recentring_camera_does_not_steer_a_held_key() {
+        let mut latch = None;
+        let a = Vec2::new(-1.0, 0.0);
+        assert_eq!(steer_azimuth(&mut latch, 0.3, 5.0, a), 0.3);
+        // The camera swung 0.4 rad by itself; the key still means what it did.
+        assert!((steer_azimuth(&mut latch, 0.7, 5.4, a) - 0.3).abs() < 1e-6);
+        // A hand adds 0.2 on top: that part steers.
+        assert!((steer_azimuth(&mut latch, 0.9, 5.4, a) - 0.5).abs() < 1e-6);
+        // A new direction reads against the camera as it now is.
+        assert_eq!(
+            steer_azimuth(&mut latch, 0.9, 5.4, Vec2::new(0.0, 1.0)),
+            0.9
+        );
+        assert_eq!(steer_azimuth(&mut latch, 0.9, 5.4, Vec2::ZERO), 0.9);
+        assert!(latch.is_none());
+    }
+
+    #[test]
+    fn a_flier_banks_into_its_turn() {
+        // Turning left is the facing yaw increasing; the left side is +X.
+        let left_hand = Vec3::new(0.5, 1.2, 0.0);
+        let level = flight_pose(FLIGHT_LEAN, 0.0, 1.0).transform_point(left_hand);
+        let bank = (-1.0 * FLIGHT_BANK_PER_TURN).clamp(-FLIGHT_BANK_MAX, FLIGHT_BANK_MAX);
+        let banked = flight_pose(FLIGHT_LEAN, bank, 1.0).transform_point(left_hand);
+        assert!(
+            banked.y < level.y,
+            "a left turn must drop the left side: {banked} vs {level}"
+        );
+    }
+
+    #[test]
+    fn a_flier_does_not_dip_into_the_canals_it_crosses() {
+        // 100 m/s at 300 m, rendered at 60 Hz: the old lift was `canal(x)`
+        // itself, a two-metre drop for a third of a second.
+        let dt = 1.0 / 60.0;
+        let (mut lift, mut worst) = (0.0_f32, 0.0_f32);
+        for i in 0..120 {
+            let x = i as f32 * 100.0 * dt;
+            lift = airborne_lift(lift, canal(x), 300.0, dt);
+            worst = worst.max(lift.abs());
+        }
+        assert!(worst < 0.2, "the canal still reached the avatar: {worst} m");
+    }
+
+    #[test]
+    fn walking_and_jumping_follow_the_ground_exactly() {
+        for height in [
+            0.0,
+            0.5,
+            motion::JUMP_SPEED.powi(2) / (2.0 * motion::GRAVITY),
+        ] {
+            assert_eq!(airborne_lift(7.0, -2.0, height, 1.0 / 60.0), -2.0);
+        }
+    }
+
+    #[test]
+    fn a_descent_arrives_on_the_ground_it_is_landing_on() {
+        // Coming down from 300 m onto land five metres above where the flight
+        // started: the eased lift must have caught up before it turns exact,
+        // or the landing ends in a five-metre pop.
+        let dt = 1.0 / 60.0;
+        let (mut lift, mut height) = (0.0_f32, 300.0_f32);
+        while height > LIFT_EXACT_BELOW_M + 1e-3 {
+            lift = airborne_lift(lift, 5.0, height, dt);
+            height -= motion::FLY_VERTICAL_SPEED * dt;
+        }
+        assert!(
+            (lift - 5.0).abs() < 0.05,
+            "lift lagged by {} m at touchdown",
+            5.0 - lift
+        );
+    }
 
     /// Follow a remote avatar walking a straight line at `speed`, with snapshots
     /// every 50 ms rendered at 60 Hz, and return how far the drawn avatar ends
@@ -3123,9 +3327,9 @@ mod tests {
     /// avatar on its back and only a screenshot would say so.
     #[test]
     fn flight_lean_pitches_forward_about_the_chest() {
-        assert_eq!(flight_pose(0.0, 1.0), Transform::IDENTITY);
+        assert_eq!(flight_pose(0.0, 0.0, 1.0), Transform::IDENTITY);
 
-        let pose = flight_pose(FLIGHT_LEAN, 1.0);
+        let pose = flight_pose(FLIGHT_LEAN, 0.0, 1.0);
         let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
         assert!(
             pose.transform_point(pivot).distance(pivot) < 1e-5,
