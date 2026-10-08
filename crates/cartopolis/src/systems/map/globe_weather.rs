@@ -18,7 +18,7 @@
 //! procedural fallback. Fetch/decode failures are logged and simply leave the
 //! weight where it is — the shader keeps using its procedural bands.
 
-use std::sync::{Arc, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 use std::time::Duration;
 use web_time::Instant;
 

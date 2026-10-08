@@ -36,8 +36,8 @@
 //! raw tiles and grades them itself, as a desktop does, rather than one WCS patch
 //! that no second visit can reuse.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;

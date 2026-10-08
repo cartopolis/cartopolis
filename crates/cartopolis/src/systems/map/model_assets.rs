@@ -29,10 +29,10 @@
 //! session sets [`set_endpoint`], every read here fails as not-found, which is the
 //! honest answer: offline there is no simulator and therefore no model store.
 
+use crate::platform::sync::RwLock;
 use bevy::asset::io::{AssetReader, AssetReaderError, PathStream, Reader, VecReader};
 use bevy::prelude::*;
 use std::path::Path;
-use std::sync::RwLock;
 
 use crate::components::{Prim, PrimMesh};
 use crate::platform::{http, storage};

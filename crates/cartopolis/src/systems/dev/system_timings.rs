@@ -34,8 +34,8 @@
 //! `opt-level = 1` and its dependencies at `3`, so a row from `cartopolis` and a
 //! row from `bevy_render` are not measured on equal terms.
 
+use crate::platform::sync::{LazyLock, Mutex};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 use tracing::field::{Field, Visit};

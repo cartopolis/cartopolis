@@ -22,10 +22,10 @@
 use crate::components::OsmBuildingMesh;
 use crate::grid::{anchored_xz, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
+use crate::platform::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -125,7 +125,7 @@ fn overpass_endpoints() -> Vec<(String, u32)> {
 /// stall the one behind it.
 #[cfg(not(target_arch = "wasm32"))]
 fn pace_fallback() {
-    use std::sync::Mutex;
+    use crate::platform::sync::Mutex;
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     // Poisoning only means some other caller panicked mid-pace; the timestamp is
     // still meaningful, and refusing to pace is the worse failure here.

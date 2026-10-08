@@ -96,8 +96,8 @@ pub async fn get(ns: Namespace, key: &str) -> Option<Vec<u8>> {
 /// whether a warm start was actually warm, per kind of thing, without reading a
 /// cache directory by hand.
 pub mod stats {
+    use crate::platform::sync::Mutex;
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
 
     static READS: Mutex<BTreeMap<String, (u64, u64)>> = Mutex::new(BTreeMap::new());
 
@@ -344,10 +344,10 @@ mod imp {
     //! and it has to be stored because IndexedDB keeps no metadata of its own.
 
     use super::{Cached, Namespace};
+    use crate::platform::sync::{Mutex, OnceLock};
     use js_sys::{Object, Reflect, Uint8Array};
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
     use wasm_bindgen::prelude::*;
     use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransactionMode};
 

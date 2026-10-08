@@ -57,7 +57,7 @@
 //! return those slots would leak the entire cap over a few teleports and then
 //! stream nothing, for ever, with nothing in the log.
 
-use std::sync::Mutex;
+use crate::platform::sync::Mutex;
 
 /// How far, in cells, from the one the camera is over. Lower is more urgent.
 pub type Rank = u32;

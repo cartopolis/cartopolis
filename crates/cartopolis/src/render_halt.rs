@@ -363,8 +363,8 @@ pub(crate) fn warn_once_per_failure(
     error: bevy::ecs::error::BevyError,
     ctx: bevy::ecs::error::ErrorContext,
 ) {
+    use crate::platform::sync::{Mutex, OnceLock};
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
 
     static SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     let key = format!("{ctx}: {error}");

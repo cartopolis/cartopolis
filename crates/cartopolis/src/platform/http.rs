@@ -248,8 +248,8 @@ pub mod stats {
         pub us: u64,
     }
 
-    static ROUTES: std::sync::Mutex<std::collections::BTreeMap<String, Route>> =
-        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    static ROUTES: crate::platform::sync::Mutex<std::collections::BTreeMap<String, Route>> =
+        crate::platform::sync::Mutex::new(std::collections::BTreeMap::new());
 
     /// `https://host/first/rest?q` → `host/first`.
     #[must_use]
@@ -316,14 +316,14 @@ pub const BREAKER_COOLDOWN: Duration = Duration::from_secs(60);
 /// ignores the request timeout there).
 pub struct Breaker {
     /// When the breaker was last tripped, if it has been.
-    tripped_at: std::sync::Mutex<Option<web_time::Instant>>,
+    tripped_at: crate::platform::sync::Mutex<Option<web_time::Instant>>,
 }
 
 impl Breaker {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            tripped_at: std::sync::Mutex::new(None),
+            tripped_at: crate::platform::sync::Mutex::new(None),
         }
     }
 

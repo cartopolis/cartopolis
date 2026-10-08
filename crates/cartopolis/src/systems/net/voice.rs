@@ -59,8 +59,8 @@
 //! foot, and a client that has not yet spawned an avatar entity for the speaker
 //! still hears them at the right level.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use cartopolis_core::{ChatScope, NetMessage};

@@ -29,8 +29,8 @@
 //!
 //! [`SubTile::resolve`]: crate::systems::vector_tiles::SubTile::resolve
 
+use crate::platform::sync::{Arc, Mutex, OnceLock};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
 
 use futures_channel::oneshot;
 
@@ -256,7 +256,7 @@ impl TileSource {
     /// the state holds are "a map and a running total", not anything a torn
     /// update can corrupt into unsoundness, so recovering beats taking the whole
     /// tile pipeline down with it.
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+    fn lock(&self) -> crate::platform::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

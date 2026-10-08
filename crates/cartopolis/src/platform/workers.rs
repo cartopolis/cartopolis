@@ -135,8 +135,8 @@ mod imp {
 #[cfg(target_arch = "wasm32")]
 mod imp {
     use super::Job;
+    use crate::platform::sync::{Arc, Condvar, Mutex, OnceLock};
     use std::collections::VecDeque;
-    use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
     struct Pool {
         queue: Mutex<VecDeque<Job>>,
@@ -168,19 +168,23 @@ mod imp {
             let pool = pool.clone();
             let spawned = wasm_thread::Builder::new()
                 .name(format!("carto-cpu-{i}"))
-                .spawn(move || loop {
-                    let job = {
-                        let mut q = pool.queue.lock().unwrap_or_else(|e| e.into_inner());
-                        loop {
-                            match q.pop_front() {
-                                Some(job) => break job,
-                                None => {
-                                    q = pool.idle.wait(q).unwrap_or_else(|e| e.into_inner());
+                .spawn(move || {
+                    // A worker may park; the main thread must not (`platform::sync`).
+                    crate::platform::sync::mark_worker();
+                    loop {
+                        let job = {
+                            let mut q = pool.queue.lock().unwrap_or_else(|e| e.into_inner());
+                            loop {
+                                match q.pop_front() {
+                                    Some(job) => break job,
+                                    None => {
+                                        q = pool.idle.wait(q).unwrap_or_else(|e| e.into_inner());
+                                    }
                                 }
                             }
-                        }
-                    };
-                    job();
+                        };
+                        job();
+                    }
                 });
             if let Err(e) = spawned {
                 tracing::warn!(worker = i, error = ?e, "could not start CPU worker");
@@ -216,8 +220,8 @@ pub use imp::init;
 #[allow(unused_imports, dead_code)]
 pub use imp::worker_count;
 
+use crate::platform::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 /// While set, [`submit`] parks jobs in [`PARKED`] instead of dispatching them.
 static PAUSED: AtomicBool = AtomicBool::new(false);
@@ -358,7 +362,7 @@ static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
 /// counted: `std::time::Instant` panics there, and the harness that reads the
 /// durations is native.
 pub mod stats {
-    use std::sync::Mutex;
+    use crate::platform::sync::Mutex;
 
     /// Cumulative cost of one labelled stream's jobs.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

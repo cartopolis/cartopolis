@@ -12,7 +12,7 @@
 //! placing work everywhere, and only *adding* to the library needs a desktop or a
 //! browser.
 
-use std::sync::{Arc, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 
 /// Where a pick has got to. `poll` hands `Ready` over exactly once.
 ///

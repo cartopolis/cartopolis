@@ -39,8 +39,8 @@
 use crate::components::FreeCamera;
 use crate::components::{VehicleBox, VehicleLabel};
 use crate::grid::{anchored_xz, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use web_time::Instant;
 

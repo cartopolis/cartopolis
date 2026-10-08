@@ -13,9 +13,9 @@
 //! `platform::audio`'s web capture does: a Bevy resource must be `Send`, and a
 //! `JsValue` is not.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
 
 use cartopolis_core::CallTrack;
 use wasm_bindgen::prelude::*;

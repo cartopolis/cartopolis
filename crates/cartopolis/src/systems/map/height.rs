@@ -37,8 +37,8 @@
 //!
 //! [AHN]: https://www.ahn.nl
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;

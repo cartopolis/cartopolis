@@ -46,7 +46,7 @@
 //! actually runs (`map_stream` documents why the bevy-side budget makes the
 //! opposite choice).
 
-use std::sync::Mutex;
+use crate::platform::sync::Mutex;
 
 /// The frame's remaining allowance, or `None` while uncapped.
 struct Ledger {
@@ -150,7 +150,7 @@ mod tests {
     /// The tests share one process-wide ledger, so they run under one lock —
     /// otherwise a parallel test's `refund` lands mid-assertion and the failure
     /// reads as a broken rule rather than as a shared static.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SERIAL: crate::platform::sync::Mutex<()> = crate::platform::sync::Mutex::new(());
 
     #[test]
     fn the_first_admission_always_passes_and_later_ones_must_fit() {

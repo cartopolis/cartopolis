@@ -18,7 +18,7 @@
 
 use crate::components::FreeCamera;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use std::sync::{Arc, LazyLock, Mutex};
+use crate::platform::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use web_time::Instant;
 

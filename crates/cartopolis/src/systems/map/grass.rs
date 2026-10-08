@@ -41,6 +41,7 @@
 //! rebuild trigger has [`FIELD_MARGIN_M`] of slack in it precisely so that is
 //! never a race — the camera cannot outwalk the mask it is standing in.
 
+use crate::platform::sync::{Arc, Mutex};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::ViewVisibility;
@@ -50,7 +51,6 @@ use bevy::prelude::*;
 use bevy::render::mesh::MeshTag;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use big_space::prelude::{Grid, GridCell};
-use std::sync::{Arc, Mutex};
 
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};

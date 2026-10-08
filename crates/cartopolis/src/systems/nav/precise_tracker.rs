@@ -16,8 +16,8 @@
 //! re-anchors where the last pose left off, not on a fresh fix, so the hand
 //! does not jump.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 
 use bevy::math::{DQuat, DVec3};
 use cartopolis_vio::geom::Camera;

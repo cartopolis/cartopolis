@@ -23,8 +23,8 @@
 use crate::components::FreeCamera;
 use crate::components::RouteVisual;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use web_time::Instant;
 

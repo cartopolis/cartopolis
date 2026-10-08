@@ -244,8 +244,8 @@ pub fn platform_property(key: &str) -> Option<String> {
 /// way it went — without that line there is no way to tell "ADPF is helping" from
 /// "ADPF was never running".
 mod perf_hint {
+    use crate::platform::sync::Mutex;
     use std::ffi::c_void;
-    use std::sync::Mutex;
 
     /// The live session, as an address rather than a pointer, so the static needs
     /// no `unsafe impl Send`. Zero means "no session".

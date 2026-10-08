@@ -30,7 +30,7 @@
 //! matters on the web, where an open watch keeps the browser's location indicator
 //! lit and, on a phone, the GNSS radio warm.
 
-use std::sync::{Arc, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 
 /// One position report, normalised across providers.
 ///
@@ -88,7 +88,7 @@ struct Provider {
 /// The running provider, if anything is holding one. `Weak`, so this static is a
 /// rendezvous point and never an owner: the subscription's lifetime is exactly the
 /// lifetime of the [`LocationWatch`]es outstanding.
-static SHARED: Mutex<Option<std::sync::Weak<Provider>>> = Mutex::new(None);
+static SHARED: Mutex<Option<crate::platform::sync::Weak<Provider>>> = Mutex::new(None);
 
 /// A live subscription to the device's position. Drop it to unsubscribe.
 pub struct LocationWatch {

@@ -25,9 +25,9 @@
 //! cells a minute into the fill — measured, in `docs/notes/one-pass-cells.md`.
 //! `http::fetch_optional` is what tells the two apart.
 
+use crate::platform::sync::{Arc, Mutex, RwLock};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 
 use bevy::tasks::IoTaskPool;
 

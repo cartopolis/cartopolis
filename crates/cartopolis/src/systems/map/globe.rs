@@ -18,9 +18,9 @@
 //! geometry, its tile streaming, and the Earth-centre / radius the camera reads.
 
 use crate::components::{GlobeMesh, HideInSpace, PlanetAtmosphere};
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;

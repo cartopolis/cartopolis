@@ -110,7 +110,8 @@ const CONTACT_WAIT_S: f64 = 8.0;
 const VIDEO_WAIT_S: f64 = 300.0;
 
 /// An upload in flight: the hash, or why not.
-type VideoUpload = std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>;
+type VideoUpload =
+    crate::platform::sync::Arc<crate::platform::sync::Mutex<Option<Result<String, String>>>>;
 
 /// How long `sign_in` waits for the session to come up before answering.
 const SIGN_IN_WAIT_S: f64 = 30.0;
@@ -488,7 +489,9 @@ enum Pending {
 
 /// A geocoder answer in flight.
 type GeocodeSlot = std::sync::Arc<
-    std::sync::Mutex<Option<Result<Vec<crate::systems::geo_nav::GeoSuggestion>, String>>>,
+    crate::platform::sync::Mutex<
+        Option<Result<Vec<crate::systems::geo_nav::GeoSuggestion>, String>>,
+    >,
 >;
 
 /// What `wait` can wake for.

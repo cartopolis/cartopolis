@@ -493,7 +493,8 @@ async fn load_source(
 pub(crate) static REGISTER_BREAKER: http::Breaker = http::Breaker::new();
 
 /// Registers that have answered with something. See [`attributions`].
-static USED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+static USED: crate::platform::sync::Mutex<Vec<&'static str>> =
+    crate::platform::sync::Mutex::new(Vec::new());
 
 fn mark_used(id: &'static str) {
     if let Ok(mut u) = USED.lock() {

@@ -1898,7 +1898,7 @@ pub struct ShotProgress {
     /// The previous capture's RGB8 frame, kept only under `--flicker` so the
     /// pair's second observer has something to diff against. `Arc<Mutex>` for
     /// the same reason `saved` is an `Arc`: the closure outlives the borrow.
-    flicker_prev: Arc<std::sync::Mutex<Option<(u32, u32, Vec<u8>)>>>,
+    flicker_prev: Arc<crate::platform::sync::Mutex<Option<(u32, u32, Vec<u8>)>>>,
     /// Frames left before exiting (drains after the last save).
     exit_in: Option<u32>,
     /// One [`ShotMetrics`] per captured viewpoint, flushed to `--csv`/`--dump-state`

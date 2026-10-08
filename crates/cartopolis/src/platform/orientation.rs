@@ -48,8 +48,8 @@
 //! **None of the two device arms has run on hardware from this container** — see
 //! `docs/notes/device-orientation.md` for what a phone still has to confirm.
 
+use crate::platform::sync::{Arc, Mutex};
 use bevy::math::{DQuat, DVec3, Quat};
-use std::sync::{Arc, Mutex};
 
 /// One attitude report, normalised across providers.
 ///

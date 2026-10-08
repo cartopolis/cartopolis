@@ -1,9 +1,9 @@
+use crate::platform::sync::{Arc, Mutex, MutexGuard};
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use cartopolis_core::{NetMessage, PrimSurface, TextureEntry};
 use futures_channel::mpsc::UnboundedSender;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Stand-in for the primary `Window` when there isn't one: a scripted `--shot`
 /// run is windowless (no winit event loop at all) and renders into an offscreen
@@ -1845,7 +1845,7 @@ pub struct LocalAvatarSimId(pub Option<u64>);
 /// Incoming messages from the network thread (`Receiver` is not `Sync`; wrap in `Mutex`).
 #[derive(Resource)]
 pub struct NetworkMailbox {
-    pub rx: Mutex<std::sync::mpsc::Receiver<NetMessage>>,
+    pub rx: Mutex<crate::platform::sync::mpsc::Receiver<NetMessage>>,
     /// Messages drained so far. `session::drive_session` reads it to tell a link
     /// that has gone quiet from one that is merely idle.
     pub received: std::sync::atomic::AtomicU64,
@@ -1859,7 +1859,7 @@ impl NetworkMailbox {
         }
     }
 
-    pub fn lock_rx(&self) -> MutexGuard<'_, std::sync::mpsc::Receiver<NetMessage>> {
+    pub fn lock_rx(&self) -> MutexGuard<'_, crate::platform::sync::mpsc::Receiver<NetMessage>> {
         self.rx.lock().expect("network mailbox mutex poisoned")
     }
 }

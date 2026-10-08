@@ -53,11 +53,11 @@
 use bevy::prelude::*;
 
 use crate::grid::{anchored_xz, AnchoredCamera};
+use crate::platform::sync::{Arc, Mutex};
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
 use futures_channel::oneshot;
-use std::sync::{Arc, Mutex};
 
 /// Half-extent of the field in world metres (a 6.4 km box). Sized to cover the
 /// geometry ring and the finest textured tiles around it, which is everything
@@ -559,7 +559,7 @@ pub struct TerrainField {
     /// a min pyramid over the result — which is a long frame, and a long frame is the
     /// documented way to lose the device on the hardware this has to run on.
     coarse_job: Option<u32>,
-    coarse_sink: std::sync::Arc<std::sync::Mutex<Option<CoarseBake>>>,
+    coarse_sink: crate::platform::sync::Arc<crate::platform::sync::Mutex<Option<CoarseBake>>>,
     /// The anchor generation a field is *expected* for — `None` with the layer off or
     /// outside AHN. Paired with `answered_gen` it is the streamer-style "still working"
     /// signal the shot harness settles on.
@@ -573,7 +573,7 @@ pub struct TerrainField {
     /// a long frame is the documented way to lose the device on the hardware this has
     /// to run on.
     fine_job: Option<(Vec2, u32)>,
-    fine_sink: std::sync::Arc<std::sync::Mutex<Option<FineBake>>>,
+    fine_sink: crate::platform::sync::Arc<crate::platform::sync::Mutex<Option<FineBake>>>,
     /// The tier's residual slope, waiting for `systems::ground_detail` to take it.
     /// `None` once taken — it is a megabyte and there is no second reader.
     fine_slope: Option<Vec<u8>>,

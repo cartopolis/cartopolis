@@ -19,7 +19,7 @@
 //! The desktop and web arms have real completion events, so their `poll` is just
 //! a read of the slot the event filled.
 
-use std::sync::{Arc, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 
 /// Where a capture has got to. `poll` hands `Ready` over exactly once.
 pub enum Outcome {
@@ -281,8 +281,8 @@ mod imp {
 
 #[cfg(target_os = "android")]
 mod imp {
+    use crate::platform::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use super::{Outcome, Slot};
     use crate::platform::android::{self, CameraCapture};

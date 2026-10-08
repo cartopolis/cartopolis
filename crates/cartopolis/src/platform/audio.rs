@@ -76,8 +76,8 @@
 // dead-code errors under `[workspace.lints.rust] unused = "deny"`.
 #![cfg_attr(not(feature = "audio"), allow(dead_code))]
 
+use crate::platform::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// Sample rate voice is normalised to. 48 kHz is Opus's native rate and what
 /// WebAudio hands out, so choosing anything else buys a resampler on both arms.

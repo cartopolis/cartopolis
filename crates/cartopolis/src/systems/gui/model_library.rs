@@ -27,9 +27,9 @@
 //! panel drains — the same shape `geo_nav`'s geocoding uses, and for the same
 //! reason: it has to work on the web, where there are no OS threads.
 
+use crate::platform::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
-use std::sync::{Arc, Mutex};
 
 use crate::platform::model_file;
 use crate::resources::{AvatarState, EditDialogState, GameState, OnlineSession, RightPanel};

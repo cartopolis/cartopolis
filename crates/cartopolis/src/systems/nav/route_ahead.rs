@@ -34,9 +34,9 @@
 //! would put them a few dozen metres apart and there would be no way to tell which
 //! was lying.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;

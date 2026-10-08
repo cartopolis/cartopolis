@@ -22,9 +22,9 @@
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code, unused_imports))]
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use cartopolis_core::lens::Lens;
 

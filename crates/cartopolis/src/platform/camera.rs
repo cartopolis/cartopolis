@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// (`platform::precise_sensors::Sensors::camera_lost`).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub const CAMERA_TAKEN: &str = "The camera was taken by another app";
-use std::sync::{Arc, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 
 use cartopolis_calls::video::{self, I420};
 

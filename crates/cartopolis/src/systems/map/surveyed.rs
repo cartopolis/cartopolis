@@ -652,12 +652,12 @@ pub(crate) fn raster_ready() -> bool {
 /// Recently built surveys, by source tile. Up to 64 overzoomed tiles share one
 /// source, and each would otherwise re-read and re-parse every paving file
 /// under it — the crops can afford that and a city's paving cannot.
-static RASTER_SURVEYS: std::sync::Mutex<
+static RASTER_SURVEYS: crate::platform::sync::Mutex<
     Vec<(
         cartopolis_core::TileKey,
         std::sync::Arc<cartopolis_geo::vector_tiles::Survey>,
     )>,
-> = std::sync::Mutex::new(Vec::new());
+> = crate::platform::sync::Mutex::new(Vec::new());
 
 /// Surveys kept in [`RASTER_SURVEYS`].
 const RASTER_SURVEYS_KEPT: usize = 24;

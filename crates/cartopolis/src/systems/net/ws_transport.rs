@@ -24,13 +24,13 @@
 //! leak per sign-in. They are owned by the future instead, which drops them when
 //! the socket does.
 
+use crate::platform::sync::{mpsc, Arc, Mutex};
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, NetMessage, PROTOCOL_VERSION,
 };
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_util::{FutureExt, StreamExt};
 use js_sys::Uint8Array;
-use std::sync::{mpsc, Arc, Mutex};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, MessageEvent, WebSocket};

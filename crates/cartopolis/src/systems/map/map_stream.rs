@@ -12,9 +12,9 @@
 use crate::components::FreeCamera;
 use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
 use crate::grid::{anchored_xz, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::sync::{Arc, Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 
 use bevy::camera::primitives::Aabb;
 

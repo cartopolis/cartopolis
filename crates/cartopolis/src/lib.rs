@@ -122,6 +122,20 @@ pub fn run() {
     run_client();
 }
 
+/// Logical cores on this machine. `available_parallelism` is `Unsupported` on
+/// `wasm32-unknown-unknown`, so the browser is asked instead — before this, every
+/// browser got the fallback of four workers whatever it ran on.
+#[cfg(target_arch = "wasm32")]
+fn core_count() -> Option<usize> {
+    let n = web_sys::window()?.navigator().hardware_concurrency() as usize;
+    (n > 0).then_some(n)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn core_count() -> Option<usize> {
+    std::thread::available_parallelism().ok().map(|n| n.get())
+}
+
 /// Build and run the client. The `cartopolis` binary is a one-line shim over this
 /// (`src/main.rs`); everything lives in the lib target so `cargo test` links the
 /// rlib instead of compiling all ~52k lines a second time under `cfg(test)`.
@@ -167,8 +181,8 @@ fn run_client() {
     // efficiency cores at all, and `auto()` puts Android on `Budget::balanced`,
     // whose `worker_cap` is `None` — so the cap below is once again only what a
     // deliberately-selected `phone` tier asks for.
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1))
+    let workers = core_count()
+        .map(|n| n.saturating_sub(1))
         .unwrap_or(4)
         .max(1);
     platform::workers::start(match quality::budget().worker_cap {
@@ -823,9 +837,9 @@ fn run_client() {
         // the route planner cannot solve against. A preset manifest may therefore pin
         // its own source; `CARTO_TILE_URL` still wins over it (see `shot_presets`).
         .insert_resource(match harness.as_ref().and_then(|h| h.tile_url.clone()) {
-            Some(url) if resources::tile_url_override().is_none() => {
-                OsmTileUrlTemplate(std::sync::Arc::new(std::sync::Mutex::new(url)))
-            }
+            Some(url) if resources::tile_url_override().is_none() => OsmTileUrlTemplate(
+                crate::platform::sync::Arc::new(crate::platform::sync::Mutex::new(url)),
+            ),
             _ => OsmTileUrlTemplate::default(),
         })
         // The user's own preferences — units, turn chimes, keep-screen-on, the

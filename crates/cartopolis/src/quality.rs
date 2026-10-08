@@ -46,8 +46,8 @@
 //! not a weaker default — it is unreachable. Anything a handset needs turned down
 //! belongs in [`Budget`], where `auto()` can answer for it.
 
+use crate::platform::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::ShadowFilteringMethod;

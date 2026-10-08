@@ -42,10 +42,10 @@
 //! has no business tinting. A street of identical lampposts is what a street of
 //! lampposts looks like.
 
+use crate::platform::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use crate::systems::furniture::{FurnitureKind, FurnitureMask};
 use crate::systems::model_assets;

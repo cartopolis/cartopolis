@@ -20,9 +20,9 @@
 //! Everything here is a static rather than a resource because the readers include
 //! a worker task (`lod22`'s job), which has no `World`.
 
+use crate::platform::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use bevy::tasks::IoTaskPool;
 use cartopolis_geo::building_design::{BuildingDesign, DESIGN_ZOOM};
@@ -55,13 +55,13 @@ static LAST_POLL: AtomicU64 = AtomicU64::new(0);
 /// Cell fetches in flight, so two readers asking at once share one.
 static IN_FLIGHT: LazyLock<Mutex<HashSet<((i64, i64), u64)>>> = LazyLock::new(Default::default);
 
-fn read() -> std::sync::RwLockReadGuard<'static, Store> {
+fn read() -> crate::platform::sync::RwLockReadGuard<'static, Store> {
     STORE
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn write() -> std::sync::RwLockWriteGuard<'static, Store> {
+fn write() -> crate::platform::sync::RwLockWriteGuard<'static, Store> {
     STORE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

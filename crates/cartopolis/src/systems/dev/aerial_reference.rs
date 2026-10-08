@@ -135,8 +135,8 @@ pub fn spawn_write(capture: PathBuf, view: View) {
 }
 
 /// References still being fetched.
-static PENDING: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
-    std::sync::Mutex::new(Vec::new());
+static PENDING: crate::platform::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    crate::platform::sync::Mutex::new(Vec::new());
 
 /// How long [`wait_all`] gives the references still being fetched before the
 /// harness exits without them.

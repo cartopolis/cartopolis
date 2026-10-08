@@ -47,6 +47,7 @@ pub mod photo;
 pub mod precise_sensors;
 pub mod storage;
 pub mod stream;
+pub mod sync;
 pub mod warm;
 pub mod watchdog;
 #[cfg(target_arch = "wasm32")]

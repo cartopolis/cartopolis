@@ -9,7 +9,7 @@
 //! themselves, at the moment they place their vertices. `ground probe` lines in
 //! the log, one per sheet per point.
 
-use std::sync::Mutex;
+use crate::platform::sync::Mutex;
 
 use bevy::prelude::*;
 

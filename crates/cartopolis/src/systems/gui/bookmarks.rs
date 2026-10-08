@@ -34,9 +34,9 @@
 //! which is the alternative egui documents for this; it paints no ghost at the
 //! cursor, so [`drag_ghost`] does.
 
+use crate::platform::sync::{Arc, Mutex};
 use crate::resources::MapAnchor;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;

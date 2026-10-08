@@ -24,8 +24,8 @@
 
 use crate::components::BoardQuad;
 use crate::components::FreeCamera;
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 

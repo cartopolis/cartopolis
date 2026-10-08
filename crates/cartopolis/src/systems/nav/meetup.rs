@@ -16,8 +16,8 @@
 //!   walk or a drive whose destination is the meet-up — turns it off and tells the
 //!   chat, so nobody has to remember to stop sharing.
 
+use crate::platform::sync::{Arc, Mutex};
 use bevy::prelude::*;
-use std::sync::{Arc, Mutex};
 
 use cartopolis_core::point::{Meetup, Point};
 

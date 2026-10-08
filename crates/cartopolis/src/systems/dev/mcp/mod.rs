@@ -62,13 +62,13 @@ pub use cartopolis_mcp::protocol::{
 /// this one. Named `server` here as it always was.
 pub use cartopolis_mcp::server;
 
+use crate::platform::sync::{Arc, RwLock};
 use bevy::prelude::*;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, FrameStats, MapAnchor};

@@ -20,8 +20,8 @@
 //! sun's. Stopping a clip (or walking away) hands the prim back to its own
 //! texture through `NeedsTextureRefresh`.
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;

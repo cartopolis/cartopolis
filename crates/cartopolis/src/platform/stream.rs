@@ -28,10 +28,10 @@
 //! convention `Dispatcher` uses and for the same reason: `std::time::Instant`
 //! panics on wasm, and threading one clock through beats two notions of "now".
 
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::{Commands, Entity};
 

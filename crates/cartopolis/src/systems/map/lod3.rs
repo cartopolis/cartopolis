@@ -28,9 +28,9 @@
 //!   sealing the doorway the model actually has. So each wall-like element gets
 //!   its own hull and everything else gets none, which leaves the openings open.
 
+use crate::platform::sync::{LazyLock, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{LazyLock, RwLock};
 
 use bevy::tasks::IoTaskPool;
 
@@ -64,7 +64,7 @@ static MANIFEST_REVISION: AtomicU64 = AtomicU64::new(0);
 static POLLING: AtomicBool = AtomicBool::new(false);
 static LAST_POLL: AtomicU64 = AtomicU64::new(0);
 
-fn manifest() -> std::sync::RwLockReadGuard<'static, Manifest> {
+fn manifest() -> crate::platform::sync::RwLockReadGuard<'static, Manifest> {
     MANIFEST
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

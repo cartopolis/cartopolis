@@ -19,7 +19,7 @@
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod imp {
-    use std::sync::{Mutex, OnceLock};
+    use crate::platform::sync::{Mutex, OnceLock};
 
     fn clipboard() -> &'static Mutex<Option<arboard::Clipboard>> {
         static CB: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();

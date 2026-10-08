@@ -739,8 +739,9 @@ pub(crate) async fn fetch_bag_text(cx: i64, cy: i64, part: BagPart) -> Result<St
 type BagWaiters = Vec<futures_channel::oneshot::Sender<Result<String, String>>>;
 
 /// The BAG files on their way, by cache key, with whoever else is waiting for each.
-static BAG_IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<HashMap<String, BagWaiters>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static BAG_IN_FLIGHT: crate::platform::sync::LazyLock<
+    crate::platform::sync::Mutex<HashMap<String, BagWaiters>>,
+> = crate::platform::sync::LazyLock::new(|| crate::platform::sync::Mutex::new(HashMap::new()));
 
 async fn download_bag_text(cx: i64, cy: i64, part: BagPart, key: &str) -> Result<String, String> {
     let url = format!(
@@ -785,7 +786,7 @@ struct ParsedFiles {
     recent: std::collections::VecDeque<Arc<BagCell>>,
 }
 
-static PARSED: std::sync::LazyLock<std::sync::Mutex<ParsedFiles>> =
+static PARSED: crate::platform::sync::LazyLock<crate::platform::sync::Mutex<ParsedFiles>> =
     std::sync::LazyLock::new(Default::default);
 
 /// Parse one of a cell's files, **once however many read it**.

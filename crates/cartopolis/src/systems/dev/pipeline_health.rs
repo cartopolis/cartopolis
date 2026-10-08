@@ -18,7 +18,7 @@
 //! creation-time log line names the *shader*, and by the time somebody reads
 //! logcat that line is gone.
 
-use std::sync::{Mutex, OnceLock};
+use crate::platform::sync::{Mutex, OnceLock};
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{CachedPipelineState, PipelineCache, PipelineDescriptor};

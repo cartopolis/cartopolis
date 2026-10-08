@@ -25,8 +25,8 @@
 use crate::components::MapSurface;
 use crate::components::{FurnitureSurface, VegetationSurface};
 use crate::grid::{anchored_xz, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use cartopolis_geo::deck_profile::DeckMeasure;
 

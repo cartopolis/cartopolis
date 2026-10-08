@@ -55,7 +55,7 @@
 //! desktop rungs, and [`observe`] returns immediately there — so a workstation
 //! runs the code that existed before this module, byte for byte.
 
-use std::sync::Mutex;
+use crate::platform::sync::Mutex;
 
 /// How much detail a *cell* is built with, from how far it is from the one the
 /// camera is over.

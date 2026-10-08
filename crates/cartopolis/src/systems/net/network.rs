@@ -49,6 +49,7 @@ pub struct AuthWriteback<'w, 's> {
     /// Optional: the session tests drive this system in an app with no clock.
     time: Option<Res<'w, Time>>,
 }
+use crate::platform::sync::{mpsc, Arc, Mutex};
 use crate::systems::locomotion;
 use crate::systems::model_assets;
 use bevy::asset::RenderAssetUsages;
@@ -65,7 +66,6 @@ use futures_channel::mpsc::UnboundedReceiver;
 #[cfg(not(target_arch = "wasm32"))]
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
-use std::sync::{mpsc, Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]

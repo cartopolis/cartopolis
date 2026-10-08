@@ -1,8 +1,8 @@
+use crate::platform::sync::{Arc, Mutex};
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy_image::{Image, ImageSampler, ImageSamplerDescriptor};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use crate::systems::vector_tiles;
 pub use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
@@ -52,8 +52,9 @@ fn source_ground_m(key: TileKey) -> f32 {
 /// and cost nothing in the steady state, because an entry dies with its last
 /// reader. What this is emphatically *not* is a second byte cache with a
 /// different eviction rule.
-static PARSED_TILES: Mutex<Option<HashMap<TileKey, std::sync::Weak<vector_tiles::TileData>>>> =
-    Mutex::new(None);
+static PARSED_TILES: Mutex<
+    Option<HashMap<TileKey, crate::platform::sync::Weak<vector_tiles::TileData>>>,
+> = Mutex::new(None);
 
 /// Dead entries tolerated before the map is swept.
 ///
@@ -445,7 +446,7 @@ struct OverlayMemo {
     building: HashMap<OverlayKey, OverlayWaiters>,
 }
 
-static OVERLAYS: std::sync::LazyLock<Mutex<OverlayMemo>> =
+static OVERLAYS: crate::platform::sync::LazyLock<Mutex<OverlayMemo>> =
     std::sync::LazyLock::new(Default::default);
 
 /// One source tile's overlays, **built once however many tiles are drawn from

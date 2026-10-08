@@ -17,6 +17,7 @@
 //!     schedule-based render graph), ordered after `Core3dSystems::PostProcess`
 //!     (tonemapping) and before `upscaling`.
 
+use crate::platform::sync::Mutex;
 use bevy::{
     core_pipeline::{upscaling::upscaling, Core3d},
     input::{keyboard::KeyboardInput, mouse::MouseScrollUnit, ButtonState},
@@ -30,7 +31,6 @@ use bevy::{
         RenderApp,
     },
 };
-use std::sync::Mutex;
 
 use crate::resources::HeadlessSurface;
 
