@@ -231,8 +231,8 @@ loopback-only, so there is nothing plaintext to reach.
 [`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
 what is still open.
 
-**cartopolis.org is the atlas web UI, `crates/atlas/web`.** Preact +
-deepsignal, Bun, no Rust — it manages accounts on the hosted simulator and drives
+**cartopolis.org is the atlas web UI, `crates/atlas/web`.** Mithril
+(`@garage44/mithril`, our fork of Mithril.js with signals), Bun, no Rust — it manages accounts on the hosted simulator and drives
 atlas's map data pipelines, and `deploy-web.yml` publishes it to
 [cartopolis.org](https://cartopolis.org/) (operator pages at `/admin`) on every push to
 `main` that touches it. It was a separate repository, on its own

@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'preact/hooks'
+import m, {MithrilComponent} from '@garage44/mithril'
 
 import type {LibraryEntry} from '@/types'
 
@@ -23,6 +23,7 @@ import {
     uploadFormatHint,
     uploadModel,
 } from '@/lib/library'
+import {local} from '@/lib/reactive'
 import {formatTimestamp} from '@/lib/utils'
 
 /**
@@ -37,124 +38,134 @@ import {formatTimestamp} from '@/lib/utils'
  * one file and one row, which is why the meta line lists every uploader and why
  * "in world" counts prims rather than owners.
  */
-export const Library = () => {
-    const [confirming, setConfirming] = useState('')
-    const [showFiles, setShowFiles] = useState(false)
+export class Library extends MithrilComponent {
+    s = local({confirming: '', showFiles: false})
 
-    useEffect(() => {
+    oninit() {
         void loadLibrary()
         void loadLibraryAssets()
         void loadPlaceholders()
-    }, [])
+    }
 
-    const needle = $s.librarySearch.trim().toLowerCase()
-    const entries = $s.library.filter((entry) =>
-        needle === ''
-            ? true
-            : entry.name.toLowerCase().includes(needle) ||
-              entry.tags.some((tag) => tag.toLowerCase().includes(needle)),
-    )
-    // An operator opening this page is here to review, so what has never been
-    // reviewed goes first; hidden entries go last, since acting on one is rare.
-    const ordered = [...entries].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
-    const waiting = $s.library.filter((entry) => entry.visibility === 'shared').length
-    const orphans = $s.libraryAssets.filter(
-        (asset) => asset.in_world === 0 && asset.held_by === 0,
-    )
+    view() {
+        const s = this.s
+        const needle = $s.librarySearch.trim().toLowerCase()
+        const entries = $s.library.filter((entry) =>
+            needle === ''
+                ? true
+                : entry.name.toLowerCase().includes(needle) ||
+                  entry.tags.some((tag) => tag.toLowerCase().includes(needle)),
+        )
+        // An operator opening this page is here to review, so what has never been
+        // reviewed goes first; hidden entries go last, since acting on one is rare.
+        const ordered = [...entries].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+        const waiting = $s.library.filter((entry) => entry.visibility === 'shared').length
+        const orphans = $s.libraryAssets.filter(
+            (asset) => asset.in_world === 0 && asset.held_by === 0,
+        )
 
-    return (
-        <>
-            <div class="section-head">
-                <h1>Models</h1>
-                <span class="count">{$s.library.length}</span>
-                {waiting > 0 && <span class="count">{waiting} to review</span>}
-                <span style="flex:1" />
-                <input
-                    onInput={(e) => {
-                        $s.librarySearch = (e.target as HTMLInputElement).value
-                    }}
-                    placeholder="Search names and tags"
-                    type="search"
-                    value={$s.librarySearch}
-                />
-            </div>
+        return (
+            <>
+                <div class="section-head">
+                    <h1>Models</h1>
+                    <span class="count">{$s.library.length}</span>
+                    {waiting > 0 && <span class="count">{waiting} to review</span>}
+                    <span style="flex:1" />
+                    <input
+                        oninput={(e: Event) => {
+                            $s.librarySearch = (e.target as HTMLInputElement).value
+                        }}
+                        placeholder="Search names and tags"
+                        type="search"
+                        value={$s.librarySearch}
+                    />
+                </div>
 
-            <Upload />
+                <Upload />
 
-            {$s.library.length === 0 ? (
-                <div class="empty">Nobody has shared a model yet.</div>
-            ) : (
-                <ul class="account-list">
-                    {ordered.map((entry) => (
-                        <Row
-                            confirming={confirming === entry.asset}
-                            entry={entry}
-                            key={entry.asset}
-                            onConfirm={(on) => setConfirming(on ? entry.asset : '')}
-                        />
-                    ))}
-                </ul>
-            )}
-
-            <StreetObjects />
-
-            <div class="section-head">
-                <h1>Stored files</h1>
-                <span class="count">{$s.libraryAssets.length}</span>
-                {orphans.length > 0 && <span class="count">{orphans.length} unused</span>}
-                <span style="flex:1" />
-                <button class="ghost" onClick={() => setShowFiles(!showFiles)} type="button">
-                    {showFiles ? 'Hide' : 'Show'}
-                </button>
-            </div>
-
-            {showFiles && (
-                $s.libraryAssets.length === 0 ? (
-                    <div class="empty">Nothing has been uploaded to this server.</div>
+                {$s.library.length === 0 ? (
+                    <div class="empty">Nobody has shared a model yet.</div>
                 ) : (
                     <ul class="account-list">
-                        {$s.libraryAssets.map((asset) => (
-                            <li class="account" key={asset.hash}>
-                                <div class="account-main">
-                                    <span class="mono">{asset.hash.slice(0, 12)}</span>
-                                    <span style="flex:1" />
-                                    {/*
-                                      * Offered only for a file nothing refers to.
-                                      * The server refuses the rest and says what
-                                      * is holding them, so this is a courtesy
-                                      * rather than the guard.
-                                      */}
-                                    {asset.in_world === 0 && asset.held_by === 0 && (
-                                        <button
-                                            class="ghost"
-                                            onClick={() => void forgetAsset(asset)}
-                                            type="button"
-                                        >
-                                            Remove
-                                        </button>
-                                    )}
-                                </div>
-                                <div class="account-meta">
-                                    <span>{asset.triangles.toLocaleString()} triangles</span>
-                                    <span>{formatBytes(asset.byte_size)}</span>
-                                    <span>
-                                        {asset.textures === 0
-                                            ? 'no textures'
-                                            : `${asset.textures} texture(s), ${asset.largest_texture} px`}
-                                    </span>
-                                    <span>
-                                        {asset.in_world} in world · {asset.held_by} held
-                                    </span>
-                                    {!asset.shared && <span>not shared</span>}
-                                    <span>{formatTimestamp(asset.created_at)}</span>
-                                </div>
-                            </li>
+                        {ordered.map((entry) => (
+                            <Row
+                                confirming={s.confirming === entry.asset}
+                                entry={entry}
+                                key={entry.asset}
+                                onConfirm={(on: boolean) => {
+                                    s.confirming = on ? entry.asset : ''
+                                }}
+                            />
                         ))}
                     </ul>
-                )
-            )}
-        </>
-    )
+                )}
+
+                <StreetObjects />
+
+                <div class="section-head">
+                    <h1>Stored files</h1>
+                    <span class="count">{$s.libraryAssets.length}</span>
+                    {orphans.length > 0 && <span class="count">{orphans.length} unused</span>}
+                    <span style="flex:1" />
+                    <button
+                        class="ghost"
+                        onclick={() => {
+                            s.showFiles = !s.showFiles
+                        }}
+                        type="button"
+                    >
+                        {s.showFiles ? 'Hide' : 'Show'}
+                    </button>
+                </div>
+
+                {s.showFiles && (
+                    $s.libraryAssets.length === 0 ? (
+                        <div class="empty">Nothing has been uploaded to this server.</div>
+                    ) : (
+                        <ul class="account-list">
+                            {$s.libraryAssets.map((asset) => (
+                                <li class="account" key={asset.hash}>
+                                    <div class="account-main">
+                                        <span class="mono">{asset.hash.slice(0, 12)}</span>
+                                        <span style="flex:1" />
+                                        {/*
+                                          * Offered only for a file nothing refers to.
+                                          * The server refuses the rest and says what
+                                          * is holding them, so this is a courtesy
+                                          * rather than the guard.
+                                          */}
+                                        {asset.in_world === 0 && asset.held_by === 0 && (
+                                            <button
+                                                class="ghost"
+                                                onclick={() => void forgetAsset(asset)}
+                                                type="button"
+                                            >
+                                                Remove
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div class="account-meta">
+                                        <span>{asset.triangles.toLocaleString()} triangles</span>
+                                        <span>{formatBytes(asset.byte_size)}</span>
+                                        <span>
+                                            {asset.textures === 0
+                                                ? 'no textures'
+                                                : `${asset.textures} texture(s), ${asset.largest_texture} px`}
+                                        </span>
+                                        <span>
+                                            {asset.in_world} in world · {asset.held_by} held
+                                        </span>
+                                        {!asset.shared && <span>not shared</span>}
+                                        <span>{formatTimestamp(asset.created_at)}</span>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    )
+                )}
+            </>
+        )
+    }
 }
 
 /** Unreviewed first, then curated, then hidden. */
@@ -169,177 +180,193 @@ function rank(entry: LibraryEntry): number {
     }
 }
 
-const Row = (props: {
+interface RowAttrs {
     confirming: boolean
     entry: LibraryEntry
     onConfirm: (on: boolean) => void
-}) => {
-    const {confirming, entry, onConfirm} = props
-    const editing = $s.libraryEditing === entry.asset
-    const [name, setName] = useState(entry.name)
-    const [category, setCategory] = useState(entry.category)
-    const [attribution, setAttribution] = useState(entry.attribution)
+}
 
-    return (
-        <li class="account">
-            <div class="account-main">
-                <span class="account-name">{entry.name}</span>
-                {entry.visibility === 'hidden' && <span class="count">hidden</span>}
-                {entry.visibility === 'shared' && <span class="count">unreviewed</span>}
-                <span style="flex:1" />
-                <button
-                    class="ghost"
-                    onClick={() => {
-                        // Reset the fields on every open, so a form abandoned
-                        // half-edited does not reopen holding the abandoned text.
-                        setName(entry.name)
-                        setCategory(entry.category)
-                        setAttribution(entry.attribution)
-                        $s.libraryEditing = editing ? null : entry.asset
-                    }}
-                    type="button"
-                >
-                    {editing ? 'Close' : 'Edit'}
-                </button>
-                {entry.visibility === 'hidden' ? (
-                    <button class="ghost" onClick={() => void unhideEntry(entry)} type="button">
-                        Restore
+class Row extends MithrilComponent<RowAttrs> {
+    s: {attribution: string; category: string; name: string}
+
+    constructor(vnode: m.Vnode<RowAttrs>) {
+        super()
+        const entry = vnode.attrs.entry
+        this.s = local({attribution: entry.attribution, category: entry.category, name: entry.name})
+    }
+
+    view(vnode: m.Vnode<RowAttrs>) {
+        const {confirming, entry, onConfirm} = vnode.attrs
+        const s = this.s
+        const editing = $s.libraryEditing === entry.asset
+
+        return (
+            <li class="account">
+                <div class="account-main">
+                    <span class="account-name">{entry.name}</span>
+                    {entry.visibility === 'hidden' && <span class="count">hidden</span>}
+                    {entry.visibility === 'shared' && <span class="count">unreviewed</span>}
+                    <span style="flex:1" />
+                    <button
+                        class="ghost"
+                        onclick={() => {
+                            // Reset the fields on every open, so a form abandoned
+                            // half-edited does not reopen holding the abandoned text.
+                            s.name = entry.name
+                            s.category = entry.category
+                            s.attribution = entry.attribution
+                            $s.libraryEditing = editing ? null : entry.asset
+                        }}
+                        type="button"
+                    >
+                        {editing ? 'Close' : 'Edit'}
                     </button>
-                ) : confirming ? (
-                    <>
-                        {/*
-                          * Two presses. Hiding a model stops the server serving
-                          * the file at all, so every prim in the world wearing it
-                          * goes to a placeholder — that is the intended effect and
-                          * it is not a small one.
-                          */}
-                        <button
-                            class="danger"
-                            onClick={() => {
-                                onConfirm(false)
-                                void hideEntry(entry)
-                            }}
-                            type="button"
-                        >
+                    {entry.visibility === 'hidden' ? (
+                        <button class="ghost" onclick={() => void unhideEntry(entry)} type="button">
+                            Restore
+                        </button>
+                    ) : confirming ? (
+                        <>
+                            {/*
+                              * Two presses. Hiding a model stops the server serving
+                              * the file at all, so every prim in the world wearing it
+                              * goes to a placeholder — that is the intended effect and
+                              * it is not a small one.
+                              */}
+                            <button
+                                class="danger"
+                                onclick={() => {
+                                    onConfirm(false)
+                                    void hideEntry(entry)
+                                }}
+                                type="button"
+                            >
+                                Take down
+                            </button>
+                            <button class="ghost" onclick={() => onConfirm(false)} type="button">
+                                Cancel
+                            </button>
+                        </>
+                    ) : (
+                        <button class="ghost" onclick={() => onConfirm(true)} type="button">
                             Take down
                         </button>
-                        <button class="ghost" onClick={() => onConfirm(false)} type="button">
-                            Cancel
-                        </button>
-                    </>
-                ) : (
-                    <button class="ghost" onClick={() => onConfirm(true)} type="button">
-                        Take down
-                    </button>
-                )}
-            </div>
+                    )}
+                </div>
 
-            <div class="account-meta">
-                <span>{entry.category}</span>
-                <span>{entry.triangles.toLocaleString()} triangles</span>
-                <span>{formatBytes(entry.byte_size)}</span>
-                <span>{licenceLabel(entry.licence)}</span>
-                <span>
-                    {entry.in_world} in world · {entry.held_by} held
-                </span>
-                <span>shared by {entry.shared_by ?? 'the server'}</span>
-                {/*
-                  * Everyone who uploaded these exact bytes. Plural because the
-                  * file is deduplicated by content — and it is who an operator
-                  * acts on when a model turns out not to be shareable.
-                  */}
-                {entry.uploaders.length > 0 && (
-                    <span>uploaded by {entry.uploaders.join(', ')}</span>
-                )}
-                <span>{formatTimestamp(entry.created_at)}</span>
-            </div>
-
-            {/* The credit line a CC-BY model must be shown with, always visible
-                rather than only in the edit form: it is the thing most likely to
-                be wrong, and a wrong credit is worse than a missing model. */}
-            {entry.attribution !== '' && (
                 <div class="account-meta">
-                    <span>{entry.attribution}</span>
+                    <span>{entry.category}</span>
+                    <span>{entry.triangles.toLocaleString()} triangles</span>
+                    <span>{formatBytes(entry.byte_size)}</span>
+                    <span>{licenceLabel(entry.licence)}</span>
+                    <span>
+                        {entry.in_world} in world · {entry.held_by} held
+                    </span>
+                    <span>shared by {entry.shared_by ?? 'the server'}</span>
+                    {/*
+                      * Everyone who uploaded these exact bytes. Plural because the
+                      * file is deduplicated by content — and it is who an operator
+                      * acts on when a model turns out not to be shareable.
+                      */}
+                    {entry.uploaders.length > 0 && (
+                        <span>uploaded by {entry.uploaders.join(', ')}</span>
+                    )}
+                    <span>{formatTimestamp(entry.created_at)}</span>
                 </div>
-            )}
 
-            {editing && (
-                <div class="account-edit">
-                    <label>
-                        Name
-                        <input
-                            onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                            type="text"
-                            value={name}
-                        />
-                    </label>
-                    <label>
-                        Category
-                        <select
-                            onChange={(e) => setCategory((e.target as HTMLSelectElement).value)}
-                            value={category}
-                        >
-                            {CATEGORIES.map((c) => (
-                                <option key={c} value={c}>
-                                    {c}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-                    <label>
-                        Credit line
-                        <input
-                            onInput={(e) => setAttribution((e.target as HTMLInputElement).value)}
-                            placeholder={
-                                entry.licence === 'cc-by'
-                                    ? 'Required for CC BY'
-                                    : 'Not required for this licence'
-                            }
-                            type="text"
-                            value={attribution}
-                        />
-                    </label>
-                    <div class="account-main">
-                        {/*
-                          * Saving marks it curated as well as writing the fields.
-                          * The two are the same act: an operator who has typed a
-                          * name and picked a category has reviewed it, and a
-                          * separate "approve" button would be a second click for
-                          * a decision already made.
-                          */}
-                        <button
-                            onClick={() => {
-                                void curateEntry(entry.asset, {
-                                    attribution,
-                                    category,
-                                    name,
-                                    visibility: 'curated',
-                                }).then((ok) => {
-                                    if (ok) {
-                                        $s.libraryEditing = null
-                                    }
-                                })
-                            }}
-                            type="button"
-                        >
-                            Save and approve
-                        </button>
-                        <button
-                            class="ghost"
-                            onClick={() => {
-                                $s.libraryEditing = null
-                            }}
-                            type="button"
-                        >
-                            Cancel
-                        </button>
-                        <span style="flex:1" />
-                        <span class="mono">{entry.asset.slice(0, 16)}</span>
+                {/* The credit line a CC-BY model must be shown with, always visible
+                    rather than only in the edit form: it is the thing most likely to
+                    be wrong, and a wrong credit is worse than a missing model. */}
+                {entry.attribution !== '' && (
+                    <div class="account-meta">
+                        <span>{entry.attribution}</span>
                     </div>
-                </div>
-            )}
-        </li>
-    )
+                )}
+
+                {editing && (
+                    <div class="account-edit">
+                        <label>
+                            Name
+                            <input
+                                oninput={(e: Event) => {
+                                    s.name = (e.target as HTMLInputElement).value
+                                }}
+                                type="text"
+                                value={s.name}
+                            />
+                        </label>
+                        <label>
+                            Category
+                            <select
+                                onchange={(e: Event) => {
+                                    s.category = (e.target as HTMLSelectElement).value
+                                }}
+                                value={s.category}
+                            >
+                                {CATEGORIES.map((c) => (
+                                    <option key={c} value={c}>
+                                        {c}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <label>
+                            Credit line
+                            <input
+                                oninput={(e: Event) => {
+                                    s.attribution = (e.target as HTMLInputElement).value
+                                }}
+                                placeholder={
+                                    entry.licence === 'cc-by'
+                                        ? 'Required for CC BY'
+                                        : 'Not required for this licence'
+                                }
+                                type="text"
+                                value={s.attribution}
+                            />
+                        </label>
+                        <div class="account-main">
+                            {/*
+                              * Saving marks it curated as well as writing the fields.
+                              * The two are the same act: an operator who has typed a
+                              * name and picked a category has reviewed it, and a
+                              * separate "approve" button would be a second click for
+                              * a decision already made.
+                              */}
+                            <button
+                                onclick={() => {
+                                    void curateEntry(entry.asset, {
+                                        attribution: s.attribution,
+                                        category: s.category,
+                                        name: s.name,
+                                        visibility: 'curated',
+                                    }).then((ok) => {
+                                        if (ok) {
+                                            $s.libraryEditing = null
+                                        }
+                                    })
+                                }}
+                                type="button"
+                            >
+                                Save and approve
+                            </button>
+                            <button
+                                class="ghost"
+                                onclick={() => {
+                                    $s.libraryEditing = null
+                                }}
+                                type="button"
+                            >
+                                Cancel
+                            </button>
+                            <span style="flex:1" />
+                            <span class="mono">{entry.asset.slice(0, 16)}</span>
+                        </div>
+                    </div>
+                )}
+            </li>
+        )
+    }
 }
 
 /**
@@ -357,119 +384,133 @@ const Row = (props: {
  * and can never be shared — the server refuses, this form only has to not lie
  * about it.
  */
-const Upload = () => {
-    const [file, setFile] = useState<File | null>(null)
-    const [name, setName] = useState('')
-    const [licence, setLicence] = useState('own')
-    const [attribution, setAttribution] = useState('')
-    const [category, setCategory] = useState('other')
-    const [share, setShare] = useState(true)
-    const [busy, setBusy] = useState(false)
+class Upload extends MithrilComponent {
+    // A plain field, not state: `state()` would wrap the File in a proxy, and a
+    // proxied File is refused by FormData. Every write to it happens in an event
+    // handler or beside a state write, either of which redraws.
+    file: File | null = null
+    s = local({attribution: '', busy: false, category: 'other', licence: 'own', name: '', share: true})
 
-    const mayShare = licence !== 'other'
-    const needsCredit = licence === 'cc-by'
+    view() {
+        const s = this.s
+        const file = this.file
+        const mayShare = s.licence !== 'other'
+        const needsCredit = s.licence === 'cc-by'
 
-    return (
-        <div class="panel">
-            <div class="section-head">
-                <h1>Add a model</h1>
-                <span style="flex:1" />
-            </div>
-            {/*
-              * What the simulator accepts, said before a large upload finds out.
-              * Built from `UPLOAD_LIMITS` (see `uploadFormatHint`), which a Rust
-              * test pins to the numbers the server enforces.
-              */}
-            <p class="hint">{uploadFormatHint()}</p>
-            <input
-                accept={UPLOAD_ACCEPT}
-                onChange={(e) => {
-                    const picked = (e.target as HTMLInputElement).files?.[0] ?? null
-                    setFile(picked)
-                    if (picked && name === '') {
-                        setName(modelNameFromFile(picked.name))
-                    }
-                }}
-                type="file"
-            />
-            {file && (
-                <>
-                    <input
-                        onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                        placeholder="What is it?"
-                        type="text"
-                        value={name}
-                    />
-                    <select
-                        onChange={(e) => setLicence((e.target as HTMLSelectElement).value)}
-                        value={licence}
-                    >
-                        <option value="own">I made it</option>
-                        <option value="cc0">CC0 — public domain</option>
-                        <option value="cc-by">CC BY — credit required</option>
-                        <option value="other">Something else</option>
-                    </select>
-                    {needsCredit && (
+        return (
+            <div class="panel">
+                <div class="section-head">
+                    <h1>Add a model</h1>
+                    <span style="flex:1" />
+                </div>
+                {/*
+                  * What the simulator accepts, said before a large upload finds out.
+                  * Built from `UPLOAD_LIMITS` (see `uploadFormatHint`), which a Rust
+                  * test pins to the numbers the server enforces.
+                  */}
+                <p class="hint">{uploadFormatHint()}</p>
+                <input
+                    accept={UPLOAD_ACCEPT}
+                    onchange={(e: Event) => {
+                        const picked = (e.target as HTMLInputElement).files?.[0] ?? null
+                        this.file = picked
+                        if (picked && s.name === '') {
+                            s.name = modelNameFromFile(picked.name)
+                        }
+                    }}
+                    type="file"
+                />
+                {file && (
+                    <>
                         <input
-                            onInput={(e) => setAttribution((e.target as HTMLInputElement).value)}
-                            placeholder="Credit line, e.g. “Bench by A. N. Other”"
+                            oninput={(e: Event) => {
+                                s.name = (e.target as HTMLInputElement).value
+                            }}
+                            placeholder="What is it?"
                             type="text"
-                            value={attribution}
+                            value={s.name}
                         />
-                    )}
-                    {mayShare ? (
-                        <label>
-                            <input
-                                checked={share}
-                                onChange={(e) => setShare((e.target as HTMLInputElement).checked)}
-                                type="checkbox"
-                            />
-                            Share it in the library
-                        </label>
-                    ) : (
-                        <p class="hint">
-                            This can be used on this server and can never be shared or handed on.
-                        </p>
-                    )}
-                    {share && mayShare && (
                         <select
-                            onChange={(e) => setCategory((e.target as HTMLSelectElement).value)}
-                            value={category}
+                            onchange={(e: Event) => {
+                                s.licence = (e.target as HTMLSelectElement).value
+                            }}
+                            value={s.licence}
                         >
-                            {CATEGORIES.map((c) => (
-                                <option key={c} value={c}>
-                                    {c}
-                                </option>
-                            ))}
+                            <option value="own">I made it</option>
+                            <option value="cc0">CC0 — public domain</option>
+                            <option value="cc-by">CC BY — credit required</option>
+                            <option value="other">Something else</option>
                         </select>
-                    )}
-                    <button
-                        disabled={busy}
-                        onClick={() => {
-                            setBusy(true)
-                            void uploadModel(file, {
-                                attribution,
-                                category,
-                                licence,
-                                name,
-                                share,
-                            }).then((ok) => {
-                                setBusy(false)
-                                if (ok) {
-                                    setFile(null)
-                                    setName('')
-                                    setAttribution('')
-                                }
-                            })
-                        }}
-                        type="button"
-                    >
-                        {busy ? 'Uploading…' : 'Upload'}
-                    </button>
-                </>
-            )}
-        </div>
-    )
+                        {needsCredit && (
+                            <input
+                                oninput={(e: Event) => {
+                                    s.attribution = (e.target as HTMLInputElement).value
+                                }}
+                                placeholder="Credit line, e.g. “Bench by A. N. Other”"
+                                type="text"
+                                value={s.attribution}
+                            />
+                        )}
+                        {mayShare ? (
+                            <label>
+                                <input
+                                    checked={s.share}
+                                    onchange={(e: Event) => {
+                                        s.share = (e.target as HTMLInputElement).checked
+                                    }}
+                                    type="checkbox"
+                                />
+                                Share it in the library
+                            </label>
+                        ) : (
+                            <p class="hint">
+                                This can be used on this server and can never be shared or handed on.
+                            </p>
+                        )}
+                        {s.share && mayShare && (
+                            <select
+                                onchange={(e: Event) => {
+                                    s.category = (e.target as HTMLSelectElement).value
+                                }}
+                                value={s.category}
+                            >
+                                {CATEGORIES.map((c) => (
+                                    <option key={c} value={c}>
+                                        {c}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                        <button
+                            disabled={s.busy}
+                            onclick={() => {
+                                s.busy = true
+                                void uploadModel(file, {
+                                    attribution: s.attribution,
+                                    category: s.category,
+                                    licence: s.licence,
+                                    name: s.name,
+                                    share: s.share,
+                                }).then((ok) => {
+                                    if (ok) {
+                                        this.file = null
+                                    }
+                                    s.busy = false
+                                    if (ok) {
+                                        s.name = ''
+                                        s.attribution = ''
+                                    }
+                                })
+                            }}
+                            type="button"
+                        >
+                            {s.busy ? 'Uploading…' : 'Upload'}
+                        </button>
+                    </>
+                )}
+            </div>
+        )
+    }
 }
 
 /**
@@ -489,118 +530,129 @@ const Upload = () => {
  * heavier action than curating a name — worth knowing before flipping through
  * fifteen of them.
  */
-const StreetObjects = () => {
-    const set = new Map($s.placeholders.map((p) => [p.kind, p]))
-    // Only what has actually been published: a placeholder pointing at a model
-    // nobody can fetch is a street with nothing in it.
-    const usable = $s.library.filter((entry) => entry.visibility !== 'hidden')
+class StreetObjects extends MithrilComponent {
     // The one row whose upload form is open, if any.
-    const [uploadingFor, setUploadingFor] = useState('')
+    s = local({uploadingFor: ''})
 
-    return (
-        <>
-            <div class="section-head">
-                <h1>Street objects</h1>
-                <span class="count">{$s.placeholders.length} replaced</span>
-            </div>
-            <ul class="account-list">
-                {PLACEHOLDER_KINDS.map((kind) => {
-                    const current = set.get(kind)
-                    return (
-                        <li class="account" key={kind}>
-                            <div class="account-main">
-                                <span class="account-name">
-                                    {PLACEHOLDER_LABELS[kind] ?? kind}
-                                </span>
-                                <span style="flex:1" />
-                                <select
-                                    onChange={(e) => {
-                                        const asset = (e.target as HTMLSelectElement).value
-                                        if (asset === '') {
-                                            void clearPlaceholder(kind)
-                                            return
-                                        }
-                                        void setPlaceholder(kind, {
-                                            asset,
-                                            scale: current?.scale ?? 1,
-                                            yaw_offset: current?.yaw_offset ?? 0,
-                                        })
-                                    }}
-                                    value={current?.asset ?? ''}
-                                >
-                                    <option value="">Built-in shape</option>
-                                    {usable.map((entry) => (
-                                        <option key={entry.asset} value={entry.asset}>
-                                            {entry.name}
-                                        </option>
-                                    ))}
-                                </select>
-                                <button
-                                    onClick={() => setUploadingFor(uploadingFor === kind ? '' : kind)}
-                                    type="button"
-                                >
-                                    {uploadingFor === kind ? 'Cancel' : 'Upload…'}
-                                </button>
-                            </div>
-                            {uploadingFor === kind && (
-                                <StreetUpload kind={kind} onDone={() => setUploadingFor('')} />
-                            )}
-                            {current && (
-                                <div class="account-meta">
-                                    {/*
-                                      * Scale and angle are here rather than at
-                                      * upload because they are about *this* use of
-                                      * the model: the same bench may be the right
-                                      * size for a prim and the wrong one for a
-                                      * street, and a model whose front faces +x
-                                      * sits sideways on every pavement in the city
-                                      * until this is turned.
-                                      */}
-                                    <label>
-                                        scale
-                                        <input
-                                            onChange={(e) => {
-                                                const scale = Number(
-                                                    (e.target as HTMLInputElement).value,
-                                                )
-                                                void setPlaceholder(kind, {
-                                                    asset: current.asset,
-                                                    scale,
-                                                    yaw_offset: current.yaw_offset,
-                                                })
-                                            }}
-                                            step="0.05"
-                                            type="number"
-                                            value={current.scale}
-                                        />
-                                    </label>
-                                    <label>
-                                        turn°
-                                        <input
-                                            onChange={(e) => {
-                                                const yaw = Number(
-                                                    (e.target as HTMLInputElement).value,
-                                                )
-                                                void setPlaceholder(kind, {
-                                                    asset: current.asset,
-                                                    scale: current.scale,
-                                                    yaw_offset: yaw,
-                                                })
-                                            }}
-                                            step="15"
-                                            type="number"
-                                            value={current.yaw_offset}
-                                        />
-                                    </label>
-                                    <span>set by {current.set_by}</span>
+    view() {
+        const s = this.s
+        const set = new Map($s.placeholders.map((p) => [p.kind, p]))
+        // Only what has actually been published: a placeholder pointing at a model
+        // nobody can fetch is a street with nothing in it.
+        const usable = $s.library.filter((entry) => entry.visibility !== 'hidden')
+
+        return (
+            <>
+                <div class="section-head">
+                    <h1>Street objects</h1>
+                    <span class="count">{$s.placeholders.length} replaced</span>
+                </div>
+                <ul class="account-list">
+                    {PLACEHOLDER_KINDS.map((kind) => {
+                        const current = set.get(kind)
+                        return (
+                            <li class="account" key={kind}>
+                                <div class="account-main">
+                                    <span class="account-name">
+                                        {PLACEHOLDER_LABELS[kind] ?? kind}
+                                    </span>
+                                    <span style="flex:1" />
+                                    <select
+                                        onchange={(e: Event) => {
+                                            const asset = (e.target as HTMLSelectElement).value
+                                            if (asset === '') {
+                                                void clearPlaceholder(kind)
+                                                return
+                                            }
+                                            void setPlaceholder(kind, {
+                                                asset,
+                                                scale: current?.scale ?? 1,
+                                                yaw_offset: current?.yaw_offset ?? 0,
+                                            })
+                                        }}
+                                        value={current?.asset ?? ''}
+                                    >
+                                        <option value="">Built-in shape</option>
+                                        {usable.map((entry) => (
+                                            <option key={entry.asset} value={entry.asset}>
+                                                {entry.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        onclick={() => {
+                                            s.uploadingFor = s.uploadingFor === kind ? '' : kind
+                                        }}
+                                        type="button"
+                                    >
+                                        {s.uploadingFor === kind ? 'Cancel' : 'Upload…'}
+                                    </button>
                                 </div>
-                            )}
-                        </li>
-                    )
-                })}
-            </ul>
-        </>
-    )
+                                {s.uploadingFor === kind && (
+                                    <StreetUpload
+                                        kind={kind}
+                                        onDone={() => {
+                                            s.uploadingFor = ''
+                                        }}
+                                    />
+                                )}
+                                {current && (
+                                    <div class="account-meta">
+                                        {/*
+                                          * Scale and angle are here rather than at
+                                          * upload because they are about *this* use of
+                                          * the model: the same bench may be the right
+                                          * size for a prim and the wrong one for a
+                                          * street, and a model whose front faces +x
+                                          * sits sideways on every pavement in the city
+                                          * until this is turned.
+                                          */}
+                                        <label>
+                                            scale
+                                            <input
+                                                onchange={(e: Event) => {
+                                                    const scale = Number(
+                                                        (e.target as HTMLInputElement).value,
+                                                    )
+                                                    void setPlaceholder(kind, {
+                                                        asset: current.asset,
+                                                        scale,
+                                                        yaw_offset: current.yaw_offset,
+                                                    })
+                                                }}
+                                                step="0.05"
+                                                type="number"
+                                                value={current.scale}
+                                            />
+                                        </label>
+                                        <label>
+                                            turn°
+                                            <input
+                                                onchange={(e: Event) => {
+                                                    const yaw = Number(
+                                                        (e.target as HTMLInputElement).value,
+                                                    )
+                                                    void setPlaceholder(kind, {
+                                                        asset: current.asset,
+                                                        scale: current.scale,
+                                                        yaw_offset: yaw,
+                                                    })
+                                                }}
+                                                step="15"
+                                                type="number"
+                                                value={current.yaw_offset}
+                                            />
+                                        </label>
+                                        <span>set by {current.set_by}</span>
+                                    </div>
+                                )}
+                            </li>
+                        )
+                    })}
+                </ul>
+            </>
+        )
+    }
 }
 
 /** Where a street object's model is filed in the library. */
@@ -613,6 +665,11 @@ const STREET_CATEGORY: Record<string, string> = {
     yacht: 'vehicles',
 }
 
+interface StreetUploadAttrs {
+    kind: string
+    onDone: () => void
+}
+
 /**
  * Upload a model straight into one street object: it is stored, shared and set
  * as that object's model in one go, at scale 1 and no turn.
@@ -622,60 +679,71 @@ const STREET_CATEGORY: Record<string, string> = {
  * "something else" is not offered as a licence here: that one can never be
  * shared. The general form above still takes those.
  */
-const StreetUpload = ({kind, onDone}: {kind: string; onDone: () => void}) => {
-    const [file, setFile] = useState<File | null>(null)
-    const [licence, setLicence] = useState('own')
-    const [attribution, setAttribution] = useState('')
-    const [busy, setBusy] = useState(false)
-    const label = PLACEHOLDER_LABELS[kind] ?? kind
+class StreetUpload extends MithrilComponent<StreetUploadAttrs> {
+    // A plain field for the reason `Upload.file` is one.
+    file: File | null = null
+    s = local({attribution: '', busy: false, licence: 'own'})
 
-    return (
-        <div class="account-meta">
-            <input
-                accept={UPLOAD_ACCEPT}
-                onChange={(e) => setFile((e.target as HTMLInputElement).files?.[0] ?? null)}
-                type="file"
-            />
-            <select
-                onChange={(e) => setLicence((e.target as HTMLSelectElement).value)}
-                value={licence}
-            >
-                <option value="own">I made it</option>
-                <option value="cc0">CC0 — public domain</option>
-                <option value="cc-by">CC BY — credit required</option>
-            </select>
-            {licence === 'cc-by' && (
+    view(vnode: m.Vnode<StreetUploadAttrs>) {
+        const {kind, onDone} = vnode.attrs
+        const s = this.s
+        const file = this.file
+        const label = PLACEHOLDER_LABELS[kind] ?? kind
+
+        return (
+            <div class="account-meta">
                 <input
-                    onInput={(e) => setAttribution((e.target as HTMLInputElement).value)}
-                    placeholder="Credit line"
-                    type="text"
-                    value={attribution}
+                    accept={UPLOAD_ACCEPT}
+                    onchange={(e: Event) => {
+                        this.file = (e.target as HTMLInputElement).files?.[0] ?? null
+                    }}
+                    type="file"
                 />
-            )}
-            <button
-                disabled={busy || !file || (licence === 'cc-by' && attribution.trim() === '')}
-                onClick={() => {
-                    if (!file) return
-                    setBusy(true)
-                    void uploadModel(file, {
-                        attribution,
-                        category: STREET_CATEGORY[kind] ?? 'furniture',
-                        licence,
-                        name: modelNameFromFile(file.name),
-                        share: true,
-                    })
-                        .then((asset) =>
-                            asset ? setPlaceholder(kind, {asset, scale: 1, yaw_offset: 0}) : false,
-                        )
-                        .then((ok) => {
-                            setBusy(false)
-                            if (ok) onDone()
+                <select
+                    onchange={(e: Event) => {
+                        s.licence = (e.target as HTMLSelectElement).value
+                    }}
+                    value={s.licence}
+                >
+                    <option value="own">I made it</option>
+                    <option value="cc0">CC0 — public domain</option>
+                    <option value="cc-by">CC BY — credit required</option>
+                </select>
+                {s.licence === 'cc-by' && (
+                    <input
+                        oninput={(e: Event) => {
+                            s.attribution = (e.target as HTMLInputElement).value
+                        }}
+                        placeholder="Credit line"
+                        type="text"
+                        value={s.attribution}
+                    />
+                )}
+                <button
+                    disabled={s.busy || !file || (s.licence === 'cc-by' && s.attribution.trim() === '')}
+                    onclick={() => {
+                        if (!file) return
+                        s.busy = true
+                        void uploadModel(file, {
+                            attribution: s.attribution,
+                            category: STREET_CATEGORY[kind] ?? 'furniture',
+                            licence: s.licence,
+                            name: modelNameFromFile(file.name),
+                            share: true,
                         })
-                }}
-                type="button"
-            >
-                {busy ? 'Uploading…' : `Use for ${label.toLowerCase()}`}
-            </button>
-        </div>
-    )
+                            .then((asset) =>
+                                asset ? setPlaceholder(kind, {asset, scale: 1, yaw_offset: 0}) : false,
+                            )
+                            .then((ok) => {
+                                s.busy = false
+                                if (ok) onDone()
+                            })
+                    }}
+                    type="button"
+                >
+                    {s.busy ? 'Uploading…' : `Use for ${label.toLowerCase()}`}
+                </button>
+            </div>
+        )
+    }
 }

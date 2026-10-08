@@ -123,7 +123,7 @@ session middleware. Copying that here would have meant a second long-running
 process on the box, a second thing to supervise and restart, and a second place
 holding credentials, in order to serve 35 KB of static files and forward JSON to
 a Rust process that was already answering HTTP. What was worth borrowing from
-codebrew is its *front end*: the deepsignal store with its persistent/volatile
+codebrew is its *front end*: the reactive store with its persistent/volatile
 split, and the `App.init` + `components/{pages,elements}` layout. Those are in
 `crates/atlas/web` and the GUI has no backend of its own — it is static files
 Caddy serves, and its API calls go to this simulator (`/api/admin/*`) and to

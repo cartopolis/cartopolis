@@ -299,8 +299,8 @@ Startup switches for bisecting a render problem, each removing one layer:
 
 ## Architecture
 
-**cartopolis.org is the atlas web UI**, `crates/atlas/web` — a Preact +
-deepsignal app (Bun, not Rust) served as static files at the site root: the
+**cartopolis.org is the atlas web UI**, `crates/atlas/web` — a Mithril
+app (Bun, not Rust; `@garage44/mithril`, our fork at `jeroen/mithril`) served as static files at the site root: the
 front page (`/`), the operator's pages (`/admin`: accounts, houses, models, the
 Data tab that drives the pipelines, the autopilot) and the players' pages
 (`/register`, `/verify`, `/buildings`, and the floor-plan editor at

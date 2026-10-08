@@ -12,11 +12,8 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@preact/signals": "^2.0.2",
-    "classnames": "^2.5.1",
-    "deepsignal": "^1.6.0",
-    "preact": "^10.26.5",
-    "preact-router": "^4.1.2"
+    "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/151bc64f737cb0bd890fc0e460de6b5cf8344f19.tar.gz",
+    "classnames": "^2.5.1"
   },
   "devDependencies": {
     "@types/bun": "^1.2.17",

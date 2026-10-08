@@ -1,14 +1,21 @@
-import {type DeepSignal, deepSignal} from 'deepsignal'
+import {state} from '@garage44/mithril'
 
 import {copyObject, mergeDeep} from './utils'
 
 /**
- * The whole app's state, as one deepsignal proxy.
+ * The whole app's state, as one reactive `state()` proxy (Mithril, Garage44
+ * edition).
  *
  * Codebrew's model, and the reason it is worth copying: there is no context, no
- * provider and no selector. A component that reads `$s.accounts` subscribes to
- * exactly that, and writing `$s.accounts = […]` from an API call re-renders the
- * components that read it and nothing else.
+ * provider and no selector. A component whose view reads `$s.accounts` redraws
+ * when that changes, and writing `$s.accounts = […]` from an API call redraws
+ * the components that read it and nothing else.
+ *
+ * `state` is typed as the plain shape rather than as `State<State>`. Mithril's
+ * own type reads a nested object back as a state with `$`-signal twins, which
+ * makes `$s.profile = {…}` — the write this app does everywhere — refuse to
+ * type-check even though the proxy accepts it at runtime. Nothing here reaches
+ * for the raw signals, so the plain shape is the honest one.
  *
  * `persistentState` does double duty. It is the initial shape *and* the
  * whitelist for `save()`: `filterKeys` walks it as a blueprint, so a key that is
@@ -17,7 +24,7 @@ import {copyObject, mergeDeep} from './utils'
  * out of a store that survives the tab.
  */
 export class Store<State extends Record<string, unknown>> {
-    state: DeepSignal<State>
+    state: State
 
     private blueprint?: State
 
@@ -25,7 +32,7 @@ export class Store<State extends Record<string, unknown>> {
 
     constructor(key = 'cartopolis-admin') {
         this.key = key
-        this.state = deepSignal({} as State)
+        this.state = state({} as State) as unknown as State
     }
 
     load(persistentState: State, volatileState: Partial<State>) {

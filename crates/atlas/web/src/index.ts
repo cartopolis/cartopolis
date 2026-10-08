@@ -1,4 +1,4 @@
 import {App} from '@/app'
-import {Main} from '@/components/main/main'
+import {mountRoutes} from '@/components/main/main'
 
-void new App().init(Main)
+void new App().init(mountRoutes)

@@ -1,6 +1,6 @@
 # The atlas web UI
 
-**[cartopolis.org](https://cartopolis.org)** itself: a small Preact app, static
+**[cartopolis.org](https://cartopolis.org)** itself: a small Mithril app, static
 files behind Caddy at the site root. It is the front page (`/`), the operator's
 pages (`/admin`) and the players' pages (`/register`, `/verify`, `/house`);
 Caddy sends everything else — the viewer at `/viewer/`, the APK, the simulator's
@@ -77,9 +77,11 @@ the datasets, the port and how it was checked.
 Borrowed from [codebrew](https://code.garage44.eu/jeroen/codebrew), the house
 style for Garage44 front-ends. Two pieces of it in particular:
 
-- **State is one deepsignal store** (`src/lib/store.ts`). No context, no
-  provider, no selectors: a component reads `$s.accounts` and re-renders when it
-  changes. `persistentState` is both the initial shape *and* the localStorage
+- **State is one reactive store** (`src/lib/store.ts`), Mithril's `state()`. No
+  context, no provider, no selectors: a component reads `$s.accounts` and redraws
+  when it changes. A component's own state is the same thing at a smaller scale
+  (`local()` in `src/lib/reactive.ts`), so a write from an awaited `fetch`
+  redraws without an `m.redraw()`. `persistentState` is both the initial shape *and* the localStorage
   whitelist — `filterKeys` walks it as a blueprint, so a key absent from it is
   structurally incapable of being persisted, and `volatileState` is applied last
   so a stale account list can never be rendered as though the server had just
@@ -88,6 +90,17 @@ style for Garage44 front-ends. Two pieces of it in particular:
   store, the API client, the notifier — is built once at module scope and
   imported by name. One folder per component under
   `src/components/{pages,elements}`.
+
+The renderer is **Mithril, Garage44 edition** (`@garage44/mithril`): our fork of
+Bitstillery's Mithril with signals, at
+[code.garage44.eu/jeroen/mithril](https://code.garage44.eu/jeroen/mithril). It
+replaced Preact, preact-router and deepsignal in 2026-10. It is not on npm, so
+`package.json` names a commit's tarball from Forgejo — a branch or a git URL
+would be the obvious spelling, and Bun's git clone of this Forgejo fails where
+the tarball does not. Bump it by changing the commit in that URL. Components are
+`MithrilComponent` classes, because a plain `{view}` object is not something TSX
+can type-check as a tag; routing is `m.route` with pathname URLs
+(`src/components/main/main.tsx`).
 
 Colours come from the Cartopolis client's own theme constants
 (`systems::gui::theme`); a fresh hex here is how the two drift apart.

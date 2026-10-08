@@ -1,7 +1,3 @@
-import type {DeepSignal} from 'deepsignal'
-import type {ComponentChild} from 'preact'
-
-import {h, render} from 'preact'
 
 import type {AdminState, Notification, RegistrationRules} from '@/types'
 
@@ -17,12 +13,12 @@ import {Store} from '@/lib/store'
  * Codebrew's setup, and the reason for it: these are singletons in fact — there
  * is one store, one API client, one notifier — so threading them through props or
  * a context is ceremony around a fact that never changes. `$s` is the same store
- * seen as a deepsignal proxy, which is what components read.
+ * seen as Mithril reactive state, which is what components read.
  */
 const store = new Store<AdminState>()
 store.load(persistentState, volatileState)
 
-const $s = store.state as DeepSignal<AdminState>
+const $s = store.state
 
 /**
  * The API reads the token out of the live store and reports a 401 back into it,
@@ -61,7 +57,7 @@ const signupApi = new Api(
 const notifier = new Notifier()
 
 export class App {
-    async init(Main: () => ComponentChild) {
+    async init(mount: (root: Element) => void) {
         notifier.init($s.notifications as Notification[])
 
         // A token from localStorage is a *claim* to be signed in, not a fact: it
@@ -98,7 +94,7 @@ export class App {
             $s.registration = null
         }
 
-        render(h(Main, {}), document.body)
+        mount(document.body)
     }
 }
 

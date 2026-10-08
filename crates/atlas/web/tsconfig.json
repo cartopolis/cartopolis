@@ -8,8 +8,9 @@
       "DOM",
       "DOM.Iterable"
     ],
-    "jsx": "react-jsx",
-    "jsxImportSource": "preact",
+    "jsx": "react",
+    "jsxFactory": "m",
+    "jsxFragmentFactory": "m.Fragment",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,

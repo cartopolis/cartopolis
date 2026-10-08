@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'preact/hooks'
+import m, {MithrilComponent} from '@garage44/mithril'
 
 import type {PipelineCount, PipelineJob} from '@/types'
 
@@ -12,6 +12,7 @@ import {
     pollFollowed,
     startRun,
 } from '@/lib/pipeline'
+import {local} from '@/lib/reactive'
 import {formatTimestamp} from '@/lib/utils'
 
 /** How often a running job's log is pulled. */
@@ -53,297 +54,352 @@ function counts(list?: readonly PipelineCount[]): string {
  * manifest, and "what would I be replacing?" is the question this page exists to
  * answer before it is the one that runs anything.
  */
-export const Pipeline = () => {
-    const [area, setArea] = useState('groningen')
-    const [custom, setCustom] = useState('')
-    const [customName, setCustomName] = useState('')
-    const [picked, setPicked] = useState<string[]>([])
-    const [fresh, setFresh] = useState(false)
-    const logRef = useRef<HTMLPreElement>(null)
+export class Pipeline extends MithrilComponent {
+    s = local({
+        area: 'groningen',
+        custom: '',
+        customName: '',
+        fresh: false,
+        picked: [] as string[],
+    })
 
-    useEffect(() => {
+    /** The run log's `<pre>`, while it is on the page. */
+    private logEl: HTMLPreElement | null = null
+
+    /** The `pipelineJobs.length` the live-run check last acted on. */
+    private seenJobs: number | undefined = undefined
+
+    /** The `pipelineFollowing` the poll loop was started for. */
+    private seenFollowing: string | null | undefined = undefined
+
+    /** Stops the running poll loop: what the effect's cleanup was. */
+    private stopPoll: (() => void) | null = null
+
+    /** The `pipelineLog.length` the log was last scrolled for. */
+    private seenLog: number | undefined = undefined
+
+    oninit() {
         void loadPipelineConfig()
         void loadCoverage()
         void loadJobs()
-    }, [])
+    }
 
-    // Follow whatever is already running when the page opens, so an operator who
-    // reloads mid-run is not shown an idle Data tab over a live job.
-    useEffect(() => {
-        if (!$s.pipelineFollowing) {
-            const live = $s.pipelineJobs.find((job) => job.status === 'running' || job.status === 'queued')
-            if (live) {
-                follow(live.id)
+    // The three effects that ran after a render with dependencies: each compares
+    // its dependency against the value it last acted on.
+    private sync() {
+        // Follow whatever is already running when the page opens, so an operator who
+        // reloads mid-run is not shown an idle Data tab over a live job.
+        if (this.seenJobs !== $s.pipelineJobs.length) {
+            this.seenJobs = $s.pipelineJobs.length
+            if (!$s.pipelineFollowing) {
+                const live = $s.pipelineJobs.find((job) => job.status === 'running' || job.status === 'queued')
+                if (live) {
+                    follow(live.id)
+                }
             }
         }
-    }, [$s.pipelineJobs.length])
 
-    useEffect(() => {
-        if (!$s.pipelineFollowing) {
-            return
+        if (this.seenFollowing !== $s.pipelineFollowing) {
+            this.seenFollowing = $s.pipelineFollowing
+            this.stopPoll?.()
+            this.stopPoll = null
+            if ($s.pipelineFollowing) {
+                let stopped = false
+                let timer = 0
+                const tick = async () => {
+                    const live = await pollFollowed()
+                    if (stopped) {
+                        return
+                    }
+                    if (live) {
+                        timer = window.setTimeout(() => void tick(), POLL_MS)
+                    } else {
+                        // One last list refresh, so the history row shows its verdict.
+                        void loadJobs()
+                    }
+                }
+                void tick()
+                this.stopPoll = () => {
+                    stopped = true
+                    window.clearTimeout(timer)
+                }
+            }
         }
-        let stopped = false
-        let timer = 0
-        const tick = async () => {
-            const live = await pollFollowed()
-            if (stopped) {
+
+        // Stick to the bottom of the log while it grows, which is where a run says
+        // what it is doing now.
+        if (this.seenLog !== $s.pipelineLog.length) {
+            this.seenLog = $s.pipelineLog.length
+            if (this.logEl) {
+                this.logEl.scrollTop = this.logEl.scrollHeight
+            }
+        }
+    }
+
+    oncreate() {
+        this.sync()
+    }
+
+    onupdate() {
+        this.sync()
+    }
+
+    onremove() {
+        this.stopPoll?.()
+        this.stopPoll = null
+    }
+
+    view() {
+        const s = this.s
+        const config = $s.pipelineConfig
+        const followed = $s.pipelineJobs.find((job) => job.id === $s.pipelineFollowing)
+        const busy = $s.pipelineJobs.some((job) => job.status === 'running' || job.status === 'queued')
+
+        if (!config) {
+            return (
+                <>
+                    <div class="section-head">
+                        <h1>Data</h1>
+                    </div>
+                    <div class="empty">
+                        The data pipeline is not answering. It runs beside the simulator on the
+                        machine that holds the map tiles — if it is down, nothing here can start a
+                        run, but the tiles already extracted are still being served.
+                    </div>
+                </>
+            )
+        }
+
+        const isCustom = s.area === '__custom'
+        const minutes = config.datasets
+            .filter((dataset) => s.picked.includes(dataset.id))
+            .reduce((sum, dataset) => sum + dataset.typicalMinutes, 0)
+
+        const submit = () => {
+            if (!s.picked.length) {
                 return
             }
-            if (live) {
-                timer = window.setTimeout(() => void tick(), POLL_MS)
+            if (isCustom) {
+                const parts = s.custom.trim().split(/[\s,]+/).map(Number)
+                if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
+                    return
+                }
+                void startRun(s.customName.trim(), s.picked, parts as [number, number, number, number], s.fresh)
             } else {
-                // One last list refresh, so the history row shows its verdict.
-                void loadJobs()
+                void startRun(s.area, s.picked, undefined, s.fresh)
             }
         }
-        void tick()
-        return () => {
-            stopped = true
-            window.clearTimeout(timer)
-        }
-    }, [$s.pipelineFollowing])
 
-    // Stick to the bottom of the log while it grows, which is where a run says
-    // what it is doing now.
-    useEffect(() => {
-        if (logRef.current) {
-            logRef.current.scrollTop = logRef.current.scrollHeight
-        }
-    }, [$s.pipelineLog.length])
-
-    const config = $s.pipelineConfig
-    const followed = $s.pipelineJobs.find((job) => job.id === $s.pipelineFollowing)
-    const busy = $s.pipelineJobs.some((job) => job.status === 'running' || job.status === 'queued')
-
-    if (!config) {
         return (
             <>
                 <div class="section-head">
                     <h1>Data</h1>
+                    <span class="count">{config.datasets.length}</span>
                 </div>
-                <div class="empty">
-                    The data pipeline is not answering. It runs beside the simulator on the
-                    machine that holds the map tiles — if it is down, nothing here can start a
-                    run, but the tiles already extracted are still being served.
-                </div>
-            </>
-        )
-    }
+                <p class="hint">
+                    The map's Dutch layers are extracted from open registers and served as static
+                    files from <span class="mono">{config.out}</span>. A run refreshes them in place.
+                </p>
 
-    const isCustom = area === '__custom'
-    const minutes = config.datasets
-        .filter((dataset) => picked.includes(dataset.id))
-        .reduce((sum, dataset) => sum + dataset.typicalMinutes, 0)
-
-    const submit = () => {
-        if (!picked.length) {
-            return
-        }
-        if (isCustom) {
-            const parts = custom.trim().split(/[\s,]+/).map(Number)
-            if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
-                return
-            }
-            void startRun(customName.trim(), picked, parts as [number, number, number, number], fresh)
-        } else {
-            void startRun(area, picked, undefined, fresh)
-        }
-    }
-
-    return (
-        <>
-            <div class="section-head">
-                <h1>Data</h1>
-                <span class="count">{config.datasets.length}</span>
-            </div>
-            <p class="hint">
-                The map's Dutch layers are extracted from open registers and served as static
-                files from <span class="mono">{config.out}</span>. A run refreshes them in place.
-            </p>
-
-            <div class="card">
-                <h2>What is being served</h2>
-                <ul class="coverage-list">
-                    {$s.pipelineCoverage.map((entry) => (
-                        <li class="coverage" key={entry.dataset}>
-                            <div class="coverage-main">
-                                <span class="coverage-name">{entry.label}</span>
-                                <span style="flex:1" />
-                                {entry.name ? (
-                                    <span class="tag">{entry.name}</span>
-                                ) : (
-                                    <span class="tag disabled">never extracted</span>
-                                )}
-                            </div>
-                            {entry.name && (
-                                <div class="account-meta">
-                                    <span>{entry.cells.toLocaleString()} cells</span>
-                                    {counts(entry.counts) && <span>{counts(entry.counts)}</span>}
-                                    {entry.updatedAt && (
-                                        <span>{formatTimestamp(new Date(entry.updatedAt).toISOString())}</span>
+                <div class="card">
+                    <h2>What is being served</h2>
+                    <ul class="coverage-list">
+                        {$s.pipelineCoverage.map((entry) => (
+                            <li class="coverage" key={entry.dataset}>
+                                <div class="coverage-main">
+                                    <span class="coverage-name">{entry.label}</span>
+                                    <span style="flex:1" />
+                                    {entry.name ? (
+                                        <span class="tag">{entry.name}</span>
+                                    ) : (
+                                        <span class="tag disabled">never extracted</span>
                                     )}
                                 </div>
-                            )}
-                        </li>
-                    ))}
-                </ul>
-            </div>
-
-            <div class="card">
-                <h2>Extract</h2>
-                <label class="field">
-                    <span>Area</span>
-                    <select
-                        onChange={(e) => setArea((e.target as HTMLSelectElement).value)}
-                        value={area}
-                    >
-                        {config.areas.map((a) => (
-                            <option key={a.id} value={a.id}>
-                                {a.label} — {a.km2} km²
-                            </option>
-                        ))}
-                        <option value="__custom">A bounding box I will type…</option>
-                    </select>
-                </label>
-
-                {isCustom && (
-                    <>
-                        <label class="field">
-                            <span>Name</span>
-                            <input
-                                onInput={(e) => setCustomName((e.target as HTMLInputElement).value)}
-                                placeholder="delfzijl"
-                                value={customName}
-                            />
-                        </label>
-                        <label class="field">
-                            <span>Bounding box</span>
-                            <input
-                                onInput={(e) => setCustom((e.target as HTMLInputElement).value)}
-                                placeholder="229000 578000 238000 587000"
-                                value={custom}
-                            />
-                        </label>
-                        <p class="hint">
-                            Four numbers — xmin ymin xmax ymax — in RD New (EPSG:28992), which is
-                            the grid these registers are published on. Not degrees.
-                        </p>
-                    </>
-                )}
-
-                <div class="dataset-picks">
-                    {config.datasets.map((dataset) => (
-                        <label class="check" key={dataset.id}>
-                            <input
-                                checked={picked.includes(dataset.id)}
-                                onChange={(e) => {
-                                    const on = (e.target as HTMLInputElement).checked
-                                    setPicked((was) =>
-                                        on ? [...was, dataset.id] : was.filter((id) => id !== dataset.id),
-                                    )
-                                }}
-                                type="checkbox"
-                            />
-                            <span>
-                                <b>{dataset.label}</b>
-                                <em>{dataset.description}</em>
-                            </span>
-                        </label>
-                    ))}
-                </div>
-
-                <label class="check">
-                    <input
-                        checked={fresh}
-                        onChange={(e) => setFresh((e.target as HTMLInputElement).checked)}
-                        type="checkbox"
-                    />
-                    <span>
-                        <b>Fetch fresh source data</b>
-                        <em>
-                            Otherwise what was fetched from the registers in the last month is
-                            reused, which is what a re-run after a pipeline change wants.
-                        </em>
-                    </span>
-                </label>
-
-                <div class="row-actions">
-                    <button
-                        disabled={busy || !picked.length || (isCustom && (!custom.trim() || !customName.trim()))}
-                        onClick={submit}
-                        type="button"
-                    >
-                        {busy ? 'A run is already going' : 'Start'}
-                    </button>
-                    {picked.length > 0 && !busy && (
-                        <span class="hint">roughly {minutes} minutes for an area this size</span>
-                    )}
-                </div>
-            </div>
-
-            {followed && (
-                <div class="card">
-                    <h2>
-                        {followed.area} — {statusLabel(followed)}
-                    </h2>
-                    <ul class="step-list">
-                        {followed.steps.map((step) => (
-                            <li class={`step is-${step.status}`} key={step.dataset}>
-                                <span class="step-name">{step.dataset}</span>
-                                <span class="step-detail">
-                                    {step.status === 'running' && step.progress.phase
-                                        ? `${step.progress.phase} — ${(step.progress.done ?? 0).toLocaleString()}` +
-                                          (step.progress.total ? ` / ${step.progress.total.toLocaleString()}` : '')
-                                        : step.status === 'done'
-                                          ? counts(step.counts) || 'finished'
-                                          : step.error || statusLabel({...followed, status: step.status})}
-                                </span>
+                                {entry.name && (
+                                    <div class="account-meta">
+                                        <span>{entry.cells.toLocaleString()} cells</span>
+                                        {counts(entry.counts) && <span>{counts(entry.counts)}</span>}
+                                        {entry.updatedAt && (
+                                            <span>{formatTimestamp(new Date(entry.updatedAt).toISOString())}</span>
+                                        )}
+                                    </div>
+                                )}
                             </li>
                         ))}
                     </ul>
-                    <pre class="run-log" ref={logRef}>
-                        {$s.pipelineLog.map((line) => `${line.dataset}  ${line.text}`).join('\n')}
-                    </pre>
-                    {(followed.status === 'running' || followed.status === 'queued') && (
-                        <div class="row-actions">
-                            <button class="danger" onClick={() => void cancelRun(followed.id)} type="button">
-                                Stop
-                            </button>
-                            <span class="hint">
-                                What has already been written stays written — the manifest is
-                                written last, so a stopped run leaves the previous one serving.
-                            </span>
-                        </div>
-                    )}
                 </div>
-            )}
 
-            {$s.pipelineJobs.length > 1 && (
                 <div class="card">
-                    <h2>Earlier runs</h2>
-                    <ul class="account-list">
-                        {$s.pipelineJobs
-                            .filter((job) => job.id !== $s.pipelineFollowing)
-                            .map((job) => (
-                                <li class="account" key={job.id}>
-                                    <div class="account-main">
-                                        <span class="account-name">{job.area}</span>
-                                        <span style="flex:1" />
-                                        <button class="ghost" onClick={() => follow(job.id)} type="button">
-                                            Show log
-                                        </button>
-                                    </div>
-                                    <div class="account-meta">
-                                        <span>{statusLabel(job)}</span>
-                                        <span>{job.steps.map((s) => s.dataset).join(', ')}</span>
-                                        <span>{job.by}</span>
-                                        <span>{formatTimestamp(new Date(job.createdAt).toISOString())}</span>
-                                    </div>
+                    <h2>Extract</h2>
+                    <label class="field">
+                        <span>Area</span>
+                        <select
+                            onchange={(e: Event) => {
+                                s.area = (e.target as HTMLSelectElement).value
+                            }}
+                            value={s.area}
+                        >
+                            {config.areas.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                    {a.label} — {a.km2} km²
+                                </option>
+                            ))}
+                            <option value="__custom">A bounding box I will type…</option>
+                        </select>
+                    </label>
+
+                    {isCustom && (
+                        <>
+                            <label class="field">
+                                <span>Name</span>
+                                <input
+                                    oninput={(e: Event) => {
+                                        s.customName = (e.target as HTMLInputElement).value
+                                    }}
+                                    placeholder="delfzijl"
+                                    value={s.customName}
+                                />
+                            </label>
+                            <label class="field">
+                                <span>Bounding box</span>
+                                <input
+                                    oninput={(e: Event) => {
+                                        s.custom = (e.target as HTMLInputElement).value
+                                    }}
+                                    placeholder="229000 578000 238000 587000"
+                                    value={s.custom}
+                                />
+                            </label>
+                            <p class="hint">
+                                Four numbers — xmin ymin xmax ymax — in RD New (EPSG:28992), which is
+                                the grid these registers are published on. Not degrees.
+                            </p>
+                        </>
+                    )}
+
+                    <div class="dataset-picks">
+                        {config.datasets.map((dataset) => (
+                            <label class="check" key={dataset.id}>
+                                <input
+                                    checked={s.picked.includes(dataset.id)}
+                                    onchange={(e: Event) => {
+                                        const on = (e.target as HTMLInputElement).checked
+                                        const was = s.picked
+                                        s.picked = on ? [...was, dataset.id] : was.filter((id) => id !== dataset.id)
+                                    }}
+                                    type="checkbox"
+                                />
+                                <span>
+                                    <b>{dataset.label}</b>
+                                    <em>{dataset.description}</em>
+                                </span>
+                            </label>
+                        ))}
+                    </div>
+
+                    <label class="check">
+                        <input
+                            checked={s.fresh}
+                            onchange={(e: Event) => {
+                                s.fresh = (e.target as HTMLInputElement).checked
+                            }}
+                            type="checkbox"
+                        />
+                        <span>
+                            <b>Fetch fresh source data</b>
+                            <em>
+                                Otherwise what was fetched from the registers in the last month is
+                                reused, which is what a re-run after a pipeline change wants.
+                            </em>
+                        </span>
+                    </label>
+
+                    <div class="row-actions">
+                        <button
+                            disabled={busy || !s.picked.length || (isCustom && (!s.custom.trim() || !s.customName.trim()))}
+                            onclick={submit}
+                            type="button"
+                        >
+                            {busy ? 'A run is already going' : 'Start'}
+                        </button>
+                        {s.picked.length > 0 && !busy && (
+                            <span class="hint">roughly {minutes} minutes for an area this size</span>
+                        )}
+                    </div>
+                </div>
+
+                {followed && (
+                    <div class="card">
+                        <h2>
+                            {followed.area} — {statusLabel(followed)}
+                        </h2>
+                        <ul class="step-list">
+                            {followed.steps.map((step) => (
+                                <li class={`step is-${step.status}`} key={step.dataset}>
+                                    <span class="step-name">{step.dataset}</span>
+                                    <span class="step-detail">
+                                        {step.status === 'running' && step.progress.phase
+                                            ? `${step.progress.phase} — ${(step.progress.done ?? 0).toLocaleString()}` +
+                                              (step.progress.total ? ` / ${step.progress.total.toLocaleString()}` : '')
+                                            : step.status === 'done'
+                                              ? counts(step.counts) || 'finished'
+                                              : step.error || statusLabel({...followed, status: step.status})}
+                                    </span>
                                 </li>
                             ))}
-                    </ul>
-                </div>
-            )}
-        </>
-    )
+                        </ul>
+                        <pre
+                            class="run-log"
+                            oncreate={(v: m.VnodeDOM) => {
+                                this.logEl = v.dom as HTMLPreElement
+                            }}
+                            onremove={() => {
+                                this.logEl = null
+                            }}
+                        >
+                            {$s.pipelineLog.map((line) => `${line.dataset}  ${line.text}`).join('\n')}
+                        </pre>
+                        {(followed.status === 'running' || followed.status === 'queued') && (
+                            <div class="row-actions">
+                                <button class="danger" onclick={() => void cancelRun(followed.id)} type="button">
+                                    Stop
+                                </button>
+                                <span class="hint">
+                                    What has already been written stays written — the manifest is
+                                    written last, so a stopped run leaves the previous one serving.
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {$s.pipelineJobs.length > 1 && (
+                    <div class="card">
+                        <h2>Earlier runs</h2>
+                        <ul class="account-list">
+                            {$s.pipelineJobs
+                                .filter((job) => job.id !== $s.pipelineFollowing)
+                                .map((job) => (
+                                    <li class="account" key={job.id}>
+                                        <div class="account-main">
+                                            <span class="account-name">{job.area}</span>
+                                            <span style="flex:1" />
+                                            <button class="ghost" onclick={() => follow(job.id)} type="button">
+                                                Show log
+                                            </button>
+                                        </div>
+                                        <div class="account-meta">
+                                            <span>{statusLabel(job)}</span>
+                                            <span>{job.steps.map((s) => s.dataset).join(', ')}</span>
+                                            <span>{job.by}</span>
+                                            <span>{formatTimestamp(new Date(job.createdAt).toISOString())}</span>
+                                        </div>
+                                    </li>
+                                ))}
+                        </ul>
+                    </div>
+                )}
+            </>
+        )
+    }
 }
