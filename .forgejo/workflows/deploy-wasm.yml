@@ -214,13 +214,28 @@ jobs:
           }
           echo "threading: shared memory + thread transform confirmed"
 
-      # Pre-compress so Caddy's `precompressed gzip` serves a file read instead
-      # of compressing ~71 MB per cold request. Keep the original: a client that
-      # sends no Accept-Encoding still needs it.
+      # Pre-compress so Caddy's `precompressed br zstd gzip` serves a file read
+      # instead of compressing the module per cold request. Keep the original: a
+      # client that sends no Accept-Encoding still needs it.
+      #
+      # Measured on the 87.7 MB module of 2026-10-05: gzip -9 21.2 MB, zstd -19
+      # 14.2 MB (26 s), brotli q11 12.9 MB (~6 min, single-threaded). Brotli is
+      # what every browser that has WebGPU accepts, so it is the one that counts
+      # — 39 % less to download than the gzip this used to ship, on a phone link
+      # where the download *is* the startup. `--large_window` is deliberately not
+      # used: browsers refuse brotli windows over 16 MB. wasm-opt was measured
+      # too and is not here on purpose: -O2 and -Oz shrank the raw module by
+      # 11–22 % and the compressed one by nothing (gzip grew).
       - name: Pre-compress the large assets
         run: |
+          apt-get update -qq && apt-get install -y -qq brotli >/dev/null
           cd crates/cartopolis/dist
-          for f in *.wasm *.js; do [ -f "$f" ] && gzip -9 -k -f "$f"; done
+          for f in *.wasm *.js; do
+            [ -f "$f" ] || continue
+            gzip -9 -k -f "$f"
+            zstd -19 -T0 -q -f "$f" -o "$f.zst"
+            brotli -q 11 -w 24 -k -f "$f"
+          done
           ls -la *.wasm* *.js* | awk '{print $5, $9}'
 
       # Into `viewer/` under the site root, which is where Caddy serves

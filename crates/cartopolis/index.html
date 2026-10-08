@@ -307,8 +307,101 @@
 
          Keep this in step with `.forgejo/workflows/ci.yml`'s wasm check, which
          passes the same two flags on the command line. -->
+    <script>
+      // Download progress for the HTML loader while the module downloads and
+      // compiles. This is deliberately *not* a splash: the splash is Bevy's, and
+      // it cannot exist until the engine is running — which is the several
+      // seconds this covers. So the job here is narrow: say honestly how far
+      // along the load is, and say clearly when it has failed.
+      //
+      // **Why this wraps `instantiateStreaming` rather than being a Trunk
+      // `data-initializer`** (which it was until 2026-10-08): Trunk's initializer
+      // counts bytes by re-wrapping the body in `new Response(stream)`, and a
+      // synthetic Response has no URL. Chrome keys its compiled-wasm code cache on
+      // the response's URL, so that wrapper meant the ~88 MB module was compiled
+      // from scratch on every visit, cached download or not. Here the browser
+      // compiles the *real* response, and the progress is read off a clone.
+      //
+      // Only the first streaming call is the page's module: wasm_thread's
+      // workers instantiate the already-compiled `WebAssembly.Module`.
+      (function () {
+        var orig = WebAssembly.instantiateStreaming;
+        if (!orig) return;
+        var el = function (id) { return document.getElementById(id); };
+        // `force` is what keeps a diagnosis on screen. The sanity checks below
+        // run concurrently with the transfer, so a fatal one (no GPU adapter)
+        // lands mid-download and the very next progress tick would paint
+        // "Downloading engine… 41.2 MB" back over it. Once the boot has failed,
+        // only the failure path may write here.
+        var set = function (state, text, force) {
+          if (window.__boot.failed && !force) return;
+          var s = el("status");
+          if (s) s.textContent = text;
+          var root = el("loader");
+          if (root) root.dataset.state = state;
+        };
+        var mb = function (n) { return (n / 1e6).toFixed(1); };
+        var progress = function (current) {
+          var bar = el("bar");
+          if (!bar) return;
+          // Bytes counted are *decoded* bytes, and a compressed transfer carries
+          // no usable Content-Length for them: show motion and the count, not a
+          // fake percentage.
+          bar.classList.add("indeterminate");
+          set("loading", "Downloading engine… " + mb(current) + " MB");
+        };
+        var compiling = function () {
+          var bar = el("bar");
+          if (bar) {
+            bar.style.width = "100%";
+            bar.classList.add("indeterminate");
+          }
+          // For a module this size compiling is seconds more, with no progress
+          // signal available.
+          set("compiling", "Starting engine…");
+        };
+        var count = function (response) {
+          if (!response.body) return;
+          var reader = response.body.getReader();
+          var current = 0;
+          var pump = function () {
+            reader.read().then(function (r) {
+              if (r.done) { compiling(); return; }
+              current += r.value.byteLength;
+              progress(current);
+              pump();
+            }, function () {});
+          };
+          pump();
+        };
+        var used = false;
+        WebAssembly.instantiateStreaming = function (source, imports) {
+          if (used) return orig.call(WebAssembly, source, imports);
+          used = true;
+          set("loading", "Downloading engine…");
+          var real = Promise.resolve(source).then(function (r) {
+            try { count(r.clone()); } catch (e) {}
+            return r;
+          });
+          return orig.call(WebAssembly, real, imports).then(function (v) {
+            // Do NOT hide the loader here. This fires when the module has
+            // instantiated, not when anything has been drawn — hiding now would
+            // show a blank canvas until Bevy's own splash appears. The script
+            // below hides it on the first real frame instead.
+            set("running", "Ready");
+            return v;
+          }, function (error) {
+            // wasm-bindgen retries with `instantiate` when the MIME type is
+            // wrong, so this is reported but the boot is not yet over; a real
+            // failure surfaces through the boot recorder's handlers.
+            console.error("wasm streaming instantiation failed:", error);
+            throw error;
+          });
+        };
+      })();
+    </script>
     <link data-trunk rel="rust" data-bin="cartopolis" data-cargo-no-default-features
-          data-cargo-features="audio" data-initializer="loader.js" />
+          data-cargo-features="audio" />
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
