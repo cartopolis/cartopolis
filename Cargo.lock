@@ -2330,6 +2330,7 @@ dependencies = [
  "cartopolis_materials",
  "cartopolis_mcp",
  "cartopolis_simulator",
+ "cartopolis_vio",
  "clap",
  "cpal",
  "dotenvy",
@@ -2564,6 +2565,13 @@ dependencies = [
  "serde_json",
  "tracing",
  "ureq",
+]
+
+[[package]]
+name = "cartopolis_vio"
+version = "1.0.0"
+dependencies = [
+ "glam 0.32.1",
 ]
 
 [[package]]

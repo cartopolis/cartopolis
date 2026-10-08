@@ -32,6 +32,10 @@ use crate::resources::OnlineSession;
 #[derive(Resource)]
 pub struct PreciseHand {
     pub active: bool,
+    /// Where the hand is while `active`: latitude, longitude and metres above
+    /// the ground, from the high-precision mode's tracker anchored on its first
+    /// GNSS fix and compass heading (`systems::high_precision`).
+    pub hand_geo: Option<(f64, f64, f32)>,
     /// Report a stand-in as an imprecise hand — the avatar's, or the view — so
     /// a hand-sensing script can be tried before high precision positions
     /// anything. `CARTO_HAND_FROM_CAMERA=1` sets it at launch; Developer tools
@@ -43,6 +47,7 @@ impl Default for PreciseHand {
     fn default() -> Self {
         Self {
             active: false,
+            hand_geo: None,
             camera_stands_in: std::env::var("CARTO_HAND_FROM_CAMERA").is_ok_and(|v| v == "1"),
         }
     }
@@ -66,6 +71,8 @@ impl PreciseHand {
 #[derive(Resource, Default)]
 pub struct HandReports {
     last: HashMap<i64, ([f32; 3], f32)>,
+    /// The tracked hand this frame, copied from [`PreciseHand::hand_geo`].
+    hand_geo: Option<(f64, f64, f32)>,
 }
 
 /// Re-send an unchanged hand this often, so a script timing out a hand that
@@ -94,10 +101,18 @@ pub fn report_hands(
     online: Option<Res<OnlineSession>>,
     camera: Query<&GlobalTransform, With<FreeCamera>>,
     avatar: Query<&GlobalTransform, (With<crate::components::Avatar>, Without<FreeCamera>)>,
-    prims: Query<(&Prim, &SensesHands, &GlobalTransform)>,
+    prims: Query<(
+        &Prim,
+        &SensesHands,
+        &GlobalTransform,
+        &crate::components::PrimGeo,
+        &Transform,
+    )>,
+    anchor: Res<crate::resources::MapAnchor>,
     mut reports: ResMut<HandReports>,
 ) {
     let dt = time.delta_secs();
+    reports.hand_geo = precise.hand_geo.filter(|_| precise.active);
     let (Some(precise), Some(session), Ok(view)) = (precise.reporting(), online, camera.single())
     else {
         reports.last.clear();
@@ -109,12 +124,34 @@ pub fn report_hands(
         (false, Ok(body)) => body.translation() + Vec3::Y * STAND_IN_HAND_HEIGHT_M,
         _ => view.translation(),
     };
+    // With a tracked hand, the hand is measured against each prim through their
+    // geo anchors rather than the view: the tracker knows where the phone is on
+    // the map, and the camera is wherever the user left it.
+    let tracked = if precise {
+        anchor.geo.zip(reports.hand_geo)
+    } else {
+        None
+    };
     let mut near: Vec<i64> = Vec::new();
-    for (prim, senses, at) in &prims {
+    for (prim, senses, at, geo, local) in &prims {
         if senses.0 <= 0.0 {
             continue;
         }
-        let hand = hand_in_prim_frame(at, eye);
+        let hand = match tracked {
+            Some((map, (lat, lng, alt))) => {
+                let (hx, hz) = crate::systems::geo_nav::lat_lng_to_world(map, lat, lng);
+                let (px, pz) =
+                    crate::systems::geo_nav::lat_lng_to_world(map, geo.latitude, geo.longitude);
+                let offset = Vec3::new(
+                    (hx - px) as f32,
+                    alt - local.translation.y,
+                    (hz - pz) as f32,
+                );
+                let (_, rotation, _) = at.to_scale_rotation_translation();
+                rotation.inverse() * offset
+            }
+            None => hand_in_prim_frame(at, eye),
+        };
         if hand.length() > senses.0 {
             continue;
         }
@@ -167,16 +204,19 @@ mod tests {
     fn nothing_is_reported_without_consent() {
         let off = PreciseHand {
             active: false,
+            hand_geo: None,
             camera_stands_in: false,
         };
         assert_eq!(off.reporting(), None);
         let dev = PreciseHand {
             active: false,
+            hand_geo: None,
             camera_stands_in: true,
         };
         assert_eq!(dev.reporting(), Some(false));
         let tracked = PreciseHand {
             active: true,
+            hand_geo: None,
             camera_stands_in: true,
         };
         assert_eq!(tracked.reporting(), Some(true));

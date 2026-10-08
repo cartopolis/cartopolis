@@ -64,11 +64,33 @@ thing its log answers.
 
 ## What exists today
 
-**Nothing the camera sees is kept**, today or later: a frame is looked at and
-dropped. The matcher is not built, so switched on the mode runs the sensors and
-the locate button and reports on them; `PreciseHand::active` is held `false`
-by `high_precision::drive_high_precision` — a mode that claimed centimetres it
-does not have would make every hand-sensing script lie.
+**Nothing the camera sees is kept**: a frame is looked at and dropped.
+
+**Tracking is built (2026-10-08), building matching is not.** `crates/vio`
+(`cartopolis_vio`, Bevy-free) is visual-inertial odometry: FAST corners
+followed by pyramidal Lucas–Kanade, the rotation from the gyroscope (its bias
+measured while the phone is held still, and corrected slowly by the
+landmarks), the position from the corners with that rotation known (a 3×3
+linear solve per frame), and metres from the accelerometer by a 4-second
+least-squares fit with the accelerometer's bias as a prior. On the bench —
+synthetic street, phone-like sensor noise and bias, rendered 640×480 frames
+through the whole pipeline — the hand is tracked to a 4.9 mm median and
+9.9 mm at the 95th percentile. **Not run on a phone yet.**
+
+`systems::precise_tracker` runs it on its own thread (every motion reading,
+only the newest frame) and anchors its frame on the map once, at the lock: the
+GNSS fix for where, the compass for which way, 1.3 m for how high. From then
+on `PreciseHand` carries the hand marked precise, and a hand-sensing prim is
+measured against it through both geo anchors. The fix is read once, not
+followed, or the hand would inherit its metre of jitter; a tracker restart
+continues from the last hand.
+
+Three things the bench taught, each a constant with its reason beside it:
+the accelerometer may only pull tilt gently (a swaying hand is not gravity —
+0.5/s read orientation 2–4° wrong); the landmarks may correct the gyroscope
+only a tenth per frame, with the position re-solved under what is applied (a
+façade makes a 2 cm shift and a 0.2° turn look alike); and the scale window
+must be longer than the slowest sway it measures (2.5 s read 2–3 % short).
 
 - **Camera:** the back camera, 640×480 `YUV_420_888`, plane 0 only (that *is*
   greyscale), frame timestamps from `AImage_getTimestamp`, not turned (the

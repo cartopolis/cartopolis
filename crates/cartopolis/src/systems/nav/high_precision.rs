@@ -8,13 +8,18 @@
 //! hand-sensing prim (`systems::prim_hand`, `on_hand`) playable — a theremin on
 //! the Grote Markt. Nothing the camera sees is kept.
 //!
-//! **The matcher is not built yet.** Switched on today, the mode runs the
-//! sensors and the locate button, and writes what they report to the
-//! [`HighPrecisionLog`] — the lens calibration, sensor rates, frame brightness,
-//! GNSS accuracy — which Developer tools ▸ Precision shows and copies, so a
-//! phone's behaviour can be pasted into a chat. [`PreciseHand::active`] stays
-//! `false` until a pose is actually held: a mode that claimed centimetres it
-//! does not have would make every hand-sensing script lie.
+//! **What runs:** the sensors feed the visual-inertial tracker
+//! (`systems::precise_tracker`, `cartopolis_vio`) on its own thread; once it
+//! holds a pose in metres it is anchored on the map with one GNSS fix and the
+//! compass, and [`PreciseHand`] carries the hand from then on, marked precise.
+//! Until then `PreciseHand::active` stays `false`: a mode that claimed
+//! centimetres it does not have would make every hand-sensing script lie.
+//! Building matching (to pin the anchor tighter than GNSS) is not built.
+//!
+//! Everything it does goes to the [`HighPrecisionLog`] — lens, sensor rates,
+//! frame brightness and age, GNSS, the tracker's state and the hand — which
+//! Developer tools ▸ Precision shows and copies, so a phone's behaviour can be
+//! pasted into a chat.
 //!
 //! It holds a GNSS and a compass subscription of its own, beside the locate
 //! button's (the providers are shared, so the radio is not opened twice): the
@@ -36,7 +41,9 @@ use crate::platform::location::LocationWatch;
 use crate::platform::orientation::OrientationWatch;
 use crate::platform::precise_sensors::{Counts, MotionKind, Sensors};
 use crate::systems::locate::LocateTracking;
+use crate::systems::precise_tracker::{Anchor, TrackerThread, HAND_HEIGHT_M};
 use crate::systems::prim_hand::PreciseHand;
+use cartopolis_vio::State as TrackState;
 
 /// The mode, as the button and the systems see it.
 #[derive(Resource, Default)]
@@ -56,6 +63,15 @@ pub struct HighPrecision {
     last_counts: Counts,
     /// When to start the sensors again after Android took the camera.
     retry_at: Option<web_time::Instant>,
+    /// The tracker (`systems::precise_tracker`), started on the first frame
+    /// once the lens is known, and where its frame sits on the map.
+    tracker: Option<TrackerThread>,
+    anchor: Option<Anchor>,
+    /// The newest tracked hand, for continuity across a tracker restart.
+    last_hand: Option<(f64, f64, f32)>,
+    /// Whether the tracker held a pose last frame — for logging the lock and
+    /// its loss once each.
+    locked: bool,
     logged_lens: bool,
     logged_error: bool,
     /// The newest frame's size and brightness, for the log.
@@ -103,10 +119,21 @@ impl HighPrecision {
         if let Some(e) = sensors.error() {
             return Some(e);
         }
-        Some(if sensors.counts().frames == 0 {
-            "High precision · starting camera".into()
-        } else {
-            "High precision · no position lock yet".into()
+        if sensors.counts().frames == 0 {
+            return Some("High precision · starting camera".into());
+        }
+        let state = self.tracker.as_ref().and_then(|t| t.latest().state);
+        Some(match state {
+            Some(TrackState::Tracking { .. }) if self.anchor.is_some() => {
+                "High precision · locked".into()
+            }
+            Some(TrackState::Tracking { .. }) => {
+                "High precision · waiting for GPS and compass".into()
+            }
+            Some(TrackState::Starting { .. } | TrackState::Scaling { .. }) => {
+                "High precision · move the phone a little".into()
+            }
+            Some(TrackState::Waiting) | None => "High precision · hold still".into(),
         })
     }
 }
@@ -250,6 +277,13 @@ impl HighPrecision {
         self.last_gyro_t = None;
         self.gyro_gap_ms = 0.0;
         self.retry_at = None;
+        // A new camera is a new tracker; the anchor is kept, marked stale, so
+        // the new tracker's first pose continues from the last hand.
+        self.tracker = None;
+        if let Some(a) = &mut self.anchor {
+            a.epoch = u32::MAX;
+        }
+        self.locked = false;
     }
 }
 
@@ -260,10 +294,6 @@ pub fn drive_high_precision(
     mut tracking: ResMut<LocateTracking>,
     mut precise: ResMut<PreciseHand>,
 ) {
-    // No matcher yet: the view is not the hand, whatever the switch says.
-    if precise.active {
-        precise.active = false;
-    }
     if !HighPrecision::available() {
         high.on = false;
         return;
@@ -297,6 +327,10 @@ pub fn drive_high_precision(
             high.compass = None;
             high.retry_at = None;
             high.gnss = None;
+            high.tracker = None;
+            high.anchor = None;
+            high.last_hand = None;
+            high.locked = false;
             log.note("off");
         }
         _ => {}
@@ -333,8 +367,52 @@ pub fn drive_high_precision(
             high.last_frame = Some((frame.width, frame.height, frame.mean()));
             let taken_off = crate::platform::precise_sensors::now_ns();
             high.frame_age_ms = Some((taken_off - frame.t_ns) as f64 / 1e6);
+            if high.tracker.is_none() {
+                if let Some(lens) = sensors.lens() {
+                    let (tracker, reported) =
+                        TrackerThread::start(&lens, frame.width, frame.height);
+                    let c = tracker.camera();
+                    log.note(format!(
+                        "tracker · fx {:.1} fy {:.1} cx {:.1} cy {:.1} ({})",
+                        c.fx,
+                        c.fy,
+                        c.cx,
+                        c.cy,
+                        if reported {
+                            "the lens's own"
+                        } else {
+                            "assumed: the lens reports none"
+                        }
+                    ));
+                    high.tracker = Some(tracker);
+                }
+            }
+            if let Some(tracker) = &high.tracker {
+                tracker.frame(
+                    frame.t_ns,
+                    cartopolis_vio::image::Gray::new(
+                        frame.width as usize,
+                        frame.height as usize,
+                        frame.luma,
+                    ),
+                );
+            }
         }
         for m in sensors.drain_motion() {
+            if let Some(tracker) = &high.tracker {
+                let v = bevy::math::DVec3::new(
+                    f64::from(m.xyz[0]),
+                    f64::from(m.xyz[1]),
+                    f64::from(m.xyz[2]),
+                );
+                tracker.imu(
+                    m.t_ns,
+                    match m.kind {
+                        MotionKind::Gyro => cartopolis_vio::Imu::Gyro(v),
+                        MotionKind::Accel => cartopolis_vio::Imu::Accel(v),
+                    },
+                );
+            }
             let [x, y, z] = m.xyz;
             let len = (x * x + y * y + z * z).sqrt();
             match m.kind {
@@ -433,6 +511,23 @@ pub fn drive_high_precision(
                 None => line.push_str(" · compass none"),
             }
             log.note(line);
+            if let Some(tracker) = &high.tracker {
+                let latest = tracker.latest();
+                let mut line = format!(
+                    "tracker · {:?} · restarts {} · frames skipped {}",
+                    latest.state, latest.epoch, latest.dropped
+                );
+                if let (Some(anchor), Some(hand)) = (&high.anchor, high.last_hand) {
+                    let (per_lat, per_lng) = cartopolis_core::degree_scale_m(anchor.lat);
+                    line.push_str(&format!(
+                        " · hand {:+.2} m east {:+.2} m north {:.2} m up",
+                        (hand.1 - anchor.lng) * per_lng,
+                        (hand.0 - anchor.lat) * per_lat,
+                        hand.2
+                    ));
+                }
+                log.note(line);
+            }
             if let Some(gnss) = high.gnss.as_ref().filter(|g| g.running()) {
                 match high.gnss_stats.line(span) {
                     Some(raw) => log.note(raw),
@@ -446,6 +541,61 @@ pub fn drive_high_precision(
             high.last_counts = counts;
             high.last_line_at = Some(now);
         }
+    }
+    // The hand, while the tracker holds a pose and its frame is on the map.
+    let hand = high.tracker.as_ref().and_then(|t| {
+        let latest = t.latest();
+        let pose = latest.pose?;
+        let stale = high.anchor.is_none_or(|a| a.epoch != latest.epoch);
+        if stale {
+            let compass_looks = || {
+                let heading = high.compass.as_ref().and_then(OrientationWatch::latest)?;
+                Some(heading.screen_to_world * bevy::math::DVec3::NEG_Z)
+            };
+            high.anchor = match (high.anchor, high.last_hand) {
+                // The same tracker restarted: its world kept its heading, so
+                // only the position is carried over.
+                (Some(old), Some(was)) if old.epoch != u32::MAX => {
+                    Some(old.continue_at(latest.epoch, &pose, was))
+                }
+                // A new tracker (the camera was taken and given back): a new
+                // world with its own heading, so the compass is read again,
+                // but the hand continues where it was.
+                (Some(_), Some(was)) => {
+                    Some(Anchor::new(latest.epoch, &pose, t.camera(), was, compass_looks()?)?)
+                }
+                // The first lock: the GNSS fix and the compass, once.
+                _ => {
+                    let fix = high.location.as_ref().and_then(LocationWatch::latest)?;
+                    let anchor = Anchor::new(
+                        latest.epoch,
+                        &pose,
+                        t.camera(),
+                        (fix.lat, fix.lng, HAND_HEIGHT_M),
+                        compass_looks()?,
+                    )?;
+                    log.note(format!(
+                        "locked · anchored at {:.6},{:.6} (GNSS ±{:.1} m) · heading from the compass",
+                        fix.lat, fix.lng, fix.accuracy_m
+                    ));
+                    Some(anchor)
+                }
+            };
+        }
+        Some(high.anchor?.place(pose.position))
+    });
+    if hand.is_some() != high.locked {
+        high.locked = hand.is_some();
+        if !high.locked && high.sensors.is_some() {
+            log.note("lock lost · tracking from where the hand was when it comes back");
+        }
+    }
+    if hand.is_some() {
+        high.last_hand = hand;
+    }
+    if precise.active != hand.is_some() || precise.hand_geo != hand {
+        precise.active = hand.is_some();
+        precise.hand_geo = hand;
     }
     log.save();
 }

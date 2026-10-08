@@ -136,6 +136,8 @@ serde_json.workspace = true
 toml = "0.8"
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
+# Visual-inertial odometry for the high-precision mode (`systems::high_precision`).
+cartopolis_vio = { path = "../vio" }
 # The custom render materials and the plugin that registers them, kept below
 # this crate so Bevy's per-material plugin code is not generated here
 # (docs/notes/client-build-cost.md).

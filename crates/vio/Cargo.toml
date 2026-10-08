@@ -1,0 +1,20 @@
+# Visual-inertial odometry for the high-precision mode
+# (docs/notes/high-precision-mode.md): where the phone is moving, to the
+# centimetre, from its camera frames and its gyroscope and accelerometer.
+#
+# Bevy-free for the reason cartopolis_geo is: it is developed and tested off the
+# phone, against synthetic camera and motion data with a known answer, and none
+# of that should wait on the client's link.
+[package]
+name = "cartopolis_vio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_vio"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+glam.workspace = true

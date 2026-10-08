@@ -14,6 +14,7 @@ pub mod locate;
 pub mod meetup;
 pub mod navigation;
 pub mod place_link;
+pub mod precise_tracker;
 pub mod route_ahead;
 pub mod traffic;
 pub mod transit_live;
