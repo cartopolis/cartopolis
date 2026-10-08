@@ -743,7 +743,13 @@ pub fn step_floor_lift(
     dt: f32,
 ) -> f32 {
     let target = support_level(floors, tunnels, terrain, at, avatar.floor_lift);
-    if target >= avatar.floor_lift {
+    if target > avatar.floor_lift + STEP_UP_M {
+        // Climbing back out from under the ground (`support_level`): eased, so
+        // that a tunnel cell reloading under somebody standing in the bore costs
+        // a drift upward and back, not a jump through the roof.
+        avatar.floor_lift = (avatar.floor_lift + CLIMB_OUT_M_S * dt).min(target);
+        avatar.floor_drop_speed = 0.0;
+    } else if target >= avatar.floor_lift {
         avatar.floor_lift = target;
         avatar.floor_drop_speed = 0.0;
     } else {
@@ -782,18 +788,25 @@ fn support_level(
 ) -> f32 {
     // The deck as drawn, over the ground field it is measured against here.
     let deck = tunnels.road_under(at).map(|y| y - terrain.at(at.x, at.y));
-    if !tunnels.over_opening(at) {
-        let indoors = floors.support(at, from);
-        if indoors <= from + STEP_UP_M {
-            return indoors;
-        }
+    let indoors = floors.support(at, from);
+    if !tunnels.over_opening(at) && indoors <= from + STEP_UP_M {
+        return indoors;
     }
     // Over the opening, or under a roof that cannot be climbed back onto: the
-    // bottom of the cut is the only floor there is. `from` where there is not
-    // even that — the avatar is against a wall it cannot be moved through, and
-    // holding its level beats dropping it through the world.
-    deck.unwrap_or(from)
+    // bottom of the cut is the only floor there is.
+    //
+    // **Where there is not even that, the way out is up.** This used to hold
+    // `from`, on the reasoning that an avatar off the deck is against a wall it
+    // cannot pass. Online the wall is a steer on a wish, not a fact, and an
+    // avatar that got past it was then below the street with no deck under it
+    // and no ground it could step onto — held there for good, the camera with
+    // it, looking up at the road from underneath. Nothing below the ground
+    // means the ground is the floor; `step_floor_lift` eases the climb.
+    deck.unwrap_or(indoors)
 }
+
+/// How fast an avatar stranded under the ground rises back to it, in m/s.
+const CLIMB_OUT_M_S: f32 = 3.0;
 
 /// The ring a room's outer walls would stand on inside `outline`, or `None` when
 /// the building is too small to hold a room at all.
@@ -1025,6 +1038,29 @@ mod tests {
             ),
             0.0
         );
+    }
+
+    /// Off the deck with nothing under it — past the bore's side, or after its
+    /// cell was dropped — the avatar comes back up to the ground, and not in one
+    /// frame.
+    #[test]
+    fn an_avatar_stranded_under_the_ground_climbs_back_out() {
+        let floors = InteriorFloors::default();
+        let tunnels = one_bore();
+        let terrain = TerrainField::default();
+        let at = Vec2::new(100.0, 40.0);
+        assert_eq!(support_level(&floors, &tunnels, &terrain, at, -3.5), 0.0);
+        let mut avatar = AvatarState {
+            floor_lift: -3.5,
+            ..AvatarState::default()
+        };
+        let dt = 1.0 / 60.0;
+        let first = step_floor_lift(&floors, &tunnels, &terrain, &mut avatar, at, dt);
+        assert!(first < -3.0, "jumped out in one frame: {first}");
+        for _ in 0..120 {
+            step_floor_lift(&floors, &tunnels, &terrain, &mut avatar, at, dt);
+        }
+        assert_eq!(avatar.floor_lift, 0.0, "still under the street after 2 s");
     }
 
     /// The anchor the frame tests place a building under: Groningen.
