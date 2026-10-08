@@ -111,6 +111,12 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_gizmos",
+    # The half of gizmos that *draws* them. Since the 0.19 upgrade `bevy_gizmos`
+    # alone is only the immediate-mode API: every `Gizmos` call is accepted and
+    # then dropped, nothing logs, and the prim editor's move/rotate/scale handles
+    # were invisible from 2026-07-16 until this was added. `gizmo_render` in
+    # `--dump-state` (`--ui gizmo`) is what notices if it goes again.
+    "bevy_gizmos_render",
     "bevy_gltf",
     "bevy_log",
     "bevy_pbr",

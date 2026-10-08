@@ -207,6 +207,10 @@ impl Plugin for ShotHarnessPlugin {
                     systems::shot_harness::hold_scripted_fire
                         .after(systems::shot_harness::open_scripted_ui)
                         .in_set(ClientPhase::Input),
+                    // The same, for the selected prim the editing handles stand on.
+                    systems::shot_harness::hold_scripted_gizmo
+                        .after(systems::shot_harness::open_scripted_ui)
+                        .in_set(ClientPhase::Input),
                     // After the teleport for the reason its doc gives — the teleport
                     // clears the seat — and before the camera, so the shift it
                     // applies is framed on the same frame it is written.

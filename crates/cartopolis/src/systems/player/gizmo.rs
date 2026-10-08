@@ -38,6 +38,9 @@ pub struct GizmoState {
     pub drag_start_screen: Vec2,
     /// Copy of the prim transform when the drag started (used as the drag base).
     pub drag_start_transform: Option<Transform>,
+    /// Where the handles stood at drag start, in render space — what the screen
+    /// projection of the dragged axis is measured from (see [`handle_frame`]).
+    pub drag_start_origin: Vec3,
     pub last_update_time: f32,
 }
 
@@ -80,8 +83,7 @@ pub fn render_gizmo_visuals(
     mut gizmos: Gizmos,
 ) {
     for gt in selected_query.iter() {
-        let pos = gt.translation();
-        let arm = arm_length(gt.scale().max_element());
+        let (pos, arm) = handle_frame(gt);
 
         let cx = axis_color(GizmoAxis::X, &gizmo_state);
         let cy = axis_color(GizmoAxis::Y, &gizmo_state);
@@ -127,6 +129,20 @@ pub fn render_gizmo_visuals(
 
 fn arm_length(max_scale: f32) -> f32 {
     (max_scale * 0.8).max(1.2)
+}
+
+/// Where the handles of a selected prim stand and how long their arms are, in
+/// **render space** — the one answer the drawing, the click test and the drag
+/// all use.
+///
+/// From the `GlobalTransform`, never the `Transform`: a prim's `Transform` is an
+/// offset inside its own `big_space` grid cell, while the camera projects render
+/// space (relative to the camera's cell). The click test used to read the
+/// `Transform`, which is the same point only while the prim and the camera share
+/// a cell; across a cell boundary every handle was clickable ten kilometres from
+/// where it was drawn.
+fn handle_frame(gt: &GlobalTransform) -> (Vec3, f32) {
+    (gt.translation(), arm_length(gt.scale().max_element()))
 }
 
 fn axis_color(axis: GizmoAxis, state: &GizmoState) -> Color {
@@ -234,12 +250,15 @@ fn find_hit_axis_ring(
 pub fn handle_gizmo_interaction(
     // ADR-029: `Option<&GridCell>` lets the send path reconstruct the prim's
     // absolute world position (cell + local) to persist as a geo anchor.
-    mut selected_query: Query<(&mut Transform, &Prim, Option<&GridCell>), With<Selected>>,
+    mut selected_query: Query<
+        (&mut Transform, &GlobalTransform, &Prim, Option<&GridCell>),
+        With<Selected>,
+    >,
     mut gizmo_state: ResMut<GizmoState>,
     mut edit_dialog: ResMut<EditDialogState>,
     egui_manager: Res<EguiManager>,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: Query<(&Camera, &GlobalTransform), With<crate::components::FreeCamera>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
     online_session: Option<Res<OnlineSession>>,
@@ -257,9 +276,8 @@ pub fn handle_gizmo_interaction(
         Some(p) => p,
         None => return,
     };
-    let (camera, cam_gt) = match cameras.iter().next() {
-        Some(c) => c,
-        None => return,
+    let Ok((camera, cam_gt)) = cameras.single() else {
+        return;
     };
 
     // ── On press: hit-test axis handles (skip if egui is consuming the click) ─
@@ -267,16 +285,18 @@ pub fn handle_gizmo_interaction(
     {
         // Read prim position without a mutable borrow.
         let (prim_pos, arm, start_tr) = {
-            let Ok((tr, _, _)) = selected_query.single() else {
+            let Ok((tr, gt, _, _)) = selected_query.single() else {
                 return;
             };
-            (tr.translation, arm_length(tr.scale.max_element()), *tr)
+            let (pos, arm) = handle_frame(gt);
+            (pos, arm, *tr)
         };
 
         if let Some(axis) = find_hit_axis(camera, cam_gt, prim_pos, arm, cursor, gizmo_state.mode) {
             gizmo_state.active_axis = Some(axis);
             gizmo_state.drag_start_screen = cursor;
             gizmo_state.drag_start_transform = Some(start_tr);
+            gizmo_state.drag_start_origin = prim_pos;
         }
         // No axis hit → do nothing; prim_picking handles selection normally.
     }
@@ -284,7 +304,7 @@ pub fn handle_gizmo_interaction(
     // ── On release: clear drag state, send final network update ──────────────
     if mouse_buttons.just_released(MouseButton::Left) {
         if gizmo_state.active_axis.is_some() {
-            let Ok((transform, prim, cell)) = selected_query.single() else {
+            let Ok((transform, _, prim, cell)) = selected_query.single() else {
                 return;
             };
             if let Some(ref session) = online_session {
@@ -336,12 +356,15 @@ pub fn handle_gizmo_interaction(
     let mouse_delta = cursor - gizmo_state.drag_start_screen;
     let dir = axis_vec(active_axis);
     let arm = arm_length(start_tr.scale.max_element());
+    let origin = gizmo_state.drag_start_origin;
 
     // Project the axis into screen space to get a pixels-per-world-unit ratio.
-    let Ok(ss_origin) = camera.world_to_viewport(cam_gt, start_tr.translation) else {
+    // From the render-space origin the handles were drawn at — the `Transform`
+    // is cell-local and projects somewhere else entirely across a cell boundary.
+    let Ok(ss_origin) = camera.world_to_viewport(cam_gt, origin) else {
         return;
     };
-    let Ok(ss_tip) = camera.world_to_viewport(cam_gt, start_tr.translation + dir * arm) else {
+    let Ok(ss_tip) = camera.world_to_viewport(cam_gt, origin + dir * arm) else {
         return;
     };
 
@@ -354,7 +377,7 @@ pub fn handle_gizmo_interaction(
     // Signed distance the cursor moved along this axis (in world units).
     let world_delta = screen_norm.dot(mouse_delta) / screen_arm_px * arm;
 
-    let Ok((mut transform, prim, cell)) = selected_query.single_mut() else {
+    let Ok((mut transform, _, prim, cell)) = selected_query.single_mut() else {
         return;
     };
 
@@ -418,4 +441,85 @@ fn generate_request_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+// ─── Readout for the shot harness ─────────────────────────────────────────────
+
+/// What `--dump-state` says about the gizmo (`gizmo_render`, `gizmo_selected`,
+/// `gizmo_axes_hit`), and what `--ui gizmo` exists to exercise.
+///
+/// Both halves of "the editing handles work" had broken without a word: the
+/// handles were never drawn (the renderer was not compiled in, see
+/// [`GizmoReadout::renders`]), and the click test measured them from a different
+/// point than the one they were drawn at. A capture shows the first and nothing
+/// shows the second, so the second is measured: every handle's drawn point is
+/// projected to the screen and handed to the same hit test a click goes through,
+/// which has to name that handle back.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct GizmoReadout<'w, 's> {
+    selected: Query<'w, 's, &'static GlobalTransform, With<Selected>>,
+    camera: Query<
+        'w,
+        's,
+        (&'static Camera, &'static GlobalTransform),
+        With<crate::components::FreeCamera>,
+    >,
+    state: Res<'w, GizmoState>,
+    /// Inserted by `bevy_gizmos_render`'s plugin and by nothing else, so its
+    /// presence is the renderer's.
+    render: Option<Res<'w, bevy::gizmos_render::LineGizmoEntities>>,
+}
+
+impl GizmoReadout<'_, '_> {
+    /// Whether gizmo lines can reach the screen at all. `bevy_gizmos` without
+    /// `bevy_gizmos_render` accepts every `Gizmos` call and draws nothing.
+    pub fn renders(&self) -> bool {
+        self.render.is_some()
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected.iter().count()
+    }
+
+    /// Handles (summed over the selection) on screen whose drawn point, clicked,
+    /// selects that same handle. Three per selected prim in view is healthy.
+    pub fn axes_hit(&self) -> usize {
+        let Ok((camera, cam_gt)) = self.camera.single() else {
+            return 0;
+        };
+        let mode = self.state.mode;
+        let mut hit = 0;
+        for gt in &self.selected {
+            let (pos, arm) = handle_frame(gt);
+            for axis in [GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z] {
+                let Ok(screen) =
+                    camera.world_to_viewport(cam_gt, drawn_point(pos, arm, axis, mode))
+                else {
+                    continue;
+                };
+                if find_hit_axis(camera, cam_gt, pos, arm, screen, mode) == Some(axis) {
+                    hit += 1;
+                }
+            }
+        }
+        hit
+    }
+}
+
+/// A point on `axis`'s handle as [`render_gizmo_visuals`] draws it: the tip of an
+/// arrow or a scale stub, or an eighth of the way round a ring — not the start,
+/// where two rings cross and either answer is right.
+fn drawn_point(pos: Vec3, arm: f32, axis: GizmoAxis, mode: GizmoMode) -> Vec3 {
+    match mode {
+        GizmoMode::Translate | GizmoMode::Scale => pos + axis_vec(axis) * arm,
+        GizmoMode::Rotate => {
+            let (u, v) = match axis {
+                GizmoAxis::X => (Vec3::Y, Vec3::Z),
+                GizmoAxis::Y => (Vec3::X, Vec3::Z),
+                GizmoAxis::Z => (Vec3::X, Vec3::Y),
+            };
+            let a = std::f32::consts::FRAC_PI_4;
+            pos + (u * a.cos() + v * a.sin()) * arm
+        }
+    }
 }

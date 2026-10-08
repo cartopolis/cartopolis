@@ -967,6 +967,17 @@ pub struct ShotMetrics {
     /// catalogue with nothing drawn is a camera below the space tier.
     pub satellites_drawn: usize,
     pub satellites_catalogued: usize,
+    /// The prim editor's handles (`systems::gizmo::GizmoReadout`, `--ui gizmo`).
+    ///
+    /// `gizmo_render` is whether gizmo lines can be drawn at all — it was false
+    /// for three months after the Bevy 0.19 upgrade, because `bevy_gizmos` no
+    /// longer brings its renderer, and nothing said so. `gizmo_selected` is the
+    /// selected prims and `gizmo_axes_hit` the handles on screen that a click on
+    /// their drawn point would grab: three per selected prim in view. A capture
+    /// shows the handles; only this shows that clicking them works.
+    pub gizmo_render: bool,
+    pub gizmo_selected: usize,
+    pub gizmo_axes_hit: usize,
     /// Mesh entities under the local avatar, and how many the view rendered.
     ///
     /// The same split the route and globe counts make, added because the avatar
@@ -1243,6 +1254,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 satellites_drawn,satellites_catalogued,\
+gizmo_render,gizmo_selected,gizmo_axes_hit,\
 grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,ground_unopened,backdrop_present,backdrop_visible,backdrop_depth_m,backdrop_half_m,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
@@ -2157,6 +2169,9 @@ const UI_ELEMENTS: &[&str] = &[
     "locate",
     "firstperson",
     "fire",
+    "gizmo",
+    "gizmorotate",
+    "gizmoscale",
     "callincoming",
     "call",
     "callvideo",
@@ -2669,6 +2684,138 @@ pub fn hold_scripted_fire(
         let step = (time.elapsed_secs() / period) as u32;
         if effect.sequence != step {
             effect.sequence = step;
+        }
+    }
+}
+
+/// Marks the prim [`hold_scripted_gizmo`] seeded, so it is the one that goes when
+/// a later shot does not ask for it.
+#[derive(Component)]
+pub struct ScriptedGizmoPrim;
+
+/// `--ui gizmo` (or `gizmorotate`, `gizmoscale`): a selected prim in front of
+/// the camera with the editing handles on it, in that mode.
+///
+/// The prim goes in **through its geo anchor**, as every server prim does, so
+/// `prim_geo::place_geo_prims` gives it a `big_space` grid cell and a cell-local
+/// `Transform` — the very difference the handles' click test once got wrong.
+/// (`hold_scripted_fire` parks its prims at the root with no cell, which is fine
+/// for an emitter and would test nothing here.) `Selected` is added a frame
+/// after the prim, once it has a material, or `highlight_selected_prim` — which
+/// fires on the change — would have nothing to tint.
+///
+/// What to read off the run: `gizmo_render`, `gizmo_selected` and
+/// `gizmo_axes_hit` in `--dump-state` (`--expect 'gizmo_axes_hit>=3'`), and the
+/// arrows, rings or stubs in the PNG. Like the fire, it follows the camera.
+#[allow(clippy::type_complexity)]
+pub fn hold_scripted_gizmo(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut commands: Commands,
+    mut gizmo: ResMut<crate::systems::gizmo::GizmoState>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+    camera: crate::grid::AnchoredCamera,
+    mut seeded: Query<
+        (
+            Entity,
+            &mut crate::components::PrimGeo,
+            &mut Transform,
+            Option<&big_space::prelude::GridCell>,
+            Has<crate::components::Selected>,
+            Has<crate::components::PrimMesh>,
+        ),
+        (With<ScriptedGizmoPrim>, Without<FreeCamera>),
+    >,
+) {
+    use crate::systems::gizmo::GizmoMode;
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    let want = |k: &str| all || panels.iter().any(|u| u == k);
+    let mode = if want("gizmorotate") {
+        GizmoMode::Rotate
+    } else if want("gizmoscale") {
+        GizmoMode::Scale
+    } else if want("gizmo") {
+        GizmoMode::Translate
+    } else {
+        for (entity, ..) in &seeded {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    gizmo.mode = mode;
+    let Some(anchor) = map_anchor.geo else { return };
+    let Some((cell, cam)) = camera.get() else {
+        return;
+    };
+
+    // On the view ray, a comfortable distance out, and standing on the ground —
+    // the same placement `hold_scripted_fire` argues for.
+    const HALF_HEIGHT: f64 = 0.75;
+    let forward = cam.forward().as_vec3().as_dvec3();
+    let eye = crate::grid::anchored_position_f64(cell, cam.translation);
+    let drop = eye.y - HALF_HEIGHT;
+    let distance = (forward.y < -0.05 && drop > 0.0)
+        .then(|| drop / -forward.y)
+        .unwrap_or(8.0)
+        .clamp(5.0, 12.0);
+    let mut at = eye + forward * distance;
+    at.y = at.y.max(HALF_HEIGHT);
+    let (latitude, longitude) = crate::systems::geo_nav::world_to_lat_lng(anchor, at.x, at.z);
+
+    if seeded.is_empty() {
+        commands.spawn((
+            crate::components::Prim {
+                // Negative, like the seeded fire: never a server id.
+                id: -3,
+                name: "Gizmo".into(),
+                shape: crate::components::PrimShape::Box,
+                color: Color::srgb(0.55, 0.6, 0.65),
+                texture_id: None,
+                model: None,
+                path_cut_begin: 0.0,
+                path_cut_end: 1.0,
+                hollow: 0.0,
+                twist_begin: 0.0,
+                twist_end: 0.0,
+                taper_x: 0.0,
+                taper_y: 0.0,
+                top_shear_x: 0.0,
+                top_shear_y: 0.0,
+                slice_begin: 0.0,
+                slice_end: 1.0,
+                surface: cartopolis_core::PrimSurface::default(),
+                particles: None,
+                scripted: false,
+                video: None,
+                sound_loop: None,
+                physical: false,
+            },
+            crate::components::PrimGeo {
+                latitude,
+                longitude,
+            },
+            ScriptedGizmoPrim,
+            // No cell yet, so this is the anchored-frame height
+            // `place_geo_prims` keeps when it grids the prim.
+            Transform::from_xyz(0.0, at.y as f32, 0.0).with_scale(Vec3::splat(1.5)),
+        ));
+        return;
+    }
+
+    for (entity, mut geo, mut transform, cell, selected, meshed) in &mut seeded {
+        if !selected && meshed {
+            commands.entity(entity).insert(crate::components::Selected);
+        }
+        let moved =
+            (geo.latitude - latitude).abs() > 1e-8 || (geo.longitude - longitude).abs() > 1e-8;
+        if moved {
+            geo.latitude = latitude;
+            geo.longitude = longitude;
+            let cell_y = cell.map_or(0.0, |c| {
+                c.y as f64 * f64::from(crate::grid::WORLD_CELL_EDGE)
+            });
+            transform.translation.y = (at.y - cell_y) as f32;
         }
     }
 }
@@ -3360,6 +3507,8 @@ pub struct VisualCounts<'w, 's> {
     /// rather than added as its own argument for the reason above — the system is
     /// at Bevy's parameter ceiling.
     particles: Query<'w, 's, &'static crate::systems::particles::ParticleEmitter>,
+    /// The prim editor's handles, bundled here for the same reason.
+    gizmo: crate::systems::gizmo::GizmoReadout<'w, 's>,
     /// The light-shaft fog volumes and where they actually are in render space
     /// (`systems::light_shafts`). `GlobalTransform`, not `Transform`, precisely
     /// because the bug this metric exists for is the difference between the two.
@@ -4001,6 +4150,9 @@ fn record_metrics(
         particle_quads: particles.1 as usize,
         satellites_drawn: readouts.satellites.drawn(),
         satellites_catalogued: readouts.satellites.catalogued(),
+        gizmo_render: visuals.gizmo.renders(),
+        gizmo_selected: visuals.gizmo.selected(),
+        gizmo_axes_hit: visuals.gizmo.axes_hit(),
         grass_patches: grass.0,
         grass_slots: grass.1,
         grass_rendered: grass.2,
@@ -4226,6 +4378,9 @@ fn record_metrics(
                 route_rendered = m.route_rendered,
                 particle_emitters = m.particle_emitters,
                 particle_quads = m.particle_quads,
+                gizmo_render = m.gizmo_render,
+                gizmo_selected = m.gizmo_selected,
+                gizmo_axes_hit = m.gizmo_axes_hit,
                 grass_patches = m.grass_patches,
                 grass_slots = m.grass_slots,
                 grass_rendered = m.grass_rendered,
@@ -4840,6 +4995,9 @@ mod tests {
             particle_quads: 0,
             satellites_drawn: 0,
             satellites_catalogued: 0,
+            gizmo_render: false,
+            gizmo_selected: 0,
+            gizmo_axes_hit: 0,
             avatar_meshes: 0,
             avatar_floor_m: 0.0,
             avatar_rendered: 0,
