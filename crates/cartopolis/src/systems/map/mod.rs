@@ -97,6 +97,7 @@ pub mod tile_source;
 // The bores the map used to throw away, as places rather than as triangles:
 // the floor down there and the hole in the ground over the portal.
 pub mod tunnels;
+pub mod underground;
 pub mod vegetation;
 pub mod water;
 pub mod water_levels;

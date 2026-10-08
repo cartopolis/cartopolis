@@ -207,6 +207,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) sewers: bool,
 
+    /// Switch underground layers on for this run, by `underground::LAYERS` key
+    /// (`geotop,gasfield`), or `all`. Opt-in for the reason `--sewers` is.
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) underground: Vec<String>,
+
     /// Beside every capture, write the aerial photograph of the ground it looks
     /// at — `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB with the camera and the
     /// point it is aimed at drawn on (`systems::aerial_reference`). The check a

@@ -105,6 +105,8 @@ impl Plugin for MapPlugin {
             .watch_stream::<systems::tall_structures::TallStructures>()
             .init_resource::<systems::sewers::Sewers>()
             .watch_stream::<systems::sewers::Sewers>()
+            .init_resource::<systems::underground::Underground>()
+            .watch_stream::<systems::underground::Underground>()
             .init_resource::<systems::height::HeightLayer>()
             .init_resource::<systems::terrain_tiles::TerrainTiles>()
             .init_resource::<systems::water_levels::WaterLevels>()
@@ -484,6 +486,7 @@ impl Plugin for MapPlugin {
             Update,
             (
                 systems::sewers::update_sewers,
+                systems::underground::update_underground,
                 systems::sewers::apply_ground_see_through,
                 systems::sewers::follow_backdrop,
             )

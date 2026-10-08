@@ -824,6 +824,10 @@ pub struct ShotMetrics {
     /// the build dropped them.
     pub sewer_pipes: usize,
     pub sewer_meshes: usize,
+    /// Underground shapes drawn across the other underground layers
+    /// (`systems::underground`, `--underground`), and their meshes.
+    pub underground_shapes: usize,
+    pub underground_meshes: usize,
     /// Surveyed paved surfaces — pavements, cycle paths, parking bays, verges.
     /// Zero over a covered city means the paving never arrived, and the street
     /// then looks exactly like the one this client always drew.
@@ -1224,7 +1228,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -3246,6 +3250,8 @@ pub struct ShotReadouts<'w, 's> {
     dikes: Res<'w, crate::systems::dikes::Dikes>,
     /// The sewers — see `ShotMetrics::sewer_pipes`.
     sewers: Res<'w, crate::systems::sewers::Sewers>,
+    /// The other underground layers — see `ShotMetrics::underground_shapes`.
+    underground: Res<'w, crate::systems::underground::Underground>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -3961,6 +3967,8 @@ fn record_metrics(
         flood_defences_measured: readouts.dikes.measured(),
         sewer_pipes: readouts.sewers.pipe_count(),
         sewer_meshes: readouts.sewers.meshes(),
+        underground_shapes: readouts.underground.shapes(),
+        underground_meshes: readouts.underground.meshes(),
         tunnel_count: readouts.tunnels.tunnel_count(),
         tunnel_road_m: readouts.tunnels.deepest_road(),
         tunnel_meshes: visuals.tunnels.iter().count(),
@@ -4703,6 +4711,8 @@ mod tests {
             flood_defences_measured: 0,
             sewer_pipes: 0,
             sewer_meshes: 0,
+            underground_shapes: 0,
+            underground_meshes: 0,
             tunnel_count: 0,
             tunnel_road_m: 0.0,
             tunnel_meshes: 0,

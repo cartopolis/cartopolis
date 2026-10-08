@@ -522,6 +522,10 @@ pub struct DataLayers {
     /// default because it changes how the ground itself looks, not only what is
     /// drawn on it — the same reason the aerial basemap is opt-in.
     pub sewers: bool,
+    /// The other underground layers, in `underground::LAYERS` order — soil,
+    /// boreholes, groundwater, heat storage, pipelines, the gas field, soil
+    /// contamination. Off by default for the reason `sewers` is.
+    pub underground: [bool; crate::systems::underground::LAYERS.len()],
     /// Feature toggle (under Map): the Overpass street-detail layer
     /// (`systems::street_detail`) — surveyed trees, street lamps, traffic
     /// signals, zebra paint, barriers, piers. Off tears the cells down, the
@@ -663,6 +667,11 @@ impl DataLayers {
             street_labels: self.street_labels,
             flood_defences: self.flood_defences,
             sewers: self.sewers,
+            underground: crate::systems::underground::LAYERS
+                .iter()
+                .zip(self.underground)
+                .map(|(def, on)| (def.key.to_string(), on))
+                .collect(),
             furniture,
             traffic: self.traffic_enabled,
             people: self.people_enabled,
@@ -743,6 +752,13 @@ impl DataLayers {
         self.street_labels = p.street_labels;
         self.flood_defences = p.flood_defences;
         self.sewers = p.sewers;
+        for (slot, def) in self
+            .underground
+            .iter_mut()
+            .zip(crate::systems::underground::LAYERS.iter())
+        {
+            *slot = p.underground.get(def.key).copied().unwrap_or(false);
+        }
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
@@ -818,6 +834,7 @@ impl Default for DataLayers {
             // already running, and nothing at all outside the Netherlands.
             flood_defences: true,
             sewers: false,
+            underground: [false; crate::systems::underground::LAYERS.len()],
             street_detail_enabled: detail,
             // The aerial basemap stays opt-in, and the measured ground no longer
             // is (it has no toggle at all). The difference is that this one
@@ -2331,18 +2348,34 @@ pub fn render_data_layers_panel(
                         &mut dl.flood_defences,
                         egui::RichText::new("Flood defences").size(theme::SIZE_SUB),
                     );
+                    // Underground: everything drawn below the street, which
+                    // all opens the ground the same way (`underground::opens_ground`).
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Underground")
+                            .size(theme::SIZE_SUB)
+                            .strong(),
+                    );
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.sewers,
                         egui::RichText::new("Sewers").size(theme::SIZE_SUB),
                     );
-                    if dl.sewers {
+                    for (i, def) in crate::systems::underground::LAYERS.iter().enumerate() {
+                        crate::systems::theme::checkbox(
+                            ui,
+                            &mut dl.underground[i],
+                            egui::RichText::new(def.label).size(theme::SIZE_SUB),
+                        );
+                    }
+                    if dl.sewers || dl.underground.iter().any(|on| *on) {
                         // It changes the ground, so it says it does.
                         ui.label(
                             egui::RichText::new("Opens the ground near you — Netherlands only")
                                 .size(theme::SIZE_SUB),
                         );
                     }
+                    ui.add_space(4.0);
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.street_detail_enabled,
@@ -2465,6 +2498,9 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::sewers::sewer_attribution() {
                     ui.small(credit);
                 }
+                for credit in crate::systems::underground::attributions() {
+                    ui.small(credit);
+                }
                 // Unlike the two above, this is not one national dataset with one
                 // licence: a building model belongs to whoever surveyed it, so the
                 // line is whatever the importer was told to record.
@@ -2519,6 +2555,7 @@ pub fn render_data_layers_panel(
         dl.street_labels = fresh.street_labels;
         dl.flood_defences = fresh.flood_defences;
         dl.sewers = fresh.sewers;
+        dl.underground = fresh.underground;
         // The three that a "reset" used to leave standing. Traffic and people are
         // new here; `street_detail` was simply missed, and a reset that puts back
         // every checkbox but one is worse than none — the one it skips reads as a

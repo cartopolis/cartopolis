@@ -56,6 +56,9 @@ gltf = { version = "1.4", default-features = false, features = ["utils", "names"
 # crate's sha2 0.10).
 glam.workspace = true
 sha2 = "0.10"
+# Reading the BRO's groundwater usage register, which is published only as a
+# GeoPackage (`pipeline/wko.rs`). The workspace's, already built for the simulator.
+rusqlite.workspace = true
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
 

@@ -39,6 +39,7 @@ pub mod lod22;
 pub mod osm_buildings;
 pub mod roofs;
 pub mod sewers;
+pub mod underground;
 pub mod water;
 
 /// The slippy-map zoom every per-cell tree on the data host is binned at.

@@ -80,6 +80,8 @@ const BACKDROP_DEPTH_M: f32 = 14.0;
 /// The backdrop's half-width: past the opening (`SEE_THROUGH_FAR_M` in the
 /// shader, 450 m), so its edge is never seen through a hole.
 const BACKDROP_HALF_M: f32 = 700.0;
+/// How far under the deepest loaded underground shape the backdrop lies.
+const BACKDROP_MARGIN_M: f32 = 30.0;
 const BACKDROP_RGB: u32 = 0x2B_22_1A;
 
 static COVERAGE: CoverageSlot = CoverageSlot::new("sewers", "/sewers/coverage.json", SEWER_ZOOM);
@@ -124,7 +126,7 @@ pub fn end_depths(kind: SewerKind, start: Option<f32>, end: Option<f32>) -> (f32
 }
 
 /// An `n`-sided prism from `a` to `b` (centres), `r` across.
-fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, r: f32, color: [f32; 4]) {
+pub(crate) fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, r: f32, color: [f32; 4]) {
     let axis = b - a;
     if axis.length_squared() < 1e-6 {
         return;
@@ -476,6 +478,9 @@ pub fn update_sewers(
                             // Underground there is no sun; the form is in the
                             // vertex colour (`push_pipe`).
                             unlit: true,
+                            // No air underground to fog: three kilometres of distance fog
+                            // turns a gas well into sky.
+                            fog_enabled: false,
                             ..default()
                         })
                     })
@@ -537,7 +542,7 @@ pub fn apply_ground_see_through(
     mut roads: ResMut<Assets<crate::systems::road_depth::RoadMaterial>>,
     mut applied: Local<Option<(bool, usize)>>,
 ) {
-    let on = wanted(&layers);
+    let on = crate::systems::underground::opens_ground(&layers);
     let want = (on, ground.len() + roads.len());
     if *applied == Some(want) {
         return;
@@ -586,8 +591,9 @@ pub fn follow_backdrop(
     >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    under: Res<crate::systems::underground::Underground>,
 ) {
-    let on = wanted(&layers);
+    let on = crate::systems::underground::opens_ground(&layers);
     let existing = backdrop.single_mut().ok();
     if !on {
         if let Some((e, _, _)) = existing {
@@ -599,7 +605,13 @@ pub fn follow_backdrop(
         return;
     };
     let world = crate::grid::anchored_xz(cell, tf.translation);
-    let y = terrain.ground_at(world.x, world.y) - BACKDROP_DEPTH_M;
+    // Under the deepest thing loaded — a sewer, or a gas well three kilometres
+    // down — and wider the deeper it lies, so its edge stays out of a view
+    // that looks down that far.
+    let depth = BACKDROP_DEPTH_M.max(under.deepest_m() + BACKDROP_MARGIN_M);
+    let half = BACKDROP_HALF_M.max(depth * 1.5);
+    let y = terrain.ground_at(world.x, world.y) - depth;
+    let scale = Vec3::splat(half);
     // Same cell as the camera in x and z, the bottom row in y, so the sheet is
     // never more than a cell's float error away from where it is drawn.
     let at = GridCell::new(cell.x, 0, cell.z);
@@ -609,6 +621,9 @@ pub fn follow_backdrop(
             if t.translation != translation {
                 t.translation = translation;
             }
+            if t.scale != scale {
+                t.scale = scale;
+            }
             if *g != at {
                 *g = at;
             }
@@ -617,9 +632,8 @@ pub fn follow_backdrop(
             let Ok(root) = bigspace.single() else {
                 return;
             };
-            let mesh = Plane3d::new(Vec3::Y, Vec2::splat(BACKDROP_HALF_M))
-                .mesh()
-                .build();
+            // A unit sheet, sized by the transform's scale.
+            let mesh = Plane3d::new(Vec3::Y, Vec2::splat(1.0)).mesh().build();
             let [r, g, b, _] = linear(BACKDROP_RGB);
             commands.spawn((
                 Backdrop,
@@ -627,9 +641,12 @@ pub fn follow_backdrop(
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: Color::linear_rgb(r, g, b),
                     unlit: true,
+                    // No air underground to fog: three kilometres of distance fog
+                    // turns a gas well into sky.
+                    fog_enabled: false,
                     ..default()
                 })),
-                Transform::from_translation(translation),
+                Transform::from_translation(translation).with_scale(scale),
                 at,
                 ChildOf(root),
                 crate::components::HideInSpace,

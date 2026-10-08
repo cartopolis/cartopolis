@@ -18,6 +18,8 @@ pub struct GuiPlugin {
     pub aerial: bool,
     /// `--sewers`, for the same reason.
     pub sewers: bool,
+    /// `--underground`: layer keys, or `all`.
+    pub underground: Vec<String>,
 }
 
 impl Plugin for GuiPlugin {
@@ -35,6 +37,13 @@ impl Plugin for GuiPlugin {
                 let mut layers = systems::data_layers::DataLayers::default();
                 layers.aerial_enabled = self.aerial;
                 layers.sewers = self.sewers;
+                for (slot, def) in layers
+                    .underground
+                    .iter_mut()
+                    .zip(systems::underground::LAYERS.iter())
+                {
+                    *slot = self.underground.iter().any(|k| k == "all" || k == def.key);
+                }
                 layers
             })
             .watch_stream::<systems::data_layers::DataLayers>()

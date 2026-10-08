@@ -287,6 +287,10 @@ pub struct LayerPrefs {
     /// for: it changes how the ground looks.
     #[serde(default)]
     pub sewers: bool,
+    /// The other underground layers by `underground::LAYERS` key. A map rather
+    /// than a field each, so a layer added later needs no field here; absent is off.
+    #[serde(default)]
+    pub underground: std::collections::BTreeMap<String, bool>,
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,

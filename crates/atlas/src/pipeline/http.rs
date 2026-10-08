@@ -274,6 +274,62 @@ pub fn post_json(ctx: &Ctx, url: &str, body: &Value, label: &str) -> Outcome<Val
     Err(PipelineError::Failed(format!("{label}: {last}")))
 }
 
+/// A JSON POST answered with text (the BRO searches answer XML). A refusal —
+/// any 4xx — is handed back as `Err((status, body))` inside the `Ok`, not
+/// retried: the BRO refuses a search over 2,000 objects with a 400 whose body
+/// says so, and the caller answers it by splitting the area. Transport failures
+/// are retried as [`post_json`]'s are.
+pub fn post_text(
+    ctx: &Ctx,
+    url: &str,
+    body: &Value,
+    label: &str,
+) -> Outcome<Result<String, (u16, String)>> {
+    let body = body.to_string();
+    let mut last = String::new();
+    for attempt in 0..4 {
+        ctx.check()?;
+        let answer = agent()
+            .post(url)
+            .timeout(Duration::from_secs(180))
+            .set("content-type", "application/json")
+            .send_string(&body);
+        let read = |r: ureq::Response| {
+            let mut text = String::new();
+            r.into_reader()
+                .take(MAX_BODY)
+                .read_to_string(&mut text)
+                .map(|_| text)
+                .map_err(|e| e.to_string())
+        };
+        match answer {
+            Ok(r) => match read(r) {
+                Ok(text) => return Ok(Ok(text)),
+                Err(e) => last = e,
+            },
+            Err(ureq::Error::Status(code, r)) if (400..500).contains(&code) => {
+                return Ok(Err((code, read(r).unwrap_or_default())));
+            }
+            Err(e) => last = e.to_string(),
+        }
+        ctx.check()?;
+        if attempt == 3 {
+            break;
+        }
+        ctx.log(format!("{label}: {last} (retry {})", attempt + 1));
+        ctx.sleep(Duration::from_secs(3))?;
+    }
+    Err(PipelineError::Failed(format!("{label}: {last}")))
+}
+
+/// A GET answered with text, through the source cache and retried as
+/// [`get_json`] is — the BRO's per-object XML.
+pub fn get_text_retried(ctx: &Ctx, url: &str, label: &str) -> Outcome<String> {
+    get_parsed_with(ctx, url, label, Duration::from_secs(120), 4, |b| {
+        String::from_utf8(b.to_vec()).map_err(|e| e.to_string())
+    })
+}
+
 /// A GET streamed into a file rather than into memory, for an archive that can
 /// run to gigabytes. Retried from the start. Answers the bytes written.
 pub fn download_to(ctx: &Ctx, url: &str, path: &Path, label: &str) -> Outcome<u64> {

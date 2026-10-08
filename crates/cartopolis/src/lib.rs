@@ -938,6 +938,7 @@ fn run_client() {
         systems::gui::GuiPlugin {
             aerial: cli.aerial,
             sewers: cli.sewers,
+            underground: cli.underground.clone(),
         },
         systems::dev::DevPlugin,
     ));

@@ -21,15 +21,20 @@
 pub mod bag;
 pub mod bgt;
 pub mod bgt_extract;
+pub mod bro;
 pub mod brp;
 pub mod buildings;
 pub mod bv3d;
+pub mod contamination;
 pub mod dikes;
 pub mod gardens;
+pub mod gasfield;
 pub mod geom;
+pub mod geotop;
 pub mod http;
 pub mod lod22;
 pub mod models;
+pub mod pipelines;
 pub mod rd;
 pub mod roofs;
 pub mod sewers;
@@ -37,7 +42,9 @@ pub mod tall;
 pub mod terrain;
 pub mod terrain_grade;
 pub mod tile;
+pub mod underground;
 pub mod water;
+pub mod wko;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -554,6 +561,62 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "sewers/coverage.json",
         typical_minutes: 1,
         run: sewers::run,
+    },
+    Dataset {
+        id: "geotop",
+        label: "Soil model (GeoTOP)",
+        description: "TNO's model of the top fifty metres of the subsurface — peat, clay, sand and gravel per 100 m column — drawn as soil columns under the street when Map ▸ Underground ▸ Soil layers is on.",
+        coverage: "geotop/coverage.json",
+        typical_minutes: 1,
+        run: geotop::run,
+    },
+    Dataset {
+        id: "boreholes",
+        label: "Boreholes and soundings (BRO)",
+        description: "Every geotechnical, soil and geological borehole with its layers, and every cone penetration test with the depth it reached, from the BRO. One request per borehole.",
+        coverage: "boreholes/coverage.json",
+        typical_minutes: 5,
+        run: bro::run_boreholes,
+    },
+    Dataset {
+        id: "groundwater",
+        label: "Groundwater (BRO)",
+        description: "Groundwater monitoring wells with their screens and their latest measured level, from the BRO. Two requests per level dossier.",
+        coverage: "groundwater/coverage.json",
+        typical_minutes: 3,
+        run: bro::run_groundwater,
+    },
+    Dataset {
+        id: "wko",
+        label: "Heat storage wells (BRO GUF)",
+        description: "The wells of open ground-energy systems, warm and cold, and the loops of closed ones, to their depth — from the BRO's groundwater usage register.",
+        coverage: "wko/coverage.json",
+        typical_minutes: 2,
+        run: wko::run,
+    },
+    Dataset {
+        id: "pipelines",
+        label: "Transport pipelines (REV)",
+        description: "Gasunie's gas network and the oil and chemical lines from the Register Externe Veiligheid. Depth is mostly unregistered and drawn at 1 m.",
+        coverage: "pipelines/coverage.json",
+        typical_minutes: 1,
+        run: pipelines::run,
+    },
+    Dataset {
+        id: "gasfield",
+        label: "Gas field and earthquakes (KNMI, NLOG)",
+        description: "Induced earthquakes from KNMI, the gas wells along their surveyed paths with where they meet the reservoir, and the field's edge at the reservoir's depth, from NLOG. Run it over the province.",
+        coverage: "gasfield/coverage.json",
+        typical_minutes: 5,
+        run: gasfield::run,
+    },
+    Dataset {
+        id: "contamination",
+        label: "Soil contamination (Bodemloket)",
+        description: "Contaminated sites from Bodemloket, and the City of Groningen's underground tanks still in the ground.",
+        coverage: "contamination/coverage.json",
+        typical_minutes: 1,
+        run: contamination::run,
     },
     Dataset {
         id: "bgt",

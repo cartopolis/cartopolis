@@ -318,6 +318,13 @@ impl CoverageSlot {
     /// stored copy answering first it changes again if the network then says
     /// something different, and a [`refresh_all`] that finds a new answer moves
     /// it too. It never passes back through 0.
+    /// The name it was made with — the dataset it covers. Only a test asks.
+    #[cfg(test)]
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        self.label
+    }
+
     pub fn revision(&self) -> u32 {
         self.generation.load(Ordering::Relaxed)
     }
