@@ -132,6 +132,12 @@ const FINE_RECENTRE_M: f32 = 96.0;
 /// **the coarse answer**, and the two agree at the rim instead of meeting at a step.
 const FINE_BLEND_M: f32 = 24.0;
 
+/// How far the land beside the water may be lifted over the carve before
+/// [`TerrainField::ground_at`] stops applying the half-metre tier there, metres.
+/// The lift is bilinear and so continuous, and fading by it keeps the footing
+/// continuous too as the avatar walks up to a bank.
+const FINE_BANK_FADE_M: f32 = 0.1;
+
 /// Fraction of the half-extent held at full strength before the edge taper begins.
 const TAPER_START: f32 = 0.82;
 
@@ -692,17 +698,28 @@ impl TerrainField {
     ///
     /// Same contract as `at`: `0.0` when nothing is known, so a caller adds it
     /// unconditionally.
+    ///
+    /// **Beside registered water this is the land, not the carve** — the
+    /// [`land_at`](TerrainSnapshot::land_at) every flat ground sheet is stood on. A
+    /// register's ring is routinely a metre or two wider than the drawn water (the
+    /// the study pond's is 1.2 m, 2026-10-08), so the carve reaches under the lawn,
+    /// and reading `at` there put the avatar and the grass a metre and a half under
+    /// the lawn they were standing on. The half-metre tier is carved too and knows no
+    /// banks, so its correction fades out wherever the land was lifted
+    /// ([`FINE_BANK_FADE_M`]).
     #[must_use]
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
-        let coarse = self.ground.at(wx, wz);
+        let land = self.ground.land_at(wx, wz);
         if !self.fine.is_ready() {
-            return coarse;
+            return land;
         }
         let w = self.fine.rim_weight(wx, wz);
         if w <= 0.0 {
-            return coarse;
+            return land;
         }
-        coarse + (self.fine.at(wx, wz) - coarse) * w
+        let coarse = self.ground.at(wx, wz);
+        let keep = (1.0 - (land - coarse).abs() / FINE_BANK_FADE_M).clamp(0.0, 1.0);
+        land + (self.fine.at(wx, wz) - coarse) * w * keep
     }
 
     /// Whether the half-metre tier currently carries measurements.
@@ -3285,6 +3302,29 @@ mod tests {
             );
             x += 0.7;
         }
+    }
+
+    /// A point consumer stands where the sheets are drawn: on the street right up
+    /// to the quay, not in the carve the register's ring reaches under it — with the
+    /// half-metre tier on, which is carved too. The avatar and the grass stood
+    /// 1.5 m under the study pond's lawn that way.
+    #[test]
+    fn the_footing_beside_the_water_is_the_land_the_sheets_stand_on() {
+        let (coarse, _) = canal();
+        let fine = snapshot_of(100.0, 0.5, |x, _| if x.abs() < 10.0 { -3.5 } else { 2.3 });
+        let field = TerrainField {
+            ground: coarse,
+            fine,
+            ..Default::default()
+        };
+        assert!(field.fine_ready());
+        for x in [10.0, 10.5, 12.0] {
+            let h = field.ground_at(x, 0.0);
+            assert!((h - 2.0).abs() < 1e-3, "footing at x = {x}: {h}");
+        }
+        // Away from the water the half-metre tier still has its say.
+        let h = field.ground_at(25.0, 0.0);
+        assert!((h - 2.3).abs() < 1e-3, "fine tier away from the bank: {h}");
     }
 
     /// With nothing registered, both readings are the field to the bit.

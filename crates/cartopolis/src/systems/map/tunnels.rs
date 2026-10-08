@@ -75,7 +75,9 @@ impl LidSnapshot {
         z: f32,
         ground: &crate::systems::terrain::TerrainSnapshot,
     ) -> f32 {
-        let here = ground.at(x, z);
+        // The land beside the water, as the flat sheets are stood on — not the
+        // carve a register's ring reaches under the lawn with.
+        let here = ground.land_at(x, z);
         let (w, land) = fill_of(&self.tunnels, [x, z]);
         if w <= 0.0 {
             return here;
