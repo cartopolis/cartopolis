@@ -89,3 +89,24 @@ at all. What it does publish is `Tankbestand` (2,549 underground tanks, with
 whether they were removed, filled, or left), which is what is drawn there; a
 removed tank is not. The city's filled-in canals (`Dempingen`, 2,595) are an
 obvious next layer and are not drawn yet.
+
+## Two things in front of anything deep, both found the hard way (2026-10-08)
+
+* **The ground skirt.** `free_camera` lays a paper-toned cap 25 m down to carry
+  the ground past the last tile (`GROUND_SKIRT_SINK`). It is a plain material,
+  so it does not take the screen door, and everything deeper than it — the
+  backdrop, a soil column's foot, every gas well — was hidden, with the
+  street's own shadows on it so it read as a surface under the opening. The
+  sewers never met it (their backdrop sat at 14 m). While the ground is open,
+  `sewers::follow_backdrop` sinks it under the backdrop. Diagnosed by making the
+  opening discard every pixel: what remained was blank paper with shadows.
+* **The atmosphere's aerial perspective.** Bevy's sky pass hazes every pixel by
+  the length of the camera ray to it, material fog settings or not, so three
+  kilometres "of air" turned the opening blue-grey. `render_sky.wgsl` is now a
+  fourth patched copy (`atmosphere_patch`): a pixel well below the surface for
+  its distance is hazed only to where its ray enters the ground. A/B over
+  Loppersum: blue-grey without, soil-brown with.
+
+`--dump-state` carries `backdrop_present`, `backdrop_visible`,
+`backdrop_depth_m` and `ground_unopened` (materials still solid while the ground
+should be open — must be 0), which separate these failures without a picture.

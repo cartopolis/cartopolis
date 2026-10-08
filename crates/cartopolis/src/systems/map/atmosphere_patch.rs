@@ -1,5 +1,6 @@
-//! Patched copies of three bevy_pbr shaders, swapped in at runtime, so that
-//! nothing in this app's frame loads bevy's `Atmosphere` struct whole.
+//! Patched copies of four bevy_pbr shaders, swapped in at runtime — three so that
+//! nothing in this app's frame loads bevy's `Atmosphere` struct whole, and one
+//! (`render_sky.wgsl`) so that the air's haze stops where the ground begins.
 //!
 //! **Why.** Bevy 0.19 hands its `Atmosphere` binding to helper functions *by
 //! value* — `clamp_to_surface(atmosphere, ..)`, `transmittance_lut_r_mu_to_uv(
@@ -87,7 +88,7 @@ impl Target {
     }
 }
 
-const PATCHES: [Patch; 3] = [
+const PATCHES: [Patch; 4] = [
     Patch {
         target: Target::Import("bevy_pbr::atmosphere::functions"),
         stock_fnv: 0x60e6_7b67_9f17_c525,
@@ -107,6 +108,16 @@ const PATCHES: [Patch; 3] = [
         stock_fnv: 0x7fbd_c39f_a422_0106,
         source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_volumetric_fog.wgsl"),
         path: "assets/shaders/patched/bevy_pbr_volumetric_fog.wgsl",
+    },
+    // Not the Adreno fix: the sky pass's aerial perspective, clamped to the
+    // stretch of each ray that is in air, so the underground layers seen through
+    // the opened ground are not hazed as if three kilometres of air lay between
+    // (`systems::underground`, `docs/notes/underground.md`).
+    Patch {
+        target: Target::PathSuffix("atmosphere/render_sky.wgsl"),
+        stock_fnv: 0x0a3c_7163_0fac_c64f,
+        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_render_sky.wgsl"),
+        path: "assets/shaders/patched/bevy_pbr_render_sky.wgsl",
     },
 ];
 
@@ -226,6 +237,8 @@ mod tests {
             // The import, the call site, and the helpers.
             ("bevy_pbr_lighting.wgsl", 3),
             ("bevy_pbr_volumetric_fog.wgsl", 3),
+            // The import, and the aerial perspective's clamp to the air.
+            ("bevy_pbr_render_sky.wgsl", 2),
         ] {
             assert_eq!(
                 patch(file).source.matches("PATCHED (cartopolis)").count(),

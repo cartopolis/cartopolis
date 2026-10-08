@@ -828,6 +828,16 @@ pub struct ShotMetrics {
     /// (`systems::underground`, `--underground`), and their meshes.
     pub underground_shapes: usize,
     pub underground_meshes: usize,
+    /// Ground and road materials still solid while the ground should be open
+    /// (`sewers::apply_ground_see_through`). Must be 0: one solid clipmap tile
+    /// is enough for every hole above it to open onto that tile instead.
+    pub ground_unopened: usize,
+    /// The backdrop under the opening: whether it exists, how deep and how wide
+    /// (`sewers::BackdropState`). 0 when no underground layer is on.
+    pub backdrop_present: bool,
+    pub backdrop_visible: bool,
+    pub backdrop_depth_m: f32,
+    pub backdrop_half_m: f32,
     /// Surveyed paved surfaces — pavements, cycle paths, parking bays, verges.
     /// Zero over a covered city means the paving never arrived, and the street
     /// then looks exactly like the one this client always drew.
@@ -1228,7 +1238,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,ground_unopened,backdrop_present,backdrop_visible,backdrop_depth_m,backdrop_half_m,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -3252,6 +3262,11 @@ pub struct ShotReadouts<'w, 's> {
     sewers: Res<'w, crate::systems::sewers::Sewers>,
     /// The other underground layers — see `ShotMetrics::underground_shapes`.
     underground: Res<'w, crate::systems::underground::Underground>,
+    /// The ground materials and the layer switch, for `ShotMetrics::ground_unopened`.
+    ground_materials: Res<'w, Assets<crate::systems::ground_detail::GroundMaterial>>,
+    road_materials: Res<'w, Assets<crate::systems::road_depth::RoadMaterial>>,
+    layers: Res<'w, crate::systems::data_layers::DataLayers>,
+    backdrop: Res<'w, crate::systems::sewers::BackdropState>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -3969,6 +3984,24 @@ fn record_metrics(
         sewer_meshes: readouts.sewers.meshes(),
         underground_shapes: readouts.underground.shapes(),
         underground_meshes: readouts.underground.meshes(),
+        backdrop_present: readouts.backdrop.spawned,
+        backdrop_visible: readouts.backdrop.visible,
+        backdrop_depth_m: readouts.backdrop.depth_m,
+        backdrop_half_m: readouts.backdrop.half_m,
+        ground_unopened: if crate::systems::underground::opens_ground(&readouts.layers) {
+            readouts
+                .ground_materials
+                .iter()
+                .filter(|(_, m)| m.extension.params.w >= 0.0 && !m.extension.see_through)
+                .count()
+                + readouts
+                    .road_materials
+                    .iter()
+                    .filter(|(_, m)| !m.extension.see_through)
+                    .count()
+        } else {
+            0
+        },
         tunnel_count: readouts.tunnels.tunnel_count(),
         tunnel_road_m: readouts.tunnels.deepest_road(),
         tunnel_meshes: visuals.tunnels.iter().count(),
@@ -4713,6 +4746,11 @@ mod tests {
             sewer_meshes: 0,
             underground_shapes: 0,
             underground_meshes: 0,
+            ground_unopened: 0,
+            backdrop_present: false,
+            backdrop_visible: false,
+            backdrop_depth_m: 0.0,
+            backdrop_half_m: 0.0,
             tunnel_count: 0,
             tunnel_road_m: 0.0,
             tunnel_meshes: 0,

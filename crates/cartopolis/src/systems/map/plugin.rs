@@ -104,6 +104,7 @@ impl Plugin for MapPlugin {
             .init_resource::<systems::tall_structures::TallStructures>()
             .watch_stream::<systems::tall_structures::TallStructures>()
             .init_resource::<systems::sewers::Sewers>()
+            .init_resource::<systems::sewers::BackdropState>()
             .watch_stream::<systems::sewers::Sewers>()
             .init_resource::<systems::underground::Underground>()
             .watch_stream::<systems::underground::Underground>()

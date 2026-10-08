@@ -626,7 +626,7 @@ pub const GROUND_DISC_RADIUS: f32 = 150_000.0;
 
 /// How far the ground skirt sits below the anchor's ground (m) — see the spawn
 /// site in [`setup_camera`] for why it is not the 5 m it used to be.
-const GROUND_SKIRT_SINK: f32 = 25.0;
+pub(crate) const GROUND_SKIRT_SINK: f32 = 25.0;
 
 /// Radius the skirt's curve is built against.
 ///

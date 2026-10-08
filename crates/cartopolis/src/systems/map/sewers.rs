@@ -82,6 +82,8 @@ const BACKDROP_DEPTH_M: f32 = 14.0;
 const BACKDROP_HALF_M: f32 = 700.0;
 /// How far under the deepest loaded underground shape the backdrop lies.
 const BACKDROP_MARGIN_M: f32 = 30.0;
+/// How far under the backdrop the ground skirt is sunk while the ground is open.
+const SKIRT_CLEARANCE_M: f32 = 20.0;
 const BACKDROP_RGB: u32 = 0x2B_22_1A;
 
 static COVERAGE: CoverageSlot = CoverageSlot::new("sewers", "/sewers/coverage.json", SEWER_ZOOM);
@@ -533,23 +535,42 @@ pub fn update_sewers(
 /// Open the ground while the layer is on: switch every ground and road material
 /// to the screen-door variant (`ground_detail::GroundKey`), and back.
 ///
-/// Guarded on the material count as `ground_detail::refresh_ground_detail` is,
-/// so a cell that streams in after the switch is opened too, and a frame with
-/// nothing new touches nothing — a material written is a bind group re-prepared.
+/// Every material when the switch flips; after that, only the ones whose asset
+/// events say they are new or were rewritten. **Not a count of materials**: the
+/// first version guarded on `len()`, and a clipmap tile that swaps one material
+/// for another leaves the count where it was — that tile then stayed solid, and
+/// every hole above it opened onto it instead of onto the backdrop. Rewritten
+/// ones are read too, because code that rebuilds an extension wholesale puts the
+/// flag back to its default.
 pub fn apply_ground_see_through(
     layers: Res<crate::systems::data_layers::DataLayers>,
     mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     mut roads: ResMut<Assets<crate::systems::road_depth::RoadMaterial>>,
-    mut applied: Local<Option<(bool, usize)>>,
+    mut ground_events: MessageReader<AssetEvent<crate::systems::ground_detail::GroundMaterial>>,
+    mut road_events: MessageReader<AssetEvent<crate::systems::road_depth::RoadMaterial>>,
+    mut applied: Local<Option<bool>>,
 ) {
     let on = crate::systems::underground::opens_ground(&layers);
-    let want = (on, ground.len() + roads.len());
-    if *applied == Some(want) {
-        return;
-    }
-    *applied = Some(want);
-    let ids: Vec<_> = ground.ids().collect();
-    for id in ids {
+    let touched = |e: &AssetEvent<_>| match e {
+        AssetEvent::Added { id } | AssetEvent::Modified { id } => Some(*id),
+        _ => None,
+    };
+    let fresh_ground: Vec<_> = ground_events.read().filter_map(touched).collect();
+    let fresh_roads: Vec<_> = road_events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let flipped = *applied != Some(on);
+    *applied = Some(on);
+    let ground_ids: Vec<_> = if flipped {
+        ground.ids().collect()
+    } else {
+        fresh_ground
+    };
+    for id in ground_ids {
         // Read first: writing a material that is already right re-prepares it.
         let Some(m) = ground.get(id) else { continue };
         // The volumetric groups opt out of the ground's look for good
@@ -561,8 +582,12 @@ pub fn apply_ground_see_through(
             m.extension.see_through = on;
         }
     }
-    let ids: Vec<_> = roads.ids().collect();
-    for id in ids {
+    let road_ids: Vec<_> = if flipped {
+        roads.ids().collect()
+    } else {
+        fresh_roads
+    };
+    for id in road_ids {
         if roads.get(id).is_some_and(|m| m.extension.see_through != on) {
             if let Some(mut m) = roads.get_mut(id) {
                 m.extension.see_through = on;
@@ -575,6 +600,20 @@ pub fn apply_ground_see_through(
 #[derive(Component)]
 pub struct Backdrop;
 
+/// Where the backdrop was put this frame, for `--dump-state`: a backdrop that
+/// is not drawn leaves the opening showing the sky pass's planet ground, which
+/// looks like soil from a distance and is not.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct BackdropState {
+    pub spawned: bool,
+    /// Whether it passed the CPU-side culling last frame — false with
+    /// `spawned` true means something culled it, not that it is hidden behind
+    /// the ground.
+    pub visible: bool,
+    pub depth_m: f32,
+    pub half_m: f32,
+}
+
 /// Keep the backdrop under the camera while the layer is on.
 #[allow(clippy::too_many_arguments)]
 pub fn follow_backdrop(
@@ -586,17 +625,46 @@ pub fn follow_backdrop(
     // `Without<FreeCamera>`: `camera` reads a `Transform` and a `GridCell` too,
     // and Bevy refuses two queries it cannot prove disjoint (B0001).
     mut backdrop: Query<
-        (Entity, &mut Transform, &mut GridCell),
+        (Entity, &mut Transform, &mut GridCell, &ViewVisibility),
         (With<Backdrop>, Without<crate::components::FreeCamera>),
     >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     under: Res<crate::systems::underground::Underground>,
+    mut state: ResMut<BackdropState>,
+    mut skirt: Query<
+        &mut Transform,
+        (
+            With<crate::components::GroundSkirt>,
+            Without<Backdrop>,
+            Without<crate::components::FreeCamera>,
+        ),
+    >,
 ) {
     let on = crate::systems::underground::opens_ground(&layers);
     let existing = backdrop.single_mut().ok();
+    state.spawned = existing.is_some();
+    state.visible = existing.as_ref().is_some_and(|b| b.3.get());
+    // The paper-toned skirt that carries the ground past the last tile is a
+    // plain opaque sheet 25 m down (`free_camera::GROUND_SKIRT_SINK`). It does
+    // not take the screen door, so anything deeper than it — the backdrop, a
+    // soil column's foot, every gas well — was hidden behind it, and the opening
+    // showed blank paper with the street's shadows on it. Measured 2026-10-08:
+    // a backdrop at 14 m showed and one at 280 m did not. While the ground is
+    // open the skirt goes under the backdrop; it is the ground *past the tiles*,
+    // kilometres off and fogged, so its depth there is not something one sees.
+    let skirt_y = if on {
+        -(crate::systems::free_camera::GROUND_SKIRT_SINK.max(state.depth_m + SKIRT_CLEARANCE_M))
+    } else {
+        -crate::systems::free_camera::GROUND_SKIRT_SINK
+    };
+    for mut t in &mut skirt {
+        if t.translation.y != skirt_y {
+            t.translation.y = skirt_y;
+        }
+    }
     if !on {
-        if let Some((e, _, _)) = existing {
+        if let Some((e, ..)) = existing {
             commands.entity(e).try_despawn();
         }
         return;
@@ -611,13 +679,15 @@ pub fn follow_backdrop(
     let depth = BACKDROP_DEPTH_M.max(under.deepest_m() + BACKDROP_MARGIN_M);
     let half = BACKDROP_HALF_M.max(depth * 1.5);
     let y = terrain.ground_at(world.x, world.y) - depth;
+    state.depth_m = depth;
+    state.half_m = half;
     let scale = Vec3::splat(half);
     // Same cell as the camera in x and z, the bottom row in y, so the sheet is
     // never more than a cell's float error away from where it is drawn.
     let at = GridCell::new(cell.x, 0, cell.z);
     let translation = Vec3::new(tf.translation.x, y, tf.translation.z);
     match existing {
-        Some((_, mut t, mut g)) => {
+        Some((_, mut t, mut g, _)) => {
             if t.translation != translation {
                 t.translation = translation;
             }
