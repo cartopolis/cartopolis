@@ -1,7 +1,7 @@
 ---
 topic: sewers
 triggers: [sewers.rs, GWSW, riolering, KLIC, "beheerstedelijkwater", maaiveldhoogte, bob, GROUND_SEE_THROUGH, see_through, GroundKey, "underground", "cables and pipes", "pipes in the ground"]
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # What is under the street, and what we may draw of it
@@ -46,6 +46,16 @@ joined on the pipe's `uriB`/`uriE`) over 147 pipe ends in the centre: 1.23 m
 at the 5th percentile, **1.72 m median**, 3.13 m at the 95th. Atlas writes
 that depth and the client hangs it under its own terrain, so the datum both
 levels are in never matters.
+
+**A depth cannot be trusted to keep a pipe underground.** Over the 31,292
+published pipes (2026-10-08), 7,316 have no depth at either end, and among them
+are the culverts and storage sewers — 928 pipes over a metre across, up to
+3.5 × 2 m. Hung from the 1.7 m default and drawn round at their width, 47 stood
+out of the street, some a metre high. A few measured ends are no better: 0.1 m
+under the street over a 315 mm pipe, i.e. a wrong ground level at the manhole.
+So the client draws a pipe as wide as it is wide and as tall as it is tall, and
+pushes its invert down until there is 0.5 m of ground over the crown
+(`sewers::invert_depths`).
 
 Not settled: whether those levels are NAP. Manhole ground levels in the centre
 read 4.2–7.9 m. An AHN comparison was tried and abandoned (the WCS answers

@@ -281,7 +281,7 @@ fn push_line(
         for s in 1..=steps {
             let f = s as f32 / steps as f32;
             let next = at(a.lerp(b, f), da + (db - da) * f);
-            push_pipe(buf, prev, next, r, color);
+            push_pipe(buf, prev, next, Vec2::splat(r), color);
             prev = next;
         }
     }

@@ -16,6 +16,15 @@
 //! differ by the ground's own curvature across a 40 m section — centimetres here.
 //! A pipe with no measured level is drawn at [`DEFAULT_DEPTH_M`].
 //!
+//! **No pipe breaks the street.** Whatever the depth says, the crown stays at
+//! least [`MIN_COVER_M`] under the ground ([`invert_depths`]). The default is a
+//! street sewer's depth, and the unmeasured pipes include Groningen's culverts
+//! and storage sewers, two to three and a half metres across — hung from 1.7 m
+//! they stood a metre out of the road. A few measured ends are as bad (0.1 m
+//! over a 315 mm pipe, a ground level at the manhole that is wrong); a register
+//! that puts a crown above its own street is wrong about the depth, not the
+//! street.
+//!
 //! **Seeing them means opening the ground**, and the ground is a stack of
 //! opaque sheets ordered by a depth ladder (`ground_stack`), so it cannot simply
 //! be made translucent: sorting would put every sheet in a fight with the others.
@@ -62,6 +71,9 @@ const STEP_M: f32 = 8.0;
 pub const DEFAULT_DEPTH_M: f32 = 1.7;
 /// A pumped main is laid shallower — it does not need a fall.
 const DEFAULT_PRESSURE_DEPTH_M: f32 = 1.2;
+/// The least ground over a pipe's crown. Dutch practice lays sewers under 0.8 m
+/// or more; this is the floor, not a typical value.
+const MIN_COVER_M: f32 = 0.5;
 /// A manhole the register gives no depth for.
 const DEFAULT_MANHOLE_DEPTH_M: f32 = 2.0;
 /// A house drain is 110 mm across and would be a hairline from fifty metres; this
@@ -110,25 +122,35 @@ pub fn kind_colour(kind: SewerKind) -> u32 {
 
 const MANHOLE_RGB: u32 = 0xC8_C8_C0;
 
-/// Depth at both ends, filling one missing end from the other and both from the
-/// kind's default.
+/// Invert depth at both ends, filling one missing end from the other and both
+/// from the kind's default, then pushed down until the crown of a pipe
+/// `height_m` tall has [`MIN_COVER_M`] of ground over it (module note).
 #[must_use]
-pub fn end_depths(kind: SewerKind, start: Option<f32>, end: Option<f32>) -> (f32, f32) {
+pub fn invert_depths(
+    kind: SewerKind,
+    start: Option<f32>,
+    end: Option<f32>,
+    height_m: f32,
+) -> (f32, f32) {
     let fallback = if kind == SewerKind::Pressure {
         DEFAULT_PRESSURE_DEPTH_M
     } else {
         DEFAULT_DEPTH_M
     };
-    match (start, end) {
+    let (a, b) = match (start, end) {
         (Some(a), Some(b)) => (a, b),
         (Some(a), None) => (a, a),
         (None, Some(b)) => (b, b),
         (None, None) => (fallback, fallback),
-    }
+    };
+    let floor = height_m + MIN_COVER_M;
+    (a.max(floor), b.max(floor))
 }
 
-/// An `n`-sided prism from `a` to `b` (centres), `r` across.
-pub(crate) fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, r: f32, color: [f32; 4]) {
+/// An `n`-sided prism from `a` to `b` (centres), `half` its half-width and
+/// half-height — a culvert is a wide, low box, and drawing it round as wide as it
+/// is wide would stand it out of the street.
+pub(crate) fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, half: Vec2, color: [f32; 4]) {
     let axis = b - a;
     if axis.length_squared() < 1e-6 {
         return;
@@ -144,7 +166,7 @@ pub(crate) fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, r: f32, color: [f3
     let n = PIPE_SIDES;
     let ring = |i: u32| {
         let t = (i as f32 / n as f32) * std::f32::consts::TAU;
-        right * t.cos() + up * t.sin()
+        right * (t.cos() * half.x) + up * (t.sin() * half.y)
     };
     for i in 0..n {
         let (o0, o1) = (ring(i), ring(i + 1));
@@ -152,7 +174,7 @@ pub(crate) fn push_pipe(buf: &mut MeshData, a: Vec3, b: Vec3, r: f32, color: [f3
         // Unlit, so the form is baked into the colour: lighter on top, as if lit
         // from above, which is how the eye reads a tube underground.
         let c = shade(color, 0.62 + 0.38 * (0.5 + 0.5 * out.y));
-        buf.quad_facing(a + o0 * r, a + o1 * r, b + o1 * r, b + o0 * r, c, out);
+        buf.quad_facing(a + o0, a + o1, b + o1, b + o0, c, out);
     }
 }
 
@@ -224,16 +246,17 @@ fn build_cell(
             continue;
         };
         let kind = SewerKind::from_index(*kind);
-        let (d0, d1) = end_depths(kind, *start, *end);
         let width = if *width == 0 {
             DEFAULT_DIAMETER_MM
         } else {
             *width
         };
         let height = if *height == 0 { width } else { *height };
-        let r = (f32::from(width.max(height)) / 2000.0).max(MIN_RADIUS_M);
+        let half = Vec2::new(f32::from(width), f32::from(height)) / 2000.0;
+        let (d0, d1) = invert_depths(kind, *start, *end, half.y * 2.0);
+        let half = half.max(Vec2::splat(MIN_RADIUS_M));
         // The centre stands half the pipe's height over its invert.
-        let lift = f32::from(height) / 2000.0;
+        let lift = half.y;
         let color = linear(kind_colour(kind));
 
         let world: Vec<Vec2> = points.iter().map(|&p| to_world(p)).collect();
@@ -256,7 +279,7 @@ fn build_cell(
                 let f = s as f32 / steps as f32;
                 let p = w[0].lerp(w[1], f);
                 let next = at(p, run + len * f);
-                push_pipe(&mut buf, prev, next, r, color);
+                push_pipe(&mut buf, prev, next, half, color);
                 prev = next;
             }
             run += len;
@@ -733,18 +756,41 @@ mod tests {
     #[test]
     fn a_missing_end_takes_the_other_and_both_take_the_default() {
         assert_eq!(
-            end_depths(SewerKind::Combined, Some(1.5), Some(2.0)),
+            invert_depths(SewerKind::Combined, Some(1.5), Some(2.0), 0.3),
             (1.5, 2.0)
         );
-        assert_eq!(end_depths(SewerKind::Combined, None, Some(2.0)), (2.0, 2.0));
         assert_eq!(
-            end_depths(SewerKind::Storm, None, None),
+            invert_depths(SewerKind::Combined, None, Some(2.0), 0.3),
+            (2.0, 2.0)
+        );
+        assert_eq!(
+            invert_depths(SewerKind::Storm, None, None, 0.3),
             (DEFAULT_DEPTH_M, DEFAULT_DEPTH_M)
         );
         assert_eq!(
-            end_depths(SewerKind::Pressure, None, None),
+            invert_depths(SewerKind::Pressure, None, None, 0.3),
             (DEFAULT_PRESSURE_DEPTH_M, DEFAULT_PRESSURE_DEPTH_M)
         );
+    }
+
+    /// Groningen's unmeasured 2 m culverts, and a measured end 0.1 m under the
+    /// street over a 315 mm pipe (both in the published cells, 2026-10-08):
+    /// neither may put a crown above the ground.
+    #[test]
+    fn no_crown_comes_out_of_the_street() {
+        for (start, end, height) in [
+            (None, None, 2.0),
+            (Some(1.79), Some(0.1), 0.315),
+            (None, Some(4.43), 2.2),
+        ] {
+            let (a, b) = invert_depths(SewerKind::Combined, start, end, height);
+            for d in [a, b] {
+                assert!(
+                    d - height >= MIN_COVER_M - 1e-6,
+                    "{start:?} {end:?} {height}"
+                );
+            }
+        }
     }
 
     #[test]
