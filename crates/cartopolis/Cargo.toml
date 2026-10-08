@@ -168,6 +168,9 @@ futures-lite = "2"
 # Portable `Instant`/`SystemTime` (ADR-033): plain `std` on native, JS-backed on
 # wasm where `std::time::Instant::now()` panics. Already in the tree via Bevy.
 web-time = "1"
+# Satellite orbits from published element sets (`systems::satellites`). Pure
+# Rust, so it builds for Android and the web unchanged.
+sgp4 = { version = "2.4", default-features = false, features = ["std"] }
 tzf-rs = "1.3.6"
 jiff = "0.2.34"
 # Direct handle on winit purely to build a `window::Icon` for the runtime OS

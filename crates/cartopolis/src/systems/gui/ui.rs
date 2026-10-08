@@ -719,14 +719,16 @@ pub fn sync_dialog_to_selection(
 /// (`systems::touch` fires an emulated `Right` for a held finger, which is what
 /// `picking` opens this on).
 ///
-/// It is reached from a point on the map rather than from a panel, so it is where
-/// the acts that take a *coordinate* live: route to or from here, and save here as
-/// a place.
+/// It is a ring of round buttons around the point (`systems::action_ring`,
+/// `docs/mockups/layers-and-ring/v1.png`), with a pill under it saying what was
+/// pointed at. It is reached from a point on the map rather than from a panel, so
+/// it is where the acts that take a *coordinate* live: route to or from here,
+/// save or share here as a place, build here. On an object the ring is the
+/// object's instead: touch it, edit it, script it, delete it, follow it.
 ///
-/// At 15 system parameters this is one short of Bevy's cap of 16. The next thing
-/// that needs world access here should be grouped into a `SystemParam` rather than
-/// added to the list — `camera_controls` hit the same wall and that is what it
-/// did.
+/// At 16 system parameters this is at Bevy's cap. The next thing that needs world
+/// access here should be grouped into a `SystemParam` rather than added to the
+/// list — `camera_controls` hit the same wall and that is what it did.
 pub fn render_context_menu(
     mut commands: Commands,
     mut egui: ResMut<EguiManager>,
@@ -747,208 +749,234 @@ pub fn render_context_menu(
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
     camera_state: Res<crate::resources::CameraState>,
     camera: crate::grid::AnchoredCamera,
+    mut attach: ResMut<crate::systems::camera_attach::CameraAttach>,
 ) {
     use crate::resources::RightPanel;
+    use crate::systems::action_ring::{self, RingAction, RingOutcome};
     use crate::systems::navigation::Endpoint;
 
     if !context_menu.visible {
         return;
     }
 
-    // Read before the menu closure, which already borrows half the world: this is
-    // one number, and taking the query in there as well buys nothing.
+    // Read before anything borrows the world: this is one number.
     let camera_altitude = camera.world_position_f64().map(|world| world.y);
+    let prim = context_menu.hit_prim_id.and_then(|id| {
+        prim_query
+            .iter()
+            .find(|(_, p, _)| p.id == id)
+            .map(|(_, p, _)| (id, p.name.clone()))
+    });
+    let lat_lng = context_menu.lat_lng;
 
-    // Position the context menu where the click landed. `screen_pos` came from
-    // `Window::cursor_position` (picking), so it is in window points and needs
-    // converting before egui can be asked to put anything there.
-    let menu_pos = egui.window_to_ui(context_menu.screen_pos);
-
-    let ctx = egui.ctx_mut();
-
-    // No title bar: this is a context menu, and egui's stock window chrome gave it
-    // a draggable caption reading "Context Menu" plus a collapse triangle — three
-    // affordances a menu does not have. The last entry is the way out (there is no
-    // Escape handler, and a phone has no Escape key), so nothing is lost with the
-    // caption's ✕.
-    Window::new("context menu")
-        .id(egui::Id::new("prim_context_menu"))
-        .title_bar(false)
-        .resizable(false)
-        .frame(egui::Frame::popup(&ctx.style_of(ctx.theme())))
-        .fixed_pos(menu_pos)
-        .show(ctx, |ui| {
-            // ── Routing, first and primary ──
-            //
-            // "Route to here" is the default act — a point on a map is a place you
-            // want to *go*, and asking for the destination is the whole planner.
-            // "Route from here" is the same gesture the other way round and is
-            // deliberately the quieter of the two: needing it means you are
-            // planning a journey that does not start where you are, which is the
-            // rarer case.
-            if let Some((lat, lng)) = context_menu.lat_lng {
-                if ui
-                    .button(format!("{}  Route to here", icons::FLAG))
-                    .on_hover_text("Set this point as the destination")
-                    .clicked()
-                {
-                    route.set_endpoint_at(Endpoint::To, lat, lng);
-                    // The start fills itself in: opening the panel runs
-                    // `RouteState::default_start`, which is where "here" is
-                    // defined (the camera against the map anchor). Resolving it a
-                    // second time here would mean carrying three more queries into
-                    // a menu that has no other use for them.
-                    *right_panel = RightPanel::Route;
-                    context_menu.visible = false;
-                }
-                if theme::action_button(ui, "Route from here")
-                    .on_hover_text("Set this point as the starting point")
-                    .clicked()
-                {
-                    route.set_endpoint_at(Endpoint::From, lat, lng);
-                    *right_panel = RightPanel::Route;
-                    context_menu.visible = false;
-                }
-
-                // ── Save the point you pointed at ──
-                //
-                // The same save-place button the corner overlay wears, because it is the same act
-                // with a different subject: the overlay's saves *where the camera
-                // is*, this saves *where you tapped*. Until now the second one had
-                // to be done by flying there first and then pressing save, which on a
-                // phone means losing the view you were looking at to record a spot
-                // inside it.
-                //
-                // Altitude and pose come from the camera rather than from the hit
-                // point, because a saved place is a remembered *view* as well as a
-                // coordinate (`CameraPose::apply`) — a place saved from orbit that
-                // returned you to ground level would be a different place.
-                if let Some(altitude) = camera_altitude {
-                    let star = icons::BOOKMARK_ADD;
-                    if ui
-                        .button(format!("{star}  Save this place"))
-                        .on_hover_text("Add this point to Places, named by reverse lookup")
-                        .clicked()
-                    {
-                        let id = store.add_bookmark(
-                            crate::systems::bookmarks::PLACEHOLDER_NAME.to_string(),
-                            lat,
-                            lng,
-                            altitude,
-                            crate::systems::geo_nav::CameraPose::capture(&camera_state),
-                        );
-                        // Named by the same reverse lookup that button uses, so a place
-                        // saved either way lands in the list reading as an address
-                        // rather than as six decimals.
-                        bookmarks.request_address(id, lat, lng);
-                        *right_panel = RightPanel::Places;
-                        context_menu.visible = false;
-                    }
-                }
-                ui.separator();
-            }
-
-            if let Some(prim_id) = context_menu.hit_prim_id {
-                // Clicked on an existing object.
-                //
-                // No key hints in these labels: `E` is *interact* (it was the
-                // flight climb key once), `D` strafes right, and Escape closes
-                // nothing — three hints that named the wrong key, on a surface a
-                // phone reaches with no keyboard at all. Delete/Backspace does
-                // delete a selection (`picking`), but that belongs beside the
-                // selection, not on a menu entry.
-                if ui.button("Edit object…").clicked() {
-                    for entity in selected_query.iter() {
-                        commands.entity(entity).remove::<Selected>();
-                    }
-                    for (entity, prim, transform) in prim_query.iter() {
-                        if prim.id == prim_id {
-                            commands.entity(entity).insert(Selected);
-                            game_state.selected_prim_id = Some(prim_id);
-                            game_state.editing_prim_id = Some(prim_id);
-                            populate_edit_dialog(&mut edit_dialog, prim, transform);
-                            edit_dialog.visible = true;
-                            break;
-                        }
-                    }
-                    context_menu.visible = false;
-                }
-
-                if ui.button("Delete object").clicked() {
-                    tracing::info!(prim_id, "deleting prim");
-                    game_state.prims_to_delete.push(prim_id);
-                    context_menu.visible = false;
-                }
-
-                // Scripts are server state, so both entries are online-only —
-                // `--offline` has no one to store a script or fire a touch.
-                if let Some(session) = online.as_ref() {
-                    if ui
-                        .button(format!("{}  Edit script…", icons::NOTE))
-                        .on_hover_text("Write a Luau script that runs on this object")
-                        .clicked()
-                    {
-                        script_editor.open(prim_id);
-                        *right_panel = RightPanel::Script;
-                        context_menu.visible = false;
-                    }
-                    if ui
-                        .button("Touch")
-                        .on_hover_text("Fire the object's on_touch handler")
-                        .clicked()
-                    {
-                        session.send(
-                            "touch prim",
-                            cartopolis_core::NetMessage::TouchPrim {
-                                request_id: 0,
-                                prim_id,
-                            },
-                        );
-                        context_menu.visible = false;
-                    }
-                }
-            } else if online.is_some() {
-                // Clicked on empty ground with a sim to put a prim in.
-                //
-                // Gated on the *session*, which is what "can I build here?"
-                // actually means: a prim is created by `CreatePrim` and lives in
-                // the simulator, so offline there is nobody to make one. It used
-                // to be gated on a `Region` entity existing — which came to the
-                // same thing by accident, since regions only ever arrived from a
-                // sim, and was the reason the entry silently vanished when an
-                // area-of-interest filter dropped the region a client was
-                // standing in.
-                if ui.button("Create object…").clicked() {
-                    edit_dialog.prim_id = None;
-                    edit_dialog.is_new = true;
-                    edit_dialog.name = "Object".to_string();
-                    edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
-                    edit_dialog.shape = "box".to_string();
-                    edit_dialog.texture_id = None;
-                    edit_dialog.model = None;
-                    edit_dialog.texture_picker_open = false;
-                    edit_dialog.path_cut_begin = 0.0;
-                    edit_dialog.path_cut_end = 1.0;
-                    edit_dialog.hollow = 0.0;
-                    edit_dialog.warp = crate::resources::PrimWarp::default();
-                    edit_dialog.surface = cartopolis_core::PrimSurface::default();
-                    edit_dialog.repeats_per_meter = 0.0;
-                    let hit = context_menu.hit_point;
-                    // Offset Y so the prim rests on the surface instead of being centred in it.
-                    edit_dialog.position = [hit.x, hit.y + 0.5, hit.z];
-                    edit_dialog.rotation = [0.0, 0.0, 0.0];
-                    edit_dialog.scale = [1.0, 1.0, 1.0];
-                    edit_dialog.visible = true;
-                    game_state.editing_prim_id = None;
-                    context_menu.visible = false;
-                }
-            }
-
-            ui.separator();
-            if ui.button("Close").clicked() {
-                context_menu.visible = false;
-            }
+    // The actions, primary first. No key hints in the labels: `E` is *interact*,
+    // `D` strafes right, and a phone reaches this with no keyboard at all.
+    let mut actions: Vec<RingAction> = Vec::new();
+    if prim.is_some() {
+        // Scripts are server state, so Touch and Script are online-only —
+        // `--offline` has no one to store a script or fire a touch.
+        if online.is_some() {
+            actions.push(RingAction {
+                key: "touch",
+                icon: icons::TOUCH,
+                label: "Touch",
+                hint: "Fire the object's on_touch handler",
+            });
+        }
+        actions.push(RingAction {
+            key: "edit",
+            icon: icons::RENAME,
+            label: "Edit",
+            hint: "Edit this object",
         });
+        if online.is_some() {
+            actions.push(RingAction {
+                key: "script",
+                icon: icons::NOTE,
+                label: "Script",
+                hint: "Write a Luau script that runs on this object",
+            });
+        }
+        actions.push(RingAction {
+            key: "follow",
+            icon: icons::FOLLOW,
+            label: "Follow",
+            hint: "Keep the camera on this object as it moves",
+        });
+        actions.push(RingAction {
+            key: "delete",
+            icon: icons::DELETE,
+            label: "Delete",
+            hint: "Delete this object",
+        });
+    } else if lat_lng.is_some() {
+        // "Route to here" is the default act — a point on a map is a place you
+        // want to *go*. "Route from here" is the quieter of the two: needing it
+        // means a journey that does not start where you are.
+        actions.push(RingAction {
+            key: "route_to",
+            icon: icons::ROUTE,
+            label: "Route here",
+            hint: "Set this point as the destination",
+        });
+        if camera_altitude.is_some() {
+            actions.push(RingAction {
+                key: "save",
+                icon: icons::BOOKMARK_ADD,
+                label: "Save",
+                hint: "Add this point to Places, named by reverse lookup",
+            });
+        }
+        actions.push(RingAction {
+            key: "share",
+            icon: icons::SHARE,
+            label: "Share",
+            hint: "Share a link that opens the map here",
+        });
+        // Gated on the *session*, which is what "can I build here?" means: a
+        // prim is created by `CreatePrim` and lives in the simulator.
+        if online.is_some() {
+            actions.push(RingAction {
+                key: "build",
+                icon: icons::BUILD,
+                label: "Build",
+                hint: "Create an object here",
+            });
+        }
+        actions.push(RingAction {
+            key: "route_from",
+            icon: icons::START,
+            label: "Route from",
+            hint: "Set this point as the starting point",
+        });
+    }
+    if actions.is_empty() {
+        context_menu.visible = false;
+        return;
+    }
+
+    let (title, detail) = match (&prim, lat_lng) {
+        (Some((_, name)), _) => (name.clone(), "Object".to_string()),
+        (None, Some((lat, lng))) => ("This spot".to_string(), format!("{lat:.5}, {lng:.5}")),
+        (None, None) => (String::new(), String::new()),
+    };
+    // A new id per opening, so the press that opened it is not read as a press
+    // off the ring (`action_ring::show`).
+    let at = egui.window_to_ui(context_menu.screen_pos);
+    let id = egui::Id::new("map_ring").with((
+        context_menu.screen_pos.x.to_bits(),
+        context_menu.screen_pos.y.to_bits(),
+    ));
+    let outcome = action_ring::show(egui.ctx_mut(), id, at, &title, &detail, &actions);
+
+    let chosen = match outcome {
+        RingOutcome::Open => return,
+        RingOutcome::Dismissed => {
+            context_menu.visible = false;
+            return;
+        }
+        RingOutcome::Chosen(key) => key,
+    };
+    context_menu.visible = false;
+
+    match (chosen, lat_lng, &prim) {
+        ("route_to", Some((lat, lng)), _) => {
+            route.set_endpoint_at(Endpoint::To, lat, lng);
+            // The start fills itself in: opening the panel runs
+            // `RouteState::default_start`, which is where "here" is defined.
+            *right_panel = RightPanel::Route;
+        }
+        ("route_from", Some((lat, lng)), _) => {
+            route.set_endpoint_at(Endpoint::From, lat, lng);
+            *right_panel = RightPanel::Route;
+        }
+        ("save", Some((lat, lng)), _) => {
+            // Altitude and pose come from the camera rather than from the hit
+            // point, because a saved place is a remembered *view* as well as a
+            // coordinate (`CameraPose::apply`).
+            if let Some(altitude) = camera_altitude {
+                let id = store.add_bookmark(
+                    crate::systems::bookmarks::PLACEHOLDER_NAME.to_string(),
+                    lat,
+                    lng,
+                    altitude,
+                    crate::systems::geo_nav::CameraPose::capture(&camera_state),
+                );
+                bookmarks.request_address(id, lat, lng);
+                *right_panel = RightPanel::Places;
+            }
+        }
+        ("share", Some((lat, lng)), _) => {
+            let alt = camera_altitude.unwrap_or(300.0).max(50.0);
+            let link = crate::systems::place_link::web_link(lat, lng, alt, None);
+            crate::systems::contacts::share(&link);
+        }
+        ("build", _, _) => {
+            edit_dialog.prim_id = None;
+            edit_dialog.is_new = true;
+            edit_dialog.name = "Object".to_string();
+            edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
+            edit_dialog.shape = "box".to_string();
+            edit_dialog.texture_id = None;
+            edit_dialog.model = None;
+            edit_dialog.texture_picker_open = false;
+            edit_dialog.path_cut_begin = 0.0;
+            edit_dialog.path_cut_end = 1.0;
+            edit_dialog.hollow = 0.0;
+            edit_dialog.warp = crate::resources::PrimWarp::default();
+            edit_dialog.surface = cartopolis_core::PrimSurface::default();
+            edit_dialog.repeats_per_meter = 0.0;
+            let hit = context_menu.hit_point;
+            // Offset Y so the prim rests on the surface instead of being centred in it.
+            edit_dialog.position = [hit.x, hit.y + 0.5, hit.z];
+            edit_dialog.rotation = [0.0, 0.0, 0.0];
+            edit_dialog.scale = [1.0, 1.0, 1.0];
+            edit_dialog.visible = true;
+            game_state.editing_prim_id = None;
+        }
+        ("edit", _, Some((prim_id, _))) => {
+            for entity in selected_query.iter() {
+                commands.entity(entity).remove::<Selected>();
+            }
+            for (entity, p, transform) in prim_query.iter() {
+                if p.id == *prim_id {
+                    commands.entity(entity).insert(Selected);
+                    game_state.selected_prim_id = Some(*prim_id);
+                    game_state.editing_prim_id = Some(*prim_id);
+                    populate_edit_dialog(&mut edit_dialog, p, transform);
+                    edit_dialog.visible = true;
+                    break;
+                }
+            }
+        }
+        ("delete", _, Some((prim_id, _))) => {
+            tracing::info!(prim_id, "deleting prim");
+            game_state.prims_to_delete.push(*prim_id);
+        }
+        ("script", _, Some((prim_id, _))) => {
+            script_editor.open(*prim_id);
+            *right_panel = RightPanel::Script;
+        }
+        ("touch", _, Some((prim_id, _))) => {
+            if let Some(session) = online.as_ref() {
+                session.send(
+                    "touch prim",
+                    cartopolis_core::NetMessage::TouchPrim {
+                        request_id: 0,
+                        prim_id: *prim_id,
+                    },
+                );
+            }
+        }
+        ("follow", _, Some((prim_id, name))) => {
+            attach.attach(
+                crate::systems::prim_geo::prim_attach_key(*prim_id),
+                name.clone(),
+                crate::systems::prim_geo::PRIM_ATTACH_RANGE,
+            );
+        }
+        _ => {}
+    }
 }
 
 /// Width of the object editor and its texture picker, clamped to the viewport.

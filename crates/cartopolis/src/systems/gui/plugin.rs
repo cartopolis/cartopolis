@@ -20,6 +20,8 @@ pub struct GuiPlugin {
     pub sewers: bool,
     /// `--underground`: layer keys, or `all`.
     pub underground: Vec<String>,
+    /// `--satellites`, for the same reason as `--sewers`.
+    pub satellites: bool,
 }
 
 impl Plugin for GuiPlugin {
@@ -37,6 +39,7 @@ impl Plugin for GuiPlugin {
                 let mut layers = systems::data_layers::DataLayers::default();
                 layers.aerial_enabled = self.aerial;
                 layers.sewers = self.sewers;
+                layers.satellites_enabled = self.satellites;
                 for (slot, def) in layers
                     .underground
                     .iter_mut()
@@ -110,6 +113,16 @@ impl Plugin for GuiPlugin {
                 // the card, whose Look inside it answers in the same frame.
                 systems::floor_picker::render_floor_picker
                     .after(systems::building_card::render_building_card)
+                    .before(systems::ui::render_main_menu),
+                // The menu a tap on a satellite opens, and the chip that says what the
+                // camera is riding: both floating, outside the panel chain on the
+                // card's terms. The menu first, so attaching from it puts the chip up
+                // in the same frame.
+                systems::satellites::render_satellite_menu
+                    .after(systems::building_card::render_building_card)
+                    .before(systems::ui::render_main_menu),
+                systems::camera_attach::render_attach_chip
+                    .after(systems::satellites::render_satellite_menu)
                     .before(systems::ui::render_main_menu),
                 // The sign-in screen (`systems::login_screen`). It draws into its
                 // own floating `Area` (a modal must sit above the main menu, which

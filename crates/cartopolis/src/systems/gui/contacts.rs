@@ -1349,7 +1349,7 @@ pub fn screen(
 
 /// Hand a text to the platform's share sheet where there is one, else the
 /// clipboard.
-fn share(text: &str) {
+pub(crate) fn share(text: &str) {
     #[cfg(target_os = "android")]
     {
         if crate::platform::android::share_text("Cartopolis", text).is_ok() {

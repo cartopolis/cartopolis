@@ -172,3 +172,40 @@ pub fn smooth_physical_prims(
         }
     }
 }
+
+/// The camera-attachment owner name for objects (`systems::camera_attach`); the
+/// id is the prim's.
+pub const PRIM_ATTACH_SOURCE: &str = "prim";
+
+/// The attachment key for prim `id`.
+#[must_use]
+pub fn prim_attach_key(id: i64) -> crate::systems::camera_attach::AttachKey {
+    crate::systems::camera_attach::AttachKey {
+        source: PRIM_ATTACH_SOURCE,
+        id: id as u64,
+    }
+}
+
+/// Where the camera sits round a followed object: a few metres off, as a
+/// person would stand to look at it.
+pub const PRIM_ATTACH_RANGE: crate::systems::camera_attach::AttachRange =
+    crate::systems::camera_attach::AttachRange {
+        start_m: 12.0,
+        min_m: 2.0,
+        max_m: 5_000.0,
+    };
+
+/// While the camera follows an object, tell it where the object is. A prim a
+/// script moves is the case this is for; one that is deleted lets the camera go.
+pub fn report_attached_prim(
+    prims: Query<(&Prim, Option<&GridCell>, &Transform)>,
+    mut attach: ResMut<crate::systems::camera_attach::CameraAttach>,
+) {
+    let Some(key) = attach.key().filter(|k| k.source == PRIM_ATTACH_SOURCE) else {
+        return;
+    };
+    match prims.iter().find(|(p, _, _)| p.id as u64 == key.id) {
+        Some((_, cell, tf)) => attach.report(key, world_position(cell, tf), DVec3::Y),
+        None => attach.detach_if(key),
+    }
+}

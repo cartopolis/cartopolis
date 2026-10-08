@@ -566,6 +566,28 @@ impl Plugin for MapPlugin {
             )
                 .in_set(ClientPhase::Present),
         );
+        // Satellites round the globe: the catalogue and the snapshot are streamed
+        // like any layer; the uniform that carries the snapshot forward is written
+        // after the camera, so the points are where this frame's view expects them.
+        app.init_resource::<systems::satellites::SatelliteLayer>()
+            .watch_stream::<systems::satellites::SatelliteLayer>()
+            .add_systems(
+                Update,
+                (
+                    systems::satellites::pick_satellite.in_set(ClientPhase::Input),
+                    systems::satellites::drive_satellites.in_set(ClientPhase::Stream),
+                    // The attached satellite's position, before the camera rides it.
+                    systems::satellites::report_attached_satellite
+                        .in_set(ClientPhase::Move)
+                        .before(systems::free_camera::camera_controls),
+                    (
+                        systems::satellites::update_satellite_material,
+                        systems::satellites::draw_selected_track,
+                    )
+                        .after(systems::free_camera::camera_controls)
+                        .in_set(ClientPhase::Present),
+                ),
+            );
         // After every streamer has said whether it is busy this frame.
         app.init_resource::<systems::load_timing::LoadTimings>()
             .add_systems(

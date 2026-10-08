@@ -16,6 +16,7 @@ pub mod grass;
 pub mod ground_detail;
 pub mod particles;
 pub mod road_depth;
+pub mod satellites;
 pub mod sky;
 pub mod sky_dome;
 pub mod sun_rays;
@@ -45,6 +46,7 @@ impl Plugin for MaterialsPlugin {
             .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
             .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
             .add_plugins(MaterialPlugin::<particles::ParticleMaterial>::default())
+            .add_plugins(MaterialPlugin::<satellites::SatelliteMaterial>::default())
             .add_plugins(MaterialPlugin::<water::WaterMaterial>::default())
             // The basemap and the ground surfaces, carrying the half-metre residual slope
             // the geometry is too coarse to hold (`systems::ground_detail`).

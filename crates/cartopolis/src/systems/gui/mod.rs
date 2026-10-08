@@ -5,6 +5,7 @@
 mod plugin;
 pub use plugin::GuiPlugin;
 
+pub mod action_ring;
 pub mod bookmarks;
 pub mod building_card;
 pub mod call_screen;
@@ -21,6 +22,7 @@ pub mod floor_picker;
 pub mod glass;
 pub mod hud;
 pub mod icons;
+pub mod layer_tiles;
 pub mod login_screen;
 pub mod map_osd;
 pub mod model_library;

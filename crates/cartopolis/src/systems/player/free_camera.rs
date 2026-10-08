@@ -1424,6 +1424,10 @@ pub fn camera_controls(
         (With<crate::components::Avatar>, Without<FreeCamera>),
     >,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    // How far out the satellite layer needs the far plane (0 while it is off).
+    orbit: Res<crate::systems::satellites::SatelliteLayer>,
+    // Something the camera is riding along with (`systems::camera_attach`).
+    mut attach: ResMut<crate::systems::camera_attach::CameraAttach>,
 ) {
     // Unpacked rather than used through `input.` so the body reads the same as
     // it did when these were five separate parameters.
@@ -1496,6 +1500,28 @@ pub fn camera_controls(
     // the working copies above, and returns; nothing here returns early, so the
     // depth range and the write-back below run after every mode.
     let mode = camera_state.mode;
+
+    // An attachment (`systems::camera_attach`) takes the place of the mode while it
+    // lasts. Picking another mode lets go of it; letting go, however it happens,
+    // hands the view back from where the camera now is.
+    let attached = attach.take_frame();
+    if let Some(rig) = attach.rig {
+        // A new mode was entered by the switcher, which has already seeded it.
+        let switched = rig.mode != mode;
+        if switched {
+            attach.detach();
+        }
+        if !attach.active() {
+            if !switched {
+                let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
+                let up = (camera_transform.rotation * Vec3::Y).as_dvec3();
+                release_attachment(&mut camera_state, &globe, cam_world, up);
+            }
+            attach.rig = None;
+        }
+    }
+    let attached = attached.filter(|_| attach.active());
+
     let ctx = ModeCtx {
         keyboard_input: &keyboard_input,
         mouse_input: &mouse_input,
@@ -1519,10 +1545,11 @@ pub fn camera_controls(
         projection: &mut projection,
         prev_cell,
     };
-    match mode {
-        CameraMode::Avatar => follow_mode(ctx),
-        CameraMode::Free => fly_mode(ctx),
-        CameraMode::Orbit => earth_mode(ctx),
+    match (attached, mode) {
+        (Some(target), _) => attached_mode(ctx, target, &mut attach.rig),
+        (None, CameraMode::Avatar) => follow_mode(ctx),
+        (None, CameraMode::Free) => fly_mode(ctx),
+        (None, CameraMode::Orbit) => earth_mode(ctx),
     }
 
     // Depth range for the space tier — applied in EVERY camera mode, not just
@@ -1542,8 +1569,17 @@ pub fn camera_controls(
             // Keep `near` below the star/moon shells (~150 km) so they stay visible
             // from deep space; reversed-z keeps depth precise even with a small
             // near against the far-limb `far`.
-            let near = (altitude as f32 * 0.01).clamp(100.0, 50_000.0);
-            let far = (dist_center as f32 + globe.radius * 2.5).clamp(DEFAULT_FAR, 60_000_000.0);
+            let mut near = (altitude as f32 * 0.01).clamp(100.0, 50_000.0);
+            // Riding along with something in orbit puts it metres away, far
+            // inside a near plane sized for looking at the planet.
+            if let Some(d) = attach.distance_m() {
+                near = near.min(d as f32 * 0.3).max(1.0);
+            }
+            // Past the far limb, or — with the satellite layer on — past the
+            // geostationary belt on the far side of the planet. Reversed-z keeps
+            // the extra range nearly free in precision.
+            let reach = (globe.radius * 2.5).max(orbit.far_reach_m());
+            let far = (dist_center as f32 + reach).clamp(DEFAULT_FAR, 120_000_000.0);
             set_projection(&mut projection, near, far);
         } else if altitude as f32 > crate::systems::globe::GLOBE_DRAW_ALT {
             // The band where both tiers are drawn. The 200 km default far plane
@@ -2360,6 +2396,171 @@ fn fly_mode(ctx: ModeCtx) {
 
 /// Earth mode (`CameraMode::Orbit`): the ground orbit, and the globe orbit it
 /// hands off to in space.
+/// Steepest the attached camera may look down on (or up at) its target, radians
+/// from the target's horizon — short of straight, where "up" stops meaning
+/// anything for `look_at`.
+const ATTACH_PITCH_LIMIT: f32 = 1.45;
+
+/// The elevation an attachment starts at: above the target, so the ground (or
+/// the planet) is behind it.
+const ATTACH_START_PITCH: f32 = 0.6;
+
+/// Riding along with an attached target (`systems::camera_attach`): the camera
+/// sits on a sphere around it, in the target's own horizon frame, so it keeps
+/// its place relative to the thing as the thing moves. Drag turns round it,
+/// the wheel, a pinch or the on-screen pair zoom. The first frame seeds the rig
+/// from wherever the camera is, then glides in to the owner's start distance —
+/// attaching from orbit reads as flying down to the satellite, not as a cut.
+fn attached_mode(
+    ctx: ModeCtx,
+    (target, up, range): (DVec3, DVec3, crate::systems::camera_attach::AttachRange),
+    slot: &mut Option<crate::systems::camera_attach::AttachRig>,
+) {
+    let ModeCtx {
+        mouse_input,
+        cursor_moved_events,
+        mouse_wheel_events,
+        touch,
+        osd,
+        camera_state,
+        delta_time,
+        gizmo_state,
+        egui_manager,
+        globe,
+        camera_transform,
+        camera_cell,
+        ..
+    } = ctx;
+
+    // The target's horizon frame. North is the planet's axis flattened onto the
+    // horizon; at a pole, where that vanishes, any perpendicular will do.
+    let axis = if globe.ready {
+        globe.north_axis_local().as_dvec3()
+    } else {
+        DVec3::NEG_Z
+    };
+    let east = axis
+        .cross(up)
+        .try_normalize()
+        .unwrap_or_else(|| up.any_orthonormal_vector());
+    let north = up.cross(east);
+
+    let cam_world = cell_origin(camera_cell) + camera_transform.translation.as_dvec3();
+    let rig = slot.get_or_insert_with(|| {
+        let off = cam_world - target;
+        let len = off.length().max(1.0);
+        crate::systems::camera_attach::AttachRig {
+            yaw: off.dot(east).atan2(off.dot(north)) as f32,
+            // Always above the target, looking down past it at the planet. Taking
+            // the angle from where the camera was put it *under* a satellite on
+            // the far side of the Earth, looking out at an empty sky.
+            pitch: ATTACH_START_PITCH,
+            distance: len.min(range.max_m.max(range.start_m)),
+            distance_target: range.start_m.clamp(range.min_m, range.max_m),
+            mode: camera_state.mode,
+        }
+    });
+
+    // Turn round the target: a plain drag, a finger, or the middle button.
+    let mut rot = Vec2::ZERO;
+    if gizmo_state.active_axis.is_some()
+        || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+    {
+        camera_state.pan_offset = None;
+        cursor_moved_events.clear();
+    } else {
+        if mouse_input.pressed(MouseButton::Left) || mouse_input.pressed(MouseButton::Middle) {
+            for event in cursor_moved_events.read() {
+                if let Some(last) = camera_state.pan_offset {
+                    rot += event.position - last;
+                }
+                camera_state.pan_offset = Some(event.position);
+            }
+        } else {
+            camera_state.pan_offset = None;
+            cursor_moved_events.clear();
+        }
+        if touch.pair() {
+            rot.x += touch.twist / ORBIT_ROT_SENS;
+            rot.y += touch.two_drag.y;
+            rig.distance_target /= f64::from(touch.pinch.max(1e-3));
+        } else {
+            rot += touch.drag;
+        }
+    }
+    rig.yaw -= rot.x * ORBIT_ROT_SENS;
+    rig.pitch = (rig.pitch + rot.y * ORBIT_ROT_SENS).clamp(-ATTACH_PITCH_LIMIT, ATTACH_PITCH_LIMIT);
+
+    for event in mouse_wheel_events.read() {
+        rig.distance_target *= f64::from((1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0));
+    }
+    if osd.zoom != 0.0 {
+        rig.distance_target *= f64::from(osd_zoom_factor(osd.zoom, delta_time));
+    }
+    rig.distance_target = rig.distance_target.clamp(range.min_m, range.max_m);
+    // Glide in log space: the attach often starts thousands of kilometres out,
+    // and a linear glide would cover almost all of that in the first frame.
+    let glide = 1.0 - (-ZOOM_GLIDE_RATE * f64::from(delta_time)).exp();
+    rig.distance = (rig.distance.max(1e-3).ln()
+        + (rig.distance_target.ln() - rig.distance.max(1e-3).ln()) * glide)
+        .exp();
+
+    let (cp, sp) = (f64::from(rig.pitch.cos()), f64::from(rig.pitch.sin()));
+    let (sy, cy) = (f64::from(rig.yaw.sin()), f64::from(rig.yaw.cos()));
+    let offset = (east * sy * cp + north * cy * cp + up * sp) * rig.distance;
+    let cam = target + offset;
+
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+    let (new_cell, local) = grid.translation_to_grid(cam);
+    *camera_cell = new_cell;
+    camera_transform.translation = local;
+    let target_local = (target - cell_origin(&new_cell)).as_vec3();
+    camera_transform.look_at(target_local, up.as_vec3());
+}
+
+/// Hand the view back to the mode that was running when an attachment ends,
+/// from wherever the camera now is — never back to the pose that mode held
+/// before the attachment, which would throw the view across the planet.
+fn release_attachment(
+    camera_state: &mut CameraState,
+    globe: &crate::systems::globe::GlobeState,
+    cam_world: DVec3,
+    up: DVec3,
+) {
+    match camera_state.mode {
+        CameraMode::Orbit => {
+            let center = globe.center_local.as_dvec3();
+            let off = cam_world - center;
+            let d = off.length();
+            if globe.ready && d - f64::from(globe.radius) > SPACE_EXIT_ALT {
+                // Exactly the surface→space handoff: the direction and distance
+                // from the Earth's centre, and the heading that keeps "up" up.
+                let dir = off / d;
+                camera_state.orbit_space = true;
+                camera_state.orbit_dir = dir;
+                camera_state.orbit_distance = d;
+                camera_state.orbit_distance_target = d;
+                camera_state.orbit_up = up;
+                camera_state.orbit_heading =
+                    globe_heading(dir, globe.north_axis_local().as_dvec3(), up);
+                camera_state.orbit_initialized = true;
+                camera_state.orbit_has_pose = true;
+            } else {
+                // Near the ground: seed a fresh focus from the current view.
+                camera_state.orbit_space = false;
+                camera_state.orbit_initialized = false;
+            }
+        }
+        CameraMode::Free => {
+            // No saved spot: the first frame seeds the look from the live view.
+            camera_state.free_saved = None;
+            camera_state.free_initialized = false;
+            camera_state.free_velocity = Vec3::ZERO;
+        }
+        CameraMode::Avatar => camera_state.avatar_initialized = false,
+    }
+}
+
 fn earth_mode(ctx: ModeCtx) {
     let ModeCtx {
         keyboard_input,

@@ -29,3 +29,10 @@ backend = "https://nomads.ncep.noaa.gov/"
 [[proxy]]
 rewrite = "/up/ahn/"
 backend = "https://service.pdok.nl/"
+
+# CelesTrak's element sets, for the satellite layer (`systems::satellites`). It
+# sends no Access-Control-Allow-Origin, so the browser asks its own origin; the
+# Caddy entry `/up/celestrak/*` mirrors this in production.
+[[proxy]]
+rewrite = "/up/celestrak/"
+backend = "https://celestrak.org/"

@@ -18,6 +18,8 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<systems::touch::TouchGestures>()
+            // What the camera is riding along with (`systems::camera_attach`).
+            .init_resource::<systems::camera_attach::CameraAttach>()
             .init_resource::<systems::touch::UiClaimRegions>()
             // What an agent driving this client asked for (`systems::mcp`); read
             // beside the on-screen controls by `avatar::handle_avatar_movement`.
@@ -109,6 +111,14 @@ impl Plugin for PlayerPlugin {
                 .after(network::apply_network_snapshot)
                 .before(rendering::spawn_prims)
                 .in_set(ClientPhase::Stream),
+        )
+        // A followed object's position, after it has been placed and before the
+        // camera rides it (`systems::camera_attach`).
+        .add_systems(
+            Update,
+            systems::prim_geo::report_attached_prim
+                .in_set(ClientPhase::Move)
+                .before(systems::free_camera::camera_controls),
         )
         .add_systems(
             Update,

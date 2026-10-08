@@ -212,6 +212,13 @@ pub(crate) struct Cli {
     #[arg(long, value_delimiter = ',')]
     pub(crate) underground: Vec<String>,
 
+    /// Switch the **satellites** layer on for this run (`systems::satellites`):
+    /// every active satellite round the globe, drawn from space. Opt-in, as it is
+    /// in the panel, because it is a download of its own. `CARTO_SATELLITES_URL`
+    /// points it at another element-set file.
+    #[arg(long)]
+    pub(crate) satellites: bool,
+
     /// Beside every capture, write the aerial photograph of the ground it looks
     /// at — `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB with the camera and the
     /// point it is aimed at drawn on (`systems::aerial_reference`). The check a

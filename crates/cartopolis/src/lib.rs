@@ -939,6 +939,7 @@ fn run_client() {
             aerial: cli.aerial,
             sewers: cli.sewers,
             underground: cli.underground.clone(),
+            satellites: cli.satellites,
         },
         systems::dev::DevPlugin,
     ));

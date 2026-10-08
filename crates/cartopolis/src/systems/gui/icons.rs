@@ -301,6 +301,38 @@ icons! {
     /// A playground. `toys` is the Material name a playground reaches for first
     /// and it draws a toy *car*, which on a map is a road, not a swing.
     SWING = "\u{ea52}", "attractions";
+    /// The Layers sheet's six categories (`data_layers::LayerCategory`).
+    CAT_MAP = "\u{e55b}", "map";
+    CAT_CITY = "\u{e7f1}", "location_city";
+    CAT_MOVING = "\u{e940}", "commute";
+    CAT_UNDER = "\u{f200}", "foundation";
+    CAT_ORBIT = "\u{eb3a}", "satellite_alt";
+    /// Layer tiles.
+    BUILDINGS = "\u{e7ee}", "domain";
+    GRASS = "\u{f205}", "grass";
+    SIGNPOST = "\u{eb91}", "signpost";
+    FLOOD = "\u{ebe6}", "flood";
+    LABEL = "\u{e893}", "label";
+    ROAD = "\u{ef3b}", "add_road";
+    WATER = "\u{f084}", "water";
+    PLUMBING = "\u{f107}", "plumbing";
+    LANDSCAPE = "\u{e564}", "landscape";
+    BOREHOLE = "\u{e258}", "vertical_align_bottom";
+    HEAT_PUMP = "\u{ec18}", "heat_pump";
+    VALVE = "\u{e224}", "valve";
+    EARTHQUAKE = "\u{f64f}", "earthquake";
+    DANGER = "\u{e99a}", "dangerous";
+    BUS = "\u{eff6}", "directions_bus";
+    GROUP = "\u{ea21}", "group";
+    AERIAL = "\u{e562}", "satellite";
+    NO_GROUND = "\u{e53c}", "layers_clear";
+    /// The ring of actions (`action_ring`).
+    SHARE = "\u{e80d}", "share";
+    BUILD = "\u{e146}", "add_box";
+    TOUCH = "\u{e913}", "touch_app";
+    FOLLOW = "\u{e3b4}", "center_focus_strong";
+    ORBIT_PATH = "\u{f0c1}", "conversion_path";
+    MORE = "\u{e5d3}", "more_horiz";
 }
 
 /// The icon for a POI category.

@@ -6,6 +6,7 @@ mod plugin;
 pub use plugin::PlayerPlugin;
 
 pub mod avatar;
+pub mod camera_attach;
 pub mod collision;
 pub mod free_camera;
 pub mod gizmo;

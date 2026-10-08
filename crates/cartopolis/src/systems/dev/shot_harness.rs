@@ -962,6 +962,11 @@ pub struct ShotMetrics {
     /// `avatar_meshes == 0` was.
     pub particle_emitters: usize,
     pub particle_quads: usize,
+    /// Satellites in the snapshot the layer is drawing, and how many the
+    /// catalogue holds (`systems::satellites`). 0 / 0 with the layer off; a
+    /// catalogue with nothing drawn is a camera below the space tier.
+    pub satellites_drawn: usize,
+    pub satellites_catalogued: usize,
     /// Mesh entities under the local avatar, and how many the view rendered.
     ///
     /// The same split the route and globe counts make, added because the avatar
@@ -1237,6 +1242,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
+satellites_drawn,satellites_catalogued,\
 grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,ground_unopened,backdrop_present,backdrop_visible,backdrop_depth_m,backdrop_half_m,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
@@ -2056,6 +2062,8 @@ pub struct ScriptedCards<'w, 's> {
     menu: ResMut<'w, crate::systems::ui::MainMenu>,
     sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
+    /// The map's ring of actions, for `--ui ring`.
+    context_menu: ResMut<'w, crate::resources::ContextMenuState>,
     /// Nested rather than added beside: the ceiling this type exists to work
     /// around is a *parameter* count, so a second bundle would hit it again.
     chat: ScriptedChat<'w, 's>,
@@ -2113,6 +2121,12 @@ const UI_ELEMENTS: &[&str] = &[
     "avatar",
     "appearance",
     "layers",
+    // The Layers panel's categories, alongside `layers`.
+    "city",
+    "under",
+    "orbit",
+    // The ring of actions on a point in the middle of the view.
+    "ring",
     "places",
     "bookmarks",
     "route",
@@ -2204,6 +2218,17 @@ pub fn open_scripted_ui(
     // is here for the reason `--ui menu` is: a card nothing can screenshot is a
     // card nobody reviews, and this one is a form that only opens by hand.
     cards.sign_in.open = want("signin");
+    // `--ui ring` opens the map's ring of actions on the middle of the view, as a
+    // long press there would: it only ever opens from a gesture otherwise.
+    cards.context_menu.visible = want("ring");
+    if want("ring") {
+        // The middle of the view. A headless run draws egui at scale 1, where
+        // window points and ui points are the same.
+        let size = egui.viewport_pts();
+        cards.context_menu.screen_pos = Vec2::new(size.x, size.y) / 2.0;
+        cards.context_menu.hit_prim_id = None;
+        cards.context_menu.lat_lng = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
+    }
     // A scripted run reads no `user.json`, so the form comes up empty — and an
     // empty form is the *disabled* state of the button, which is the one state
     // this capture should not be documenting. Seed it with the address the docs
@@ -2218,6 +2243,16 @@ pub fn open_scripted_ui(
     cards.menu.open = want("menu");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
+    // Which category the Layers panel opens on: `--ui layers,orbit`.
+    layers.category = if want("orbit") {
+        crate::systems::layer_tiles::LayerCategory::Orbit
+    } else if want("under") {
+        crate::systems::layer_tiles::LayerCategory::Under
+    } else if want("city") {
+        crate::systems::layer_tiles::LayerCategory::City
+    } else {
+        crate::systems::layer_tiles::LayerCategory::Map
+    };
     bookmarks.panel_open = want("bookmarks") || want("places");
     // Driver mode is a *mode*, not a panel: it takes the map over (bare basemap,
     // locked chase camera, navigation chrome). Written unconditionally like the
@@ -3229,6 +3264,8 @@ pub struct ShotReadouts<'w, 's> {
     /// while its coverage mask is still on a worker photographs a lawn that has
     /// not arrived.
     grass: Res<'w, crate::systems::grass::GrassPatches>,
+    /// The satellite layer — a metric, and a settle input through its stream.
+    satellites: Res<'w, crate::systems::satellites::SatelliteLayer>,
     /// The Overpass street-detail streamer and its coarse sibling, the
     /// tall-structure lane — settle inputs (a ground-level capture without its
     /// lamps and trees photographs a half-built street) and the `prop_meshes`
@@ -3962,6 +3999,8 @@ fn record_metrics(
         shadows_pref: readouts.prefs.shadows_on(),
         particle_emitters: particles.0 as usize,
         particle_quads: particles.1 as usize,
+        satellites_drawn: readouts.satellites.drawn(),
+        satellites_catalogued: readouts.satellites.catalogued(),
         grass_patches: grass.0,
         grass_slots: grass.1,
         grass_rendered: grass.2,
@@ -4799,6 +4838,8 @@ mod tests {
             shadows_pref: false,
             particle_emitters: 0,
             particle_quads: 0,
+            satellites_drawn: 0,
+            satellites_catalogued: 0,
             avatar_meshes: 0,
             avatar_floor_m: 0.0,
             avatar_rendered: 0,

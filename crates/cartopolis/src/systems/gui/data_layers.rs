@@ -467,19 +467,6 @@ pub struct DataLayers {
     /// collider set: `collision::sync_prop_colliders` gates on this, and a prop
     /// that is hidden but still solid is an invisible wall.
     pub furniture_enabled: bool,
-    /// Master toggle for **Life**: everything on the map that moves — the
-    /// generated cars and people, and the real vehicles their operators report.
-    ///
-    /// A group rather than three loose rows because motion is one property, and
-    /// it is the one a viewer either wants or does not independently of what is
-    /// surveyed underneath it: judging a still, or a slow phone, is one tap here
-    /// rather than three hunted out of three different lists.
-    ///
-    /// **Read it through [`Self::cars_visible`] and its two siblings, never
-    /// directly.** A master toggle whose consumers each have to remember to `&&`
-    /// it is a master toggle that will eventually be forgotten by one of them,
-    /// and that layer then keeps moving with the group switched off.
-    pub life_enabled: bool,
     /// Feature toggle (under Life): the ambient cars (`systems::traffic`) driving
     /// the streets the map already draws, off the same `streets` layer.
     ///
@@ -548,6 +535,15 @@ pub struct DataLayers {
     /// router keep the vector template, so nothing about the geometry, the
     /// routing, the street labels or the water shading changes with it.
     pub aerial_enabled: bool,
+    /// Satellites in orbit around the globe (`systems::satellites`), shown only
+    /// from space. Off on a fresh install: it is a download of its own.
+    pub satellites_enabled: bool,
+    /// Which kinds of satellite are drawn, indexed by `satellites::SatKind`.
+    pub satellite_kinds: [bool; crate::systems::satellites::KINDS.len()],
+    /// The Layers panel's open category. View state, not a preference.
+    pub category: crate::systems::layer_tiles::LayerCategory,
+    /// The tile whose ⋯ options are showing under the grid, by its label.
+    pub open_tile: Option<&'static str>,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
     /// Terrain-field revision the live marker cells were built against.
@@ -607,25 +603,25 @@ pub struct DataLayers {
 impl DataLayers {
     /// Should the ambient cars be drawn and driven? (`systems::traffic`)
     ///
-    /// The three `*_visible` answers below are the only way the Life group is
-    /// read: each folds the group's master toggle into its own, so a consumer
-    /// cannot half-apply it. See [`Self::life_enabled`].
+    /// Read through these three rather than the fields: there was a Life master
+    /// switch over all three once (retired with the categorised Layers panel), and
+    /// the accessors are where a gate like it would go again.
     #[must_use]
     pub fn cars_visible(&self) -> bool {
-        self.life_enabled && self.traffic_enabled
+        self.traffic_enabled
     }
 
     /// Should the ambient people be drawn and walked? (`systems::traffic`)
     #[must_use]
     pub fn people_visible(&self) -> bool {
-        self.life_enabled && self.people_enabled
+        self.people_enabled
     }
 
     /// Should the live vehicle feed be polled and drawn?
     /// (`systems::transit_vehicles`)
     #[must_use]
     pub fn live_vehicles_visible(&self) -> bool {
-        self.life_enabled && self.vehicles_enabled
+        self.vehicles_enabled
     }
 
     /// Snapshot the panel's toggles for persistence (`data/user.json`). While
@@ -659,7 +655,6 @@ impl DataLayers {
             tdbag: self.tdbag_enabled,
             osm_buildings: self.osm_buildings_enabled,
             map: self.map_enabled,
-            life: self.life_enabled,
             trees,
             grass,
             roads_textured: self.roads_textured,
@@ -678,6 +673,8 @@ impl DataLayers {
             friends: self.friends_enabled,
             street_detail,
             aerial: self.aerial_enabled,
+            satellites: self.satellites_enabled,
+            satellite_kinds: crate::systems::satellites::kinds_to_prefs(&self.satellite_kinds),
             vehicles,
             overlays: LAYER_DEFS
                 .iter()
@@ -744,7 +741,6 @@ impl DataLayers {
         self.tdbag_enabled = p.tdbag;
         self.osm_buildings_enabled = p.osm_buildings;
         self.map_enabled = p.map;
-        self.life_enabled = p.life;
         self.trees_enabled = p.trees;
         self.grass_enabled = p.grass;
         self.roads_textured = p.roads_textured;
@@ -765,6 +761,8 @@ impl DataLayers {
         self.friends_enabled = p.friends;
         self.street_detail_enabled = p.street_detail;
         self.aerial_enabled = p.aerial;
+        self.satellites_enabled = p.satellites;
+        self.satellite_kinds = crate::systems::satellites::kinds_from_prefs(&p.satellite_kinds);
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
             if let Some(on) = p.overlays.get(def.key) {
@@ -816,7 +814,6 @@ impl Default for DataLayers {
             // On, like the other group masters: what a fresh install starts
             // *with* is decided by the rows under it, which ride the render
             // budget. A master that started off would hide them twice.
-            life_enabled: true,
             vehicles_enabled: false,
             trees_enabled: detail,
             grass_enabled: detail,
@@ -841,6 +838,10 @@ impl Default for DataLayers {
             // *replaces* the drawn ground rather than adding to it, which is a
             // change to how the map looks and not only to what it knows.
             aerial_enabled: false,
+            satellites_enabled: false,
+            satellite_kinds: [true; crate::systems::satellites::KINDS.len()],
+            category: crate::systems::layer_tiles::LayerCategory::default(),
+            open_tile: None,
             terrain_revision: 0,
             popup: None,
             anchor: None,
@@ -2179,6 +2180,7 @@ pub fn animate_stop_rings(
 ///
 /// Split out of [`render_data_layers_panel`] so a unit test can drive it with
 /// synthetic clicks. Returns the 3DBAG checkbox's response for that test.
+#[cfg(test)]
 fn buildings_section(
     ui: &mut egui::Ui,
     dl: &mut DataLayers,
@@ -2189,7 +2191,20 @@ fn buildings_section(
         &mut dl.buildings_enabled,
         egui::RichText::new("Buildings"),
     );
-    ui.indent("buildings", |ui| {
+    ui.indent("buildings", |ui| building_sources(ui, dl, tdbag_available))
+        .inner
+}
+
+/// The Buildings tile's options: one checkbox per source, in precedence order —
+/// 3DBAG first (where it covers and is on, it owns the cell), the OSM fallback
+/// beneath. Returns the 3DBAG checkbox's response, for the click log and the
+/// test.
+fn building_sources(
+    ui: &mut egui::Ui,
+    dl: &mut DataLayers,
+    tdbag_available: bool,
+) -> Option<egui::Response> {
+    {
         // Grayed out while the master is off: the sources are gated by it, so
         // an active-looking sub-checkbox would promise something it can't do.
         ui.add_enabled_ui(dl.buildings_enabled, |ui| {
@@ -2208,17 +2223,351 @@ fn buildings_section(
             tdbag
         })
         .inner
-    })
-    .inner
+    }
 }
 
-/// The Layers side panel (menu bar ▸ Layers): a checkbox per layer with a
-/// colour legend, plus the required OSM attribution. Styled like the AI
-/// assistant panel (right side panel, resizable).
+/// What the Layers panel needs to know about the view: whether the camera is in
+/// space, which decides which tiles can be seen from here.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LayerView<'w, 's> {
+    globe: Res<'w, crate::systems::globe::GlobeState>,
+    camera: AnchoredCamera<'w, 's>,
+}
+
+impl LayerView<'_, '_> {
+    fn in_space(&self) -> bool {
+        self.camera
+            .get()
+            .is_some_and(|(c, t)| self.globe.in_space(c, t))
+    }
+}
+
+/// Why a tile that needs the ground cannot show while the map is off.
+const NEEDS_GROUND: &str = "Needs the ground: pick a map under Map";
+/// Why a ground-level layer cannot show from orbit.
+const NEAR_GROUND: &str = "Shown near the ground: zoom in";
+
+/// How many layers are on in each category, in `LayerCategory::ALL` order.
+fn category_counts(dl: &DataLayers) -> [usize; 6] {
+    let n = |xs: &[bool]| xs.iter().filter(|x| **x).count();
+    let places: Vec<bool> = dl
+        .layers
+        .iter()
+        .map(|l| l.enabled)
+        .chain([dl.friends_enabled])
+        .collect();
+    let under: Vec<bool> = std::iter::once(dl.sewers)
+        .chain(dl.underground.iter().copied())
+        .collect();
+    [
+        n(&[dl.street_labels, dl.roads_textured, dl.water_shading]),
+        n(&[
+            dl.buildings_enabled,
+            dl.trees_enabled,
+            dl.grass_enabled,
+            dl.furniture_enabled,
+            dl.street_detail_enabled,
+            dl.flood_defences,
+        ]),
+        n(&places),
+        n(&[dl.traffic_enabled, dl.people_enabled, dl.vehicles_enabled]),
+        n(&under),
+        n(&[dl.satellites_enabled]),
+    ]
+}
+
+/// The icon for an underground layer, by its key.
+fn underground_icon(key: &str) -> &'static str {
+    match key {
+        "geotop" => icons::LANDSCAPE,
+        "boreholes" => icons::BOREHOLE,
+        "groundwater" => icons::FOUNTAIN,
+        "wko" => icons::HEAT_PUMP,
+        "pipelines" => icons::VALVE,
+        "gasfield" => icons::EARTHQUAKE,
+        "contamination" => icons::DANGER,
+        _ => icons::CAT_UNDER,
+    }
+}
+
+/// The tiles of the open category, and the options of the tile whose ⋯ is open.
+fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_available: bool) {
+    use crate::systems::layer_tiles::{basemap_choice, tile_grid, Basemap, LayerCategory, Tile};
+
+    let ground = (!dl.map_enabled).then_some(NEEDS_GROUND);
+    let low = in_space.then_some(NEAR_GROUND);
+    let tile = |icon, label, nl, more, unseen| Tile {
+        icon,
+        label,
+        nl,
+        more,
+        unseen,
+    };
+    let open = dl.open_tile;
+    let open_index = |labels: &[&str]| open.and_then(|o| labels.iter().position(|l| *l == o));
+
+    match dl.category {
+        LayerCategory::Map => {
+            let current = if !dl.map_enabled {
+                Basemap::None
+            } else if dl.aerial_enabled {
+                Basemap::Aerial
+            } else {
+                Basemap::Drawn
+            };
+            if let Some(pick) = basemap_choice(ui, current) {
+                match pick {
+                    Basemap::Drawn => {
+                        dl.map_enabled = true;
+                        dl.aerial_enabled = false;
+                    }
+                    Basemap::Aerial => {
+                        dl.map_enabled = true;
+                        dl.aerial_enabled = true;
+                    }
+                    Basemap::None => dl.map_enabled = false,
+                }
+            }
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("On the map")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add_space(4.0);
+            tile_grid(
+                ui,
+                &mut [
+                    (
+                        tile(icons::LABEL, "Street names", false, false, ground.or(low)),
+                        &mut dl.street_labels,
+                    ),
+                    (
+                        tile(icons::ROAD, "Road markings", false, false, low),
+                        &mut dl.roads_textured,
+                    ),
+                    (
+                        tile(icons::WATER, "Moving water", false, false, low),
+                        &mut dl.water_shading,
+                    ),
+                ],
+                None,
+            );
+        }
+        LayerCategory::City => {
+            let labels = ["Buildings"];
+            let resp = tile_grid(
+                ui,
+                &mut [
+                    (
+                        tile(icons::BUILDINGS, "Buildings", false, true, low),
+                        &mut dl.buildings_enabled,
+                    ),
+                    (
+                        tile(icons::LEISURE, "Trees", false, false, low),
+                        &mut dl.trees_enabled,
+                    ),
+                    (
+                        tile(icons::GRASS, "Grass", false, false, low),
+                        &mut dl.grass_enabled,
+                    ),
+                    (
+                        tile(icons::BENCH, "Street furniture", false, false, low),
+                        &mut dl.furniture_enabled,
+                    ),
+                    (
+                        tile(icons::SIGNPOST, "Street detail", false, false, low),
+                        &mut dl.street_detail_enabled,
+                    ),
+                    (
+                        tile(icons::FLOOD, "Flood defences", true, false, ground.or(low)),
+                        &mut dl.flood_defences,
+                    ),
+                ],
+                open_index(&labels),
+            );
+            toggle_open(dl, resp.more.map(|_| "Buildings"));
+            if dl.open_tile == Some("Buildings") {
+                options_box(ui, "Buildings: sources", |ui| {
+                    // One line per click, so a live session can tell "the click
+                    // never reached the widget" from "it toggled and something
+                    // reverted it" without a debugger (#12 reported it stuck).
+                    if building_sources(ui, dl, tdbag_available).is_some_and(|r| r.clicked()) {
+                        tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
+                    }
+                });
+            }
+        }
+        LayerCategory::Places => {
+            let names: Vec<&'static str> = LAYER_DEFS.iter().map(|d| d.name).collect();
+            let icons_for = |key: &str| match key {
+                "transit" => icons::TRANSPORT,
+                "shops" => icons::SHOP,
+                _ => icons::PIN,
+            };
+            let (overlays, friends) = (&mut dl.layers, &mut dl.friends_enabled);
+            let mut tiles: Vec<(Tile<'_>, &mut bool)> = LAYER_DEFS
+                .iter()
+                .zip(overlays.iter_mut())
+                .map(|(def, layer)| {
+                    (
+                        tile(icons_for(def.key), def.name, false, true, low),
+                        &mut layer.enabled,
+                    )
+                })
+                .collect();
+            tiles.push((tile(icons::GROUP, "Friends", false, false, None), friends));
+            let resp = tile_grid(ui, &mut tiles, open_index(&names));
+            drop(tiles);
+            toggle_open(dl, resp.more.and_then(|i| names.get(i).copied()));
+            if let Some(def) = dl
+                .open_tile
+                .and_then(|o| LAYER_DEFS.iter().find(|d| d.name == o))
+            {
+                options_box(ui, def.name, |ui| {
+                    for (label, style) in def.categories {
+                        let c = egui::Color32::from_rgb(
+                            (style.color[0] * 255.0) as u8,
+                            (style.color[1] * 255.0) as u8,
+                            (style.color[2] * 255.0) as u8,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(icons::DOT)
+                                    .size(theme::SIZE_CHIP)
+                                    .color(c),
+                            );
+                            ui.label(egui::RichText::new(*label).size(theme::SIZE_SUB));
+                        });
+                    }
+                });
+            }
+        }
+        LayerCategory::Moving => {
+            ui.label(
+                egui::RichText::new(
+                    "Traffic and people are made up from the streets; buses and trains are real.",
+                )
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+            );
+            ui.add_space(4.0);
+            tile_grid(
+                ui,
+                &mut [
+                    (
+                        tile(icons::CAR, "Traffic", false, false, low),
+                        &mut dl.traffic_enabled,
+                    ),
+                    (
+                        tile(icons::WALK, "People", false, false, low),
+                        &mut dl.people_enabled,
+                    ),
+                    (
+                        tile(icons::BUS, "Live buses & trains", true, false, low),
+                        &mut dl.vehicles_enabled,
+                    ),
+                ],
+                None,
+            );
+        }
+        LayerCategory::Under => {
+            let unseen = ground.or(low);
+            let (sewers, underground) = (&mut dl.sewers, &mut dl.underground);
+            let mut tiles: Vec<(Tile<'_>, &mut bool)> = vec![(
+                tile(icons::PLUMBING, "Sewers", false, false, unseen),
+                sewers,
+            )];
+            for (def, on) in crate::systems::underground::LAYERS
+                .iter()
+                .zip(underground.iter_mut())
+            {
+                tiles.push((
+                    tile(underground_icon(def.key), def.label, false, false, unseen),
+                    on,
+                ));
+            }
+            tile_grid(ui, &mut tiles, None);
+        }
+        LayerCategory::Orbit => {
+            let from_ground = (!in_space).then_some("Seen from space: zoom out to see it");
+            let labels = ["Satellites"];
+            let resp = tile_grid(
+                ui,
+                &mut [(
+                    tile(icons::CAT_ORBIT, "Satellites", false, true, from_ground),
+                    &mut dl.satellites_enabled,
+                )],
+                open_index(&labels),
+            );
+            toggle_open(dl, resp.more.map(|_| "Satellites"));
+            if dl.open_tile == Some("Satellites") {
+                let enabled = dl.satellites_enabled;
+                options_box(ui, "Satellites: kinds", |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (def, on) in crate::systems::satellites::KINDS
+                                .iter()
+                                .zip(dl.satellite_kinds.iter_mut())
+                            {
+                                let [r, g, b] = def.color.map(|c| (c.min(1.0) * 255.0) as u8);
+                                crate::systems::layer_tiles::swatch_chip(
+                                    ui,
+                                    on,
+                                    egui::Color32::from_rgb(r, g, b),
+                                    def.label,
+                                );
+                            }
+                        });
+                    });
+                });
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Tap a satellite to follow it or see its path.")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+        }
+    }
+}
+
+/// Open the options of the tile whose ⋯ was tapped, or close them if they were
+/// already open.
+fn toggle_open(dl: &mut DataLayers, tapped: Option<&'static str>) {
+    if let Some(label) = tapped {
+        dl.open_tile = if dl.open_tile == Some(label) {
+            None
+        } else {
+            Some(label)
+        };
+    }
+}
+
+/// The raised box a tile's options open in, under the grid.
+fn options_box(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(theme::SURFACE_RAISED)
+        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        .corner_radius(12)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(title).size(theme::SIZE_SUB).strong());
+            ui.add_space(4.0);
+            body(ui);
+        });
+}
+
+/// The Layers side panel (menu bar ▸ Layers): six categories by where a layer
+/// is — Map, City, Places, Moving, Under, Orbit — each a grid of tiles that are
+/// their own switches (`layer_tiles`, `docs/mockups/layers-and-ring/`), plus the
+/// required attributions.
 pub fn render_data_layers_panel(
     mut egui: ResMut<EguiManager>,
     mut dl: ResMut<DataLayers>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
+    layer_view: LayerView,
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
@@ -2258,207 +2607,20 @@ pub fn render_data_layers_panel(
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (i, def) in LAYER_DEFS.iter().enumerate() {
-                    ui.add_space(4.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.layers[i].enabled,
-                        egui::RichText::new(def.name),
-                    );
-                    ui.indent(def.key, |ui| {
-                        for (label, style) in def.categories {
-                            let c = egui::Color32::from_rgb(
-                                (style.color[0] * 255.0) as u8,
-                                (style.color[1] * 255.0) as u8,
-                                (style.color[2] * 255.0) as u8,
-                            );
-                            ui.horizontal(|ui| {
-                                // Still a ring, as `◎` was — the icon subset is
-                                // outlined throughout (`icons::DOT`) — but one
-                                // drawn on the same grid as every other icon.
-                                ui.label(
-                                    egui::RichText::new(icons::DOT)
-                                        .size(theme::SIZE_CHIP)
-                                        .color(c),
-                                );
-                                ui.label(egui::RichText::new(*label).size(theme::SIZE_SUB));
-                            });
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.separator();
-                }
-                ui.add_space(4.0);
-                let tdbag_resp = buildings_section(
-                    ui,
-                    &mut dl,
-                    crate::systems::osm_buildings::tdbag_attribution().is_some(),
+                let in_space = layer_view.in_space();
+                let tdbag_available = crate::systems::osm_buildings::tdbag_attribution().is_some();
+                let dl = &mut *dl;
+                let counts = category_counts(dl);
+                crate::systems::layer_tiles::category_strip(ui, &mut dl.category, counts);
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(dl.category.subtitle())
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
                 );
-                // One line per click, so a live session can tell "the click never
-                // reached the widget" from "it toggled and something reverted it"
-                // without a debugger (#12 reported the checkbox stuck).
-                if tdbag_resp.is_some_and(|r| r.clicked()) {
-                    tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
-                }
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                crate::systems::theme::checkbox(
-                    ui,
-                    &mut dl.map_enabled,
-                    egui::RichText::new("Map"),
-                );
-                ui.indent("map", |ui| {
-                    ui.label(egui::RichText::new("OSM ground tiles").size(theme::SIZE_SUB));
-                    ui.add_space(2.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.trees_enabled,
-                        egui::RichText::new("Trees").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.grass_enabled,
-                        egui::RichText::new("Grass").size(theme::SIZE_SUB),
-                    );
-                    // Also the parked cars and bikes (`systems::parking`); the
-                    // label stays short because this is a phone row.
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.furniture_enabled,
-                        egui::RichText::new("Street furniture").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.roads_textured,
-                        egui::RichText::new("Road textures").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.water_shading,
-                        egui::RichText::new("Water shading").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.street_labels,
-                        egui::RichText::new("Street labels").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.flood_defences,
-                        egui::RichText::new("Flood defences").size(theme::SIZE_SUB),
-                    );
-                    // Underground: everything drawn below the street, which
-                    // all opens the ground the same way (`underground::opens_ground`).
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Underground")
-                            .size(theme::SIZE_SUB)
-                            .strong(),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.sewers,
-                        egui::RichText::new("Sewers").size(theme::SIZE_SUB),
-                    );
-                    for (i, def) in crate::systems::underground::LAYERS.iter().enumerate() {
-                        crate::systems::theme::checkbox(
-                            ui,
-                            &mut dl.underground[i],
-                            egui::RichText::new(def.label).size(theme::SIZE_SUB),
-                        );
-                    }
-                    if dl.sewers || dl.underground.iter().any(|on| *on) {
-                        // It changes the ground, so it says it does.
-                        ui.label(
-                            egui::RichText::new("Opens the ground near you — Netherlands only")
-                                .size(theme::SIZE_SUB),
-                        );
-                    }
-                    ui.add_space(4.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.street_detail_enabled,
-                        egui::RichText::new("Street detail").size(theme::SIZE_SUB),
-                    );
-                    ui.add_space(4.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.aerial_enabled,
-                        egui::RichText::new("Aerial photography").size(theme::SIZE_SUB),
-                    );
-                    // Same rule as Height's: a toggle that silently does nothing
-                    // over Berlin is a bug report, so the panel says where it works.
-                    ui.label(
-                        egui::RichText::new("PDOK imagery — Netherlands only")
-                            .size(theme::SIZE_SUB),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                // Life: everything on the map that moves. Its own section rather
-                // than three rows scattered through the others, because "is
-                // anything moving" is one question and the answer is only ever
-                // read as a whole — and because motion is the one property a
-                // viewer either wants or does not, independent of what is
-                // surveyed underneath it.
-                crate::systems::theme::checkbox(
-                    ui,
-                    &mut dl.life_enabled,
-                    egui::RichText::new("Life"),
-                );
-                ui.indent("life", |ui| {
-                    // Say which of these is invented, in the panel: two of the
-                    // three are made up off the road centrelines and the third is
-                    // a real feed of real buses, and a viewer who cannot tell
-                    // them apart is being misled about what the map knows.
-                    ui.label(
-                        egui::RichText::new("Generated from the streets").size(theme::SIZE_SUB),
-                    );
-                    ui.add_space(2.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.traffic_enabled,
-                        egui::RichText::new("Traffic").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.people_enabled,
-                        egui::RichText::new("People").size(theme::SIZE_SUB),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Reported by their operators").size(theme::SIZE_SUB),
-                    );
-                    ui.add_space(2.0);
-                    crate::systems::theme::checkbox(
-                        ui,
-                        &mut dl.vehicles_enabled,
-                        egui::RichText::new("Live vehicles").size(theme::SIZE_SUB),
-                    );
-                    // Same rule as Height's "Netherlands only": a toggle that
-                    // silently does nothing over Berlin is a bug report.
-                    ui.label(
-                        egui::RichText::new("Buses & trains — Netherlands only")
-                            .size(theme::SIZE_SUB),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                crate::systems::theme::checkbox(
-                    ui,
-                    &mut dl.friends_enabled,
-                    egui::RichText::new("Friends"),
-                );
-                ui.indent("friends", |ui| {
-                    ui.label(
-                        egui::RichText::new("Contacts who show they are online, at their avatars")
-                            .size(theme::SIZE_SUB),
-                    );
-                });
-                ui.add_space(4.0);
+                ui.add_space(6.0);
+                category_body(ui, dl, in_space, tdbag_available);
+                ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
                 // In the flow, not `bottom_up`: a bottom-anchored layout inside a scroll
@@ -2519,6 +2681,9 @@ pub fn render_data_layers_panel(
                 // Static: every map drawn off the default host has it underneath.
                 ui.small("Land cover © ESA WorldCover 2021 (CC BY 4.0), via VersaTiles");
                 ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
+                if let Some(credit) = crate::systems::satellites::attribution(&dl) {
+                    ui.small(credit);
+                }
                 // Not gated on a coverage manifest the way the four above are:
                 // this register is fetched by the client itself and has no
                 // manifest to ask, so the line is static like the two around it.
@@ -2545,7 +2710,6 @@ pub fn render_data_layers_panel(
         dl.tdbag_enabled = fresh.tdbag_enabled;
         dl.osm_buildings_enabled = fresh.osm_buildings_enabled;
         dl.map_enabled = fresh.map_enabled;
-        dl.life_enabled = fresh.life_enabled;
         dl.vehicles_enabled = fresh.vehicles_enabled;
         dl.trees_enabled = fresh.trees_enabled;
         dl.grass_enabled = fresh.grass_enabled;
@@ -2565,6 +2729,8 @@ pub fn render_data_layers_panel(
         dl.friends_enabled = fresh.friends_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;
         dl.aerial_enabled = fresh.aerial_enabled;
+        dl.satellites_enabled = fresh.satellites_enabled;
+        dl.satellite_kinds = fresh.satellite_kinds;
     }
     if about {
         *right_panel = crate::resources::RightPanel::About;
@@ -3191,7 +3357,6 @@ mod tests {
         dl.trees_enabled = false;
         dl.vehicles_enabled = true;
         dl.people_enabled = !dl.people_enabled;
-        dl.life_enabled = false;
         dl.aerial_enabled = true;
         dl.layers[0].enabled = true;
 
@@ -3203,7 +3368,6 @@ mod tests {
         assert!(!restored.tdbag_enabled);
         assert!(!restored.trees_enabled);
         assert!(restored.vehicles_enabled);
-        assert!(!restored.life_enabled);
         assert!(
             restored.aerial_enabled,
             "the aerial basemap must survive a save/load"
@@ -3215,37 +3379,6 @@ mod tests {
             "untouched toggles keep defaults"
         );
         assert_eq!(restored.prefs(), prefs);
-    }
-
-    /// The Life master has to reach all three rows under it, and each row still
-    /// has to be able to say no on its own.
-    ///
-    /// Worth a test rather than a reading of three one-line methods: the failure
-    /// it guards against is a *fourth* row added later that reads its own field
-    /// directly and keeps moving with the group switched off, and this is where
-    /// the next person adding one finds out what the contract is.
-    #[test]
-    fn the_life_master_reaches_every_row_under_it() {
-        let mut dl = DataLayers::default();
-        dl.life_enabled = true;
-        dl.traffic_enabled = true;
-        dl.people_enabled = true;
-        dl.vehicles_enabled = true;
-        assert!(dl.cars_visible() && dl.people_visible() && dl.live_vehicles_visible());
-
-        dl.life_enabled = false;
-        assert!(
-            !dl.cars_visible() && !dl.people_visible() && !dl.live_vehicles_visible(),
-            "the group master stops all three at once"
-        );
-
-        // …and switching the group back on restores exactly what was ticked
-        // under it: the master gates the rows, it does not overwrite them.
-        dl.life_enabled = true;
-        dl.people_enabled = false;
-        assert!(dl.cars_visible(), "cars are unaffected by the people row");
-        assert!(!dl.people_visible());
-        assert!(dl.live_vehicles_visible());
     }
 
     /// The persisted sky is the user's, not driver mode's. Quitting mid-drive

@@ -135,6 +135,13 @@ url: https://ovapi.nl/
 notice: Public transport data from OVapi, over the Dutch NDOV operator feeds.
 scope: Netherlands only
 
+## CelesTrak
+
+role: Orbital elements of every active satellite, for the satellite layer
+license: Public data (US Space Force catalogue, redistributed by CelesTrak)
+url: https://celestrak.org/
+notice: Satellite orbits from CelesTrak (celestrak.org).
+
 ## MET Norway
 
 role: Weather forecasts driving clouds, fog, rain and wind

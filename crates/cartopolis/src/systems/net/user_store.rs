@@ -294,11 +294,6 @@ pub struct LayerPrefs {
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,
-    /// The **Life** group master: everything that moves (`data_layers::
-    /// DataLayers::life_enabled`). Defaults to on, like the other group masters —
-    /// what a fresh install starts *with* is decided by the three rows under it.
-    #[serde(default = "yes")]
-    pub life: bool,
     /// Ambient cars (`systems::traffic`).
     ///
     /// `serde(default)` on the same helper as the rest, so a `user.json` written
@@ -327,6 +322,13 @@ pub struct LayerPrefs {
     /// more: it replaces the drawn ground rather than adding to it.
     #[serde(default)]
     pub aerial: bool,
+    /// Satellites around the globe (`systems::satellites`). Opt-in: a download.
+    #[serde(default)]
+    pub satellites: bool,
+    /// Which kinds of satellite are drawn, by `satellites::KINDS` key; a kind
+    /// missing here is on.
+    #[serde(default)]
+    pub satellite_kinds: std::collections::HashMap<String, bool>,
     #[serde(default)]
     pub overlays: std::collections::HashMap<String, bool>,
 }

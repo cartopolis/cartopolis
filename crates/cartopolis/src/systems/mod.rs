@@ -54,10 +54,10 @@ pub use cartopolis_geo::{
     road_texture, routing, scatter, turf, vector_tiles,
 };
 pub use gui::{
-    bookmarks, building_card, call_screen, chat, chat_overlay, chat_people, chats, contacts,
-    data_layers, dismiss, dock, egui_manager, floor_picker, glass, hud, icons, login_screen,
-    map_osd, model_library, onscreen_keyboard, place_card, place_pins, script_editor, settings,
-    splash, text_touch, theme, ui,
+    action_ring, bookmarks, building_card, call_screen, chat, chat_overlay, chat_people, chats,
+    contacts, data_layers, dismiss, dock, egui_manager, floor_picker, glass, hud, icons,
+    layer_tiles, login_screen, map_osd, model_library, onscreen_keyboard, place_card, place_pins,
+    script_editor, settings, splash, text_touch, theme, ui,
 };
 pub use map::prim_hand;
 pub use map::prim_sound;
@@ -70,8 +70,8 @@ pub use map::{
     globe_ocean, globe_weather, grass, ground_detail, ground_probe, height, interiors,
     light_shafts, load_control, load_timing, lod22, lod22_facade, lod3, map_geometry, map_stream,
     model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
-    render_features, render_scale, rendering, road_depth, roof_colours, scaffolding, sewers, sky,
-    sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
+    render_features, render_scale, rendering, road_depth, roof_colours, satellites, scaffolding,
+    sewers, sky, sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
     street_labels, sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader,
     tile_source, tunnels, underground, vegetation, water, water_levels, weather, wet_surfaces,
     world_places,
@@ -88,8 +88,8 @@ pub use net::{
     user_store, voice,
 };
 pub use player::{
-    avatar, collision, free_camera, gizmo, interact, local_avatar, locomotion, picking, prim_geo,
-    sit_pose, touch,
+    avatar, camera_attach, collision, free_camera, gizmo, interact, local_avatar, locomotion,
+    picking, prim_geo, sit_pose, touch,
 };
 // Re-exported only where something reaches it by name: with `audio` off the
 // module is still compiled (its synthesis and rate maths are pure and tested),

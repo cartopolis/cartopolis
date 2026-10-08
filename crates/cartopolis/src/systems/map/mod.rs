@@ -58,6 +58,7 @@ pub mod prim_hand;
 pub mod prim_sound;
 pub mod prim_tone;
 pub mod roof_colours;
+pub mod satellites;
 // Scaffolding on the buildings the register says are being worked on.
 pub mod scaffolding;
 pub mod sewers;
