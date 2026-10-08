@@ -1,7 +1,7 @@
 ---
 topic: avatar-game-feel
-triggers: [avatar feels sluggish, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle]
-updated: 2026-08-21
+triggers: [avatar feels sluggish, camera feels awkward, recentre, auto-rotate camera, camera behind avatar, banking, framing, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle]
+updated: 2026-10-08
 ---
 
 # What made the avatar feel wrong, and what the fix rests on
@@ -202,3 +202,39 @@ the smaller of them.
 waits to see whether a hold is coming is not a jump. `F` remains the unambiguous
 flight toggle. `Shift` runs and `Alt` strolls — both were free in Follow. Note
 neither is needed for the ordinary case: the unmodified gait is the walk.
+
+## The follow camera, against the published rules (2026-10-08)
+
+Reported as "movement and camera position feel awkward". Checked against
+Cinemachine's Third Person Follow and its recentring, Unreal's SpringArm, and
+John Nesky's "50 Game Camera Mistakes" (GDC 2014, the Journey camera). The rig
+already did most of what those ask — frame-rate-independent eases, collision in
+fast and out slow, a speed-coupled FOV, a landing dip. Four things it did not:
+
+- **It never came round behind the avatar.** Facing follows travel, and the
+  camera stayed wherever it was last dragged, so a turn left the avatar walking
+  across the screen until somebody dragged it back. `free_camera::recentre_turn`
+  swings it after **1 s** without a hand on it (Cinemachine's wait), ramped in
+  over 0.6 s, at 1.2/s on foot and 2.5/s in flight, scaled by pace, and faded to
+  nothing for travel toward the lens — or pressing S spins the view round.
+- **Recentring alone would make A walk a circle** — the camera turns, the keys
+  are read against the camera, the avatar turns to follow (Nesky #18–19). So
+  the camera totals what it turned *by itself* (`CameraState::auto_yaw`) and
+  `avatar::steer_azimuth` takes that back out of the frame the held input is
+  read in, until the input is released or changes by ~20°. A hand on the camera
+  still steers. This also retires the "holding A walks a circle" caveat of
+  follow-and-rotate (`avatar-locomotion.md`), which accrues into the same total.
+- **It rode every jump** (Nesky #44). `step_pivot` holds the pivot height while
+  on foot and off the ground, follows a fall once it drops 0.4 m below, and
+  eases back on landing.
+- **The avatar was dead centre and the boom was the same at 640 m/s as at a
+  walk.** The aim rises 8 % of the boom above the chest, which puts the avatar
+  in the lower middle; the boom stretches up to 1.9× between a run and 80 m/s
+  (`pullback_for_speed`) — distance and FOV as one curve on speed (Nesky
+  #14–16). `distance` keeps the wheel's choice; the stretch is applied on top.
+
+Flight also **banks** now: roll ∝ the facing's turn rate, capped at ~35°
+(`avatar::FLIGHT_BANK_*`). Not replicated, like the lean.
+
+None of this has been felt on a device yet; every number above is a starting
+point taken from the sources, not a tuning.

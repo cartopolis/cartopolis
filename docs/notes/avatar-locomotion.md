@@ -66,7 +66,8 @@ them — and they were not taken: strafing everywhere reads as a shooter, not as
 person walking through a city, and it makes the replicated `display_yaw`
 carry the camera's orientation rather than the avatar's.
 
-Consequence worth knowing: with follow-and-rotate armed (the GPS button, pressed
-while in Follow) the camera chases the avatar's heading while the input stays
-camera-relative, so **holding A walks a circle**. That is inherent to the pair,
-not a bug in either.
+With follow-and-rotate armed (the GPS button, pressed while in Follow) the camera
+chases the avatar's heading while the input stays camera-relative, which used to
+make **holding A walk a circle**. Since 2026-10-08 the held input is read against
+the camera minus what it turned by itself (`avatar::steer_azimuth`), so it walks
+straight and the camera comes round behind it — `avatar-game-feel.md` has why.

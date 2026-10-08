@@ -1,7 +1,7 @@
 ---
 topic: flight-at-speed
-triggers: [flight stutters, flying is jerky, walking is jerky, movement wobble, prediction jitter, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
-updated: 2026-09-11
+triggers: [flight stutters, avatar bobs in flight, terrain lift, flying is jerky, walking is jerky, movement wobble, prediction jitter, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
+updated: 2026-10-08
 ---
 
 # Why fast flight juddered, and what the fixes rest on
@@ -290,6 +290,35 @@ The same expression fixed a second bug beside it: the gravity arc subtracted
 only `terrain_lift`, so standing on an upper storey predicted a fall from the
 height of that floor on every frame, which the reconciler then undid — for as
 long as you stood indoors above the ground floor.
+
+## 8. The ground was still under a flier's feet
+
+Reported a fourth time, 2026-10-08, after all of the above. Sections 1–7 are
+about *time* — when the news arrives and how hard it is acted on. This one is
+about *height*, and none of them could have reached it.
+
+The sim is flat; the measured ground is added on the display side
+(`AvatarState::terrain_lift`, plus `floor_lift` for storeys and tunnel cuts).
+That lift was the ground height under the avatar **on every frame at any
+altitude**. Flying over Groningen at 300 m the avatar dropped two metres for each
+canal, rose for each dike, and — since the half-metre tier — shivered over
+kerbs, at whatever rate flight carried it across them: 100 m/s crosses a 30 m
+canal in a third of a second. The follow camera aims at the avatar, so the whole
+view shook with it. Being proportional to relief rather than to speed, it shows
+over the city and not over the polder, which is a pattern nobody would read as
+"the terrain".
+
+`avatar::airborne_lift`: exact up to 1.5 m above the sim's ground (a jump's
+apex is ~1.1 m, so a hop still lands on the kerb), then easing toward the ground
+at a rate falling geometrically from 25/s to 0.3/s by 25 m. A long rise of the
+land is still followed; a ditch is not (≤ 0.2 m, tested). A descent sweeps the
+rate back up, so the lift is exact before the feet arrive.
+
+The storey state machine (`interiors::step_floor_lift`) is held above 2 m for a
+related reason: stepped at altitude it dropped the floor into every tunnel cut
+the flight crossed, and — because getting out of a cut is refused except by the
+ramp — by that rule left it there (read from the code, not reproduced), so
+the next landing anywhere would be seven metres underground.
 
 ## 6. Why not UDP
 
