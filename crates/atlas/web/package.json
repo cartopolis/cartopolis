@@ -12,7 +12,7 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/151bc64f737cb0bd890fc0e460de6b5cf8344f19.tar.gz",
+    "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/5511d3fae88f0fbd7dac2c3917b727885c2e131e.tar.gz",
     "classnames": "^2.5.1"
   },
   "devDependencies": {

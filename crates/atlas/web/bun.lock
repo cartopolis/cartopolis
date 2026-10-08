@@ -5,7 +5,7 @@
     "": {
       "name": "cartopolis-atlas-web",
       "dependencies": {
-        "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/151bc64f737cb0bd890fc0e460de6b5cf8344f19.tar.gz",
+        "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/5511d3fae88f0fbd7dac2c3917b727885c2e131e.tar.gz",
         "classnames": "^2.5.1",
       },
       "devDependencies": {
@@ -15,7 +15,7 @@
     },
   },
   "packages": {
-    "@garage44/mithril": ["@garage44/mithril@https://code.garage44.eu/jeroen/mithril/archive/151bc64f737cb0bd890fc0e460de6b5cf8344f19.tar.gz", { "dependencies": { "htm": "^3.1.1" } }, "sha512-wC66uiAcZU2CIEY6c5lyMOhzd9C0kz2cfn+Q98DVna1hdYKXCSCUjvpVrvEPj93VYtpobgL6YwYCItnlE0+cCQ=="],
+    "@garage44/mithril": ["@garage44/mithril@https://code.garage44.eu/jeroen/mithril/archive/5511d3fae88f0fbd7dac2c3917b727885c2e131e.tar.gz", { "dependencies": { "htm": "^3.1.1" } }, "sha512-5T9me2veEUSaQeJV3sPbSxEhu5yxVnbbrRCVss8U0NNWL45L1MwF3xhm0tVbch0iqVC7xk02/dLR976RttrOpg=="],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
