@@ -17,6 +17,7 @@ pub mod http;
 pub mod jobs;
 pub mod overrides;
 pub mod pipeline;
+pub mod satellites;
 pub mod stamped;
 pub mod terrain;
 
@@ -58,6 +59,14 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             config.upstream_concurrency,
         )),
         api,
+        satellites: {
+            let mirror = Arc::new(satellites::SatelliteMirror::new(
+                &config.data_dir,
+                &config.satellites_source,
+            ));
+            mirror.spawn_refresh();
+            mirror
+        },
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, data_dir = %config.data_dir.display(), "atlas serving");

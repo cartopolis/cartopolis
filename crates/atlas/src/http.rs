@@ -25,6 +25,8 @@ pub struct AtlasState {
     pub heights: Arc<crate::terrain::HeightPatches>,
     /// The pipeline surface the web UI drives, `/api/pipeline/*`.
     pub api: crate::api::ApiState,
+    /// `/satellites/active.tle`, the mirrored satellite catalogue.
+    pub satellites: Arc<crate::satellites::SatelliteMirror>,
 }
 
 /// Only the paths Caddy sends here. The site root — the front page, the
@@ -36,6 +38,10 @@ pub fn router(state: AtlasState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/terrain/{z}/{x}/{y}", get(terrain_tile))
         .route("/height", get(height_patch))
+        .route(
+            "/satellites/active.tle",
+            get(crate::satellites::serve).with_state(state.satellites.clone()),
+        )
         .with_state(state)
         .nest("/api/pipeline", api)
 }
@@ -198,6 +204,7 @@ mod tests {
                     dir.path(),
                 )),
             },
+            satellites: Arc::new(crate::satellites::SatelliteMirror::new(dir.path(), "")),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -220,6 +227,14 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    /// Before the first copy has been fetched the satellite route says so, rather
+    /// than answering an empty body a client would parse as no satellites.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_satellite_route_is_unavailable_before_a_copy() {
+        let (base, _dir) = serve(Arc::new(Flat)).await;
+        assert_eq!(get(format!("{base}/satellites/active.tle")).await.0, 503);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

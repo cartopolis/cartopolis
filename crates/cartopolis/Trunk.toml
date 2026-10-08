@@ -30,9 +30,8 @@ backend = "https://nomads.ncep.noaa.gov/"
 rewrite = "/up/ahn/"
 backend = "https://service.pdok.nl/"
 
-# CelesTrak's element sets, for the satellite layer (`systems::satellites`). It
-# sends no Access-Control-Allow-Origin, so the browser asks its own origin; the
-# Caddy entry `/up/celestrak/*` mirrors this in production.
+# The satellite catalogue (`systems::satellites`), from atlas's mirror on the
+# production site: in production the browser asks its own origin, which is atlas.
 [[proxy]]
-rewrite = "/up/celestrak/"
-backend = "https://celestrak.org/"
+rewrite = "/satellites/"
+backend = "https://cartopolis.org/satellites/"

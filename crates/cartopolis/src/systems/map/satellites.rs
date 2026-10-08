@@ -1,11 +1,15 @@
 //! Satellites in orbit, drawn around the globe (Layers ▸ In orbit).
 //!
 //! The catalogue is CelesTrak's `active` group — every payload still reported
-//! as working, about 16,000 of them in October 2026, two thirds Starlink —
-//! fetched as two-line element sets, cached for [`CATALOGUE_TTL`] and kept on a
-//! failed refresh. Positions are computed here, not fetched: the `sgp4` crate is
-//! the standard propagator the element sets are published for, in pure Rust, so
-//! this layer costs one download a day and no server at all.
+//! as working, about 16,000 of them in October 2026, two thirds Starlink — as
+//! two-line element sets, read from **our own mirror** (atlas's
+//! `/satellites/active.tle`, refreshed from CelesTrak every two hours), cached
+//! for [`CATALOGUE_TTL`] and kept on a failed refresh. Not from CelesTrak
+//! directly: it refuses an address that downloads too often, and every browser
+//! user would share this server's (`atlas::satellites` says more). Positions are
+//! computed here, not fetched: the `sgp4` crate is the standard propagator the
+//! element sets are published for, in pure Rust, so the layer costs a few
+//! downloads a day.
 //!
 //! Three things are load-bearing.
 //!
@@ -55,20 +59,20 @@ use crate::systems::{icons, theme};
 
 pub use cartopolis_materials::satellites::SatelliteMaterial;
 
-/// CelesTrak's general-perturbations query for every active payload, as
-/// three-line element sets (a name line, then the two element lines). The text
-/// form, not the JSON one: 2.7 MB against about twice that.
-const CATALOGUE_PATH: &str = "/NORAD/elements/gp.php?GROUP=active&FORMAT=tle";
-const CATALOGUE_ORIGIN: &str = "https://celestrak.org";
+/// Atlas's mirror of CelesTrak's `active` group, as three-line element sets (a
+/// name line, then the two element lines): 2.7 MB of text, about 0.9 MB as Caddy
+/// sends it compressed. The browser build asks its own origin, which is the same
+/// server.
+const CATALOGUE_URL: &str = "https://cartopolis.org/satellites/active.tle";
+const CATALOGUE_URL_WEB: &str = "/satellites/active.tle";
 
 /// Where the catalogue is kept between runs (`platform::storage`'s cache).
 const CATALOGUE_KEY: &str = "satellites/active.tle";
 
-/// How old the cached catalogue may be before it is fetched again. CelesTrak
-/// refreshes about every two hours and asks clients not to poll faster than
-/// that; at twelve hours a LEO position is still a few kilometres from the
-/// truth, which is under a pixel from orbit.
-const CATALOGUE_TTL: Duration = Duration::from_secs(12 * 3600);
+/// How old the cached catalogue may be before it is fetched again. The mirror
+/// refreshes every two hours; at six a low orbit is still only a few kilometres
+/// from the truth, which is under a pixel from space.
+const CATALOGUE_TTL: Duration = Duration::from_secs(6 * 3600);
 
 /// How long a failed fetch waits before it is tried again.
 const RETRY_AFTER: Duration = Duration::from_secs(300);
@@ -537,11 +541,15 @@ fn kind_mask(dl: &DataLayers) -> u8 {
         .fold(0, |m, (i, _)| m | (1 << i))
 }
 
-/// The URL the catalogue is fetched from: CelesTrak, through the page's own
-/// origin on the web (it sends no CORS header), or `CARTO_SATELLITES_URL`.
+/// The URL the catalogue is fetched from: our mirror, or `CARTO_SATELLITES_URL`.
 fn catalogue_url() -> String {
-    crate::env_value("CARTO_SATELLITES_URL")
-        .unwrap_or_else(|| http::upstream_url("celestrak", CATALOGUE_ORIGIN, CATALOGUE_PATH))
+    crate::env_value("CARTO_SATELLITES_URL").unwrap_or_else(|| {
+        if cfg!(target_arch = "wasm32") {
+            CATALOGUE_URL_WEB.to_string()
+        } else {
+            CATALOGUE_URL.to_string()
+        }
+    })
 }
 
 /// The catalogue text: the cache while it is fresh, else a fetch (cached on
