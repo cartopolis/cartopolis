@@ -662,6 +662,34 @@ async fn client_loop(
     Ok(())
 }
 
+/// Which snapshots in a drained batch a later one supersedes, by index: every
+/// one but the last — except the connection's first, while the world has not
+/// arrived yet.
+///
+/// That first snapshot is the only one carrying the prims (the broadcast is
+/// avatars only, `SimWorld::avatar_snapshot`), so nothing after it supersedes
+/// it. The server writes it straight before its tick loop, so on a slow first
+/// frame it routinely shares a batch with a repeat — and coalescing it away
+/// built the world from the repeat's empty prim list. The client then drew only
+/// the prims a later `PrimUpsert` happened to resend, and a prim that never
+/// changes never appeared at all.
+fn superseded_snapshots(batch: &[NetMessage], received_initial_world: bool) -> Vec<usize> {
+    let snapshots: Vec<usize> = batch
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m, NetMessage::WorldSnapshot { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let initial = (!received_initial_world)
+        .then(|| snapshots.first().copied())
+        .flatten();
+    let last = snapshots.last().copied();
+    snapshots
+        .into_iter()
+        .filter(|&i| Some(i) != last && Some(i) != initial)
+        .collect()
+}
+
 /// Apply network messages (authoritative when online).
 pub fn apply_network_snapshot(
     mut commands: Commands,
@@ -703,12 +731,13 @@ pub fn apply_network_snapshot(
     }
     mb.received
         .fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    let last_snapshot = batch
-        .iter()
-        .rposition(|m| matches!(m, NetMessage::WorldSnapshot { .. }));
+    let superseded = superseded_snapshots(
+        &batch,
+        sync.as_ref().is_some_and(|s| s.received_initial_world),
+    );
     let mut skipped: u32 = 0;
     for (i, msg) in batch.into_iter().enumerate() {
-        if matches!(msg, NetMessage::WorldSnapshot { .. }) && Some(i) != last_snapshot {
+        if superseded.contains(&i) {
             skipped += 1;
             continue;
         }
@@ -1734,6 +1763,29 @@ pub fn send_network_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot(tick: u64) -> NetMessage {
+        NetMessage::WorldSnapshot {
+            tick,
+            prims: Vec::new(),
+            avatars: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_first_snapshot_is_kept_even_when_a_repeat_follows_it() {
+        let ping = NetMessage::PrimRemoved { id: 1 };
+        // The handshake's full world, a repeat, something else, a repeat.
+        let batch = [snapshot(0), snapshot(1), ping, snapshot(2)];
+        assert_eq!(
+            superseded_snapshots(&batch, false),
+            [1],
+            "the world arrived with a repeat behind it and was dropped"
+        );
+        // Once the world is in, only the newest counts.
+        assert_eq!(superseded_snapshots(&batch, true), [0, 1]);
+        assert!(superseded_snapshots(&[snapshot(0)], false).is_empty());
+    }
 
     /// The four shapes a person can put in the sign-in screen's Server field.
     ///
