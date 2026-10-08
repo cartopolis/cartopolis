@@ -319,12 +319,13 @@ config) reads the TypeScript through `cartopolis_core::ts_mirror` and fails when
 the fields differ. Change an account field and change it there too. `docs/notes/hosted-simulator.md` has the
 deployment.
 
-This is a **Cargo workspace** with twelve crates:
+This is a **Cargo workspace** with thirteen crates:
 
 | Crate | Role | Notable deps |
 |-------|------|-------------|
 | `cartopolis_core` | Shared protocol types, `NetMessage`, tile/coordinate math | `serde`, `postcard`, `glam` |
 | `cartopolis_geo` (`crates/geo`) | Bevy-free map geodata: MVT decode/raster, road classes, tree scatter, the routing graph, terrain grading, building designs, and `formats` — the per-cell files atlas writes and the client reads, one type for both. Split out of the client on 2026-08-06 at ~6,900 lines so it would stop being recompiled and relinked behind the Bevy binary; ~47,000 lines and ~480 tests by 2026-10, and every edit here is an opt-level-3 compile ahead of the client, atlas and the viewer. **Nothing here may depend on `bevy`** — if a type needs a `Component` it belongs in `cartopolis`, and the pure part it wraps belongs here. Re-exported by `systems/mod.rs`, so client code still writes `systems::vector_tiles`. | `mvt-reader`, `tiny-skia`, `earcutr`, `image` — **no Bevy** |
+| `cartopolis_vio` (`crates/vio`) | Visual-inertial odometry for the high-precision mode: the phone's hand followed to the centimetre from the back camera, the gyroscope and the accelerometer (`docs/notes/camera-tracking.md`). Its bench (`sim.rs`) renders a street and a swaying phone with known truth, which is how the tracker is developed off the phone. **Nothing here may depend on `bevy`**; the client runs it on a thread in `systems::precise_tracker` | `glam` only — **no Bevy** |
 | `cartopolis_e2ee` (`crates/e2ee`) | End-to-end encrypted private chats: device keys, MLS groups, sealed messages, no I/O (`docs/notes/encrypted-chat.md`). The client's `systems::private_chat` wraps it. **The simulator must never link it outside its tests** — the server relays sealed bytes, and not containing the code that could open them is how that stays true. | `openmls` + `openmls_rust_crypto` (pure Rust: builds for Android and wasm) — **no Bevy** |
 | `cartopolis_calls` (`crates/calls`) | End-to-end encrypted calls in private chats: codecs, SFrame sealing with keys from the chat's MLS group, and the forwarder (`docs/notes/calls.md`). Two features split it the way `e2ee` is split: `client` (sealing, opening, the codecs) for the app, `sfu` (a plain forwarder of bytes it cannot open) for the simulator — **the simulator takes `sfu` only outside its tests**. | `str0m`, `sframe`, `opus-pure` (pure Rust, no C) — **no Bevy** |
 | `simulator` | Headless TCP simulation server; SQLite authority; tick loop | `tokio`, `rusqlite`, `refinery` — **no Bevy** |
