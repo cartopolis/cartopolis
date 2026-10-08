@@ -30,7 +30,7 @@ use crate::resources::DevPanelState;
 // in `cartopolis_materials`, so that Bevy's per-material plugin code is generated
 // there rather than in this crate.
 pub use cartopolis_materials::building_windows::{
-    BuildingMaterial, BuildingWindows, GHOST_MAX_POINTS, GHOST_RING_VEC4S,
+    BuildingMaterial, BuildingWindows, ATTRIBUTE_FACADE_CODE, GHOST_MAX_POINTS, GHOST_RING_VEC4S,
 };
 // The lattice arithmetic the tests below pin.
 #[cfg(test)]

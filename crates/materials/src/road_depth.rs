@@ -12,7 +12,7 @@ use bevy::render::render_resource::{
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
-use crate::ground_detail::GroundKey;
+use crate::ground_detail::{GroundKey, GroundUniform};
 
 /// The road ladder rung this vertex draws on — `SurfaceMesh::rungs`.
 ///
@@ -42,40 +42,49 @@ pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 /// must be added to the other, or the shared shader declares a binding this material's
 /// layout does not supply and the pipeline fails validation — which
 /// `lib.rs::handle_render_error` answers by halting the renderer for the rest of the
-/// process. The clipmap cross-fade's three (103–105) are here for that reason alone; a
+/// process. The clipmap cross-fade (`lod`, and the basemap at 103–104) is here for that reason alone; a
 /// road is never a clipmap tile, so they are never written and `lod.w` stays 0.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 // A bare name: the derive parses an identifier and silently drops a path.
 #[bind_group_data(GroundKey)]
+#[data(100, GroundUniform, binding_array(110))]
+#[bindless(index_table(range(100..106), binding(109)))]
 pub struct RoadDepthExtension {
     /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
     /// w: strength, `0.0` when there is no tier to read.
-    #[uniform(100)]
     pub detail: Vec4,
     #[texture(101)]
     #[sampler(102)]
     pub slope: Option<Handle<Image>>,
     /// Always zero — see the type's own docs.
-    #[uniform(103)]
     pub lod: Vec4,
     /// Always `None` — see the type's own docs.
-    #[texture(104)]
-    #[sampler(105)]
+    #[texture(103)]
+    #[sampler(104)]
     pub basemap: Option<Handle<Image>>,
-    /// Always zero — see the type's own docs. The clipmap's water (106–107) is
+    /// Always zero — see the type's own docs. The clipmap's water is
     /// here for the same reason the cross-fade is: a road carries no water mask,
     /// and `water_sea.z == 0` keeps the shader off it.
-    #[uniform(106)]
     pub water_body: Vec4,
-    #[uniform(107)]
     pub water_sea: Vec4,
-    /// The cloud deck the clipmap's water mirrors (108) — bound for the same
+    /// The cloud deck the clipmap's water mirrors (105) — bound for the same
     /// reason, and never read on a road for the same `water_sea.z`.
-    #[storage(108, read_only, visibility(fragment))]
+    #[storage(105, read_only, visibility(fragment), binding_array(111))]
     pub clouds: Handle<ShaderBuffer>,
     /// The ground's screen-door variant (`ground_detail::GroundKey`), so a road
     /// opens onto what is under it exactly where the pavement beside it does.
     pub see_through: bool,
+}
+
+impl From<&RoadDepthExtension> for GroundUniform {
+    fn from(e: &RoadDepthExtension) -> Self {
+        Self {
+            detail: e.detail,
+            lod: e.lod,
+            water_body: e.water_body,
+            water_sea: e.water_sea,
+        }
+    }
 }
 
 impl From<&RoadDepthExtension> for GroundKey {

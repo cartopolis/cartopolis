@@ -53,34 +53,64 @@
 }
 #import cartopolis::cloud_field as cf
 
-// x, z: the detail box's centre in render-space XZ. z: 1 / its half-extent, so
-// `(world_position.xz - centre) * inv_half` is −1..1 across it. w: strength, 0 when
-// there is no tier to read (the layer off, outside the Netherlands, still fetching),
-// which is what makes this shader identical to the plain one at no cost.
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> detail: vec4<f32>;
+#import bevy_pbr::mesh_bindings::mesh
+#ifdef BINDLESS
+#import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d}
+#endif
+
+// The material's four vectors, one buffer (`ground_detail::GroundUniform`):
+//
+// detail — x, z: the detail box's centre in render-space XZ. z: 1 / its
+//   half-extent, so `(world_position.xz - centre) * inv_half` is −1..1 across it.
+//   w: strength, 0 when there is no tier to read (the layer off, outside the
+//   Netherlands, still fetching), which is what makes this shader identical to the
+//   plain one at no cost.
+// lod — the clipmap level's ring, for the cross-fade below: xy its centre in
+//   render-space XZ, z 1 / its half-extent, w the mip bias to reach at its edge.
+//   Zero on every ground surface that is not a clipmap tile, which is the off
+//   switch.
+// water_body — the water surface's far field, for a clipmap tile's water texels
+//   (`water::WaterSeaState::far_water`). rgb: the deep body colour — the surface's
+//   albedo less what depth takes out of it, linear. w: its `reflectance`.
+// water_sea — x: perceptual roughness with every wave retired. y: how clear the
+//   sky is (1 = cloudless), for the stand-in sky. z: 1 on a clipmap tile, 0
+//   everywhere else — the off switch, since the vector fills and the roads share
+//   this material and carry no mask. w unused.
+struct GroundUniform {
+    detail: vec4<f32>,
+    lod: vec4<f32>,
+    water_body: vec4<f32>,
+    water_sea: vec4<f32>,
+}
+
+// Bindless where the platform has it, which is what lets every clipmap tile —
+// each a material of its own, with its own basemap — share one bind group and be
+// batched into one draw (`ground_detail::GroundUniform`). The same resources
+// either way: the uniforms, the slope tier (`detail_slope`), the tile's own
+// basemap bound a second time for the cross-fade (`lod_basemap`), and the ground
+// cloud deck (`sky::CLOUD_FIELD_BUFFER`) the water texels mirror exactly as the
+// streamed surface inside the ring does.
+#ifdef BINDLESS
+// One entry per material, field i naming bindless index 100 + i.
+struct GroundIndices {
+    material: u32,        // 100
+    slope: u32,           // 101
+    slope_sampler: u32,   // 102
+    basemap: u32,         // 103
+    basemap_sampler: u32, // 104
+    clouds: u32,          // 105
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var<storage> ground_indices: array<GroundIndices>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var<storage> ground_array: array<GroundUniform>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var<storage> ground_clouds: binding_array<cf::Deck>;
+#else
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ground_single: GroundUniform;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var detail_slope: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var detail_sampler: sampler;
-
-// The clipmap level's ring, for the cross-fade below: xy its centre in render-space
-// XZ, z 1 / its half-extent, w the mip bias to reach at its edge. Zero on every
-// ground surface that is not a clipmap tile, which is the off switch.
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> lod: vec4<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var lod_basemap: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var lod_basemap_sampler: sampler;
-
-// The water surface's far field, for a clipmap tile's water texels
-// (`water::WaterSeaState::far_water`). rgb: the deep body colour — the surface's
-// albedo less what depth takes out of it, linear. w: its `reflectance`.
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> water_body: vec4<f32>;
-// x: perceptual roughness with every wave retired. y: how clear the sky is (1 =
-// cloudless), for the stand-in sky. z: 1 on a clipmap tile, 0 everywhere else —
-// the off switch, since the vector fills and the roads share this material and
-// carry no mask. w unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var<uniform> water_sea: vec4<f32>;
-// The ground cloud deck (`sky::CLOUD_FIELD_BUFFER`), which the water texels mirror
-// exactly as the streamed surface inside the ring does. Bound on every ground
-// material and read only under a water mask; a field at a time (see `cf::Deck`).
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var<storage, read> clouds: cf::Deck;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var lod_basemap: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var lod_basemap_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var<storage, read> clouds_single: cf::Deck;
+#endif
 
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
 // `terrain::DETAIL_SLOPE_RANGE`.
@@ -249,6 +279,16 @@ fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32) -> PavingLook {
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+#ifdef BINDLESS
+    let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    let ground = ground_array[ground_indices[slot].material];
+#else
+    let ground = ground_single;
+#endif
+    let detail = ground.detail;
+    let lod = ground.lod;
+    let water_body = ground.water_body;
+    let water_sea = ground.water_sea;
     // How much of this texel is water, read out of the tile's alpha **before**
     // `alpha_discard` flattens it to 1 for an opaque material. 255 is land, so a
     // mask-less image and every surface that is not a tile answer 0.
@@ -297,7 +337,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // takes over.
         let edge = max(abs(ring.x), abs(ring.y));
         let t = smoothstep(LOD_BLEND_START, 1.0, edge);
+#ifdef BINDLESS
+        let soft = textureSampleBias(
+            bindless_textures_2d[ground_indices[slot].basemap],
+            bindless_samplers_filtering[ground_indices[slot].basemap_sampler],
+            in.uv,
+            lod.w * t,
+        );
+#else
         let soft = textureSampleBias(lod_basemap, lod_basemap_sampler, in.uv, lod.w * t);
+#endif
         // `mix`, not an assignment: at `t = 0` the inner ring must be bit-for-bit
         // what it was, and this fetch and bevy's own are not obliged to agree in the
         // last bit. Only the colour is taken — `alpha_discard` has already run
@@ -329,9 +378,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let w = detail.w * (1.0 - smoothstep(RIM_START, 1.0, rim)) * (1.0 - water);
         if w > 0.0 {
             let uv = d * 0.5 + vec2<f32>(0.5, 0.5);
-            let s = textureSampleLevel(detail_slope, detail_sampler, uv, 0.0).xy
-                * SLOPE_RANGE
-                * w;
+#ifdef BINDLESS
+            let slope = textureSampleLevel(
+                bindless_textures_2d[ground_indices[slot].slope],
+                bindless_samplers_filtering[ground_indices[slot].slope_sampler],
+                uv,
+                0.0,
+            );
+#else
+            let slope = textureSampleLevel(detail_slope, detail_sampler, uv, 0.0);
+#endif
+            let s = slope.xy * SLOPE_RANGE * w;
             // The ground's own normal already carries the coarse slope, and the
             // texture is the residual, so this is an addition rather than a
             // replacement — `water.wgsl` replaces because its surface is flat by
@@ -404,6 +461,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The pixel's footprint on the deck is taken out here, for every ground pixel,
     // because a derivative is not allowed inside the water-only branch — the mask
     // varies from texel to texel. It is a handful of arithmetic and one load.
+#ifdef BINDLESS
+    let clouds = ground_clouds[ground_indices[slot].clouds];
+#else
+    let clouds = clouds_single;
+#endif
     let offset = in.world_position.xyz - view_bindings::view.world_position.xyz;
     let mirror_ray = reflect(-pbr_input.V, pbr_input.N);
     let spread = length(fwidth(cf::mirror_hit(clouds.shape.w, offset, mirror_ray)));

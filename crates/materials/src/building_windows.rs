@@ -2,9 +2,14 @@
 //! constants its defaults are built from. The facade packing and the clock that
 //! drives it are `cartopolis::systems::building_windows`.
 
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef};
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::render_resource::{
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
+};
 use bevy::shader::ShaderRef;
 
 /// The LoD2.2 buildings' material: the same `StandardMaterial` the lane always
@@ -80,11 +85,36 @@ pub const BLOCK_M: f32 = 25.0;
 /// How many blocks the occupancy hash repeats over. See [`BLOCK_M`].
 pub const BLOCK_PERIOD: f32 = 16.0;
 
+/// Which variant of the building shader a material compiles.
+///
+/// One flag: [`BuildingKey::cutaway`], the variant that can `discard` — the
+/// ghosted building's walls (`systems::cutaway`) and the screen-door holes in
+/// scaffold netting and site fences. A *variant* rather than a uniform branch
+/// for the reason `ground_detail::GroundKey` gives: a fragment shader that
+/// contains `discard` loses early depth testing for every draw it is used in,
+/// whether or not it ever takes the branch, and this one is the most expensive
+/// fragment shader on the largest geometry in the app. So the shells compile
+/// without it except while somebody is indoors, and the netting, which always
+/// needs it, is meshed onto the other material (`lod22`'s inside pieces).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BuildingKey {
+    pub cutaway: bool,
+}
+
+impl From<&BuildingWindows> for BuildingKey {
+    fn from(e: &BuildingWindows) -> Self {
+        Self {
+            cutaway: e.screen_door || e.ghost.x > 0.5,
+        }
+    }
+}
+
 /// Uniforms for `shaders/building_windows.wgsl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 // One uniform buffer, not one per field: see the shader's `Facade` for the
 // browser limit seven of them broke.
 #[uniform(100, BuildingWindowsGpu)]
+#[bind_group_data(BuildingKey)]
 pub struct BuildingWindows {
     /// x: column pitch (m). y: floor pitch (m). z: pane width. w: pane height.
     pub lattice: Vec4,
@@ -120,6 +150,11 @@ pub struct BuildingWindows {
     /// ring is 32 floats and there is one material; paying for it once a frame is
     /// cheaper than any arrangement that makes the shader solve it.
     pub ghost_ring: [Vec4; GHOST_RING_VEC4S],
+    /// Always compile the [`BuildingKey::cutaway`] variant: set on the material
+    /// the scaffold netting and site fences are drawn with, whose holes are
+    /// `discard`s. Every other building material compiles it only while
+    /// [`Self::ghost`] names a building.
+    pub screen_door: bool,
 }
 
 /// [`BuildingWindows`]' uniforms as `building_windows.wgsl`'s `Facade` lays
@@ -177,12 +212,80 @@ impl Default for BuildingWindows {
             ghost: Vec4::ZERO,
             ghost_bounds: Vec4::ZERO,
             ghost_ring: [Vec4::ZERO; GHOST_RING_VEC4S],
+            screen_door: false,
         }
     }
 }
 
 impl MaterialExtension for BuildingWindows {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/building_vertex.wgsl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/building_windows.wgsl".into()
     }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if key.bind_group_data.cutaway {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("BUILDING_CUTAWAY".into());
+            }
+        }
+        // The shadow pass is bevy's prepass pipeline, whose vertex inputs sit at
+        // other locations; `building_fade::specialize` says why touching it is a
+        // pipeline that never validates. It reads the position, which is
+        // unchanged.
+        if descriptor
+            .label
+            .as_ref()
+            .is_some_and(|label| label.contains("prepass"))
+        {
+            return Ok(());
+        }
+        if !layout.0.contains(ATTRIBUTE_FACADE_CODE) {
+            // Built the old way: four-float colour with the code in its alpha,
+            // which bevy's own layout already describes.
+            return Ok(());
+        }
+        let mut wanted = vec![
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+        ];
+        if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
+            wanted.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
+        }
+        wanted.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
+        wanted.push(ATTRIBUTE_FACADE_CODE.at_shader_location(FACADE_SHADER_LOCATION));
+        let vertex = layout.0.get_layout(&wanted)?;
+        descriptor.vertex.buffers = vec![vertex];
+        descriptor
+            .vertex
+            .shader_defs
+            .push("BUILDING_FACADE_CODE".into());
+        Ok(())
+    }
 }
+
+/// The facade code — occupancy, era, shop and eaves, packed into one float
+/// (`cartopolis::systems::building_windows::Facade`) — as its own attribute.
+///
+/// It used to ride in the vertex colour's alpha, which is what kept the colour
+/// at four floats (sixteen bytes) on the largest meshes in the app: the code
+/// runs far past 1.0, so no normalised byte can hold it. Split out, the colour
+/// is four bytes and the code four more — eight bytes a vertex back.
+/// `shaders/building_vertex.wgsl` puts the two back together.
+///
+/// The id is arbitrary but must not collide with bevy's own (below 10),
+/// `building_fade::ATTRIBUTE_BUILDING_BASE` or `road_depth::ATTRIBUTE_ROAD_RUNG`.
+pub const ATTRIBUTE_FACADE_CODE: MeshVertexAttribute =
+    MeshVertexAttribute::new("FacadeCode", 812_774_916, VertexFormat::Float32);
+
+/// Where the vertex stage reads [`ATTRIBUTE_FACADE_CODE`]. Bevy's own attributes
+/// occupy 0–7.
+const FACADE_SHADER_LOCATION: u32 = 8;

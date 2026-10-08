@@ -69,7 +69,7 @@ pub use map::{
     building_windows, cache_reset, cell_ring, coverage, crops, crossings, cutaway, dikes, globe,
     globe_ocean, globe_weather, grass, ground_detail, ground_probe, height, interiors,
     light_shafts, load_control, load_timing, lod22, lod22_facade, lod3, map_geometry, map_stream,
-    model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
+    mesh_format, model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
     render_features, render_scale, rendering, road_depth, roof_colours, satellites, scaffolding,
     sewers, sky, sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
     street_labels, sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader,

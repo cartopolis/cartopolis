@@ -45,6 +45,8 @@ pub mod lod22_facade;
 pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
+// The compact vertex formats every streamed mesh is uploaded in.
+pub mod mesh_format;
 pub mod model_assets;
 pub mod sun_rays;
 // The fetching half of the navigation marks (`cartopolis_geo::nav_marks` is the

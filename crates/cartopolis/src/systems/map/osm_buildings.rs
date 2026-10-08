@@ -25,13 +25,14 @@ use crate::platform::fetch_gate;
 use crate::platform::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
+use crate::systems::mesh_format;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::mesh::PrimitiveTopology;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
@@ -760,6 +761,11 @@ pub struct OsmBuildings {
     /// a tunnel cell streaming in afterwards changes which of its buildings stand
     /// in a covered trench, and a changed digest evicts the cell to be rebuilt.
     far_lids: HashMap<(i64, i64), u64>,
+    /// Whether each far cell was dispatched as skyline ([`far_skyline`]). A cell
+    /// that has since crossed the boundary — by more than a ring, so a camera
+    /// standing on it does not rebuild it back and forth — is evicted and
+    /// rebuilt in the other mode, from the disk cache.
+    far_skyline_built: HashMap<(i64, i64), bool>,
     /// Shared material for every building mesh this module spawns — far cells
     /// **and** the detail patch.
     ///
@@ -843,6 +849,7 @@ impl OsmBuildings {
     /// exact churn shape the queue exists to forbid.
     pub(crate) fn evict_far_cell(&mut self, cell: (i64, i64)) {
         let entities = self.far_cells.remove(&cell).unwrap_or_default();
+        self.far_skyline_built.remove(&cell);
         self.far.retire_all(entities);
         self.far.forget(&cell);
         self.far_tdbag.forget(&cell);
@@ -899,6 +906,7 @@ impl Default for OsmBuildings {
             terrain_revision: 0,
             far_cells: HashMap::new(),
             far_lids: HashMap::new(),
+            far_skyline_built: HashMap::new(),
             building_material: None,
             far_building_material: None,
             far_window_materials: None,
@@ -1060,7 +1068,39 @@ const FAR_CELL_RADIUS: i64 = 3;
 /// missing, at a distance that changes with the tier. `the_far_ring_meets_the_lod22_
 /// handover` pins it on both tiers.
 pub(crate) fn far_cell_radius() -> i64 {
-    crate::systems::load_control::radius(FAR_CELL_RADIUS)
+    crate::systems::load_control::radius(FAR_REACH.load(Ordering::Relaxed))
+}
+
+/// How far the far tier reaches where **our own 3DBAG host** covers the camera:
+/// radius 5, 11×11 cells, about ±8 km — against [`FAR_CELL_RADIUS`]'s ±5 km.
+///
+/// The rings past [`FAR_CELL_RADIUS`] are the **skyline**: only buildings whose
+/// eaves reach [`SKYLINE_MIN_EAVES_M`] are drawn there ([`far_skyline`]). At 5–8 km
+/// a two-storey house is a pixel or two tall and a whole town of them is most of
+/// a far cell's vertices; the flats, churches and offices are what a city's
+/// silhouette is made of.
+///
+/// Only where the camera's own cell is covered, and only for covered cells: an
+/// uncovered far cell rides the public Overpass lane at one request per 800 ms
+/// (`fetch_gate`), and quadrupling the ring there would be quadrupling the load
+/// on somebody else's server for houses nobody can see.
+const FAR_SKYLINE_RADIUS: i64 = 5;
+
+/// The far tier's base radius this frame, before the budget —
+/// [`FAR_SKYLINE_RADIUS`] when the camera stands in 3DBAG coverage, else
+/// [`FAR_CELL_RADIUS`]. Written by `stream_far_cells` each frame and read by
+/// [`far_cell_radius`], which is also what `building_fade` sinks the outer ring
+/// at, so the ramp always finishes where the ring does.
+static FAR_REACH: AtomicI64 = AtomicI64::new(FAR_CELL_RADIUS);
+
+/// Eaves height a building needs to be drawn in the skyline rings, metres:
+/// about four storeys. See [`FAR_SKYLINE_RADIUS`].
+const SKYLINE_MIN_EAVES_M: f32 = 12.0;
+
+/// Whether a far cell `d` rings from the camera is built as skyline — past the
+/// ring the full far tier would have covered.
+fn far_skyline(d: i64) -> bool {
+    d > crate::systems::load_control::radius(FAR_CELL_RADIUS)
 }
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
@@ -1505,8 +1545,22 @@ fn stream_far_cells(
         // Not `cell_ring::request_ring`: each cell is routed to one of two lanes
         // as it is requested, below.
         let queue_open = coverage_resolved();
+        FAR_REACH.store(
+            if tdbag_covers(ccx, ccy) {
+                FAR_SKYLINE_RADIUS
+            } else {
+                FAR_CELL_RADIUS
+            },
+            Ordering::Relaxed,
+        );
+        let overpass_reach = crate::systems::load_control::radius(FAR_CELL_RADIUS);
         let to_request = if queue_open {
             cell_ring::ring((ccx, ccy), far_cell_radius(), |cell, d| {
+                // The skyline rings are for our own host only — see
+                // `FAR_SKYLINE_RADIUS`.
+                if d > overpass_reach && !tdbag_covers(cell.0, cell.1) {
+                    return false;
+                }
                 // Distance LOD: within the LoD2.2 KEEP ring (its request radius
                 // plus its one cell of despawn hysteresis) the real meshes
                 // (lod22.rs) own the cell, so skip the simplified far extrusion.
@@ -1572,6 +1626,8 @@ fn stream_far_cells(
                 (cx, cy),
                 lid_key(&tunnels, &terrain, cell_centre, cell_half),
             );
+            let skyline = far_skyline((cx - ccx).abs().max((cy - ccy).abs()));
+            osm.far_skyline_built.insert((cx, cy), skyline);
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
             // on wasm `IoTaskPool` is the main thread, so this whole thing used to
             // run on the frame loop.
@@ -1600,6 +1656,7 @@ fn stream_far_cells(
                                         &ground,
                                         &lids,
                                         roofs.as_ref(),
+                                        skyline,
                                     );
                                     if let Ok(mut g) = results.lock() {
                                         g.push(((cx, cy), built));
@@ -1806,8 +1863,33 @@ fn stream_far_cells(
                 }
             }
         }
+        // A cell built in one mode that the camera has carried across the
+        // skyline boundary is rebuilt in the other. A ring of hysteresis on the
+        // way out (full → skyline), none on the way in: a cell coming nearer has
+        // to show its houses by the time the full ring would have.
+        let full_reach = crate::systems::load_control::radius(FAR_CELL_RADIUS);
+        let remode: Vec<(i64, i64)> = osm
+            .far_skyline_built
+            .iter()
+            // Standing cells only: one still in flight lands in the mode it was
+            // dispatched in and is judged on the next frame.
+            .filter(|(cell, _)| osm.far_cells.contains_key(cell))
+            .filter(|((x, y), skyline)| {
+                let d = (x - ccx).abs().max((y - ccy).abs());
+                if **skyline {
+                    d <= full_reach
+                } else {
+                    d > full_reach + 1
+                }
+            })
+            .map(|(cell, _)| *cell)
+            .collect();
+        for cell in remode {
+            osm.evict_far_cell(cell);
+        }
         for cell in stale {
             osm.far_lids.remove(&cell);
+            osm.far_skyline_built.remove(&cell);
             let entities = osm.far_cells.remove(&cell).unwrap_or_default();
             // Retiring is lane-agnostic (the `far` lane owns the queue); forgetting
             // is not, so both are asked — only the owning lane has anything to drop.
@@ -1965,6 +2047,7 @@ fn build_far_from_text(
     ground: &crate::systems::terrain::TerrainSnapshot,
     lids: &crate::systems::tunnels::LidSnapshot,
     roofs: Option<&cartopolis_geo::formats::roofs::Cell>,
+    skyline: bool,
 ) -> Result<Option<FarCellBuild>, String> {
     let mut buildings = parse_buildings(text)?;
     if let Some(roofs) = roofs {
@@ -2032,6 +2115,9 @@ fn build_far_from_text(
         // the far volume sits *under* its detailed twin in the overlap region,
         // instead of a flat slab poking up through the pitched roof (Stage 1).
         let eaves = detail_eaves(b, &ring);
+        if skyline && eaves < SKYLINE_MIN_EAVES_M {
+            continue;
+        }
         let base = ground.level_over(ring.iter().map(|p| [p.x + ox, p.y + oz]));
         buf.set_base(base);
         wins.iter_mut().for_each(|w| w.set_base(base));
@@ -2045,9 +2131,17 @@ fn build_far_from_text(
             b.roof_color,
         );
     }
-    Ok(buf
-        .into_mesh()
-        .map(|m| (grid_cell, m, wins.map(MeshData::into_mesh))))
+    // A skyline cell is one entity, not five: the render thread's cost on the
+    // Steam Deck scales with draws (`docs/notes/render-performance-survey.md`),
+    // and four window buckets per cell across the outer rings would add more
+    // draws than the rings add buildings. Its lit windows are a few pixels
+    // inside a ring that is already sinking into the map.
+    let windows = if skyline {
+        [None, None, None, None]
+    } else {
+        wins.map(MeshData::into_mesh)
+    };
+    Ok(buf.into_mesh().map(|m| (grid_cell, m, windows)))
 }
 
 /// What decides which buildings of a square stand in a covered trench: the lids
@@ -2213,6 +2307,9 @@ pub(crate) struct MeshData {
     /// Per-vertex UV0 when built with [`MeshData::with_uvs`] — the facade
     /// layout `building_windows::WallFaces` hands the shader.
     uvs: Option<Vec<[f32; 2]>>,
+    /// Split the colour's alpha out as the facade code — see
+    /// [`MeshData::with_facade_code`].
+    facade_code: bool,
 }
 
 /// A vertex's position, flat normal, colour and UV, as raw bit patterns.
@@ -2315,6 +2412,20 @@ impl MeshData {
     /// derivable in the shader can tell it.
     pub(crate) fn with_uvs(mut self) -> Self {
         self.uvs = Some(Vec::new());
+        self
+    }
+
+    /// Store the colour as four bytes and its alpha — which on this buffer is
+    /// the facade code `building_windows::Facade` packs, not a colour — as a
+    /// float of its own (`building_windows::ATTRIBUTE_FACADE_CODE`).
+    ///
+    /// **Only for meshes drawn with `BuildingMaterial`**, whose vertex stage
+    /// (`building_vertex.wgsl`) puts the two back together. Any other material
+    /// would read the colour's alpha byte and never see the code. Twenty bytes a
+    /// vertex became eight on the LoD2.2 cells, which are most of what the client
+    /// holds in graphics memory over a city.
+    pub(crate) fn with_facade_code(mut self) -> Self {
+        self.facade_code = true;
         self
     }
 
@@ -2559,24 +2670,29 @@ impl MeshData {
         if self.indices.is_empty() {
             return None;
         }
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
-        if let Some(uvs) = self.uvs {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-        }
-        if let Some(bases) = self.bases {
-            mesh.insert_attribute(
-                crate::systems::building_fade::ATTRIBUTE_BUILDING_BASE,
-                bases,
-            );
-        }
-        mesh.insert_indices(Indices::U32(self.indices));
-        Some(mesh)
+        Some(finish_mesh(
+            self.positions,
+            &self.normals,
+            &self.colors,
+            self.uvs,
+            self.bases,
+            self.indices,
+            self.facade_code,
+        ))
+    }
+
+    /// Bytes one vertex of this buffer occupies on the GPU, matching
+    /// [`finish_mesh`] attribute for attribute.
+    fn vertex_bytes(&self) -> usize {
+        let color = if self.facade_code {
+            mesh_format::COMPACT_COLOR_BYTES + FACADE_CODE_BYTES
+        } else {
+            16
+        };
+        12 + mesh_format::COMPACT_NORMAL_BYTES
+            + color
+            + if self.uvs.is_some() { 8 } else { 0 }
+            + if self.bases.is_some() { 4 } else { 0 }
     }
 
     /// The same geometry, as one or more meshes none of which exceeds
@@ -2612,10 +2728,12 @@ impl MeshData {
         if self.indices.is_empty() {
             return Vec::new();
         }
-        // Position + normal + colour, matching the three attributes below, and the
-        // index that points at them. The same arithmetic `RenderMesh::byte_len`
-        // uses, which is what makes `max_bytes` comparable with the upload budget.
-        let vertex_bytes: usize = 12 + 12 + 16 + if self.uvs.is_some() { 8 } else { 0 };
+        // Every attribute `finish_mesh` writes, and the index that points at them.
+        // The same arithmetic `RenderMesh::byte_len` uses, which is what makes
+        // `max_bytes` comparable with the upload budget. Indices are budgeted at
+        // four bytes even where a chunk turns out small enough for two, so a chunk
+        // can never overshoot.
+        let vertex_bytes = self.vertex_bytes();
         const INDEX_BYTES: usize = 4;
         let total = self.positions.len() * vertex_bytes + self.indices.len() * INDEX_BYTES;
         if total <= max_bytes {
@@ -2640,7 +2758,8 @@ impl MeshData {
             let mut positions = Vec::new();
             let mut normals = Vec::new();
             let mut colors = Vec::new();
-            let mut uvs = Vec::new();
+            let mut uvs = self.uvs.as_ref().map(|_| Vec::new());
+            let mut bases = self.bases.as_ref().map(|_| Vec::new());
             let mut indices = Vec::with_capacity(triangles.len());
             for &old in triangles {
                 let slot = &mut remap[old as usize];
@@ -2649,30 +2768,80 @@ impl MeshData {
                     positions.push(self.positions[old as usize]);
                     normals.push(self.normals[old as usize]);
                     colors.push(self.colors[old as usize]);
-                    if let Some(u) = &self.uvs {
-                        uvs.push(u[old as usize]);
+                    if let (Some(out), Some(src)) = (&mut uvs, &self.uvs) {
+                        out.push(src[old as usize]);
+                    }
+                    if let (Some(out), Some(src)) = (&mut bases, &self.bases) {
+                        out.push(src[old as usize]);
                     }
                 }
                 indices.push(*slot);
             }
-            let mut mesh = Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-            if self.uvs.is_some() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-            }
-            mesh.insert_indices(Indices::U32(indices));
-            meshes.push(mesh);
+            meshes.push(finish_mesh(
+                positions,
+                &normals,
+                &colors,
+                uvs,
+                bases,
+                indices,
+                self.facade_code,
+            ));
             for &old in triangles {
                 remap[old as usize] = u32::MAX;
             }
         }
         meshes
     }
+}
+
+/// The facade code's own float (`building_windows::ATTRIBUTE_FACADE_CODE`).
+const FACADE_CODE_BYTES: usize = 4;
+
+/// One finished mesh from per-vertex arrays — the single place `MeshData`'s
+/// vertex format is decided, so `into_mesh`, `into_meshes` and
+/// [`MeshData::vertex_bytes`] cannot disagree about it. The formats themselves
+/// are `mesh_format`'s.
+fn finish_mesh(
+    positions: Vec<[f32; 3]>,
+    normals: &[[f32; 3]],
+    colors: &[[f32; 4]],
+    uvs: Option<Vec<[f32; 2]>>,
+    bases: Option<Vec<f32>>,
+    indices: Vec<u32>,
+    facade_code: bool,
+) -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    let vertex_count = positions.len();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(
+        mesh_format::COMPACT_NORMAL,
+        mesh_format::pack_normals(normals),
+    );
+    if facade_code {
+        mesh.insert_attribute(mesh_format::COMPACT_COLOR, mesh_format::pack_colors(colors));
+        mesh.insert_attribute(
+            crate::systems::building_windows::ATTRIBUTE_FACADE_CODE,
+            colors.iter().map(|c| c[3]).collect::<Vec<f32>>(),
+        );
+    } else {
+        // Four floats: on every other buffer the alpha (and on the far tier the
+        // colour itself) can run past 1, which a normalised byte would clamp.
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
+    }
+    if let Some(uvs) = uvs {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    }
+    if let Some(bases) = bases {
+        mesh.insert_attribute(
+            crate::systems::building_fade::ATTRIBUTE_BUILDING_BASE,
+            bases,
+        );
+    }
+    mesh.insert_indices(mesh_format::indices_for(vertex_count, indices));
+    mesh
 }
 
 /// Oriented bounding box of a footprint in a (u, v) basis (min-area over edges).
@@ -3889,6 +4058,7 @@ pub(crate) fn num_from_value(v: &serde_json::Value) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::mesh::Indices;
 
     /// Both of Overpass's refusal channels are refusals — the JSON `remark` and
     /// the HTML page it sends for a duplicate query or a rate limit — and an

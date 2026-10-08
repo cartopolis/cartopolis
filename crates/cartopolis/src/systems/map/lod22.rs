@@ -693,6 +693,9 @@ pub struct Lod22Buildings {
     /// rather than a second lane: they share the window shader, the palette and
     /// the merging, and differ only in which faces survive.
     interior_material: Option<Handle<BuildingMaterial>>,
+    /// The entity that keeps the shells' cutaway pipeline compiled — see
+    /// [`spawn_cutaway_prewarm`].
+    cutaway_prewarm: Option<Entity>,
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
@@ -878,6 +881,7 @@ impl Default for Lod22Buildings {
             no_shadow: HashSet::new(),
             material: None,
             interior_material: None,
+            cutaway_prewarm: None,
             enabled_was: true,
             terrain_revision: 0,
             bag_revision: (0, 0, 0),
@@ -934,11 +938,76 @@ fn cell_materials(
                     cull_mode: None,
                     ..default()
                 },
-                extension: BuildingWindows::default(),
+                // The scaffold netting and fence panels are meshed here, and
+                // their holes are `discard`s (`BuildingKey`).
+                extension: BuildingWindows {
+                    screen_door: true,
+                    ..default()
+                },
             })
         })
         .clone();
     (material, interior_material)
+}
+
+/// Keep the shells' cutaway pipeline compiled before anybody walks indoors.
+///
+/// The shells compile without `discard` until a building is ghosted
+/// (`BuildingKey`), and a pipeline is only compiled once something visible asks
+/// for it — so the first cutaway of a run would leave *every* shell in range
+/// undrawn for as long as the new variant takes to compile, 50–300 ms on an
+/// Adreno (`docs/notes/render-performance-survey.md`). This draws one degenerate
+/// triangle, in the shells' exact vertex layout, with a third material that is
+/// the shells' recipe in the cutaway variant: one draw, no pixels, and the
+/// variant is in the pipeline cache from the first frame a cell lands.
+fn spawn_cutaway_prewarm(
+    commands: &mut Commands,
+    lod: &mut Lod22Buildings,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<BuildingMaterial>,
+    grid_cell: GridCell,
+    root: Entity,
+) {
+    if lod.cutaway_prewarm.is_some() {
+        return;
+    }
+    let Some(shell) = lod
+        .material
+        .as_ref()
+        .and_then(|h| materials.get(h))
+        .cloned()
+    else {
+        return;
+    };
+    let mut buf = MeshData::with_dedup().with_uvs().with_facade_code();
+    buf.tri(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, [1.0; 4]);
+    let Some(mesh) = buf.into_mesh() else {
+        return;
+    };
+    let warm = materials.add(BuildingMaterial {
+        extension: BuildingWindows {
+            screen_door: true,
+            ..shell.extension
+        },
+        ..shell
+    });
+    lod.cutaway_prewarm = Some(
+        commands
+            .spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(warm),
+                Transform::default(),
+                grid_cell,
+                ChildOf(root),
+                // A degenerate triangle has no box to cull by; it must be
+                // submitted every frame or its pipeline is never asked for.
+                bevy::camera::visibility::NoFrustumCulling,
+                // …and `NoFrustumCulling` alone would put it in every shadow
+                // cascade (CLAUDE.md, "NoFrustumCulling also means…").
+                bevy::light::NotShadowCaster,
+            ))
+            .id(),
+    );
 }
 
 /// A building cell's box in the anchored world-XZ frame.
@@ -1702,6 +1771,7 @@ fn spawn_admitted_pieces(
     // park the rest for the next frame.
     if let Some(mut partial) = lod.partial.take() {
         let (material, interior_material) = cell_materials(&mut lod, &mut materials);
+        spawn_cutaway_prewarm(commands, lod, meshes, materials, partial.grid_cell, root);
         while let Some((mesh, _)) = partial.pieces.first() {
             let cost = crate::systems::stream_ledger::mesh_cost(mesh);
             if !crate::systems::stream_ledger::admit(cost) {
@@ -1975,12 +2045,12 @@ fn build_lod22_from_body(
     // index list, and the loop below expands it triangle-by-triangle. Without this
     // a dense cell ballooned to three unshared vertices per triangle (~720k for a
     // ~240k-triangle cell) behind a useless identity index buffer.
-    let mut buf = MeshData::with_dedup().with_uvs();
+    let mut buf = MeshData::with_dedup().with_uvs().with_facade_code();
     // Imported models mesh into their own buffer: they are drawn with culling off
     // (see [`Piece`]) and so cannot share a mesh with the shells.
     // UV0 carries `building_windows::WINDOWLESS_UV` on every vertex: a model's
     // walls get no painted windows.
-    let mut interior = MeshData::with_dedup().with_uvs();
+    let mut interior = MeshData::with_dedup().with_uvs().with_facade_code();
     // One footprint polygon per building, in world XZ (for avatar collision).
     let mut footprints: Vec<crate::systems::collision::Footprint> = Vec::new();
     // Buildings the register has struck off, for the log line below — a silent
@@ -2385,12 +2455,19 @@ fn build_lod22_from_body(
             "lod22: skipped buildings standing in a covered tunnel's trench"
         );
     }
+    // Scaffolds and site fences go in the *inside* buffer, not the shells': their
+    // netting and mesh panels are screen-door holes, i.e. `discard`s, and the
+    // inside material is the one that always compiles that variant
+    // (`BuildingKey`). On the shells' material every building in range would
+    // lose early depth testing for the sake of a few scaffolds. Drawing them
+    // from both sides costs nothing they did not already do — a fence is pushed
+    // facing both ways.
     let mut drawn_scaffolds = 0usize;
     for pending in &scaffolds_pending {
         let mut any = false;
         for i in crate::systems::scaffolding::choose(&pending.faces, &outlines) {
             any |= crate::systems::scaffolding::push(
-                &mut buf,
+                &mut interior,
                 &pending.faces[i],
                 pending.base,
                 Vec2::new(ox, oz),
@@ -2401,7 +2478,7 @@ fn build_lod22_from_body(
     let mut drawn_fences = 0usize;
     for (ring, base) in &fences_pending {
         drawn_fences += usize::from(crate::systems::scaffolding::push_fence(
-            &mut buf,
+            &mut interior,
             ring,
             *base,
             Vec2::new(ox, oz),
@@ -3010,9 +3087,11 @@ mod tests {
             pieces
                 .iter()
                 .map(|(mesh, _)| match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
-                    Some(bevy::mesh::VertexAttributeValues::Float32x4(v)) => v
+                    // Four bytes since the facade code moved out of the alpha
+                    // (`MeshData::with_facade_code`).
+                    Some(bevy::mesh::VertexAttributeValues::Unorm8x4(v)) => v
                         .iter()
-                        .filter(|c| c[0] == 1.0 && c[1] == 0.0 && c[2] == 1.0)
+                        .filter(|c| c[0] == 255 && c[1] == 0 && c[2] == 255)
                         .count(),
                     _ => 0,
                 })

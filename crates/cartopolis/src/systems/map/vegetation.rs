@@ -141,5 +141,8 @@ fn set_base_color(
     let Some(mut mat) = materials.get_mut(handle) else {
         return;
     };
-    mat.base.base_color = Color::linear_rgb(linear[0], linear[1], linear[2]);
+    // Times the headroom the group's vertex tints were divided by when they
+    // were packed into bytes (`mesh_format::tint_headroom`).
+    let h = crate::systems::mesh_format::tint_headroom(group);
+    mat.base.base_color = Color::linear_rgb(linear[0] * h, linear[1] * h, linear[2] * h);
 }

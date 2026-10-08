@@ -682,9 +682,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // a follow camera above and behind the avatar can only see into it from
     // above: with the roof on it was looking at the underside of the roof.
     // `is_wall` is already the right question and is already answered.
+    //
+    // Only in the cutaway variant (`BuildingKey`): a shader holding a `discard`
+    // loses early depth testing on every draw, taken or not, so the shells
+    // compile without one while nobody is indoors.
+#ifdef BUILDING_CUTAWAY
     if (is_wall || facade.ghost.y > 0.5) && in_ghost(in.world_position.xz) {
         discard;
     }
+#endif
 
     // Computed **outside** the branch on purpose: `fwidth` below is a derivative,
     // and a derivative taken in non-uniform control flow is undefined — naga
@@ -795,9 +801,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             } else {
                 cover = netting(&pbr_input, u, v, weave, weave_px);
             }
+            // The netting is meshed onto the screen-door material, which always
+            // compiles the cutaway variant (`lod22`'s inside pieces); a panel
+            // somehow drawn on a shell material is opaque rather than wrong.
+#ifdef BUILDING_CUTAWAY
             if see_through(cover, in.position.xy) {
                 discard;
             }
+#endif
         }
     } else if is_wall {
         let idx = floor(cell);

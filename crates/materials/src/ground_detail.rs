@@ -7,7 +7,7 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
@@ -47,14 +47,52 @@ pub fn specialize_ground(descriptor: &mut RenderPipelineDescriptor, key: GroundK
     }
 }
 
+/// The ground material's four vectors, as the one buffer the shader reads them
+/// from (binding 100; in bindless mode an element of the array at 110).
+///
+/// **Bindless is what this shape is for.** Every clipmap tile is a material of
+/// its own — it has its own basemap image — so before 2026-10 every tile was a
+/// bind group of its own and a draw of its own, and the render thread's time on
+/// the Steam Deck scales with draws (`docs/notes/render-performance-survey.md`).
+/// With `#[bindless]` the tiles share one bind group and bevy batches them
+/// together; four separate uniforms cannot be bindless (bevy supports buffers in
+/// that mode only as one `data` struct per material), so they became one.
+/// Where the platform cannot do bindless — the web, some Android drivers — the
+/// same declaration falls back to an ordinary uniform at 100 and nothing else
+/// changes. `RoadDepthExtension` declares the identical layout, because the two
+/// share a fragment shader.
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct GroundUniform {
+    /// `GroundDetailExtension::params`.
+    pub detail: Vec4,
+    /// `GroundDetailExtension::lod`.
+    pub lod: Vec4,
+    /// `GroundDetailExtension::water_body`.
+    pub water_body: Vec4,
+    /// `GroundDetailExtension::water_sea`.
+    pub water_sea: Vec4,
+}
+
+impl From<&GroundDetailExtension> for GroundUniform {
+    fn from(e: &GroundDetailExtension) -> Self {
+        Self {
+            detail: e.params,
+            lod: e.lod,
+            water_body: e.water_body,
+            water_sea: e.water_sea,
+        }
+    }
+}
+
 /// The sub-metre half of the ground, for `shaders/ground_detail.wgsl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 #[bind_group_data(GroundKey)]
+#[data(100, GroundUniform, binding_array(110))]
+#[bindless(index_table(range(100..106), binding(109)))]
 pub struct GroundDetailExtension {
     /// xy: the detail box's centre in **render-space** XZ. z: 1 / its half-extent.
     /// w: strength, and `0.0` means "no tier" — see the module docs
     /// (`cartopolis::systems::ground_detail`).
-    #[uniform(100)]
     pub params: Vec4,
     /// The tier's residual slope, `Rg8Snorm`. Shared by every ground material, so a
     /// re-bake rewrites one image rather than hundreds.
@@ -69,7 +107,6 @@ pub struct GroundDetailExtension {
     /// `w = 0` is the off switch and is what every ground surface that is not a
     /// clipmap tile carries — the vector surfaces, the roads, the paving, the
     /// volumetric groups. The shader takes no second sample at all there.
-    #[uniform(103)]
     pub lod: Vec4,
     /// The tile's *own* basemap image, bound a second time so the shader can sample
     /// it at a mip bias.
@@ -78,18 +115,16 @@ pub struct GroundDetailExtension {
     /// and no memory. Bound here rather than reached for through
     /// `bevy_pbr::pbr_bindings`, whose base-colour binding is `#ifdef BINDLESS`-shaped
     /// and is bevy's to rearrange; this one is ours and is the same on every platform.
-    #[texture(104)]
-    #[sampler(105)]
+    #[texture(103)]
+    #[sampler(104)]
     pub basemap: Option<Handle<Image>>,
     /// The water surface's deep body colour (rgb, linear) and its `reflectance`
     /// (w), for a clipmap tile's water texels —
     /// `WaterSeaState::far_water` (`cartopolis::systems::water::WaterSeaState::far_water`).
-    #[uniform(106)]
     pub water_body: Vec4,
     /// x: the surface's roughness with every wave retired. y: how clear the sky
     /// is. z: `1.0` on a clipmap tile, whose alpha carries the water mask, and
     /// `0.0` on every other ground surface — the off switch.
-    #[uniform(107)]
     pub water_sea: Vec4,
     /// The ground cloud deck
     /// ([`CLOUD_FIELD_BUFFER`](crate::sky::CLOUD_FIELD_BUFFER)), for a
@@ -97,7 +132,7 @@ pub struct GroundDetailExtension {
     /// inside the ring mirrors — without it, a lake would show its clouds up to
     /// the ring's edge and none past it. Every ground material binds the one
     /// buffer, and only a water texel reads it.
-    #[storage(108, read_only, visibility(fragment))]
+    #[storage(105, read_only, visibility(fragment), binding_array(111))]
     pub clouds: Handle<ShaderBuffer>,
     /// Compile the screen-door variant ([`GroundKey`]). Written on every ground
     /// material at once by `sewers::apply_ground_see_through`.

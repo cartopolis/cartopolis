@@ -2365,9 +2365,13 @@ impl MapSurfaces {
             .entry(group)
             .or_insert_with(|| {
                 let [r, g, b] = group.base_color();
+                // Same headroom as `update_map_surfaces`' constructor: whichever
+                // of the two creates the group's material first, its meshes'
+                // colours were divided by it (`mesh_format::insert_group_colors`).
+                let h = crate::systems::mesh_format::tint_headroom(group);
                 materials.add(GroundMaterial {
                     base: StandardMaterial {
-                        base_color: Color::srgb(r, g, b),
+                        base_color: (Color::srgb(r, g, b).to_linear() * h).into(),
                         perceptual_roughness: group.perceptual_roughness(),
                         depth_bias: group.depth_bias(),
                         ..default()
@@ -3093,9 +3097,13 @@ fn upload_finished_cells(
                         .entry(group)
                         .or_insert_with(|| {
                             let [r, g, b] = group.base_color();
+                            // Times the headroom the vertex tints were packed under
+                            // (`mesh_format::tint_headroom`); 1 for the flat groups.
+                            let h = crate::systems::mesh_format::tint_headroom(group);
+                            let base_color = Color::srgb(r, g, b).to_linear() * h;
                             mats.plain.add(GroundMaterial {
                                 base: StandardMaterial {
-                                    base_color: Color::srgb(r, g, b),
+                                    base_color: base_color.into(),
                                     perceptual_roughness: group.perceptual_roughness(),
                                     metallic_roughness_texture: finish,
                                     // UV0 on an area surface is **metres from the map
@@ -4302,7 +4310,7 @@ fn stand_surface(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> (Surfac
 /// fill in the attributes the flat groups leave empty, and attach the road rungs.
 fn assemble_mesh(sm: SurfaceMesh, wx: f32, wz: f32, on_terrain: bool) -> Mesh {
     use bevy::asset::RenderAssetUsages;
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::mesh::PrimitiveTopology;
 
     let group = sm.group;
     let positions = sm.positions;
@@ -4336,14 +4344,23 @@ fn assemble_mesh(sm: SurfaceMesh, wx: f32, wz: f32, on_terrain: bool) -> Mesh {
         RenderAssetUsages::RENDER_WORLD,
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    // Four bytes, not twelve, and two-byte indices where the group is small
+    // enough (`mesh_format`). Colours stay floats: a canopy's tint runs past 1.
+    .with_inserted_attribute(
+        crate::systems::mesh_format::COMPACT_NORMAL,
+        crate::systems::mesh_format::pack_normals(&normals),
+    )
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-    .with_inserted_indices(Indices::U32(indices));
+    .with_inserted_indices(crate::systems::mesh_format::indices_for(
+        vertex_count,
+        indices,
+    ));
     // `StandardMaterial` multiplies `base_color` by this whenever the attribute is
     // present — which is how one canopy material gives thousands of trees their own
     // tone and brightness without a material or a draw call per tree.
+    // Four bytes where they fit (`mesh_format::insert_group_colors`).
     if colors.len() == vertex_count {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        crate::systems::mesh_format::insert_group_colors(&mut mesh, group, colors);
     }
     // The road ladder (`systems::road_depth`). Present on road and casing meshes
     // and on nothing else, which is exactly the set that draws with

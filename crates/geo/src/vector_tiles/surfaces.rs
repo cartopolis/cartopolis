@@ -459,12 +459,14 @@ pub struct SurfaceMesh {
 
 /// What one vertex of a finished [`SurfaceMesh`] costs on the GPU.
 ///
-/// Position (12) + normal (12) + UV (8) + linear RGBA (16). Every one of those is
-/// present by the time the mesh reaches the GPU **even when the fields above are
-/// left empty**, because `map_geometry::build_mesh` fills the gaps — a
-/// straight-up normal, a planar UV, an opaque white. So this is the real figure
-/// and not a lower bound, and it agrees with what `systems::upload_meter` measures
-/// off bevy's `RenderMesh::byte_len` (48 B/vertex, checked against a capture).
+/// Position (12) + normal (4) + UV (8) + linear RGBA (16). The normal is four
+/// bytes because the client uploads it as `Snorm8x4` (`systems::mesh_format`),
+/// not the twelve the struct holds it in here. The normal and UV are present by
+/// the time the mesh reaches the GPU **even when the fields above are left
+/// empty**, because `map_geometry::build_mesh` fills the gaps — a straight-up
+/// normal, a planar UV — and the colour is only uploaded where a group has one,
+/// so this is an upper bound that the vegetation groups meet exactly. It was 48
+/// while every attribute went up as floats.
 ///
 /// It lives in this crate, which may not depend on bevy, because it is a fact
 /// about this struct rather than about the renderer. The *limit* a mesh is cut to
@@ -473,11 +475,12 @@ pub struct SurfaceMesh {
 ///
 /// **Road meshes carry a fifth attribute** — the 4-byte depth rung
 /// ([`Self::rungs`](SurfaceMesh::rungs)) — and are still inside this figure,
-/// because they are also the group that carries *no* vertex colour: 12 + 12 + 8 +
-/// 4 = 36. The constant stays an upper bound over every group, which is what a
+/// because they are also the group that carries *no* vertex colour: 12 + 4 + 8 +
+/// 4 = 28. The constant stays an upper bound over every group, which is what a
 /// byte budget needs it to be.
-pub const VERTEX_BYTES: usize = 12 + 12 + 8 + 16;
-/// Indices are `u32`, always — a planted cell runs well past 65 k vertices.
+pub const VERTEX_BYTES: usize = 12 + 4 + 8 + 16;
+/// Indices budgeted at `u32`. The client uploads `u16` wherever a mesh has few
+/// enough vertices, but a planted cell runs well past 65 k, so four is the bound.
 pub const INDEX_BYTES: usize = 4;
 
 /// What this many vertices and indices will cost to upload.

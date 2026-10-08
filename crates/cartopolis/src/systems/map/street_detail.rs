@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::mesh::PrimitiveTopology;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
@@ -744,10 +744,22 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 RenderAssetUsages::RENDER_WORLD,
             )
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, sm.normals.clone())
-            .with_inserted_indices(Indices::U32(sm.indices.clone()));
+            .with_inserted_attribute(
+                crate::systems::mesh_format::COMPACT_NORMAL,
+                crate::systems::mesh_format::pack_normals(&sm.normals),
+            )
+            .with_inserted_indices(crate::systems::mesh_format::indices_for(
+                sm.positions.len(),
+                sm.indices.clone(),
+            ));
             if sm.colors.len() == sm.positions.len() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, sm.colors.clone());
+                // Through the same door as the scattered trees: both draw with
+                // the group's shared material, which carries the tint headroom.
+                crate::systems::mesh_format::insert_group_colors(
+                    &mut mesh,
+                    sm.group,
+                    sm.colors.clone(),
+                );
             }
             let class = if sm.group == SurfaceGroup::Trunk {
                 PropClass::Trunk
