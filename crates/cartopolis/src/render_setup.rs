@@ -164,7 +164,20 @@ impl Plugin for MeshSlabCapPlugin {
         let mut settings = MeshAllocatorSettings::default();
         settings.max_slab_size = MAX_MESH_SLAB_BYTES;
         settings.large_threshold = MAX_MESH_SLAB_BYTES / 2;
+        // Into the render world, where `MeshAllocatorPlugin` keeps it and where
+        // `allocate_and_free_meshes` reads it on every call.
         render_app.insert_resource(settings);
+        // Read back from the render world, so a log proves the cap is in force.
+        render_app.add_systems(
+            bevy::render::RenderStartup,
+            |settings: Res<MeshAllocatorSettings>| {
+                tracing::info!(
+                    max_slab_mib = settings.max_slab_size / (1024 * 1024),
+                    large_threshold_mib = settings.large_threshold / (1024 * 1024),
+                    "mesh slabs capped"
+                );
+            },
+        );
     }
 }
 
