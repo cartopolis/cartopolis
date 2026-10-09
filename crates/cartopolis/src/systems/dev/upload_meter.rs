@@ -260,6 +260,10 @@ pub fn measure_uploads(
             // A removal is the same bookkeeping with a new size of zero.
             let previous = meter.images.remove(&id);
             UploadMeter::account(&mut resident, &mut peak_resident, previous, 0);
+            // The per-kind split comes down with the total, as the mesh arm's
+            // does: without this the image figure only ever grew, and read as an
+            // image leak that was not there.
+            UploadMeter::account(&mut resident_images, &mut unused_peak_a, previous, 0);
             continue;
         }
         let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
