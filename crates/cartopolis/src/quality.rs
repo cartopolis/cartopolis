@@ -671,14 +671,26 @@ impl Budget {
     /// 1 km reach puts most of the visible city in every cascade's caster pass;
     /// 400 m keeps the shadows near the viewer, which are the ones that decide
     /// whether a street looks lit. Fewer cascades were measured too and bought
-    /// almost nothing beside the reach. Street level is limited by the detail
-    /// layers rather than by shadows, which is why it moves less.
+    /// almost nothing beside the reach. Street level is limited by how heavy the
+    /// ground is rather than by shadows, which is why it moves less — see below.
     ///
     /// Its own name rather than a change to `balanced`, because `balanced` is what
     /// Android resolves to, and a browser default must not move the phone.
+    ///
+    /// **And a terrain field half as fine** (1025 points over the same 6.4 km, a
+    /// sample every 6.25 m). The ground surfaces are refined against the field —
+    /// to `max(12.5 m, 3.9 samples)` along an edge and half a sample at a crease —
+    /// so at full resolution the nine cells round a street-level camera were 256
+    /// meshes of 6–8 MB, 1.56 GB, and the page held 2.1 GB on a GPU with 1 GB of
+    /// its own (Steam Deck, Chrome, 2026-10-09): 30 s at 1–10 fps while they were
+    /// built and a steady 24 fps after. A per-frame upload ceiling was measured
+    /// beside it and changed nothing (23 fps), so the weight is the lever, not the
+    /// rate. The relief survives at 6.25 m — the Hondsrug is kilometres wide — and
+    /// everything finer than the geometry was already the ground-detail normal.
     pub(crate) const fn browser() -> Self {
         Self {
             shadow_distance_m: 400.0,
+            terrain_grid: 1025,
             ..Self::balanced()
         }
     }
@@ -1701,12 +1713,15 @@ mod tests {
         for word in ["desktop", "high", "Desktop", "HIGH"] {
             assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Desktop), "{word}");
         }
-        // The browser default is balanced with a shorter shadow reach and nothing
-        // else, so it cannot drift from the rung Android resolves to.
+        // The browser default is balanced with a shorter shadow reach and a
+        // coarser terrain field and nothing else, so it cannot drift from the rung
+        // Android resolves to.
         for word in ["browser", "web", "Browser"] {
             let b = parse(word).expect(word);
             assert_eq!(b.tier, Tier::Balanced, "{word}");
             assert_eq!(b.shadow_distance_m, 400.0, "{word}");
+            assert_eq!(b.terrain_grid, 1025, "{word}");
+            assert_eq!(b.tile_px, Budget::balanced().tile_px, "{word}");
             assert_eq!(
                 b.shadow_cascades,
                 Budget::balanced().shadow_cascades,
