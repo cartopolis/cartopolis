@@ -75,6 +75,17 @@ struct AvatarSim {
     /// it the moment the same avatar asks to move, so "sitting" cannot become a
     /// way to walk around displaced from your own position.
     seated: Option<[f32; 2]>,
+    /// Whether this avatar has a body yet: false from the handshake until its
+    /// client first sends an intent or a teleport.
+    ///
+    /// Every connection gets an avatar, and not every connection is somebody
+    /// standing in the world: the web UI signs in to chat, and never moves. An
+    /// avatar nobody is driving would stand at the frame origin in everybody's
+    /// snapshot and hear every nearby line said there, so until it is embodied
+    /// it is left out of both ([`SimWorld::avatar_dtos`],
+    /// [`SimWorld::embodied_position`]). The app sends its first intent on its
+    /// first online frame, so for an app this lasts one frame.
+    embodied: bool,
 }
 
 pub struct SimWorld {
@@ -279,6 +290,7 @@ impl SimWorld {
                 name: "Someone".to_string(),
                 geo: None,
                 seated: None,
+                embodied: false,
             },
         );
         id
@@ -418,6 +430,7 @@ impl SimWorld {
         let Some(av) = self.avatars.get_mut(&id) else {
             return;
         };
+        av.embodied = true;
         av.position = Vec3::new(position.x, position.y.max(0.0), position.z);
         av.velocity = Vec3::ZERO;
         av.vertical_velocity = 0.0;
@@ -435,6 +448,16 @@ impl SimWorld {
     /// Current position of an avatar (proximity chat, ADR-028).
     pub fn avatar_position(&self, id: u64) -> Option<Vec3> {
         self.avatars.get(&id).map(|a| a.position)
+    }
+
+    /// Where an avatar is, if it has a body ([`AvatarSim::embodied`]). What
+    /// anything that delivers by distance — nearby chat, voice, a prim's speech —
+    /// must ask, so a connection that only chats is never in earshot of anyone.
+    pub fn embodied_position(&self, id: u64) -> Option<Vec3> {
+        self.avatars
+            .get(&id)
+            .filter(|a| a.embodied)
+            .map(|a| a.position)
     }
 
     /// How many avatars are in the world — one per connected client, so this is
@@ -493,6 +516,7 @@ impl SimWorld {
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
+        av.embodied = true;
         // The geographic fix, filtered rather than trusted: a non-finite or
         // off-globe coordinate is dropped and the last good one kept, because a
         // sensor reading a NaN latitude would compute a NaN distance and then see
@@ -779,6 +803,7 @@ impl SimWorld {
     fn avatar_dtos(&self) -> Vec<AvatarStateDto> {
         self.avatars
             .iter()
+            .filter(|(_, a)| a.embodied)
             .map(|(&id, a)| AvatarStateDto {
                 id,
                 position: a.position,
@@ -1428,6 +1453,7 @@ mod tests {
         let (mut world, dir) = test_world();
         let _ = stored_prim(&mut world, &dir);
         let id = world.spawn_avatar();
+        world.teleport_avatar(id, Vec3::ZERO);
 
         let NetMessage::WorldSnapshot { prims, avatars, .. } = world.snapshot(0) else {
             panic!("snapshot")
@@ -1494,6 +1520,30 @@ mod tests {
             (p.z - start.z).abs() > 1e-4,
             "a valid intent should have moved the avatar"
         );
+    }
+
+    /// A connection that only chats (the web UI) never sends an intent, and
+    /// must be neither drawn nor in earshot: no snapshot shows it and nothing
+    /// delivered by distance finds it. Its first intent gives it a body.
+    #[test]
+    fn an_avatar_is_absent_until_its_client_drives_it() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        let shown = |w: &SimWorld| {
+            let NetMessage::WorldSnapshot { avatars, .. } = w.avatar_snapshot(1) else {
+                panic!("snapshot")
+            };
+            avatars.iter().any(|a| a.id == id)
+        };
+        assert!(!shown(&world), "nobody is driving it yet");
+        assert_eq!(world.embodied_position(id), None);
+        assert!(world.avatar_position(id).is_some(), "it still exists");
+
+        world.apply_intent(
+            id, 0.0, 0.0, 0.0, false, false, false, false, None, None, None,
+        );
+        assert!(shown(&world));
+        assert_eq!(world.embodied_position(id), world.avatar_position(id));
     }
 
     /// The seat is the one thing a client may use to draw its body away from the
@@ -1670,6 +1720,8 @@ mod tests {
     fn the_snapshot_carries_the_velocity_the_tick_moved_the_avatar_by() {
         let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
+        // Placed, so it has a body and is in the snapshot at all.
+        world.teleport_avatar(id, Vec3::ZERO);
         let velocity = |world: &SimWorld| match world.avatar_snapshot(0) {
             NetMessage::WorldSnapshot { avatars, .. } => {
                 avatars

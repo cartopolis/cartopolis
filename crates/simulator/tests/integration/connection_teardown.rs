@@ -34,6 +34,28 @@ async fn connect(addr: &str) -> Client {
     )
 }
 
+/// The first intent, standing still: what gives a connection's avatar a body
+/// (`AvatarSim::embodied`). Until a client sends one it is in no snapshot and
+/// in earshot of nobody, which is how a chat-only web UI stays out of the world.
+fn stand_here() -> Bytes {
+    Bytes::from(
+        encode_app_frame(&NetMessage::ClientIntent {
+            request_id: 0,
+            move_x: 0.0,
+            move_z: 0.0,
+            display_yaw: 0.0,
+            flying: false,
+            fly_up: false,
+            fly_down: false,
+            jump: false,
+            emote: None,
+            seated: None,
+            geo: None,
+        })
+        .unwrap(),
+    )
+}
+
 async fn login(addr: &str) -> Client {
     let mut client = connect(addr).await;
     let frame = encode_app_frame(&NetMessage::ClientHello {
@@ -47,7 +69,10 @@ async fn login(addr: &str) -> Client {
     client.send(Bytes::from(frame)).await.unwrap();
     let reply = client.next().await.unwrap().unwrap();
     match decode_app_frame(&reply).unwrap() {
-        NetMessage::ServerHelloAck { .. } => client,
+        NetMessage::ServerHelloAck { .. } => {
+            client.send(stand_here()).await.unwrap();
+            client
+        }
         other => panic!("expected ServerHelloAck, got {other:?}"),
     }
 }

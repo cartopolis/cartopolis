@@ -32,13 +32,13 @@ pub(super) async fn on_frame<T: FrameTransport>(
             };
             let (sender_pos, positions) = {
                 let w = ctx.world.read().await;
-                let sp = w.avatar_position(avatar_id);
+                let sp = w.embodied_position(avatar_id);
                 let ps: Vec<(u64, _)> = ctx
                     .chat
                     .connected_ids()
                     .into_iter()
                     .filter(|id| *id != avatar_id)
-                    .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
+                    .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
                     .collect();
                 (sp, ps)
             };

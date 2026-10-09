@@ -40,6 +40,28 @@ async fn start_sim() -> (SimHandle, String, tempfile::TempDir) {
     (handle, addr, dir)
 }
 
+/// The first intent, standing still: what gives a connection's avatar a body
+/// (`AvatarSim::embodied`). Until a client sends one it is in no snapshot and
+/// in earshot of nobody, which is how a chat-only web UI stays out of the world.
+fn stand_here() -> Bytes {
+    Bytes::from(
+        encode_app_frame(&NetMessage::ClientIntent {
+            request_id: 0,
+            move_x: 0.0,
+            move_z: 0.0,
+            display_yaw: 0.0,
+            flying: false,
+            fly_up: false,
+            fly_down: false,
+            jump: false,
+            emote: None,
+            seated: None,
+            geo: None,
+        })
+        .unwrap(),
+    )
+}
+
 async fn connect_auth(addr: &str) -> Client {
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut c = Framed::new(
@@ -59,7 +81,25 @@ async fn connect_auth(addr: &str) -> Client {
     .unwrap();
     c.send(Bytes::from(hello)).await.unwrap();
     let ack = decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap();
-    assert!(matches!(ack, NetMessage::ServerHelloAck { .. }));
+    let NetMessage::ServerHelloAck { your_avatar_id, .. } = ack else {
+        panic!("expected ServerHelloAck, got {ack:?}");
+    };
+    c.send(stand_here()).await.unwrap();
+    // Every other connection is concurrent with this one, so wait until the
+    // world has applied that intent — until a snapshot shows this avatar — or a
+    // test that speaks next can race it and find nobody in earshot.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = c.next().await.unwrap().unwrap();
+            if let Ok(NetMessage::WorldSnapshot { avatars, .. }) = decode_app_frame(&frame) {
+                if avatars.iter().any(|a| a.id == your_avatar_id) {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .expect("this avatar never appeared in the world");
     c
 }
 

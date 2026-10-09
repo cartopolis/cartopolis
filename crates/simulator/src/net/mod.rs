@@ -1390,7 +1390,7 @@ pub async fn tick_loop(
         } else {
             chat.connected_ids()
                 .into_iter()
-                .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
+                .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
                 .collect()
         };
         let locked_for = lock_taken.elapsed();
