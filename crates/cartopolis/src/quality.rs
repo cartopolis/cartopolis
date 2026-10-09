@@ -661,18 +661,21 @@ impl Budget {
     }
 
     /// What a desktop browser gets when nothing asked for a tier: [`Self::balanced`]
-    /// with shadows cast over 400 m rather than 1 km.
+    /// with **shadows off by default** — Settings ▸ Lighting ▸ Shadows still turns
+    /// them on, at once and without a reload, and they then reach 400 m rather
+    /// than 1 km.
     ///
-    /// Measured in Chrome 146 on the Steam Deck (RADV), 2026-10-09, frames per
-    /// second once loaded over Groningen: [`Self::desktop`] — which every desktop
-    /// browser got until this — 20 at the default view and 16 at street level;
-    /// `balanced` 22 / 18; this rung **41** / 23; shadows off altogether 50 / 29.
-    /// The GPU was the limit (the main thread sat 45 % idle on `desktop`), and a
-    /// 1 km reach puts most of the visible city in every cascade's caster pass;
-    /// 400 m keeps the shadows near the viewer, which are the ones that decide
-    /// whether a street looks lit. Fewer cascades were measured too and bought
-    /// almost nothing beside the reach. Street level is limited by how heavy the
-    /// ground is rather than by shadows, which is why it moves less — see below.
+    /// **Measure shadows in daylight.** The sky follows the real clock, and with
+    /// the sun down or just rising the shadow passes cost almost nothing: every
+    /// "41–45 fps" figure this rung was first chosen on was taken between 03:00
+    /// and 07:00 UTC. In daylight (Chrome 146, Steam Deck RADV, 2026-10-09, 10:00
+    /// UTC, default view at 1.5 km over Groningen, fps once loaded): [`Self::desktop`]
+    /// — what every desktop browser got until 2026-10-09 — 20; shadows over 400 m
+    /// 27; one cascade over 250 m 29; one over 150 m 33; **shadows off 53**.
+    /// Clouds off changed nothing (27). So the reach and the cascade count are
+    /// small levers and the shadows themselves are most of a daylight frame, and
+    /// the browser — where the GPU is the limit (the main thread sat 45 % idle
+    /// on `desktop`) — starts without them.
     ///
     /// Its own name rather than a change to `balanced`, because `balanced` is what
     /// Android resolves to, and a browser default must not move the phone.
@@ -689,6 +692,7 @@ impl Budget {
     /// everything finer than the geometry was already the ground-detail normal.
     pub(crate) const fn browser() -> Self {
         Self {
+            shadows: false,
             shadow_distance_m: 400.0,
             terrain_grid: 1025,
             ..Self::balanced()
@@ -1713,12 +1717,18 @@ mod tests {
         for word in ["desktop", "high", "Desktop", "HIGH"] {
             assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Desktop), "{word}");
         }
-        // The browser default is balanced with a shorter shadow reach and a
-        // coarser terrain field and nothing else, so it cannot drift from the rung
-        // Android resolves to.
+        // The browser default is balanced with shadows off by default (a shorter
+        // reach for whoever turns them on) and a coarser terrain field, and
+        // nothing else, so it cannot drift from the rung Android resolves to —
+        // which keeps its shadows.
+        assert!(
+            Budget::balanced().shadows,
+            "Android's rung keeps its shadows"
+        );
         for word in ["browser", "web", "Browser"] {
             let b = parse(word).expect(word);
             assert_eq!(b.tier, Tier::Balanced, "{word}");
+            assert!(!b.shadows, "{word}");
             assert_eq!(b.shadow_distance_m, 400.0, "{word}");
             assert_eq!(b.terrain_grid, 1025, "{word}");
             assert_eq!(b.tile_px, Budget::balanced().tile_px, "{word}");
