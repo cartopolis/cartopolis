@@ -1,0 +1,39 @@
+# Private chats as a state machine over protocol messages — the half of the
+# client's `systems::private_chat` that is not Bevy, split out so the web UI
+# can run the same engine in the browser (`crates/web_chat`).
+# `docs/notes/encrypted-chat.md`.
+#
+# Nothing here may depend on `bevy`. Like `cartopolis_e2ee`, the simulator must
+# never link it outside its tests.
+[package]
+name = "cartopolis_chat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_chat"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+cartopolis_core = { path = "../core" }
+cartopolis_e2ee = { path = "../e2ee" }
+postcard = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+# The loopback suite boots a real simulator, exactly as the client's tests do;
+# declared the way the client declares them, so the workspace resolves one set
+# of features for each (`a-dev-dep-default-feature-forks-the-build`).
+[dev-dependencies]
+cartopolis_simulator = { path = "../simulator" }
+tempfile = "3"
+bytes.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

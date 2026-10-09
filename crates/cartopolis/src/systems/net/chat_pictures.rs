@@ -21,16 +21,9 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::platform::http::poll_task;
 
-/// Where a picture lives and what opens it: the half of `Payload::Picture` a
-/// line keeps.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PictureRef {
-    pub hash: String,
-    pub key: [u8; 32],
-    pub nonce: [u8; 12],
-    pub width: u32,
-    pub height: u32,
-}
+/// Where a picture lives and what opens it. Defined with the engine that
+/// produces it (`cartopolis_chat`), so the web UI has the same one.
+pub use cartopolis_chat::PictureRef;
 
 /// A picture somebody asked to send: encoded bytes in any format `image`
 /// reads, and the chat it goes to.

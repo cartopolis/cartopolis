@@ -2447,6 +2447,7 @@ dependencies = [
  "big_space",
  "bytes",
  "cartopolis_calls",
+ "cartopolis_chat",
  "cartopolis_core",
  "cartopolis_e2ee",
  "cartopolis_geo",
@@ -2564,6 +2565,24 @@ dependencies = [
  "tracing",
  "uuid",
  "x509-cert",
+]
+
+[[package]]
+name = "cartopolis_chat"
+version = "1.0.0"
+dependencies = [
+ "bytes",
+ "cartopolis_core",
+ "cartopolis_e2ee",
+ "cartopolis_simulator",
+ "futures-util",
+ "postcard",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

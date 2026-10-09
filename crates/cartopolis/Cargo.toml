@@ -145,6 +145,8 @@ cartopolis_materials = { path = "../materials" }
 # Private chats (`systems::private_chat`). The only crate that can open a
 # sealed message; the simulator links it for tests only.
 cartopolis_e2ee = { path = "../e2ee" }
+# The private-chat engine (`systems::private_chat` re-exports it).
+cartopolis_chat = { path = "../chat" }
 # Calls in private chats (`systems::calls`, `docs/notes/calls.md`): the
 # `client` half only — sealing, Opus and a device's session. The forwarder is
 # the simulator's. Pure Rust on every target this crate builds for.

@@ -2217,7 +2217,7 @@ mod tests {
         let mut c = Contacts::default();
         let id = c.request("bas", None);
         assert!(is_contacts_request(id));
-        assert!(!crate::systems::private_chat::is_private_request(id));
+        assert!(!cartopolis_chat::is_private_request(id));
     }
 
     #[test]
