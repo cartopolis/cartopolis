@@ -127,8 +127,22 @@ pub fn render_gizmo_visuals(
     }
 }
 
-fn arm_length(max_scale: f32) -> f32 {
-    (max_scale * 0.8).max(1.2)
+/// Clearance between the prim's bounds and a handle's tip, as a fraction of the
+/// prim's bounding radius, and never less than [`MIN_ARM_CLEARANCE_M`].
+const ARM_CLEARANCE: f32 = 0.5;
+const MIN_ARM_CLEARANCE_M: f32 = 0.75;
+
+/// How far a handle reaches from the prim's centre: past its **bounding sphere**,
+/// plus clearance. Every prim mesh is a unit shape scaled by `scale`, so that
+/// sphere's radius is half the scale vector's length, and it holds at any
+/// rotation — the handles run along world axes, the prim need not.
+///
+/// It was `0.8 × max(scale)`, which is inside a cube's own corners and barely
+/// clear of its faces: the tips sat on or behind the surface, the depth test hid
+/// most of each arrow, and the point a click has to land on was under the prim.
+fn arm_length(scale: Vec3) -> f32 {
+    let radius = scale.abs().length() * 0.5;
+    radius + (radius * ARM_CLEARANCE).max(MIN_ARM_CLEARANCE_M)
 }
 
 /// Where the handles of a selected prim stand and how long their arms are, in
@@ -142,7 +156,7 @@ fn arm_length(max_scale: f32) -> f32 {
 /// a cell; across a cell boundary every handle was clickable ten kilometres from
 /// where it was drawn.
 fn handle_frame(gt: &GlobalTransform) -> (Vec3, f32) {
-    (gt.translation(), arm_length(gt.scale().max_element()))
+    (gt.translation(), arm_length(gt.scale()))
 }
 
 fn axis_color(axis: GizmoAxis, state: &GizmoState) -> Color {
@@ -355,7 +369,7 @@ pub fn handle_gizmo_interaction(
 
     let mouse_delta = cursor - gizmo_state.drag_start_screen;
     let dir = axis_vec(active_axis);
-    let arm = arm_length(start_tr.scale.max_element());
+    let arm = arm_length(start_tr.scale);
     let origin = gizmo_state.drag_start_origin;
 
     // Project the axis into screen space to get a pixels-per-world-unit ratio.
@@ -521,5 +535,37 @@ fn drawn_point(pos: Vec3, arm: f32, axis: GizmoAxis, mode: GizmoMode) -> Vec3 {
             let a = std::f32::consts::FRAC_PI_4;
             pos + (u * a.cos() + v * a.sin()) * arm
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every handle tip must stand clear of the prim it belongs to, or the
+    /// arrow is hidden inside it and the point a click needs is behind a face.
+    #[test]
+    fn handle_tips_clear_the_prim_at_any_rotation() {
+        for scale in [
+            Vec3::ONE,
+            Vec3::splat(0.1),
+            Vec3::new(4.0, 0.5, 0.5),
+            Vec3::new(20.0, 3.0, 12.0),
+        ] {
+            let bounding_radius = scale.length() * 0.5;
+            let arm = arm_length(scale);
+            assert!(
+                arm >= bounding_radius + MIN_ARM_CLEARANCE_M - 1e-4,
+                "scale {scale}: arm {arm} m leaves under {MIN_ARM_CLEARANCE_M} m past a {bounding_radius} m bounding sphere"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mirrored_prim_gets_the_same_handles() {
+        assert_eq!(
+            arm_length(Vec3::new(-2.0, 1.0, 3.0)),
+            arm_length(Vec3::new(2.0, 1.0, 3.0))
+        );
     }
 }
