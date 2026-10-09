@@ -4,7 +4,7 @@
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
 /// The LoD2.2 buildings' material: the same `StandardMaterial` the lane always
@@ -82,20 +82,19 @@ pub const BLOCK_PERIOD: f32 = 16.0;
 
 /// Uniforms for `shaders/building_windows.wgsl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
+// One uniform buffer, not one per field: see the shader's `Facade` for the
+// browser limit seven of them broke.
+#[uniform(100, BuildingWindowsGpu)]
 pub struct BuildingWindows {
     /// x: column pitch (m). y: floor pitch (m). z: pane width. w: pane height.
-    #[uniform(100)]
     pub lattice: Vec4,
     /// x: night factor, 0 by day → 1 after dusk. y: emissive gain at full night.
     /// z: the daylight darkening. w: the first sill's height.
-    #[uniform(101)]
     pub glow: Vec4,
     /// x: occupancy block size (m). y: how many blocks it repeats over.
     /// z, w: the fraction of windows lit in the deadest and the liveliest block.
-    #[uniform(103)]
     pub block: Vec4,
     /// rgb: the lit colour, linear. a unused.
-    #[uniform(102)]
     pub lit: Vec4,
     /// x: how many of [`Self::ghost_ring`]'s points are live, 0 for nothing
     /// ghosted. y, z, w unused.
@@ -108,12 +107,10 @@ pub struct BuildingWindows {
     /// A uniform rather than a per-vertex key for the reason this whole module
     /// exists: four bytes a vertex on the largest geometry in the app, carried
     /// forever, to serve a state that is off almost all of the time.
-    #[uniform(104)]
     pub ghost: Vec4,
     /// The ghost ring's bounding box in render-space XZ — `(min x, min z, max x,
     /// max z)`. The broad phase, and not optional: without it every wall fragment
     /// in the city walks the polygon while anything is ghosted.
-    #[uniform(105)]
     pub ghost_bounds: Vec4,
     /// The ghost ring in render-space XZ, two points per element (`xy` then `zw`).
     ///
@@ -122,8 +119,35 @@ pub struct BuildingWindows {
     /// which is the trap this file's `WINDOW_LATTICE` note is entirely about. A
     /// ring is 32 floats and there is one material; paying for it once a frame is
     /// cheaper than any arrangement that makes the shader solve it.
-    #[uniform(106)]
     pub ghost_ring: [Vec4; GHOST_RING_VEC4S],
+}
+
+/// [`BuildingWindows`]' uniforms as `building_windows.wgsl`'s `Facade` lays
+/// them out, in that order.
+#[derive(ShaderType, Clone, Copy, Debug)]
+pub struct BuildingWindowsGpu {
+    pub lattice: Vec4,
+    pub glow: Vec4,
+    pub lit: Vec4,
+    pub block: Vec4,
+    pub ghost: Vec4,
+    pub ghost_bounds: Vec4,
+    pub ghost_ring: [Vec4; GHOST_RING_VEC4S],
+}
+
+/// What `#[uniform(100, BuildingWindowsGpu)]` binds.
+impl From<&BuildingWindows> for BuildingWindowsGpu {
+    fn from(m: &BuildingWindows) -> Self {
+        Self {
+            lattice: m.lattice,
+            glow: m.glow,
+            lit: m.lit,
+            block: m.block,
+            ghost: m.ghost,
+            ghost_bounds: m.ghost_bounds,
+            ghost_ring: m.ghost_ring,
+        }
+    }
 }
 
 /// How many `vec4`s the ghost ring is packed into — two points each, so 32

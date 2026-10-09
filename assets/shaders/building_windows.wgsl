@@ -53,16 +53,16 @@
 }
 
 // x: column pitch (m). y: floor pitch (m). z: window width (m). w: window height (m).
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> lattice: vec4<f32>;
+// → `facade.lattice`, in `Facade` below.
 // x: night factor, 0 by day → 1 after dusk. y: emissive gain at full night.
 // z: how much a window darkens the facade by day. w: lowest wall height (m) that
 // carries windows at all — below it a fragment is a garden wall or a shed.
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> glow: vec4<f32>;
+// → `facade.glow`, in `Facade` below.
 // rgb: the lit colour, linear. a unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<uniform> lit: vec4<f32>;
+// → `facade.lit`, in `Facade` below.
 // x: occupancy block size (m). y: blocks per hash period. z, w: the fraction of
 // windows lit in the deadest and the liveliest block.
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> block: vec4<f32>;
+// → `facade.block`, in `Facade` below.
 
 // ─── The ghosted building ────────────────────────────────────────────────────
 //
@@ -81,12 +81,27 @@
 // x: how many ring points are live (0 = nothing ghosted, and then this whole
 // block is two instructions). y: 1 when the roof goes as well as the walls — the
 // cutaway (`systems::cutaway`). z, w unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> ghost: vec4<f32>;
+// → `facade.ghost`, in `Facade` below.
 // The ring's bounding box in render-space XZ: min x, min z, max x, max z. The
 // broad phase — without it every wall fragment in the city walks the polygon.
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var<uniform> ghost_bounds: vec4<f32>;
+// → `facade.ghost_bounds`, in `Facade` below.
 // The ring, two points per element (xy then zw), in render-space XZ.
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> ghost_ring: array<vec4<f32>, 16>;
+// → `facade.ghost_ring`, in `Facade` below.
+
+// The seven above as one uniform, not seven: WebGPU allows 12 uniform buffers
+// per shader stage, bevy's view bindings spend five and `StandardMaterial` one,
+// so seven more failed this pipeline in every browser. `BuildingWindowsGpu` in
+// `building_windows.rs` is the Rust side and must keep this order.
+struct Facade {
+    lattice: vec4<f32>,
+    glow: vec4<f32>,
+    lit: vec4<f32>,
+    block: vec4<f32>,
+    ghost: vec4<f32>,
+    ghost_bounds: vec4<f32>,
+    ghost_ring: array<vec4<f32>, 16>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> facade: Facade;
 
 /// Ring points this shader can hold. A BAG outline simplified at 10 cm is about
 /// nine points; anything longer is simplified again on the CPU before it is sent,
@@ -607,7 +622,7 @@ fn value_noise(p: vec2<f32>) -> f32 {
 
 /// One ring point, out of the packed pairs.
 fn ghost_point(i: i32) -> vec2<f32> {
-    let v = ghost_ring[i / 2];
+    let v = facade.ghost_ring[i / 2];
     return select(v.xy, v.zw, (i & 1) == 1);
 }
 
@@ -616,12 +631,12 @@ fn ghost_point(i: i32) -> vec2<f32> {
 /// Even-odd, the same test `collision::Footprint::contains` runs on the CPU over
 /// the same ring — so what you can see through is what you can walk through.
 fn in_ghost(p: vec2<f32>) -> bool {
-    let n = min(i32(ghost.x), GHOST_MAX_POINTS);
+    let n = min(i32(facade.ghost.x), GHOST_MAX_POINTS);
     if n < 3 {
         return false;
     }
-    if p.x < ghost_bounds.x || p.x > ghost_bounds.z
-        || p.y < ghost_bounds.y || p.y > ghost_bounds.w {
+    if p.x < facade.ghost_bounds.x || p.x > facade.ghost_bounds.z
+        || p.y < facade.ghost_bounds.y || p.y > facade.ghost_bounds.w {
         return false;
     }
     var inside = false;
@@ -667,7 +682,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // a follow camera above and behind the avatar can only see into it from
     // above: with the roof on it was looking at the underside of the roof.
     // `is_wall` is already the right question and is already answered.
-    if (is_wall || ghost.y > 0.5) && in_ghost(in.world_position.xz) {
+    if (is_wall || facade.ghost.y > 0.5) && in_ghost(in.world_position.xz) {
         discard;
     }
 
@@ -705,8 +720,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // metres — the rule `interiors` builds its storeys by — and a shop's ground
     // floor is its own taller storey under them. Unknown keeps the one pitch
     // every building used to share.
-    var ground_h = lattice.y;
-    var storey_h = lattice.y;
+    var ground_h = facade.lattice.y;
+    var storey_h = facade.lattice.y;
     if eave > 0.0 {
         let rest = select(eave, eave - SHOP_FLOOR_M, shop);
         storey_h = rest / max(1.0, round(rest / STOREY_M));
@@ -730,7 +745,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let door_part = face_uv.y < -0.25;
     let laid_out = face_uv.y > 0.5;
     let face_code = u32(round(max(face_uv.y, 0.0)));
-    var bay = lattice.x;
+    var bay = facade.lattice.x;
     var along = u;
     var door_u = -1000.0;
     if laid_out {
@@ -813,7 +828,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // real size as the pitch changes.
         let on_ground = idx.y < 0.5;
         let floor_h = select(storey_h, ground_h, on_ground);
-        var pane_m = pane_for_era(era, lattice.zw);
+        var pane_m = pane_for_era(era, facade.lattice.zw);
         var centre = vec2<f32>(0.5, 0.5);
         if shop && on_ground {
             pane_m = SHOP_PANE_M;
@@ -847,8 +862,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Taken on the horizontal position only, so all four walls of a building
         // agree, and moduloed on its own period for the floating-origin reason
         // the window lattice is.
-        let bidx = floor(in.world_position.xz / block.x);
-        let bkey = bidx - floor(bidx / block.y) * block.y;
+        let bidx = floor(in.world_position.xz / facade.block.x);
+        let bkey = bidx - floor(bidx / facade.block.y) * facade.block.y;
         let liveliness = hash2(bkey + vec2<f32>(37.0, 91.0));
 
         // …scaled by what the building is actually *for*. The vertex colour's
@@ -864,7 +879,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Clamped rather than trusted: the scale is authored above 1.0 for homes,
         // and a lit fraction past 1 would light every window on a facade.
         let occupancy = clamp(occupancy_raw, 0.0, 2.0);
-        let lit_fraction = clamp(mix(block.z, block.w, liveliness) * occupancy, 0.0, 1.0);
+        let lit_fraction = clamp(mix(facade.block.z, facade.block.w, liveliness) * occupancy, 0.0, 1.0);
 
         // Lit if this window's own draw came in under the block's fraction, then
         // ramped so the ones that are on are not all on equally.
@@ -879,7 +894,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         //
         // Where the eaves are known the building is known to be a building, and
         // its ground floor has windows like any other; a shop's is the window.
-        let sill = select(glow.w, GROUND_SILL_M, eave >= 4.0);
+        let sill = select(facade.glow.w, GROUND_SILL_M, eave >= 4.0);
         let tall_enough = select(f32(v > sill), 1.0, shop && on_ground)
             * f32(clear_of_door && !windowless);
 
@@ -944,7 +959,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         wall_col = mix(wall_col, wall_col * lintel_tone(era), lintel(pm, hs, era) * detail);
         var glazed = mix(interior, frame_col, look.y);
         // At range the pane is only its coverage, the way it always was.
-        glazed = mix(glazed, mix(GLASS_BASE, plain * glow.z, 0.3), blur);
+        glazed = mix(glazed, mix(GLASS_BASE, plain * facade.glow.z, 0.3), blur);
         // Boards cover the frame and the glass alike.
         glazed = mix(glazed, mix(boarded(pm, hs, r), BOARD_MEAN, blur), board_k);
         // The glass's share of the opening: none where it is boarded.
@@ -962,7 +977,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // …and at night it is lit from inside. The emissive is added rather than
         // replacing the surface, so the wall keeps taking the moon and the street.
         pbr_input.material.emissive += vec4<f32>(
-            lit.rgb * (emissive * glow.x * glow.y),
+            facade.lit.rgb * (emissive * facade.glow.x * facade.glow.y),
             0.0,
         );
 

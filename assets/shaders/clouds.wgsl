@@ -36,23 +36,23 @@
 
 // x: coverage 0..1 (fraction of sky filled). y: edge softness. z: the sky's clock
 // in seconds (drives the churn). w: low deck height above the camera, in metres.
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params0: vec4<f32>;
+// → `deck.shape`, read as `params0` in `fragment`.
 // xy: the wind's accumulated drift in metres. z: space fade (1 = fully hidden in
 // orbit). w: altitude fade (1 = full clouds, 0 = faded out at high flight).
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var<uniform> params1: vec4<f32>;
+// → `deck.motion`, read as `params1` in `fragment`.
 // xyz: world direction TO the sun. w: deck thickness in metres (the vertical
 // extent the sun march traverses).
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> sun_dir: vec4<f32>;
+// → `deck.sun_dir`, read as `sun_dir` in `fragment`.
 // rgb: sunlight reaching the deck's altitude by `utils::sun`'s model — the
 // stand-in for a view with no bevy atmosphere (see `cf::deck_sunlight`). a: overall
 // cloud opacity, before the coverage/altitude/space fades.
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> sun_color: vec4<f32>;
+// → `deck.sun_color`, read as `sun_color` in `fragment`.
 // rgb: ambient sky light falling on the deck (what fills the shadowed side).
 // a: opacity scale for the high deck, so the cirrus layer can be tuned alone.
-@group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> sky_color: vec4<f32>;
+// → `deck.sky_color`, read as `sky_color` in `fragment`.
 // xy: world-anchor offset in metres. z: the camera fog's per-metre density, for
 // aerial perspective. w: high deck height above the camera, in metres.
-@group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> params2: vec4<f32>;
+// → `deck.place`, read as `params2` in `fragment`.
 // rgb: the colour the deck recedes into with distance — the same fog colour the
 // horizon-haze shell paints, so cloud and sky reach the horizon together. It is
 // also what `sky_color` is now taken from, which is what stops an overcast deck
@@ -60,12 +60,19 @@
 // a: the fraction of `sky_color` an opaque core still receives — low for scattered
 // cumulus (a dark base against a bright sky), high for overcast (the deck *is*
 // the sky). Rust decides it from the coverage; see `cloud_sky_floor`.
-@group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> haze_color: vec4<f32>;
+// → `deck.haze_color`, read as `haze_color` in `fragment`.
 // x: the sunlight's scale apart from its colour — the sun disc's occlusion through
 // sunrise and sunset times the deck's gain — for the atmosphere path of
 // `cf::deck_sunlight`. y: 1 on the cheap tier, for `cf::mirrored`; this shader
 // reads `CLOUDS_LOW` instead. zw: unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> params3: vec4<f32>;
+// → `deck.light`, read as `params3` in `fragment`.
+//
+// One uniform rather than eight: WebGPU allows 12 uniform buffers per shader
+// stage, bevy's view bindings already spend some, and eight more made this
+// pipeline invalid in every browser — the renderer halted the moment the deck
+// was first drawn. `cf::Deck` is the layout `CloudMaterial` writes
+// (`CloudFieldGpu`), the same one the water reads its mirrored deck from.
+@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> deck: cf::Deck;
 
 // ---- quality tier -----------------------------------------------------------
 // `CLOUDS_LOW` is set by `CloudMaterial::specialize` on `quality::Tier::Phone`.
@@ -100,6 +107,16 @@ const MS_OCTAVES: i32 = 3;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    // The eight vectors under the names the comments above give them.
+    let params0 = deck.shape;
+    let params1 = deck.motion;
+    let sun_dir = deck.sun_dir;
+    let sun_color = deck.sun_color;
+    let sky_color = deck.sky_color;
+    let params2 = deck.place;
+    let haze_color = deck.haze_color;
+    let params3 = deck.light;
+
     let dir = normalize(in.world_position.xyz - view.world_position.xyz);
 
     // Only rays that climb toward the ceiling carry cloud.

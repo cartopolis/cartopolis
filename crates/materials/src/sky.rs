@@ -206,34 +206,30 @@ pub fn low_clouds() -> bool {
 /// colours are the *same* day/night model the sunlight and the fog are built
 /// from, so the deck can't drift off the sky's palette (see `update_clouds`).
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
+// One uniform buffer, not one per field: see `clouds.wgsl`'s binding for the
+// browser limit eight of them broke.
+#[uniform(0, CloudFieldGpu)]
 pub struct CloudMaterial {
     /// x: coverage 0–1, y: softness, z: the sky's clock in seconds (drives the
     /// churn), w: low deck height (m).
-    #[uniform(0)]
     pub params0: Vec4,
     /// xy: the wind's accumulated drift (m, `CloudField`,
     /// `cartopolis::systems::sky::CloudField`), z: space fade (1 =
     /// hidden), w: altitude fade.
-    #[uniform(1)]
     pub params1: Vec4,
     /// xyz: world direction to the sun. w: deck thickness (m), for the sun march.
-    #[uniform(2)]
     pub sun_dir: Vec4,
     /// Sunlight reaching the deck's altitude by `utils::sun`'s model — what a view
     /// without bevy's atmosphere uses; alpha carries the overall opacity.
-    #[uniform(3)]
     pub sun_color: LinearRgba,
     /// Ambient sky light on the deck; alpha scales the high deck's opacity.
-    #[uniform(4)]
     pub sky_color: LinearRgba,
     /// xy: world-anchor offset in metres (camera displacement from the anchor), so
     /// the deck stays fixed over the ground. z: the camera fog's per-metre density
     /// (aerial perspective). w: high deck height (m).
-    #[uniform(5)]
     pub params2: Vec4,
     /// The colour the deck recedes into with distance — the camera's fog colour,
     /// so cloud and sky reach the horizon together.
-    #[uniform(6)]
     pub haze_color: LinearRgba,
     /// x: the sunlight's scale apart from its colour (the sun disc's occlusion ×
     /// `CLOUD_SUN_GAIN`, `cartopolis::systems::sky::CLOUD_SUN_GAIN`). With bevy's
@@ -242,7 +238,6 @@ pub struct CloudMaterial {
     /// `sun_color`, so sunset clouds match the sky around them. y: 1 on the phone
     /// tier (`CLOUDS_LOW`), for the water that mirrors the deck — the shell
     /// itself reads its shader def. zw: unused.
-    #[uniform(7)]
     pub params3: Vec4,
 }
 
@@ -259,6 +254,13 @@ impl CloudMaterial {
             haze_color: self.haze_color.to_vec4(),
             light: self.params3,
         }
+    }
+}
+
+/// What `#[uniform(0, CloudFieldGpu)]` binds: the same eight vectors, one buffer.
+impl From<&CloudMaterial> for CloudFieldGpu {
+    fn from(material: &CloudMaterial) -> Self {
+        material.gpu()
     }
 }
 
@@ -343,29 +345,26 @@ impl Material for RainMaterial {
 /// surface, sampled by a 3D noise field and shaded by the sun terminator. Fades
 /// in with `space_factor` (absent on the ground, where the ceiling shell rules).
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
+// One uniform buffer, not one per field: WebGPU allows 12 per shader stage and
+// bevy's view bindings already spend five, so seven left this pipeline at
+// exactly the limit. `GlobeCloudGpu` is the same seven, in order.
+#[uniform(0, GlobeCloudGpu)]
 pub struct GlobeCloudMaterial {
     /// xyz: sphere centre in render space, w: radius (m).
-    #[uniform(0)]
     pub centre: Vec4,
     /// World direction to the sun (local anchor frame).
-    #[uniform(1)]
     pub sun_dir: Vec4,
     /// x: coverage, y: opacity (space fade), z: time, w: noise frequency.
-    #[uniform(2)]
     pub params: Vec4,
     /// Sunlit cloud colour; alpha carries the overall opacity.
-    #[uniform(3)]
     pub lit_color: LinearRgba,
     /// Night-side cloud colour.
-    #[uniform(4)]
     pub shadow_color: LinearRgba,
     /// Earth's spin axis in the local frame (latitude banding + zonal drift).
-    #[uniform(5)]
     pub north_axis: Vec4,
     /// xyz: local-frame direction to geographic (0°,0°), used to recover longitude
     /// for the data lookup. w: data weight (0 = procedural fallback, 1 = live
     /// GFS/TCDC coverage). See `systems::globe_weather` and ADR-032.
-    #[uniform(6)]
     pub frame_ref: Vec4,
     /// Live Total Cloud Cover grid (equirectangular, r = cloud fraction). A
     /// mid-grey placeholder until the first GFS fetch lands (weight stays 0 so it's
@@ -373,6 +372,34 @@ pub struct GlobeCloudMaterial {
     #[texture(7)]
     #[sampler(8)]
     pub cloud_field: Handle<Image>,
+}
+
+/// [`GlobeCloudMaterial`]'s vectors as `globe_clouds.wgsl`'s `GlobeClouds` lays
+/// them out. All `vec4`, so it has one layout on every driver.
+#[derive(ShaderType, Clone, Copy, Default, Debug, PartialEq)]
+pub struct GlobeCloudGpu {
+    pub centre: Vec4,
+    pub sun_dir: Vec4,
+    pub params: Vec4,
+    pub lit_color: Vec4,
+    pub shadow_color: Vec4,
+    pub north_axis: Vec4,
+    pub frame_ref: Vec4,
+}
+
+/// What `#[uniform(0, GlobeCloudGpu)]` binds.
+impl From<&GlobeCloudMaterial> for GlobeCloudGpu {
+    fn from(m: &GlobeCloudMaterial) -> Self {
+        GlobeCloudGpu {
+            centre: m.centre,
+            sun_dir: m.sun_dir,
+            params: m.params,
+            lit_color: m.lit_color.to_vec4(),
+            shadow_color: m.shadow_color.to_vec4(),
+            north_axis: m.north_axis,
+            frame_ref: m.frame_ref,
+        }
+    }
 }
 
 impl Material for GlobeCloudMaterial {

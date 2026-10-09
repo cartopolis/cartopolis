@@ -25,22 +25,29 @@
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
 
-// xyz: sphere centre in render space. w: sphere radius (m).
-@group(3) @binding(0) var<uniform> centre: vec4<f32>;
-// xyz: world direction TO the sun (local anchor frame). w unused.
-@group(3) @binding(1) var<uniform> sun_dir: vec4<f32>;
-// x: coverage 0..1. y: opacity (space fade). z: time. w: noise frequency.
-@group(3) @binding(2) var<uniform> params: vec4<f32>;
-// rgb: sunlit cloud colour. a: overall opacity.
-@group(3) @binding(3) var<uniform> lit_color: vec4<f32>;
-// rgb: night-side cloud colour. a unused.
-@group(3) @binding(4) var<uniform> shadow_color: vec4<f32>;
-// xyz: Earth's spin axis in the local frame (for latitude banding + drift).
-@group(3) @binding(5) var<uniform> north_axis: vec4<f32>;
-// xyz: local-frame direction to geographic (0°,0°) — the prime-meridian/equator
-// reference used to recover longitude for the data lookup. w: data weight
-// (0 = pure procedural fallback, 1 = live GFS/TCDC coverage — see ADR-032).
-@group(3) @binding(6) var<uniform> frame_ref: vec4<f32>;
+// One uniform rather than seven: WebGPU allows 12 uniform buffers per shader
+// stage and bevy's view bindings already spend five, so seven left this
+// pipeline at exactly the limit. `GlobeCloudGpu` in `sky.rs` is the Rust side;
+// `fragment` reads the fields back under their old names.
+struct GlobeClouds {
+    // xyz: sphere centre in render space. w: sphere radius (m).
+    centre: vec4<f32>,
+    // xyz: world direction TO the sun (local anchor frame). w unused.
+    sun_dir: vec4<f32>,
+    // x: coverage 0..1. y: opacity (space fade). z: time. w: noise frequency.
+    params: vec4<f32>,
+    // rgb: sunlit cloud colour. a: overall opacity.
+    lit_color: vec4<f32>,
+    // rgb: night-side cloud colour. a unused.
+    shadow_color: vec4<f32>,
+    // xyz: Earth's spin axis in the local frame (for latitude banding + drift).
+    north_axis: vec4<f32>,
+    // xyz: local-frame direction to geographic (0°,0°) — the prime-meridian/
+    // equator reference used to recover longitude for the data lookup. w: data
+    // weight (0 = pure procedural fallback, 1 = live GFS/TCDC coverage — ADR-032).
+    frame_ref: vec4<f32>,
+}
+@group(3) @binding(0) var<uniform> globe: GlobeClouds;
 // Live Total Cloud Cover: a coarse equirectangular grid (GFS TCDC), r = cloud
 // fraction 0..1. Row 0 = +90° lat, column 0 = 0° lng, columns increase eastward.
 @group(3) @binding(7) var cloud_field: texture_2d<f32>;
@@ -177,6 +184,13 @@ const SWIRL_STRENGTH: f32 = 1.10;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let centre = globe.centre;
+    let sun_dir = globe.sun_dir;
+    let params = globe.params;
+    let lit_color = globe.lit_color;
+    let shadow_color = globe.shadow_color;
+    let north_axis = globe.north_axis;
+    let frame_ref = globe.frame_ref;
     // Surface direction from Earth's centre — frame-independent of the render
     // translation, so it matches the sun direction's local frame.
     let normal = normalize(in.world_position.xyz - centre.xyz);

@@ -41,38 +41,54 @@
 // xy: the mask's minimum corner in anchor metres. z: the ground size of the
 // whole mask, in metres. w: the ground plane the blades stand on (the vector
 // surfaces' own y).
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> field: vec4<f32>;
+// → `turf.field`, in `Turf` below.
 
 // x: blade height in metres (before the per-blade jitter). y: blade width.
 // z: how far a blade may be jittered off its lattice slot, in metres — the
 // slot spacing with `JITTER_FRAC` already folded in, so it is applied once and
 // on the side that documents it. w: patch edge length in metres, the unit the
 // `MeshTag` counts in.
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> blade: vec4<f32>;
+// → `turf.blade`, in `Turf` below.
 
 // xy: unit wind direction. z: sway amplitude as a fraction of blade height.
 // w: sway speed.
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<uniform> wind: vec4<f32>;
+// → `turf.wind`, in `Turf` below.
 
 // x: distance (m) at which blades start retiring. y: distance by which they all
 // have. z: the ground height the mask's green `0` stands for. w: the height
 // range a full byte of green covers.
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> range: vec4<f32>;
+// → `turf.range`, in `Turf` below.
 
 // rgb: the tip colour, linear. a: how much darker the root is (0 = no gradient).
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> tint: vec4<f32>;
+// → `turf.tint`, in `Turf` below.
 
 // x: clump size in metres. y,z: the density the thinnest and thickest patches
 // keep, 0–1. w: how far a blade's facing may swing off its clump's, in radians.
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var<uniform> clump: vec4<f32>;
+// → `turf.clump`, in `Turf` below.
 
 // xy: the distance band over which this tier's blades *arrive*, staggered per
 // blade. The near tier passes a band below zero, which any real distance has
 // already crossed; the far ring passes the near tier's retire band, so its
 // blades stand up exactly where the dense ones sink. zw: spare.
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var<uniform> range2: vec4<f32>;
+// → `turf.range2`, in `Turf` below.
 
-// r: grass coverage. g: ground height, encoded over `range.zw`.
+// The seven above as one uniform, not seven: WebGPU allows 12 uniform buffers
+// per shader stage, and the browser counted these in the fragment stage too
+// (bevy's view bindings five, `StandardMaterial` one, these seven: 13), which
+// failed the lawn's pipeline at street level in every browser. `GrassGpu` in
+// `grass.rs` is the Rust side and must keep this order.
+struct Turf {
+    field: vec4<f32>,
+    blade: vec4<f32>,
+    wind: vec4<f32>,
+    range: vec4<f32>,
+    tint: vec4<f32>,
+    clump: vec4<f32>,
+    range2: vec4<f32>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> turf: Turf;
+
+// r: grass coverage. g: ground height, encoded over `turf.range.zw`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var mask_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var mask_sampler: sampler;
 
@@ -174,24 +190,24 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // and a healthy coverage mask. `systems::pipeline_health` is the only thing
     // in the tree that says so out loud.
     let patch_ij = vec2<f32>(f32(tag >> 16u), f32((tag << 16u) >> 16u));
-    let slot = patch_ij * blade.w + v.position.xz;
+    let slot = patch_ij * turf.blade.w + v.position.xz;
 
     let h = hash_slot(slot);
     let h2 = hash_slot2(slot);
 
     // Off the lattice, or the lawn is visibly a grid. Kept inside half a spacing
     // so blades never cross and the density stays what the lattice says it is.
-    let stand = slot + (h.xy - 0.5) * blade.z;
+    let stand = slot + (h.xy - 0.5) * turf.blade.z;
 
     // The mask. `textureSampleLevel`, not `textureSample`: there are no
     // derivatives in a vertex stage. Clamped to the field's own edge and then
     // *forced* to zero outside it, because clamp-to-edge would otherwise smear
     // the field's border row outwards over the whole world.
-    let uv = (stand - field.xy) / field.z;
+    let uv = (stand - turf.field.xy) / turf.field.z;
     let inside = f32(all(uv > vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)));
     let m = textureSampleLevel(mask_texture, mask_sampler, uv, 0.0);
     let cover = m.r * inside;
-    let ground = range.z + m.g * range.w;
+    let ground = turf.range.z + m.g * turf.range.w;
 
     // Distance is taken in render space — both ends of it are, so the frame
     // cancels and no anchor-metre camera position is needed.
@@ -214,23 +230,23 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // has retired from one lattice has, in expectation, stood up on the other —
     // the total blade count ramps smoothly from the near density to the far one
     // and no circle exists for the eye to find.
-    let cut = mix(range.x, range.y, h.z);
-    let acut = mix(range2.x, range2.y, h.z);
+    let cut = mix(turf.range.x, turf.range.y, h.z);
+    let acut = mix(turf.range2.x, turf.range2.y, h.z);
     let reach = smoothstep(acut - 2.0, acut, dist) * (1.0 - smoothstep(cut - 2.0, cut, dist));
 
     // The clump this blade belongs to. Square cells rather than a true Voronoi:
     // the blades are jittered off their slots and the density noise below is
     // continuous, so the cell edges never surface, and a Voronoi would cost nine
     // hashes per vertex to hide something already hidden.
-    let clump_cell = floor(stand / clump.x);
-    let ch = hash_slot(clump_cell * clump.x);
+    let clump_cell = floor(stand / turf.clump.x);
+    let ch = hash_slot(clump_cell * turf.clump.x);
 
     // Two octaves, and they are two different phenomena: a metre-scale one for
     // wear, shade and damp ground, and a tuft-scale one for the clumping itself.
     let wear = value_noise(stand * 0.28);
     let tuft = value_noise(stand * 1.6);
     let density = clamp(
-        mix(clump.y, clump.z, 0.55 * wear + 0.45 * tuft),
+        mix(turf.clump.y, turf.clump.z, 0.55 * wear + 0.45 * tuft),
         0.0,
         1.0,
     );
@@ -247,7 +263,7 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // Blades in a clump broadly agree on which way they lean, and fan out from
     // there. A fully independent yaw per blade averages out to a uniform carpet
     // at any distance — the variation has to have a *scale* to be visible.
-    let yaw = ch.x * 6.2831853 + (h2.x - 0.5) * clump.w;
+    let yaw = ch.x * 6.2831853 + (h2.x - 0.5) * turf.clump.w;
     let facing = vec3<f32>(-sin(yaw), 0.0, cos(yaw));
     let side = vec3<f32>(cos(yaw), 0.0, sin(yaw));
 
@@ -259,7 +275,7 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // verge from a lawn is less the mean height than the unevenness — 0.6–1.4×
     // per blade and 0.65–1.35× per clump means neighbouring stands genuinely
     // differ, where the original mown ranges read as a cut surface.
-    let height = blade.x
+    let height = turf.blade.x
         * (0.6 + 0.8 * h.w)
         * mix(0.65, 1.35, ch.y)
         * mix(0.72, 1.08, density)
@@ -280,8 +296,8 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // the field shimmers in place instead of being pushed. The travelling term
     // is what carries a gust across the lawn, and it only reads if neighbours
     // broadly agree.
-    let drift = value_noise(stand * 0.12 - wind.xy * (globals.time * 0.35));
-    let phase = dot(stand, wind.xy) * 0.45 + globals.time * wind.w + h2.y * 0.9;
+    let drift = value_noise(stand * 0.12 - turf.wind.xy * (globals.time * 0.35));
+    let phase = dot(stand, turf.wind.xy) * 0.45 + globals.time * turf.wind.w + h2.y * 0.9;
     let gust = (sin(phase) + 0.35 * sin(phase * 2.3 + 1.7)) * (0.55 + 0.75 * drift);
     // A blade of grass is not a spike. At 0.18–0.40 the tip moved 3–6 cm on a
     // 15 cm blade — about 15° off vertical — and a lawn of those reads as a
@@ -313,16 +329,16 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // coplanar stack, so a canal cannot occlude them. And they crawl, because
     // which degenerate triangle lands on a pixel centre is a property of the
     // projection and re-rolls on every camera move.
-    let width = blade.y * (0.8 + 0.4 * h2.w) * (1.0 + edge_on * 0.6) * step(1e-6, live);
+    let width = turf.blade.y * (0.8 + 0.4 * h2.w) * (1.0 + edge_on * 0.6) * step(1e-6, live);
 
-    var world = vec3<f32>(stand.x, ground + field.w, stand.y);
+    var world = vec3<f32>(stand.x, ground + turf.field.w, stand.y);
     world += side * (corner.y * width);
     world += vec3<f32>(0.0, height * t, 0.0);
     world += facing * (lean * curve * height);
-    world += vec3<f32>(wind.x, 0.0, wind.y) * (wind.z * gust * curve * height);
+    world += vec3<f32>(turf.wind.x, 0.0, turf.wind.y) * (turf.wind.z * gust * curve * height);
     // Bending a blade over does not stretch it: what leaves the vertical has to
     // come off the top, or a gale makes the whole lawn visibly taller.
-    let bend = lean * curve + abs(wind.z * gust * curve);
+    let bend = lean * curve + abs(turf.wind.z * gust * curve);
     world.y -= min(bend * bend * 0.5, 1.0) * height * t;
 
     // The blade is a flat strip, so its true normal is `facing` — which is
@@ -339,7 +355,7 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     out.world_normal = normalize(mix(
         own_normal,
         clump_normal,
-        smoothstep(range.x * 0.4, range.y, dist),
+        smoothstep(turf.range.x * 0.4, turf.range.y, dist),
     ));
 
     out.world_position = vec4<f32>(world, 1.0);
@@ -353,8 +369,8 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // back to a flat green a few metres out; a patch of slightly different green
     // is still legible there, and is most of what a real lawn's surface is.
     let tone = (0.86 + 0.28 * ch.w) * (0.94 + 0.12 * h2.z) * mix(0.9, 1.06, density);
-    let root = 1.0 - tint.a;
-    out.color = vec4<f32>(tint.rgb * tone * mix(root, 1.0, t), 1.0);
+    let root = 1.0 - turf.tint.a;
+    out.color = vec4<f32>(turf.tint.rgb * tone * mix(root, 1.0, t), 1.0);
 
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Not optional: the standard fragment reads its material out of a bindless
