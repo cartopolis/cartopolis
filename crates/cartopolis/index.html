@@ -212,6 +212,8 @@
           forcedTier = "balanced";
         } else if (forced === "desktop" || forced === "high") {
           forcedTier = "desktop";
+        } else if (forced === "browser" || forced === "web") {
+          forcedTier = "browser";
         }
 
         var phone;
@@ -230,8 +232,12 @@
         // itself cannot be laid out yet — it is in `<body>`, which this script
         // precedes — so the second half of the job runs down there, off this
         // decision.
+        // Not "desktop" when nothing was asked for: a desktop browser gets the
+        // `browser` rung (`quality::Budget::browser` — balanced, shadows over
+        // 400 m), which held 41 fps against desktop's 20 in Chrome on the Steam
+        // Deck. `?quality=high` still asks for the full desktop rung.
         document.documentElement.dataset.quality =
-          forcedTier || (phone ? "phone" : "desktop");
+          forcedTier || (phone ? "phone" : "browser");
         window.__phone = phone;
       })();
     </script>

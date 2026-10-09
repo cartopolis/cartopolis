@@ -660,6 +660,29 @@ impl Budget {
         }
     }
 
+    /// What a desktop browser gets when nothing asked for a tier: [`Self::balanced`]
+    /// with shadows cast over 400 m rather than 1 km.
+    ///
+    /// Measured in Chrome 146 on the Steam Deck (RADV), 2026-10-09, frames per
+    /// second once loaded over Groningen: [`Self::desktop`] — which every desktop
+    /// browser got until this — 20 at the default view and 16 at street level;
+    /// `balanced` 22 / 18; this rung **41** / 23; shadows off altogether 50 / 29.
+    /// The GPU was the limit (the main thread sat 45 % idle on `desktop`), and a
+    /// 1 km reach puts most of the visible city in every cascade's caster pass;
+    /// 400 m keeps the shadows near the viewer, which are the ones that decide
+    /// whether a street looks lit. Fewer cascades were measured too and bought
+    /// almost nothing beside the reach. Street level is limited by the detail
+    /// layers rather than by shadows, which is why it moves less.
+    ///
+    /// Its own name rather than a change to `balanced`, because `balanced` is what
+    /// Android resolves to, and a browser default must not move the phone.
+    pub(crate) const fn browser() -> Self {
+        Self {
+            shadow_distance_m: 400.0,
+            ..Self::balanced()
+        }
+    }
+
     /// Everything that costs fill or main-thread time, off or halved.
     ///
     /// This is not a gentle preset and is not meant to be one: the brief it was
@@ -1532,6 +1555,7 @@ fn parse(value: &str) -> Option<Budget> {
     match value.trim().to_ascii_lowercase().as_str() {
         "phone" | "low" | "mobile" => Some(Budget::phone()),
         "balanced" | "medium" => Some(Budget::balanced()),
+        "browser" | "web" => Some(Budget::browser()),
         // The rung Android resolves to, by name, on every platform — so the
         // handset's real budget can be run on a machine that can profile it.
         // `balanced` is **not** a substitute for it *off* the handset: there it is
@@ -1557,6 +1581,7 @@ fn auto() -> Budget {
     match html_quality_attr().as_deref() {
         Some("phone") => Budget::phone(),
         Some("balanced") => Budget::balanced(),
+        Some("browser") => Budget::browser(),
         _ => Budget::desktop(),
     }
 }
@@ -1675,6 +1700,18 @@ mod tests {
         }
         for word in ["desktop", "high", "Desktop", "HIGH"] {
             assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Desktop), "{word}");
+        }
+        // The browser default is balanced with a shorter shadow reach and nothing
+        // else, so it cannot drift from the rung Android resolves to.
+        for word in ["browser", "web", "Browser"] {
+            let b = parse(word).expect(word);
+            assert_eq!(b.tier, Tier::Balanced, "{word}");
+            assert_eq!(b.shadow_distance_m, 400.0, "{word}");
+            assert_eq!(
+                b.shadow_cascades,
+                Budget::balanced().shadow_cascades,
+                "{word}"
+            );
         }
         // Unrecognised is `None`, not a silent tier: `detect` warns and falls
         // through to auto-detection rather than pretending a typo meant one.
