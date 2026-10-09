@@ -601,6 +601,11 @@ pub struct ShotMetrics {
     /// not arrive (0 with `settled=false`). Colour is not evidence on this
     /// container's software rasteriser, so this is the assertable half.
     pub aerial_tiles: usize,
+    /// Flat-map tiles uploaded block-compressed so far (`quality::tile_compression`),
+    /// and the raster size of the last one uploaded: whether compression reached
+    /// the ring, and whether the handset got the 512² `compressed_tile_px` buys.
+    pub tiles_compressed: usize,
+    pub tile_px_uploaded: u32,
     pub alt_m: i64,
     /// Space-tier crossfade, 0 (ground) → 1 (deep space). Every ramp rides this.
     pub space_factor: f32,
@@ -1247,7 +1252,7 @@ pub struct ShotMetrics {
 /// name rather than by position.
 const CSV_HEADER: &str = "shot,name,lat,lng,camera_lat,camera_lng,aim_lat,aim_lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
 draws,tris_total,tris_shadow,shadow_casters,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,fetch_outstanding,radius_bias,\
-tiles_occluded,aerial_tiles,\
+tiles_occluded,aerial_tiles,tiles_compressed,tile_px_uploaded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
@@ -4117,6 +4122,8 @@ fn record_metrics(
         radius_bias: crate::systems::load_control::bias(),
         tiles_occluded: stream.occluded.len(),
         aerial_tiles: stream.aerial_tiles(),
+        tiles_compressed: stream.compressed_uploads(),
+        tile_px_uploaded: stream.last_tile_px(),
         alt_m: globe.altitude_m(cell, tf) as i64,
         space_factor: globe.space_factor(cell, tf),
         in_space: globe.in_space(cell, tf),
@@ -4363,6 +4370,8 @@ fn record_metrics(
                 radius_bias = m.radius_bias,
                 tiles_occluded = m.tiles_occluded,
                 aerial_tiles = m.aerial_tiles,
+                tiles_compressed = m.tiles_compressed,
+                tile_px_uploaded = m.tile_px_uploaded,
                 alt_m = m.alt_m,
                 space_factor = format!("{:.3}", m.space_factor),
                 in_space = m.in_space,
@@ -4910,6 +4919,8 @@ mod tests {
             radius_bias: 0,
             tiles_occluded: 0,
             aerial_tiles: 0,
+            tiles_compressed: 0,
+            tile_px_uploaded: 0,
             alt_m: 1000,
             space_factor: 0.0,
             in_space: false,

@@ -51,7 +51,7 @@ pub use dev::mcp;
 // group folders use, and the reason the move cost no call-site edits.
 pub use cartopolis_geo::{
     furniture, ground_stack, ground_texture, mip, moorings, parking, paving, places, pois,
-    road_texture, routing, scatter, turf, vector_tiles,
+    road_texture, routing, scatter, texcomp, turf, vector_tiles,
 };
 pub use gui::{
     action_ring, bookmarks, building_card, call_screen, chat, chat_overlay, chat_people, chats,

@@ -163,13 +163,15 @@ struct DecodedTile {
     width: u32,
     height: u32,
     mip_count: u32,
+    /// RGBA8, or the block format `tile_loader::tile_texels` compressed it to.
+    format: TextureFormat,
 }
 
 impl crate::platform::warm::WarmSize for DecodedTile {
     fn warm_bytes(&self) -> usize {
-        // The mip chain is the whole of it — the other three fields are its
-        // shape. A 512² RGBA8 chain is 1,398,100 bytes every time, because the
-        // raster size is the tier's and not the content's.
+        // The mip chain is the whole of it — the other fields are its shape. A
+        // 512² RGBA8 chain is 1,398,100 bytes every time, because the raster size
+        // is the tier's and not the content's; block-compressed, a quarter of that.
         self.data.len()
     }
 }
@@ -293,6 +295,12 @@ pub struct MapStream {
     /// Mirrors [`Self::loaded`] and must be maintained wherever that is: a stale
     /// key here is a number that says the photograph is up when it is not.
     aerial_ready: HashSet<TileKey>,
+    /// Tiles uploaded block-compressed, and the raster size of the last tile
+    /// uploaded — `tiles_compressed` / `tile_px_uploaded` in the `--shot` metrics,
+    /// the two facts that say whether `quality::tile_compression` actually reached
+    /// the ring and at what size.
+    compressed_uploads: usize,
+    last_tile_px: u32,
 }
 
 /// What decides the desired set — see [`DesiredTiles::key`].
@@ -384,6 +392,16 @@ impl MapStream {
     /// photograph arrived.
     pub fn aerial_tiles(&self) -> usize {
         self.aerial_ready.len()
+    }
+
+    /// Tiles uploaded block-compressed since startup.
+    pub fn compressed_uploads(&self) -> usize {
+        self.compressed_uploads
+    }
+
+    /// Raster size of the most recently uploaded tile, 0 before the first.
+    pub fn last_tile_px(&self) -> u32 {
+        self.last_tile_px
     }
 
     /// Is this tile's imagery coming from the aerial source this frame?
@@ -555,6 +573,8 @@ impl Default for MapStream {
             occlusion_revision: 0,
             aerial: None,
             aerial_ready: HashSet::new(),
+            compressed_uploads: 0,
+            last_tile_px: 0,
         }
     }
 }
@@ -691,7 +711,7 @@ fn spawn_map_tile(
             // measured 512² as 2-3× oversampled per axis for the same reason
             // (`docs/notes/globe-tile-cost.md`). Scan conversion is ~area, so it is
             // also most of the time-to-first-map.
-            let tile_px = crate::quality::budget().tile_px;
+            let tile_px = crate::quality::tile_px();
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
                 Ok(_) if !tile_still_wanted(key, gen, &live_gen, &wanted) => {
                     // Retired or re-anchored while the fetch was in flight. Nothing
@@ -739,17 +759,18 @@ fn spawn_map_tile(
                         let decoded = match drawn {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
-                                let (data, mip_count) =
-                                    crate::systems::mip::build_mip_chain(
+                                let (texels, mip_count) =
+                                    crate::systems::tile_loader::tile_texels(
                                         width,
                                         height,
                                         rgba.into_raw(),
                                     );
                                 Some(DecodedTile {
-                                    data,
+                                    data: texels.data,
                                     width,
                                     height,
                                     mip_count,
+                                    format: texels.format,
                                 })
                             }
                             Err(e) => {
@@ -2246,13 +2267,17 @@ pub fn apply_stream_textures(
                 if !stream.warm.disabled() {
                     stream.warm.put(key, decoded.clone());
                 }
+                stream.last_tile_px = decoded.width;
+                if decoded.format != TextureFormat::Rgba8UnormSrgb {
+                    stream.compressed_uploads += 1;
+                }
                 // Decode + mipmaps already done off-thread; just assemble and upload.
                 let bevy_image = crate::systems::tile_loader::image_from_mip_chain(
                     decoded.width,
                     decoded.height,
                     decoded.data,
                     decoded.mip_count,
-                    TextureFormat::Rgba8UnormSrgb,
+                    decoded.format,
                     crate::systems::tile_loader::TILE_TEXTURE_USAGE,
                     crate::systems::tile_loader::ground_sampler(),
                 );

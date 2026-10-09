@@ -682,12 +682,14 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 /// (the fetch + decode/render itself is `tile_loader::fetch_globe_tile_payload`).
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
-    let (data, mip_count) = crate::systems::mip::build_mip_chain(width, height, rgba.into_raw());
+    let (texels, mip_count) =
+        crate::systems::tile_loader::tile_texels(width, height, rgba.into_raw());
     DecodedTile {
-        data,
+        data: texels.data,
         width,
         height,
         mip_count,
+        format: texels.format,
         has_ocean_mask,
     }
 }
@@ -711,6 +713,8 @@ struct DecodedTile {
     width: u32,
     height: u32,
     mip_count: u32,
+    /// RGBA8, or the block format `tile_loader::tile_texels` compressed it to.
+    format: TextureFormat,
     /// Whether the alpha channel carries a real ocean mask (`systems::globe_ocean`)
     /// rather than the opaque 255s a source without one leaves behind.
     has_ocean_mask: bool,
@@ -1623,7 +1627,7 @@ pub fn update_globe_tiles(
             tile.height,
             tile.data,
             tile.mip_count,
-            TextureFormat::Rgba8UnormSrgb,
+            tile.format,
             crate::systems::tile_loader::TILE_TEXTURE_USAGE,
             crate::systems::tile_loader::ground_sampler(),
         );

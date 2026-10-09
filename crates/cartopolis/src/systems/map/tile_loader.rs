@@ -1061,3 +1061,40 @@ pub fn image_from_mip_chain(
     image.sampler = sampler;
     image
 }
+
+/// A finished tile raster in the form it is uploaded: the packed mip chain and
+/// the texture format those bytes are in.
+pub struct TileTexels {
+    pub data: Vec<u8>,
+    pub format: bevy::render::render_resource::TextureFormat,
+}
+
+/// Mipmap a decoded tile raster and, where the device decodes one, block-compress
+/// the chain — on the worker that rasterised it, never on the main thread.
+///
+/// Compression is a quarter of the texture memory (8 bits a texel against 32) and
+/// a quarter of each upload, for the encode time on a worker that just spent
+/// 48–68 ms scan-converting the tile. Which format, and whether at all, is
+/// `quality::tile_compression` — read here, per tile, so a tile fetched before
+/// the renderer answered simply goes up as RGBA8.
+pub fn tile_texels(width: u32, height: u32, rgba: Vec<u8>) -> (TileTexels, u32) {
+    use crate::systems::texcomp::{compress_chain, BlockFormat};
+    use bevy::render::render_resource::TextureFormat;
+    let (chain, mip_count) = crate::systems::mip::build_mip_chain(width, height, rgba);
+    let texels = match crate::quality::tile_compression() {
+        // Block formats need a whole number of blocks at level 0. Every tile size
+        // in use is a power of two ≥ 256, so this only ever refuses a test's toy.
+        Some(format) if width % 4 == 0 && height % 4 == 0 => TileTexels {
+            data: compress_chain(format, width, height, mip_count, &chain),
+            format: match format {
+                BlockFormat::Bc3 => TextureFormat::Bc3RgbaUnormSrgb,
+                BlockFormat::Etc2Rgba8 => TextureFormat::Etc2Rgba8UnormSrgb,
+            },
+        },
+        _ => TileTexels {
+            data: chain,
+            format: TextureFormat::Rgba8UnormSrgb,
+        },
+    };
+    (texels, mip_count)
+}

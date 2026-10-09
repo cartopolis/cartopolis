@@ -939,6 +939,22 @@ pub fn setup_camera(
         // sample-count comment gives at length: the web build targets WebGPU now,
         // and a platform test would refuse a pass the browser can actually run.
         compute_shaders: render_device.limits().max_compute_workgroup_size_x > 0,
+        etc2_offered: render_device
+            .features()
+            .contains(bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_ETC2),
+        // BC first: it is what every desktop GPU and desktop browser decodes.
+        tile_blocks: {
+            let features = render_device.features();
+            if features.contains(bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC) {
+                Some(crate::systems::texcomp::BlockFormat::Bc3)
+            } else if features
+                .contains(bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_ETC2)
+            {
+                Some(crate::systems::texcomp::BlockFormat::Etc2Rgba8)
+            } else {
+                None
+            }
+        },
         vsync_paced: matches!(
             primary_window.iter().next().map(|w| w.present_mode),
             Some(

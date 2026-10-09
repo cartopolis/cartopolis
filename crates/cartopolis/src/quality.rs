@@ -254,6 +254,16 @@ pub struct Budget {
     /// the backdrop between the polygons. It would not be acceptable on a tier
     /// where the imagery is the map.
     pub tile_px: u32,
+    /// The flat-map tile raster size when tiles are block-compressed on the
+    /// worker (`quality::tile_compression`), which is what [`tile_px`] answers
+    /// whenever compression is on.
+    ///
+    /// The same as `tile_px` on every rung, and different only through
+    /// [`handset_guarded`]: a handset's 256 cap is a *memory* cap, and a 512² chain
+    /// at 8 bits per texel (BC3 / ETC2 RGBA) is 350 kB — what a 256² RGBA8 chain
+    /// costs. So compression buys the phone back the sharper basemap for the
+    /// memory it already spends, rather than the same picture for less.
+    pub compressed_tile_px: u32,
     /// Samples per side in the terrain field's 6.4 km box (`systems::terrain`).
     ///
     /// **A memory and a bandwidth rung, not a picture one.** 2049² is one 12 MB
@@ -494,6 +504,11 @@ const PHONE_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
 /// 2026-08-19, that one field is 424 MB — see [`handset_guarded`] for the table.
 const HANDSET_TILE_PX: u32 = 256;
 
+/// The flat-map tile raster a handset may use once its tiles are block-compressed:
+/// a 512² chain at 8 bits per texel is the 350 kB a 256² RGBA8 chain is, so this is
+/// [`HANDSET_TILE_PX`]'s memory, spent on sharpness. See [`Budget::compressed_tile_px`].
+const HANDSET_COMPRESSED_TILE_PX: u32 = 512;
+
 /// Samples per side of the terrain field a handset may ask for, whatever rung it is
 /// on. 513² over 6.4 km is 12.5 m ground: 780 kB per anchor against 12 MB, and 1 MB
 /// resident against 22 MB.
@@ -541,6 +556,7 @@ impl Budget {
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
             terrain_grid: crate::systems::terrain::TERRAIN_GRID,
             render_scale: 1.0,
             fps_cap: Some(60.0),
@@ -627,6 +643,7 @@ impl Budget {
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
             terrain_grid: crate::systems::terrain::TERRAIN_GRID,
             // Native resolution: an integrated GPU is bandwidth-limited, not
             // resolution-limited, and this rung's brief is to keep the picture.
@@ -746,6 +763,7 @@ impl Budget {
             // the flat map's raster size later does not silently raise the
             // phone's with it.
             tile_px: 256,
+            compressed_tile_px: 256,
             // Quarter the samples per side of the desktop rungs: 513² is 12.5 m
             // ground, 780 kB on the wire and 1 MB resident. Two rungs coarser than
             // the box a workstation gets and still twice as fine as the 25 m every
@@ -1241,6 +1259,21 @@ pub struct Capabilities {
     /// could this adapter have done" is the first question asked of a device that
     /// renders differently from every other.
     pub compute_shaders: bool,
+    /// The block-compressed format streamed map tiles are encoded to on the
+    /// worker, or `None` where the device offers neither (`systems::tile_loader`,
+    /// `cartopolis_geo::texcomp`).
+    ///
+    /// BC3 wherever `TEXTURE_COMPRESSION_BC` is offered — desktop GPUs, lavapipe,
+    /// and desktop browsers' WebGPU — and ETC2 RGBA where only
+    /// `TEXTURE_COMPRESSION_ETC2` is, which is the Android case. Both keep an
+    /// 8-bit alpha, which is not optional here: the flat tiles carry the water mask
+    /// in it and the globe tiles the ocean mask. Read off the device for the reason
+    /// `float32_filterable` is: whether an Adreno exposes BC is a property of the
+    /// driver this run found, not of "Android".
+    pub tile_blocks: Option<crate::systems::texcomp::BlockFormat>,
+    /// `TEXTURE_COMPRESSION_ETC2` is offered, whichever format `tile_blocks` chose:
+    /// what lets `CARTO_TILE_COMPRESSION=etc2` put the phone's format on a desktop.
+    pub etc2_offered: bool,
 }
 
 static CAPABILITIES: OnceLock<Capabilities> = OnceLock::new();
@@ -1257,6 +1290,8 @@ pub fn init_capabilities(caps: Capabilities) {
             vsync_paced = caps.vsync_paced,
             software_renderer = caps.software_renderer,
             compute_shaders = caps.compute_shaders,
+            tile_blocks = ?caps.tile_blocks,
+            etc2_offered = caps.etc2_offered,
             "device capabilities measured"
         );
     }
@@ -1272,6 +1307,41 @@ pub fn init_capabilities(caps: Capabilities) {
 #[must_use]
 pub fn capabilities() -> Option<Capabilities> {
     CAPABILITIES.get().copied()
+}
+
+/// The format streamed map tiles are block-compressed to, or `None` to upload them
+/// as RGBA8.
+///
+/// `None` before the renderer exists, on a device that offers neither format, and
+/// under `CARTO_TILE_COMPRESSION=0` (`etc2` / `bc3` force a format the device
+/// offers) — the A/B switch, since whether a compressed
+/// basemap looks worse is a judgement made by comparing two runs.
+#[must_use]
+pub fn tile_compression() -> Option<crate::systems::texcomp::BlockFormat> {
+    use crate::systems::texcomp::BlockFormat;
+    let caps = capabilities()?;
+    match crate::env_value("CARTO_TILE_COMPRESSION").as_deref() {
+        Some("0" | "off") => None,
+        // Forcing a format only works where the device decodes it, which is why
+        // `etc2_offered` is recorded at all: a desktop that also exposes ETC2 can
+        // show what the phone's tiles look like.
+        Some("etc2") if caps.etc2_offered => Some(BlockFormat::Etc2Rgba8),
+        Some("bc3") if caps.tile_blocks == Some(BlockFormat::Bc3) => Some(BlockFormat::Bc3),
+        _ => caps.tile_blocks,
+    }
+}
+
+/// The flat-map tile raster size for a tile fetched now: the rung's
+/// [`Budget::compressed_tile_px`] when tiles are being compressed, its
+/// [`Budget::tile_px`] when not.
+#[must_use]
+pub fn tile_px() -> u32 {
+    let budget = budget();
+    if tile_compression().is_some() {
+        budget.compressed_tile_px
+    } else {
+        budget.tile_px
+    }
 }
 
 fn detect(preferred: Option<&str>) -> Budget {
@@ -1516,6 +1586,7 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
     Budget {
         upload_bytes_per_frame: Some(ceiling),
         tile_px: budget.tile_px.min(HANDSET_TILE_PX),
+        compressed_tile_px: budget.compressed_tile_px.min(HANDSET_COMPRESSED_TILE_PX),
         // The terrain box, on the same rule as `tile_px`: a rung picked by hand in
         // Settings ▸ Graphics must not hand a phone a 12 MB request per anchor and
         // 22 MB of samples to hold. The minimum, so the phone rung's own 513 stands.

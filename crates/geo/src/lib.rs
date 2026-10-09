@@ -48,6 +48,7 @@ pub mod render_revision;
 // definition of the format rather than two that must agree.
 pub mod lod22_cell;
 pub mod mip;
+pub mod texcomp;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
 // from `furniture` rather than folded into it because the claim is different: a
 // bench is surveyed and a parked car is inferred from the area it stands on. It
