@@ -198,6 +198,38 @@ pub enum Payload {
         caption: String,
         sent_at_ms: u64,
     },
+
+    // The four below are what a work chat needs on top of lines (the web UI's
+    // workspaces, `docs/notes/web-chat.md`). Each names another message by its
+    // place in the chat's log (`E2eeDeliver::seq`), which every member sees the
+    // same: the server orders the log, and that order is the only id a message
+    // has that nobody had to agree on separately.
+    /// A line in the thread under the message at `parent`.
+    Reply {
+        parent: u64,
+        body: String,
+        sent_at_ms: u64,
+    },
+    /// An emoji reaction to the message at `target`; `remove` takes it back.
+    React {
+        target: u64,
+        emoji: String,
+        remove: bool,
+        sent_at_ms: u64,
+    },
+    /// The sender's new text for a message of theirs at `target`. Receivers
+    /// apply it only if the target's sender is the same person.
+    Edit {
+        target: u64,
+        body: String,
+        sent_at_ms: u64,
+    },
+    /// The sender takes back a message of theirs at `target`. Receivers apply
+    /// it only if the target's sender is the same person.
+    Delete {
+        target: u64,
+        sent_at_ms: u64,
+    },
 }
 
 /// An attachment encrypted for upload, and what opens it.

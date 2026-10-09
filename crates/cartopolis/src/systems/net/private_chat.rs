@@ -390,7 +390,7 @@ pub fn drive_private_chats(
             continue;
         };
         match engine.send_text(&group, &text, now_ms(), &mut out) {
-            Ok(()) => {
+            Ok(_) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive(&channel, my_id, me, text, None);
@@ -429,7 +429,7 @@ pub fn drive_private_chats(
             now_ms(),
             &mut out,
         ) {
-            Ok(()) => {
+            Ok(_) => {
                 pictures.insert_local(&uploaded.picture.hash, uploaded.jpeg);
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
@@ -462,7 +462,7 @@ pub fn drive_private_chats(
             }
         });
         match engine.send_point(&group, &point, link, now_ms(), &mut out) {
-            Ok(()) => {
+            Ok(_) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive_point(
@@ -494,7 +494,7 @@ pub fn drive_private_chats(
                 {
                     let (_, text) = chat.private_hello.remove(i);
                     match engine.send_text(&group, &text, now_ms(), &mut out) {
-                        Ok(()) => {
+                        Ok(_) => {
                             let me = shown(&engine, engine.address());
                             let my_id = chat.my_id.unwrap_or(0);
                             chat.receive(&key, my_id, me, text, None);
@@ -516,6 +516,7 @@ pub fn drive_private_chats(
                 point,
                 picture,
                 sent_at_ms,
+                ..
             } => {
                 let channel = channel_key(&group);
                 let filter = private
@@ -564,8 +565,14 @@ pub fn drive_private_chats(
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
             }
             // Workspaces are the web UI's for now; a channel the app is in
-            // still arrives here as an ordinary group chat.
-            Event::Workspaces(_) => {}
+            // still arrives here as an ordinary group chat. So are reactions,
+            // edits and deletes: the app shows a reply as an ordinary line and
+            // keeps no message ids to hang the rest on.
+            Event::Workspaces(_)
+            | Event::Reaction { .. }
+            | Event::Edited { .. }
+            | Event::Deleted { .. }
+            | Event::Sent { .. } => {}
         }
     }
     for msg in out {

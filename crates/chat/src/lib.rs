@@ -33,6 +33,10 @@ const KEY_PACKAGE_LOW: u32 = 5;
 /// Longest group name kept, in characters.
 const MAX_GROUP_NAME: usize = 60;
 
+/// Longest reaction, in characters: one emoji, which may be several code
+/// points (a flag, a skin tone, a family).
+const MAX_EMOJI_CHARS: usize = 16;
+
 /// Request ids for private-chat traffic live in their own range, so a refusal
 /// (`ServerError`) can be told apart from one about a prim edit — the network
 /// system deselects the prim on a 403, which is the wrong answer to "that
@@ -107,12 +111,46 @@ pub enum Event {
     /// place; `body` is then its caption, or its name.
     Line {
         group: Vec<u8>,
+        /// Its place in the chat's log: the message's id, the same on every
+        /// member's device.
+        seq: u64,
         from: String,
         body: String,
         point: Option<Point>,
         /// Set when what they sent was a picture; `body` is then its caption.
         picture: Option<PictureRef>,
+        /// Set when the line is in the thread under the message with this id.
+        parent: Option<u64>,
         sent_at_ms: u64,
+    },
+    /// Somebody reacted to the message at `target` (or took it back).
+    Reaction {
+        group: Vec<u8>,
+        from: String,
+        target: u64,
+        emoji: String,
+        remove: bool,
+    },
+    /// Somebody changed the text of a message. The caller applies it only if
+    /// `from` sent the message at `target`: this engine keeps no history.
+    Edited {
+        group: Vec<u8>,
+        from: String,
+        target: u64,
+        body: String,
+    },
+    /// Somebody took back a message, on the same condition as [`Event::Edited`].
+    Deleted {
+        group: Vec<u8>,
+        from: String,
+        target: u64,
+    },
+    /// The server accepted something this device sent: the request id the send
+    /// answered with, and the place in the log — the message's id — it took.
+    Sent {
+        group: Vec<u8>,
+        request: u32,
+        seq: u64,
     },
     /// Somebody in a chat shared where their phone is, until `until_ms`.
     Location {
@@ -168,9 +206,16 @@ fn read_payload(bytes: &[u8]) -> ReadLine {
                 height,
             }),
         ),
-        // Location updates are not lines; `on_deliver` handles them before this.
+        // A reply is a line, with its parent beside it (`on_deliver`).
+        Ok(Payload::Reply { body, .. }) => (body, None, None),
+        // None of these is a line; `on_deliver` handles them before this.
         Ok(
-            Payload::Location { .. } | Payload::LocationStopped { .. } | Payload::GroupName { .. },
+            Payload::Location { .. }
+            | Payload::LocationStopped { .. }
+            | Payload::GroupName { .. }
+            | Payload::React { .. }
+            | Payload::Edit { .. }
+            | Payload::Delete { .. },
         )
         | Err(_) => (UNREADABLE.into(), None, None),
     }
@@ -894,13 +939,18 @@ impl Engine {
 
     /// Seal and send a line. The caller shows it straight away: this device
     /// cannot read its own entry back when the server replays it.
+    ///
+    /// Every send answers the request id it went out under; when the server
+    /// accepts it, [`Event::Sent`] names that id and the place in the log the
+    /// message took, which is its id from then on (what a reply, a reaction,
+    /// an edit or a delete names).
     pub fn send_text(
         &mut self,
         group: &[u8],
         body: &str,
         now_ms: u64,
         out: &mut Vec<NetMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         self.send_payload(
             group,
             &Payload::Text {
@@ -921,7 +971,7 @@ impl Engine {
         link: Option<String>,
         now_ms: u64,
         out: &mut Vec<NetMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         let json = point.to_activity_json(link).map_err(|e| e.to_string())?;
         self.send_payload(
             group,
@@ -942,7 +992,7 @@ impl Engine {
         caption: &str,
         now_ms: u64,
         out: &mut Vec<NetMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         self.send_payload(
             group,
             &Payload::Picture {
@@ -952,6 +1002,90 @@ impl Engine {
                 width: picture.width,
                 height: picture.height,
                 caption: caption.to_string(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Seal and send a line in the thread under the message at `parent`.
+    pub fn send_reply(
+        &mut self,
+        group: &[u8],
+        parent: u64,
+        body: &str,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        self.send_payload(
+            group,
+            &Payload::Reply {
+                parent,
+                body: body.to_string(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// React to the message at `target` with `emoji`, or take it back.
+    pub fn send_reaction(
+        &mut self,
+        group: &[u8],
+        target: u64,
+        emoji: &str,
+        remove: bool,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        let emoji: String = emoji.trim().chars().take(MAX_EMOJI_CHARS).collect();
+        if emoji.is_empty() {
+            return Err("a reaction needs an emoji".into());
+        }
+        self.send_payload(
+            group,
+            &Payload::React {
+                target,
+                emoji,
+                remove,
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Replace the text of this person's own message at `target`.
+    pub fn send_edit(
+        &mut self,
+        group: &[u8],
+        target: u64,
+        body: &str,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        self.send_payload(
+            group,
+            &Payload::Edit {
+                target,
+                body: body.to_string(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Take back this person's own message at `target`.
+    pub fn send_delete(
+        &mut self,
+        group: &[u8],
+        target: u64,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        self.send_payload(
+            group,
+            &Payload::Delete {
+                target,
                 sent_at_ms: now_ms,
             },
             out,
@@ -979,6 +1113,7 @@ impl Engine {
             },
             out,
         )
+        .map(|_| ())
     }
 
     /// Tell the chat this phone stopped sharing before its time was up.
@@ -989,6 +1124,7 @@ impl Engine {
         out: &mut Vec<NetMessage>,
     ) -> Result<(), String> {
         self.send_payload(group, &Payload::LocationStopped { sent_at_ms: now_ms }, out)
+            .map(|_| ())
     }
 
     fn send_payload(
@@ -996,20 +1132,21 @@ impl Engine {
         group: &[u8],
         payload: &Payload,
         out: &mut Vec<NetMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         let sealed = self
             .device
             .encrypt(group, payload)
             .map_err(|e| e.to_string())?;
+        let request_id = self.request();
         out.push(NetMessage::E2eeSend {
-            request_id: self.request(),
+            request_id,
             group: group.to_vec(),
             epoch: sealed.epoch,
             commit: false,
             message: sealed.message,
             welcome: None,
         });
-        Ok(())
+        Ok(request_id)
     }
 
     /// Apply one message from the server. Anything that is not private-chat
@@ -1420,6 +1557,12 @@ impl Engine {
         if let Some(why) = refused {
             let peer = self.peers.get(group).cloned().unwrap_or_default();
             events.push(Event::Notice(format!("Not delivered to {peer}: {why}")));
+        } else if let Some(seq) = seq {
+            events.push(Event::Sent {
+                group: group.to_vec(),
+                request: request_id,
+                seq,
+            });
         }
     }
 
@@ -1529,14 +1672,43 @@ impl Engine {
                         events.push(Event::Named { group, name });
                     }
                 }
-                _ => {
+                Ok(Payload::React {
+                    target,
+                    emoji,
+                    remove,
+                    ..
+                }) => events.push(Event::Reaction {
+                    group,
+                    from: from.address,
+                    target,
+                    emoji: emoji.chars().take(MAX_EMOJI_CHARS).collect(),
+                    remove,
+                }),
+                Ok(Payload::Edit { target, body, .. }) => events.push(Event::Edited {
+                    group,
+                    from: from.address,
+                    target,
+                    body,
+                }),
+                Ok(Payload::Delete { target, .. }) => events.push(Event::Deleted {
+                    group,
+                    from: from.address,
+                    target,
+                }),
+                decoded => {
+                    let parent = match &decoded {
+                        Ok(Payload::Reply { parent, .. }) => Some(*parent),
+                        _ => None,
+                    };
                     let (body, point, picture) = read_payload(&bytes);
                     events.push(Event::Line {
                         group,
+                        seq,
                         from: from.address,
                         body,
                         point,
                         picture,
+                        parent,
                         sent_at_ms,
                     });
                 }
@@ -2083,5 +2255,86 @@ mod loopback {
             "bob is in once alice's device comes back: {:?}",
             bob.events
         );
+    }
+
+    /// A message's id is its place in the log, the same on both sides, and
+    /// replies, reactions, edits and deletes all name it.
+    #[tokio::test]
+    async fn threads_reactions_edits_and_deletes_name_a_message_by_its_place_in_the_log() {
+        let (_dir, _h, addr) = server(&["alice", "bob"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .start_direct("bob", &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let group = alice.opened().unwrap();
+
+        let mut out = Vec::new();
+        let request = alice
+            .engine
+            .send_text(&group, "lunch?", 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        let seq = alice
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Sent {
+                    request: r, seq, ..
+                } if *r == request => Some(*seq),
+                _ => None,
+            })
+            .expect("the server placed alice's line");
+        bob.pump(PUMP).await;
+        assert!(bob
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Line { seq: s, parent: None, .. } if *s == seq)));
+
+        // Bob answers in a thread under it; Alice reacts, edits, then deletes.
+        let mut out = Vec::new();
+        bob.engine
+            .send_reply(&group, seq, "the usual place", 0, &mut out)
+            .unwrap();
+        bob.send_all(out).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_reaction(&group, seq, "👍", false, 0, &mut out)
+            .unwrap();
+        alice
+            .engine
+            .send_edit(&group, seq, "lunch at one?", 0, &mut out)
+            .unwrap();
+        alice.engine.send_delete(&group, seq, 0, &mut out).unwrap();
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+
+        assert!(alice.events.iter().any(|e| matches!(
+            e,
+            Event::Line { parent: Some(p), body, .. } if *p == seq && body == "the usual place"
+        )));
+        assert!(bob.events.iter().any(|e| matches!(
+            e,
+            Event::Reaction { target, emoji, remove: false, .. } if *target == seq && emoji == "👍"
+        )));
+        assert!(bob.events.iter().any(|e| matches!(
+            e,
+            Event::Edited { target, body, .. } if *target == seq && body == "lunch at one?"
+        )));
+        assert!(bob
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Deleted { target, .. } if *target == seq)));
+        // None of the three is a line of its own.
+        assert_eq!(bob.lines(), vec![("alice".into(), "lunch?".into())]);
     }
 }

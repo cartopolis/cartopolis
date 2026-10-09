@@ -278,15 +278,12 @@ impl ChatCore {
     }
 
     /// Say `body` in the chat `channel` (a `dm:…` key from [`Self::chats`]).
-    pub fn send_text(&mut self, channel: &str, body: &str, now_ms: f64) -> Result<(), Error> {
-        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine
-            .send_text(&group, body, now_ms as u64, &mut out)
-            .map_err(js_err)?;
-        self.dirty = true;
-        self.flush(out, Vec::new())
+    /// Answers the request id; a `sent` event later names it with the
+    /// message's id (its place in the log).
+    pub fn send_text(&mut self, channel: &str, body: &str, now_ms: f64) -> Result<u32, Error> {
+        self.send(channel, |e, g, out| {
+            e.send_text(g, body, now_ms as u64, out)
+        })
     }
 
     /// Send a point — a place and the view it was seen from — given as the
@@ -296,16 +293,58 @@ impl ChatCore {
         channel: &str,
         point_json: &str,
         now_ms: f64,
-    ) -> Result<(), Error> {
-        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+    ) -> Result<u32, Error> {
         let point = Point::from_activity_json(point_json).map_err(js_err)?;
-        let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine
-            .send_point(&group, &point, None, now_ms as u64, &mut out)
-            .map_err(js_err)?;
-        self.dirty = true;
-        self.flush(out, Vec::new())
+        self.send(channel, |e, g, out| {
+            e.send_point(g, &point, None, now_ms as u64, out)
+        })
+    }
+
+    /// Say `body` in the thread under the message `parent`.
+    pub fn send_reply(
+        &mut self,
+        channel: &str,
+        parent: f64,
+        body: &str,
+        now_ms: f64,
+    ) -> Result<u32, Error> {
+        self.send(channel, |e, g, out| {
+            e.send_reply(g, parent as u64, body, now_ms as u64, out)
+        })
+    }
+
+    /// React to the message `target` with `emoji`, or take it back.
+    pub fn send_reaction(
+        &mut self,
+        channel: &str,
+        target: f64,
+        emoji: &str,
+        remove: bool,
+        now_ms: f64,
+    ) -> Result<u32, Error> {
+        self.send(channel, |e, g, out| {
+            e.send_reaction(g, target as u64, emoji, remove, now_ms as u64, out)
+        })
+    }
+
+    /// Replace the text of this person's own message `target`.
+    pub fn send_edit(
+        &mut self,
+        channel: &str,
+        target: f64,
+        body: &str,
+        now_ms: f64,
+    ) -> Result<u32, Error> {
+        self.send(channel, |e, g, out| {
+            e.send_edit(g, target as u64, body, now_ms as u64, out)
+        })
+    }
+
+    /// Take back this person's own message `target`.
+    pub fn send_delete(&mut self, channel: &str, target: f64, now_ms: f64) -> Result<u32, Error> {
+        self.send(channel, |e, g, out| {
+            e.send_delete(g, target as u64, now_ms as u64, out)
+        })
     }
 
     // ── Workspaces and channels (protocol 38) ──────────────────────────────
@@ -411,6 +450,23 @@ fn workspace_json(w: WorkspaceDto) -> Value {
 }
 
 impl ChatCore {
+    /// One send into `channel`, by whichever of the engine's send calls `f`
+    /// makes: its frames queued, the state marked to be saved, its request id
+    /// answered.
+    fn send(
+        &mut self,
+        channel: &str,
+        f: impl FnOnce(&mut Engine, &[u8], &mut Vec<NetMessage>) -> Result<u32, String>,
+    ) -> Result<u32, Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let engine = self.engine_mut()?;
+        let mut out = Vec::new();
+        let request = f(engine, &group, &mut out).map_err(js_err)?;
+        self.dirty = true;
+        self.flush(out, Vec::new())?;
+        Ok(request)
+    }
+
     fn engine_mut(&mut self) -> Result<&mut Engine, Error> {
         self.engine
             .as_mut()
@@ -440,11 +496,13 @@ fn event_json(event: Event) -> Value {
         }
         Event::Line {
             group,
+            seq,
             from,
             body,
             point,
             picture,
             sent_at_ms,
+            parent,
         } => json!({
             "kind": "line",
             "channel": channel_key(&group),
@@ -458,6 +516,8 @@ fn event_json(event: Event) -> Value {
                 "width": p.width,
                 "height": p.height,
             })),
+            "seq": seq,
+            "parent": parent,
             "sent_at_ms": sent_at_ms,
         }),
         Event::Location {
@@ -483,6 +543,52 @@ fn event_json(event: Event) -> Value {
             json!({ "kind": "named", "channel": channel_key(&group), "name": name })
         }
         Event::Notice(text) => json!({ "kind": "notice", "text": text }),
+        Event::Reaction {
+            group,
+            from,
+            target,
+            emoji,
+            remove,
+        } => json!({
+            "kind": "reaction",
+            "channel": channel_key(&group),
+            "from": from,
+            "target": target,
+            "emoji": emoji,
+            "remove": remove,
+        }),
+        Event::Edited {
+            group,
+            from,
+            target,
+            body,
+        } => json!({
+            "kind": "edited",
+            "channel": channel_key(&group),
+            "from": from,
+            "target": target,
+            "body": body,
+        }),
+        Event::Deleted {
+            group,
+            from,
+            target,
+        } => json!({
+            "kind": "deleted",
+            "channel": channel_key(&group),
+            "from": from,
+            "target": target,
+        }),
+        Event::Sent {
+            group,
+            request,
+            seq,
+        } => json!({
+            "kind": "sent",
+            "channel": channel_key(&group),
+            "request": request,
+            "seq": seq,
+        }),
         Event::Workspaces(list) => json!({
             "kind": "workspaces",
             "workspaces": list.into_iter().map(workspace_json).collect::<Vec<_>>(),
