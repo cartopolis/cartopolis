@@ -134,6 +134,40 @@ fn requested_gpu_preprocessing(
 /// GPU-clustering system (`.run_if(gpu_clustering_is_enabled)`) off.
 pub(crate) struct ForceCpuClusteringPlugin;
 
+/// Cap Bevy's mesh slabs at [`MAX_MESH_SLAB_BYTES`].
+///
+/// **Why.** Bevy packs every mesh's vertices and indices into shared GPU buffers
+/// ("slabs") that grow by 1.5× up to 512 MiB, and each growth allocates the new
+/// buffer and copies the old one into it, so for a moment both are resident. A
+/// streamed city fills those slabs fast. On the Steam Deck — 1 GiB of VRAM, most
+/// of it already taken when a second client is running — a capture over Groningen
+/// froze for good, every thread parked, 0 % CPU, with the render thread's
+/// `Queue::submit` from `AllocationStage::commit` sitting in a RADV ioctl and the
+/// image uploads queued behind wgpu's queue lock (gdb, 2026-10-09). The same view
+/// froze on main and on the web-fps branch, i.e. it predates both. A cap keeps
+/// each growth, and so each copy and each eviction the kernel has to make room
+/// for, small. The cost is more slabs and so more vertex-buffer rebinds between
+/// batches, which at 64 MiB is a handful for a whole city.
+pub(crate) struct MeshSlabCapPlugin;
+
+/// The largest mesh slab, and the size above which a mesh gets a slab of its own.
+const MAX_MESH_SLAB_BYTES: u64 = 64 * 1024 * 1024;
+
+impl Plugin for MeshSlabCapPlugin {
+    fn build(&self, app: &mut App) {
+        use bevy::render::mesh::allocator::MeshAllocatorSettings;
+        use bevy::render::RenderApp;
+
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+        let mut settings = MeshAllocatorSettings::default();
+        settings.max_slab_size = MAX_MESH_SLAB_BYTES;
+        settings.large_threshold = MAX_MESH_SLAB_BYTES / 2;
+        render_app.insert_resource(settings);
+    }
+}
+
 impl Plugin for ForceCpuClusteringPlugin {
     fn build(&self, _app: &mut App) {}
 

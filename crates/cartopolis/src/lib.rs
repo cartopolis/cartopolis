@@ -785,6 +785,9 @@ fn run_client() {
         // Same reason for the placement: it orders a `RenderStartup` system after
         // one `RenderPlugin` registers, so the sub-app has to exist first.
         .add_plugins(render_setup::GpuPreprocessingOverridePlugin)
+        // After DefaultPlugins so the render sub-app's own default is already
+        // there to be replaced.
+        .add_plugins(render_setup::MeshSlabCapPlugin)
         .add_plugins(EguiPlugin)
         // Renders the 3D world below the screen's resolution on a tier that asks
         // for it, and no-ops entirely on the tiers that do not. Must come after
