@@ -1,0 +1,173 @@
+/* The Models tab: the catalogue, the street objects and the stored files. */
+
+.library {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+/* Counts on the left, the search taking the rest of the row — or a row of its
+   own on a phone, where both will not fit. */
+.library-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2) var(--m-space-3);
+
+    & .library-search {
+        flex: 1 1 14rem;
+    }
+}
+
+.library-count {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+.library-note {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+.library-empty {
+    color: var(--m-text-dim);
+    margin: 0;
+    padding: var(--m-space-5) var(--m-space-4);
+    text-align: center;
+}
+
+.library-form,
+.library-editor,
+.library-street-upload {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.library-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+/* Rows run edge to edge inside a flush card, divided by rules rather than boxed. */
+.library-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.library-row {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    padding: var(--m-space-3) var(--m-space-4);
+
+    /* The entry whose form is open in the context panel. */
+    &[data-selected] {
+        background: var(--m-accent-soft);
+    }
+}
+
+.library-row__main {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+.library-name {
+    color: var(--m-text-strong);
+    font-weight: 600;
+    /* Names are user input: an uploader's file name can be one long word. */
+    overflow-wrap: anywhere;
+}
+
+.library-spacer {
+    flex: 1;
+}
+
+/*
+ * The facts are separated by a gap on the row rather than punctuation in the
+ * markup, so a row with one fact is unchanged and three do not run together
+ * into one value.
+ */
+.library-meta {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+
+    & > span + span::before {
+        color: var(--m-text-faint);
+        content: "·";
+        padding: 0 6px;
+    }
+}
+
+.library-credit {
+    font-style: italic;
+}
+
+/* A street object's model picker sits in the row; it must not push the row past
+   a phone's width. */
+.library-street-model {
+    flex: 1 1 10rem;
+    max-width: 16rem;
+}
+
+.library-street-fit {
+    align-items: end;
+    display: grid;
+    gap: var(--m-space-2) var(--m-space-3);
+    grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+}
+
+.library-street-upload {
+    border-top: 1px dashed var(--m-border);
+    padding-top: var(--m-space-3);
+}
+
+/*
+ * The native file input, which the library has no field for. Its own button is
+ * restyled to sit with the library's buttons; the file name beside it stays the
+ * browser's.
+ */
+.library-file {
+    color: var(--m-text-dim);
+    font-family: var(--m-font);
+    font-size: var(--m-font-size-sm);
+    max-width: 100%;
+
+    &::file-selector-button {
+        background: var(--m-surface);
+        border: 1px solid var(--m-border);
+        border-radius: var(--m-radius);
+        color: var(--m-text-strong);
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+        margin-right: var(--m-space-3);
+        min-height: var(--m-control-height);
+        padding-inline: var(--m-space-4);
+    }
+
+    &:hover::file-selector-button {
+        background: var(--m-surface-raised);
+        border-color: var(--m-border-strong);
+    }
+
+    &:focus-visible {
+        outline: 0;
+
+        &::file-selector-button {
+            box-shadow: 0 0 0 3px var(--m-focus);
+        }
+    }
+}
+
+.library-mono {
+    color: var(--m-text-dim);
+    font-family: var(--m-font-mono);
+    font-size: var(--m-font-size-sm);
+}

@@ -1,0 +1,147 @@
+/* The Overrides tab: buildings drawn from a model instead of the survey. */
+
+.overrides {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+.overrides-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2) var(--m-space-3);
+}
+
+.overrides-count {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+.overrides-spacer {
+    flex: 1;
+}
+
+.overrides-note {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+.overrides-empty {
+    border: 1px dashed var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text-dim);
+    margin: 0;
+    padding: var(--m-space-5) var(--m-space-4);
+    text-align: center;
+}
+
+.overrides-form,
+.overrides-editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+/* Rows run edge to edge inside a flush card, divided by rules rather than boxed. */
+.overrides-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.overrides-row {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-1);
+    padding: var(--m-space-3) var(--m-space-4);
+    /* Arriving from the viewer scrolls a row into view; keep it clear of the
+       Shell's sticky header. */
+    scroll-margin-top: var(--m-space-6);
+
+    /* The override whose form is open in the context panel. */
+    &[data-selected] {
+        background: var(--m-accent-soft);
+    }
+}
+
+.overrides-row__main {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+.overrides-name {
+    color: var(--m-text-strong);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.overrides-meta {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: var(--m-font-size-sm);
+    gap: var(--m-space-2);
+}
+
+.overrides-facts {
+    overflow-wrap: anywhere;
+}
+
+/* "Building" and "Placement" in the form: a quiet frame with a small caption. */
+.overrides-group {
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    margin: 0;
+    min-width: 0;
+    padding: var(--m-space-2) var(--m-space-3) var(--m-space-3);
+
+    & legend {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        padding: 0 var(--m-space-1);
+        text-transform: uppercase;
+    }
+}
+
+.overrides-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+/*
+ * The upload button is a label dressed as a library button. Its input is kept
+ * focusable but out of sight, so keyboard users can still reach it and the label
+ * shows the focus ring on its behalf.
+ */
+.overrides-upload {
+    position: relative;
+
+    & input {
+        block-size: 1px;
+        clip-path: inset(50%);
+        inline-size: 1px;
+        opacity: 0;
+        overflow: hidden;
+        position: absolute;
+    }
+
+    &:focus-within {
+        box-shadow: 0 0 0 3px var(--m-focus);
+    }
+
+    &[aria-disabled='true'] {
+        pointer-events: none;
+    }
+}

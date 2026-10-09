@@ -1,4 +1,5 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Button} from '@garage44/mithril/components'
 
 import {ADMIN} from '@/lib/base'
 
@@ -13,28 +14,31 @@ import {ADMIN} from '@/lib/base'
 export class Home extends MithrilComponent {
     view() {
         return (
-            <div class="home">
-                <h1>Cartopolis</h1>
-                <p class="hint">A shared 3D world on the real map.</p>
-                <div class="home-actions">
-                    <a class="button primary" href="/viewer/">
+            <section class="home">
+                <h1 class="home__title">
+                    carto<b>polis</b>
+                </h1>
+                <p class="home__tagline">A shared 3D world on the real map.</p>
+                <div class="home__actions">
+                    <Button href="/viewer/" size="lg" variant="primary">
                         Open the map
-                    </a>
-                    <a class="button" href="/apk/">
+                    </Button>
+                    <Button href="/apk/" size="lg">
                         Android app
-                    </a>
-                    <a
-                        class="button"
+                    </Button>
+                    <Button
                         href={ADMIN}
-                        onclick={(e: Event) => {
+                        onclick={(e: MouseEvent) => {
                             e.preventDefault()
                             m.route.set(ADMIN)
                         }}
+                        size="lg"
+                        variant="ghost"
                     >
                         Sign in
-                    </a>
+                    </Button>
                 </div>
-            </div>
+            </section>
         )
     }
 }

@@ -1,6 +1,9 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Badge, Button, Card, FieldCheckbox, FieldSelect, FieldText, Progress} from '@garage44/mithril/components'
+import {check, required, validation, validations} from '@garage44/mithril/validation'
 
-import type {PipelineCount, PipelineJob} from '@/types'
+import type {Tone} from '@garage44/mithril/components'
+import type {JobStatus, PipelineCount, PipelineJob} from '@/types'
 
 import {$s} from '@/app'
 import {
@@ -12,11 +15,14 @@ import {
     pollFollowed,
     startRun,
 } from '@/lib/pipeline'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {formatTimestamp} from '@/lib/utils'
 
 /** How often a running job's log is pulled. */
 const POLL_MS = 1_000
+
+/** The `area` value that means "the bounding box typed below", not a configured area. */
+const CUSTOM = '__custom'
 
 function statusLabel(job: PipelineJob): string {
     switch (job.status) {
@@ -33,6 +39,18 @@ function statusLabel(job: PipelineJob): string {
     }
 }
 
+/*
+ * A stopped run is neutral rather than a warning: stopping is something the
+ * operator did, and the previous manifest is still serving, so nothing is wrong.
+ */
+const STATUS_TONE: Record<JobStatus, Tone> = {
+    cancelled: 'neutral',
+    done: 'success',
+    failed: 'danger',
+    queued: 'warning',
+    running: 'accent',
+}
+
 /** "94,052 buildings, 781 berths" — the zeroes left out, since they say nothing. */
 function counts(list?: readonly PipelineCount[]): string {
     if (!list) {
@@ -42,6 +60,15 @@ function counts(list?: readonly PipelineCount[]): string {
         .filter((count) => count.n > 0)
         .map((count) => `${count.n.toLocaleString()} ${count.label}`)
         .join(', ')
+}
+
+/** The typed bounding box as four numbers, or null when it is not four numbers. */
+function parseBbox(text: string): [number, number, number, number] | null {
+    const parts = text.trim().split(/[\s,]+/).map(Number)
+    if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
+        return null
+    }
+    return parts as [number, number, number, number]
 }
 
 /**
@@ -61,6 +88,20 @@ export class Pipeline extends MithrilComponent {
         customName: '',
         fresh: false,
         picked: [] as string[],
+    })
+
+    /*
+     * Only the typed-area fields have rules, and they only count while that area
+     * is chosen: a configured area needs neither. The four-numbers rule is the one
+     * `submit` used to apply silently — a box that was not four numbers made Start
+     * do nothing at all — so it now says what is wrong instead.
+     */
+    v = validations({
+        custom: validation(bind(this.s, 'custom'), [
+            required,
+            check((text: string) => parseBbox(text) !== null, 'Four numbers: xmin ymin xmax ymax'),
+        ]),
+        customName: validation(bind(this.s, 'customName'), [required]),
     })
 
     /** The run log's `<pre>`, while it is on the page. */
@@ -157,20 +198,17 @@ export class Pipeline extends MithrilComponent {
 
         if (!config) {
             return (
-                <>
-                    <div class="section-head">
-                        <h1>Data</h1>
-                    </div>
-                    <div class="empty">
+                <Card>
+                    <p class="pipeline-muted">
                         The data pipeline is not answering. It runs beside the simulator on the
                         machine that holds the map tiles — if it is down, nothing here can start a
                         run, but the tiles already extracted are still being served.
-                    </div>
-                </>
+                    </p>
+                </Card>
             )
         }
 
-        const isCustom = s.area === '__custom'
+        const isCustom = s.area === CUSTOM
         const minutes = config.datasets
             .filter((dataset) => s.picked.includes(dataset.id))
             .reduce((sum, dataset) => sum + dataset.typicalMinutes, 0)
@@ -180,43 +218,64 @@ export class Pipeline extends MithrilComponent {
                 return
             }
             if (isCustom) {
-                const parts = s.custom.trim().split(/[\s,]+/).map(Number)
-                if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
+                if (!this.v.$validate()) {
                     return
                 }
-                void startRun(s.customName.trim(), s.picked, parts as [number, number, number, number], s.fresh)
+                const bbox = parseBbox(s.custom)
+                if (!bbox) {
+                    return
+                }
+                void startRun(s.customName.trim(), s.picked, bbox, s.fresh)
             } else {
                 void startRun(s.area, s.picked, undefined, s.fresh)
             }
         }
 
+        // FieldSelect's model may be written `null` (its placeholder entry); this
+        // one has no placeholder, so a null never arrives and is ignored if it does.
+        const area = {
+            get value(): string | null {
+                return s.area
+            },
+            set value(next: string | null) {
+                if (next !== null) {
+                    s.area = next
+                }
+            },
+        }
+
+        const picks = (id: string) => ({
+            get value() {
+                return s.picked.includes(id)
+            },
+            set value(on: boolean) {
+                const was = s.picked
+                s.picked = on ? [...was, id] : was.filter((picked) => picked !== id)
+            },
+        })
+
         return (
             <>
-                <div class="section-head">
-                    <h1>Data</h1>
-                    <span class="count">{config.datasets.length}</span>
-                </div>
-                <p class="hint">
+                <p class="pipeline-intro">
+                    <Badge>{config.datasets.length} datasets</Badge>{' '}
                     The map's Dutch layers are extracted from open registers and served as static
-                    files from <span class="mono">{config.out}</span>. A run refreshes them in place.
+                    files from <code>{config.out}</code>. A run refreshes them in place.
                 </p>
 
-                <div class="card">
-                    <h2>What is being served</h2>
-                    <ul class="coverage-list">
+                <Card title="What is being served">
+                    <ul class="pipeline-coverage">
                         {$s.pipelineCoverage.map((entry) => (
-                            <li class="coverage" key={entry.dataset}>
-                                <div class="coverage-main">
-                                    <span class="coverage-name">{entry.label}</span>
-                                    <span style="flex:1" />
+                            <li key={entry.dataset}>
+                                <div class="pipeline-row">
+                                    <span class="pipeline-name">{entry.label}</span>
                                     {entry.name ? (
-                                        <span class="tag">{entry.name}</span>
+                                        <Badge tone="info">{entry.name}</Badge>
                                     ) : (
-                                        <span class="tag disabled">never extracted</span>
+                                        <Badge>never extracted</Badge>
                                     )}
                                 </div>
                                 {entry.name && (
-                                    <div class="account-meta">
+                                    <div class="pipeline-meta">
                                         <span>{entry.cells.toLocaleString()} cells</span>
                                         {counts(entry.counts) && <span>{counts(entry.counts)}</span>}
                                         {entry.updatedAt && (
@@ -227,129 +286,109 @@ export class Pipeline extends MithrilComponent {
                             </li>
                         ))}
                     </ul>
-                </div>
+                </Card>
 
-                <div class="card">
-                    <h2>Extract</h2>
-                    <label class="field">
-                        <span>Area</span>
-                        <select
-                            onchange={(e: Event) => {
-                                s.area = (e.target as HTMLSelectElement).value
-                            }}
-                            value={s.area}
-                        >
-                            {config.areas.map((a) => (
-                                <option key={a.id} value={a.id}>
-                                    {a.label} — {a.km2} km²
-                                </option>
-                            ))}
-                            <option value="__custom">A bounding box I will type…</option>
-                        </select>
-                    </label>
-
-                    {isCustom && (
-                        <>
-                            <label class="field">
-                                <span>Name</span>
-                                <input
-                                    oninput={(e: Event) => {
-                                        s.customName = (e.target as HTMLInputElement).value
-                                    }}
-                                    placeholder="delfzijl"
-                                    value={s.customName}
-                                />
-                            </label>
-                            <label class="field">
-                                <span>Bounding box</span>
-                                <input
-                                    oninput={(e: Event) => {
-                                        s.custom = (e.target as HTMLInputElement).value
-                                    }}
-                                    placeholder="229000 578000 238000 587000"
-                                    value={s.custom}
-                                />
-                            </label>
-                            <p class="hint">
-                                Four numbers — xmin ymin xmax ymax — in RD New (EPSG:28992), which is
-                                the grid these registers are published on. Not degrees.
-                            </p>
-                        </>
-                    )}
-
-                    <div class="dataset-picks">
-                        {config.datasets.map((dataset) => (
-                            <label class="check" key={dataset.id}>
-                                <input
-                                    checked={s.picked.includes(dataset.id)}
-                                    onchange={(e: Event) => {
-                                        const on = (e.target as HTMLInputElement).checked
-                                        const was = s.picked
-                                        s.picked = on ? [...was, dataset.id] : was.filter((id) => id !== dataset.id)
-                                    }}
-                                    type="checkbox"
-                                />
-                                <span>
-                                    <b>{dataset.label}</b>
-                                    <em>{dataset.description}</em>
-                                </span>
-                            </label>
-                        ))}
-                    </div>
-
-                    <label class="check">
-                        <input
-                            checked={s.fresh}
-                            onchange={(e: Event) => {
-                                s.fresh = (e.target as HTMLInputElement).checked
-                            }}
-                            type="checkbox"
+                <Card title="Extract">
+                    <div class="pipeline-form">
+                        <FieldSelect
+                            label="Area"
+                            model={area}
+                            options={[
+                                ...config.areas.map((a) => ({label: `${a.label} — ${a.km2} km²`, value: a.id})),
+                                {label: 'A bounding box I will type…', value: CUSTOM},
+                            ]}
                         />
-                        <span>
-                            <b>Fetch fresh source data</b>
-                            <em>
-                                Otherwise what was fetched from the registers in the last month is
-                                reused, which is what a re-run after a pipeline change wants.
-                            </em>
-                        </span>
-                    </label>
 
-                    <div class="row-actions">
-                        <button
-                            disabled={busy || !s.picked.length || (isCustom && (!s.custom.trim() || !s.customName.trim()))}
-                            onclick={submit}
-                            type="button"
-                        >
-                            {busy ? 'A run is already going' : 'Start'}
-                        </button>
-                        {s.picked.length > 0 && !busy && (
-                            <span class="hint">roughly {minutes} minutes for an area this size</span>
+                        {isCustom && (
+                            <>
+                                <FieldText
+                                    label="Name"
+                                    model={bind(s, 'customName')}
+                                    placeholder="delfzijl"
+                                    validation={this.v.customName}
+                                />
+                                <FieldText
+                                    help={
+                                        'Four numbers — xmin ymin xmax ymax — in RD New (EPSG:28992), which is ' +
+                                        'the grid these registers are published on. Not degrees.'
+                                    }
+                                    label="Bounding box"
+                                    model={bind(s, 'custom')}
+                                    placeholder="229000 578000 238000 587000"
+                                    validation={this.v.custom}
+                                />
+                            </>
                         )}
+
+                        <div class="pipeline-picks">
+                            {config.datasets.map((dataset) => (
+                                <FieldCheckbox
+                                    help={dataset.description}
+                                    key={dataset.id}
+                                    label={<b>{dataset.label}</b>}
+                                    model={picks(dataset.id)}
+                                />
+                            ))}
+                        </div>
+
+                        <FieldCheckbox
+                            help={
+                                'Otherwise what was fetched from the registers in the last month is ' +
+                                'reused, which is what a re-run after a pipeline change wants.'
+                            }
+                            label={<b>Fetch fresh source data</b>}
+                            model={bind(s, 'fresh')}
+                        />
+
+                        <div class="pipeline-actions">
+                            <Button
+                                disabled={busy || !s.picked.length || (isCustom && !this.v.$valid)}
+                                onclick={submit}
+                                variant="primary"
+                            >
+                                {busy ? 'A run is already going' : 'Start'}
+                            </Button>
+                            {s.picked.length > 0 && !busy && (
+                                <span class="pipeline-muted">roughly {minutes} minutes for an area this size</span>
+                            )}
+                        </div>
                     </div>
-                </div>
+                </Card>
 
                 {followed && (
-                    <div class="card">
-                        <h2>
-                            {followed.area} — {statusLabel(followed)}
-                        </h2>
-                        <ul class="step-list">
+                    <Card
+                        actions={
+                            <Badge dot tone={STATUS_TONE[followed.status]}>
+                                {statusLabel(followed)}
+                            </Badge>
+                        }
+                        title={followed.area}
+                    >
+                        <ul class="pipeline-steps">
                             {followed.steps.map((step) => (
-                                <li class={`step is-${step.status}`} key={step.dataset}>
-                                    <span class="step-name">{step.dataset}</span>
-                                    <span class="step-detail">
+                                <li class={`is-${step.status}`} key={step.dataset}>
+                                    <span class="pipeline-step-name">{step.dataset}</span>
+                                    <span class="pipeline-step-detail">
                                         {step.status === 'running' && step.progress.phase
                                             ? `${step.progress.phase} — ${(step.progress.done ?? 0).toLocaleString()}` +
                                               (step.progress.total ? ` / ${step.progress.total.toLocaleString()}` : '')
                                             : step.status === 'done'
                                               ? counts(step.counts) || 'finished'
                                               : step.error || statusLabel({...followed, status: step.status})}
+                                        {/*
+                                          * A bar only where the step reports a total: a phase
+                                          * that counts with no known end would otherwise draw a
+                                          * bar that is always full or always empty.
+                                          */}
+                                        {step.status === 'running' && !!step.progress.total && (
+                                            <Progress max={step.progress.total} value={step.progress.done ?? 0} />
+                                        )}
                                     </span>
                                 </li>
                             ))}
                         </ul>
                         <pre
-                            class="run-log"
+                            class="pipeline-log"
                             oncreate={(v: m.VnodeDOM) => {
                                 this.logEl = v.dom as HTMLPreElement
                             }}
@@ -360,44 +399,42 @@ export class Pipeline extends MithrilComponent {
                             {$s.pipelineLog.map((line) => `${line.dataset}  ${line.text}`).join('\n')}
                         </pre>
                         {(followed.status === 'running' || followed.status === 'queued') && (
-                            <div class="row-actions">
-                                <button class="danger" onclick={() => void cancelRun(followed.id)} type="button">
+                            <div class="pipeline-actions">
+                                <Button onclick={() => void cancelRun(followed.id)} variant="danger">
                                     Stop
-                                </button>
-                                <span class="hint">
+                                </Button>
+                                <span class="pipeline-muted">
                                     What has already been written stays written — the manifest is
                                     written last, so a stopped run leaves the previous one serving.
                                 </span>
                             </div>
                         )}
-                    </div>
+                    </Card>
                 )}
 
                 {$s.pipelineJobs.length > 1 && (
-                    <div class="card">
-                        <h2>Earlier runs</h2>
-                        <ul class="account-list">
+                    <Card title="Earlier runs">
+                        <ul class="pipeline-runs">
                             {$s.pipelineJobs
                                 .filter((job) => job.id !== $s.pipelineFollowing)
                                 .map((job) => (
-                                    <li class="account" key={job.id}>
-                                        <div class="account-main">
-                                            <span class="account-name">{job.area}</span>
-                                            <span style="flex:1" />
-                                            <button class="ghost" onclick={() => follow(job.id)} type="button">
+                                    <li key={job.id}>
+                                        <div class="pipeline-row">
+                                            <span class="pipeline-name">{job.area}</span>
+                                            <Badge tone={STATUS_TONE[job.status]}>{statusLabel(job)}</Badge>
+                                            <Button onclick={() => follow(job.id)} size="sm" variant="ghost">
                                                 Show log
-                                            </button>
+                                            </Button>
                                         </div>
-                                        <div class="account-meta">
-                                            <span>{statusLabel(job)}</span>
-                                            <span>{job.steps.map((s) => s.dataset).join(', ')}</span>
+                                        <div class="pipeline-meta">
+                                            <span>{job.steps.map((step) => step.dataset).join(', ')}</span>
                                             <span>{job.by}</span>
                                             <span>{formatTimestamp(new Date(job.createdAt).toISOString())}</span>
                                         </div>
                                     </li>
                                 ))}
                         </ul>
-                    </div>
+                    </Card>
                 )}
             </>
         )

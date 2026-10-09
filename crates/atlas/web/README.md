@@ -102,14 +102,32 @@ the tarball does not. Bump it by changing the commit in that URL. Components are
 can type-check as a tag; routing is `m.route` with pathname URLs
 (`src/components/main/main.tsx`).
 
-Colours come from the Cartopolis client's own theme constants
-(`systems::gui::theme`); a fresh hex here is how the two drift apart.
+The **controls, layout and theme are the fork's component library**
+(`@garage44/mithril/components`, its stylesheet, and `@garage44/mithril/validation`),
+since 2026-10; the fork's `docs/notes/components.md` has the design. Every stateful
+control takes its state as a `model` signal — `bind(s, 'key')` in
+`src/lib/reactive.ts` hands it a field of a `local()` — and a form's rules are a
+`validations({...})` that drives its submit button. The operator's pages sit in the
+library's `Shell` (`src/components/main/main.tsx`): the tabs in the left nav, and a
+right-hand panel a page fills with `openContext()` (`src/lib/layout.ts`) to edit
+one record beside the list — on a phone it covers the list instead. Everybody
+else's pages get a header and a centred column.
+
+The palette is the library's, which took it from the client's theme constants
+(`systems::gui::theme`) and added a light half: the switch in the header follows
+the OS until somebody picks. **No stylesheet here names a colour** — `src/css/app.css`
+holds the frames and a page's own rules sit beside it as `<page>.css`, all in the
+library's `--m-*` tokens, which is what makes both themes work.
+
+The type-checker is **TypeScript 7**, the fork's: TypeScript 5 infers the
+library's `m(Component, attrs)` overloads differently and fails inside it.
 
 ## Running it
 
 ```bash
 bun install
 bun run dev          # http://localhost:3100/, proxying /api to a local simulator
+bun run mock         # the same, against a stand-in API in mock.ts: no simulator, no atlas
 bun run build        # → dist/
 bun test             # store rules, API errors, sign-up
 bunx tsc --noEmit
@@ -119,6 +137,12 @@ bunx tsc --noEmit
 `http://127.0.0.1:4748`) and `/api/pipeline/*` to `$CARTO_PIPELINE_API` (default
 atlas, `http://127.0.0.1:4749`) — two upstreams behind one prefix, exactly as
 Caddy does in production, so the web UI sees one origin and needs no CORS.
+
+`bun run mock` answers `/api/*` from `mock.ts` instead: typed fixtures of a
+Groningen-sized world that writes change, for looking at the UI with neither
+backend running. `/admin?mock-signin` opens signed in as an admin (`&mock-tab=Data`
+picks a tab), `/buildings?mock-signin=player` as a player who owns two buildings.
+It exists only behind that flag: the production build contains none of it.
 
 ## Deployment
 

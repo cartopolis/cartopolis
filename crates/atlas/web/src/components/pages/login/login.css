@@ -1,0 +1,54 @@
+/* ── Sign-in, sign-up and verification ───────────────────────────────────── */
+
+/*
+ * One centred card for every form a person without a session meets: the
+ * operator's sign-in, sign-up and the verification landing all use it, so the
+ * three read as one flow. Full width on a phone, ~26rem from there up.
+ */
+.auth {
+    display: block;
+    width: 100%;
+    max-width: 26rem;
+    margin: 6vh auto 0;
+
+    & .m-card__body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--m-space-4);
+    }
+
+    & p {
+        margin: 0;
+    }
+}
+
+.auth__lede {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+/* The main action first and full width, the ways out under it. */
+.auth__actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    margin-top: var(--m-space-1);
+
+    & .m-button {
+        justify-content: center;
+        width: 100%;
+    }
+}
+
+.auth__working {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--m-space-3);
+    color: var(--m-text-dim);
+}
+
+/* The building picker follows the confirmation card on /verify. */
+.auth + * {
+    margin-top: var(--m-space-5);
+}

@@ -1,9 +1,10 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Badge, Button, ButtonGroup, Card, FieldText} from '@garage44/mithril/components'
 
 import type {BuildingAddress, OwnedBuilding} from '@/types'
 
 import {$s} from '@/app'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {claimBuilding, releaseBuilding, searchBuildings} from '@/lib/signup'
 
 /** Where the floor-plan editor for one building lives. */
@@ -17,6 +18,29 @@ export function editorPath(building: Pick<OwnedBuilding, 'latitude' | 'longitude
  */
 export function gamePlaceUrl(lat: number, lng: number) {
     return `/go?place=${lat.toFixed(5)},${lng.toFixed(5)},45m,-50,0`
+}
+
+/**
+ * A link out to the game, drawn as a library button. `Button` takes an `href`
+ * but no `target`, and the game has to open beside this page rather than over a
+ * floor plan that may hold unsaved work — so this is the `<a>` with the
+ * button's classes, not the component.
+ */
+export class GameLink extends MithrilComponent<{lat: number; lng: number}> {
+    view({attrs}: m.Vnode<{lat: number; lng: number}>) {
+        return (
+            <a
+                class="m-button"
+                data-size="sm"
+                data-variant="ghost"
+                href={gamePlaceUrl(attrs.lat, attrs.lng)}
+                rel="noreferrer"
+                target="_blank"
+            >
+                View in the game
+            </a>
+        )
+    }
 }
 
 /**
@@ -65,131 +89,128 @@ export class BuildingPicker extends MithrilComponent {
         const results = s.results
 
         return (
-            <>
+            <div class="building-picker">
                 {owned.length > 0 && (
-                    <div class="card">
-                        <h2>Your buildings</h2>
-                        <ul class="house-list">
+                    <Card
+                        footer={
+                            <p class="building-picker__hint">
+                                Design lays out the floors, walls, doors and stairs inside the building. What you
+                                save is what everybody sees when they walk in — or tap the building in the game
+                                and choose Look inside.
+                            </p>
+                        }
+                        flush
+                        title="Your buildings"
+                    >
+                        <ul class="building-picker__list">
                             {owned.map((building) => (
-                                <li class="house" key={building.pand_id}>
-                                    <span class="house-address">{building.address}</span>
+                                <li class="building-picker__item" key={building.pand_id}>
+                                    <span class="building-picker__address">{building.address}</span>
+                                    {/*
+                                      * Giving a building up is two presses: the first only
+                                      * swaps the row's actions for a confirmation, because
+                                      * a released building is anybody's to claim at once.
+                                      */}
                                     {s.confirming === building.pand_id ? (
-                                        <>
-                                            <button
-                                                class="danger"
+                                        <ButtonGroup>
+                                            <Button
                                                 onclick={() => {
                                                     s.confirming = ''
                                                     void releaseBuilding(building)
                                                 }}
-                                                type="button"
+                                                size="sm"
+                                                variant="danger"
                                             >
                                                 Give it up
-                                            </button>
-                                            <button
-                                                class="ghost"
+                                            </Button>
+                                            <Button
                                                 onclick={() => {
                                                     s.confirming = ''
                                                 }}
-                                                type="button"
+                                                size="sm"
+                                                variant="ghost"
                                             >
                                                 Keep
-                                            </button>
-                                        </>
+                                            </Button>
+                                        </ButtonGroup>
                                     ) : (
-                                        <>
-                                            <button
-                                                class="primary"
+                                        <ButtonGroup>
+                                            <Button
                                                 onclick={() => m.route.set(editorPath(building))}
-                                                type="button"
+                                                size="sm"
+                                                variant="primary"
                                             >
                                                 Design
-                                            </button>
-                                            <a
-                                                class="ghost-link"
-                                                href={gamePlaceUrl(building.latitude, building.longitude)}
-                                                rel="noreferrer"
-                                                target="_blank"
-                                            >
-                                                View in the game
-                                            </a>
-                                            <button
-                                                class="ghost"
+                                            </Button>
+                                            <GameLink lat={building.latitude} lng={building.longitude} />
+                                            <Button
                                                 onclick={() => {
                                                     s.confirming = building.pand_id
                                                 }}
-                                                type="button"
+                                                size="sm"
+                                                variant="ghost"
                                             >
                                                 Give up
-                                            </button>
-                                        </>
+                                            </Button>
+                                        </ButtonGroup>
                                     )}
                                 </li>
                             ))}
                         </ul>
-                        <p class="hint">
-                            Design lays out the floors, walls, doors and stairs inside the building. What you
-                            save is what everybody sees when they walk in — or tap the building in the game
-                            and choose Look inside.
-                        </p>
-                    </div>
+                    </Card>
                 )}
 
-                <div class="card">
-                    <h2>{owned.length > 0 ? 'Claim another building' : 'Claim a building'}</h2>
-                    <p class="hint">
+                <Card title={owned.length > 0 ? 'Claim another building' : 'Claim a building'}>
+                    <p class="building-picker__hint">
                         Groningen only, for now — that's where the map has buildings. One owner per building,
                         first come first served
                         {$s.buildingLimit > 0 ? `, up to ${$s.buildingLimit} per account` : ''}. Type any
                         address in it.
                     </p>
                     {atLimit ? (
-                        <div class="empty">You own as many buildings as an account may.</div>
+                        <p class="building-picker__empty">You own as many buildings as an account may.</p>
                     ) : (
-                        <form class="house-search" onsubmit={this.search}>
-                            <label class="field">
-                                <span>An address in the building</span>
-                                <input
-                                    autocomplete="street-address"
-                                    disabled={s.busy}
-                                    oninput={(e: Event) => {
-                                        s.query = (e.target as HTMLInputElement).value
-                                    }}
-                                    placeholder="Grote Markt 1"
-                                    type="search"
-                                    value={s.query}
-                                />
-                            </label>
-                            <button class="primary" disabled={s.busy || !s.query.trim()} type="submit">
-                                {s.busy ? 'Looking…' : 'Find it'}
-                            </button>
+                        <form class="building-picker__search" onsubmit={this.search}>
+                            <FieldText
+                                autocomplete="street-address"
+                                disabled={s.busy}
+                                label="An address in the building"
+                                model={bind(s, 'query')}
+                                placeholder="Grote Markt 1"
+                                type="search"
+                            />
+                            <Button disabled={!s.query.trim()} loading={s.busy} type="submit" variant="primary">
+                                Find it
+                            </Button>
                         </form>
                     )}
 
                     {results === null ? null : results.length === 0 ? (
-                        <div class="empty">Nothing in Groningen matches that.</div>
+                        <p class="building-picker__empty">Nothing in Groningen matches that.</p>
                     ) : (
-                        <ul class="house-list">
+                        <ul class="building-picker__list">
                             {results.map((address) => (
-                                <li class="house" key={address.nummeraanduiding_id}>
-                                    <span class="house-address">{address.address}</span>
+                                <li class="building-picker__item" key={address.nummeraanduiding_id}>
+                                    <span class="building-picker__address">{address.address}</span>
                                     {address.available ? (
-                                        <button
-                                            class="primary"
+                                        <Button
                                             disabled={s.claiming !== ''}
+                                            loading={s.claiming === address.nummeraanduiding_id}
                                             onclick={() => void this.take(address)}
-                                            type="button"
+                                            size="sm"
+                                            variant="primary"
                                         >
-                                            {s.claiming === address.nummeraanduiding_id ? 'Claiming…' : 'Claim'}
-                                        </button>
+                                            Claim
+                                        </Button>
                                     ) : (
-                                        <span class="tag disabled">owned</span>
+                                        <Badge>owned</Badge>
                                     )}
                                 </li>
                             ))}
                         </ul>
                     )}
-                </div>
-            </>
+                </Card>
+            </div>
         )
     }
 }

@@ -1,9 +1,11 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Alert, Button, Card, FieldText, Spinner} from '@garage44/mithril/components'
+import {validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
 import {BuildingPicker} from '@/components/elements/buildings/buildings'
 import {ADMIN} from '@/lib/base'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {resend, tokenFromLocation, verify} from '@/lib/signup'
 
 type Phase = 'confirmed' | 'failed' | 'working'
@@ -17,7 +19,16 @@ type Phase = 'confirmed' | 'failed' | 'working'
  * valid".
  */
 export class Verify extends MithrilComponent {
-    s = local({again: '', phase: 'working' as Phase})
+    s = local({again: '', phase: 'working' as Phase, sending: false})
+
+    // The check this form always had, and no more: the resend endpoint answers
+    // success whatever the address, so a stricter test here would only refuse
+    // addresses it would have mailed.
+    v = validations({
+        again: validation(bind(this.s, 'again'))
+            .required()
+            .check((value) => value.includes('@'), 'That does not look like an email address.'),
+    })
 
     oninit() {
         const s = this.s
@@ -38,24 +49,47 @@ export class Verify extends MithrilComponent {
         })
     }
 
+    send = async (e: Event) => {
+        e.preventDefault()
+        const s = this.s
+        if (s.sending || !this.v.$validate()) {
+            return
+        }
+        s.sending = true
+        await resend(s.again.trim())
+        s.sending = false
+    }
+
     view() {
         const s = this.s
 
         if (s.phase === 'working') {
-            return <div class="splash">Confirming…</div>
+            return (
+                <div class="auth">
+                    <Card>
+                        <div class="auth__working">
+                            <Spinner />
+                            Confirming…
+                        </div>
+                    </Card>
+                </div>
+            )
         }
 
         if (s.phase === 'confirmed') {
             return (
                 <>
-                    <div class="card">
-                        <h1>You're in, {$s.signup.username}</h1>
-                        <p class="hint">
-                            Your account is confirmed. Sign in to the world at{' '}
-                            <a href="https://cartopolis.org">cartopolis.org</a> with the username and
-                            password you just chose — this page is the account admin, and it only lets
-                            operators in.
-                        </p>
+                    <div class="auth">
+                        <Card title="Welcome">
+                            <Alert title={`You're in, ${$s.signup.username}`} tone="success">
+                                Your account is confirmed.
+                            </Alert>
+                            <p class="auth__lede">
+                                Sign in to the world at <a href="https://cartopolis.org">cartopolis.org</a> with the
+                                username and password you just chose — this page is the account admin, and it only
+                                lets operators in.
+                            </p>
+                        </Card>
                     </div>
                     <BuildingPicker />
                 </>
@@ -63,36 +97,30 @@ export class Verify extends MithrilComponent {
         }
 
         return (
-            <div class="card signin">
-                <h1>That link didn't work</h1>
-                <p class="hint">
-                    It may have been used already, replaced by a newer one, or simply expired. Ask for
-                    another and we'll send it.
-                </p>
-                <label class="field">
-                    <span>Email</span>
-                    <input
+            // A form, so Enter or the phone's Go key sends the link.
+            <form class="auth" novalidate onsubmit={this.send}>
+                <Card title="Confirm your address">
+                    <Alert title="That link didn't work" tone="danger">
+                        It may have been used already, replaced by a newer one, or simply expired. Ask for another
+                        and we'll send it.
+                    </Alert>
+                    <FieldText
                         autocomplete="email"
-                        inputmode="email"
-                        oninput={(e: Event) => {
-                            s.again = (e.target as HTMLInputElement).value
-                        }}
+                        label="Email"
+                        model={bind(s, 'again')}
                         type="email"
-                        value={s.again}
+                        validation={this.v.again}
                     />
-                </label>
-                <button
-                    class="primary"
-                    disabled={!s.again.includes('@')}
-                    onclick={() => void resend(s.again.trim())}
-                    type="button"
-                >
-                    Send another link
-                </button>
-                <button class="ghost" onclick={() => m.route.set(ADMIN)} type="button">
-                    Back to sign in
-                </button>
-            </div>
+                    <div class="auth__actions">
+                        <Button disabled={!this.v.$valid} loading={s.sending} type="submit" variant="primary">
+                            Send another link
+                        </Button>
+                        <Button onclick={() => m.route.set(ADMIN)} variant="ghost">
+                            Back to sign in
+                        </Button>
+                    </div>
+                </Card>
+            </form>
         )
     }
 }

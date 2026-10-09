@@ -1,8 +1,10 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Button, Card, FieldText} from '@garage44/mithril/components'
+import {required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
 import {BuildingPicker} from '@/components/elements/buildings/buildings'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {loadMyBuildings, playerSignIn, playerSignOut} from '@/lib/signup'
 
 /**
@@ -17,6 +19,12 @@ import {loadMyBuildings, playerSignIn, playerSignOut} from '@/lib/signup'
 export class Buildings extends MithrilComponent {
     s = local({busy: false, password: '', username: ''})
 
+    // Both fields were already required in code; the rules only move here.
+    v = validations({
+        password: validation(bind(this.s, 'password'), [required]),
+        username: validation(bind(this.s, 'username'), [required]),
+    })
+
     oninit() {
         // A remembered session: ask the server which buildings it owns. A dead
         // token answers 401, `signupApi` clears it, and the form below appears.
@@ -28,7 +36,7 @@ export class Buildings extends MithrilComponent {
     submit = async (e: Event) => {
         e.preventDefault()
         const s = this.s
-        if (s.busy || !s.username || !s.password) {
+        if (s.busy || !this.v.$validate()) {
             return
         }
         s.busy = true
@@ -36,6 +44,7 @@ export class Buildings extends MithrilComponent {
         s.busy = false
         if (ok) {
             s.password = ''
+            this.v.password.reset()
         }
     }
 
@@ -45,56 +54,50 @@ export class Buildings extends MithrilComponent {
 
         if (signedIn) {
             return (
-                <>
+                <div class="buildings-page">
                     <BuildingPicker />
-                    <div class="card">
-                        <p class="hint">
+                    <Card
+                        footer={
+                            <Button onclick={() => void playerSignOut()} size="sm" variant="ghost">
+                                Sign out
+                            </Button>
+                        }
+                    >
+                        <p class="buildings-page__hint">
                             You're signed in as <b>{$s.signup.username}</b>.
                         </p>
-                        <div class="row-actions">
-                            <button class="ghost" onclick={() => void playerSignOut()} type="button">
-                                Sign out
-                            </button>
-                        </div>
-                    </div>
-                </>
+                    </Card>
+                </div>
             )
         }
 
         return (
-            <form class="card signin" onsubmit={this.submit}>
-                <h1>Your buildings</h1>
-                <p class="hint">
-                    Sign in with your Cartopolis account — the one you play with. No admin flag
-                    needed here.
-                </p>
-                <label class="field">
-                    <span>Username</span>
-                    <input
+            // A real <form>, so the phone keyboard shows a Go key and Enter submits.
+            <form class="buildings-signin" onsubmit={this.submit}>
+                <Card title="Your buildings">
+                    <p class="buildings-page__hint">
+                        Sign in with your Cartopolis account — the one you play with. No admin flag
+                        needed here.
+                    </p>
+                    <FieldText
                         autocomplete="username"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.username = (e.target as HTMLInputElement).value
-                        }}
-                        type="text"
-                        value={s.username}
+                        label="Username"
+                        model={bind(s, 'username')}
+                        validation={this.v.username}
                     />
-                </label>
-                <label class="field">
-                    <span>Password</span>
-                    <input
+                    <FieldText
                         autocomplete="current-password"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.password = (e.target as HTMLInputElement).value
-                        }}
+                        label="Password"
+                        model={bind(s, 'password')}
                         type="password"
-                        value={s.password}
+                        validation={this.v.password}
                     />
-                </label>
-                <button class="primary" disabled={s.busy || !s.username || !s.password} type="submit">
-                    {s.busy ? 'Signing in…' : 'Sign in'}
-                </button>
+                    <Button disabled={!this.v.$valid} loading={s.busy} type="submit" variant="primary">
+                        Sign in
+                    </Button>
+                </Card>
             </form>
         )
     }

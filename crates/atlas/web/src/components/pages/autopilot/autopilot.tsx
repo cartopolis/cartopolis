@@ -1,4 +1,15 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {
+    Badge,
+    Button,
+    Card,
+    CloseButton,
+    FieldNumber,
+    FieldSlider,
+    FieldSwitch,
+    FieldTextarea,
+} from '@garage44/mithril/components'
+import {integer, max, min, validation} from '@garage44/mithril/validation'
 
 import type {AutopilotPlanItem} from '@/types'
 
@@ -16,18 +27,6 @@ import {local} from '@/lib/reactive'
  * as you type and save on blur — a PATCH per keystroke is a write per letter,
  * and the sentence is a paragraph.
  */
-
-const sliderCommit =
-    (field: 'ticketsPerDay' | 'qaPerDay') => (e: Event) => {
-        void saveAutopilot({[field]: Number((e.target as HTMLInputElement).value)})
-    }
-
-const sliderTrack =
-    (field: 'ticketsPerDay' | 'qaPerDay') => (e: Event) => {
-        if ($s.autopilot) {
-            $s.autopilot[field] = Number((e.target as HTMLInputElement).value)
-        }
-    }
 
 /*
  * Where the lane files. A filed row links to its ticket, and that ticket lives
@@ -74,8 +73,80 @@ function commitPlan(items: AutopilotPlanItem[]) {
     void saveAutopilot({focusPlan: items.filter((item) => item.title.trim())})
 }
 
+/**
+ * A numeric setting as a field model: it reads the store and tracks it while a
+ * slider is dragged, so the figure beside the track follows the thumb. Nothing is
+ * sent from here — see `saveOnRelease`.
+ */
+const tracked = (field: 'qaPerDay' | 'ticketsPerDay') => ({
+    get value(): number {
+        return $s.autopilot?.[field] ?? 0
+    },
+    set value(next: number) {
+        if ($s.autopilot) {
+            $s.autopilot[field] = next
+        }
+    },
+})
+
+/*
+ * The slider writes its model on every `input`, which is right for the figure
+ * and wrong for the file. A range input's native `change` fires once, on release,
+ * and bubbles — so the wrapper around the field is what sends, exactly as the
+ * hand-built slider's own `onchange` did.
+ */
+const saveOnRelease = (field: 'qaPerDay' | 'ticketsPerDay') => (e: Event) => {
+    void saveAutopilot({[field]: Number((e.target as HTMLInputElement).value)})
+}
+
+/**
+ * An on/off setting as a field model. A switch applies at once: the write goes
+ * straight to the server, and the store takes the server's answer, not the click.
+ */
+const switched = (field: 'enabled' | 'ship') => ({
+    get value(): boolean {
+        return $s.autopilot?.[field] ?? false
+    },
+    set value(next: boolean) {
+        void saveAutopilot({[field]: next})
+    },
+})
+
 export class Autopilot extends MithrilComponent {
-    s = local({replanning: false})
+    /*
+     * `retro` is what the number box holds while it is being typed into, and
+     * `undefined` when it shows the file's value. It has to be separate from the
+     * store: an emptied box is `null`, which the store cannot hold, and a box that
+     * refilled itself from the store the moment it was cleared could not be
+     * retyped.
+     */
+    s = local({replanning: false, retro: undefined as number | null | undefined})
+
+    /** The number box's model: the draft while there is one, the file's value otherwise. */
+    private retroModel = {
+        get: () => (this.s.retro !== undefined ? this.s.retro : ($s.autopilot?.retroEveryDays ?? 0)),
+        set: (next: number | null) => {
+            this.s.retro = next
+        },
+        get value(): number | null {
+            return this.get()
+        },
+        set value(next: number | null) {
+            this.set(next)
+        },
+    }
+
+    /*
+     * The server clamps `retroEveryDays` to 0…30 (`clamp_int` in atlas's
+     * `autopilot.rs`), so the same bounds here say so before a write rather than
+     * after one comes back changed. Required, because an empty box has no value
+     * to send.
+     */
+    private vRetro = validation(this.retroModel)
+        .required()
+        .rule(integer)
+        .rule(min(0))
+        .rule(max(30))
 
     /*
      * Again after the layout has settled, and again on a rotate. `grow` measures
@@ -87,7 +158,7 @@ export class Autopilot extends MithrilComponent {
      * `oncreate` and `onupdate`, and the resize listener lives as long as the page.
      */
     private growAll = () => {
-        document.querySelectorAll<HTMLTextAreaElement>('.plan-body textarea').forEach(grow)
+        document.querySelectorAll<HTMLTextAreaElement>('.autopilot-plan-body textarea').forEach(grow)
     }
 
     oninit() {
@@ -111,17 +182,14 @@ export class Autopilot extends MithrilComponent {
         const config = $s.autopilot
         if (!config) {
             return (
-                <>
-                    <div class="section-head">
-                        <h1>Autopilot</h1>
-                    </div>
-                    <div class="empty">
+                <Card>
+                    <p class="autopilot-muted">
                         The autopilot is not answering. It runs beside the pipeline on the
                         production machine, steered through a config file there — if this page
                         cannot reach it, the lane itself is untouched and keeps whatever
                         settings it had.
-                    </div>
-                </>
+                    </p>
+                </Card>
             )
         }
 
@@ -169,54 +237,71 @@ export class Autopilot extends MithrilComponent {
             }
         }
 
+        // Tracks the store as it is typed; the wrapper's `focusout` is what saves.
+        const focus = {
+            get value(): string {
+                return $s.autopilot?.focus ?? ''
+            },
+            set value(next: string) {
+                if ($s.autopilot) {
+                    $s.autopilot.focus = next
+                }
+            },
+        }
+
         return (
             <>
-                <div class="section-head">
-                    <h1>Autopilot</h1>
-                </div>
-                <p class="hint">
+                <p class="autopilot-intro">
                     The unattended development lane: it files tickets, builds them, merges what
                     passes CI and deploys. These knobs are read on its next pass — nothing
                     restarts.
                 </p>
 
-                <div class="card">
-                    <h2>Focus</h2>
-                    <label class="field">
-                        <span>What to work on</span>
-                        <textarea
-                            onblur={(e: Event) => {
-                                void saveAutopilot({focus: (e.target as HTMLTextAreaElement).value})
-                            }}
-                            oninput={(e: Event) => {
-                                if ($s.autopilot) {
-                                    $s.autopilot.focus = (e.target as HTMLTextAreaElement).value
-                                }
-                            }}
+                <Card title="Focus">
+                    {/*
+                      * Saved on blur, not per keystroke. `blur` does not bubble out of
+                      * the field component, `focusout` does — same moment, same value.
+                      */}
+                    <div
+                        onfocusout={() => {
+                            void saveAutopilot({focus: $s.autopilot?.focus ?? ''})
+                        }}
+                    >
+                        <FieldTextarea
+                            autosize
+                            help={
+                                'A sentence saying what the next stretch of work is for. The lane asks a ' +
+                                'session to turn it into queued work below, and quotes it into every QA ' +
+                                'pass and retrospective as well. Empty it and the queue keeps whatever is ' +
+                                'already on it. Nothing here lifts a fence — a focus asking for a ' +
+                                'wire-protocol change still files tickets that stop for review.'
+                            }
+                            label="What to work on"
+                            model={focus}
                             placeholder="Focus on improving Cartopolis on the Steam Deck runner"
                             rows={3}
-                            value={config.focus}
                         />
-                    </label>
-                    <p class="hint">
-                        A sentence saying what the next stretch of work is for. The lane asks a
-                        session to turn it into queued work below, and quotes it into every QA
-                        pass and retrospective as well. Empty it and the queue keeps whatever is
-                        already on it. Nothing here lifts a fence — a focus asking for a
-                        wire-protocol change still files tickets that stop for review.
-                    </p>
+                    </div>
 
                     {!config.focus && (
-                        <div class="empty">
+                        <p class="autopilot-empty">
                             No focus. The lane works the frontier in the direction document, and
                             whatever is queued below.
-                        </div>
+                        </p>
                     )}
-                </div>
+                </Card>
 
-                <div class="card">
-                    <h2>Queue</h2>
-                    <p class="hint">
+                <Card
+                    actions={
+                        config.focusPlan.length > 0 ? (
+                            <Badge>
+                                {filed} of {config.focusPlan.length} filed
+                            </Badge>
+                        ) : null
+                    }
+                    title="Queue"
+                >
+                    <p class="autopilot-muted">
                         What gets built, in the order it is in, ahead of the direction document.
                         Rows come from three places — the session that plans a focus, a QA pass
                         that walked into a gap, a retrospective that found something broken —
@@ -226,46 +311,48 @@ export class Autopilot extends MithrilComponent {
                     </p>
 
                     {!config.focusPlan.length && (
-                        <div class="empty">
+                        <p class="autopilot-empty">
                             {config.focus
                                 ? 'Nothing queued yet. The lane files one planning ticket for this focus, and the rows appear here when that session answers — usually within the hour. You can also write them yourself, one at a time.'
                                 : 'Nothing queued. QA passes and retrospectives add rows here as they find work, or write one yourself.'}
-                        </div>
+                        </p>
                     )}
 
                     {config.focusPlan.length > 0 && (
-                        <ul class="plan-list">
+                        <ul class="autopilot-plan">
                             {config.focusPlan.map((item, index) => (
-                                <li class={`plan-item ${item.issue ? 'is-filed' : ''}`} key={item.id || `new-${index}`}>
+                                <li class={item.issue ? 'is-filed' : ''} key={item.id || `new-${index}`}>
                                     {/*
                                       * The buttons are a column beside the row rather than a
                                       * drag handle: this list is read and reordered on a phone
                                       * as often as on a desk, and a drag inside a scrolling
                                       * page fights the scroll.
                                       */}
-                                    <div class="plan-move">
-                                        <button
-                                            class="ghost"
+                                    <div class="autopilot-plan-move">
+                                        <Button
+                                            aria-label="Move up"
                                             disabled={item.issue > 0 || index === 0 || config.focusPlan[index - 1].issue > 0}
                                             onclick={() => move(index, -1)}
+                                            size="sm"
                                             title={item.issue > 0 ? 'Filed — the ticket is the record now' : 'Move up'}
-                                            type="button"
+                                            variant="ghost"
                                         >
                                             ↑
-                                        </button>
-                                        <button
-                                            class="ghost"
+                                        </Button>
+                                        <Button
+                                            aria-label="Move down"
                                             disabled={
                                                 item.issue > 0 ||
                                                 index === config.focusPlan.length - 1 ||
                                                 config.focusPlan[index + 1].issue > 0
                                             }
                                             onclick={() => move(index, 1)}
+                                            size="sm"
                                             title={item.issue > 0 ? 'Filed — the ticket is the record now' : 'Move down'}
-                                            type="button"
+                                            variant="ghost"
                                         >
                                             ↓
-                                        </button>
+                                        </Button>
                                     </div>
                                     {/*
                                       * A filed row is not a plan any more: a session is building
@@ -277,13 +364,14 @@ export class Autopilot extends MithrilComponent {
                                       * as broken, and the server refuses the edit anyway.
                                       */}
                                     {item.issue > 0 ? (
-                                        <div class="plan-body is-filed">
-                                            <span class="plan-title">{item.title}</span>
-                                            {item.note && <span class="plan-note">{item.note}</span>}
+                                        <div class="autopilot-plan-body is-filed">
+                                            <span class="autopilot-plan-title">{item.title}</span>
+                                            {item.note && <span class="autopilot-plan-note">{item.note}</span>}
                                         </div>
                                     ) : (
-                                        <div class="plan-body">
+                                        <div class="autopilot-plan-body">
                                             <textarea
+                                                aria-label="What changes"
                                                 onblur={() => commitPlan(plan())}
                                                 oninput={(e: Event) => {
                                                     grow(e.currentTarget as HTMLTextAreaElement)
@@ -295,7 +383,8 @@ export class Autopilot extends MithrilComponent {
                                                 value={item.title}
                                             />
                                             <textarea
-                                                class="plan-note-field"
+                                                aria-label="Where it lands, and how it would be judged"
+                                                class="autopilot-plan-note-field"
                                                 onblur={() => commitPlan(plan())}
                                                 oninput={(e: Event) => {
                                                     grow(e.currentTarget as HTMLTextAreaElement)
@@ -316,30 +405,26 @@ export class Autopilot extends MithrilComponent {
                                       * sitting beside it — the queue may not drop a row that is
                                       * being built, and a ✕ that answers "no" is worse than no ✕.
                                       */}
-                                    <div class="plan-side">
+                                    <div class="autopilot-plan-side">
                                         {item.issue > 0 ? (
                                             <a
-                                                class="tag"
+                                                class="autopilot-ticket"
                                                 href={`${FORGE_ISSUES}/${item.issue}`}
                                                 rel="noreferrer"
                                                 target="_blank"
                                                 title="Open the ticket"
                                             >
-                                                #{item.issue}
+                                                <Badge tone="info">#{item.issue}</Badge>
                                             </a>
                                         ) : (
-                                            <button
-                                                class="ghost"
+                                            <CloseButton
+                                                label="Remove"
                                                 onclick={() => {
                                                     const items = plan()
                                                     items.splice(index, 1)
                                                     commitPlan(items)
                                                 }}
-                                                title="Remove"
-                                                type="button"
-                                            >
-                                                ✕
-                                            </button>
+                                            />
                                         )}
                                     </div>
                                 </li>
@@ -347,7 +432,7 @@ export class Autopilot extends MithrilComponent {
                         </ul>
                     )}
 
-                    <div class="row-actions">
+                    <div class="autopilot-actions">
                         {/*
                           * Tracked, not saved. The server drops an untitled row — a title is
                           * what becomes a ticket over there — so saving here would answer
@@ -355,16 +440,15 @@ export class Autopilot extends MithrilComponent {
                           * instant it appeared. It is written to the file by the blur that
                           * leaves the title field, like every other edit on this page.
                           */}
-                        <button
+                        <Button
                             onclick={() => {
                                 if ($s.autopilot) {
                                     $s.autopilot.focusPlan = [...plan(), {id: '', issue: 0, note: '', title: ''}]
                                 }
                             }}
-                            type="button"
                         >
                             Add an item
-                        </button>
+                        </Button>
                         {/*
                           * Only with a focus: this asks a session to plan one, and there is
                           * nothing to ask without a sentence to plan from. Two presses, like
@@ -377,121 +461,93 @@ export class Autopilot extends MithrilComponent {
                           */}
                         {config.focus &&
                             (!unfiled ? (
-                                <button class="ghost" onclick={replan} type="button">
+                                <Button onclick={replan} variant="ghost">
                                     Ask again
-                                </button>
+                                </Button>
                             ) : this.s.replanning ? (
                                 <>
-                                    <button class="danger" onclick={replan} type="button">
+                                    <Button onclick={replan} variant="danger">
                                         Discard the {unfiled} unfiled and ask again
-                                    </button>
-                                    <button
-                                        class="ghost"
+                                    </Button>
+                                    <Button
                                         onclick={() => {
                                             this.s.replanning = false
                                         }}
-                                        type="button"
+                                        variant="ghost"
                                     >
                                         Keep them
-                                    </button>
+                                    </Button>
                                 </>
                             ) : (
-                                <button
-                                    class="ghost"
+                                <Button
                                     onclick={() => {
                                         this.s.replanning = true
                                     }}
-                                    type="button"
+                                    variant="ghost"
                                 >
                                     Ask for a new plan
-                                </button>
+                                </Button>
                             ))}
-                        <span style="flex:1" />
-                        {config.focusPlan.length > 0 && (
-                            <span class="hint">
-                                {filed} of {config.focusPlan.length} filed
-                            </span>
-                        )}
                     </div>
-                </div>
+                </Card>
 
-                <div class="card">
-                    <h2>Pace</h2>
-                    <label class="field">
-                        <span>
-                            Feature tickets per day: <strong>{config.ticketsPerDay}</strong>
-                        </span>
-                        <input
-                            max={24}
-                            min={0}
-                            onchange={sliderCommit('ticketsPerDay')}
-                            oninput={sliderTrack('ticketsPerDay')}
-                            type="range"
-                            value={config.ticketsPerDay}
-                        />
-                    </label>
-                    <label class="field">
-                        <span>
-                            QA passes per day: <strong>{config.qaPerDay}</strong>
-                        </span>
-                        <input
-                            max={24}
-                            min={0}
-                            onchange={sliderCommit('qaPerDay')}
-                            oninput={sliderTrack('qaPerDay')}
-                            type="range"
-                            value={config.qaPerDay}
-                        />
-                    </label>
-                    <p class="hint">
-                        Features come from the plan above, or from the frontier in the
-                        repository's direction document when no focus is set; a QA pass walks one
-                        functionality the way a player would and files what is missing. Zero
-                        stops that half without touching work already in flight.
-                    </p>
-                </div>
+                <Card title="Pace">
+                    <div class="autopilot-form">
+                        <div onchange={saveOnRelease('ticketsPerDay')}>
+                            <FieldSlider label="Feature tickets per day" max={24} min={0} model={tracked('ticketsPerDay')} />
+                        </div>
+                        <div onchange={saveOnRelease('qaPerDay')}>
+                            <FieldSlider label="QA passes per day" max={24} min={0} model={tracked('qaPerDay')} />
+                        </div>
+                        <p class="autopilot-muted">
+                            Features come from the plan above, or from the frontier in the
+                            repository's direction document when no focus is set; a QA pass walks one
+                            functionality the way a player would and files what is missing. Zero
+                            stops that half without touching work already in flight.
+                        </p>
+                    </div>
+                </Card>
 
-                <div class="card">
-                    <h2>Authority</h2>
-                    <label class="check">
-                        <input
-                            checked={config.enabled}
-                            onchange={(e: Event) => {
-                                void saveAutopilot({enabled: (e.target as HTMLInputElement).checked})
-                            }}
-                            type="checkbox"
+                <Card title="Authority">
+                    <div class="autopilot-form">
+                        <FieldSwitch label="File new tickets at all" model={switched('enabled')} />
+                        <FieldSwitch
+                            label="Merge and deploy finished tickets (off leaves them for review)"
+                            model={switched('ship')}
                         />
-                        <span>File new tickets at all</span>
-                    </label>
-                    <label class="check">
-                        <input
-                            checked={config.ship}
-                            onchange={(e: Event) => {
-                                void saveAutopilot({ship: (e.target as HTMLInputElement).checked})
+                        {/*
+                          * Sent as each valid value lands — a one- or two-digit number, so a
+                          * write per keystroke is a write or two, and the steppers have no
+                          * blur to wait for. An invalid box sends nothing; the field says why.
+                          */}
+                        {/*
+                          * Leaving the box drops the draft, so it shows the file again — the
+                          * clamped value the server took, or the old one if what was typed
+                          * was never valid enough to send.
+                          */}
+                        <div
+                            onfocusout={() => {
+                                this.s.retro = undefined
                             }}
-                            type="checkbox"
-                        />
-                        <span>Merge and deploy finished tickets (off leaves them for review)</span>
-                    </label>
-                    <label class="field">
-                        <span>
-                            Retrospective every <strong>{config.retroEveryDays || '—'}</strong>{' '}
-                            day(s), 0 for never
-                        </span>
-                        <input
-                            max={30}
-                            min={0}
-                            onchange={(e: Event) => {
-                                void saveAutopilot({
-                                    retroEveryDays: Number((e.target as HTMLInputElement).value),
-                                })
-                            }}
-                            style="max-width: 6rem"
-                            type="number"
-                            value={config.retroEveryDays}
-                        />
-                    </label>
-                </div>
+                        >
+                            <FieldNumber
+                                class="autopilot-retro"
+                                help="0 for never"
+                                label="Retrospective every"
+                                max={30}
+                                min={0}
+                                model={this.retroModel}
+                                onchange={(next) => {
+                                    if (next !== null && this.vRetro.valid && next !== config.retroEveryDays) {
+                                        void saveAutopilot({retroEveryDays: next})
+                                    }
+                                }}
+                                unit="days"
+                                validation={this.vRetro}
+                            />
+                        </div>
+                    </div>
+                </Card>
             </>
         )
     }

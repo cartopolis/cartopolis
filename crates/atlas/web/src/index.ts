@@ -1,3 +1,4 @@
+import '@/css/app.css'
 import {App} from '@/app'
 import {mountRoutes} from '@/components/main/main'
 

@@ -1,0 +1,23 @@
+.claims {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.claims-count {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+/* The 3DBAG id is copied and quoted, not read: monospace, and never broken. */
+.claims-pand {
+    font-family: var(--m-font-mono);
+    font-size: var(--m-font-size-sm);
+    white-space: nowrap;
+}
+
+.claims-actions {
+    display: inline-flex;
+    gap: var(--m-space-1);
+}

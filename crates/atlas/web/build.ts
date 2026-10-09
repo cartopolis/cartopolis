@@ -9,6 +9,11 @@
  *
  * `--serve` adds a dev server that proxies `/api` to a local simulator, so the
  * app runs against the real Rust API rather than a mock of it.
+ *
+ * `--serve --mock` is the exception, and only for looking at the UI: `/api/*`
+ * is answered in-process by `mock.ts` instead of proxied, so the pages render
+ * with realistic data on a machine with no simulator and no atlas — a screenshot,
+ * a layout check on a phone. It is not how anything is tested.
  */
 import {existsSync, rmSync} from 'node:fs'
 import path from 'node:path'
@@ -16,6 +21,7 @@ import path from 'node:path'
 const root = import.meta.dir
 const dist = path.join(root, 'dist')
 const serve = process.argv.includes('--serve')
+const mock = serve && process.argv.includes('--mock')
 
 /** Where `--serve` forwards `/api/*`. The simulator's `--http-listen`. */
 const API = process.env.CARTO_ADMIN_API || 'http://127.0.0.1:4748'
@@ -40,7 +46,9 @@ async function build() {
         // Content hashing is pointless here and actively unhelpful: index.html
         // is written by hand and would have to be templated to name the hash.
         // The site is ~30 KB and Caddy is told not to cache it.
-        naming: 'app.js',
+        // `[ext]` because the entry imports the stylesheet, which Bun bundles into a
+        // second output beside the script: app.js and app.css, as index.html names them.
+        naming: 'app.[ext]',
         minify: !serve,
         outdir: dist,
         sourcemap: serve ? 'inline' : 'none',
@@ -55,19 +63,76 @@ async function build() {
     }
 
     await Bun.write(path.join(dist, 'index.html'), Bun.file(path.join(root, 'src/index.html')))
-    await Bun.write(path.join(dist, 'app.css'), Bun.file(path.join(root, 'src/css/app.css')))
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
 }
 
+/**
+ * What `--mock` adds to `index.html`: a classic inline script, so it runs before
+ * the app's module script reads localStorage (`src/lib/store.ts`).
+ *
+ * `?mock-signin` seeds the stored sessions with the mock's remembered tokens —
+ * `admin` (the default) for the operator's `/admin`, `player` for `/buildings`
+ * and `/building/{pand}`, `both`, or `none` to sign out — so a headless browser
+ * opens a signed-in page with no form to fill. `?mock-tab=Data` then clicks the
+ * admin tab with that label, because the open tab is reset on every load
+ * (`volatileState`) and so cannot be seeded — matched on the button's text,
+ * not a class, so it survives the layout changing around it. Both exist only
+ * here: the real server never sees this script.
+ */
+async function mockIndex(): Promise<Response> {
+    const {MOCK_ADMIN_TOKEN, MOCK_PLAYER, MOCK_PLAYER_TOKEN} = await import('./mock')
+    const seed = `<script>
+(() => {
+  const q = new URLSearchParams(location.search)
+  const KEY = 'cartopolis-admin'
+  if (q.has('mock-signin')) {
+    const who = q.get('mock-signin') || 'admin'
+    let s = {}
+    try { s = JSON.parse(localStorage.getItem(KEY) || '{}') } catch {}
+    const admin = {principal: '', token: ${JSON.stringify(MOCK_ADMIN_TOKEN)}, username: 'viberfox'}
+    const player = {token: ${JSON.stringify(MOCK_PLAYER_TOKEN)}, username: ${JSON.stringify(MOCK_PLAYER)}}
+    s.profile = who === 'admin' || who === 'both' ? admin : {principal: '', token: '', username: ''}
+    s.signup = who === 'player' || who === 'both' ? player : {token: '', username: ''}
+    localStorage.setItem(KEY, JSON.stringify(s))
+  }
+  const tab = q.get('mock-tab')
+  if (tab) {
+    let tries = 0
+    const click = () => {
+      const button = [...document.querySelectorAll('nav button, nav a')]
+        .find((b) => b.textContent.trim().toLowerCase() === tab.toLowerCase())
+      // Clicked again shortly after: the first can land while the app is still
+      // settling its first render, and re-selecting the open tab is harmless.
+      if (button) [0, 300, 800].forEach((ms) => setTimeout(() => button.click(), ms))
+      else if (++tries < 60) setTimeout(click, 50)
+    }
+    addEventListener('DOMContentLoaded', click)
+  }
+})()
+</script>`
+    const html = (await Bun.file(path.join(dist, 'index.html')).text()).replace('<head>', `<head>\n${seed}`)
+    return new Response(html, {headers: {'Content-Type': 'text/html'}})
+}
+
 await build()
 
 if (serve) {
+    const {mockApi} = mock ? await import('./mock') : {mockApi: null}
+
     Bun.serve({
         port: PORT,
         async fetch(req) {
             const url = new URL(req.url)
+
+            // Answered here rather than proxied, pipeline prefix included: the
+            // mock stands in for both upstreams. A route it does not know is a
+            // 404 in the server's own shape, so the UI reports it as it would.
+            if (mockApi && url.pathname.startsWith('/api/')) {
+                return (await mockApi(req, url)) ??
+                    Response.json({error: `The mock has no ${req.method} ${url.pathname}`}, {status: 404})
+            }
 
             // Proxy to the simulator, headers and body intact — including the
             // Authorization bearer the app sends. The pipeline prefix is tested
@@ -86,14 +151,17 @@ if (serve) {
             // Mounted as in production (`src/lib/base.ts`): at the site root.
             const file = url.pathname === '/' ? '/index.html' : url.pathname
             const candidate = Bun.file(path.join(dist, file))
-            if (await candidate.exists()) {
+            if (await candidate.exists() && file !== '/index.html') {
                 return new Response(candidate)
             }
             // Single-page app: an unknown path is a route, not a 404.
+            if (mock) {
+                return mockIndex()
+            }
             return new Response(Bun.file(path.join(dist, 'index.html')), {
                 headers: {'Content-Type': 'text/html'},
             })
         },
     })
-    console.log(`web UI on http://localhost:${PORT}/ (api → ${API})`)
+    console.log(`web UI on http://localhost:${PORT}/ (api → ${mock ? 'mock.ts' : API})`)
 }

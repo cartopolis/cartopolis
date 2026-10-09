@@ -2,6 +2,7 @@ import type {Account, OwnedBuilding} from '@/types'
 
 import {$s, api, notifier, store} from '@/app'
 import {ApiError} from '@/lib/api'
+import {closeContext} from '@/lib/layout'
 import {loadMe, may} from '@/lib/roles'
 
 /**
@@ -59,7 +60,8 @@ export async function signOut() {
     $s.profile = {principal: '', token: '', username: ''}
     $s.accounts = []
     $s.signedIn = false
-    $s.editing = null
+    // Whatever record the panel held belongs to the session that just ended.
+    closeContext()
     store.save()
 }
 

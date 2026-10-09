@@ -1,4 +1,5 @@
 import m, {MithrilComponent, type ComponentType, type RouteResolver} from '@garage44/mithril'
+import {Button, NavGroup, NavItem, Shell, ShellMenuButton, ThemeSwitch} from '@garage44/mithril/components'
 
 import {$s} from '@/app'
 import {Notifications} from '@/components/elements/notifications/notifications'
@@ -16,9 +17,28 @@ import {Overrides} from '@/components/pages/overrides/overrides'
 import {Roles} from '@/components/pages/roles/roles'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
+import {closeContext, contextContent, layout} from '@/lib/layout'
 import {requestedPand} from '@/lib/overrides'
 import {may, visibleTabs} from '@/lib/roles'
-import {ADMIN, PLAYER_PATHS} from '@/lib/base'
+import {ADMIN} from '@/lib/base'
+
+/** The wordmark, as the client draws it: "carto" in cream, "polis" in the accent. */
+class Wordmark extends MithrilComponent {
+    view() {
+        return (
+            <a
+                class="wordmark"
+                href="/"
+                onclick={(e: Event) => {
+                    e.preventDefault()
+                    m.route.set('/')
+                }}
+            >
+                carto<b>polis</b>
+            </a>
+        )
+    }
+}
 
 /**
  * The operator's half: sign in, then one of the tabs.
@@ -57,101 +77,115 @@ class AdminView extends MithrilComponent {
 
     view() {
         if ($s.signedIn === null) {
-            return <div class="splash">Checking your session…</div>
+            return <PageFrame><div class="splash">Checking your session…</div></PageFrame>
         }
         if (!$s.signedIn) {
-            return <Login />
+            return <PageFrame><Login /></PageFrame>
         }
         // Only the tabs this operator's roles open (`lib/roles.ts`). The server
         // refuses the rest anyway; hiding them just keeps the screen honest.
         const tabs = visibleTabs()
         if (!tabs.length) {
-            return <div class="splash">This account has nothing to manage here.</div>
+            return <PageFrame><div class="splash">This account has nothing to manage here.</div></PageFrame>
         }
+        const current = tabs.find((t) => t.tab === $s.adminTab) ?? tabs[0]
+        const context = contextContent()
         return (
-            <>
-                <nav class="tabs">
-                    {tabs.map((t) => (
-                        <button
-                            class={$s.adminTab === t.tab ? 'tab is-current' : 'tab'}
-                            key={t.tab}
-                            onclick={() => {
-                                $s.adminTab = t.tab
-                            }}
-                            type="button"
-                        >
-                            {t.label}
-                        </button>
-                    ))}
-                </nav>
-                {$s.adminTab === 'claims' ? (
-                    <Claims />
-                ) : $s.adminTab === 'overrides' ? (
-                    <Overrides />
-                ) : $s.adminTab === 'roles' ? (
-                    <Roles />
-                ) : $s.adminTab === 'library' ? (
-                    <Library />
-                ) : $s.adminTab === 'pipeline' ? (
-                    <Pipeline />
-                ) : $s.adminTab === 'autopilot' ? (
-                    <Autopilot />
-                ) : (
-                    <Accounts />
-                )}
-            </>
+            <Shell
+                class="admin"
+                navLabel="Admin"
+                navOpen={layout.navOpen}
+                navWidth={layout.navWidth}
+                contextOpen={layout.contextOpen}
+                contextWidth={layout.contextWidth}
+                navHeader={<Wordmark />}
+                nav={
+                    <NavGroup title="Manage">
+                        {tabs.map((t) => (
+                            <NavItem
+                                key={t.tab}
+                                active={current.tab === t.tab}
+                                onclick={() => {
+                                    if ($s.adminTab !== t.tab) {
+                                        // A form about the last tab's record means nothing on this one.
+                                        closeContext()
+                                    }
+                                    $s.adminTab = t.tab
+                                }}
+                            >
+                                {t.label}
+                            </NavItem>
+                        ))}
+                    </NavGroup>
+                }
+                navFooter={
+                    <div class="nav-account">
+                        <span class="who">{$s.profile.username}</span>
+                        <ThemeSwitch model={layout.theme} />
+                        <Button size="sm" variant="ghost" onclick={() => void signOut()}>
+                            Sign out
+                        </Button>
+                    </div>
+                }
+                header={[<ShellMenuButton model={layout.navOpen} />, <h1>{current.label}</h1>]}
+                context={context ? context.body() : null}
+                contextTitle={context?.title()}
+                contextFooter={context?.footer?.()}
+            >
+                <div class="admin-page">
+                    {current.tab === 'claims' ? (
+                        <Claims />
+                    ) : current.tab === 'overrides' ? (
+                        <Overrides />
+                    ) : current.tab === 'roles' ? (
+                        <Roles />
+                    ) : current.tab === 'library' ? (
+                        <Library />
+                    ) : current.tab === 'pipeline' ? (
+                        <Pipeline />
+                    ) : current.tab === 'autopilot' ? (
+                        <Autopilot />
+                    ) : (
+                        <Accounts />
+                    )}
+                </div>
+            </Shell>
         )
     }
 }
 
 /**
- * The chrome around every page.
+ * The frame of every page that is not the operator's: the front page, sign-up,
+ * and a player's buildings. A header and a centred column; the operator's pages
+ * get the `Shell` instead, because they have a nav and a context to show.
  *
  * The header's sign-out button is deliberately absent on the player routes: the
  * session it would end is the operator's, and the person following a link out of
  * their inbox — or signing in to claim their house — has never seen it.
  */
-class Layout extends MithrilComponent {
-    view(vnode: m.Vnode) {
-        const path = m.route.get() ?? window.location.pathname
-        const playerRoute = PLAYER_PATHS.some((p) => path === p || path.startsWith(`${p}/`) ||
-            path.startsWith(`${p}?`))
-
+class PageFrame extends MithrilComponent<{wide?: boolean}> {
+    view(vnode: m.Vnode<{wide?: boolean}>) {
         return (
-            <div class="app">
-                <header class="app-header">
-                    <a
-                        class="wordmark"
-                        href="/"
-                        onclick={(e: Event) => {
-                            e.preventDefault()
-                            m.route.set('/')
-                        }}
-                    >
-                        carto<b>polis</b>
-                    </a>
+            <div class="page-frame">
+                <header class="page-header">
+                    <Wordmark />
                     <span class="spacer" />
-                    {$s.signedIn && !playerRoute && (
-                        <>
-                            <span class="who">{$s.profile.username}</span>
-                            <button class="ghost" onclick={() => void signOut()} type="button">
-                                Sign out
-                            </button>
-                        </>
-                    )}
+                    <ThemeSwitch model={layout.theme} />
                 </header>
-
-                <main class="view">{vnode.children}</main>
-
-                <Notifications />
+                <main class={vnode.attrs.wide ? 'page-body is-wide' : 'page-body'}>{vnode.children}</main>
             </div>
         )
     }
 }
 
-/** One route: the page inside the layout, with the route's parameters as its attrs. */
-const page = (Page: ComponentType<any>): RouteResolver => ({
-    render: (vnode) => m(Layout, m(Page, vnode.attrs)),
+/** One route: the page inside its frame, with the route's parameters as its attrs. */
+const page = (Page: ComponentType<any>, frame: 'page' | 'wide' | 'admin' = 'page'): RouteResolver => ({
+    render: (vnode) =>
+        m.fragment(
+            null,
+            frame === 'admin' ? m(Page, vnode.attrs) : m(PageFrame, {wide: frame === 'wide'}, m(Page, vnode.attrs)),
+            m(Notifications),
+        ),
 })
 
 /**
@@ -179,8 +213,8 @@ export function mountRoutes(root: Element) {
         // The old path, from before a person owned buildings rather than one
         // house; links to it are in sent mail.
         '/house': page(Buildings),
-        '/building/:pand': page(Building),
-        [ADMIN]: page(AdminView),
+        '/building/:pand': page(Building, 'wide'),
+        [ADMIN]: page(AdminView, 'admin'),
         '/:rest...': page(Home),
     })
 }

@@ -1,23 +1,25 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Button, Card, FieldCheckbox, FieldText} from '@garage44/mithril/components'
+import {minLength, required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
-import {Account} from '@/components/elements/account/account'
+import {Account, MIN_PASSWORD} from '@/components/elements/account/account'
 import {createAccount, visibleAccounts} from '@/lib/accounts'
-import {local} from '@/lib/reactive'
-
-const MIN_PASSWORD = 8
+import {bind, local} from '@/lib/reactive'
 
 class NewAccount extends MithrilComponent {
     s = local({admin: false, busy: false, open: false, password: '', username: ''})
-
-    get valid() {
-        return this.s.username.trim().length > 0 && this.s.password.length >= MIN_PASSWORD
-    }
+    // `required` trims, so a username of spaces is refused here as it was by the
+    // old `trim().length > 0` check; the server has the rest of the rules.
+    v = validations({
+        password: validation(bind(this.s, 'password'), [required, minLength(MIN_PASSWORD)]),
+        username: validation(bind(this.s, 'username'), [required]),
+    })
 
     submit = async (e: Event) => {
         e.preventDefault()
         const s = this.s
-        if (!this.valid || s.busy) {
+        if (!this.v.$validate() || s.busy) {
             return
         }
         s.busy = true
@@ -28,85 +30,74 @@ class NewAccount extends MithrilComponent {
             s.password = ''
             s.admin = false
             s.open = false
+            this.v.$reset()
         }
     }
 
     view() {
         const s = this.s
-        const valid = this.valid
 
         if (!s.open) {
             return (
-                <button
-                    class="primary"
+                <Button
                     onclick={() => {
                         s.open = true
                     }}
-                    type="button"
+                    variant="primary"
                 >
                     New account
-                </button>
+                </Button>
             )
         }
 
         return (
-            <form class="card" onsubmit={this.submit} style="margin-bottom:16px">
-                <h2>New account</h2>
-                <label class="field">
-                    <span>Username</span>
-                    <input
+            <form class="accounts-new" onsubmit={this.submit}>
+                <Card
+                    footer={
+                        <>
+                            <Button disabled={!this.v.$valid} loading={s.busy} type="submit" variant="primary">
+                                Create
+                            </Button>
+                            <Button
+                                disabled={s.busy}
+                                onclick={() => {
+                                    s.open = false
+                                    this.v.$reset()
+                                }}
+                                variant="ghost"
+                            >
+                                Cancel
+                            </Button>
+                        </>
+                    }
+                    title="New account"
+                >
+                    <FieldText
                         autocomplete="off"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.username = (e.target as HTMLInputElement).value
-                        }}
-                        type="text"
-                        value={s.username}
+                        label="Username"
+                        model={bind(s, 'username')}
+                        validation={this.v.username}
                     />
-                </label>
-                <label class="field">
-                    <span>Password</span>
-                    <input
+                    <FieldText
                         autocomplete="new-password"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.password = (e.target as HTMLInputElement).value
-                        }}
+                        label="Password"
+                        model={bind(s, 'password')}
                         placeholder={`At least ${MIN_PASSWORD} characters`}
                         type="password"
-                        value={s.password}
+                        validation={this.v.password}
                     />
-                </label>
-                {/* Who is an admin is an admin's call; the server refuses it from
-                    anybody a role merely lets manage accounts. */}
-                {$s.me.admin && (
-                    <label class="check">
-                        <input
-                            checked={s.admin}
+                    {/* Who is an admin is an admin's call; the server refuses it from
+                        anybody a role merely lets manage accounts. */}
+                    {$s.me.admin && (
+                        <FieldCheckbox
                             disabled={s.busy}
-                            onchange={(e: Event) => {
-                                s.admin = (e.target as HTMLInputElement).checked
-                            }}
-                            type="checkbox"
+                            label="Admin (every permission)"
+                            model={bind(s, 'admin')}
                         />
-                        Admin (every permission)
-                    </label>
-                )}
-                <div class="row-actions" style="margin-top:14px">
-                    <button class="primary" disabled={!valid || s.busy} type="submit">
-                        {s.busy ? 'Creating…' : 'Create'}
-                    </button>
-                    <button
-                        class="ghost"
-                        disabled={s.busy}
-                        onclick={() => {
-                            s.open = false
-                        }}
-                        type="button"
-                    >
-                        Cancel
-                    </button>
-                </div>
+                    )}
+                </Card>
             </form>
         )
     }
@@ -118,28 +109,22 @@ export class Accounts extends MithrilComponent {
         const total = $s.accounts.length
 
         return (
-            <>
-                <div class="section-head">
-                    <h1>Accounts</h1>
-                    <span class="count">
-                        {rows.length === total ? `${total}` : `${rows.length} of ${total}`}
+            <div class="accounts">
+                <div class="accounts-head">
+                    <span class="accounts-count">
+                        {rows.length === total ? `${total}` : `${rows.length} of ${total}`}{' '}
+                        {total === 1 ? 'account' : 'accounts'}
                     </span>
-                    <span style="flex:1" />
                     <NewAccount />
                 </div>
 
                 {total > 0 && (
-                    <label class="field">
-                        <span>Search</span>
-                        <input
-                            oninput={(e: Event) => {
-                                $s.search = (e.target as HTMLInputElement).value
-                            }}
-                            placeholder="Filter by username"
-                            type="search"
-                            value={$s.search}
-                        />
-                    </label>
+                    <FieldText
+                        label="Search"
+                        model={bind($s, 'search')}
+                        placeholder="Filter by username"
+                        type="search"
+                    />
                 )}
 
                 {$s.loading && !total ? (
@@ -149,13 +134,13 @@ export class Accounts extends MithrilComponent {
                         {total === 0 ? 'No accounts yet.' : `Nothing matches “${$s.search}”.`}
                     </div>
                 ) : (
-                    <ul class="account-list">
+                    <ul class="record-list">
                         {rows.map((account) => (
                             <Account account={account} key={account.id} />
                         ))}
                     </ul>
                 )}
-            </>
+            </div>
         )
     }
 }

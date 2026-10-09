@@ -1,0 +1,77 @@
+/*
+ * The buildings a player owns and the claim search (`BuildingPicker`). The
+ * cards and buttons are the library's; this is only the rows between them.
+ */
+.building-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+.building-picker__hint {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+.building-picker__empty {
+    color: var(--m-text-dim);
+    margin: var(--m-space-3) 0 0;
+}
+
+/* The field takes the width; the button sits on its baseline beside it. */
+.building-picker__search {
+    align-items: flex-end;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2) var(--m-space-3);
+    margin-top: var(--m-space-3);
+
+    & > .m-field {
+        flex: 1 1 14rem;
+        min-width: 0;
+    }
+}
+
+.building-picker__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+
+    /* Under the search, the results stand apart from the form above them. */
+    .building-picker__search ~ & {
+        margin-top: var(--m-space-3);
+    }
+}
+
+/*
+ * Address left, actions right; on a phone the actions drop under the address
+ * rather than squeezing it to one word per line.
+ */
+.building-picker__item {
+    align-items: center;
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2) var(--m-space-3);
+    padding: var(--m-space-3) var(--m-space-4);
+
+    &:first-child {
+        border-top: 0;
+    }
+
+    /* The claim results sit in a padded card body, not edge to edge. */
+    .m-card__body:not([data-flush]) & {
+        padding-inline: 0;
+
+        &:first-child {
+            border-top: 1px solid var(--m-border);
+        }
+    }
+}
+
+.building-picker__address {
+    flex: 1 1 12rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}

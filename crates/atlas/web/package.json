@@ -8,15 +8,16 @@
   "scripts": {
     "build": "bun run build.ts",
     "dev": "bun run --watch build.ts --serve",
+    "mock": "bun run --watch build.ts --serve --mock",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/5511d3fae88f0fbd7dac2c3917b727885c2e131e.tar.gz",
+    "@garage44/mithril": "https://code.garage44.eu/jeroen/mithril/archive/5ef10eb3dd63d8b97792086046fde614af0491a4.tar.gz",
     "classnames": "^2.5.1"
   },
   "devDependencies": {
     "@types/bun": "^1.2.17",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }

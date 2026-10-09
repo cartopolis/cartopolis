@@ -14,6 +14,3 @@
 
 /** The operator's pages. */
 export const ADMIN = '/admin'
-
-/** The player routes: no operator chrome, no sign-out button. */
-export const PLAYER_PATHS = ['/register', '/verify', '/house', '/buildings', '/building']

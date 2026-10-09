@@ -6,13 +6,23 @@
     <!-- No robots tag: this page is also the front page. Caddy sends
          `X-Robots-Tag: noindex` on the operator's and players' paths instead. -->
     <title>Cartopolis</title>
-    <!-- Slate `#1b2830` is `theme::SURFACE`; painting it here rather than
-         waiting for the stylesheet keeps a phone from flashing white first. -->
-    <meta name="theme-color" content="#1b2830" />
+    <!-- The page background of each theme (`--m-bg`), painted here rather than
+         waiting for the stylesheet so a phone never flashes the wrong one first.
+         The script pins the theme the switch remembered (`m-theme`, the
+         library's `storedTheme`) before anything is drawn. -->
+    <meta name="theme-color" content="#f4f1ec" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#10181e" media="(prefers-color-scheme: dark)" />
+    <script>
+      try {
+        const theme = localStorage.getItem('m-theme')
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme
+      } catch {}
+    </script>
     <style>
-      body {
-        background: #1b2830;
-      }
+      html { background: #f4f1ec; }
+      @media (prefers-color-scheme: dark) { html { background: #10181e; } }
+      html[data-theme="light"] { background: #f4f1ec; }
+      html[data-theme="dark"] { background: #10181e; }
     </style>
     <link rel="stylesheet" href="/app.css" />
     <script type="module" src="/app.js"></script>

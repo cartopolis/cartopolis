@@ -1,1224 +1,137 @@
+@import '@garage44/mithril/components.css';
+@import '@garage44/mithril/components/base.css';
+
+/* Each page's own rules, in a stylesheet beside the page or element it styles. */
+@import '../components/elements/account/account.css';
+@import '../components/elements/buildings/buildings.css';
+@import '../components/pages/accounts/accounts.css';
+@import '../components/pages/autopilot/autopilot.css';
+@import '../components/pages/building/building.css';
+@import '../components/pages/buildings/buildings.css';
+@import '../components/pages/claims/claims.css';
+@import '../components/pages/home/home.css';
+@import '../components/pages/library/library.css';
+@import '../components/pages/login/login.css';
+@import '../components/pages/overrides/overrides.css';
+@import '../components/pages/pipeline/pipeline.css';
+@import '../components/pages/roles/roles.css';
+
 /*
- * The palette is the client's, not a new one: every value below is a constant in
- * `crates/cartopolis/src/systems/gui/theme.rs`, which is the only place UI colour
- * lives in this project. A fresh hex here is how the chrome drifts — the loader
- * CSS in `crates/cartopolis/index.html` is kept in step with the same table for
- * the same reason.
+ * The palette is the library's (`@garage44/mithril/components`, `css/tokens.css`),
+ * which took it from the client: every colour there is a constant in
+ * `crates/cartopolis/src/systems/gui/theme.rs`, the only place UI colour lives in
+ * this project, with a light half added for daylight on a phone. A fresh hex here
+ * is how the chrome drifts.
  *
- * The contrast ratios in that file's module note carry over unchanged, since the
- * pairings do: --text on --surface is 11.9:1, --text-dim 6.9:1, --accent-text
- * 6.9:1, and --ink on an --accent fill is 5.9:1.
+ * So nothing here names a colour: every rule, here and in the page stylesheets,
+ * uses the library's `--m-*` tokens, which is what makes light and dark work.
  */
-:root {
-    --ink: #10181e;
-    --surface: #1b2830;
-    --surface-raised: #26383f;
-    --surface-hover: #324855;
-    --line: #3c5564;
-    --accent: #fd6012;
-    --accent-bright: #ff843c;
-    --accent-text: #ff9457;
-    --accent-muted: #96441c;
-    --amber: #fd9212;
-    --cream: #f2efea;
-    --text: #dfe5e7;
-    --text-dim: #a8b1ba;
-    --warn: #d8c07a;
-    --error: #e88b7d;
-
-    --radius: 6px;
-    --gap: 12px;
-    --font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    background: var(--surface);
-    color: var(--text);
-    font: var(--font);
-    /* The phone is the primary viewport for this project's operator — see the
-       container notes. Nothing below assumes a mouse. */
-    -webkit-text-size-adjust: 100%;
-}
 
 h1,
 h2,
 h3 {
-    color: var(--cream);
     font-weight: 600;
     margin: 0;
 }
 
-a {
-    color: var(--accent-text);
-}
+/* ── Frames ──────────────────────────────────────────────────────────────── */
 
-/* ── Layout ──────────────────────────────────────────────────────────────── */
-
-.app {
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
-}
-
-.app-header {
-    align-items: center;
-    background: var(--ink);
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    gap: var(--gap);
-    padding: 14px 18px;
-    position: sticky;
-    top: 0;
-    z-index: 5;
-}
-
-.app-header .wordmark {
-    color: var(--cream);
+.wordmark {
+    color: var(--m-text-strong);
     font-size: 1.05rem;
     font-weight: 600;
     letter-spacing: 0.01em;
+    text-decoration: none;
+
+    & b {
+        color: var(--m-accent-text);
+        font-weight: 600;
+    }
 }
 
-.app-header .wordmark b {
-    color: var(--accent-text);
-    font-weight: 600;
+/* The admin frame is a Shell, and the Shell is the whole viewport. */
+.m-shell.admin {
+    height: 100dvh;
 }
 
-.app-header .spacer {
+.admin-page {
+    max-width: 64rem;
+}
+
+.nav-account {
+    display: flex;
     flex: 1;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--m-space-2);
+    padding-block: var(--m-space-2);
+
+    & .who {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 }
 
-.app-header .who {
-    color: var(--text-dim);
-    font-size: 0.85rem;
+.page-frame {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
 }
 
-.view {
+.page-header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: var(--m-space-3);
+    padding: var(--m-space-2) var(--m-space-4);
+    border-bottom: 1px solid var(--m-border);
+    background: var(--m-surface);
+
+    & .spacer {
+        flex: 1;
+    }
+}
+
+.page-body {
     flex: 1;
-    margin: 0 auto;
+    width: 100%;
     max-width: 60rem;
-    padding: 22px 18px 60px;
-    width: 100%;
+    margin: 0 auto;
+    padding: var(--m-space-5) var(--m-space-4) 60px;
+
+    &.is-wide {
+        max-width: none;
+    }
 }
 
-.section-head {
-    align-items: baseline;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--gap);
-    margin-bottom: 14px;
-}
+/* ── Shared ──────────────────────────────────────────────────────────────── */
 
-.section-head .count {
-    color: var(--text-dim);
-    font-size: 0.85rem;
-}
-
+/* A sentence of explanation under a control or a heading. */
 .hint {
-    color: var(--text-dim);
-    font-size: 0.85rem;
-    margin: 6px 0 0;
+    margin: var(--m-space-1) 0 0;
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
 }
 
+/* What a list says when it has nothing in it. */
 .empty {
-    border: 1px dashed var(--line);
-    border-radius: var(--radius);
-    color: var(--text-dim);
-    padding: 28px 18px;
+    padding: var(--m-space-6) var(--m-space-4);
+    border: 1px dashed var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text-dim);
     text-align: center;
 }
 
-/* ── Cards, forms, controls ──────────────────────────────────────────────── */
-
-/*
- * 18px of padding either side is 9 per cent of a 412px phone, and this web UI
- * is read on one — a card holding a paragraph of queued work gave it about two
- * thirds of the screen. Narrower here, and the desk gets its 18 back below.
- */
-.card {
-    background: var(--surface-raised);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 13px;
-}
-
-@media (min-width: 40rem) {
-    .card {
-        padding: 18px;
-    }
-}
-
-/* Cards were only ever used one at a time until the sign-up flow stacked two of
-   them, and two touching cards read as one badly divided box. */
-.card + .card {
-    margin-top: var(--gap);
-}
-
-.field {
-    display: block;
-    margin-bottom: var(--gap);
-}
-
-.field > span {
-    color: var(--text-dim);
-    display: block;
-    font-size: 0.8rem;
-    letter-spacing: 0.02em;
-    margin-bottom: 5px;
-    text-transform: uppercase;
-}
-
-/*
- * Enumerated by type rather than `.field input`, because the checkbox in
- * `.check` must not pick these up — and enumerated *completely*, because a type
- * left out of this list renders as a bare white browser input in the middle of a
- * dark card. `email` was missing until 2026-08-29 and the sign-up form shipped
- * with one field that looked like a different application; `number` was missing
- * until the autopilot's retrospective interval, which is that bug a second time.
- */
-input[type="email"],
-input[type="number"],
-input[type="password"],
-input[type="search"],
-input[type="text"] {
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    font: var(--font);
-    padding: 9px 11px;
-    width: 100%;
-}
-
-/*
- * Not folded into the list above for the reason `select` is not: that list
- * enumerates `input` *types*, and a rule for a different element hiding in it
- * would make the comment on it a lie. A textarea also needs two properties an
- * input does not — a resize handle that only grows downward, and a line height,
- * since this one holds a paragraph rather than a value.
- */
-textarea {
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    font: var(--font);
-    padding: 9px 11px;
-    resize: vertical;
-    width: 100%;
-}
-
-input:focus-visible,
-textarea:focus-visible,
-button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-}
-
-.check {
-    align-items: center;
-    color: var(--text);
-    cursor: pointer;
-    display: flex;
-    gap: 8px;
-    /* A checkbox is the smallest thing on this page and the one most often
-       pressed with a thumb; the row is the target, not the box. */
-    min-height: 34px;
-}
-
-.check input {
-    accent-color: var(--accent);
-    height: 17px;
-    width: 17px;
-}
-
-/* The autopilot's pace sliders. `accent-color` is all the theming a native
-   range control needs, and a native control is all two integers deserve. */
-input[type="range"] {
-    accent-color: var(--accent);
-    display: block;
-    max-width: 28rem;
-    width: 100%;
-}
-
-button {
-    background: var(--surface-hover);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    cursor: pointer;
-    font: var(--font);
-    font-weight: 500;
-    /* 38px, not the 30-odd a desktop would take: this is a touch target. */
-    min-height: 38px;
-    padding: 8px 14px;
-}
-
-button:hover:not(:disabled) {
-    background: var(--line);
-}
-
-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-button.primary {
-    background: var(--accent);
-    border-color: var(--accent-bright);
-    /* Not --cream: that is 3.1:1 on this fill. --ink is 5.9:1. */
-    color: var(--ink);
-}
-
-button.primary:hover:not(:disabled) {
-    background: var(--accent-bright);
-}
-
-button.danger {
-    border-color: var(--accent-muted);
-    color: var(--error);
-}
-
-button.ghost {
-    background: none;
-    border-color: transparent;
-    color: var(--text-dim);
-}
-
-button.ghost:hover:not(:disabled) {
-    background: var(--surface-hover);
-    color: var(--text);
-}
-
-.row-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-/* ── Account list ────────────────────────────────────────────────────────── */
-
-.account-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.account {
-    background: var(--surface-raised);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 12px 14px;
-}
-
-.account.is-disabled {
-    /* Dimmed, but never hidden: a disabled account is the one an operator is
-       most likely to be looking for. */
-    opacity: 0.62;
-}
-
-.account-main {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.account-name {
-    color: var(--cream);
-    font-weight: 600;
-    /* Usernames are user input and can be 64 characters of anything. */
-    overflow-wrap: anywhere;
-}
-
-.account-meta {
-    color: var(--text-dim);
-    flex-basis: 100%;
-    font-size: 0.8rem;
-}
-
-/*
- * The claims list puts three facts in one meta row, and the account row puts one
- * — so the separator is a gap on the row rather than punctuation in the markup,
- * and the single-child case is unchanged. Without it the three ran together into
- * "webuser1788…Aug 29, 20260014100010934570", which reads as one corrupt value.
- */
-.account-meta > span + span::before {
-    color: var(--line);
-    content: "·";
-    padding: 0 6px;
-}
-
-.tag {
-    border: 1px solid currentcolor;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 2px 8px;
-    text-transform: uppercase;
-}
-
-.tag.admin {
-    color: var(--accent-text);
-}
-
-.tag.disabled {
-    color: var(--warn);
-}
-
-.tag.you {
-    color: var(--text-dim);
-}
-
-.account-edit {
-    border-top: 1px solid var(--line);
-    margin-top: 12px;
-    padding-top: 12px;
-}
-
-/* ── Sign-in ─────────────────────────────────────────────────────────────── */
-
-.signin {
-    margin: 8vh auto 0;
-    max-width: 24rem;
-}
-
-.signin h1 {
-    margin-bottom: 6px;
-}
-
-.signin .hint {
-    margin-bottom: 18px;
-}
-
-.signin button {
-    width: 100%;
-}
-
+/* A page with one sentence on it: "Checking your session…". */
 .splash {
-    color: var(--text-dim);
     padding: 20vh 0;
+    color: var(--m-text-dim);
     text-align: center;
-}
-
-/* ── Notifications ───────────────────────────────────────────────────────── */
-
-.notifications {
-    bottom: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    left: 14px;
-    position: fixed;
-    right: 14px;
-    z-index: 20;
-}
-
-@media (min-width: 40rem) {
-    .notifications {
-        left: auto;
-        max-width: 26rem;
-    }
-}
-
-.notification {
-    align-items: flex-start;
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-left-width: 3px;
-    border-radius: var(--radius);
-    box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
-    display: flex;
-    gap: 10px;
-    padding: 11px 13px;
-}
-
-.notification.success {
-    border-left-color: var(--amber);
-}
-
-.notification.error {
-    border-left-color: var(--error);
-}
-
-.notification.info {
-    border-left-color: var(--line);
-}
-
-.notification p {
-    flex: 1;
-    margin: 0;
-}
-
-.notification button {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    min-height: 0;
-    padding: 0 4px;
-}
-
-/* ── Tabs ────────────────────────────────────────────────────────────────── */
-
-.tabs {
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    gap: 4px;
-    margin-bottom: 18px;
-}
-
-.tab {
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-dim);
-    cursor: pointer;
-    font: inherit;
-    /* Finger-sized: this is operated from a phone more often than not. */
-    padding: 10px 14px;
-}
-
-.tab.is-current {
-    border-bottom-color: var(--accent);
-    color: var(--cream);
-}
-
-/* ── Sign-up ─────────────────────────────────────────────────────────────── */
-
-a.wordmark {
-    text-decoration: none;
-}
-
-.form-problem {
-    color: var(--warn);
-}
-
-/* ── Buildings ───────────────────────────────────────────────────────────── */
-
-.house-search {
-    align-items: flex-end;
-    margin-top: 14px;
-    display: flex;
-    gap: var(--gap);
-}
-
-.house-search .field {
-    flex: 1;
-}
-
-.house-list {
-    list-style: none;
-    margin: 16px 0 0;
-    padding: 0;
-}
-
-.house {
-    align-items: center;
-    border-top: 1px solid var(--line);
-    display: flex;
-    gap: var(--gap);
-    padding: 10px 0;
-}
-
-.house-address {
-    flex: 1;
-}
-
-.house-held {
-    color: var(--cream);
-    font-size: 1.1rem;
-    margin: 0 0 8px;
-}
-
-.tag.pending {
-    background: var(--accent-muted);
-    color: var(--cream);
-}
-
-.mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.8rem;
-}
-
-/* ---- The Data tab ------------------------------------- */
-
-/*
- * `select` is deliberately not folded into the `input[type=…]` list above. That
- * list exists because a *missing* type renders as a bare white box; a select has
- * its own set of properties to fix (the arrow, and `appearance` on WebKit) and
- * adding it there would make that list a lie about what it enumerates.
- */
-select {
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    font: var(--font);
-    padding: 9px 11px;
-    width: 100%;
-}
-
-.card h2 {
-    color: var(--cream);
-    font-size: 1.05rem;
-    margin: 0 0 var(--gap);
-}
-
-.coverage-list,
-.step-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.coverage {
-    border-top: 1px solid var(--line);
-    padding: 10px 0;
-}
-
-.coverage:first-child {
-    border-top: none;
-    padding-top: 0;
-}
-
-.coverage-main {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-}
-
-.coverage-name {
-    color: var(--cream);
-}
-
-/*
- * The dataset checkboxes carry two lines each, so they cannot use `.check`'s
- * centred alignment: with a description under the name, centring puts the box
- * beside the gap between the two lines instead of beside the name.
- */
-.dataset-picks .check {
-    align-items: flex-start;
-    margin-bottom: 4px;
-}
-
-.dataset-picks .check input {
-    margin-top: 3px;
-}
-
-.dataset-picks em {
-    color: var(--text-dim);
-    display: block;
-    font-size: 0.85rem;
-    font-style: normal;
-}
-
-.step {
-    align-items: baseline;
-    border-top: 1px solid var(--line);
-    display: flex;
-    gap: 10px;
-    padding: 7px 0;
-}
-
-.step:first-child {
-    border-top: none;
-}
-
-.step-name {
-    color: var(--text-dim);
-    flex: 0 0 9rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85rem;
-}
-
-.step-detail {
-    flex: 1;
-}
-
-.step.is-running .step-detail {
-    color: var(--amber);
-}
-
-.step.is-done .step-detail {
-    color: var(--text);
-}
-
-.step.is-failed .step-detail {
-    color: var(--error);
-}
-
-.step.is-queued .step-detail,
-.step.is-cancelled .step-detail {
-    color: var(--text-dim);
-}
-
-/*
- * A fixed height rather than one that grows: this is a live tail and a box that
- * grew with it would push the Stop button off the bottom of the screen within
- * seconds of a run starting — on a phone, immediately.
- */
-.run-log {
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text-dim);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.78rem;
-    line-height: 1.5;
-    margin: var(--gap) 0;
-    max-height: 16rem;
-    overflow: auto;
-    padding: 10px 12px;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-/* ---- The focus plan ---------------------------------------------------- */
-
-/*
- * The lane's queue, in the order it will be built. A list of rows rather than a
- * textarea of lines, because two of the four things an operator does to it —
- * reorder and delete — have no keyboard shape, and because each row carries a
- * ticket number the lane wrote and the operator did not.
- */
-.plan-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    list-style: none;
-    margin: var(--gap) 0 0;
-    padding: 0;
-}
-
-/*
- * Phone first, and the phone is where this list is read: the row's text takes a
- * whole line of its own and the controls sit under it. Side by side, a title had
- * about a third of a narrow screen and every row ended in an ellipsis — which is
- * the one thing this list must never do, since a row IS its sentence.
- *
- * A row is also not a box here. Card inside card inside field was three frames
- * around one paragraph, each costing its own padding twice, and what was left
- * read as cramped however the text inside it wrapped. A rule between rows says
- * the same thing for one pixel.
- */
-.plan-list {
-    gap: 0;
-}
-
-.plan-item {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 10px 0;
-}
-
-.plan-item + .plan-item {
-    border-top: 1px solid var(--line);
-}
-
-/*
- * Filed rows are history: the ticket exists, and the queue has moved past them.
- * Dimmed rather than hidden or moved, because where they sit is how far down the
- * plan the lane has got, which is the one thing a glance at this list is for.
- */
-.plan-item.is-filed {
-    opacity: 0.62;
-}
-
-/*
- * A column of two, deliberately narrow: these are pressed far more often than
- * anything else in the row, and a full-width button beside a text field reads as
- * the field's own action.
- */
-.plan-move {
-    display: flex;
-    /* A row under the text on a phone, a column beside it on a desk. */
-    flex-direction: row;
-    gap: 2px;
-}
-
-.plan-move button {
-    line-height: 1;
-    min-height: 22px;
-    padding: 0 8px;
-}
-
-.plan-body {
-    display: flex;
-    /* Its own line, above the controls. `order` puts it there without the markup
-       having to disagree with the reading order for a keyboard or a screen reader. */
-    flex: 1 1 100%;
-    flex-direction: column;
-    gap: 4px;
-    /* Without this the fields' intrinsic width wins and the row overflows the
-       card on a phone instead of the fields shrinking. */
-    min-width: 0;
-    order: -1;
-}
-
-/*
- * Fields that hold a paragraph, not a line — and that look like the paragraph
- * rather than like a field. The frame and the fill are what made a row read as
- * cramped, and they buy nothing: the row already carries a ✕ and two arrows, so
- * nobody is in doubt that it is editable, and tapping one draws the focus ring
- * every other field on this page draws. `grow()` sets the height from the
- * content, so there is nothing for a resize grip to do and no scrollbar to show.
- */
-.plan-body textarea {
-    background: none;
-    border: 0;
-    border-radius: 0;
-    line-height: 1.4;
-    overflow: hidden;
-    padding: 0;
-    resize: none;
-}
-
-.plan-body textarea:focus-visible {
-    outline-offset: 3px;
-}
-
-.plan-title,
-.plan-body textarea {
-    font-size: 1rem;
-}
-
-/* The note is the second line and reads as one — same type, quieter. */
-.plan-body .plan-note-field {
-    color: var(--text-dim);
-    font-size: 0.9rem;
-}
-
-/*
- * A filed row's two lines are text, not fields — the item is a ticket now and
- * the web UI may not rewrite it. Padded to the fields' own metrics so a locked
- * row and an editable one line up down the list instead of reading as two lists.
- */
-.plan-body.is-filed {
-    gap: 2px;
-}
-
-/* Wrapped, never clipped: a filed row is the only place the wording of a ticket
-   in flight can be read, and half of it is not a description of anything. */
-.plan-title {
-    overflow-wrap: anywhere;
-}
-
-.plan-note {
-    color: var(--text-dim);
-    font-size: 0.9rem;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-/* The ticket link. A tag that goes somewhere, so it says so on hover. */
-a.tag {
-    color: var(--accent-text);
-    text-decoration: none;
-}
-
-a.tag:hover {
-    background: var(--accent-muted);
-    color: var(--cream);
-}
-
-/*
- * Fixed width, and it holds the ticket number when there is one. Sized to its
- * contents instead, a filed row and an unfiled one end their fields in different
- * places, and a ragged right edge down four rows reads as four kinds of row
- * rather than one list.
- */
-.plan-side {
-    align-items: center;
-    display: flex;
-    gap: 6px;
-    justify-content: flex-end;
-    /* Pushed to the far end of the controls line, opposite the arrows. */
-    margin-left: auto;
-}
-
-/*
- * Wide enough for the row to read as one line again: text, arrows and the ticket
- * number side by side, the fixed right-hand column keeping every row's fields
- * ending in the same place.
- */
-@media (min-width: 40rem) {
-    .plan-list {
-        gap: 8px;
-    }
-
-    /* Wide enough to afford the frame again, and with the controls back beside
-       the text a row needs one: there is no line break to separate two rows. */
-    .plan-item {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        flex-wrap: nowrap;
-        gap: 8px;
-        padding: 8px;
-    }
-
-    .plan-item + .plan-item {
-        border-top: 1px solid var(--line);
-    }
-
-    .plan-move {
-        flex-direction: column;
-    }
-
-    .plan-body {
-        flex: 1 1 auto;
-        order: 0;
-    }
-
-    .plan-side {
-        flex: 0 0 5.5rem;
-        margin-left: 0;
-    }
-}
-
-/* ── Front page ──────────────────────────────────────────────────────────── */
-
-.home {
-    margin: 14vh auto 0;
-    max-width: 32rem;
-    text-align: center;
-}
-
-.home h1 {
-    font-size: 2rem;
-    letter-spacing: 0.02em;
-    margin-bottom: 6px;
-}
-
-.home .hint {
-    margin-bottom: 28px;
-}
-
-.home-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--gap);
-    justify-content: center;
-}
-
-/* A link that leaves for another build (`/viewer/`, `/apk/`), dressed as the
-   buttons above so the front page reads as one row of choices. */
-a.button {
-    background: var(--surface-hover);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    display: inline-block;
-    font-weight: 500;
-    min-height: 38px;
-    padding: 8px 18px;
-    text-decoration: none;
-}
-
-a.button:hover {
-    background: var(--line);
-}
-
-a.button.primary {
-    background: var(--accent);
-    border-color: var(--accent-bright);
-    color: var(--ink);
-}
-
-a.button.primary:hover {
-    background: var(--accent-bright);
-}
-
-/* ── The floor-plan editor ───────────────────────────────────────────────── */
-
-/*
- * The plan is drawn in metres (`building.tsx` puts one SVG unit at one metre,
- * north up), so every stroke width in this block is set there, scaled to stay a
- * pixel or two wide at any zoom; only colours live here. The colours are the
- * palette's: walls in cream on the ink of an empty floor, the accent for what is
- * selected and what is being drawn.
- */
-.designer .storeys {
-    flex-wrap: wrap;
-    margin-bottom: 10px;
-}
-
-.toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-.tool-hint {
-    margin-bottom: 8px;
-}
-
-.plan-wrap {
-    position: relative;
-}
-
-.plan {
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    display: block;
-    height: auto;
-    /* A drag on the plan pans it; the page must not scroll or zoom instead. */
-    touch-action: none;
-    user-select: none;
-    width: 100%;
-    aspect-ratio: 4 / 3;
-}
-
-.plan.tool-select {
-    cursor: grab;
-}
-
-.plan:not(.tool-select) {
-    cursor: crosshair;
-}
-
-.plan .grid .g1 {
-    stroke: var(--surface);
-}
-
-.plan .grid .g5 {
-    stroke: var(--surface-raised);
-}
-
-.plan .neighbour {
-    fill: var(--surface);
-    stroke: var(--line);
-}
-
-.plan .outline {
-    fill: none;
-    stroke: var(--text-dim);
-}
-
-.plan .floor {
-    fill: var(--surface-raised);
-}
-
-.plan .room polygon {
-    fill: rgba(253, 146, 18, 0.07);
-    stroke: rgba(253, 146, 18, 0.35);
-}
-
-.plan .room.is-selected polygon {
-    fill: rgba(253, 96, 18, 0.18);
-    stroke: var(--accent);
-}
-
-.plan .room text {
-    fill: var(--cream);
-    text-anchor: middle;
-}
-
-.plan .room text.area {
-    fill: var(--text-dim);
-}
-
-.plan .wall {
-    stroke: var(--cream);
-    stroke-linecap: square;
-}
-
-.plan .wall.outer {
-    stroke: var(--text);
-}
-
-.plan .wall.is-selected,
-.plan .opening.is-selected line,
-.plan .opening.is-selected path {
-    stroke: var(--accent);
-}
-
-.plan .opening .gap {
-    stroke: var(--surface-raised);
-}
-
-.plan .opening line,
-.plan .opening path {
-    stroke: var(--amber);
-}
-
-.plan .opening.window line:not(.gap) {
-    stroke: var(--accent-text);
-}
-
-.plan .stair polygon {
-    fill: rgba(242, 239, 234, 0.08);
-    stroke: var(--cream);
-}
-
-.plan .stair line {
-    stroke: var(--text-dim);
-}
-
-.plan .stair .arrow {
-    stroke: var(--cream);
-}
-
-.plan #arrow path {
-    fill: var(--cream);
-}
-
-.plan .stair.is-selected polygon {
-    stroke: var(--accent);
-}
-
-.plan .well {
-    fill: var(--ink);
-    stroke: var(--text-dim);
-    stroke-dasharray: 0.2 0.1;
-}
-
-.plan .below,
-.plan .faint {
-    opacity: 0.25;
-}
-
-.plan .preview line,
-.plan polyline.preview {
-    stroke: var(--accent);
-}
-
-.plan .preview text {
-    fill: var(--accent-text);
-    text-anchor: middle;
-}
-
-.plan .cursor {
-    fill: var(--accent);
-}
-
-.plan .north {
-    fill: var(--text-dim);
-}
-
-.zoom {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    position: absolute;
-    right: 8px;
-    top: 8px;
-}
-
-.zoom button {
-    min-width: 40px;
-}
-
-.designer .props {
-    margin-top: var(--gap);
-}
-
-.designer .props .fields {
-    display: grid;
-    gap: 0 var(--gap);
-    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
-    margin-top: 8px;
-}
-
-.field.compact {
-    margin-bottom: 8px;
-}
-
-.designer .problems p {
-    color: var(--warn);
-}
-
-.save-bar {
-    align-items: center;
-    margin-top: var(--gap);
-}
-
-a.ghost-link {
-    font-size: 0.9rem;
-}
-
-.row-actions.wrap {
-    flex-wrap: wrap;
-}
-
-/* A room nobody has named yet: just its area, quietly, until it is tapped. */
-.plan .room.unnamed text {
-    fill: var(--text-dim);
-    opacity: 0.7;
-}
-
-/* ── Roles ───────────────────────────────────────────────────────────────── */
-
-.role-grid {
-    display: grid;
-    gap: 12px;
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-    margin: 12px 0;
-}
-
-.role-group {
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    margin: 0;
-    padding: 8px 12px 10px;
-}
-
-.role-group legend {
-    color: var(--text-dim);
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 0 4px;
-    text-transform: uppercase;
-}
-
-.role-group .check {
-    margin: 4px 0;
-}
-
-/* A permission that is trust rather than a feature says so beside its box. */
-.role .warning {
-    color: var(--warn);
-    font-size: 0.8rem;
-}
-
-.account-roles {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    margin: 8px 0;
-}
-
-/* A file picker dressed as a button (the overrides page): the input is hidden
-   and the label is what is pressed. */
-label.button {
-    background: var(--surface-hover);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    color: var(--text);
-    cursor: pointer;
-    display: inline-block;
-    font-weight: 500;
-    padding: 8px 18px;
-}
-
-label.button:hover {
-    background: var(--line);
-}
-
-label.button.is-busy {
-    cursor: progress;
-    opacity: 0.6;
 }

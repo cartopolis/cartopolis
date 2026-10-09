@@ -1,20 +1,27 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Alert} from '@garage44/mithril/components'
 
 import {$s, notifier} from '@/app'
 
+/** The notifier's levels in the library's tone names. */
+const TONE = {error: 'danger', info: 'info', success: 'success'} as const
+
+/**
+ * The notifier's list, drawn as the library's toasts.
+ *
+ * Not the library's `Toaster`: that owns its own list and timeouts, and this one
+ * is `lib/notifier.ts`'s, where errors deliberately never expire. Same markup and
+ * styles, different keeper.
+ */
 export class Notifications extends MithrilComponent {
     view() {
-        if (!$s.notifications.length) {
-            return null
-        }
         return (
-            <div class="notifications">
+            <div aria-live="polite" class="m-toaster">
                 {$s.notifications.map((notification) => (
-                    <div class={`notification ${notification.level}`} key={notification.id} role="status">
-                        <p>{notification.message}</p>
-                        <button aria-label="Dismiss" onclick={() => notifier.dismiss(notification.id)} type="button">
-                            ✕
-                        </button>
+                    <div class="m-toast" key={notification.id}>
+                        <Alert ondismiss={() => notifier.dismiss(notification.id)} tone={TONE[notification.level]}>
+                            {notification.message}
+                        </Alert>
                     </div>
                 ))}
             </div>

@@ -1,4 +1,5 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Alert, Badge, Button, ButtonGroup, Card, FieldNumber, FieldSegmented, FieldText, Spinner} from '@garage44/mithril/components'
 
 import type {
     BuildingDesign,
@@ -12,7 +13,7 @@ import type {
 } from '@/lib/design'
 
 import {$s, api, notifier, signupApi} from '@/app'
-import {gamePlaceUrl} from '@/components/elements/buildings/buildings'
+import {GameLink} from '@/components/elements/buildings/buildings'
 import {ApiError} from '@/lib/api'
 import {
     addOpening,
@@ -42,7 +43,7 @@ import {
     toLocal,
     wallLength,
 } from '@/lib/design'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {findRooms, labelPoint, nameRoomAt, relabel} from '@/lib/rooms'
 
 type Tool = 'door' | 'select' | 'stair' | 'wall' | 'window'
@@ -116,6 +117,8 @@ export class Building extends MithrilComponent<BuildingAttrs> {
     /** The `pand` the last load was for, so a new one in the route reloads. */
     private pand: string | undefined = undefined
     private svg: SVGSVGElement | null = null
+    /** Numbers being typed and not yet applied, by selection and field (see `num` in the view). */
+    private drafts = new Map<string, number | null>()
     private drag: {
         /** A wall end or an opening being dragged, with the draft before it. */
         edit?: {before: BuildingDesign; from: P2; target: {kind: 'corner'} | {id: string; kind: 'opening'; wallId: string}}
@@ -344,7 +347,10 @@ export class Building extends MithrilComponent<BuildingAttrs> {
             return
         }
         const canEdit = this.canEdit
-        const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
+        // The tool and storey pickers are radio inputs, and one keeps the focus
+        // after a click; that is choosing, not typing, so the keys still work.
+        const typing =
+            (e.target instanceof HTMLInputElement && e.target.type !== 'radio') || e.target instanceof HTMLTextAreaElement
         if (typing) {
             return
         }
@@ -594,29 +600,30 @@ export class Building extends MithrilComponent<BuildingAttrs> {
 
         if (error) {
             return (
-                <div class="card">
-                    <h1>Building</h1>
-                    <p class="hint">{error}</p>
-                    <div class="row-actions">
-                        <button class="ghost" onclick={() => m.route.set('/buildings')} type="button">
-                            Your buildings
-                        </button>
-                    </div>
-                </div>
+                <Card title="Building">
+                    <p class="designer__hint">{error}</p>
+                    <Button onclick={() => m.route.set('/buildings')} variant="ghost">
+                        Your buildings
+                    </Button>
+                </Card>
             )
         }
         if (!data) {
-            return <div class="splash">Opening the building…</div>
+            return (
+                <div class="designer__splash">
+                    <Spinner />
+                    <span>Opening the building…</span>
+                </div>
+            )
         }
         if (!design) {
             return (
-                <div class="card">
-                    <h1>Building {pand}</h1>
-                    <p class="hint">
+                <Card title={`Building ${pand}`}>
+                    <p class="designer__hint">
                         This building is too small to have an inside, or the map data for it is not on this
                         server yet.
                     </p>
-                </div>
+                </Card>
             )
         }
 
@@ -650,25 +657,91 @@ export class Building extends MithrilComponent<BuildingAttrs> {
                 })
             })
 
-        const num = (label: string, value: number, step: number, set: (v: number) => void, min = 0, max = 100) => (
-            <label class="field compact">
-                <span>{label}</span>
-                <input
-                    disabled={!canEdit}
-                    max={max}
-                    min={min}
-                    onchange={(e: Event) => {
-                        const v = Number((e.target as HTMLInputElement).value)
-                        if (Number.isFinite(v)) {
-                            set(Math.max(min, Math.min(max, v)))
+
+        /**
+         * A number field for a property of the selection (or of the storey).
+         *
+         * `FieldNumber` writes its model on every keystroke, and a write here is
+         * an edit with an undo step — typing "1.25" would be four of them, and
+         * a minimum clamped mid-word ("0" of "0.3" against 0.02) would rewrite
+         * the box under the cursor. So keystrokes land in a draft, and the
+         * draft is applied, clamped, when the field commits: on `change` (blur
+         * or Enter) and after a stepper press or an arrow key, which bubble up
+         * to the wrapper after the field has written the draft. The old field
+         * applied on `change` only; the steppers are new.
+         */
+        const num = (key: string, label: string, value: number, step: number, set: (v: number) => void, min = 0, max = 100) => {
+            const id = `${sel ? sel.id : `storey-${k}`}:${key}`
+            const drafts = this.drafts
+            const apply = () => {
+                if (!drafts.has(id)) {
+                    return
+                }
+                const v = drafts.get(id)
+                drafts.delete(id)
+                if (v != null && Number.isFinite(v)) {
+                    set(Math.max(min, Math.min(max, v)))
+                }
+            }
+            return (
+                <div
+                    class="designer__num"
+                    key={id}
+                    onchange={apply}
+                    onclick={(e: MouseEvent) => {
+                        if ((e.target as Element).closest('.m-input__step')) {
+                            apply()
                         }
                     }}
-                    step={step}
-                    type="number"
-                    value={Number(value.toFixed(2))}
-                />
-            </label>
+                    onkeyup={(e: KeyboardEvent) => {
+                        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                            apply()
+                        }
+                    }}
+                >
+                    <FieldNumber
+                        disabled={!canEdit}
+                        label={label}
+                        max={max}
+                        min={min}
+                        model={{
+                            get value() {
+                                return drafts.has(id) ? (drafts.get(id) ?? null) : Number(value.toFixed(2))
+                            },
+                            set value(v: number | null) {
+                                drafts.set(id, v)
+                            },
+                        }}
+                        step={step}
+                        unit="m"
+                    />
+                </div>
+            )
+        }
+
+        /**
+         * A name field. It writes on `change` (`lazy`), as the old one did, so a
+         * name is one undo step and not one per letter. `FieldText` has no
+         * `maxlength`, so the 120-character cap the input carried is a slice.
+         */
+        const nameField = (key: string, value: string, set: (v: string) => void, placeholder?: string) => (
+            <FieldText
+                disabled={!canEdit}
+                key={key}
+                label="Name"
+                lazy
+                model={{
+                    get value() {
+                        return value
+                    },
+                    set value(v: string) {
+                        set(v.slice(0, 120))
+                    },
+                }}
+                placeholder={placeholder}
+            />
         )
+
 
         const issues = problems(design, data.facts?.height ?? null)
         const toolHint = TOOLS.find((t) => t.id === tool)?.hint
@@ -771,44 +844,224 @@ export class Building extends MithrilComponent<BuildingAttrs> {
 
         const owner = data.access.owned_by
         const [lat, lng] = design.origin
+        // ── The properties panel: whatever is selected, or the storey ────────────
+
+        let panel: {actions?: m.Children; body: m.Children; title: string}
+        if (selWall) {
+            panel = {
+                actions: canEdit && (
+                    <>
+                        <Button
+                            onclick={() => editSel(({wall}) => wall && spreadWindows(wall, suggestedWindows(wall)))}
+                            size="sm"
+                        >
+                            Space {suggestedWindows(selWall)} windows along it
+                        </Button>
+                        {k + 1 < design.storeys.length && selWall.openings.some((o) => o.kind === 'window') && (
+                            <Button
+                                onclick={() => {
+                                    let n = 0
+                                    mutate((d) => {
+                                        n = copyWindowsUp(d, k, selWall.id)
+                                    })
+                                    notifier.success(
+                                        n
+                                            ? `Same windows on ${n} floor${n === 1 ? '' : 's'} above`
+                                            : 'No floor above has a wall on the same line',
+                                    )
+                                }}
+                                size="sm"
+                            >
+                                Same windows on the floors above
+                            </Button>
+                        )}
+                    </>
+                ),
+                body: (
+                    <>
+                        <p class="designer__hint">
+                            {wallLength(selWall).toFixed(2)} m long.
+                            {canEdit && ' Drag either end to move it; the walls meeting it come along.'}
+                        </p>
+                        {!selWall.exterior && (
+                            <div class="designer__fields">
+                                {num('thickness', 'Thickness', selWall.thickness, 0.01, (v) => editSel(({wall}) => wall && (wall.thickness = v)), 0.02, 1.5)}
+                            </div>
+                        )}
+                    </>
+                ),
+                title: selWall.exterior ? 'Outer wall' : 'Wall',
+            }
+        } else if (selOpening && selOpeningWall) {
+            panel = {
+                body: (
+                    <>
+                        <div class="designer__fields">
+                            {num('width', 'Width', selOpening.width, 0.05, (v) =>
+                                editSel(({opening}) => {
+                                    if (opening) {
+                                        opening.width = Math.min(v, wallLength(selOpeningWall))
+                                        opening.at = clampOpening(opening.at, opening.width, wallLength(selOpeningWall))
+                                    }
+                                }), 0.2, 6)}
+                            {num('height', 'Height', selOpening.height, 0.05, (v) => editSel(({opening}) => opening && (opening.height = v)), 0.2, 10)}
+                            {num('sill', 'Sill', selOpening.sill, 0.05, (v) => editSel(({opening}) => opening && (opening.sill = v)), 0, 5)}
+                            {num('at', 'From the wall end', selOpening.at, 0.05, (v) =>
+                                editSel(({opening}) => opening && (opening.at = clampOpening(v, opening.width, wallLength(selOpeningWall)))), 0, 100)}
+                        </div>
+                        <p class="designer__hint">
+                            {selOpening.kind === 'door'
+                                ? 'A door with a sill above 30 cm cannot be walked through.'
+                                : 'A window is a hole you can see through, not walk through.'}
+                        </p>
+                    </>
+                ),
+                title: selOpening.kind === 'door' ? 'Door' : 'Window',
+            }
+        } else if (selStair) {
+            panel = {
+                actions: canEdit && (
+                    <Button onclick={() => editSel(({stair}) => stair && flipStair(stair))} size="sm">
+                        Turn round
+                    </Button>
+                ),
+                body: (
+                    <div class="designer__fields">
+                        {num('width', 'Width', selStair.width, 0.05, (v) => editSel(({stair}) => stair && (stair.width = v)), 0.5, 5)}
+                        {num('run', 'Length', selStair.run, 0.1, (v) => editSel(({stair}) => stair && (stair.run = v)), 1, 15)}
+                    </div>
+                ),
+                title: 'Stairs',
+            }
+        } else if (selRoom) {
+            panel = {
+                body: (
+                    <>
+                        {nameField(`room-${selRoom.id}`, selRoom.name, (v) => editSel(({room}) => room && (room.name = v)))}
+                        <p class="designer__hint">{area(selRoom.outline).toFixed(1)} m². The name shows in the game when somebody stands in it.</p>
+                    </>
+                ),
+                title: 'Room',
+            }
+        } else if (face) {
+            panel = {
+                body: (
+                    <>
+                        {nameField(
+                            'face',
+                            '',
+                            (raw) => {
+                                const v = raw.trim()
+                                if (!v) {
+                                    return
+                                }
+                                const at = labelPoint(face)
+                                let id: null | string = null
+                                mutate((_, st) => {
+                                    id = nameRoomAt(st, at, v)
+                                })
+                                if (id) {
+                                    s.sel = {id, kind: 'room'}
+                                    s.face = null
+                                }
+                            },
+                            'Keuken, Woonkamer…',
+                        )}
+                        <p class="designer__hint">{area(face).toFixed(1)} m², not named yet.</p>
+                    </>
+                ),
+                title: 'Room',
+            }
+        } else {
+            panel = {
+                actions: canEdit && k === design.storeys.length - 1 && design.storeys.length > 1 && (
+                    <Button
+                        onclick={() => {
+                            mutate((d) => {
+                                removeTopStorey(d)
+                            })
+                            s.k = k - 1
+                        }}
+                        size="sm"
+                    >
+                        Remove this storey
+                    </Button>
+                ),
+                body: (
+                    <>
+                        <div class="designer__fields">
+                            {nameField(`storey-${k}`, storey.name, (v) =>
+                                mutate((_, st) => {
+                                    st.name = v
+                                }))}
+                            {num('height', 'Floor to floor', storey.height, 0.1, (v) =>
+                                mutate((d, st) => {
+                                    st.height = v
+                                    restack(d)
+                                }), 2, 12)}
+                        </div>
+                        <p class="designer__hint">
+                            {storey.walls.length} walls, {storey.walls.reduce((a, w) => a + w.openings.length, 0)} doors and
+                            windows, {storey.stairs.length} stairs. Floor at {storey.elevation.toFixed(2)} m.
+                        </p>
+                    </>
+                ),
+                title: storey.name,
+            }
+        }
+        const deleteSel = canEdit && sel && (
+            <Button
+                onclick={() => {
+                    const was = sel
+                    mutate((_, st) => removeSelected(st, was))
+                    s.sel = null
+                }}
+                size="sm"
+                variant="danger"
+            >
+                Delete
+            </Button>
+        )
 
         return (
             <div class="designer">
-                <div class="section-head">
-                    <h1>{owner ? `${owner}'s building` : 'Building'}</h1>
-                    <span class="count mono">{pand}</span>
-                    <span style="flex:1" />
-                    <a class="ghost-link" href={gamePlaceUrl(lat, lng)} rel="noreferrer" target="_blank">
-                        View in the game
-                    </a>
-                </div>
+                <header class="designer__head">
+                    <h1 class="designer__title">{owner ? `${owner}'s building` : 'Building'}</h1>
+                    <code class="designer__pand">{pand}</code>
+                    <span class="designer__spacer" />
+                    <GameLink lat={lat} lng={lng} />
+                </header>
 
                 {!canEdit && (
-                    <p class="hint">
+                    <Alert tone="info">
                         You can look, not change: only the building's owner can.{' '}
                         {data.stored ? 'This is the design its owner saved.' : 'Nobody has designed it yet; this is what the game generates.'}
-                    </p>
+                    </Alert>
                 )}
 
-                <nav class="tabs storeys">
-                    {design.storeys.map((st, i) => (
-                        <button
-                            class={i === k ? 'tab is-current' : 'tab'}
-                            key={st.id || i}
-                            onclick={() => {
+                {/*
+                  * One storey is shown at a time, so the storeys are a one-of
+                  * choice. Picking one drops the selection and any wall or
+                  * flight half drawn, which belong to the storey they were on.
+                  */}
+                <div class="designer__storeys">
+                    <FieldSegmented
+                        model={{
+                            get value() {
+                                return k
+                            },
+                            set value(i: number) {
                                 s.k = i
                                 s.sel = null
                                 s.pending = null
                                 s.face = null
-                            }}
-                            type="button"
-                        >
-                            {st.name || `Storey ${i}`}
-                        </button>
-                    ))}
+                            },
+                        }}
+                        options={design.storeys.map((st, i) => ({label: st.name || `Storey ${i}`, value: i}))}
+                        size="sm"
+                    />
                     {canEdit && (
-                        <button
-                            class="tab"
+                        <Button
                             onclick={() => {
                                 // The count before the new one: its index once added.
                                 const top = design.storeys.length
@@ -817,380 +1070,205 @@ export class Building extends MithrilComponent<BuildingAttrs> {
                                 })
                                 s.k = top
                             }}
+                            size="sm"
                             title="Add a storey on top"
-                            type="button"
+                            variant="ghost"
                         >
                             + storey
-                        </button>
+                        </Button>
                     )}
-                </nav>
+                </div>
 
                 {canEdit && (
-                    <div class="toolbar">
-                        {TOOLS.map((t) => (
-                            <button
-                                class={t.id === tool ? 'primary' : 'ghost'}
-                                key={t.id}
-                                onclick={() => this.pick(t.id)}
-                                title={`${t.label} (${t.key.toUpperCase()})`}
-                                type="button"
-                            >
-                                {t.label}
-                            </button>
-                        ))}
-                        <span style="flex:1" />
-                        {pending && (
-                            <button
-                                class="ghost"
-                                onclick={() => {
-                                    s.pending = null
-                                }}
-                                type="button"
-                            >
-                                Done
-                            </button>
-                        )}
-                        <button class="ghost" disabled={!history.length} onclick={this.undo} title="Undo" type="button">
-                            ↶
-                        </button>
-                        <button class="ghost" disabled={!future.length} onclick={this.redo} title="Redo" type="button">
-                            ↷
-                        </button>
+                    <div class="designer__toolbar">
+                        <FieldSegmented
+                            model={bind(s, 'tool')}
+                            onchange={(t: Tool) => this.pick(t)}
+                            options={TOOLS.map((t) => ({
+                                label: <span title={`${t.label} (${t.key.toUpperCase()})`}>{t.label}</span>,
+                                value: t.id,
+                            }))}
+                            size="sm"
+                        />
+                        <ButtonGroup attached>
+                            {pending && (
+                                <Button
+                                    onclick={() => {
+                                        s.pending = null
+                                    }}
+                                    size="sm"
+                                >
+                                    Done
+                                </Button>
+                            )}
+                            <Button aria-label="Undo" disabled={!history.length} onclick={this.undo} size="sm" title="Undo">
+                                ↶
+                            </Button>
+                            <Button aria-label="Redo" disabled={!future.length} onclick={this.redo} size="sm" title="Redo">
+                                ↷
+                            </Button>
+                        </ButtonGroup>
                     </div>
                 )}
-                {canEdit && toolHint && <p class="hint tool-hint">{toolHint}</p>}
+                {canEdit && toolHint && <p class="designer__hint designer__tool-hint">{toolHint}</p>}
 
-                <div class="plan-wrap">
-                    <svg
-                        class={`plan tool-${tool}`}
-                        oncreate={(v: m.VnodeDOM) => {
-                            this.svg = v.dom as SVGSVGElement
-                        }}
-                        onpointerdown={this.onPointerDown}
-                        onpointerleave={() => {
-                            s.cursor = null
-                        }}
-                        onpointermove={this.onPointerMove}
-                        onpointerup={this.onPointerUp}
-                        onremove={() => {
-                            this.svg = null
-                        }}
-                        onwheel={this.onWheel}
-                        preserveAspectRatio="xMidYMid meet"
-                        viewBox={vb}
-                    >
-                        <defs>
-                            <marker id="arrow" markerHeight="4" markerWidth="4" orient="auto" refX="2" refY="2" viewBox="0 0 4 4">
-                                <path d="M0,0 L4,2 L0,4 z" />
-                            </marker>
-                        </defs>
-                        <g class="grid" stroke-width={stroke(0.01)}>
-                            {grid}
-                        </g>
-                        {neighbours.map((r, i) => (
-                            <polygon class="neighbour" key={`n${i}`} points={pts(r)} stroke-width={stroke(0.03)} />
-                        ))}
-                        {outline.length > 2 && (
-                            <polygon
-                                class="outline"
-                                points={pts(outline)}
-                                stroke-dasharray={`${stroke(0.3)} ${stroke(0.2)}`}
-                                stroke-width={stroke(0.05)}
-                            />
-                        )}
-                        {storey.floor.length > 2 && <polygon class="floor" points={pts(storey.floor)} />}
-                        {/* Over the floor, or the floor hides it: the storey below, faint,
-                            because a staircase has to land somewhere. */}
-                        {below && <g class="below">{below.walls.map((w) => drawWall(w, true))}</g>}
-                        {/* The flights arriving from below, as the hole they come up
-                            through — under this storey's own flights, which may rise
-                            out of the same well. */}
-                        {below?.stairs.map((st) => (
-                            <polygon class="well" key={`well${st.id}`} points={pts(stairRect(st))} stroke-width={stroke(0.03)} />
-                        ))}
-                        {unnamed.map((f, i) => {
-                            const c = labelPoint(f)
-                            const isSel = face !== null && pointInRing(f, labelPoint(face))
-                            return (
-                                <g class={`room unnamed ${isSel ? 'is-selected' : ''}`} key={`f${i}`}>
-                                    {isSel && <polygon points={pts(f)} stroke-width={stroke(0.03)} />}
-                                    <text class="area" font-size={Math.max(0.24, 9 / pxPerM)} x={c[0]} y={-c[1]}>
-                                        {area(f).toFixed(1)} m²
-                                    </text>
-                                </g>
-                            )
-                        })}
-                        {storey.rooms.map((r) => {
-                            const c = labelPoint(r.outline)
-                            const isSel = sel?.kind === 'room' && sel.id === r.id
-                            return (
-                                <g class={`room ${isSel ? 'is-selected' : ''}`} key={r.id}>
-                                    <polygon points={pts(r.outline)} stroke-width={stroke(0.03)} />
-                                    <text font-size={Math.max(0.3, 11 / pxPerM)} x={c[0]} y={-c[1]}>
-                                        {r.name}
-                                    </text>
-                                    <text class="area" font-size={Math.max(0.24, 9 / pxPerM)} x={c[0]} y={-c[1] + Math.max(0.4, 14 / pxPerM)}>
-                                        {area(r.outline).toFixed(1)} m²
-                                    </text>
-                                </g>
-                            )
-                        })}
-                        {storey.walls.map((w) => drawWall(w, false))}
-                        {storey.stairs.map((st) => drawStair(st, false))}
-                        {pending && cursor && (
-                            <g class="preview">
-                                <line
-                                    stroke-dasharray={`${stroke(0.15)} ${stroke(0.1)}`}
-                                    stroke-width={stroke(tool === 'wall' ? 0.1 : 0.04)}
-                                    x1={pending[0]}
-                                    x2={cursor[0]}
-                                    y1={-pending[1]}
-                                    y2={-cursor[1]}
-                                />
-                                <text font-size={Math.max(0.3, 11 / pxPerM)} x={(pending[0] + cursor[0]) / 2} y={-(pending[1] + cursor[1]) / 2 - 0.3}>
-                                    {dist(pending, cursor).toFixed(2)} m
-                                </text>
-                            </g>
-                        )}
-                        {cursor && tool !== 'select' && <circle class="cursor" cx={cursor[0]} cy={-cursor[1]} r={stroke(0.08)} />}
-                        <text class="north" font-size={Math.max(0.4, 12 / pxPerM)} x={view.cx - view.w / 2 + 14 / pxPerM} y={-view.cy - h / 2 + 22 / pxPerM}>
-                            N ↑
-                        </text>
-                    </svg>
-                    <div class="zoom">
-                        <button class="ghost" onclick={() => this.zoom(1 / 1.4)} type="button">
-                            +
-                        </button>
-                        <button class="ghost" onclick={() => this.zoom(1.4)} type="button">
-                            −
-                        </button>
-                        <button
-                            class="ghost"
-                            onclick={() => {
-                                s.view = fit(data)
+                <div class="designer__body">
+                    <div class="designer__plan-wrap">
+                        <svg
+                            class={`designer__plan tool-${tool}`}
+                            oncreate={(v: m.VnodeDOM) => {
+                                this.svg = v.dom as SVGSVGElement
                             }}
-                            type="button"
+                            onpointerdown={this.onPointerDown}
+                            onpointerleave={() => {
+                                s.cursor = null
+                            }}
+                            onpointermove={this.onPointerMove}
+                            onpointerup={this.onPointerUp}
+                            onremove={() => {
+                                this.svg = null
+                            }}
+                            onwheel={this.onWheel}
+                            preserveAspectRatio="xMidYMid meet"
+                            viewBox={vb}
                         >
-                            ⤢
-                        </button>
-                    </div>
-                </div>
-
-                <div class="card props">
-                    {selWall ? (
-                        <>
-                            <h3>{selWall.exterior ? 'Outer wall' : 'Wall'}</h3>
-                            <p class="hint">
-                                {wallLength(selWall).toFixed(2)} m long.
-                                {canEdit && ' Drag either end to move it; the walls meeting it come along.'}
-                            </p>
-                            {!selWall.exterior &&
-                                num('Thickness (m)', selWall.thickness, 0.01, (v) => editSel(({wall}) => wall && (wall.thickness = v)), 0.02, 1.5)}
-                            {canEdit && (
-                                <div class="row-actions wrap">
-                                    <button
-                                        class="ghost"
-                                        onclick={() => editSel(({wall}) => wall && spreadWindows(wall, suggestedWindows(wall)))}
-                                        type="button"
-                                    >
-                                        Space {suggestedWindows(selWall)} windows along it
-                                    </button>
-                                    {k + 1 < design.storeys.length && selWall.openings.some((o) => o.kind === 'window') && (
-                                        <button
-                                            class="ghost"
-                                            onclick={() => {
-                                                let n = 0
-                                                mutate((d) => {
-                                                    n = copyWindowsUp(d, k, selWall.id)
-                                                })
-                                                notifier.success(
-                                                    n
-                                                        ? `Same windows on ${n} floor${n === 1 ? '' : 's'} above`
-                                                        : 'No floor above has a wall on the same line',
-                                                )
-                                            }}
-                                            type="button"
-                                        >
-                                            Same windows on the floors above
-                                        </button>
-                                    )}
-                                </div>
-                            )}
-                        </>
-                    ) : selOpening && selOpeningWall ? (
-                        <>
-                            <h3>{selOpening.kind === 'door' ? 'Door' : 'Window'}</h3>
-                            <div class="fields">
-                                {num('Width (m)', selOpening.width, 0.05, (v) =>
-                                    editSel(({opening}) => {
-                                        if (opening) {
-                                            opening.width = Math.min(v, wallLength(selOpeningWall))
-                                            opening.at = clampOpening(opening.at, opening.width, wallLength(selOpeningWall))
-                                        }
-                                    }), 0.2, 6)}
-                                {num('Height (m)', selOpening.height, 0.05, (v) => editSel(({opening}) => opening && (opening.height = v)), 0.2, 10)}
-                                {num('Sill (m)', selOpening.sill, 0.05, (v) => editSel(({opening}) => opening && (opening.sill = v)), 0, 5)}
-                                {num('From the wall end (m)', selOpening.at, 0.05, (v) =>
-                                    editSel(({opening}) => opening && (opening.at = clampOpening(v, opening.width, wallLength(selOpeningWall)))), 0, 100)}
-                            </div>
-                            <p class="hint">
-                                {selOpening.kind === 'door'
-                                    ? 'A door with a sill above 30 cm cannot be walked through.'
-                                    : 'A window is a hole you can see through, not walk through.'}
-                            </p>
-                        </>
-                    ) : selStair ? (
-                        <>
-                            <h3>Stairs</h3>
-                            <div class="fields">
-                                {num('Width (m)', selStair.width, 0.05, (v) => editSel(({stair}) => stair && (stair.width = v)), 0.5, 5)}
-                                {num('Length (m)', selStair.run, 0.1, (v) => editSel(({stair}) => stair && (stair.run = v)), 1, 15)}
-                            </div>
-                            {canEdit && (
-                                <div class="row-actions">
-                                    <button class="ghost" onclick={() => editSel(({stair}) => stair && flipStair(stair))} type="button">
-                                        Turn round
-                                    </button>
-                                </div>
-                            )}
-                        </>
-                    ) : selRoom ? (
-                        <>
-                            <h3>Room</h3>
-                            <label class="field compact">
-                                <span>Name</span>
-                                <input
-                                    disabled={!canEdit}
-                                    maxLength={120}
-                                    onchange={(e: Event) => {
-                                        const v = (e.target as HTMLInputElement).value
-                                        editSel(({room}) => room && (room.name = v))
-                                    }}
-                                    type="text"
-                                    value={selRoom.name}
+                            <defs>
+                                <marker id="arrow" markerHeight="4" markerWidth="4" orient="auto" refX="2" refY="2" viewBox="0 0 4 4">
+                                    <path d="M0,0 L4,2 L0,4 z" />
+                                </marker>
+                            </defs>
+                            <g class="grid" stroke-width={stroke(0.01)}>
+                                {grid}
+                            </g>
+                            {neighbours.map((r, i) => (
+                                <polygon class="neighbour" key={`n${i}`} points={pts(r)} stroke-width={stroke(0.03)} />
+                            ))}
+                            {outline.length > 2 && (
+                                <polygon
+                                    class="outline"
+                                    points={pts(outline)}
+                                    stroke-dasharray={`${stroke(0.3)} ${stroke(0.2)}`}
+                                    stroke-width={stroke(0.05)}
                                 />
-                            </label>
-                            <p class="hint">{area(selRoom.outline).toFixed(1)} m². The name shows in the game when somebody stands in it.</p>
-                        </>
-                    ) : face ? (
-                        <>
-                            <h3>Room</h3>
-                            <label class="field compact">
-                                <span>Name</span>
-                                <input
-                                    disabled={!canEdit}
-                                    maxLength={120}
-                                    onchange={(e: Event) => {
-                                        const v = (e.target as HTMLInputElement).value.trim()
-                                        if (!v) {
-                                            return
-                                        }
-                                        const at = labelPoint(face)
-                                        let id: null | string = null
-                                        mutate((_, st) => {
-                                            id = nameRoomAt(st, at, v)
-                                        })
-                                        if (id) {
-                                            s.sel = {id, kind: 'room'}
-                                            s.face = null
-                                        }
-                                    }}
-                                    placeholder="Keuken, Woonkamer…"
-                                    type="text"
-                                    value=""
-                                />
-                            </label>
-                            <p class="hint">{area(face).toFixed(1)} m², not named yet.</p>
-                        </>
-                    ) : (
-                        <>
-                            <h3>{storey.name}</h3>
-                            <div class="fields">
-                                <label class="field compact">
-                                    <span>Name</span>
-                                    <input
-                                        disabled={!canEdit}
-                                        maxLength={120}
-                                        onchange={(e: Event) => {
-                                            const v = (e.target as HTMLInputElement).value
-                                            mutate((_, st) => {
-                                                st.name = v
-                                            })
-                                        }}
-                                        type="text"
-                                        value={storey.name}
+                            )}
+                            {storey.floor.length > 2 && <polygon class="floor" points={pts(storey.floor)} />}
+                            {/* Over the floor, or the floor hides it: the storey below, faint,
+                                because a staircase has to land somewhere. */}
+                            {below && <g class="below">{below.walls.map((w) => drawWall(w, true))}</g>}
+                            {/* The flights arriving from below, as the hole they come up
+                                through — under this storey's own flights, which may rise
+                                out of the same well. */}
+                            {below?.stairs.map((st) => (
+                                <polygon class="well" key={`well${st.id}`} points={pts(stairRect(st))} stroke-width={stroke(0.03)} />
+                            ))}
+                            {unnamed.map((f, i) => {
+                                const c = labelPoint(f)
+                                const isSel = face !== null && pointInRing(f, labelPoint(face))
+                                return (
+                                    <g class={`room unnamed ${isSel ? 'is-selected' : ''}`} key={`f${i}`}>
+                                        {isSel && <polygon points={pts(f)} stroke-width={stroke(0.03)} />}
+                                        <text class="area" font-size={Math.max(0.24, 9 / pxPerM)} x={c[0]} y={-c[1]}>
+                                            {area(f).toFixed(1)} m²
+                                        </text>
+                                    </g>
+                                )
+                            })}
+                            {storey.rooms.map((r) => {
+                                const c = labelPoint(r.outline)
+                                const isSel = sel?.kind === 'room' && sel.id === r.id
+                                return (
+                                    <g class={`room ${isSel ? 'is-selected' : ''}`} key={r.id}>
+                                        <polygon points={pts(r.outline)} stroke-width={stroke(0.03)} />
+                                        <text font-size={Math.max(0.3, 11 / pxPerM)} x={c[0]} y={-c[1]}>
+                                            {r.name}
+                                        </text>
+                                        <text class="area" font-size={Math.max(0.24, 9 / pxPerM)} x={c[0]} y={-c[1] + Math.max(0.4, 14 / pxPerM)}>
+                                            {area(r.outline).toFixed(1)} m²
+                                        </text>
+                                    </g>
+                                )
+                            })}
+                            {storey.walls.map((w) => drawWall(w, false))}
+                            {storey.stairs.map((st) => drawStair(st, false))}
+                            {pending && cursor && (
+                                <g class="preview">
+                                    <line
+                                        stroke-dasharray={`${stroke(0.15)} ${stroke(0.1)}`}
+                                        stroke-width={stroke(tool === 'wall' ? 0.1 : 0.04)}
+                                        x1={pending[0]}
+                                        x2={cursor[0]}
+                                        y1={-pending[1]}
+                                        y2={-cursor[1]}
                                     />
-                                </label>
-                                {num('Floor to floor (m)', storey.height, 0.1, (v) =>
-                                    mutate((d, st) => {
-                                        st.height = v
-                                        restack(d)
-                                    }), 2, 12)}
-                            </div>
-                            <p class="hint">
-                                {storey.walls.length} walls, {storey.walls.reduce((a, w) => a + w.openings.length, 0)} doors and
-                                windows, {storey.stairs.length} stairs. Floor at {storey.elevation.toFixed(2)} m.
-                            </p>
-                            {canEdit && k === design.storeys.length - 1 && design.storeys.length > 1 && (
-                                <div class="row-actions">
-                                    <button
-                                        class="ghost"
-                                        onclick={() => {
-                                            mutate((d) => {
-                                                removeTopStorey(d)
-                                            })
-                                            s.k = k - 1
-                                        }}
-                                        type="button"
-                                    >
-                                        Remove this storey
-                                    </button>
-                                </div>
+                                    <text font-size={Math.max(0.3, 11 / pxPerM)} x={(pending[0] + cursor[0]) / 2} y={-(pending[1] + cursor[1]) / 2 - 0.3}>
+                                        {dist(pending, cursor).toFixed(2)} m
+                                    </text>
+                                </g>
                             )}
-                        </>
-                    )}
-                    {canEdit && sel && (
-                        <div class="row-actions">
-                            <button
-                                class="danger"
+                            {cursor && tool !== 'select' && <circle class="cursor" cx={cursor[0]} cy={-cursor[1]} r={stroke(0.08)} />}
+                            <text class="north" font-size={Math.max(0.4, 12 / pxPerM)} x={view.cx - view.w / 2 + 14 / pxPerM} y={-view.cy - h / 2 + 22 / pxPerM}>
+                                N ↑
+                            </text>
+                        </svg>
+                        <ButtonGroup class="designer__zoom">
+                            <Button aria-label="Zoom in" onclick={() => this.zoom(1 / 1.4)} size="sm" title="Zoom in">
+                                +
+                            </Button>
+                            <Button aria-label="Zoom out" onclick={() => this.zoom(1.4)} size="sm" title="Zoom out">
+                                −
+                            </Button>
+                            <Button
+                                aria-label="Fit the building"
                                 onclick={() => {
-                                    const was = sel
-                                    mutate((_, st) => removeSelected(st, was))
-                                    s.sel = null
+                                    s.view = fit(data)
                                 }}
-                                type="button"
+                                size="sm"
+                                title="Fit the building"
                             >
-                                Delete
-                            </button>
-                        </div>
-                    )}
+                                ⤢
+                            </Button>
+                        </ButtonGroup>
+                    </div>
+
+                    <div class="designer__side">
+                        <Card actions={deleteSel || undefined} footer={panel.actions || undefined} title={panel.title}>
+                            {panel.body}
+                        </Card>
+
+                        {issues.length > 0 && (
+                            <Alert tone="warning">
+                                {issues.map((p) => (
+                                    <p class="designer__issue" key={p}>
+                                        {p}
+                                    </p>
+                                ))}
+                            </Alert>
+                        )}
+
+                        <p class="designer__hint">
+                            In the game, walk in — or tap the building and choose Look inside — and pick a floor on
+                            the right. The floor names are yours, and a room's name shows when somebody stands in it.
+                        </p>
+                    </div>
                 </div>
 
-                {issues.length > 0 && (
-                    <div class="card problems">
-                        {issues.map((p) => (
-                            <p class="hint" key={p}>
-                                {p}
-                            </p>
-                        ))}
-                    </div>
-                )}
-
-                <p class="hint">
-                    In the game, walk in — or tap the building and choose Look inside — and pick a floor on
-                    the right. The floor names are yours, and a room's name shows when somebody stands in it.
-                </p>
-
+                {/*
+                  * Pinned to the bottom of the window: on a phone the plan and the
+                  * panel are taller than the screen, and Save must not be a
+                  * scroll away from the edit it saves.
+                  */}
                 {canEdit && (
-                    <div class="row-actions save-bar">
-                        <button class="ghost" disabled={busy} onclick={() => void this.reset()} type="button">
+                    <div class="designer__save">
+                        <Button disabled={busy} onclick={() => void this.reset()} size="sm" variant="ghost">
                             {data.stored ? 'Back to generated' : 'Start over'}
-                        </button>
-                        <span style="flex:1" />
-                        <span class="hint">{dirty ? 'Unsaved changes' : data.stored ? 'Saved' : 'Not saved yet'}</span>
-                        <button class="primary" disabled={busy || !dirty} onclick={() => void this.save()} type="button">
-                            {busy ? 'Saving…' : 'Save'}
-                        </button>
+                        </Button>
+                        <span class="designer__spacer" />
+                        <Badge dot tone={dirty ? 'warning' : data.stored ? 'success' : 'neutral'}>
+                            {dirty ? 'Unsaved changes' : data.stored ? 'Saved' : 'Not saved yet'}
+                        </Badge>
+                        <Button disabled={!dirty} loading={busy} onclick={() => void this.save()} variant="primary">
+                            Save
+                        </Button>
                     </div>
                 )}
             </div>

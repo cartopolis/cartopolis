@@ -1,0 +1,244 @@
+/* ---- The autopilot page ------------------------------------------------ */
+
+.autopilot-intro {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0 0 var(--m-space-4);
+}
+
+.autopilot-muted {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+/* "Nothing here", as a dashed box: an absence, not a row. */
+.autopilot-empty {
+    border: 1px dashed var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: var(--m-space-3) 0 0;
+    padding: var(--m-space-5) var(--m-space-4);
+    text-align: center;
+}
+
+.autopilot-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.autopilot-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+    margin-top: var(--m-space-3);
+}
+
+/* A day count is two digits; the box need not span the card. */
+.autopilot-retro {
+    max-width: 14rem;
+}
+
+/* ---- The focus plan ---------------------------------------------------- */
+
+/*
+ * The lane's queue, in the order it will be built. A list of rows rather than a
+ * textarea of lines, because two of the four things an operator does to it —
+ * reorder and delete — have no keyboard shape, and because each row carries a
+ * ticket number the lane wrote and the operator did not.
+ *
+ * Phone first, and the phone is where this list is read: the row's text takes a
+ * whole line of its own and the controls sit under it. Side by side, a title had
+ * about a third of a narrow screen and every row ended in an ellipsis — which is
+ * the one thing this list must never do, since a row IS its sentence.
+ *
+ * A row is also not a box here. Card inside card inside field was three frames
+ * around one paragraph, each costing its own padding twice, and what was left
+ * read as cramped however the text inside it wrapped. A rule between rows says
+ * the same thing for one pixel.
+ */
+.autopilot-plan {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+    margin: var(--m-space-3) 0 0;
+    padding: 0;
+
+    & > li {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--m-space-2);
+        padding: var(--m-space-2) 0;
+    }
+
+    & > li + li {
+        border-top: 1px solid var(--m-border);
+    }
+
+    /*
+     * Filed rows are history: the ticket exists, and the queue has moved past
+     * them. Dimmed rather than hidden or moved, because where they sit is how far
+     * down the plan the lane has got, which is the one thing a glance at this list
+     * is for.
+     */
+    & > li.is-filed {
+        opacity: 0.62;
+    }
+}
+
+/*
+ * Deliberately narrow: these are pressed far more often than anything else in
+ * the row, and a full-width button beside a text field reads as the field's own
+ * action. A row under the text on a phone, a column beside it on a desk.
+ */
+.autopilot-plan-move {
+    display: flex;
+    flex-direction: row;
+    gap: 2px;
+}
+
+.autopilot-plan-body {
+    display: flex;
+    /* Its own line, above the controls. `order` puts it there without the markup
+       having to disagree with the reading order for a keyboard or a screen reader. */
+    flex: 1 1 100%;
+    flex-direction: column;
+    gap: var(--m-space-1);
+    /* Without this the fields' intrinsic width wins and the row overflows the
+       card on a phone instead of the fields shrinking. */
+    min-width: 0;
+    order: -1;
+
+    /*
+     * Fields that hold a paragraph, not a line — and that look like the paragraph
+     * rather than like a field. The frame and the fill are what made a row read as
+     * cramped, and they buy nothing: the row already carries a ✕ and two arrows,
+     * so nobody is in doubt that it is editable, and tapping one draws the focus
+     * ring. `grow()` sets the height from the content, so there is nothing for a
+     * resize grip to do and no scrollbar to show.
+     */
+    & textarea {
+        background: none;
+        border: 0;
+        border-radius: 0;
+        color: var(--m-text);
+        font: inherit;
+        font-size: 1rem;
+        line-height: 1.4;
+        overflow: hidden;
+        padding: 0;
+        resize: none;
+        width: 100%;
+
+        &::placeholder {
+            color: var(--m-text-faint);
+        }
+
+        &:focus-visible {
+            outline: 2px solid var(--m-focus);
+            outline-offset: 3px;
+        }
+    }
+
+    /* The note is the second line and reads as one — same type, quieter. */
+    & .autopilot-plan-note-field {
+        color: var(--m-text-dim);
+        font-size: 0.9rem;
+    }
+
+    /*
+     * A filed row's two lines are text, not fields — the item is a ticket now and
+     * the web UI may not rewrite it. Spaced to the fields' own metrics so a locked
+     * row and an editable one line up down the list instead of reading as two lists.
+     */
+    &.is-filed {
+        gap: 2px;
+    }
+}
+
+/* Wrapped, never clipped: a filed row is the only place the wording of a ticket
+   in flight can be read, and half of it is not a description of anything. */
+.autopilot-plan-title {
+    font-size: 1rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.autopilot-plan-note {
+    color: var(--m-text-dim);
+    font-size: 0.9rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+/*
+ * Fixed width, and it holds the ticket number when there is one. Sized to its
+ * contents instead, a filed row and an unfiled one end their fields in different
+ * places, and a ragged right edge down four rows reads as four kinds of row
+ * rather than one list. On a phone it is pushed to the far end of the controls
+ * line, opposite the arrows.
+ */
+.autopilot-plan-side {
+    align-items: center;
+    display: flex;
+    gap: var(--m-space-2);
+    justify-content: flex-end;
+    margin-left: auto;
+}
+
+/* The ticket link: a badge that goes somewhere, so it says so on hover. */
+.autopilot-ticket {
+    border-radius: var(--m-radius-full);
+    text-decoration: none;
+
+    &:hover .m-badge {
+        text-decoration: underline;
+    }
+
+    &:focus-visible {
+        outline: 2px solid var(--m-focus);
+        outline-offset: 2px;
+    }
+}
+
+/*
+ * Wide enough for the row to read as one line again: text, arrows and the ticket
+ * number side by side, the fixed right-hand column keeping every row's fields
+ * ending in the same place — and with the controls back beside the text, a row
+ * needs its frame again, since there is no line break to separate two rows.
+ */
+@media (min-width: 40rem) {
+    .autopilot-plan {
+        gap: var(--m-space-2);
+
+        & > li {
+            background: var(--m-surface-sunken);
+            border: 1px solid var(--m-border);
+            border-radius: var(--m-radius);
+            flex-wrap: nowrap;
+            padding: var(--m-space-2);
+        }
+
+        & > li + li {
+            border-top: 1px solid var(--m-border);
+        }
+    }
+
+    .autopilot-plan-move {
+        flex-direction: column;
+    }
+
+    .autopilot-plan-body {
+        flex: 1 1 auto;
+        order: 0;
+    }
+
+    .autopilot-plan-side {
+        flex: 0 0 5.5rem;
+        margin-left: 0;
+    }
+}

@@ -1,8 +1,22 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {
+    Badge,
+    Button,
+    Card,
+    Collapse,
+    Field,
+    FieldCheckbox,
+    FieldSelect,
+    FieldText,
+    Table,
+    uid,
+} from '@garage44/mithril/components'
+import {validation, validations} from '@garage44/mithril/validation'
 
-import type {LibraryEntry} from '@/types'
+import type {LibraryEntry, StoredAsset} from '@/types'
 
 import {$s} from '@/app'
+import {closeContext, contextShows, openContext} from '@/lib/layout'
 import {
     CATEGORIES,
     clearPlaceholder,
@@ -23,8 +37,19 @@ import {
     uploadFormatHint,
     uploadModel,
 } from '@/lib/library'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {formatTimestamp} from '@/lib/utils'
+
+/** The licences an upload can claim. `other` can be used and never shared. */
+const LICENCES = [
+    {label: 'I made it', value: 'own'},
+    {label: 'CC0 — public domain', value: 'cc0'},
+    {label: 'CC BY — credit required', value: 'cc-by'},
+    {label: 'Something else', value: 'other'},
+]
+
+/** The context panel's key for one catalogue entry's form. */
+const editKey = (asset: string) => `library:${asset}`
 
 /**
  * The shared model library, and the files under it.
@@ -40,11 +65,111 @@ import {formatTimestamp} from '@/lib/utils'
  */
 export class Library extends MithrilComponent {
     s = local({confirming: '', showFiles: false})
+    /**
+     * The open entry's form. On the page rather than on its row because the form
+     * is drawn in the context panel, which outlives a row the search filters out.
+     */
+    form = local({attribution: '', category: '', name: '', saving: false})
 
     oninit() {
         void loadLibrary()
         void loadLibraryAssets()
         void loadPlaceholders()
+    }
+
+    onremove() {
+        if ($s.libraryEditing) {
+            closeContext(editKey($s.libraryEditing))
+        }
+        $s.libraryEditing = null
+    }
+
+    /** Edit one entry in the context panel; pressing Edit on the open one closes it. */
+    toggleEditor(entry: LibraryEntry) {
+        const key = editKey(entry.asset)
+        if (contextShows(key)) {
+            this.closeEditor(entry.asset)
+            return
+        }
+        // Reset the fields on every open, so a form abandoned half-edited does
+        // not reopen holding the abandoned text.
+        this.form.name = entry.name
+        this.form.category = entry.category
+        this.form.attribution = entry.attribution
+        $s.libraryEditing = entry.asset
+        openContext({
+            body: () => this.editorBody(entry.asset),
+            footer: () => this.editorFooter(entry.asset),
+            key,
+            title: () => $s.library.find((e) => e.asset === entry.asset)?.name ?? entry.name,
+        })
+    }
+
+    closeEditor(asset: string) {
+        closeContext(editKey(asset))
+        $s.libraryEditing = null
+    }
+
+    editorBody(asset: string) {
+        const form = this.form
+        const entry = $s.library.find((e) => e.asset === asset)
+        if (!entry) {
+            return <p class="library-note">This model is no longer in the catalogue.</p>
+        }
+        return (
+            <div class="library-editor">
+                <div class="library-meta">
+                    <span>{licenceLabel(entry.licence)}</span>
+                    <span>{entry.triangles.toLocaleString()} triangles</span>
+                    <span>{formatBytes(entry.byte_size)}</span>
+                </div>
+                <FieldText label="Name" model={bind(form, 'name')} />
+                <FieldSelect label="Category" model={bind(form, 'category')} options={CATEGORIES} />
+                <FieldText
+                    label="Credit line"
+                    model={bind(form, 'attribution')}
+                    placeholder={entry.licence === 'cc-by' ? 'Required for CC BY' : 'Not required for this licence'}
+                />
+                <span class="library-mono">{entry.asset.slice(0, 16)}</span>
+            </div>
+        )
+    }
+
+    editorFooter(asset: string) {
+        const form = this.form
+        return (
+            <>
+                {/*
+                  * Saving marks it curated as well as writing the fields. The two
+                  * are the same act: an operator who has typed a name and picked a
+                  * category has reviewed it, and a separate "approve" button would
+                  * be a second click for a decision already made.
+                  */}
+                <Button
+                    loading={form.saving}
+                    onclick={() => {
+                        form.saving = true
+                        void curateEntry(asset, {
+                            attribution: form.attribution,
+                            category: form.category,
+                            name: form.name,
+                            visibility: 'curated',
+                        }).then((ok) => {
+                            form.saving = false
+                            if (ok) {
+                                this.closeEditor(asset)
+                            }
+                        })
+                    }}
+                    variant="primary"
+                >
+                    Save and approve
+                </Button>
+                <Button onclick={() => this.closeEditor(asset)} variant="ghost">
+                    Cancel
+                </Button>
+            </>
+        )
     }
 
     view() {
@@ -60,110 +185,57 @@ export class Library extends MithrilComponent {
         // reviewed goes first; hidden entries go last, since acting on one is rare.
         const ordered = [...entries].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
         const waiting = $s.library.filter((entry) => entry.visibility === 'shared').length
-        const orphans = $s.libraryAssets.filter(
-            (asset) => asset.in_world === 0 && asset.held_by === 0,
-        )
+        const orphans = $s.libraryAssets.filter((asset) => asset.in_world === 0 && asset.held_by === 0)
 
         return (
-            <>
-                <div class="section-head">
-                    <h1>Models</h1>
-                    <span class="count">{$s.library.length}</span>
-                    {waiting > 0 && <span class="count">{waiting} to review</span>}
-                    <span style="flex:1" />
-                    <input
-                        oninput={(e: Event) => {
-                            $s.librarySearch = (e.target as HTMLInputElement).value
-                        }}
+            <div class="library">
+                <div class="library-head">
+                    <span class="library-count">{$s.library.length} in the catalogue</span>
+                    {waiting > 0 && <Badge tone="warning">{waiting} to review</Badge>}
+                    <FieldText
+                        class="library-search"
+                        model={bind($s, 'librarySearch')}
                         placeholder="Search names and tags"
                         type="search"
-                        value={$s.librarySearch}
                     />
                 </div>
 
                 <Upload />
 
-                {$s.library.length === 0 ? (
-                    <div class="empty">Nobody has shared a model yet.</div>
-                ) : (
-                    <ul class="account-list">
-                        {ordered.map((entry) => (
-                            <Row
-                                confirming={s.confirming === entry.asset}
-                                entry={entry}
-                                key={entry.asset}
-                                onConfirm={(on: boolean) => {
-                                    s.confirming = on ? entry.asset : ''
-                                }}
-                            />
-                        ))}
-                    </ul>
-                )}
+                <Card flush title="Catalogue">
+                    {$s.library.length === 0 ? (
+                        <p class="library-empty">Nobody has shared a model yet.</p>
+                    ) : ordered.length === 0 ? (
+                        <p class="library-empty">No model matches that search.</p>
+                    ) : (
+                        <ul class="library-list">
+                            {ordered.map((entry) => (
+                                <Row
+                                    confirming={s.confirming === entry.asset}
+                                    editing={contextShows(editKey(entry.asset))}
+                                    entry={entry}
+                                    key={entry.asset}
+                                    onConfirm={(on: boolean) => {
+                                        s.confirming = on ? entry.asset : ''
+                                    }}
+                                    onEdit={() => this.toggleEditor(entry)}
+                                />
+                            ))}
+                        </ul>
+                    )}
+                </Card>
 
                 <StreetObjects />
 
-                <div class="section-head">
-                    <h1>Stored files</h1>
-                    <span class="count">{$s.libraryAssets.length}</span>
-                    {orphans.length > 0 && <span class="count">{orphans.length} unused</span>}
-                    <span style="flex:1" />
-                    <button
-                        class="ghost"
-                        onclick={() => {
-                            s.showFiles = !s.showFiles
-                        }}
-                        type="button"
-                    >
-                        {s.showFiles ? 'Hide' : 'Show'}
-                    </button>
-                </div>
-
-                {s.showFiles && (
-                    $s.libraryAssets.length === 0 ? (
-                        <div class="empty">Nothing has been uploaded to this server.</div>
-                    ) : (
-                        <ul class="account-list">
-                            {$s.libraryAssets.map((asset) => (
-                                <li class="account" key={asset.hash}>
-                                    <div class="account-main">
-                                        <span class="mono">{asset.hash.slice(0, 12)}</span>
-                                        <span style="flex:1" />
-                                        {/*
-                                          * Offered only for a file nothing refers to.
-                                          * The server refuses the rest and says what
-                                          * is holding them, so this is a courtesy
-                                          * rather than the guard.
-                                          */}
-                                        {asset.in_world === 0 && asset.held_by === 0 && (
-                                            <button
-                                                class="ghost"
-                                                onclick={() => void forgetAsset(asset)}
-                                                type="button"
-                                            >
-                                                Remove
-                                            </button>
-                                        )}
-                                    </div>
-                                    <div class="account-meta">
-                                        <span>{asset.triangles.toLocaleString()} triangles</span>
-                                        <span>{formatBytes(asset.byte_size)}</span>
-                                        <span>
-                                            {asset.textures === 0
-                                                ? 'no textures'
-                                                : `${asset.textures} texture(s), ${asset.largest_texture} px`}
-                                        </span>
-                                        <span>
-                                            {asset.in_world} in world · {asset.held_by} held
-                                        </span>
-                                        {!asset.shared && <span>not shared</span>}
-                                        <span>{formatTimestamp(asset.created_at)}</span>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    )
-                )}
-            </>
+                <Collapse
+                    actions={orphans.length > 0 && <Badge tone="warning">{orphans.length} unused</Badge>}
+                    class="library-files"
+                    model={bind(s, 'showFiles')}
+                    title={`Stored files (${$s.libraryAssets.length})`}
+                >
+                    <StoredFiles />
+                </Collapse>
+            </div>
         )
     }
 }
@@ -182,49 +254,30 @@ function rank(entry: LibraryEntry): number {
 
 interface RowAttrs {
     confirming: boolean
+    editing: boolean
     entry: LibraryEntry
     onConfirm: (on: boolean) => void
+    onEdit: () => void
 }
 
 class Row extends MithrilComponent<RowAttrs> {
-    s: {attribution: string; category: string; name: string}
-
-    constructor(vnode: m.Vnode<RowAttrs>) {
-        super()
-        const entry = vnode.attrs.entry
-        this.s = local({attribution: entry.attribution, category: entry.category, name: entry.name})
-    }
-
     view(vnode: m.Vnode<RowAttrs>) {
-        const {confirming, entry, onConfirm} = vnode.attrs
-        const s = this.s
-        const editing = $s.libraryEditing === entry.asset
+        const {confirming, editing, entry, onConfirm, onEdit} = vnode.attrs
 
         return (
-            <li class="account">
-                <div class="account-main">
-                    <span class="account-name">{entry.name}</span>
-                    {entry.visibility === 'hidden' && <span class="count">hidden</span>}
-                    {entry.visibility === 'shared' && <span class="count">unreviewed</span>}
-                    <span style="flex:1" />
-                    <button
-                        class="ghost"
-                        onclick={() => {
-                            // Reset the fields on every open, so a form abandoned
-                            // half-edited does not reopen holding the abandoned text.
-                            s.name = entry.name
-                            s.category = entry.category
-                            s.attribution = entry.attribution
-                            $s.libraryEditing = editing ? null : entry.asset
-                        }}
-                        type="button"
-                    >
+            <li class="library-row" data-selected={editing ? '' : undefined}>
+                <div class="library-row__main">
+                    <span class="library-name">{entry.name}</span>
+                    {entry.visibility === 'hidden' && <Badge tone="neutral">hidden</Badge>}
+                    {entry.visibility === 'shared' && <Badge tone="warning">unreviewed</Badge>}
+                    <span class="library-spacer" />
+                    <Button onclick={onEdit} size="sm" variant={editing ? 'secondary' : 'ghost'}>
                         {editing ? 'Close' : 'Edit'}
-                    </button>
+                    </Button>
                     {entry.visibility === 'hidden' ? (
-                        <button class="ghost" onclick={() => void unhideEntry(entry)} type="button">
+                        <Button onclick={() => void unhideEntry(entry)} size="sm" variant="ghost">
                             Restore
-                        </button>
+                        </Button>
                     ) : confirming ? (
                         <>
                             {/*
@@ -233,28 +286,28 @@ class Row extends MithrilComponent<RowAttrs> {
                               * goes to a placeholder — that is the intended effect and
                               * it is not a small one.
                               */}
-                            <button
-                                class="danger"
+                            <Button
                                 onclick={() => {
                                     onConfirm(false)
                                     void hideEntry(entry)
                                 }}
-                                type="button"
+                                size="sm"
+                                variant="danger"
                             >
                                 Take down
-                            </button>
-                            <button class="ghost" onclick={() => onConfirm(false)} type="button">
+                            </Button>
+                            <Button onclick={() => onConfirm(false)} size="sm" variant="ghost">
                                 Cancel
-                            </button>
+                            </Button>
                         </>
                     ) : (
-                        <button class="ghost" onclick={() => onConfirm(true)} type="button">
+                        <Button onclick={() => onConfirm(true)} size="sm" variant="ghost">
                             Take down
-                        </button>
+                        </Button>
                     )}
                 </div>
 
-                <div class="account-meta">
+                <div class="library-meta">
                     <span>{entry.category}</span>
                     <span>{entry.triangles.toLocaleString()} triangles</span>
                     <span>{formatBytes(entry.byte_size)}</span>
@@ -268,105 +321,104 @@ class Row extends MithrilComponent<RowAttrs> {
                       * file is deduplicated by content — and it is who an operator
                       * acts on when a model turns out not to be shareable.
                       */}
-                    {entry.uploaders.length > 0 && (
-                        <span>uploaded by {entry.uploaders.join(', ')}</span>
-                    )}
+                    {entry.uploaders.length > 0 && <span>uploaded by {entry.uploaders.join(', ')}</span>}
                     <span>{formatTimestamp(entry.created_at)}</span>
                 </div>
 
                 {/* The credit line a CC-BY model must be shown with, always visible
                     rather than only in the edit form: it is the thing most likely to
                     be wrong, and a wrong credit is worse than a missing model. */}
-                {entry.attribution !== '' && (
-                    <div class="account-meta">
-                        <span>{entry.attribution}</span>
-                    </div>
-                )}
-
-                {editing && (
-                    <div class="account-edit">
-                        <label>
-                            Name
-                            <input
-                                oninput={(e: Event) => {
-                                    s.name = (e.target as HTMLInputElement).value
-                                }}
-                                type="text"
-                                value={s.name}
-                            />
-                        </label>
-                        <label>
-                            Category
-                            <select
-                                onchange={(e: Event) => {
-                                    s.category = (e.target as HTMLSelectElement).value
-                                }}
-                                value={s.category}
-                            >
-                                {CATEGORIES.map((c) => (
-                                    <option key={c} value={c}>
-                                        {c}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                        <label>
-                            Credit line
-                            <input
-                                oninput={(e: Event) => {
-                                    s.attribution = (e.target as HTMLInputElement).value
-                                }}
-                                placeholder={
-                                    entry.licence === 'cc-by'
-                                        ? 'Required for CC BY'
-                                        : 'Not required for this licence'
-                                }
-                                type="text"
-                                value={s.attribution}
-                            />
-                        </label>
-                        <div class="account-main">
-                            {/*
-                              * Saving marks it curated as well as writing the fields.
-                              * The two are the same act: an operator who has typed a
-                              * name and picked a category has reviewed it, and a
-                              * separate "approve" button would be a second click for
-                              * a decision already made.
-                              */}
-                            <button
-                                onclick={() => {
-                                    void curateEntry(entry.asset, {
-                                        attribution: s.attribution,
-                                        category: s.category,
-                                        name: s.name,
-                                        visibility: 'curated',
-                                    }).then((ok) => {
-                                        if (ok) {
-                                            $s.libraryEditing = null
-                                        }
-                                    })
-                                }}
-                                type="button"
-                            >
-                                Save and approve
-                            </button>
-                            <button
-                                class="ghost"
-                                onclick={() => {
-                                    $s.libraryEditing = null
-                                }}
-                                type="button"
-                            >
-                                Cancel
-                            </button>
-                            <span style="flex:1" />
-                            <span class="mono">{entry.asset.slice(0, 16)}</span>
-                        </div>
-                    </div>
-                )}
+                {entry.attribution !== '' && <div class="library-meta library-credit">{entry.attribution}</div>}
             </li>
         )
     }
+}
+
+/**
+ * Every stored file, for finding the ones nothing refers to. A table because it
+ * is one: the same seven facts about every file, compared down the column.
+ */
+class StoredFiles extends MithrilComponent {
+    view() {
+        return (
+            <Table<StoredAsset>
+                columns={[
+                    {
+                        cell: (asset) => <span class="library-mono">{asset.hash.slice(0, 12)}</span>,
+                        key: 'hash',
+                        label: 'File',
+                    },
+                    {
+                        align: 'end',
+                        cell: (asset) => asset.triangles.toLocaleString(),
+                        key: 'triangles',
+                        label: 'Triangles',
+                    },
+                    {align: 'end', cell: (asset) => formatBytes(asset.byte_size), key: 'size', label: 'Size'},
+                    {
+                        cell: (asset) =>
+                            asset.textures === 0
+                                ? 'none'
+                                : `${asset.textures}, ${asset.largest_texture} px`,
+                        key: 'textures',
+                        label: 'Textures',
+                    },
+                    {
+                        cell: (asset) => (
+                            <>
+                                {asset.in_world} in world · {asset.held_by} held
+                                {!asset.shared && <> · not shared</>}
+                            </>
+                        ),
+                        key: 'use',
+                        label: 'Use',
+                    },
+                    {cell: (asset) => formatTimestamp(asset.created_at), key: 'created', label: 'Uploaded'},
+                    {
+                        align: 'end',
+                        /*
+                         * Offered only for a file nothing refers to. The server
+                         * refuses the rest and says what is holding them, so this
+                         * is a courtesy rather than the guard.
+                         */
+                        cell: (asset) =>
+                            asset.in_world === 0 &&
+                            asset.held_by === 0 && (
+                                <Button onclick={() => void forgetAsset(asset)} size="sm" variant="ghost">
+                                    Remove
+                                </Button>
+                            ),
+                        key: 'actions',
+                        label: '',
+                    },
+                ]}
+                empty="Nothing has been uploaded to this server."
+                rowKey={(asset) => asset.hash}
+                rows={$s.libraryAssets}
+            />
+        )
+    }
+}
+
+/** A native file picker inside the fields' frame; the library has no file field. */
+function filePicker(
+    id: string,
+    label: string,
+    onpick: (file: File | null) => void,
+    keep?: (dom: HTMLInputElement) => void,
+) {
+    return (
+        <Field for={id} label={label}>
+            <input
+                accept={UPLOAD_ACCEPT}
+                class="library-file"
+                id={id}
+                onchange={(e: Event) => onpick((e.target as HTMLInputElement).files?.[0] ?? null)}
+                oncreate={keep ? (v: m.VnodeDOM) => keep(v.dom as HTMLInputElement) : undefined}
+                type="file"
+            />
+        </Field>
+    )
 }
 
 /**
@@ -389,6 +441,9 @@ class Upload extends MithrilComponent {
     // proxied File is refused by FormData. Every write to it happens in an event
     // handler or beside a state write, either of which redraws.
     file: File | null = null
+    /** The native input, so a finished upload can empty it along with the form. */
+    input: HTMLInputElement | null = null
+    id = uid('library-upload')
     s = local({attribution: '', busy: false, category: 'other', licence: 'own', name: '', share: true})
 
     view() {
@@ -398,117 +453,82 @@ class Upload extends MithrilComponent {
         const needsCredit = s.licence === 'cc-by'
 
         return (
-            <div class="panel">
-                <div class="section-head">
-                    <h1>Add a model</h1>
-                    <span style="flex:1" />
-                </div>
-                {/*
-                  * What the simulator accepts, said before a large upload finds out.
-                  * Built from `UPLOAD_LIMITS` (see `uploadFormatHint`), which a Rust
-                  * test pins to the numbers the server enforces.
-                  */}
-                <p class="hint">{uploadFormatHint()}</p>
-                <input
-                    accept={UPLOAD_ACCEPT}
-                    onchange={(e: Event) => {
-                        const picked = (e.target as HTMLInputElement).files?.[0] ?? null
-                        this.file = picked
-                        if (picked && s.name === '') {
-                            s.name = modelNameFromFile(picked.name)
-                        }
-                    }}
-                    type="file"
-                />
-                {file && (
-                    <>
-                        <input
-                            oninput={(e: Event) => {
-                                s.name = (e.target as HTMLInputElement).value
-                            }}
-                            placeholder="What is it?"
-                            type="text"
-                            value={s.name}
-                        />
-                        <select
-                            onchange={(e: Event) => {
-                                s.licence = (e.target as HTMLSelectElement).value
-                            }}
-                            value={s.licence}
-                        >
-                            <option value="own">I made it</option>
-                            <option value="cc0">CC0 — public domain</option>
-                            <option value="cc-by">CC BY — credit required</option>
-                            <option value="other">Something else</option>
-                        </select>
-                        {needsCredit && (
-                            <input
-                                oninput={(e: Event) => {
-                                    s.attribution = (e.target as HTMLInputElement).value
-                                }}
-                                placeholder="Credit line, e.g. “Bench by A. N. Other”"
-                                type="text"
-                                value={s.attribution}
-                            />
-                        )}
-                        {mayShare ? (
-                            <label>
-                                <input
-                                    checked={s.share}
-                                    onchange={(e: Event) => {
-                                        s.share = (e.target as HTMLInputElement).checked
-                                    }}
-                                    type="checkbox"
+            <Card title="Add a model">
+                <div class="library-form">
+                    {/*
+                      * What the simulator accepts, said before a large upload finds out.
+                      * Built from `UPLOAD_LIMITS` (see `uploadFormatHint`), which a Rust
+                      * test pins to the numbers the server enforces.
+                      */}
+                    <p class="library-note">{uploadFormatHint()}</p>
+                    {filePicker(
+                        this.id,
+                        'Model file',
+                        (picked) => {
+                            this.file = picked
+                            if (picked && s.name === '') {
+                                s.name = modelNameFromFile(picked.name)
+                            }
+                        },
+                        (dom) => {
+                            this.input = dom
+                        },
+                    )}
+                    {file && (
+                        <>
+                            <FieldText label="Name" model={bind(s, 'name')} placeholder="What is it?" />
+                            <FieldSelect label="Licence" model={bind(s, 'licence')} options={LICENCES} />
+                            {needsCredit && (
+                                <FieldText
+                                    label="Credit line"
+                                    model={bind(s, 'attribution')}
+                                    placeholder="e.g. “Bench by A. N. Other”"
                                 />
-                                Share it in the library
-                            </label>
-                        ) : (
-                            <p class="hint">
-                                This can be used on this server and can never be shared or handed on.
-                            </p>
-                        )}
-                        {s.share && mayShare && (
-                            <select
-                                onchange={(e: Event) => {
-                                    s.category = (e.target as HTMLSelectElement).value
-                                }}
-                                value={s.category}
-                            >
-                                {CATEGORIES.map((c) => (
-                                    <option key={c} value={c}>
-                                        {c}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                        <button
-                            disabled={s.busy}
-                            onclick={() => {
-                                s.busy = true
-                                void uploadModel(file, {
-                                    attribution: s.attribution,
-                                    category: s.category,
-                                    licence: s.licence,
-                                    name: s.name,
-                                    share: s.share,
-                                }).then((ok) => {
-                                    if (ok) {
-                                        this.file = null
-                                    }
-                                    s.busy = false
-                                    if (ok) {
-                                        s.name = ''
-                                        s.attribution = ''
-                                    }
-                                })
-                            }}
-                            type="button"
-                        >
-                            {s.busy ? 'Uploading…' : 'Upload'}
-                        </button>
-                    </>
-                )}
-            </div>
+                            )}
+                            {mayShare ? (
+                                <FieldCheckbox label="Share it in the library" model={bind(s, 'share')} />
+                            ) : (
+                                <p class="library-note">
+                                    This can be used on this server and can never be shared or handed on.
+                                </p>
+                            )}
+                            {s.share && mayShare && (
+                                <FieldSelect label="Category" model={bind(s, 'category')} options={CATEGORIES} />
+                            )}
+                            <div class="library-actions">
+                                <Button
+                                    loading={s.busy}
+                                    onclick={() => {
+                                        s.busy = true
+                                        void uploadModel(file, {
+                                            attribution: s.attribution,
+                                            category: s.category,
+                                            licence: s.licence,
+                                            name: s.name,
+                                            share: s.share,
+                                        }).then((ok) => {
+                                            if (ok) {
+                                                this.file = null
+                                                if (this.input) {
+                                                    this.input.value = ''
+                                                }
+                                            }
+                                            s.busy = false
+                                            if (ok) {
+                                                s.name = ''
+                                                s.attribution = ''
+                                            }
+                                        })
+                                    }}
+                                    variant="primary"
+                                >
+                                    Upload
+                                </Button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </Card>
         )
     }
 }
@@ -540,53 +560,51 @@ class StreetObjects extends MithrilComponent {
         // Only what has actually been published: a placeholder pointing at a model
         // nobody can fetch is a street with nothing in it.
         const usable = $s.library.filter((entry) => entry.visibility !== 'hidden')
+        const options = [
+            {label: 'Built-in shape', value: ''},
+            ...usable.map((entry) => ({label: entry.name, value: entry.asset})),
+        ]
 
         return (
-            <>
-                <div class="section-head">
-                    <h1>Street objects</h1>
-                    <span class="count">{$s.placeholders.length} replaced</span>
-                </div>
-                <ul class="account-list">
+            <Card flush subtitle={`${$s.placeholders.length} replaced`} title="Street objects">
+                <ul class="library-list">
                     {PLACEHOLDER_KINDS.map((kind) => {
                         const current = set.get(kind)
+                        const label = PLACEHOLDER_LABELS[kind] ?? kind
+                        // Choosing writes straight to the server, as the plain select
+                        // did: the model is a view of the stored placeholder, never a
+                        // draft of it.
+                        const choice = {
+                            get value(): string {
+                                return current?.asset ?? ''
+                            },
+                            set value(asset: string | null) {
+                                if (!asset) {
+                                    void clearPlaceholder(kind)
+                                    return
+                                }
+                                void setPlaceholder(kind, {
+                                    asset,
+                                    scale: current?.scale ?? 1,
+                                    yaw_offset: current?.yaw_offset ?? 0,
+                                })
+                            },
+                        }
                         return (
-                            <li class="account" key={kind}>
-                                <div class="account-main">
-                                    <span class="account-name">
-                                        {PLACEHOLDER_LABELS[kind] ?? kind}
-                                    </span>
-                                    <span style="flex:1" />
-                                    <select
-                                        onchange={(e: Event) => {
-                                            const asset = (e.target as HTMLSelectElement).value
-                                            if (asset === '') {
-                                                void clearPlaceholder(kind)
-                                                return
-                                            }
-                                            void setPlaceholder(kind, {
-                                                asset,
-                                                scale: current?.scale ?? 1,
-                                                yaw_offset: current?.yaw_offset ?? 0,
-                                            })
-                                        }}
-                                        value={current?.asset ?? ''}
-                                    >
-                                        <option value="">Built-in shape</option>
-                                        {usable.map((entry) => (
-                                            <option key={entry.asset} value={entry.asset}>
-                                                {entry.name}
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <button
+                            <li class="library-row" key={kind}>
+                                <div class="library-row__main">
+                                    <span class="library-name">{label}</span>
+                                    <span class="library-spacer" />
+                                    <FieldSelect class="library-street-model" model={choice} options={options} />
+                                    <Button
                                         onclick={() => {
                                             s.uploadingFor = s.uploadingFor === kind ? '' : kind
                                         }}
-                                        type="button"
+                                        size="sm"
+                                        variant={s.uploadingFor === kind ? 'secondary' : 'ghost'}
                                     >
                                         {s.uploadingFor === kind ? 'Cancel' : 'Upload…'}
-                                    </button>
+                                    </Button>
                                 </div>
                                 {s.uploadingFor === kind && (
                                     <StreetUpload
@@ -597,7 +615,7 @@ class StreetObjects extends MithrilComponent {
                                     />
                                 )}
                                 {current && (
-                                    <div class="account-meta">
+                                    <div class="library-street-fit">
                                         {/*
                                           * Scale and angle are here rather than at
                                           * upload because they are about *this* use of
@@ -606,51 +624,60 @@ class StreetObjects extends MithrilComponent {
                                           * street, and a model whose front faces +x
                                           * sits sideways on every pavement in the city
                                           * until this is turned.
+                                          *
+                                          * Native inputs in the fields' frame rather
+                                          * than `FieldNumber`, which writes on every
+                                          * keystroke: each write here makes every client
+                                          * rebuild its streets, so it waits for `change`.
                                           */}
-                                        <label>
-                                            scale
-                                            <input
-                                                onchange={(e: Event) => {
-                                                    const scale = Number(
-                                                        (e.target as HTMLInputElement).value,
-                                                    )
-                                                    void setPlaceholder(kind, {
-                                                        asset: current.asset,
-                                                        scale,
-                                                        yaw_offset: current.yaw_offset,
-                                                    })
-                                                }}
-                                                step="0.05"
-                                                type="number"
-                                                value={current.scale}
-                                            />
-                                        </label>
-                                        <label>
-                                            turn°
-                                            <input
-                                                onchange={(e: Event) => {
-                                                    const yaw = Number(
-                                                        (e.target as HTMLInputElement).value,
-                                                    )
-                                                    void setPlaceholder(kind, {
-                                                        asset: current.asset,
-                                                        scale: current.scale,
-                                                        yaw_offset: yaw,
-                                                    })
-                                                }}
-                                                step="15"
-                                                type="number"
-                                                value={current.yaw_offset}
-                                            />
-                                        </label>
-                                        <span>set by {current.set_by}</span>
+                                        <Field for={`street-scale-${kind}`} label="Scale">
+                                            <div class="m-input">
+                                                <input
+                                                    class="m-input__native"
+                                                    id={`street-scale-${kind}`}
+                                                    inputmode="decimal"
+                                                    onchange={(e: Event) => {
+                                                        const scale = Number((e.target as HTMLInputElement).value)
+                                                        void setPlaceholder(kind, {
+                                                            asset: current.asset,
+                                                            scale,
+                                                            yaw_offset: current.yaw_offset,
+                                                        })
+                                                    }}
+                                                    step="0.05"
+                                                    type="number"
+                                                    value={current.scale}
+                                                />
+                                            </div>
+                                        </Field>
+                                        <Field for={`street-turn-${kind}`} label="Turn (°)">
+                                            <div class="m-input">
+                                                <input
+                                                    class="m-input__native"
+                                                    id={`street-turn-${kind}`}
+                                                    inputmode="decimal"
+                                                    onchange={(e: Event) => {
+                                                        const yaw = Number((e.target as HTMLInputElement).value)
+                                                        void setPlaceholder(kind, {
+                                                            asset: current.asset,
+                                                            scale: current.scale,
+                                                            yaw_offset: yaw,
+                                                        })
+                                                    }}
+                                                    step="15"
+                                                    type="number"
+                                                    value={current.yaw_offset}
+                                                />
+                                            </div>
+                                        </Field>
+                                        <span class="library-meta">set by {current.set_by}</span>
                                     </div>
                                 )}
                             </li>
                         )
                     })}
                 </ul>
-            </>
+            </Card>
         )
     }
 }
@@ -682,7 +709,16 @@ interface StreetUploadAttrs {
 class StreetUpload extends MithrilComponent<StreetUploadAttrs> {
     // A plain field for the reason `Upload.file` is one.
     file: File | null = null
+    id = uid('street-upload')
     s = local({attribution: '', busy: false, licence: 'own'})
+    // A CC BY model has to be shown with its credit, and this form shares it at
+    // once, so the line is asked for before the button lets go.
+    v = validations({
+        attribution: validation(bind(this.s, 'attribution'), [
+            (value: string) =>
+                this.s.licence === 'cc-by' && value.trim() === '' ? 'A CC BY model needs its credit line' : null,
+        ]),
+    })
 
     view(vnode: m.Vnode<StreetUploadAttrs>) {
         const {kind, onDone} = vnode.attrs
@@ -691,58 +727,44 @@ class StreetUpload extends MithrilComponent<StreetUploadAttrs> {
         const label = PLACEHOLDER_LABELS[kind] ?? kind
 
         return (
-            <div class="account-meta">
-                <input
-                    accept={UPLOAD_ACCEPT}
-                    onchange={(e: Event) => {
-                        this.file = (e.target as HTMLInputElement).files?.[0] ?? null
-                    }}
-                    type="file"
-                />
-                <select
-                    onchange={(e: Event) => {
-                        s.licence = (e.target as HTMLSelectElement).value
-                    }}
-                    value={s.licence}
-                >
-                    <option value="own">I made it</option>
-                    <option value="cc0">CC0 — public domain</option>
-                    <option value="cc-by">CC BY — credit required</option>
-                </select>
+            <div class="library-street-upload">
+                {filePicker(this.id, 'Model file', (picked) => {
+                    this.file = picked
+                })}
+                <FieldSelect label="Licence" model={bind(s, 'licence')} options={LICENCES.slice(0, 3)} />
                 {s.licence === 'cc-by' && (
-                    <input
-                        oninput={(e: Event) => {
-                            s.attribution = (e.target as HTMLInputElement).value
-                        }}
-                        placeholder="Credit line"
-                        type="text"
-                        value={s.attribution}
+                    <FieldText
+                        label="Credit line"
+                        model={bind(s, 'attribution')}
+                        required
+                        validation={this.v.attribution}
                     />
                 )}
-                <button
-                    disabled={s.busy || !file || (s.licence === 'cc-by' && s.attribution.trim() === '')}
-                    onclick={() => {
-                        if (!file) return
-                        s.busy = true
-                        void uploadModel(file, {
-                            attribution: s.attribution,
-                            category: STREET_CATEGORY[kind] ?? 'furniture',
-                            licence: s.licence,
-                            name: modelNameFromFile(file.name),
-                            share: true,
-                        })
-                            .then((asset) =>
-                                asset ? setPlaceholder(kind, {asset, scale: 1, yaw_offset: 0}) : false,
-                            )
-                            .then((ok) => {
-                                s.busy = false
-                                if (ok) onDone()
+                <div class="library-actions">
+                    <Button
+                        disabled={!file || !this.v.$valid}
+                        loading={s.busy}
+                        onclick={() => {
+                            if (!file || !this.v.$validate()) return
+                            s.busy = true
+                            void uploadModel(file, {
+                                attribution: s.attribution,
+                                category: STREET_CATEGORY[kind] ?? 'furniture',
+                                licence: s.licence,
+                                name: modelNameFromFile(file.name),
+                                share: true,
                             })
-                    }}
-                    type="button"
-                >
-                    {s.busy ? 'Uploading…' : `Use for ${label.toLowerCase()}`}
-                </button>
+                                .then((asset) => (asset ? setPlaceholder(kind, {asset, scale: 1, yaw_offset: 0}) : false))
+                                .then((ok) => {
+                                    s.busy = false
+                                    if (ok) onDone()
+                                })
+                        }}
+                        variant="primary"
+                    >
+                        Use for {label.toLowerCase()}
+                    </Button>
+                </div>
             </div>
         )
     }

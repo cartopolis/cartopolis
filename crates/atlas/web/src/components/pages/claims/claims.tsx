@@ -1,4 +1,7 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Button, Table} from '@garage44/mithril/components'
+
+import type {OwnedBuilding} from '@/types'
 
 import {$s} from '@/app'
 import {loadClaims, releaseClaim} from '@/lib/accounts'
@@ -24,75 +27,70 @@ export class Claims extends MithrilComponent {
         const s = this.s
         const claims = $s.claims
 
-        return (
-            <>
-                <div class="section-head">
-                    <h1>Buildings</h1>
-                    <span class="count">{claims.length}</span>
-                </div>
+        /*
+         * Two presses, like the account delete: releasing a building takes it off
+         * somebody who believes it is theirs, and there is no undo but asking them
+         * to claim it again first.
+         */
+        const release = (claim: OwnedBuilding) =>
+            s.confirming === claim.pand_id ? (
+                <span class="claims-actions">
+                    <Button
+                        onclick={() => {
+                            s.confirming = ''
+                            void releaseClaim(claim)
+                        }}
+                        size="sm"
+                        variant="danger"
+                    >
+                        Release
+                    </Button>
+                    <Button
+                        onclick={() => {
+                            s.confirming = ''
+                        }}
+                        size="sm"
+                        variant="ghost"
+                    >
+                        Cancel
+                    </Button>
+                </span>
+            ) : (
+                <Button
+                    onclick={() => {
+                        s.confirming = claim.pand_id
+                    }}
+                    size="sm"
+                    variant="ghost"
+                >
+                    Release
+                </Button>
+            )
 
-                {claims.length === 0 ? (
-                    <div class="empty">Nobody has claimed a building yet.</div>
-                ) : (
-                    <ul class="account-list">
-                        {claims.map((claim) => (
-                            <li class="account" key={claim.pand_id}>
-                                <div class="account-main">
-                                    <span class="account-name">{claim.address}</span>
-                                    <span style="flex:1" />
-                                    {/*
-                                      * Two presses, like the account delete: releasing
-                                      * a building takes it off somebody who believes it
-                                      * is theirs, and there is no undo but asking them
-                                      * to claim it again first.
-                                      */}
-                                    {s.confirming === claim.pand_id ? (
-                                        <>
-                                            <button
-                                                class="danger"
-                                                onclick={() => {
-                                                    s.confirming = ''
-                                                    void releaseClaim(claim)
-                                                }}
-                                                type="button"
-                                            >
-                                                Release
-                                            </button>
-                                            <button
-                                                class="ghost"
-                                                onclick={() => {
-                                                    s.confirming = ''
-                                                }}
-                                                type="button"
-                                            >
-                                                Cancel
-                                            </button>
-                                        </>
-                                    ) : (
-                                        <button
-                                            class="ghost"
-                                            onclick={() => {
-                                                s.confirming = claim.pand_id
-                                            }}
-                                            type="button"
-                                        >
-                                            Release
-                                        </button>
-                                    )}
-                                </div>
-                                <div class="account-meta">
-                                    <span>{claim.username || '[deleted]'}</span>
-                                    <span>{formatTimestamp(claim.claimed_at)}</span>
-                                    {/* The join key to the geometry, and the thing to
-                                        quote when a claim has to be traced to a
-                                        building. */}
-                                    <span class="mono">{claim.pand_id}</span>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                )}
-            </>
+        return (
+            <div class="claims">
+                <p class="claims-count">
+                    {claims.length} {claims.length === 1 ? 'building' : 'buildings'} claimed
+                </p>
+                <Table
+                    columns={[
+                        {key: 'address', label: 'Address'},
+                        {key: 'username', label: 'Owner', cell: (c: OwnedBuilding) => c.username || '[deleted]'},
+                        {key: 'claimed_at', label: 'Claimed', cell: (c: OwnedBuilding) => formatTimestamp(c.claimed_at)},
+                        // The join key to the geometry, and the thing to quote when a
+                        // claim has to be traced to a building.
+                        {
+                            key: 'pand_id',
+                            label: 'Building',
+                            cell: (c: OwnedBuilding) => <span class="claims-pand">{c.pand_id}</span>,
+                        },
+                        {key: 'release', label: '', align: 'end', cell: release},
+                    ]}
+                    empty="Nobody has claimed a building yet."
+                    rowKey={(c: OwnedBuilding) => c.pand_id}
+                    rows={claims}
+                />
+            </div>
         )
     }
 }

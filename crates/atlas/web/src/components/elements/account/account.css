@@ -1,0 +1,107 @@
+/*
+ * A list of records, one bordered row each: the account list, and what any
+ * admin page that is a list of things with a "Manage" on the right can share.
+ */
+.record-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.record {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    padding: var(--m-space-3) var(--m-space-4);
+
+    &.is-disabled {
+        /* Dimmed, but never hidden: a disabled account is the one an operator is
+           most likely to be looking for. */
+        opacity: 0.62;
+    }
+
+    /* The record whose form the context panel holds, so the list says which
+       one is being edited without anyone matching names. */
+    &.is-selected {
+        border-color: var(--m-accent);
+        box-shadow: inset 3px 0 0 var(--m-accent);
+        opacity: 1;
+    }
+}
+
+.record-main {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+.record-name {
+    color: var(--m-text-strong);
+    font-weight: 600;
+    /* Usernames are user input and can be 64 characters of anything. */
+    overflow-wrap: anywhere;
+}
+
+.record-spacer {
+    flex: 1;
+}
+
+.record-meta {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin-top: var(--m-space-1);
+
+    /* Several facts in one row are separated by a gap on the row rather than
+       punctuation in the markup, so a row with one fact is unchanged. */
+    & > span + span::before {
+        color: var(--m-text-faint);
+        content: "·";
+        padding: 0 var(--m-space-2);
+    }
+}
+
+.account-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-1);
+}
+
+/* ── The form in the context panel ─────────────────────────────────────── */
+
+.account-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.account-form-section {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    padding-top: var(--m-space-3);
+
+    & h3 {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin: 0;
+        text-transform: uppercase;
+    }
+}
+
+.account-form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+/* Pushes Close to the far end of the panel footer, away from Delete. */
+.account-form-spacer {
+    flex: 1;
+}

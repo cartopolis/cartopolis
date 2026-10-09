@@ -1,0 +1,74 @@
+.roles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+.roles-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-3);
+    justify-content: space-between;
+}
+
+.roles-count,
+.role-members {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+/* The open create form takes the whole row under the count, not a slot beside it. */
+.roles-new {
+    flex-basis: 100%;
+}
+
+.role-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+/* Four buttons do not fit a phone's card footer on one line. */
+.role .m-card__foot {
+    flex-wrap: wrap;
+}
+
+/* Save and Undo on the left, Delete on the right. */
+.role-spacer {
+    flex: 1;
+}
+
+.role-grid {
+    display: grid;
+    gap: var(--m-space-3);
+    /* min() so a 16rem column never overflows a 360px screen. */
+    grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+    margin-top: var(--m-space-2);
+}
+
+.role-group {
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-1);
+    margin: 0;
+    min-width: 0;
+    padding: var(--m-space-2) var(--m-space-3) var(--m-space-3);
+
+    & legend {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        padding: 0 var(--m-space-1);
+        text-transform: uppercase;
+    }
+}
+
+/* A permission that is trust rather than a feature says so beside its box. */
+.role-warning {
+    color: var(--m-warning);
+    font-size: var(--m-font-size-sm);
+}

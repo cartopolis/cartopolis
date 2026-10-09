@@ -1,0 +1,27 @@
+/* `/buildings`: the player's sign-in, then their buildings (`BuildingPicker`). */
+.buildings-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+.buildings-page__hint {
+    color: var(--m-text-dim);
+    margin: 0;
+}
+
+/* A narrow card a little way down the page, as the operator's sign-in is. */
+.buildings-signin {
+    margin: 8vh auto 0;
+    max-width: 24rem;
+
+    .m-card__body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--m-space-3);
+    }
+
+    .m-button[type='submit'] {
+        width: 100%;
+    }
+}

@@ -1,0 +1,23 @@
+.accounts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+}
+
+.accounts-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-3);
+    justify-content: space-between;
+}
+
+.accounts-count {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+/* The open create form takes the whole row under the count, not a slot beside it. */
+.accounts-new {
+    flex-basis: 100%;
+}

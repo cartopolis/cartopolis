@@ -350,8 +350,6 @@ export interface AdminState extends Record<string, unknown> {
     claims: OwnedBuilding[]
     /** Buildings whose survey shell is replaced; `null` until atlas answers. */
     overrides: BuildingOverride[] | null
-    /** Which account's row is expanded into its edit form, by id. */
-    editing: string | null
     /** True between "signed in" and the first accounts response. */
     loading: boolean
     notifications: Notification[]

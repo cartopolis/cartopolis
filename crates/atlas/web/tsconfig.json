@@ -19,7 +19,6 @@
     "types": [
       "bun"
     ],
-    "baseUrl": ".",
     "paths": {
       "@/*": [
         "./src/*"
@@ -28,6 +27,7 @@
   },
   "include": [
     "src/**/*",
-    "build.ts"
+    "build.ts",
+    "mock.ts"
   ]
 }

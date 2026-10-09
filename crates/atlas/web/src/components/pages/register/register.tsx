@@ -1,8 +1,10 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Alert, Button, Card, FieldText} from '@garage44/mithril/components'
+import {validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
 import {ADMIN} from '@/lib/base'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {register, whatIsMissing} from '@/lib/signup'
 
 /**
@@ -17,48 +19,84 @@ import {register, whatIsMissing} from '@/lib/signup'
 export class Register extends MithrilComponent {
     s = local({busy: false, email: '', password: '', sent: false, username: ''})
 
+    /*
+     * The per-field half of `whatIsMissing`, with its sentences, so each problem
+     * shows under the field it is about. `whatIsMissing` stays the submit gate
+     * (it is the tested copy of the server's rules); these only decide where the
+     * sentence goes. The limits are read from `$s.registration` when a rule runs,
+     * not when it is built, because the rules arrive after this component may
+     * have been constructed.
+     */
+    v = validations({
+        email: validation(bind(this.s, 'email'))
+            .required('That does not look like an email address.')
+            .check((value) => {
+                // Deliberately shallow — see `whatIsMissing`.
+                const address = value.trim()
+                const at = address.lastIndexOf('@')
+                return at >= 1 && address.slice(at + 1).includes('.')
+            }, 'That does not look like an email address.'),
+        password: validation(bind(this.s, 'password'))
+            .required()
+            .rule((value) => {
+                const min = $s.registration?.min_password_length ?? 0
+                return value.length >= min ? null : `The password needs at least ${min} characters.`
+            }),
+        username: validation(bind(this.s, 'username'))
+            .required('Pick a username.')
+            .rule((value) => {
+                const max = $s.registration?.max_username_length ?? Infinity
+                return value.trim().length <= max ? null : `That username is longer than ${max} characters.`
+            }),
+    })
+
     view() {
         const s = this.s
         const rules = $s.registration
 
         if (!rules) {
             return (
-                <div class="card signin">
-                    <h1>Sign up</h1>
-                    <p class="hint">
-                        This server did not answer when we asked whether it takes registrations. It may be
-                        down, or older than this page.
-                    </p>
+                <div class="auth">
+                    <Card title="Sign up">
+                        <Alert tone="warning">
+                            This server did not answer when we asked whether it takes registrations. It may be
+                            down, or older than this page.
+                        </Alert>
+                    </Card>
                 </div>
             )
         }
 
         if (!rules.open) {
             return (
-                <div class="card signin">
-                    <h1>Sign up</h1>
-                    <p class="hint">
-                        This server does not take registrations — accounts on it are made by its operator.
-                    </p>
-                    <button class="ghost" onclick={() => m.route.set(ADMIN)} type="button">
-                        Back to sign in
-                    </button>
+                <div class="auth">
+                    <Card title="Sign up">
+                        <Alert tone="info">
+                            This server does not take registrations — accounts on it are made by its operator.
+                        </Alert>
+                        <div class="auth__actions">
+                            <Button onclick={() => m.route.set(ADMIN)} variant="ghost">
+                                Back to sign in
+                            </Button>
+                        </div>
+                    </Card>
                 </div>
             )
         }
 
         if (s.sent) {
             return (
-                <div class="card signin">
-                    <h1>Check your inbox</h1>
-                    <p class="hint">
-                        We've sent a link to <b>{s.email.trim()}</b>. Open it to finish signing up — it works
-                        once and expires in {rules.verification_valid_hours} hours.
-                    </p>
-                    <p class="hint">
-                        Nothing arrived? It may be in a spam folder.{' '}
-                        <a href={`/verify?resend=${encodeURIComponent(s.email.trim())}`}>Send another</a>.
-                    </p>
+                <div class="auth">
+                    <Card title="Check your inbox">
+                        <Alert tone="success">
+                            We've sent a link to <b>{s.email.trim()}</b>. Open it to finish signing up — it
+                            works once and expires in {rules.verification_valid_hours} hours.
+                        </Alert>
+                        <p class="auth__lede">
+                            Nothing arrived? It may be in a spam folder.{' '}
+                            <a href={`/verify?resend=${encodeURIComponent(s.email.trim())}`}>Send another</a>.
+                        </p>
+                    </Card>
                 </div>
             )
         }
@@ -73,7 +111,7 @@ export class Register extends MithrilComponent {
 
         const submit = async (e: Event) => {
             e.preventDefault()
-            if (missing || s.busy) {
+            if (!this.v.$validate() || missing || s.busy) {
                 return
             }
             s.busy = true
@@ -90,64 +128,52 @@ export class Register extends MithrilComponent {
 
         return (
             // A real <form>, so the phone keyboard shows a Go key and Enter submits.
-            <form class="card signin" onsubmit={submit}>
-                <h1>Sign up</h1>
-                <p class="hint">
-                    One account for the world and for this page. We'll send a link to confirm your address
-                    before it works.
-                </p>
-                <label class="field">
-                    <span>Username</span>
-                    <input
+            <form class="auth" novalidate onsubmit={submit}>
+                <Card title="Sign up">
+                    <p class="auth__lede">
+                        One account for the world and for this page. We'll send a link to confirm your address
+                        before it works.
+                    </p>
+                    {/*
+                      * Errors wait until a field is left or the form is submitted
+                      * (the library's rule, and the one this form had): on an
+                      * untouched form "Pick a username" is not advice, it is the form
+                      * telling somebody off for not having filled it in yet.
+                      */}
+                    <FieldText
                         autocomplete="username"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.username = (e.target as HTMLInputElement).value
-                        }}
-                        type="text"
-                        value={s.username}
+                        help={`Up to ${rules.max_username_length} characters.`}
+                        label="Username"
+                        model={bind(s, 'username')}
+                        validation={this.v.username}
                     />
-                </label>
-                <label class="field">
-                    <span>Email</span>
-                    <input
+                    <FieldText
                         autocomplete="email"
                         disabled={s.busy}
-                        inputmode="email"
-                        oninput={(e: Event) => {
-                            s.email = (e.target as HTMLInputElement).value
-                        }}
+                        label="Email"
+                        model={bind(s, 'email')}
                         type="email"
-                        value={s.email}
+                        validation={this.v.email}
                     />
-                </label>
-                <label class="field">
-                    <span>Password</span>
-                    <input
+                    <FieldText
                         autocomplete="new-password"
                         disabled={s.busy}
-                        oninput={(e: Event) => {
-                            s.password = (e.target as HTMLInputElement).value
-                        }}
-                        placeholder={`At least ${rules.min_password_length} characters`}
+                        help={`At least ${rules.min_password_length} characters.`}
+                        label="Password"
+                        model={bind(s, 'password')}
                         type="password"
-                        value={s.password}
+                        validation={this.v.password}
                     />
-                </label>
-                {/*
-                  * Shown only once something has been typed. On an untouched form
-                  * "Pick a username" is not advice, it is the form telling somebody
-                  * off for not having filled it in yet.
-                  */}
-                {missing && (s.username || s.email || s.password) ? (
-                    <p class="hint form-problem">{missing}</p>
-                ) : null}
-                <button class="primary" disabled={!!missing || s.busy} type="submit">
-                    {s.busy ? 'Sending…' : 'Sign up'}
-                </button>
-                <button class="ghost" disabled={s.busy} onclick={() => m.route.set(ADMIN)} type="button">
-                    I already have an account
-                </button>
+                    <div class="auth__actions">
+                        <Button disabled={!!missing || !this.v.$valid} loading={s.busy} type="submit" variant="primary">
+                            Sign up
+                        </Button>
+                        <Button disabled={s.busy} onclick={() => m.route.set(ADMIN)} variant="ghost">
+                            I already have an account
+                        </Button>
+                    </div>
+                </Card>
             </form>
         )
     }

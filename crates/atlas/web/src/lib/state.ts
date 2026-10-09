@@ -39,7 +39,6 @@ export const persistentState: AdminState = {
     autopilot: null,
     claims: [],
     overrides: null,
-    editing: null,
     /*
      * Not persisted, for the reason the account list is not: a catalogue rendered
      * from localStorage shows models an operator may have hidden from another tab,
@@ -103,7 +102,6 @@ export const volatileState: Partial<AdminState> = {
     autopilot: null,
     claims: [] as OwnedBuilding[],
     overrides: null,
-    editing: null,
     library: [] as LibraryEntry[],
     libraryAssets: [] as StoredAsset[],
     libraryEditing: null,

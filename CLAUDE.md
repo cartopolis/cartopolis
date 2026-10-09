@@ -317,7 +317,10 @@ it compile-checked, so a test does it instead: `web_mirror` in the simulator's
 integration suite (and `autopilot::web_mirror` in atlas, for the autopilot's
 config) reads the TypeScript through `cartopolis_core::ts_mirror` and fails when
 the fields differ. Change an account field and change it there too. `docs/notes/hosted-simulator.md` has the
-deployment.
+deployment. **Its controls, layout and light/dark theme are the fork's component library**
+(`@garage44/mithril/components` and `/validation`): use those rather than hand-built inputs or a fresh
+colour, and `bun run mock` in `crates/atlas/web` shows every page against a stand-in API with no backend
+(the web README has the details).
 
 This is a **Cargo workspace** with thirteen crates:
 
