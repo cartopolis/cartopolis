@@ -21,14 +21,25 @@ import type {ChatEvent, Credential} from './protocol.ts'
 
 /** The slice of `ChatCore` (wasm-bindgen's class) this file uses. */
 export interface ChatCoreApi {
+    add_to_chat(channel: string, who: string): void
+    add_workspace_member(workspace: string, who: string): void
     chats(): string
+    create_workspace(name: string): void
     free(): void
     is_open(): boolean
+    join_channel(workspace: string, channel: string): void
+    list_workspaces(): void
     next_frame(): Uint8Array | undefined
     open(saved?: Uint8Array | null): void
     receive(frame: Uint8Array): void
-    send_point(channel: string, pointJson: string, nowMs: number): void
-    send_text(channel: string, body: string, nowMs: number): void
+    // Every send answers the request id it went out under (see `Sent`).
+    send_delete(channel: string, target: number, nowMs: number): number
+    send_edit(channel: string, target: number, body: string, nowMs: number): number
+    send_point(channel: string, pointJson: string, nowMs: number): number
+    send_reaction(channel: string, target: number, emoji: string, remove: boolean, nowMs: number): number
+    send_reply(channel: string, parent: number, body: string, nowMs: number): number
+    send_text(channel: string, body: string, nowMs: number): number
+    start_channel(workspace: string, name: string, topic: string, isPrivate: boolean): void
     start_direct(username: string): void
     start_group(name: string, members: string[]): void
     take_events(): string
@@ -125,12 +136,55 @@ export class ChatConnection {
         return this.step((core) => core.start_group(name, members))
     }
 
-    sendText(channel: string, body: string): Promise<void> {
-        return this.step((core) => core.send_text(channel, body, Date.now()))
+    /**
+     * Say something in a chat, or in the thread under `parent`. Answers the
+     * request id, which a `sent` event later pairs with the message's id.
+     */
+    sendText(channel: string, body: string, parent: number | null = null): Promise<number> {
+        return this.step((core) => parent === null
+            ? core.send_text(channel, body, Date.now())
+            : core.send_reply(channel, parent, body, Date.now()))
     }
 
-    sendPoint(channel: string, pointJson: string): Promise<void> {
+    sendPoint(channel: string, pointJson: string): Promise<number> {
         return this.step((core) => core.send_point(channel, pointJson, Date.now()))
+    }
+
+    react(channel: string, target: number, emoji: string, remove: boolean): Promise<number> {
+        return this.step((core) => core.send_reaction(channel, target, emoji, remove, Date.now()))
+    }
+
+    edit(channel: string, target: number, body: string): Promise<number> {
+        return this.step((core) => core.send_edit(channel, target, body, Date.now()))
+    }
+
+    remove(channel: string, target: number): Promise<number> {
+        return this.step((core) => core.send_delete(channel, target, Date.now()))
+    }
+
+    createWorkspace(name: string): Promise<void> {
+        return this.step((core) => core.create_workspace(name))
+    }
+
+    addWorkspaceMember(workspace: string, who: string): Promise<void> {
+        return this.step((core) => core.add_workspace_member(workspace, who))
+    }
+
+    startChannel(workspace: string, name: string, topic: string, isPrivate: boolean): Promise<void> {
+        return this.step((core) => core.start_channel(workspace, name, topic, isPrivate))
+    }
+
+    joinChannel(workspace: string, channel: string): Promise<void> {
+        return this.step((core) => core.join_channel(workspace, channel))
+    }
+
+    addToChat(channel: string, who: string): Promise<void> {
+        return this.step((core) => core.add_to_chat(channel, who))
+    }
+
+    /** This person's full address, once signed in. */
+    get address(): string | undefined {
+        return this.core?.address()
     }
 
     /** Wait for everything queued so far. */
@@ -176,20 +230,24 @@ export class ChatConnection {
     }
 
     /** A step the caller asked for; rejects if the keys are not open. */
-    private step(f: (core: ChatCoreApi) => void): Promise<void> {
+    private step<T>(f: (core: ChatCoreApi) => T): Promise<T> {
         return this.enqueue(async () => {
             const core = this.core
             if (!core?.is_open()) throw new Error('chats are not connected yet')
-            f(core)
+            const answer = f(core)
             await this.afterStep(core)
+            return answer
         })
     }
 
-    private enqueue(f: () => Promise<void>): Promise<void> {
+    private enqueue<T>(f: () => Promise<T>): Promise<T> {
         const run = this.queue.then(f)
         // The queue itself never rejects, or one failed step would stall every
         // later frame; the caller still sees its own failure through `run`.
-        this.queue = run.catch((e) => this.opts.onEvent({kind: 'error', message: String(e?.message ?? e)}))
+        this.queue = run.then(
+            () => undefined,
+            (e) => this.opts.onEvent({kind: 'error', message: String(e?.message ?? e)}),
+        )
         return run
     }
 
@@ -224,6 +282,8 @@ export class ChatConnection {
         const saved = await this.opts.store.get(stateKey(this.opts.server, username))
         try {
             core.open(saved ?? null)
+            // The workspaces come with being signed in: every page wants them.
+            core.list_workspaces()
         } catch (e) {
             // Never start a new device over keys that would not load: that would
             // orphan every chat they were in. Say so and stay closed.

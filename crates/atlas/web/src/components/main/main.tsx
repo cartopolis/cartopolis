@@ -8,6 +8,7 @@ import {Autopilot} from '@/components/pages/autopilot/autopilot'
 import {Claims} from '@/components/pages/claims/claims'
 import {Home} from '@/components/pages/home/home'
 import {Building} from '@/components/pages/building/building'
+import {Chat} from '@/components/pages/chat/chat'
 import {Buildings} from '@/components/pages/buildings/buildings'
 import {Library} from '@/components/pages/library/library'
 import {Login} from '@/components/pages/login/login'
@@ -214,6 +215,9 @@ export function mountRoutes(root: Element) {
         // house; links to it are in sent mail.
         '/house': page(Buildings),
         '/building/:pand': page(Building, 'wide'),
+        // Full-screen: a work chat brings its own chrome (the rail, the
+        // sidebar), so it is not put inside the site's header and column.
+        '/chat': {render: () => m(Chat)},
         [ADMIN]: page(AdminView, 'admin'),
         '/:rest...': page(Home),
     })

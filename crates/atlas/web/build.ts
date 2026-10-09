@@ -63,6 +63,9 @@ async function build() {
     }
 
     await Bun.write(path.join(dist, 'index.html'), Bun.file(path.join(root, 'src/index.html')))
+    // The app's mark, for the chat's rail and the welcome card: the same file
+    // the viewer uses.
+    await Bun.write(path.join(dist, 'icon.svg'), Bun.file(path.join(root, '../../../assets/icon/cartopolis.svg')))
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
@@ -161,10 +164,47 @@ await build()
 if (serve) {
     const {mockApi} = mock ? await import('./mock') : {mockApi: null}
 
-    Bun.serve({
+    /**
+     * `/ws` is the simulator's WebSocket, which the chat worker opens on its own
+     * origin as it does in production. Bridged message for message: every frame
+     * is one binary message either way, so nothing here reads them. The mock
+     * has no simulator behind it, so under `--mock` the chat stays signed out.
+     */
+    type Bridge = {upstream: WebSocket; queued: (string | Uint8Array)[]}
+    const wsUpstream = API.replace(/^http/, 'ws') + '/ws'
+
+    Bun.serve<Bridge>({
         port: PORT,
-        async fetch(req) {
+        websocket: {
+            open(ws) {
+                const up = ws.data.upstream
+                up.binaryType = 'arraybuffer'
+                up.onopen = () => {
+                    for (const m of ws.data.queued) up.send(m)
+                    ws.data.queued = []
+                }
+                up.onmessage = (e) => ws.send(new Uint8Array(e.data as ArrayBuffer))
+                up.onclose = () => ws.close()
+            },
+            message(ws, msg) {
+                const up = ws.data.upstream
+                const bytes = typeof msg === 'string' ? msg : new Uint8Array(msg)
+                if (up.readyState === WebSocket.OPEN) up.send(bytes)
+                else ws.data.queued.push(bytes)
+            },
+            close(ws) {
+                ws.data.upstream.close()
+            },
+        },
+        async fetch(req, server) {
             const url = new URL(req.url)
+
+            if (url.pathname === '/ws' && !mock) {
+                const upstream = new WebSocket(wsUpstream)
+                if (server.upgrade(req, {data: {queued: [], upstream}})) return undefined
+                upstream.close()
+                return new Response('expected a WebSocket', {status: 400})
+            }
 
             // Answered here rather than proxied, pipeline prefix included: the
             // mock stands in for both upstreams. A route it does not know is a

@@ -144,6 +144,34 @@ try {
     if (bob.events.some((e) => e.kind === 'opened' && e.channel !== channel)) {
         throw new Error('bob came back as a new device and opened a different chat')
     }
+
+    // A workspace with a channel: Bob asks in and Ann's connection — not Ann —
+    // lets him in, because only a member's device can add anybody.
+    await ann.conn.createWorkspace('Atelier Noord')
+    const ws = await ann.until('workspace', (e) => (e.kind === 'workspaces' && e.workspaces[0] ? e.workspaces[0].id : undefined))
+    await ann.conn.addWorkspaceMember(ws, 'bob')
+    await ann.conn.startChannel(ws, 'General', 'everything', false)
+    const general = await ann.until('channel', (e) =>
+        e.kind === 'workspaces' && e.workspaces[0]?.channels[0]?.joined ? e.workspaces[0].channels[0].channel : undefined)
+    step('workspace and #general created')
+    await bob.until('workspace seen', (e) =>
+        e.kind === 'workspaces' && e.workspaces[0]?.channels.some((c) => c.channel === general) ? true : undefined)
+    await bob.conn.joinChannel(ws, general)
+    await bob.until('#general opened', (e) => (e.kind === 'opened' && e.channel === general ? true : undefined))
+    await bob.until('#general named', (e) => (e.kind === 'named' && e.channel === general && e.name === '#general' ? true : undefined))
+    step('bob asked into #general and ann\'s device let him in')
+
+    // A line, a reply in its thread, a reaction: all name it by its seq.
+    const request = await ann.conn.sendText(general, 'standup at ten')
+    const seq = await ann.until('sent', (e) => (e.kind === 'sent' && e.request === request ? e.seq : undefined))
+    await bob.line('ann@localhost', 'standup at ten')
+    await bob.conn.sendText(general, 'make it half past', seq)
+    await ann.until('reply in the thread', (e) =>
+        e.kind === 'line' && e.parent === seq && e.body === 'make it half past' ? true : undefined)
+    await bob.conn.react(general, seq, '👍', false)
+    await ann.until('reaction', (e) => (e.kind === 'reaction' && e.target === seq && e.emoji === '👍' ? true : undefined))
+    step('a thread reply and a reaction, both naming the line by its place in the log')
+
     ann.conn.stop()
     bob.conn.stop()
     console.log('ok')

@@ -86,6 +86,51 @@ clients show a person on their own server by bare name
 The split with the fediverse stands: ActivityPub is for public posts about
 places, and private chats and channels never go over it.
 
+## Workspaces and channels (protocol 38)
+
+A workspace is a named set of people and channels on one server
+(`simulator::workspaces`, V29). A channel is an ordinary encrypted group chat
+that the server also lists by **name and topic, in the clear**, so people not
+yet in it can see it and ask in. Those two strings, the member list and who is
+in which channel are what the server knows; what is said stays sealed.
+
+**The server cannot add anybody to an encrypted chat.** Only a member's device
+can, by claiming the newcomer's key packages and committing. So asking into a
+public channel records a row in `channel_joins` and the server hands it to
+**one** connected member device (`ChannelJoinRequest`), or to the next one that
+connects. One, not all: every device that tried would spend one of the
+joiner's key packages, and all but the first commit would be refused anyway.
+The row goes when a commit whose invitation names the joiner is accepted
+(`e2ee::append`). Two consequences: a public channel nobody's device is online
+for is joined when somebody comes back, and the engine repeats a chat's name
+after every add, because a newcomer reads from after the commit that added
+them and never sees the name said at the start.
+
+Not built yet, and both are what make channels feel like Slack: **history for
+a newcomer** (a member's device packs the history up, seals it like a picture
+and hands the key over inside the channel) and **joining with nobody online**
+(MLS external commits, which openmls supports; the server would keep the
+channel's latest GroupInfo).
+
+## A message's id is its place in the log
+
+Replies, reactions, edits and deletes (four payloads, appended after
+`Picture`) each name another message by its `E2eeDeliver` seq. That is the one
+id every member already agrees on, because the server orders the log;
+anything the sender minted would need agreeing separately. A device's own
+message gets its seq back as `Event::Sent`, matched by the request id the send
+answered with.
+
+The engine keeps no history, so it cannot check that an edit or a delete
+comes from the person who said the message; the history does
+(`worker/history.ts`), and drops one that does not.
+
+**The readable history exists only on the device.** The server keeps sealed
+bytes and replays from where the device left off, so the worker keeps every
+chat it has read in IndexedDB (`history` store, beside `keys`), up to
+`MAX_KEPT` messages per chat. Clearing site data loses it as surely as it
+loses the keys.
+
 ## Measured
 
 2026-10-09, `web-release` profile, no `wasm-opt`: the module is **2.5 MB,
@@ -97,21 +142,36 @@ browser session by the worker, not by every page. Neither size optimisation
 the real module, a real simulator over its WebSocket, a direct chat both ways,
 and one side coming back from its saved state to read what it missed.
 
+`chat-browser.ts` drives the page itself in two headless Chromium profiles
+(two people): sign-in through the form, a workspace, a channel joined through
+the other browser, a line each way with a mention and a reaction, and a reload
+that reads the history back out of IndexedDB. It is what exercises the
+`SharedWorker`, the Web Lock and the storage, which nothing else does.
+
 ```bash
-bun run build:chat-core --dev        # in crates/atlas/web, inside a build slot
+bun run build:chat-core --dev && bun run build   # in crates/atlas/web, in a build slot
 bun chat-e2e.ts --sim "$CARGO_TARGET_DIR/debug/simulator"
+bun chat-browser.ts --sim "$CARGO_TARGET_DIR/debug/simulator" --shots /tmp/chat
 ```
+
+`deploy-web.yml` builds the module with nightly (the CI image carries the
+wasm32 target only there) and fails the deploy if it cannot: the page is
+nothing without it.
 
 ## Not done yet
 
-- **No page uses it.** `lib/chat.ts` is the client a page would hold; the chat
-  screens in the mockups are the next step.
-- **Not run in a browser.** The engine, the wire and the persistence order are
-  exercised from Bun; the `SharedWorker`, the Web Lock and IndexedDB have only
-  been type-checked.
-- **The deploy may skip it.** `deploy-web.yml` builds the module with
-  `continue-on-error`, because it depends on the CI image's `wasm-bindgen`
-  matching `Cargo.lock` exactly; make the step required when a page needs it.
-- **Calls.** The browser's call worker (`crates/cartopolis/web/call-worker.js`)
-  needs the chat's call key per epoch (`Device::call_epoch`), which this module
-  does not export yet.
+- **History for newcomers and new devices**, and **joining with nobody
+  online**: see "Workspaces and channels" above.
+- **A recovery key.** A person who loses every device loses every chat.
+- **Calls in the chat page.** The browser's call worker
+  (`crates/cartopolis/web/call-worker.js`) needs the chat's call key per epoch
+  (`Engine::call_epoch`), which the browser module does not export yet.
+- **World.** The mockups' Chat | World switch with the viewer embedded in the
+  page; the viewer would then have to use this worker's connection, or it is
+  a second device in the same browser.
+- **Search** (on the device, over its own history), **pictures and files**, and
+  **notifications when no tab is open** (Web Push).
+- **The app knows nothing of workspaces**: a channel it is in shows as an
+  ordinary group chat, and replies show as plain lines.
+- **The page is drawn in the proposed halfway palette, scoped to the chat.**
+  The rest of the site keeps its own until that is decided.

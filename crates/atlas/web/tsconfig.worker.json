@@ -6,7 +6,8 @@
   },
   "include": [
     "src/worker/**/*",
-    "chat-e2e.ts"
+    "chat-e2e.ts",
+    "chat-browser.ts"
   ],
   "exclude": []
 }

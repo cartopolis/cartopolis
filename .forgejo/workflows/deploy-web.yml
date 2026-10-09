@@ -49,14 +49,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The chat engine: Rust to WebAssembly (`build-chat-core.ts`). Allowed to
-      # fail for now, and the build below then ships the site without the chat
-      # worker — no page uses it yet, and the step depends on the image's
-      # wasm-bindgen matching Cargo.lock, which has drifted before (deploy-wasm's
-      # first step checks the same thing). Make it required when a page uses it.
+      # The chat engine: Rust to WebAssembly (`build-chat-core.ts`), required —
+      # the chat page (`/chat`) is nothing without it. Nightly because that is
+      # the toolchain this image carries the wasm32 target for (deploy-wasm uses
+      # it too); the module itself needs no nightly feature. The step checks the
+      # image's wasm-bindgen against Cargo.lock first, and that pin has drifted
+      # before: a mismatch fails here, saying which version to install.
       - name: Build the chat engine
-        id: chat
-        continue-on-error: true
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: bun run build:chat-core
 
       # Both gates before the build, so a red one costs seconds rather than a
@@ -66,14 +67,13 @@ jobs:
         run: bun x tsc --noEmit
 
       - name: Typecheck the chat worker
-        if: steps.chat.outcome == 'success'
         run: bun x tsc --noEmit -p tsconfig.worker.json
 
       - name: Test
         run: bun test
 
       - name: Build
-        run: bun run build
+        run: bun run build.ts --require-chat
 
       # `--delete`, so a file dropped from the build does not linger on the site.
       - name: Publish
