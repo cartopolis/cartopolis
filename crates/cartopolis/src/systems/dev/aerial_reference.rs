@@ -138,17 +138,39 @@ pub fn spawn_write(capture: PathBuf, view: View) {
 static PENDING: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Wait for every reference still being fetched. The harness calls this before it
-/// exits: the last capture's reference is started a frame before the run ends,
-/// and a process that leaves takes its threads with it.
+/// How long [`wait_all`] gives the references still being fetched before the
+/// harness exits without them.
+///
+/// A reference is a mosaic of up to ~150 tiles fetched one after another, each
+/// allowed the request timeout and [`TILE_TRIES`] attempts, so an unbounded join
+/// against a slow or stalled PDOK is a process that has written its capture and
+/// then never exits — which is what a scripted run on the Deck did (2026-10-08).
+const WAIT_ALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Wait for every reference still being fetched, for at most
+/// [`WAIT_ALL_DEADLINE`]. The harness calls this before it exits: the last
+/// capture's reference is started a frame before the run ends, and a process that
+/// leaves takes its threads with it. A reference still unfinished at the deadline
+/// is abandoned with a warning — the capture itself is already on disk.
 pub fn wait_all() {
     let handles = std::mem::take(
         &mut *PENDING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
+    let deadline = std::time::Instant::now() + WAIT_ALL_DEADLINE;
     for h in handles {
-        let _ = h.join();
+        while !h.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if h.is_finished() {
+            let _ = h.join();
+        } else {
+            tracing::warn!(
+                deadline_s = WAIT_ALL_DEADLINE.as_secs(),
+                "aerial reference: still fetching at exit, abandoned"
+            );
+        }
     }
 }
 
