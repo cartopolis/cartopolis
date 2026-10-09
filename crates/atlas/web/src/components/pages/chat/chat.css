@@ -598,3 +598,70 @@
         display: inline-flex;
     }
 }
+/* The front door (`/` signed out): the chat's sign-in, and every other way in. */
+.chat-welcome-card {
+    max-width: 26rem;
+    text-align: left;
+    width: calc(100% - 32px);
+}
+
+.chat-welcome-mark {
+    display: block;
+    height: 56px;
+    margin-bottom: 6px;
+    width: 56px;
+}
+
+.chat-welcome-new {
+    margin-top: 10px;
+}
+
+.chat-welcome-card a {
+    color: var(--accent);
+}
+
+.chat-options {
+    border-top: 1px solid var(--gline);
+    display: grid;
+    gap: 2px;
+    margin-top: 18px;
+    padding-top: 12px;
+}
+
+.chat-options a {
+    border-radius: 8px;
+    color: var(--text) !important;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 10px;
+    text-decoration: none;
+}
+
+.chat-options a:hover {
+    background: var(--surface-raised);
+}
+
+.chat-options b {
+    color: var(--cream);
+    font-weight: 600;
+}
+
+.chat-options span {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+}
+
+.chat-side-links {
+    display: flex;
+    gap: 14px;
+    font-size: 0.82rem;
+}
+
+.chat-side-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+}
+
+.chat-side-links a:hover {
+    color: var(--cream);
+}

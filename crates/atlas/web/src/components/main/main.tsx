@@ -6,7 +6,6 @@ import {Notifications} from '@/components/elements/notifications/notifications'
 import {Accounts} from '@/components/pages/accounts/accounts'
 import {Autopilot} from '@/components/pages/autopilot/autopilot'
 import {Claims} from '@/components/pages/claims/claims'
-import {Home} from '@/components/pages/home/home'
 import {Building} from '@/components/pages/building/building'
 import {Chat} from '@/components/pages/chat/chat'
 import {Buildings} from '@/components/pages/buildings/buildings'
@@ -179,6 +178,13 @@ class PageFrame extends MithrilComponent<{wide?: boolean}> {
     }
 }
 
+/**
+ * The chat, full-screen: a work chat brings its own chrome (the rail, the
+ * sidebar), so it is not put inside the site's header and column. The
+ * notifier's toasts still show over it (a wrong password, for one).
+ */
+const chatPage: RouteResolver = {render: () => m.fragment(null, m(Chat), m(Notifications))}
+
 /** One route: the page inside its frame, with the route's parameters as its attrs. */
 const page = (Page: ComponentType<any>, frame: 'page' | 'wide' | 'admin' = 'page'): RouteResolver => ({
     render: (vnode) =>
@@ -207,7 +213,9 @@ const page = (Page: ComponentType<any>, frame: 'page' | 'wide' | 'admin' = 'page
 export function mountRoutes(root: Element) {
     m.route.prefix = ''
     m.route(root, '/', {
-        '/': page(Home),
+        // The site's front door is the chat (2026-10-09): signed in, you land in
+        // it; signed out, its welcome card offers every other way in.
+        '/': chatPage,
         '/register': page(Register),
         '/verify': page(Verify),
         '/buildings': page(Buildings),
@@ -215,10 +223,8 @@ export function mountRoutes(root: Element) {
         // house; links to it are in sent mail.
         '/house': page(Buildings),
         '/building/:pand': page(Building, 'wide'),
-        // Full-screen: a work chat brings its own chrome (the rail, the
-        // sidebar), so it is not put inside the site's header and column.
-        '/chat': {render: () => m(Chat)},
+        '/chat': chatPage,
         [ADMIN]: page(AdminView, 'admin'),
-        '/:rest...': page(Home),
+        '/:rest...': chatPage,
     })
 }

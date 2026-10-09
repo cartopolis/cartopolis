@@ -198,7 +198,8 @@ const step = (s: string) => console.log(`${((Date.now() - started) / 1000).toFix
 try {
     const simHttp = await bootSim()
     const port = await bootWeb(simHttp)
-    const url = `http://127.0.0.1:${port}/chat`
+    // The site's front door: the chat, or its welcome card when signed out.
+    const url = `http://127.0.0.1:${port}/`
     step(`simulator and web UI up (${url})`)
 
     const ann = new Browser('ann')
@@ -206,6 +207,11 @@ try {
     browsers.push(ann, bob)
     await ann.launch(url)
     await bob.launch(url)
+    await ann.until('Open the map')
+    if (shots) {
+        mkdirSync(shots, {recursive: true})
+        await ann.shot(path.join(shots, 'welcome.png'))
+    }
     await ann.signIn('ann')
     await bob.signIn('bob')
     step('both signed in through the form; the shared worker holds their keys')

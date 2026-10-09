@@ -3,6 +3,7 @@ import m, {MithrilComponent} from '@garage44/mithril'
 import {$s} from '@/app'
 import {ChatClient, type Message, type WorkspaceView} from '@/lib/chat'
 import {local} from '@/lib/reactive'
+import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
 
 /**
@@ -168,14 +169,23 @@ export class Chat extends MithrilComponent {
         )
     }
 
+    /**
+     * cartopolis.org for somebody not signed in: what the site is, the way into
+     * the chat, and every other door the site has. It replaced the front page
+     * (2026-10-09): the chat is what the site is for now, and the map, the app
+     * and the operator's pages are reached from here and from the sidebar.
+     */
     signInView() {
         const s = this.s
         return (
             <div class="chat-signin">
-                <form class="card signin" onsubmit={this.signIn}>
+                <form class="card signin chat-welcome-card" onsubmit={this.signIn}>
+                    <img alt="" class="chat-welcome-mark" src="/icon.svg" />
                     <div class="wordmark">carto<b>polis</b></div>
-                    <h1>Chat</h1>
-                    <p class="hint">Sign in with your Cartopolis account. Everything you say here is end-to-end encrypted.</p>
+                    <p class="hint">
+                        Chat with your team, end-to-end encrypted, and meet them in a shared 3D world
+                        on the real map.
+                    </p>
                     <label class="field">
                         <span>Username</span>
                         <input
@@ -199,6 +209,21 @@ export class Chat extends MithrilComponent {
                     <button class="primary" disabled={s.busy || !s.username || !s.password} type="submit">
                         {s.busy ? 'Signing in…' : 'Sign in'}
                     </button>
+                    <p class="hint chat-welcome-new">
+                        New here? {Link('/register', 'Create an account')}
+                    </p>
+                    <nav class="chat-options">
+                        <a href="/viewer/">
+                            <b>Open the map</b>
+                            <span>The world in your browser, no account needed</span>
+                        </a>
+                        <a href="/apk/">
+                            <b>Android app</b>
+                            <span>Chat, the world and calls on your phone</span>
+                        </a>
+                        {Link('/buildings', <><b>Your buildings</b><span>Claim a building, draw its floors</span></>)}
+                        {Link(ADMIN, <><b>Operators</b><span>Accounts, map data, the library</span></>)}
+                    </nav>
                 </form>
             </div>
         )
@@ -404,6 +429,11 @@ export class Chat extends MithrilComponent {
                         {c.notice}
                     </div>
                 )}
+                <nav class="chat-side-links">
+                    <a href="/viewer/">Map</a>
+                    <a href="/apk/">App</a>
+                    {Link('/buildings', 'Buildings')}
+                </nav>
                 <button class="ghost" onclick={() => void this.signOut()} type="button">Sign out</button>
             </footer>
         )
@@ -809,6 +839,25 @@ export class Chat extends MithrilComponent {
         }
         return null
     }
+}
+
+/**
+ * A link to another page of this app, through the router. The map and the APK
+ * are plain links instead: `/viewer/` and `/apk/` are other builds Caddy serves,
+ * and the router would swallow the click.
+ */
+function Link(href: string, children: m.Children) {
+    return (
+        <a
+            href={href}
+            onclick={(e: Event) => {
+                e.preventDefault()
+                m.route.set(href)
+            }}
+        >
+            {children}
+        </a>
+    )
 }
 
 /** The workspace channel a chat is, if it is one. */
