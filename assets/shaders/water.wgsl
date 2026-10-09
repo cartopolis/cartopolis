@@ -690,9 +690,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Outside this cell the sampler clamps to an edge texel, which is an answer
     // about the wrong place and would draw a seam along every cell boundary. Off
     // the edge the effect simply does not apply.
+    //
+    // The sample is taken before the test, not inside it: WGSL allows
+    // `textureSample` only in uniform control flow (it needs the quad's
+    // derivatives), and Chrome enforces that where naga does not — sampling
+    // inside this branch failed the whole water pipeline in every browser.
+    let ahead = textureSample(bank_field, bank_sampler, bank_uv).r * field.w;
     var mirror = 1.0;
     if all(bank_uv > vec2<f32>(0.0)) && all(bank_uv < vec2<f32>(1.0)) {
-        let ahead = textureSample(bank_field, bank_sampler, bank_uv).r * field.w;
         mirror = mix(BANK_MIRROR, 1.0, smoothstep(0.0, BANK_SOFT_M, ahead));
     }
     // And the bank in the mirror, which the tile past the ring has no field for.
