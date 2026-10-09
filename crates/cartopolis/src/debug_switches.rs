@@ -273,6 +273,7 @@ mod android_property_tests {
             "CARTO_NO_SHADOWS",
             "CARTO_NO_SPACE_RAYMARCH",
             "CARTO_NO_DUAL_SOURCE",
+            "CARTO_WEB_LIMITS",
             "CARTO_FPS_LOG",
             "CARTO_FPS_CAP",
             "CARTO_QUALITY",

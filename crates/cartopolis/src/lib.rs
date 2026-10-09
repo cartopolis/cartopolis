@@ -136,6 +136,25 @@ fn core_count() -> Option<usize> {
     std::thread::available_parallelism().ok().map(|n| n.get())
 }
 
+/// What `CARTO_WEB_LIMITS` holds the device to: the WebGPU spec's defaults, with
+/// the few a real browser raises put back. The spec's 256 MB `maxBufferSize` is
+/// only a floor — Chrome 146 on the Steam Deck (RADV) reported 2 GB for it and for
+/// storage bindings, 16 storage buffers and 48 sampled textures per stage (read
+/// from `GPUAdapter.limits` on 2026-10-08) — and bevy asks the browser for
+/// everything the adapter has, so the bare defaults failed mesh slabs the web
+/// never refuses. The per-stage uniform count stayed at the spec's 12 there, and
+/// that is the one that took the web build down.
+fn browser_limits() -> bevy::render::settings::WgpuLimits {
+    const GIB2: u32 = 2 << 30;
+    bevy::render::settings::WgpuLimits {
+        max_buffer_size: u64::from(GIB2),
+        max_storage_buffer_binding_size: u64::from(GIB2),
+        max_storage_buffers_per_shader_stage: 16,
+        max_sampled_textures_per_shader_stage: 48,
+        ..default()
+    }
+}
+
 /// Build and run the client. The `cartopolis` binary is a one-line shim over this
 /// (`src/main.rs`); everything lives in the lib target so `cargo test` links the
 /// rlib instead of compiling all ~52k lines a second time under `cfg(test)`.
@@ -666,13 +685,40 @@ fn run_client() {
     // GPU — offers the feature, so the fallback is otherwise unreachable here.
     // A bisecting switch in the `CARTO_NO_*` family: it reproduces the phone's
     // blend path on a machine that can screenshot it.
-    let default_plugins = if env_flag("CARTO_NO_DUAL_SOURCE") {
+    //
+    // `CARTO_WEB_LIMITS=1`: hold the device to the limits a browser hands out
+    // (`browser_limits`). A desktop Vulkan driver allows far more,
+    // so a pipeline over a browser limit compiles and draws everywhere except the
+    // web — where the browser refuses it and the renderer halts on the first
+    // frame that needs it. That is how the cloud deck took the web build down
+    // (13 uniform buffers in one fragment stage, against 12) while every native
+    // capture was fine. Run any capture with this set to see the web's failures.
+    //
+    // The limits alone are not the browser: bevy picks its *bindless* material
+    // path from device features, and a native device that still offers binding
+    // arrays takes that path and then fails a binding-array limit the web never
+    // reaches — which hid the real failure the first time this was tried. So the
+    // features the webgpu backend lacks go too (binding arrays, immediates).
+    use bevy::render::settings::WgpuFeatures as F;
+    let no_dual_source = env_flag("CARTO_NO_DUAL_SOURCE");
+    let web_limits = env_flag("CARTO_WEB_LIMITS");
+    let mut disabled = F::empty();
+    if no_dual_source {
+        disabled |= F::DUAL_SOURCE_BLENDING;
+    }
+    if web_limits {
+        disabled |= F::TEXTURE_BINDING_ARRAY
+            | F::BUFFER_BINDING_ARRAY
+            | F::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            | F::PARTIALLY_BOUND_BINDING_ARRAY
+            | F::IMMEDIATES;
+    }
+    let default_plugins = if no_dual_source || web_limits {
         default_plugins.set(bevy::render::RenderPlugin {
             render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
                 bevy::render::settings::WgpuSettings {
-                    disabled_features: Some(
-                        bevy::render::settings::WgpuFeatures::DUAL_SOURCE_BLENDING,
-                    ),
+                    disabled_features: Some(disabled),
+                    constrained_limits: web_limits.then(browser_limits),
                     ..default()
                 },
             )),
