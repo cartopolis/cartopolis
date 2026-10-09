@@ -7,8 +7,33 @@ use super::{
 };
 use crate::db;
 use bytes::Bytes;
-use cartopolis_core::{encode_app_frame, E2eeCursor, E2eeWelcome, NetMessage};
+use cartopolis_core::{address, encode_app_frame, E2eeCursor, E2eeWelcome, NetMessage};
 use uuid::Uuid;
+
+/// The local account a full address on the wire names (protocol 37), or why it
+/// cannot be served. Storage here is keyed by local account; addresses are the
+/// wire's, and this is the one place they are translated on the way in.
+///
+/// Somebody on another server is refused in words: every identity is already
+/// a full address so that chats can span servers later, but nothing forwards
+/// to another server yet. A bare name is read as a local one.
+fn local_name<T>(ctx: &ConnCtx<T>, who: &str) -> Result<String, String> {
+    match address::split(who.trim()) {
+        Some((name, server)) if server.eq_ignore_ascii_case(&ctx.config.server_name()) => {
+            Ok(name.to_string())
+        }
+        Some(_) => Err(format!(
+            "{} is on another server, and chats between servers are not built yet",
+            who.trim()
+        )),
+        None => Ok(who.trim().to_string()),
+    }
+}
+
+/// A local account as the full address the wire carries.
+fn full<T>(ctx: &ConnCtx<T>, name: &str) -> String {
+    address::person(name, &ctx.config.server_name())
+}
 
 pub(super) async fn on_register_device<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
@@ -74,7 +99,10 @@ pub(super) async fn on_claim_key_packages<T: FrameTransport>(
             ))
             .await;
     }
-    let subject = subject.trim().to_string();
+    let subject = match local_name(ctx, &subject) {
+        Ok(name) => name,
+        Err(refusal) => return ctx.send(&server_error(request_id, 501, refusal)).await,
+    };
     // Your own name means "my other devices".
     let except = if subject.eq_ignore_ascii_case(&ctx.display_name) {
         ctx.e2ee_device
@@ -118,7 +146,7 @@ pub(super) async fn on_claim_key_packages<T: FrameTransport>(
     };
     ctx.send(&NetMessage::E2eeKeyPackages {
         request_id,
-        username: subject,
+        address: full(ctx, &subject),
         packages: packages
             .into_iter()
             .map(|(device, bytes)| cartopolis_core::E2eeKeyPackage { device, bytes })
@@ -136,6 +164,23 @@ pub(super) async fn on_create_group<T: FrameTransport>(
     if ctx.e2ee_device.is_none() {
         return Ok(());
     }
+    // This server orders the log of every chat registered on it, so a chat's
+    // id must say it lives here (`address::group_id`). A client that could
+    // register any id could later make two servers each believe they own one.
+    let home = ctx.config.server_name();
+    if !address::group_home(&group).is_some_and(|h| h.eq_ignore_ascii_case(&home)) {
+        return ctx
+            .send(&server_error(
+                request_id,
+                400,
+                format!("a chat started here must have an id that begins with {home}/"),
+            ))
+            .await;
+    }
+    let direct_with = match direct_with.map(|w| local_name(ctx, &w)).transpose() {
+        Ok(w) => w,
+        Err(refusal) => return ctx.send(&server_error(request_id, 501, refusal)).await,
+    };
     let account = ctx.principal_key.clone();
     let id = group.clone();
     let result = match db::call(&ctx.conn, move |c| {
@@ -182,6 +227,31 @@ pub(super) async fn on_send<T: FrameTransport>(
         message,
         welcome,
     } = send;
+    // An invitation's members arrive as full addresses and are stored as the
+    // local accounts they name.
+    let welcome = match welcome
+        .map(|mut w| {
+            w.members = w
+                .members
+                .iter()
+                .map(|m| local_name(ctx, m))
+                .collect::<Result<_, _>>()?;
+            Ok::<_, String>(w)
+        })
+        .transpose()
+    {
+        Ok(w) => w,
+        Err(refusal) => {
+            return ctx
+                .send(&NetMessage::E2eeSent {
+                    request_id,
+                    group,
+                    seq: None,
+                    refused: Some(refusal),
+                })
+                .await
+        }
+    };
     // One message into a chat that is still a request (`contacts`, rule 4).
     // Commits are never held: a device that misses one can read nothing again.
     if !commit {
@@ -271,7 +341,7 @@ pub(super) async fn on_send<T: FrameTransport>(
             let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeDeliver {
                 group: e.group,
                 seq: e.seq,
-                sender: e.sender_name,
+                sender: full(ctx, &e.sender_name),
                 device: e.device,
                 sent_at_ms: e.sent_at_ms,
                 commit: e.is_commit,
@@ -282,7 +352,7 @@ pub(super) async fn on_send<T: FrameTransport>(
             for inv in invites {
                 let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeInvite {
                     group: inv.group,
-                    from: inv.from,
+                    from: full(ctx, &inv.from),
                     after: inv.after,
                     welcome: inv.welcome,
                 })?);
@@ -328,7 +398,7 @@ pub(super) async fn on_sync<T: FrameTransport>(
         ctx.send(&NetMessage::E2eeDeliver {
             group: e.group,
             seq: e.seq,
-            sender: e.sender_name,
+            sender: full(ctx, &e.sender_name),
             device: e.device,
             sent_at_ms: e.sent_at_ms,
             commit: e.is_commit,
@@ -339,7 +409,7 @@ pub(super) async fn on_sync<T: FrameTransport>(
     for inv in invites {
         ctx.send(&NetMessage::E2eeInvite {
             group: inv.group,
-            from: inv.from,
+            from: full(ctx, &inv.from),
             after: inv.after,
             welcome: inv.welcome,
         })

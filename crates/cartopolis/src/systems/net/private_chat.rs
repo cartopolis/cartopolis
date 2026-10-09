@@ -79,6 +79,14 @@ pub fn peer_of_label(label: &str) -> &str {
         .map_or(label, str::trim_start)
 }
 
+/// How the engine's full addresses (`name@server`, protocol 37) are shown and
+/// matched in the app: the bare name for somebody on this device's server,
+/// which is what the contacts list, the chat panel and the call screen all key
+/// on; the full address for anybody else.
+fn shown(engine: &Engine, who: &str) -> String {
+    cartopolis_core::address::display(who, engine.home()).to_string()
+}
+
 // ── Bevy ────────────────────────────────────────────────────────────────────
 
 /// Private-chat messages the network system collected this frame, for
@@ -144,7 +152,11 @@ impl PrivateChats {
     #[must_use]
     pub fn people_in(&self, channel: &str) -> Vec<String> {
         match (self.engine.as_ref(), group_of(channel)) {
-            (Some(engine), Some(group)) => engine.people_in(&group),
+            (Some(engine), Some(group)) => engine
+                .people_in(&group)
+                .iter()
+                .map(|p| shown(engine, p))
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -169,10 +181,17 @@ impl PrivateChats {
     /// See [`Engine::describe`].
     #[must_use]
     pub fn describe(&self, group: &[u8]) -> Option<(bool, String)> {
-        self.engine
-            .as_ref()?
-            .describe(group)
-            .map(|(is_group, label)| (is_group, label.to_string()))
+        let engine = self.engine.as_ref()?;
+        engine.describe(group).map(|(is_group, label)| {
+            // A direct chat's label is the other person's address; a group's
+            // is the name it was given.
+            let label = if is_group {
+                label.to_string()
+            } else {
+                shown(engine, label)
+            };
+            (is_group, label)
+        })
     }
 }
 
@@ -298,7 +317,11 @@ pub fn drive_private_chats(
     mut chat: ResMut<crate::systems::chat::ChatState>,
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
 ) {
-    let (Some(online), Some(username)) = (online, identity.username.clone()) else {
+    let (Some(online), Some(username), Some(server_name)) = (
+        online,
+        identity.username.clone(),
+        identity.server_name.clone(),
+    ) else {
         private.connected = false;
         inbox.0.clear();
         return;
@@ -319,7 +342,10 @@ pub fn drive_private_chats(
             });
         let engine = match loaded {
             Some(e) => Some(e),
-            None => Engine::new(&username)
+            // A device is the full address, not the username (protocol 37). A
+            // saved state from before that is refused by `Engine::load` above,
+            // and this is where its replacement starts.
+            None => Engine::new(&cartopolis_core::address::person(&username, &server_name))
                 .map_err(|e| tracing::warn!(error = %e, "no private chats"))
                 .ok(),
         };
@@ -338,7 +364,7 @@ pub fn drive_private_chats(
         private.connected = true;
         engine.on_connected(&mut out);
         for (g, peer) in engine.chats() {
-            chat.open_channel(&channel_key(g), &private_label(peer));
+            chat.open_channel(&channel_key(g), &private_label(&shown(&engine, peer)));
         }
         private.dirty = true;
     }
@@ -365,7 +391,7 @@ pub fn drive_private_chats(
         };
         match engine.send_text(&group, &text, now_ms(), &mut out) {
             Ok(()) => {
-                let me = engine.username().to_string();
+                let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive(&channel, my_id, me, text, None);
             }
@@ -405,7 +431,7 @@ pub fn drive_private_chats(
         ) {
             Ok(()) => {
                 pictures.insert_local(&uploaded.picture.hash, uploaded.jpeg);
-                let me = engine.username().to_string();
+                let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive_picture(
                     &channel,
@@ -437,7 +463,7 @@ pub fn drive_private_chats(
         });
         match engine.send_point(&group, &point, link, now_ms(), &mut out) {
             Ok(()) => {
-                let me = engine.username().to_string();
+                let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive_point(
                     &channel,
@@ -455,6 +481,7 @@ pub fn drive_private_chats(
     for ev in events {
         match ev {
             Event::Opened { group, peer } => {
+                let peer = shown(&engine, &peer);
                 let key = channel_key(&group);
                 chat.open_channel(&key, &private_label(&peer));
                 chat.focus_channel(&key);
@@ -468,7 +495,7 @@ pub fn drive_private_chats(
                     let (_, text) = chat.private_hello.remove(i);
                     match engine.send_text(&group, &text, now_ms(), &mut out) {
                         Ok(()) => {
-                            let me = engine.username().to_string();
+                            let me = shown(&engine, engine.address());
                             let my_id = chat.my_id.unwrap_or(0);
                             chat.receive(&key, my_id, me, text, None);
                         }
@@ -496,7 +523,7 @@ pub fn drive_private_chats(
                     .get_or_insert_with(cartopolis_core::Filter::seeded);
                 let (body, _) = filter.mask(&body);
                 if let Some(picture) = picture {
-                    chat.receive_picture(&channel, 0, from, body, picture);
+                    chat.receive_picture(&channel, 0, shown(&engine, &from), body, picture);
                     chat.date_last(&channel, sent_at_ms);
                     continue;
                 }
@@ -506,7 +533,7 @@ pub fn drive_private_chats(
                     p.name = p.name.map(|n| filter.mask(&n).0);
                     p
                 });
-                chat.receive_point(&channel, 0, from, body, None, point);
+                chat.receive_point(&channel, 0, shown(&engine, &from), body, None, point);
                 chat.date_last(&channel, sent_at_ms);
             }
             Event::Location {
@@ -519,7 +546,7 @@ pub fn drive_private_chats(
             } => chat.update_location(
                 crate::systems::chat::SharedLocation {
                     channel: channel_key(&group),
-                    from,
+                    from: shown(&engine, &from),
                     latitude,
                     longitude,
                     accuracy_m,
@@ -528,7 +555,7 @@ pub fn drive_private_chats(
                 now_ms(),
             ),
             Event::LocationStopped { group, from } => {
-                chat.drop_location(&channel_key(&group), &from);
+                chat.drop_location(&channel_key(&group), &shown(&engine, &from));
             }
             Event::Named { group, name } => {
                 chat.open_channel(&channel_key(&group), &private_label(&name));
@@ -546,7 +573,7 @@ pub fn drive_private_chats(
     // to follow every way a chat comes and goes.
     let direct: std::collections::HashMap<String, String> = engine
         .directs()
-        .map(|(g, p)| (p.to_lowercase(), channel_key(g)))
+        .map(|(g, p)| (shown(&engine, p).to_lowercase(), channel_key(g)))
         .collect();
     if chat.direct != direct {
         chat.direct = direct;

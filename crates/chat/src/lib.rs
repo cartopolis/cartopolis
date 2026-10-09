@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use cartopolis_core::address;
 use cartopolis_core::point::Point;
 use cartopolis_core::{E2eeCursor, E2eeWelcome, NetMessage};
 use cartopolis_e2ee::{Device, Payload, Received};
@@ -273,10 +274,10 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// A brand-new device for `username`.
-    pub fn new(username: &str) -> Result<Self, String> {
+    /// A brand-new device for the person at `address` (`name@server`).
+    pub fn new(address: &str) -> Result<Self, String> {
         Ok(Self {
-            device: Device::new(username, Uuid::new_v4()).map_err(|e| e.to_string())?,
+            device: Device::new(address, Uuid::new_v4()).map_err(|e| e.to_string())?,
             cursors: BTreeMap::new(),
             peers: BTreeMap::new(),
             groups: std::collections::BTreeSet::new(),
@@ -311,9 +312,30 @@ impl Engine {
         .unwrap_or_default()
     }
 
+    /// This device's person, as a full address.
     #[must_use]
-    pub fn username(&self) -> &str {
-        &self.device.identity().username
+    pub fn address(&self) -> &str {
+        &self.device.identity().address
+    }
+
+    /// This device's home server: where its person's account is, and the
+    /// home of every chat it starts.
+    #[must_use]
+    pub fn home(&self) -> &str {
+        address::split(self.address()).map_or("", |(_, server)| server)
+    }
+
+    /// `who` as a full address, a bare name meaning somebody on this
+    /// device's own server.
+    #[must_use]
+    pub fn qualify(&self, who: &str) -> String {
+        address::qualify(who, self.home())
+    }
+
+    /// An id for a chat this device starts. It begins with this device's home
+    /// server, which is the server that will order the chat's log.
+    fn new_group_id(&self) -> Vec<u8> {
+        address::group_id(self.home(), Uuid::new_v4().into_bytes())
     }
 
     /// Chats this device is in, with who each is with.
@@ -326,13 +348,13 @@ impl Engine {
     /// still names them, from its label.
     #[must_use]
     pub fn people_in(&self, group: &[u8]) -> Vec<String> {
-        let me = self.username();
+        let me = self.address();
         let mut out: Vec<String> = Vec::new();
         for id in self.device.members(group) {
-            if !id.username.eq_ignore_ascii_case(me)
-                && !out.iter().any(|n| n.eq_ignore_ascii_case(&id.username))
+            if !id.address.eq_ignore_ascii_case(me)
+                && !out.iter().any(|n| n.eq_ignore_ascii_case(&id.address))
             {
-                out.push(id.username);
+                out.push(id.address);
             }
         }
         if out.is_empty() && !self.groups.contains(group) {
@@ -356,14 +378,15 @@ impl Engine {
         self.device.forget(group);
     }
 
-    /// The direct chat with `username`, if this device is in one. Never a group,
-    /// whatever the group happens to be called — the distinction
-    /// [`Self::start_direct`] already makes.
+    /// The direct chat with `who` (a name on this server, or a full address),
+    /// if this device is in one. Never a group, whatever the group happens to
+    /// be called — the distinction [`Self::start_direct`] already makes.
     #[must_use]
-    pub fn direct_with(&self, username: &str) -> Option<&Vec<u8>> {
+    pub fn direct_with(&self, who: &str) -> Option<&Vec<u8>> {
+        let who = self.qualify(who);
         self.peers
             .iter()
-            .find(|(g, p)| !self.groups.contains(*g) && p.eq_ignore_ascii_case(username))
+            .find(|(g, p)| !self.groups.contains(*g) && p.eq_ignore_ascii_case(&who))
             .map(|(g, _)| g)
     }
 
@@ -432,7 +455,8 @@ impl Engine {
         self.group_starts.clear();
     }
 
-    /// Start a group chat called `name` with `members` (usernames).
+    /// Start a group chat called `name` with `members` (names on this server,
+    /// or full addresses).
     pub fn start_group(
         &mut self,
         name: &str,
@@ -441,10 +465,15 @@ impl Engine {
         events: &mut Vec<Event>,
     ) {
         let name = name.trim().to_string();
-        let me = self.username().to_string();
+        let me = self.address().to_string();
         let mut people: Vec<String> = Vec::new();
         for m in members {
-            let m = m.trim();
+            let m = if m.trim().is_empty() {
+                String::new()
+            } else {
+                self.qualify(m)
+            };
+            let m = m.as_str();
             if !m.is_empty()
                 && !m.eq_ignore_ascii_case(&me)
                 && !people.iter().any(|p| p.eq_ignore_ascii_case(m))
@@ -463,7 +492,7 @@ impl Engine {
             let request = self.request();
             out.push(NetMessage::E2eeClaimKeyPackages {
                 request_id: request,
-                username: person.clone(),
+                address: person.clone(),
             });
             waiting.push((request, person));
         }
@@ -490,7 +519,7 @@ impl Engine {
             )));
             return;
         }
-        let group = match self.device.create_group() {
+        let group = match self.device.create_group(&self.new_group_id()) {
             Ok(g) => g,
             Err(e) => {
                 self.group_starts.remove(i);
@@ -508,15 +537,14 @@ impl Engine {
         self.group_starts[i].group = Some(group);
     }
 
-    /// Start (or find) a direct chat with `username`.
-    pub fn start_direct(
-        &mut self,
-        username: &str,
-        out: &mut Vec<NetMessage>,
-        events: &mut Vec<Event>,
-    ) {
-        let username = username.trim().to_string();
-        if username.is_empty() || username.eq_ignore_ascii_case(self.username()) {
+    /// Start (or find) a direct chat with `who`: a name on this server, or a
+    /// full address.
+    pub fn start_direct(&mut self, who: &str, out: &mut Vec<NetMessage>, events: &mut Vec<Event>) {
+        if who.trim().is_empty() {
+            return;
+        }
+        let username = self.qualify(who);
+        if username.eq_ignore_ascii_case(self.address()) {
             return;
         }
         if let Some(g) = self.direct_with(&username) {
@@ -529,7 +557,7 @@ impl Engine {
         let request = self.request();
         out.push(NetMessage::E2eeClaimKeyPackages {
             request_id: request,
-            username: username.clone(),
+            address: username.clone(),
         });
         self.starting.push(Starting {
             request,
@@ -907,7 +935,7 @@ impl Engine {
             )));
             return;
         }
-        let group = match self.device.create_group() {
+        let group = match self.device.create_group(&self.new_group_id()) {
             Ok(g) => g,
             Err(e) => {
                 self.starting.remove(i);
@@ -1107,9 +1135,9 @@ impl Engine {
             // warning: the ratchet has already moved past it, and a line from
             // somebody pretending to be somebody else has nothing in it worth
             // reading.
-            Ok(Received::Message { from, .. }) if !from.username.eq_ignore_ascii_case(sender) => {
+            Ok(Received::Message { from, .. }) if !from.address.eq_ignore_ascii_case(sender) => {
                 tracing::warn!(
-                    claimed = %from.username,
+                    claimed = %from.address,
                     account = %sender,
                     seq,
                     "dropped a private-chat entry whose sender claims another account's name"
@@ -1124,7 +1152,7 @@ impl Engine {
                     ..
                 }) => events.push(Event::Location {
                     group,
-                    from: from.username,
+                    from: from.address,
                     latitude,
                     longitude,
                     accuracy_m,
@@ -1132,7 +1160,7 @@ impl Engine {
                 }),
                 Ok(Payload::LocationStopped { .. }) => events.push(Event::LocationStopped {
                     group,
-                    from: from.username,
+                    from: from.address,
                 }),
                 Ok(Payload::GroupName { name, .. }) => {
                     let name: String = name.trim().chars().take(MAX_GROUP_NAME).collect();
@@ -1146,7 +1174,7 @@ impl Engine {
                     let (body, point, picture) = read_payload(&bytes);
                     events.push(Event::Line {
                         group,
-                        from: from.username,
+                        from: from.address,
                         body,
                         point,
                         picture,
@@ -1219,9 +1247,18 @@ mod loopback {
             })
             .unwrap();
             conn.send(Bytes::from(hello)).await.unwrap();
+            // The server says what it is called, which is what makes `name` a
+            // full address (protocol 37).
+            let server_name = loop {
+                let frame = conn.next().await.unwrap().unwrap();
+                if let Ok(NetMessage::ServerHelloAck { server_name, .. }) = decode_app_frame(&frame)
+                {
+                    break server_name;
+                }
+            };
             let mut p = Self {
                 conn,
-                engine: Engine::new(name).unwrap(),
+                engine: Engine::new(&address::person(name, &server_name)).unwrap(),
                 events: Vec::new(),
             };
             let mut out = Vec::new();
@@ -1261,7 +1298,13 @@ mod loopback {
             self.events
                 .iter()
                 .filter_map(|e| match e {
-                    Event::Line { from, body, .. } => Some((from.clone(), body.clone())),
+                    // By name, as the person would see a neighbour; that the
+                    // event carries the full address is pinned by the
+                    // location test.
+                    Event::Line { from, body, .. } => Some((
+                        address::display(from, self.engine.home()).to_string(),
+                        body.clone(),
+                    )),
                     _ => None,
                 })
                 .collect()
@@ -1487,11 +1530,10 @@ mod loopback {
             } => Some((from.clone(), *latitude, *until_ms)),
             _ => None,
         });
-        assert_eq!(shared, Some(("alice".into(), 53.2194, 3_600_000)));
-        assert!(bob
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::LocationStopped { from, .. } if from == "alice")));
+        assert_eq!(shared, Some(("alice@localhost".into(), 53.2194, 3_600_000)));
+        assert!(bob.events.iter().any(
+            |e| matches!(e, Event::LocationStopped { from, .. } if from == "alice@localhost")
+        ));
         // And neither shows up as a chat line.
         assert!(bob.lines().is_empty());
     }

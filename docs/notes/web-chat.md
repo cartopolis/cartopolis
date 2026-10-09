@@ -1,6 +1,6 @@
 ---
 topic: web-chat
-triggers: [cartopolis_chat, cartopolis_web_chat, web_chat, chat-worker.ts, "src/worker", SharedWorker, "Web Lock", "chat in the web UI", embodied, embodied_position, build-chat-core.ts, chat-e2e.ts]
+triggers: [cartopolis_chat, cartopolis_web_chat, web_chat, address.rs, server_name, federation, MIMI, "full address", group_id, chat-worker.ts, "src/worker", SharedWorker, "Web Lock", "chat in the web UI", embodied, embodied_position, build-chat-core.ts, chat-e2e.ts]
 updated: 2026-10-09
 ---
 
@@ -50,6 +50,41 @@ frame, so for the app this lasts a frame. This was chosen over a hello flag
 because it needs no protocol revision: the version check is exact, and a bump
 means the sim, the APK and the web viewer all deploy together. The worker also
 sends `SetPresence { active: false }`, so it is not sent world snapshots.
+
+## Federation: what was fixed in place before it exists
+
+Decided 2026-10-09: channels and direct chats are all end-to-end encrypted,
+and the simulator may one day be one node of several. Encryption makes that
+easier, because a server only ever relays sealed bytes. The model to grow into
+is the IETF's MIMI (chat between providers, on MLS): every conversation has
+one **home server** that orders its log, every person has one home server that
+holds their key packages and delivers to their devices, and servers forward to
+each other. Nothing forwards yet. What could not wait is everything written
+into something that outlives a change of mind (protocol 37,
+`cartopolis_core::address`):
+
+- **A person is a full address everywhere**: `name@server`, lower-cased. It is
+  in each device's MLS credential, which lasts as long as the device, so a bare
+  username there could never later be told apart from the same name elsewhere.
+  `Device::save`'s format went to version 2, so older devices are refused and
+  replaced, and V28 cleared every private chat on the simulator (the one live
+  chat was a test, and the user said not to keep it).
+- **A conversation's id begins with its home server**: `server/` and sixteen
+  random bytes. The simulator registers only ids that name it.
+- **Key packages are claimed by full address.** The simulator answers for its
+  own people and refuses anybody else's address in words (501), never with the
+  empty answer that means "they have no devices".
+- **A server's name is the host of its public URL** (`SimConfig::server_name`,
+  `cartopolis.org` live, `localhost` for a development sim), sent in
+  `ServerHelloAck::server_name`. It must not change once chats exist.
+
+Storage on the simulator is still keyed by local account; addresses are
+translated at the wire's edge (`net/e2ee.rs`, `local_name` and `full`). The
+clients show a person on their own server by bare name
+(`address::display`), so nothing in the app's contact or chat screens changed.
+
+The split with the fediverse stands: ActivityPub is for public posts about
+places, and private chats and channels never go over it.
 
 ## Measured
 

@@ -29,10 +29,12 @@
 //!
 //! # Identity
 //!
-//! A member's credential is `username` and device id, joined by a NUL. The
-//! server vouches for the username at sign-in; nothing here verifies it
-//! further. That is the known limit of shipping without identity proofs, and
-//! the note says so.
+//! A member's credential is its full address (`name@server`, protocol 37) and
+//! device id, joined by a NUL. The server vouches for the address at sign-in;
+//! nothing here verifies it further. That is the known limit of shipping
+//! without identity proofs, and the note says so. A full address rather than
+//! a username because a credential lasts as long as the device, and chats are
+//! meant to reach other servers one day (`cartopolis_core::address`).
 
 use std::collections::BTreeMap;
 
@@ -55,7 +57,11 @@ const MAX_PAST_EPOCHS: usize = 3;
 /// Version of [`Device::save`]'s format. Bumped when the layout changes; an
 /// older blob is refused rather than half-read, because a device that
 /// misreads its own keys is worse than one that starts again.
-const SAVE_VERSION: u8 = 1;
+///
+/// 2 (protocol 37): identities are full addresses. A version-1 device's
+/// credential holds a bare username for as long as it exists, so it is refused
+/// and the client starts a new device.
+const SAVE_VERSION: u8 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -78,13 +84,13 @@ fn mls(e: impl std::fmt::Debug) -> Error {
 /// Who sent something: the account and which of its devices.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {
-    pub username: String,
+    pub address: String,
     pub device: Uuid,
 }
 
 impl Identity {
     fn to_bytes(&self) -> Vec<u8> {
-        let mut out = self.username.as_bytes().to_vec();
+        let mut out = self.address.as_bytes().to_vec();
         out.push(0);
         out.extend_from_slice(self.device.as_bytes());
         out
@@ -92,9 +98,9 @@ impl Identity {
 
     fn from_bytes(b: &[u8]) -> Option<Self> {
         let split = b.iter().position(|&c| c == 0)?;
-        let username = String::from_utf8(b[..split].to_vec()).ok()?;
+        let address = String::from_utf8(b[..split].to_vec()).ok()?;
         let device = Uuid::from_slice(b.get(split + 1..)?).ok()?;
-        Some(Self { username, device })
+        Some(Self { address, device })
     }
 
     fn from_credential(c: &Credential) -> Option<Self> {
@@ -258,13 +264,19 @@ pub struct Device {
 }
 
 impl Device {
-    /// A new device with a fresh signing key and no chats.
-    pub fn new(username: &str, device: Uuid) -> Result<Self, Error> {
+    /// A new device with a fresh signing key and no chats, for the person at
+    /// `address` — a full `name@server`, never a bare username: it goes into
+    /// the credential, which cannot change for as long as the device exists.
+    pub fn new(address: &str, device: Uuid) -> Result<Self, Error> {
+        match address.rsplit_once('@') {
+            Some((name, server)) if !name.is_empty() && !server.is_empty() => {}
+            _ => return Err(Error::Mls(format!("{address:?} is not a full address"))),
+        }
         let provider = OpenMlsRustCrypto::default();
         let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).map_err(mls)?;
         signer.store(provider.storage()).map_err(mls)?;
         let me = Identity {
-            username: username.to_string(),
+            address: address.to_lowercase(),
             device,
         };
         let credential = credential_for(&me, &signer);
@@ -284,8 +296,8 @@ impl Device {
 
     /// Whether a log entry's sender is this very device.
     #[must_use]
-    pub fn is_me(&self, username: &str, device: Uuid) -> bool {
-        device == self.me.device && username.eq_ignore_ascii_case(&self.me.username)
+    pub fn is_me(&self, address: &str, device: Uuid) -> bool {
+        device == self.me.device && address.eq_ignore_ascii_case(&self.me.address)
     }
 
     /// Everything needed to come back after a restart, as one blob.
@@ -364,17 +376,22 @@ impl Device {
     }
 
     /// Start a chat with only this device in it. Returns its id.
-    pub fn create_group(&mut self) -> Result<Vec<u8>, Error> {
+    ///
+    /// `id` is the caller's: it names the chat's home server
+    /// (`cartopolis_core::address::group_id`), which is a decision about the
+    /// network, not about keys.
+    pub fn create_group(&mut self, id: &[u8]) -> Result<Vec<u8>, Error> {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(CIPHERSUITE)
             .use_ratchet_tree_extension(true)
             .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
             .max_past_epochs(MAX_PAST_EPOCHS)
             .build();
-        let group = MlsGroup::new(
+        let group = MlsGroup::new_with_group_id(
             &self.provider,
             &self.signer,
             &config,
+            GroupId::from_slice(id),
             self.credential.clone(),
         )
         .map_err(mls)?;
@@ -659,7 +676,7 @@ mod tests {
         while *cursor < log.entries.len() {
             let (from, bytes) = &log.entries[*cursor];
             *cursor += 1;
-            if dev.is_me(&from.username, from.device) {
+            if dev.is_me(&from.address, from.device) {
                 continue;
             }
             got.push(dev.receive(group, bytes).expect("entry reads"));
@@ -679,6 +696,13 @@ mod tests {
             .collect()
     }
 
+    /// A fresh chat id whose home is the test server.
+    fn test_group() -> Vec<u8> {
+        let mut id = b"test.example/".to_vec();
+        id.extend_from_slice(Uuid::new_v4().as_bytes());
+        id
+    }
+
     fn say(body: &str) -> Payload {
         Payload::Text {
             body: body.into(),
@@ -688,11 +712,11 @@ mod tests {
 
     #[test]
     fn two_people_talk_and_the_log_holds_only_sealed_bytes() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
         let mut log = Log::default();
 
-        let g = alice.create_group().unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
         let bob_kp = bob.key_packages(1).unwrap();
         let add = alice.add(&g, &bob_kp).unwrap();
         assert!(log.commit(alice.identity(), &add));
@@ -727,10 +751,10 @@ mod tests {
 
     #[test]
     fn every_member_derives_the_same_call_key_and_it_changes_with_the_group() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let mut carol = Device::new("carol", Uuid::new_v4()).unwrap();
-        let g = alice.create_group().unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let mut carol = Device::new("carol@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
         let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
         alice.confirm_pending(&g).unwrap();
         bob.join(add.welcome.as_ref().unwrap()).unwrap();
@@ -745,7 +769,7 @@ mod tests {
         let bob_index = a
             .members
             .iter()
-            .find(|(_, id)| id.username == "bob")
+            .find(|(_, id)| id.address == "bob@test.example")
             .map(|(i, _)| *i);
         assert_eq!(bob_index, Some(b.own_index));
 
@@ -766,9 +790,9 @@ mod tests {
 
     #[test]
     fn a_devices_own_entry_never_reads_back_as_a_message() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let g = alice.create_group().unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
         let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
         alice.confirm_pending(&g).unwrap();
         bob.join(add.welcome.as_ref().unwrap()).unwrap();
@@ -783,13 +807,13 @@ mod tests {
 
     #[test]
     fn of_two_simultaneous_commits_the_server_takes_one_and_the_other_retries() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let mut carol = Device::new("carol", Uuid::new_v4()).unwrap();
-        let mut dave = Device::new("dave", Uuid::new_v4()).unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let mut carol = Device::new("carol@test.example", Uuid::new_v4()).unwrap();
+        let mut dave = Device::new("dave@test.example", Uuid::new_v4()).unwrap();
         let mut log = Log::default();
 
-        let g = alice.create_group().unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
         let add_bob = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
         assert!(log.commit(alice.identity(), &add_bob));
         alice.confirm_pending(&g).unwrap();
@@ -815,20 +839,28 @@ mod tests {
         catch_up(&mut alice, &g, &log, &mut alice_cursor);
 
         let names = |d: &Device| {
-            let mut v: Vec<String> = d.members(&g).into_iter().map(|i| i.username).collect();
+            let mut v: Vec<String> = d.members(&g).into_iter().map(|i| i.address).collect();
             v.sort();
             v
         };
-        assert_eq!(names(&alice), ["alice", "bob", "carol", "dave"]);
+        assert_eq!(
+            names(&alice),
+            [
+                "alice@test.example",
+                "bob@test.example",
+                "carol@test.example",
+                "dave@test.example"
+            ]
+        );
         assert_eq!(names(&alice), names(&bob));
         assert_eq!(alice.epoch(&g), bob.epoch(&g));
     }
 
     #[test]
     fn a_saved_device_comes_back_able_to_read_its_chats() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let g = alice.create_group().unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
         let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
         alice.confirm_pending(&g).unwrap();
         bob.join(add.welcome.as_ref().unwrap()).unwrap();
@@ -838,7 +870,7 @@ mod tests {
         let Received::Message { from, bytes } = bob.receive(&g, &m.message).unwrap() else {
             panic!("expected a message");
         };
-        assert_eq!(from.username, "alice");
+        assert_eq!(from.address, "alice@test.example");
         assert_eq!(Payload::decode(&bytes).unwrap(), say("still there?"));
         // And it can still speak, with the key it was saved with.
         let r = bob.encrypt(&g, &say("yes")).unwrap();
@@ -850,13 +882,13 @@ mod tests {
 
     #[test]
     fn a_key_package_opens_only_one_invitation() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
         let kp = bob.key_packages(1).unwrap();
-        let g1 = alice.create_group().unwrap();
+        let g1 = alice.create_group(&test_group()).unwrap();
         let a1 = alice.add(&g1, &kp).unwrap();
         alice.confirm_pending(&g1).unwrap();
-        let g2 = alice.create_group().unwrap();
+        let g2 = alice.create_group(&test_group()).unwrap();
         let a2 = alice.add(&g2, &kp).unwrap();
         alice.confirm_pending(&g2).unwrap();
         bob.join(a1.welcome.as_ref().unwrap()).unwrap();
@@ -865,10 +897,20 @@ mod tests {
         assert!(bob.join(a2.welcome.as_ref().unwrap()).is_err());
     }
 
+    /// A bare username in a credential could never be told apart from the same
+    /// name on another server, and a credential cannot be changed later.
+    #[test]
+    fn a_device_belongs_to_a_full_address() {
+        assert!(Device::new("jeroen", Uuid::new_v4()).is_err());
+        assert!(Device::new("@cartopolis.org", Uuid::new_v4()).is_err());
+        let d = Device::new("Jeroen@Cartopolis.org", Uuid::new_v4()).unwrap();
+        assert_eq!(d.identity().address, "jeroen@cartopolis.org");
+    }
+
     #[test]
     fn identities_survive_the_credential_round_trip() {
         let me = Identity {
-            username: "jeroen".into(),
+            address: "jeroen@cartopolis.org".into(),
             device: Uuid::new_v4(),
         };
         assert_eq!(Identity::from_bytes(&me.to_bytes()), Some(me));

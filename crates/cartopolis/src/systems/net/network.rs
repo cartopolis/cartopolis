@@ -763,12 +763,14 @@ pub fn apply_network_snapshot(
                 username,
                 session_token,
                 api_base_url,
+                server_name,
                 ..
             } => {
                 local_sim_id.0 = Some(your_avatar_id);
-                tracing::info!(%username, "authenticated");
+                tracing::info!(%username, %server_name, "authenticated");
                 auth.identity.principal_id = Some(principal_id);
                 auth.identity.username = Some(username);
+                auth.identity.server_name = Some(server_name);
                 auth.chat.my_id = Some(your_avatar_id);
                 // Where this server's model store is, so `sim://` paths resolve
                 // (protocol v22). The server's own answer wins; a server that says
@@ -1021,6 +1023,7 @@ pub fn apply_network_snapshot(
                 tracing::info!("account deleted; the server has closed the session");
                 auth.identity.deleted = true;
                 auth.identity.username = None;
+                auth.identity.server_name = None;
                 auth.identity.principal_id = None;
             }
             NetMessage::PrimScript {

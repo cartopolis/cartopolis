@@ -175,6 +175,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "hands and tones — PrimDto.hand_range (a script senses hands within it) and PrimDto.tone; HandPose, where a nearby high-precision client's hand is relative to such a prim, for its script; PrimTone, the synthesised tone a script set (docs/notes/hands-and-tones.md)",
     },
+    ProtocolRevision {
+        version: 37,
+        adr: "",
+        summary: "full addresses — ServerHelloAck.server_name; every person in an encrypted chat is name@server (E2eeClaimKeyPackages/E2eeKeyPackages.address, direct_with, E2eeWelcome.members, E2eeDeliver.sender, E2eeInvite.from, and each device's MLS credential), and a chat's id begins with its home server, so chats can later span servers (docs/notes/web-chat.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -743,6 +748,12 @@ pub enum NetMessage {
         /// client assuming.
         #[serde(default)]
         api_base_url: String,
+        /// This server's name (protocol 37), the host of its public URL: what
+        /// makes `username` a full address (`username@server_name`) and what a
+        /// conversation created here begins its id with (`address::group_id`).
+        /// Every identity inside an encrypted chat is a full address, so that a
+        /// chat can one day reach people on other servers (`crate::address`).
+        server_name: String,
     },
     ServerError {
         request_id: u32,
@@ -1080,19 +1091,22 @@ pub enum NetMessage {
     /// Server: how many unused key packages this device has left, so the
     /// client knows how many to make next time.
     E2eeDeviceStatus { request_id: u32, key_packages: u32 },
-    /// Client asks for one key package per device of `username`, to add them to
-    /// a chat. Each package handed out is deleted: it opens one invitation.
-    /// Asking for your own username returns your *other* devices.
-    E2eeClaimKeyPackages { request_id: u32, username: String },
+    /// Client asks for one key package per device of `address` — a full
+    /// `name@server` (protocol 37) — to add them to a chat. Each package handed
+    /// out is deleted: it opens one invitation. Asking for your own address
+    /// returns your *other* devices.
+    E2eeClaimKeyPackages { request_id: u32, address: String },
     /// Server: the packages, one per device that had one left. A device with
     /// none left is simply absent — it can be added later, when it tops up.
     E2eeKeyPackages {
         request_id: u32,
-        username: String,
+        address: String,
         packages: Vec<E2eeKeyPackage>,
     },
     /// Client registers a new chat's id with the server, with the sender as
-    /// its only member. `direct_with` names the other person for a direct
+    /// its only member. The id begins with this server's name
+    /// (`address::group_id`): a chat's log is ordered by the server it was
+    /// created on. `direct_with` is the other person's address for a direct
     /// chat, so the server can refuse a second direct chat between the same
     /// two accounts and point at the first instead.
     E2eeCreateGroup {
@@ -1143,6 +1157,7 @@ pub enum NetMessage {
     E2eeDeliver {
         group: Vec<u8>,
         seq: u64,
+        /// The sender's full address.
         sender: String,
         device: Uuid,
         sent_at_ms: u64,
@@ -1153,6 +1168,7 @@ pub enum NetMessage {
     /// from after `after`, the commit that added this device.
     E2eeInvite {
         group: Vec<u8>,
+        /// The inviter's full address.
         from: String,
         after: u64,
         welcome: Vec<u8>,
@@ -1552,8 +1568,9 @@ pub struct E2eeKeyPackage {
 pub struct E2eeWelcome {
     /// The devices it is addressed to (the ones whose key packages were used).
     pub devices: Vec<Uuid>,
-    /// The accounts those devices belong to, which become members of the chat
-    /// for delivery purposes. The server checks each device belongs to one.
+    /// The full addresses of the accounts those devices belong to, which become
+    /// members of the chat for delivery purposes. The server checks each device
+    /// belongs to one.
     pub members: Vec<String>,
     pub bytes: Vec<u8>,
 }
@@ -1910,6 +1927,7 @@ mod tests {
             session_token: "deadbeef".into(),
             osm_tile_url_template: String::new(),
             api_base_url: String::new(),
+            server_name: "cartopolis.org".into(),
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();

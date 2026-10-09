@@ -272,10 +272,10 @@ mod tests {
     /// Three devices in one chat, each holding call keys from its own
     /// `call_epoch` — the real MLS exporter, not a stand-in.
     fn chat() -> (Vec<Device>, Vec<u8>) {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let mut carol = Device::new("carol", Uuid::new_v4()).unwrap();
-        let g = alice.create_group().unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let mut carol = Device::new("carol@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(b"test.example/call-test").unwrap();
         let mut kps = bob.key_packages(1).unwrap();
         kps.extend(carol.key_packages(1).unwrap());
         let add = alice.add(&g, &kps).unwrap();
@@ -377,7 +377,7 @@ mod tests {
         let late = a.seal(Codec::Opus, b"sealed in the old epoch").unwrap();
 
         // Dave joins: a commit, a new epoch, a new key for everybody.
-        let mut dave = Device::new("dave", Uuid::new_v4()).unwrap();
+        let mut dave = Device::new("dave@test.example", Uuid::new_v4()).unwrap();
         let add = devs[0].add(&g, &dave.key_packages(1).unwrap()).unwrap();
         devs[0].confirm_pending(&g).unwrap();
         devs[1].receive(&g, &add.message).unwrap();

@@ -527,11 +527,15 @@ mod tests {
     }
 
     fn call_of_three(late: Duration) {
-        let mut devs: Vec<Device> = ["alice", "bob", "carol"]
-            .iter()
-            .map(|n| Device::new(n, Uuid::new_v4()).unwrap())
-            .collect();
-        let g = devs[0].create_group().unwrap();
+        let mut devs: Vec<Device> = [
+            "alice@test.example",
+            "bob@test.example",
+            "carol@test.example",
+        ]
+        .iter()
+        .map(|n| Device::new(n, Uuid::new_v4()).unwrap())
+        .collect();
+        let g = devs[0].create_group(b"test.example/call-test").unwrap();
         let mut kps = devs[1].key_packages(1).unwrap();
         kps.extend(devs[2].key_packages(1).unwrap());
         let add = devs[0].add(&g, &kps).unwrap();

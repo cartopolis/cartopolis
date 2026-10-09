@@ -34,6 +34,8 @@ export interface ChatCoreApi {
     take_events(): string
     take_state(): Uint8Array | undefined
     username(): string | undefined
+    /** The same person as a full address, `name@server` (protocol 37). */
+    address(): string | undefined
 }
 
 /** The module's exports, as `wasm-bindgen --target web` writes them. */

@@ -157,7 +157,7 @@ pub enum ClientRequest {
     },
     E2eeClaimKeyPackages {
         request_id: u32,
-        username: String,
+        address: String,
     },
     E2eeCreateGroup {
         request_id: u32,
@@ -423,10 +423,10 @@ impl TryFrom<NetMessage> for ClientRequest {
             },
             NetMessage::E2eeClaimKeyPackages {
                 request_id,
-                username,
+                address,
             } => Self::E2eeClaimKeyPackages {
                 request_id,
-                username,
+                address,
             },
             NetMessage::E2eeCreateGroup {
                 request_id,

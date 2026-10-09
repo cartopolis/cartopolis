@@ -113,7 +113,10 @@ try {
     const ann = new Peer(mod, server.port, 'ann', new MemoryKeyStore())
     const bobKeys = new MemoryKeyStore()
     let bob = new Peer(mod, server.port, 'bob', bobKeys)
-    await ann.until('sign-in', (e) => (e.kind === 'signed_in' ? true : undefined))
+    // Every person is a full address (protocol 37); the dev simulator is called
+    // `localhost` after its public URL.
+    const who = await ann.until('sign-in', (e) => (e.kind === 'signed_in' ? e.address : undefined))
+    if (who !== 'ann@localhost') throw new Error(`signed in as ${who}, not ann@localhost`)
     await bob.until('sign-in', (e) => (e.kind === 'signed_in' ? true : undefined))
     await ann.conn.settled()
     await bob.conn.settled()
@@ -125,9 +128,9 @@ try {
     step(`direct chat ${channel.slice(0, 12)}… open on both`)
 
     await ann.conn.sendText(channel, 'hallo bob, encrypted in wasm')
-    await bob.line('ann', 'hallo bob, encrypted in wasm')
+    await bob.line('ann@localhost', 'hallo bob, encrypted in wasm')
     await bob.conn.sendText(channel, 'hoi ann')
-    await ann.line('bob', 'hoi ann')
+    await ann.line('bob@localhost', 'hoi ann')
     step('a line each way')
 
     const saved = bobKeys.values.size
@@ -135,7 +138,7 @@ try {
     await ann.conn.sendText(channel, 'said while you were away')
     await Bun.sleep(300)
     bob = new Peer(mod, server.port, 'bob', bobKeys)
-    await bob.line('ann', 'said while you were away')
+    await bob.line('ann@localhost', 'said while you were away')
     step(`bob came back from ${saved} saved key blob and read what he missed`)
 
     if (bob.events.some((e) => e.kind === 'opened' && e.channel !== channel)) {

@@ -10,7 +10,7 @@
 export type Credential = {token: string} | {password: string; username: string}
 
 export type ChatEvent =
-    | {kind: 'signed_in'; session_token: string; username: string}
+    | {address: string; kind: 'signed_in'; server_name: string; session_token: string; username: string}
     | {code: number; kind: 'refused'; message: string; request_id: number}
     | {channel: string; kind: 'opened'; peer: string}
     | {

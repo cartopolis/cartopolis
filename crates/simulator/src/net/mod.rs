@@ -661,6 +661,7 @@ pub async fn handle_connection<T: FrameTransport>(
         session_token,
         osm_tile_url_template: config.osm_tile_url_template.clone(),
         api_base_url: config.resolved_api_base_url(),
+        server_name: config.server_name(),
     })?;
     framed.send(Bytes::from(ack)).await?;
 
@@ -1051,8 +1052,8 @@ async fn dispatch<T: FrameTransport>(
         } => e2ee::on_register_device(ctx, request_id, device, key_packages).await,
         ClientRequest::E2eeClaimKeyPackages {
             request_id,
-            username,
-        } => e2ee::on_claim_key_packages(ctx, request_id, username).await,
+            address,
+        } => e2ee::on_claim_key_packages(ctx, request_id, address).await,
         ClientRequest::E2eeCreateGroup {
             request_id,
             group,

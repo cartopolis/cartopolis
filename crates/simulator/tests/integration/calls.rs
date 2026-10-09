@@ -196,8 +196,8 @@ fn pump(phone: &mut Phone) {
 async fn two_members_of_a_chat_call_each_other_through_the_server() {
     let (s, _dir) = start(&["alice", "bob", "carol"]).await;
     let addr = s.local_addr.to_string();
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&addr, &mut alice).await;
     let mut b = online(&addr, &mut bob).await;
     let group = start_direct(&mut a, &mut alice, "bob").await;
@@ -261,7 +261,7 @@ async fn two_members_of_a_chat_call_each_other_through_the_server() {
     );
 
     // Carol is not in the chat and cannot get into its call.
-    let mut carol = Device::new("carol", Uuid::new_v4()).unwrap();
+    let mut carol = Device::new("carol@localhost", Uuid::new_v4()).unwrap();
     let mut c = online(&addr, &mut carol).await;
     // `join` reads keys only after the server says yes, so Carol never needs any.
     let refused = join(&mut c, &carol, &group).await;
@@ -276,8 +276,8 @@ async fn two_members_of_a_chat_call_each_other_through_the_server() {
 async fn a_device_that_connects_mid_call_is_rung() {
     let (s, _dir) = start(&["alice", "bob"]).await;
     let addr = s.local_addr.to_string();
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&addr, &mut alice).await;
     let mut b = online(&addr, &mut bob).await;
     let group = start_direct(&mut a, &mut alice, "bob").await;

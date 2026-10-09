@@ -54,6 +54,9 @@ pub struct ChatCore {
     engine: Option<Engine>,
     /// Who the server says we are, from its `ServerHelloAck`.
     username: Option<String>,
+    /// The same person as a full address (`username@server_name`, protocol
+    /// 37): what the device's credential and every chat event carry.
+    address: Option<String>,
     out: VecDeque<Vec<u8>>,
     events: Vec<Value>,
     dirty: bool,
@@ -73,6 +76,7 @@ impl ChatCore {
         Self {
             engine: None,
             username: None,
+            address: None,
             out: VecDeque::new(),
             events: Vec::new(),
             dirty: false,
@@ -114,6 +118,12 @@ impl ChatCore {
         self.username.clone()
     }
 
+    /// The same, as a full address (`name@server`).
+    #[must_use]
+    pub fn address(&self) -> Option<String> {
+        self.address.clone()
+    }
+
     /// Whether [`Self::open`] has run, i.e. whether chats can be used.
     #[must_use]
     pub fn is_open(&self) -> bool {
@@ -131,8 +141,10 @@ impl ChatCore {
             NetMessage::ServerHelloAck {
                 username,
                 session_token,
+                server_name,
                 ..
             } => {
+                let address = cartopolis_core::address::person(&username, &server_name);
                 // Nobody is looking at a world through this connection, so the
                 // server need not send it twenty snapshots a second. Chat and
                 // private-chat traffic still arrive.
@@ -143,9 +155,12 @@ impl ChatCore {
                 self.events.push(json!({
                     "kind": "signed_in",
                     "username": username,
+                    "address": address,
+                    "server_name": server_name,
                     "session_token": session_token,
                 }));
                 self.username = Some(username);
+                self.address = Some(address);
             }
             NetMessage::ServerError {
                 message,
@@ -183,15 +198,15 @@ impl ChatCore {
     /// starting over would orphan every chat that blob was in, and the caller
     /// is the one who can decide to.
     pub fn open(&mut self, saved: Option<Vec<u8>>) -> Result<(), Error> {
-        let username = self
-            .username
+        let address = self
+            .address
             .clone()
             .ok_or_else(|| Error("not signed in yet".into()))?;
         let mut engine = match saved {
             Some(bytes) => Engine::load(&bytes).map_err(js_err)?,
-            None => Engine::new(&username).map_err(js_err)?,
+            None => Engine::new(&address).map_err(js_err)?,
         };
-        if !engine.username().eq_ignore_ascii_case(&username) {
+        if !engine.address().eq_ignore_ascii_case(&address) {
             return Err(Error("the saved keys belong to another account".into()));
         }
         let mut out = Vec::new();
@@ -383,6 +398,7 @@ mod tests {
             session_token: "token".into(),
             osm_tile_url_template: String::new(),
             api_base_url: String::new(),
+            server_name: "test.example".into(),
         })
         .unwrap()
     }
@@ -409,6 +425,7 @@ mod tests {
         let ev = events(&mut core);
         assert_eq!(ev[0]["kind"], "signed_in");
         assert_eq!(ev[0]["username"], "ann");
+        assert_eq!(ev[0]["address"], "ann@test.example");
         assert!(!core.is_open(), "chats wait for the caller to open them");
     }
 

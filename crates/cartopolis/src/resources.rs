@@ -1761,6 +1761,10 @@ pub struct ConnectAuth {
 #[derive(Resource, Clone, Default)]
 pub struct AuthIdentity {
     pub username: Option<String>,
+    /// The server's name from its handshake (`ServerHelloAck::server_name`,
+    /// protocol 37): with `username`, this person's full address, which is what
+    /// a private-chat device is made for.
+    pub server_name: Option<String>,
     pub principal_id: Option<uuid::Uuid>,
     /// Set when the server confirms this account was deleted at its owner's
     /// request (`NetMessage::AccountDeleted`).

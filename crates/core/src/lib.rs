@@ -1,5 +1,6 @@
 //! Shared types for the Cartopolis sim and client (ADR-006, ADR-009, ADR-015).
 
+pub mod address;
 pub mod error;
 pub mod geo;
 pub mod lens;

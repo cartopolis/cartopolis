@@ -122,9 +122,22 @@ pub(super) async fn next_matching<T>(
     }
 }
 
+/// A chat id whose home is this test server (`SimConfig::default`'s public URL
+/// is `http://localhost:3100`, so the server is called `localhost`).
+fn new_group() -> Vec<u8> {
+    cartopolis_core::address::group_id("localhost", Uuid::new_v4().into_bytes())
+}
+
 /// Connect, register a device, and wait for the server to say it has.
 pub(super) async fn online(addr: &str, dev: &mut Device) -> Client {
-    let name = dev.identity().username.clone();
+    // Signs in by name; the device itself is the full address.
+    let name = dev
+        .identity()
+        .address
+        .split('@')
+        .next()
+        .unwrap()
+        .to_string();
     let mut c = connect(addr, &name).await;
     send(
         &mut c,
@@ -151,7 +164,7 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
         a,
         &NetMessage::E2eeClaimKeyPackages {
             request_id: 2,
-            username: with.into(),
+            address: with.into(),
         },
     )
     .await;
@@ -163,7 +176,7 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
     .expect("key packages");
     assert_eq!(packages.len(), 1, "one per device of the person asked for");
 
-    let group = alice.create_group().unwrap();
+    let group = alice.create_group(&new_group()).unwrap();
     send(
         a,
         &NetMessage::E2eeCreateGroup {
@@ -255,8 +268,8 @@ fn text(dev: &mut Device, group: &[u8], message: &[u8]) -> String {
 #[tokio::test]
 async fn two_people_talk_privately_and_the_server_only_ever_holds_sealed_bytes() {
     let s = start(&["alice", "bob"]).await;
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&s.addr, &mut alice).await;
     let mut b = online(&s.addr, &mut bob).await;
 
@@ -285,7 +298,7 @@ async fn two_people_talk_privately_and_the_server_only_ever_holds_sealed_bytes()
     })
     .await
     .expect("message delivered");
-    assert_eq!(from, "alice");
+    assert_eq!(from, "alice@localhost");
     assert!(
         !raw.windows(secret.len()).any(|w| w == secret.as_bytes()),
         "the frame the server relayed must not contain the plaintext"
@@ -296,8 +309,8 @@ async fn two_people_talk_privately_and_the_server_only_ever_holds_sealed_bytes()
 #[tokio::test]
 async fn a_message_sent_while_you_were_away_arrives_on_the_next_sync() {
     let s = start(&["alice", "bob"]).await;
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&s.addr, &mut alice).await;
     // Bob registers his device once, then goes offline before anything happens.
     drop(online(&s.addr, &mut bob).await);
@@ -356,9 +369,9 @@ async fn a_message_sent_while_you_were_away_arrives_on_the_next_sync() {
 #[tokio::test]
 async fn somebody_outside_the_chat_gets_nothing_from_it() {
     let s = start(&["alice", "bob", "eve"]).await;
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-    let mut eve = Device::new("eve", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
+    let mut eve = Device::new("eve@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&s.addr, &mut alice).await;
     let _b = online(&s.addr, &mut bob).await;
     let mut e = online(&s.addr, &mut eve).await;
@@ -397,7 +410,7 @@ async fn somebody_outside_the_chat_gets_nothing_from_it() {
 #[tokio::test]
 async fn a_groups_worth_of_claims_goes_through_and_a_flood_is_refused_out_loud() {
     let s = start(&["alice", "bob"]).await;
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&s.addr, &mut alice).await;
     // Twice the burst, back to back. The bucket refills while they arrive, so
     // the exact split is not the point: a group's worth must get through, and
@@ -408,7 +421,7 @@ async fn a_groups_worth_of_claims_goes_through_and_a_flood_is_refused_out_loud()
             &mut a,
             &NetMessage::E2eeClaimKeyPackages {
                 request_id: 100 + i,
-                username: "bob".into(),
+                address: "bob".into(),
             },
         )
         .await;
@@ -462,8 +475,8 @@ async fn contacts_state(c: &mut Client) -> (Vec<String>, Vec<String>, Vec<String
 #[tokio::test]
 async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
     let s = start_with(&["alice", "bob"], false).await;
-    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
     let mut a = online(&s.addr, &mut alice).await;
     let mut b = online(&s.addr, &mut bob).await;
 
@@ -488,7 +501,7 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
         &mut a,
         &NetMessage::E2eeClaimKeyPackages {
             request_id: 2,
-            username: "bob".into(),
+            address: "bob".into(),
         },
     )
     .await;
@@ -565,4 +578,78 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
     assert_eq!(contacts, vec!["bob".to_string()]);
     assert!(outgoing.is_empty());
     say(&mut a, &mut alice, &group, "great, see you there").await;
+}
+
+/// Protocol 37: a chat's log is ordered by the server it was created on, so
+/// this server registers only ids that name it; and somebody on another server
+/// is refused in words, not answered with "they have no devices", since chats
+/// between servers are not built yet.
+#[tokio::test]
+async fn a_chat_and_its_people_must_live_on_this_server() {
+    let s = start(&["alice", "bob"]).await;
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut a = online(&s.addr, &mut alice).await;
+
+    send(
+        &mut a,
+        &NetMessage::E2eeCreateGroup {
+            request_id: 10,
+            group: cartopolis_core::address::group_id("elsewhere.example", [7; 16]),
+            direct_with: None,
+        },
+    )
+    .await;
+    let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::ServerError {
+            request_id: 10,
+            code,
+            ..
+        } => Some(code),
+        NetMessage::E2eeGroupCreated { .. } => Some(0),
+        _ => None,
+    })
+    .await
+    .expect("answered");
+    assert_eq!(
+        code, 400,
+        "a chat homed on another server is not registered here"
+    );
+
+    send(
+        &mut a,
+        &NetMessage::E2eeClaimKeyPackages {
+            request_id: 11,
+            address: "bob@elsewhere.example".into(),
+        },
+    )
+    .await;
+    let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::ServerError {
+            request_id: 11,
+            code,
+            ..
+        } => Some(code),
+        NetMessage::E2eeKeyPackages { .. } => Some(0),
+        _ => None,
+    })
+    .await
+    .expect("answered");
+    assert_eq!(code, 501, "somebody on another server is refused out loud");
+
+    // The same person by full address on this server is just bob.
+    send(
+        &mut a,
+        &NetMessage::E2eeClaimKeyPackages {
+            request_id: 12,
+            address: "Bob@LOCALHOST".into(),
+        },
+    )
+    .await;
+    let (who, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::E2eeKeyPackages { address, .. } => Some(address),
+        _ => None,
+    })
+    .await
+    .expect("key packages");
+    assert_eq!(who, "bob@localhost");
 }

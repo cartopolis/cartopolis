@@ -734,9 +734,9 @@ mod tests {
     /// part (carrying SDP) this test plays by hand.
     #[test]
     fn a_tone_spoken_into_one_session_comes_out_of_the_other() {
-        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
-        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
-        let g = alice.create_group().unwrap();
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(b"test.example/call-test").unwrap();
         let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
         alice.confirm_pending(&g).unwrap();
         bob.join(add.welcome.as_ref().unwrap()).unwrap();

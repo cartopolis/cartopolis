@@ -287,6 +287,31 @@ impl SimConfig {
         }
     }
 
+    /// This server's name: the host of `public_base_url`, lower-cased, without
+    /// scheme or port (`cartopolis.org`; `localhost` for a development sim).
+    ///
+    /// It is what makes a username a full address (`name@server_name`) and
+    /// what every chat created here begins its id with
+    /// (`cartopolis_core::address`, protocol 37). Taken from the public URL
+    /// because that is the one name of this server the operator already states
+    /// for the outside world; it should not change once chats exist, since it
+    /// is written into every device's credential.
+    #[must_use]
+    pub fn server_name(&self) -> String {
+        let url = self.public_base_url.trim();
+        let rest = url.split_once("://").map_or(url, |(_, r)| r);
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+        // Drops a port. An IPv6 literal is not a name anybody's address should
+        // carry, and falls through to `localhost` below.
+        let host = host.split(':').next().unwrap_or_default().to_lowercase();
+        if cartopolis_core::address::is_server_name(&host) {
+            host
+        } else {
+            "localhost".into()
+        }
+    }
+
     /// What to tell a client about where this server's HTTP surface is
     /// (`ServerHelloAck::api_base_url`).
     ///
@@ -407,6 +432,23 @@ mod tests {
             ..SimConfig::default()
         };
         assert!(wildcard.resolved_api_base_url().is_empty());
+    }
+
+    /// The server's name is the bare host of its public URL, whatever else
+    /// the URL carries: it ends up in every device's credential.
+    #[test]
+    fn the_server_name_is_the_public_host() {
+        let named = |url: &str| {
+            SimConfig {
+                public_base_url: url.into(),
+                ..SimConfig::default()
+            }
+            .server_name()
+        };
+        assert_eq!(named("https://Cartopolis.org"), "cartopolis.org");
+        assert_eq!(named("https://cartopolis.org/admin/"), "cartopolis.org");
+        assert_eq!(named("http://localhost:3100"), "localhost");
+        assert_eq!(named("not a url"), "localhost");
     }
 
     /// Configured wins over derived, in both directions — including an operator

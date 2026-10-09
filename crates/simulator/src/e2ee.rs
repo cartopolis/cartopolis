@@ -39,8 +39,9 @@ pub const MAX_KEY_PACKAGE_BYTES: usize = 4 * 1024;
 /// connects; bounded so one device cannot fill the table.
 pub const MAX_KEY_PACKAGES: u32 = 100;
 
-/// Longest group id accepted. openmls makes 16-byte ids.
-pub const MAX_GROUP_ID_BYTES: usize = 64;
+/// Longest group id accepted: a server name (at most 253 bytes, the DNS limit),
+/// `/`, and 16 random bytes (`cartopolis_core::address::group_id`).
+pub const MAX_GROUP_ID_BYTES: usize = 270;
 
 /// Entries replayed per chat per sync. A device further behind than this syncs
 /// again from where the replay stopped.

@@ -63,8 +63,9 @@ without it the wasm build stops at `getrandom`.
   registered.
 - **Web client: encrypted like the apps**, with a note that a browser runs
   whatever code the server sends it.
-- **Identity proofs are out of scope for now.** The server vouches for usernames
-  at sign-in and nothing checks further; a key-change warning is the only
+- **Identity proofs are out of scope for now.** The server vouches for each
+  person's full address (`name@server`, protocol 37, `web-chat.md`) at sign-in
+  and nothing checks further; a key-change warning is the only
   defence against a swapped key until proofs or in-person verification exist.
 
 ## Moderation in encrypted chats
