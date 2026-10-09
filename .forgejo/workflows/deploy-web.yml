@@ -13,6 +13,14 @@ on:
     paths:
       - "crates/atlas/web/**"
       - ".forgejo/workflows/deploy-web.yml"
+      # The chat engine the site ships as WebAssembly (`docs/notes/web-chat.md`),
+      # and the protocol it speaks: a wire change the site did not follow would
+      # leave its chat worker refused by the server it talks to.
+      - "crates/chat/**"
+      - "crates/web_chat/**"
+      - "crates/e2ee/**"
+      - "crates/core/**"
+      - "Cargo.lock"
   workflow_dispatch:
 
 concurrency:
@@ -30,6 +38,7 @@ jobs:
       # `valid_volumes` from when the separate repository published it.
       options: >-
         --volume /data/cartopolis/admin:/publish
+        --volume /data/ci-cache/cargo-registry-web:/root/.cargo/registry
     defaults:
       run:
         working-directory: crates/atlas/web
@@ -40,11 +49,25 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # The chat engine: Rust to WebAssembly (`build-chat-core.ts`). Allowed to
+      # fail for now, and the build below then ships the site without the chat
+      # worker — no page uses it yet, and the step depends on the image's
+      # wasm-bindgen matching Cargo.lock, which has drifted before (deploy-wasm's
+      # first step checks the same thing). Make it required when a page uses it.
+      - name: Build the chat engine
+        id: chat
+        continue-on-error: true
+        run: bun run build:chat-core
+
       # Both gates before the build, so a red one costs seconds rather than a
       # published site nobody checked. `tsc` earns its keep: `src/types.ts`
       # describes Rust structs by hand and nothing else checks them.
       - name: Typecheck
         run: bun x tsc --noEmit
+
+      - name: Typecheck the chat worker
+        if: steps.chat.outcome == 'success'
+        run: bun x tsc --noEmit -p tsconfig.worker.json
 
       - name: Test
         run: bun test

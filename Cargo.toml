@@ -7,6 +7,7 @@ members = [
     "crates/materials",
     "crates/e2ee",
     "crates/chat",
+    "crates/web_chat",
     "crates/calls",
     "crates/simulator",
     "crates/atlas",

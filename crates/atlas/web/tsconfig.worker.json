@@ -1,0 +1,12 @@
+{
+  "//": "The chat worker imports the generated engine (src/worker/pkg/), which exists only after `bun run build:chat-core`. It is checked here, after that build, so the rest of the web UI typechecks without a Rust toolchain.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "WebWorker"]
+  },
+  "include": [
+    "src/worker/**/*",
+    "chat-e2e.ts"
+  ],
+  "exclude": []
+}

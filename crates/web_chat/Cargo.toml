@@ -1,0 +1,36 @@
+# The private-chat engine (`cartopolis_chat`) compiled for the browser, for the
+# atlas web UI to run in a shared worker (`crates/atlas/web/src/worker/`). One
+# module per browser, not per tab: two copies of the same device's keys saving
+# over each other break every group they are in, silently.
+#
+# Built without threads, unlike the viewer: it needs none, and a module that
+# does not import shared memory loads in any worker. `docs/notes/web-chat.md`.
+[package]
+name = "cartopolis_web_chat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_web_chat"
+path = "src/lib.rs"
+# `cdylib` is the browser module; `rlib` is what lets `cargo test` reach the
+# same code natively.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+cartopolis_chat = { path = "../chat" }
+cartopolis_core = { path = "../core" }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+
+# `Engine::new` makes a device id with `Uuid::new_v4()`, and on
+# `wasm32-unknown-unknown` uuid has no random source unless its `js` feature
+# names one (see the client's Cargo.toml, which never generates one and so never
+# needed it).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
+[lints]
+workspace = true

@@ -2718,6 +2718,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cartopolis_web_chat"
+version = "1.0.0"
+dependencies = [
+ "cartopolis_chat",
+ "cartopolis_core",
+ "serde_json",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

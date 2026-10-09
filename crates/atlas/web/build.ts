@@ -66,6 +66,46 @@ async function build() {
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
+
+    await buildChatWorker()
+}
+
+/**
+ * The chat worker and the engine it loads (`src/worker/`, `docs/notes/web-chat.md`).
+ *
+ * The engine is Rust, built by `build-chat-core.ts` into `src/worker/pkg/`. Without
+ * it the rest of the site still builds — editing a page must not need a Rust
+ * toolchain — unless `--require-chat` says this build is the one being shipped.
+ */
+async function buildChatWorker() {
+    const wasm = path.join(root, 'src/worker/pkg/cartopolis_web_chat_bg.wasm')
+    if (!existsSync(wasm)) {
+        if (process.argv.includes('--require-chat')) {
+            throw new Error('src/worker/pkg/ is missing: run `bun run build:chat-core` first')
+        }
+        console.warn('no src/worker/pkg/: chat worker not built (bun run build:chat-core)')
+        return
+    }
+    const result = await Bun.build({
+        entrypoints: [path.join(root, 'src/worker/chat-worker.ts')],
+        format: 'esm',
+        minify: !serve,
+        naming: 'chat-worker.js',
+        outdir: dist,
+        sourcemap: serve ? 'inline' : 'none',
+        target: 'browser',
+    })
+    if (!result.success) {
+        for (const log of result.logs) {
+            console.error(log)
+        }
+        throw new Error('chat worker build failed')
+    }
+    // A fixed name the worker asks for (`/chat-core.wasm`), for the same reason
+    // app.js has one.
+    await Bun.write(path.join(dist, 'chat-core.wasm'), Bun.file(wasm))
+    const kb = Math.round(Bun.file(wasm).size / 1024)
+    console.log(`built dist/chat-worker.js and dist/chat-core.wasm (${kb} KB)`)
 }
 
 /**

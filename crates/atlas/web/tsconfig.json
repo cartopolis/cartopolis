@@ -28,6 +28,11 @@
   "include": [
     "src/**/*",
     "build.ts",
-    "mock.ts"
+    "mock.ts",
+    "build-chat-core.ts"
+  ],
+  "exclude": [
+    "src/worker/chat-worker.ts",
+    "src/worker/pkg"
   ]
 }
