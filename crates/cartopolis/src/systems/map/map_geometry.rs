@@ -2289,6 +2289,18 @@ fn stand_cell_on_ground(
         if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
             meshes.push(walls);
         }
+        // **The cap holds after the refinement, not only before it.** The
+        // tessellators cut to a share of the cap that allows for a 2× expansion
+        // (`TERRAIN_REFINE_EXPANSION`), and over real relief it is far more: on the
+        // Deck in Chrome, 2026-10-09, a "Built" surface arrived as one 22.7 MB mesh
+        // against the 8 MB cap, and street-level frames stalled for 1–2 s each.
+        // Cutting the finished mesh here, on the worker, is exact whatever the
+        // relief did, and it costs the main thread nothing.
+        let cap = crate::systems::lod22::max_cell_mesh_bytes();
+        *meshes = std::mem::take(meshes)
+            .into_iter()
+            .flat_map(|m| cartopolis_geo::vector_tiles::split_by_upload_bytes(m, cap))
+            .collect();
         placed = true;
     }
     // The boats, at the heights they were built at.
@@ -3014,118 +3026,125 @@ fn upload_finished_cells(
                 Stand::Terrain(&terrain, &stores.tunnels)
             };
             let group = sm.group;
-            let mesh = meshes.add(build_mesh_owned(sm, wx, wz, stand));
-            let world = Vec3::new(wx, group.y_offset(), wz);
-            let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
-                .translation_to_grid(world.as_dvec3());
-            // Shared bundle; only the material component differs by group.
-            let placement = (
-                Mesh3d(mesh),
-                Transform::from_translation(local),
-                grid_cell,
-                ChildOf(root),
-                MapSurface,
-                // Hidden from orbit alongside the ground tiles (ADR-025).
-                crate::components::HideInSpace,
-            );
-            let id = if let (SurfaceGroup::Water, Some(water)) = (group, &water_material) {
-                // Water gets the wave material (`systems::water`), which owns its
-                // albedo, roughness and depth bias — and this cell's shore field.
-                commands
-                    .spawn((placement, MeshMaterial3d(water.clone())))
-                    .id()
-            } else if matches!(
-                group,
-                SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelRoad(_)
-            ) {
-                // Roads and casings carry their place in the depth ladder per
-                // vertex (`systems::road_depth`), which is what settles the
-                // coplanar fight at a junction at *every* range. Everything else
-                // about the material is the standard road recipe.
-                let material = surfaces
-                    .road_materials
-                    .entry(group)
-                    .or_insert_with(|| {
-                        let base = road_base_material(group, &mut mats.images);
-                        mats.road.add(RoadMaterial {
-                            base,
-                            extension: RoadDepthExtension::default(),
+            // One entity per piece: a surface stood on the ground here can come
+            // out of the refinement several times its measured size, and is cut
+            // back to the cap (`build_meshes_owned`).
+            for piece in build_meshes_owned(sm, wx, wz, stand) {
+                let mesh = meshes.add(piece);
+                let world = Vec3::new(wx, group.y_offset(), wz);
+                let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+                    .translation_to_grid(world.as_dvec3());
+                // Shared bundle; only the material component differs by group.
+                let placement = (
+                    Mesh3d(mesh),
+                    Transform::from_translation(local),
+                    grid_cell,
+                    ChildOf(root),
+                    MapSurface,
+                    // Hidden from orbit alongside the ground tiles (ADR-025).
+                    crate::components::HideInSpace,
+                );
+                let id = if let (SurfaceGroup::Water, Some(water)) = (group, &water_material) {
+                    // Water gets the wave material (`systems::water`), which owns its
+                    // albedo, roughness and depth bias — and this cell's shore field.
+                    commands
+                        .spawn((placement, MeshMaterial3d(water.clone())))
+                        .id()
+                } else if matches!(
+                    group,
+                    SurfaceGroup::Road(_)
+                        | SurfaceGroup::RoadCasing(_)
+                        | SurfaceGroup::TunnelRoad(_)
+                ) {
+                    // Roads and casings carry their place in the depth ladder per
+                    // vertex (`systems::road_depth`), which is what settles the
+                    // coplanar fight at a junction at *every* range. Everything else
+                    // about the material is the standard road recipe.
+                    let material = surfaces
+                        .road_materials
+                        .entry(group)
+                        .or_insert_with(|| {
+                            let base = road_base_material(group, &mut mats.images);
+                            mats.road.add(RoadMaterial {
+                                base,
+                                extension: RoadDepthExtension::default(),
+                            })
                         })
-                    })
-                    .clone();
-                commands.spawn((placement, MeshMaterial3d(material))).id()
-            } else {
-                // The ground's own finish, for the groups that are walked on. It
-                // *multiplies* `perceptual_roughness` rather than replacing it,
-                // which is what keeps `systems::wet_surfaces` composing: rain
-                // writes the scalar, this varies it across the square, and
-                // neither has to know about the other. Same contract the road map
-                // has, and the same order the three roughness terms are required
-                // to stay in (`docs/notes/surface-finish-and-occlusion.md`).
-                //
-                // Minted here rather than inside the closure below because that
-                // one already borrows `surfaces.materials`, and this is cached on
-                // `surfaces` too — every group that takes the finish shares one
-                // image, since the map says nothing about colour and the groups
-                // differ in nothing else.
-                let finish =
-                    wants_ground_finish(group).then(|| surfaces.ground_finish(&mut mats.images));
-                let material = surfaces
-                    .materials
-                    .entry(group)
-                    .or_insert_with(|| {
-                        let [r, g, b] = group.base_color();
-                        mats.plain.add(GroundMaterial {
-                            base: StandardMaterial {
-                                base_color: Color::srgb(r, g, b),
-                                perceptual_roughness: group.perceptual_roughness(),
-                                metallic_roughness_texture: finish,
-                                // UV0 on an area surface is **metres from the map
-                                // anchor**, so this is what turns a distance into a
-                                // number of repeats. Set unconditionally: with no
-                                // texture bound there is nothing for it to transform,
-                                // and a field that is only sometimes right is worse
-                                // than one that is always the same.
-                                uv_transform: ground_finish_uv(),
-                                // What actually resolves the coplanar ground stack —
-                                // see `SurfaceGroup::depth_bias`. Physical separation
-                                // is only millimetres and cannot survive the far plane.
-                                depth_bias: group.depth_bias(),
-                                ..default()
-                            },
-                            extension: ground_detail_for(group),
+                        .clone();
+                    commands.spawn((placement, MeshMaterial3d(material))).id()
+                } else {
+                    // The ground's own finish, for the groups that are walked on. It
+                    // *multiplies* `perceptual_roughness` rather than replacing it,
+                    // which is what keeps `systems::wet_surfaces` composing: rain
+                    // writes the scalar, this varies it across the square, and
+                    // neither has to know about the other. Same contract the road map
+                    // has, and the same order the three roughness terms are required
+                    // to stay in (`docs/notes/surface-finish-and-occlusion.md`).
+                    //
+                    // Minted here rather than inside the closure below because that
+                    // one already borrows `surfaces.materials`, and this is cached on
+                    // `surfaces` too — every group that takes the finish shares one
+                    // image, since the map says nothing about colour and the groups
+                    // differ in nothing else.
+                    let finish = wants_ground_finish(group)
+                        .then(|| surfaces.ground_finish(&mut mats.images));
+                    let material = surfaces
+                        .materials
+                        .entry(group)
+                        .or_insert_with(|| {
+                            let [r, g, b] = group.base_color();
+                            mats.plain.add(GroundMaterial {
+                                base: StandardMaterial {
+                                    base_color: Color::srgb(r, g, b),
+                                    perceptual_roughness: group.perceptual_roughness(),
+                                    metallic_roughness_texture: finish,
+                                    // UV0 on an area surface is **metres from the map
+                                    // anchor**, so this is what turns a distance into a
+                                    // number of repeats. Set unconditionally: with no
+                                    // texture bound there is nothing for it to transform,
+                                    // and a field that is only sometimes right is worse
+                                    // than one that is always the same.
+                                    uv_transform: ground_finish_uv(),
+                                    // What actually resolves the coplanar ground stack —
+                                    // see `SurfaceGroup::depth_bias`. Physical separation
+                                    // is only millimetres and cannot survive the far plane.
+                                    depth_bias: group.depth_bias(),
+                                    ..default()
+                                },
+                                extension: ground_detail_for(group),
+                            })
                         })
-                    })
-                    .clone();
-                commands.spawn((placement, MeshMaterial3d(material))).id()
-            };
-            if !casts_shadow(group) {
-                commands.entity(id).insert(bevy::light::NotShadowCaster);
+                        .clone();
+                    commands.spawn((placement, MeshMaterial3d(material))).id()
+                };
+                if !casts_shadow(group) {
+                    commands.entity(id).insert(bevy::light::NotShadowCaster);
+                }
+                if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
+                    // Read the *current* ramp at spawn, the way new globe tiles read
+                    // the current albedo: a cell streaming in above the fade band must
+                    // not flash a full forest for the frame before the ramp catches up.
+                    commands
+                        .entity(id)
+                        .insert((VegetationSurface, veg_lod.visibility()));
+                }
+                if group == SurfaceGroup::Furniture {
+                    // Same contract, its own (much lower) band.
+                    commands
+                        .entity(id)
+                        .insert((FurnitureSurface, furniture_lod.visibility()));
+                }
+                if matches!(
+                    group,
+                    SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
+                ) {
+                    commands.entity(id).insert(crate::components::TunnelSurface);
+                }
+                if !debug_hide_tokens().is_empty() {
+                    commands.entity(id).insert(DebugSurfaceGroup(group));
+                }
+                entities.push(id);
             }
-            if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
-                // Read the *current* ramp at spawn, the way new globe tiles read
-                // the current albedo: a cell streaming in above the fade band must
-                // not flash a full forest for the frame before the ramp catches up.
-                commands
-                    .entity(id)
-                    .insert((VegetationSurface, veg_lod.visibility()));
-            }
-            if group == SurfaceGroup::Furniture {
-                // Same contract, its own (much lower) band.
-                commands
-                    .entity(id)
-                    .insert((FurnitureSurface, furniture_lod.visibility()));
-            }
-            if matches!(
-                group,
-                SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
-            ) {
-                commands.entity(id).insert(crate::components::TunnelSurface);
-            }
-            if !debug_hide_tokens().is_empty() {
-                commands.entity(id).insert(DebugSurfaceGroup(group));
-            }
-            entities.push(id);
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
@@ -4169,9 +4188,32 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
 /// few tens of megabytes of `memcpy` in one frame for nothing; moving the buffers
 /// in costs nothing.
 fn build_mesh_owned(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
-    use bevy::asset::RenderAssetUsages;
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    let (sm, on_terrain) = stand_surface(sm, wx, wz, stand);
+    assemble_mesh(sm, wx, wz, on_terrain)
+}
 
+/// [`build_mesh_owned`], cut to the mesh cap **after** the surface is stood on
+/// its ground — the cell spawn loop's version, for the same reason the worker
+/// cuts its own meshes in [`stand_cell_on_ground`]: the terrain refinement
+/// multiplies the geometry by however much the relief asks for, and bevy uploads
+/// one whole asset in one frame. This is the rarer path — a cell whose terrain
+/// field landed after its surfaces did, stood on the ground here on the main
+/// thread — and it was where the last over-cap uploads came from (four "Built"
+/// meshes of 8.6–11.2 MB at street level, Deck, 2026-10-09).
+fn build_meshes_owned(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Vec<Mesh> {
+    let (sm, on_terrain) = stand_surface(sm, wx, wz, stand);
+    let cap = crate::systems::lod22::max_cell_mesh_bytes();
+    cartopolis_geo::vector_tiles::split_by_upload_bytes(sm, cap)
+        .into_iter()
+        .map(|piece| assemble_mesh(piece, wx, wz, on_terrain))
+        .collect()
+}
+
+/// Stand one surface on whatever it stands on — nothing, a fixed lift, a deck's
+/// profile or the measured ground — and say whether it ended up on the terrain.
+/// An attribute whose length does not match the positions is dropped here, so the
+/// refinement and everything after it see only whole attributes.
+fn stand_surface(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> (SurfaceMesh, bool) {
     let n = sm.positions.len();
     let group = sm.group;
     let mut positions = sm.positions;
@@ -4244,6 +4286,31 @@ fn build_mesh_owned(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh
             );
         }
     }
+    let stood = SurfaceMesh {
+        group,
+        positions,
+        indices,
+        uvs,
+        normals,
+        colors,
+        rungs,
+    };
+    (stood, on_terrain)
+}
+
+/// Turn a surface that already stands where it should into the mesh bevy draws:
+/// fill in the attributes the flat groups leave empty, and attach the road rungs.
+fn assemble_mesh(sm: SurfaceMesh, wx: f32, wz: f32, on_terrain: bool) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+
+    let group = sm.group;
+    let positions = sm.positions;
+    let indices = sm.indices;
+    let mut normals = sm.normals;
+    let mut uvs = sm.uvs;
+    let colors = sm.colors;
+    let mut rungs = sm.rungs;
 
     if normals.is_empty() {
         normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
@@ -4931,6 +4998,59 @@ fn veg_seed(cell: Cell) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A surface far over the mesh cap reaches the spawn loop as several meshes,
+    /// every one under the cap, drawing all the triangles it had — and one under
+    /// the cap stays one mesh.
+    #[test]
+    fn a_surface_over_the_cap_spawns_as_meshes_under_it() {
+        let cap = crate::systems::lod22::max_cell_mesh_bytes();
+        let per_quad = cartopolis_geo::vector_tiles::mesh_upload_bytes(2, 6);
+        let quads = 3 * cap / per_quad;
+        let mut sm = SurfaceMesh {
+            group: SurfaceGroup::Built,
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        for i in 0..=quads {
+            sm.positions.push([i as f32, 0.0, 0.0]);
+            sm.positions.push([i as f32, 0.0, 1.0]);
+        }
+        for i in 0..quads as u32 {
+            sm.indices
+                .extend([2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2]);
+        }
+        let triangles = sm.indices.len() / 3;
+        let meshes = build_meshes_owned(sm, 0.0, 0.0, Stand::Placed);
+        assert!(meshes.len() >= 3, "{} pieces", meshes.len());
+        let mut drawn = 0;
+        for m in &meshes {
+            let indices = m.indices().map_or(0, |i| i.len());
+            let bytes =
+                cartopolis_geo::vector_tiles::mesh_upload_bytes(m.count_vertices(), indices);
+            assert!(
+                bytes <= cap,
+                "a piece of {bytes} B against a cap of {cap} B"
+            );
+            drawn += indices / 3;
+        }
+        assert_eq!(drawn, triangles);
+
+        let small = SurfaceMesh {
+            group: SurfaceGroup::Built,
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            indices: vec![0, 1, 2],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        assert_eq!(build_meshes_owned(small, 0.0, 0.0, Stand::Placed).len(), 1);
+    }
 
     /// `water.wgsl` fades its waves out toward the edge of this module's ring,
     /// which it cannot ask about — so it carries the radius as a constant, and

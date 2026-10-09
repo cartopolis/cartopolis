@@ -486,6 +486,90 @@ pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
     vertices * VERTEX_BYTES + indices * INDEX_BYTES
 }
 
+/// Cut a finished mesh into pieces of at most `max_bytes` each, by
+/// [`mesh_upload_bytes`], keeping every triangle whole and in its original order.
+///
+/// **This is the bound that holds after refinement.** The tessellators cut a cell
+/// to a byte cap and the terrain refinement then subdivides it, by a factor that
+/// depends on the relief: a cap divided by an assumed 2× arrived on the Deck as a
+/// single 22.7 MB "Built" mesh against an 8 MB cap, and bevy always uploads one
+/// whole asset in one frame, which no per-frame throttle can spread. Cutting the
+/// finished mesh is exact whatever the refinement did.
+///
+/// A piece takes only the vertices its triangles use, remapped, so pieces do not
+/// carry each other's attributes. An attribute that was empty stays empty (the
+/// caller fills it the same way for every piece). A mesh already under the cap is
+/// returned as it is, without a copy. A single triangle is never split, so a
+/// `max_bytes` smaller than one triangle still terminates, one triangle a piece.
+#[must_use]
+pub fn split_by_upload_bytes(mesh: SurfaceMesh, max_bytes: usize) -> Vec<SurfaceMesh> {
+    if mesh_upload_bytes(mesh.positions.len(), mesh.indices.len()) <= max_bytes {
+        return vec![mesh];
+    }
+    let n = mesh.positions.len();
+    let has = |len: usize| len == n;
+    let (has_uv, has_normal, has_color, has_rung) = (
+        has(mesh.uvs.len()),
+        has(mesh.normals.len()),
+        has(mesh.colors.len()),
+        has(mesh.rungs.len()),
+    );
+    let empty = |group| SurfaceMesh {
+        group,
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        colors: Vec::new(),
+        rungs: Vec::new(),
+    };
+    // The piece's index for each source vertex, `u32::MAX` while unused. Reset
+    // only for the vertices a piece touched, so a cut costs what the piece held.
+    let mut remap = vec![u32::MAX; n];
+    let mut touched: Vec<u32> = Vec::new();
+    let mut pieces = Vec::new();
+    let mut piece = empty(mesh.group);
+    for tri in mesh.indices.chunks_exact(3) {
+        let new_verts = tri
+            .iter()
+            .filter(|&&v| remap[v as usize] == u32::MAX)
+            .count();
+        let after = mesh_upload_bytes(piece.positions.len() + new_verts, piece.indices.len() + 3);
+        if after > max_bytes && !piece.indices.is_empty() {
+            for v in touched.drain(..) {
+                remap[v as usize] = u32::MAX;
+            }
+            pieces.push(std::mem::replace(&mut piece, empty(mesh.group)));
+        }
+        for &v in tri {
+            let slot = &mut remap[v as usize];
+            if *slot == u32::MAX {
+                let i = v as usize;
+                *slot = piece.positions.len() as u32;
+                touched.push(v);
+                piece.positions.push(mesh.positions[i]);
+                if has_uv {
+                    piece.uvs.push(mesh.uvs[i]);
+                }
+                if has_normal {
+                    piece.normals.push(mesh.normals[i]);
+                }
+                if has_color {
+                    piece.colors.push(mesh.colors[i]);
+                }
+                if has_rung {
+                    piece.rungs.push(mesh.rungs[i]);
+                }
+            }
+            piece.indices.push(*slot);
+        }
+    }
+    if !piece.indices.is_empty() {
+        pieces.push(piece);
+    }
+    pieces
+}
+
 /// Tessellate a tile's area layers into one mesh per [`SurfaceGroup`], **cut so
 /// that no two of them cover the same ground**.
 ///
@@ -842,6 +926,94 @@ mod tests {
     // A real z14 tile over Groningen, from the VersaTiles Shortbread source
     // (now self-hosted at tiles.cartopolis.org; the archive is identical).
     use crate::testdata::GRONINGEN_Z14;
+
+    /// A strip of `quads` unit squares, two triangles each, with every attribute
+    /// filled, so a split has something to carry and something to check.
+    fn strip(quads: usize) -> SurfaceMesh {
+        let mut m = SurfaceMesh {
+            group: SurfaceGroup::Grass,
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        for i in 0..=quads {
+            for z in 0..2 {
+                let p = [i as f32, 0.0, z as f32];
+                m.positions.push(p);
+                m.uvs.push([p[0], p[2]]);
+                m.normals.push([0.0, 1.0, 0.0]);
+                m.colors.push([p[0], p[2], 0.5, 1.0]);
+                m.rungs.push(p[0]);
+            }
+        }
+        for i in 0..quads as u32 {
+            let (a, b, c, d) = (2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 3);
+            m.indices.extend([a, b, c, b, d, c]);
+        }
+        m
+    }
+
+    /// Every piece fits the cap, and together the pieces draw exactly the same
+    /// triangles — same corners, same attributes at each corner, same order.
+    #[test]
+    fn a_split_mesh_fits_the_cap_and_draws_the_same_triangles() {
+        let whole = strip(500);
+        let cap = mesh_upload_bytes(60, 90);
+        let pieces = split_by_upload_bytes(whole.clone(), cap);
+        assert!(pieces.len() > 1, "a mesh over the cap must be cut");
+        let corner = |m: &SurfaceMesh, i: u32| {
+            let i = i as usize;
+            (
+                m.positions[i],
+                m.uvs[i],
+                m.normals[i],
+                m.colors[i],
+                m.rungs[i],
+            )
+        };
+        let mut drawn = Vec::new();
+        for p in &pieces {
+            assert!(mesh_upload_bytes(p.positions.len(), p.indices.len()) <= cap);
+            assert_eq!(p.group, whole.group);
+            for len in [p.uvs.len(), p.normals.len(), p.colors.len(), p.rungs.len()] {
+                assert_eq!(len, p.positions.len(), "an attribute fell out of step");
+            }
+            drawn.extend(p.indices.iter().map(|&i| corner(p, i)));
+        }
+        let want: Vec<_> = whole.indices.iter().map(|&i| corner(&whole, i)).collect();
+        assert_eq!(drawn, want);
+    }
+
+    /// Under the cap nothing is copied or cut, and an empty attribute stays empty
+    /// in every piece rather than being invented.
+    #[test]
+    fn a_mesh_under_the_cap_is_returned_whole_and_empty_attributes_stay_empty() {
+        let small = strip(4);
+        let cap = mesh_upload_bytes(small.positions.len(), small.indices.len());
+        assert_eq!(split_by_upload_bytes(small.clone(), cap), vec![small]);
+
+        let mut bare = strip(200);
+        bare.uvs.clear();
+        bare.colors.clear();
+        let pieces = split_by_upload_bytes(bare, mesh_upload_bytes(30, 45));
+        assert!(pieces.len() > 1);
+        assert!(pieces
+            .iter()
+            .all(|p| p.uvs.is_empty() && p.colors.is_empty()));
+        assert!(pieces.iter().all(|p| p.normals.len() == p.positions.len()));
+    }
+
+    /// A cap below one triangle still ends, one triangle a piece, rather than
+    /// looping or dropping geometry.
+    #[test]
+    fn a_cap_below_one_triangle_still_terminates() {
+        let pieces = split_by_upload_bytes(strip(3), 1);
+        assert_eq!(pieces.len(), 6);
+        assert!(pieces.iter().all(|p| p.indices.len() == 3));
+    }
 
     #[test]
     fn tessellates_water_and_landuse() {
