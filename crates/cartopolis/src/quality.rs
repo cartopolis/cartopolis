@@ -1282,7 +1282,9 @@ fn on_this_machine(budget: Budget) -> Budget {
     } else {
         budget
     };
-    with_shadow_cascade_override(with_shadow_filter_override(budget))
+    with_shadow_distance_override(with_shadow_cascade_override(with_shadow_filter_override(
+        budget,
+    )))
 }
 
 /// Apply `CARTO_SHADOW_CASCADES`, if it is set.
@@ -1313,6 +1315,26 @@ fn with_shadow_cascade_override(budget: Budget) -> Budget {
     };
     Budget {
         shadow_cascades: n,
+        ..budget
+    }
+}
+
+/// Apply `CARTO_SHADOW_DISTANCE` (metres), if it is set — the third shadow lever,
+/// beside the cascade count and the filter, so the range a tier casts over can be
+/// swept in a browser (`?shadow_distance=400`) without a build per value.
+///
+/// Clamped to 100 m–5 km: under 100 m the street's own shadows fall outside it,
+/// and past 5 km no tier here has ever cast (the desktop rung stops at 1.5 km).
+fn with_shadow_distance_override(budget: Budget) -> Budget {
+    let Some(m) = crate::env_value("CARTO_SHADOW_DISTANCE")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|m| m.is_finite())
+        .map(|m| m.clamp(100.0, 5000.0))
+    else {
+        return budget;
+    };
+    Budget {
+        shadow_distance_m: m,
         ..budget
     }
 }
