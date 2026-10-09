@@ -1,9 +1,9 @@
 //! Patched copies of four bevy_pbr shaders, swapped in at runtime — three so that
 //! nothing in this app's frame loads bevy's `Atmosphere` struct whole, and one
-//! (`render_sky.wgsl`) so that the air's haze stops where the ground begins.
+//! (`render_sky.wesl`) so that the air's haze stops where the ground begins.
 //!
-//! **Why.** Bevy 0.19 hands its `Atmosphere` binding to helper functions *by
-//! value* — `clamp_to_surface(atmosphere, ..)`, `transmittance_lut_r_mu_to_uv(
+//! **Why.** Bevy (0.19, and still 0.20) hands its `Atmosphere` binding to
+//! helper functions *by value* —`clamp_to_surface(atmosphere, ..)`, `transmittance_lut_r_mu_to_uv(
 //! atmosphere, ..)` and friends — and naga compiles each such call into one
 //! load of the entire struct. The struct packs `inner_radius` into the padding
 //! of `ground_albedo: vec3` (byte 12, `outer_radius` at 16). The Adreno 840
@@ -15,18 +15,23 @@
 //! record, and why a month of work blamed a compiler, is
 //! `docs/notes/adreno-atmosphere-struct-copy.md`.
 //!
-//! **The copies.** Each is a byte copy of bevy_pbr 0.19.1's file with tagged
-//! hunks (`PATCHED (cartopolis)`) that read the fields through the binding —
-//! the same values on any driver that copies structs correctly:
+//! **The copies.** Each is a byte copy of bevy_pbr 0.20.0's `.wesl` file with
+//! tagged hunks (`PATCHED (cartopolis)`) that read the fields through the
+//! binding — the same values on any driver that copies structs correctly. They
+//! were first made from 0.19.1's naga_oil `.wgsl` files and re-applied, hunk
+//! for hunk, to 0.20's WESL ones:
 //!
 //! 1. `bevy_pbr::atmosphere::functions` — every atmosphere pass: the sky, its
 //!    lookup tables and the sky-reflection cubemap. Also guards the sky-view
-//!    horizon `sqrt` against a negative, as `bruneton_functions.wgsl`'s own
-//!    sibling expression always has.
-//! 2. `bevy_pbr::lighting` — the air's dimming of sunlight on every lit
-//!    surface. Without it the phone lit buildings with the sun as it is above
+//!    horizon `sqrt` against a negative, as `bruneton_functions.wesl`'s own
+//!    sibling expression always has. In 0.20 `sample_transmittance_lut_segment`
+//!    moved to `bruneton_functions`, but it still calls this module's
+//!    `sample_transmittance_lut`, so it reads through the patched one.
+//! 2. `bevy_pbr::render::pbr_lighting` (`bevy_pbr::lighting` in 0.19) — the
+//!    air's dimming of sunlight on every lit surface. Without it the phone lit buildings with the sun as it is above
 //!    the atmosphere: too bright, and never orange at sunset.
-//! 3. `volumetric_fog.wgsl` — the same dimming for the light shafts.
+//! 3. `bevy_pbr::volumetric_fog::volumetric_fog` — the same dimming for the
+//!    light shafts.
 //!
 //! **The upgrade guard.** Each patch records the FNV-1a hash of the stock file
 //! it was copied from. A stock shader that no longer matches is *not* replaced:
@@ -37,13 +42,24 @@
 //!
 //! **Why a runtime swap and not a fork.** The alternative is vendoring
 //! `bevy_pbr` — fifty thousand lines re-forked on every Bevy bump. These are
-//! three files. They cannot be replaced through the embedded-asset registry
+//! four files. They cannot be replaced through the embedded-asset registry
 //! either: `load_shader_library!` registers *and loads* the asset inside the
 //! plugin's `build`, so a later registry insert races the async load.
 //! Replacing the loaded `Shader` asset is race-free — `PipelineCache::
 //! extract_shaders` handles the `Modified` event and re-composes every
 //! dependent pipeline, the same machinery shader hot-reload rides on. The frames
 //! before the swap lands render with the stock shaders.
+//!
+//! **Identity under WESL.** Bevy 0.20 names a WESL module by its asset path:
+//! `Shader::from_wesl` turns `embedded://bevy_pbr/atmosphere/functions.wesl`
+//! into the import path `bevy_pbr::atmosphere::functions`, and the shader cache
+//! resolves every `import` of that module (and every pipeline whose entry point
+//! it is) by that path. So the copy is built with the *stock shader's own path*,
+//! never the repository path of the copy: anything else would register a second
+//! module under a different name, which nothing imports and no pipeline uses.
+//! Every one of the four is an embedded `.wesl` now — the 0.19 split between
+//! libraries (which declared an import path) and entry points (which did not)
+//! is gone, so all four are found by import path.
 //!
 //! **It runs on every platform on purpose.** The copies are arithmetic-identical
 //! on a correct driver, so desktop and the container's lavapipe render through
@@ -57,7 +73,7 @@ use bevy::shader::{Shader, ShaderImport, Source};
 struct Patch {
     /// How the loaded stock asset is found.
     target: Target,
-    /// FNV-1a of the stock source the copy was made from (bevy_pbr 0.19.1).
+    /// FNV-1a of the stock source the copy was made from (bevy_pbr 0.20.0).
     stock_fnv: u64,
     /// The copy, compiled in: it must exist before any asset IO settles, and on
     /// Android there is no asset directory to lose it in.
@@ -66,58 +82,49 @@ struct Patch {
     path: &'static str,
 }
 
+/// A stock shader, by the import path `Shader::from_wesl` derives from its
+/// embedded asset path. For a library the handle `load_shader_library!` made
+/// was leaked, so this is the only address it has; an entry point is found the
+/// same way, since every embedded `.wesl` gets one.
 #[derive(Clone, Copy)]
-enum Target {
-    /// A library module, by the naga_oil import path it declares — the handle
-    /// `load_shader_library!` made was leaked, so this is the only address it
-    /// has.
-    Import(&'static str),
-    /// An entry-point shader, which declares no import path, by the end of its
-    /// asset path.
-    PathSuffix(&'static str),
-}
+struct Target(&'static str);
 
 impl Target {
     fn matches(self, shader: &Shader) -> bool {
-        match self {
-            Self::Import(path) => {
-                matches!(&shader.import_path, ShaderImport::Custom(p) if p == path)
-            }
-            Self::PathSuffix(suffix) => shader.path.ends_with(suffix),
-        }
+        matches!(&shader.import_path, ShaderImport::Custom(p) if p == self.0)
     }
 }
 
 const PATCHES: [Patch; 4] = [
     Patch {
-        target: Target::Import("bevy_pbr::atmosphere::functions"),
-        stock_fnv: 0x60e6_7b67_9f17_c525,
+        target: Target("bevy_pbr::atmosphere::functions"),
+        stock_fnv: 0x7604_8b8c_c6cf_49a5,
         source: include_str!(
-            "../../../../../assets/shaders/patched/bevy_pbr_atmosphere_functions.wgsl"
+            "../../../../../assets/shaders/patched/bevy_pbr_atmosphere_functions.wesl"
         ),
-        path: "assets/shaders/patched/bevy_pbr_atmosphere_functions.wgsl",
+        path: "assets/shaders/patched/bevy_pbr_atmosphere_functions.wesl",
     },
     Patch {
-        target: Target::Import("bevy_pbr::lighting"),
-        stock_fnv: 0xb775_f85a_51e5_7771,
-        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_lighting.wgsl"),
-        path: "assets/shaders/patched/bevy_pbr_lighting.wgsl",
+        target: Target("bevy_pbr::render::pbr_lighting"),
+        stock_fnv: 0x6287_af15_be87_6776,
+        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_lighting.wesl"),
+        path: "assets/shaders/patched/bevy_pbr_lighting.wesl",
     },
     Patch {
-        target: Target::PathSuffix("volumetric_fog/volumetric_fog.wgsl"),
-        stock_fnv: 0x7fbd_c39f_a422_0106,
-        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_volumetric_fog.wgsl"),
-        path: "assets/shaders/patched/bevy_pbr_volumetric_fog.wgsl",
+        target: Target("bevy_pbr::volumetric_fog::volumetric_fog"),
+        stock_fnv: 0xd6b9_2688_4641_46be,
+        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_volumetric_fog.wesl"),
+        path: "assets/shaders/patched/bevy_pbr_volumetric_fog.wesl",
     },
     // Not the Adreno fix: the sky pass's aerial perspective, clamped to the
     // stretch of each ray that is in air, so the underground layers seen through
     // the opened ground are not hazed as if three kilometres of air lay between
     // (`systems::underground`, `docs/notes/underground.md`).
     Patch {
-        target: Target::PathSuffix("atmosphere/render_sky.wgsl"),
-        stock_fnv: 0x0a3c_7163_0fac_c64f,
-        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_render_sky.wgsl"),
-        path: "assets/shaders/patched/bevy_pbr_render_sky.wgsl",
+        target: Target("bevy_pbr::atmosphere::render_sky"),
+        stock_fnv: 0xce9b_a992_c7ec_05e4,
+        source: include_str!("../../../../../assets/shaders/patched/bevy_pbr_render_sky.wesl"),
+        path: "assets/shaders/patched/bevy_pbr_render_sky.wesl",
     },
 ];
 
@@ -179,7 +186,7 @@ pub fn patch_atmosphere_shader(
         };
         progress.settled[index] = true;
         let stock_fnv = match &stock.source {
-            Source::Wgsl(source) => fnv1a(source.as_bytes()),
+            Source::Wesl(source) => fnv1a(source.as_bytes()),
             _ => 0,
         };
         if stock_fnv != patch.stock_fnv {
@@ -195,14 +202,28 @@ pub fn patch_atmosphere_shader(
             tracing::error!("{message}");
             continue;
         }
+        let replacement = patched_shader(patch, stock);
         // The Err arm is an id already in use, which an id taken from `iter` is by
         // construction — replacing is the point.
-        let _ = shaders.insert(id, Shader::from_wgsl(patch.source, patch.path));
+        let _ = shaders.insert(id, replacement);
         tracing::info!(
             copy = patch.path,
             "bevy shader swapped for its patched copy"
         );
     }
+}
+
+/// The copy, wearing the stock shader's identity: built from the stock asset
+/// path so `from_wesl` derives the same import path and module path (and
+/// re-scans the copy's own imports, which differ from stock where a hunk
+/// dropped one), with the stock asset's shader defs — which the shader cache
+/// folds into every importer's compile — and dependency handles carried over.
+fn patched_shader(patch: &Patch, stock: &Shader) -> Shader {
+    let mut shader = Shader::from_wesl(patch.source, stock.path.clone());
+    shader.shader_defs = stock.shader_defs.clone();
+    shader.file_dependencies = stock.file_dependencies.clone();
+    shader.validate_shader = stock.validate_shader.clone();
+    shader
 }
 
 #[cfg(test)]
@@ -233,12 +254,12 @@ mod tests {
     fn each_copy_carries_its_hunks() {
         for (file, hunks) in [
             // Two horizon sqrt guards, and three struct-read sites.
-            ("bevy_pbr_atmosphere_functions.wgsl", 5),
+            ("bevy_pbr_atmosphere_functions.wesl", 5),
             // The import, the call site, and the helpers.
-            ("bevy_pbr_lighting.wgsl", 3),
-            ("bevy_pbr_volumetric_fog.wgsl", 3),
+            ("bevy_pbr_lighting.wesl", 3),
+            ("bevy_pbr_volumetric_fog.wesl", 3),
             // The import, and the aerial perspective's clamp to the air.
-            ("bevy_pbr_render_sky.wgsl", 2),
+            ("bevy_pbr_render_sky.wesl", 2),
         ] {
             assert_eq!(
                 patch(file).source.matches("PATCHED (cartopolis)").count(),
@@ -269,7 +290,7 @@ mod tests {
                 );
             }
         }
-        let functions = code(patch("bevy_pbr_atmosphere_functions.wgsl").source);
+        let functions = code(patch("bevy_pbr_atmosphere_functions.wesl").source);
         assert!(functions.contains("fn distance_to_top_of_atmosphere(r: f32, mu: f32)"));
         assert!(functions.contains("fn transmittance_lut_uv(r: f32, mu: f32)"));
         assert!(functions.contains("let min_radius = atmosphere.inner_radius + EPSILON;"));
@@ -278,7 +299,7 @@ mod tests {
         assert!(
             !functions.contains("sqrt(r * r - atmosphere.inner_radius * atmosphere.inner_radius);")
         );
-        for file in ["bevy_pbr_lighting.wgsl", "bevy_pbr_volumetric_fog.wgsl"] {
+        for file in ["bevy_pbr_lighting.wesl", "bevy_pbr_volumetric_fog.wesl"] {
             let copy = code(patch(file).source);
             for helper in [
                 "fn atmosphere_clamp_to_surface(position: vec3<f32>)",
@@ -290,27 +311,45 @@ mod tests {
         }
     }
 
-    /// naga_oil's preprocessor must read each copy exactly as it reads the stock
-    /// file: a library copy must declare the same import path or nothing imports
-    /// it, and the entry point must declare none.
+    /// The embedded asset path bevy_pbr 0.20 loads each stock shader from —
+    /// `embedded_asset!` / `load_shader_library!` in the module beside it.
+    fn stock_path(patch: &Patch) -> &'static str {
+        match patch.target.0 {
+            "bevy_pbr::atmosphere::functions" => "embedded://bevy_pbr/atmosphere/functions.wesl",
+            "bevy_pbr::render::pbr_lighting" => "embedded://bevy_pbr/render/pbr_lighting.wesl",
+            "bevy_pbr::volumetric_fog::volumetric_fog" => {
+                "embedded://bevy_pbr/volumetric_fog/volumetric_fog.wesl"
+            }
+            "bevy_pbr::atmosphere::render_sky" => "embedded://bevy_pbr/atmosphere/render_sky.wesl",
+            other => panic!("no stock path recorded for {other}"),
+        }
+    }
+
+    /// The shader cache names a WESL module by the import path `from_wesl`
+    /// derives from the asset path: a copy that answered to any other would be a
+    /// second module nothing imports and no pipeline runs. So the stock shader is
+    /// found by that path, and the copy built the way the swap builds it answers
+    /// to the same one, from the same asset path — and is a WESL source, so the
+    /// shader cache compiles it through the same resolver.
     #[test]
     fn each_copy_answers_to_the_stock_address() {
         for patch in &PATCHES {
-            let shader = Shader::from_wgsl(patch.source, patch.path);
-            match patch.target {
-                Target::Import(path) => assert_eq!(
-                    shader.import_path,
-                    ShaderImport::Custom(path.to_string()),
-                    "{}",
-                    patch.path
-                ),
-                Target::PathSuffix(_) => assert_eq!(
-                    shader.import_path,
-                    ShaderImport::AssetPath(patch.path.to_string()),
-                    "{}",
-                    patch.path
-                ),
-            }
+            let stock = Shader::from_wesl("", stock_path(patch));
+            assert!(
+                patch.target.matches(&stock),
+                "{}: target misses stock",
+                patch.path
+            );
+            let copy = patched_shader(patch, &stock);
+            assert_eq!(copy.path, stock.path, "{}", patch.path);
+            assert_eq!(
+                copy.import_path,
+                ShaderImport::Custom(patch.target.0.to_string()),
+                "{}",
+                patch.path
+            );
+            assert!(patch.target.matches(&copy), "{}", patch.path);
+            assert!(matches!(copy.source, Source::Wesl(_)), "{}", patch.path);
         }
     }
 

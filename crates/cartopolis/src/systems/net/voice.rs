@@ -932,7 +932,7 @@ pub fn update_voice_playback(
 pub fn read_talk_key(
     mut voice: ResMut<VoiceState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
+    egui_manager: crate::systems::egui_manager::EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
 ) {
     if voice.mode != VoiceMode::PushToTalk {

@@ -16,11 +16,11 @@
 //! broadcast (another editor saving the same prim) cannot silently eat unsaved
 //! work.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 use cartopolis_core::{NetMessage, ScriptLevel};
 
 use crate::resources::{OnlineSession, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
 
@@ -228,7 +228,7 @@ fn level_color(level: ScriptLevel) -> egui::Color32 {
 /// Only shown online: a script is server state, and `--offline` has no server to
 /// hold one. The context-menu entry that opens it is hidden on the same test.
 pub fn render_script_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut editor: ResMut<ScriptEditorState>,
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,

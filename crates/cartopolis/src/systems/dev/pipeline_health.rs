@@ -87,6 +87,7 @@ fn watch_pipelines(cache: Res<PipelineCache>, mut frame: Local<u32>) {
                     let label = match &pipeline.descriptor {
                         PipelineDescriptor::RenderPipelineDescriptor(d) => d.label.as_deref(),
                         PipelineDescriptor::ComputePipelineDescriptor(d) => d.label.as_deref(),
+                        PipelineDescriptor::MeshPipelineDescriptor(d) => d.label.as_deref(),
                     }
                     .unwrap_or("(unlabelled)");
                     // First line only: a naga validation error is a page, and the

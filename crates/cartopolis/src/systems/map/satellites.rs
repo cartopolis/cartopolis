@@ -17,7 +17,7 @@
 //! propagates the whole catalogue to one instant and writes one quad per
 //! satellite carrying its position *and velocity* in the anchor's frame
 //! (`build_snapshot`). The vertex stage moves each one on from that instant
-//! under the Earth's gravity (`shaders/satellites.wgsl`), so they glide, and
+//! under the Earth's gravity (`shaders/satellites.wesl`), so they glide, and
 //! nothing is uploaded between rebuilds but one uniform. Rebuilding every frame
 //! would be ~2.5 MB of vertex data a frame — the upload churn
 //! `docs/notes/upload-bursts.md` is about.
@@ -34,6 +34,7 @@
 //! 36,000 km up. While the layer is on, the far plane reaches past the
 //! geostationary belt ([`SatelliteLayer::far_reach_m`]).
 
+use crate::systems::egui_manager::EguiRef;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,7 +54,6 @@ use crate::grid::AnchoredCamera;
 use crate::platform::{http, storage};
 use crate::systems::camera_attach::{AttachKey, AttachRange, CameraAttach};
 use crate::systems::data_layers::DataLayers;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::{icons, theme};
 
@@ -836,7 +836,7 @@ pub fn pick_satellite(
     mouse: Res<ButtonInput<MouseButton>>,
     touch: Res<crate::systems::touch::TouchGestures>,
     time: Res<Time>,
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
     clouds: Query<(&GlobalTransform, &Visibility), With<SatelliteCloud>>,
@@ -1013,7 +1013,7 @@ pub fn report_attached_satellite(
 /// (`systems::action_ring`) — Follow, Path, More — and, from More, the card with
 /// everything known about it.
 pub fn render_satellite_menu(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut layer: ResMut<SatelliteLayer>,
     mut attach: ResMut<CameraAttach>,
     clouds: Query<&Visibility, With<SatelliteCloud>>,

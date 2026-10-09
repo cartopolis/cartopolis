@@ -44,7 +44,7 @@ What reading bevy 0.19.1 established:
 
 ## What building it would take
 
-Rasterise the low deck into that image from `cloud_field.wgsl`'s field — the
+Rasterise the low deck into that image from `cloud_field.wesl`'s field — the
 function exists on the CPU side only in the shader, so either port `fbm` /
 `hash_i` to Rust bit-for-bit (they are integer hashes, so this is possible and
 testable) or render it with a small compute pass. Drift is then the light's

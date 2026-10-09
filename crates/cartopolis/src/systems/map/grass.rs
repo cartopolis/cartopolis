@@ -2,7 +2,7 @@
 //! the altitude ramp.
 //!
 //! The pure half is [`crate::systems::turf`] and the geometry is
-//! `assets/shaders/grass.wgsl`; both have the reasoning for *why* a blade is
+//! `assets/shaders/grass.wesl`; both have the reasoning for *why* a blade is
 //! generated in the vertex shader rather than scattered and uploaded. What this
 //! module owns is the consequence of that decision, which is that grass does not
 //! stream. Per [`Tier`] — a dense near pool, and on the full quality rung two
@@ -783,7 +783,7 @@ pub fn update_grass(
                 .spawn((
                     Mesh3d(pool.mesh.clone()),
                     MeshMaterial3d(pool.material.clone()),
-                    MeshTag(0),
+                    MeshTag::new(0),
                     Transform::default(),
                     GridCell::default(),
                     ChildOf(root),
@@ -850,10 +850,11 @@ pub fn update_grass(
             *gc = cell;
             // Two signed 16-bit patch indices. This is the blade's anchor-metre
             // frame and the only thing that carries it into the shader — see the
-            // module doc in `grass.wgsl` for why it cannot come from
+            // module doc in `grass.wesl` for why it cannot come from
             // `world_position`. The unit is this tier's own patch edge, which
             // the shader reads back out of `blade.w`.
-            *tag = MeshTag(((patch.x as i16 as u16 as u32) << 16) | patch.y as i16 as u16 as u32);
+            *tag =
+                MeshTag::new(((patch.x as i16 as u16 as u32) << 16) | patch.y as i16 as u16 as u32);
         }
     }
 }
@@ -1203,7 +1204,7 @@ mod tests {
 
     #[test]
     fn the_lattice_mesh_carries_every_attribute_the_shader_declares() {
-        // `grass.wgsl` declares locations 0, 1, 2 and 5 exactly. A missing
+        // `grass.wesl` declares locations 0, 1, 2 and 5 exactly. A missing
         // attribute does not fail to compile — it drops the matching shader-def,
         // and the pipeline is then built against a vertex struct the mesh does
         // not supply, which wgpu rejects at draw time.

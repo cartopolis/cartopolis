@@ -478,7 +478,7 @@ rooftops, with no basemap visible at all.
 
 What sub-metre relief *is*, though, is 5–30 cm of amplitude: a kerb, the camber of a
 carriageway, the lip of a quay, a rut across a verge. All of that is **shading, not
-silhouette** — the same observation `water.wgsl` is built on, where a canal is two
+silhouette** — the same observation `water.wesl` is built on, where a canal is two
 triangles and every wave lives in the normal.
 
 So `systems::ground_detail` puts it in the normal:
@@ -489,7 +489,7 @@ So `systems::ground_detail` puts it in the normal:
   `MAX_GROUND_EDGE_M` — because the mesh underneath already carries the coarse
   gradient in its vertices, and adding the raw slope would apply every gradient twice.
 * `GroundDetailExtension` over `StandardMaterial` perturbs the normal by it
-  (`shaders/ground_detail.wgsl`), so the sun, the shadows, the fog and the atmosphere's
+  (`shaders/ground_detail.wesl`), so the sun, the shadows, the fog and the atmosphere's
   environment map all still reach the ground exactly as before.
 * Its uniform is the box's centre in **render** space, rewritten when the box
   re-centres or the floating origin jumps. Unlike `building_windows`, which rewrites
@@ -511,7 +511,7 @@ off: `ground_detail_ready` true / false, `ground_detail_sample_m` 0.50 / 0.00, a
 groups, and the roads. The roads reach it a different way and it is worth knowing why —
 they need a *vertex* stage of their own for the depth ladder, so they cannot share the
 material type, but they declare the same three bindings at the same numbers and name
-`shaders/ground_detail.wgsl` as their **fragment** shader. Two material types, two
+`shaders/ground_detail.wesl` as their **fragment** shader. Two material types, two
 vertex stages, one description of what the ground looks like up close.
 
 The volumetric groups — canopy, trunk, street furniture — are deliberately **out** of

@@ -14,10 +14,10 @@
 //! egui paints floating `Area`s above panels (see the CLAUDE.md entry). It is
 //! ordered with the panel chain for that reason.
 
+use crate::systems::egui_manager::{EguiMut, EguiRef};
 use bevy::prelude::*;
 
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel, Seated};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{world_to_lat_lng, GeoNavState};
 use crate::systems::theme;
 use crate::systems::world_places::{Interactable, SeatSpot, WorldPlaces};
@@ -522,7 +522,7 @@ fn nearest_berth(
 pub fn handle_interaction_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     camera_state: Res<CameraState>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
     online: Option<Res<crate::resources::OnlineSession>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -571,7 +571,7 @@ pub fn handle_interaction_input(
 /// prompt still cannot eat a click meant for the map it floats over, which is the
 /// property that made it non-interactive in the first place.
 pub fn render_interaction_prompt(
-    mut egui_manager: ResMut<EguiManager>,
+    mut egui_manager: EguiMut,
     camera_state: Res<CameraState>,
     mut state: ResMut<InteractState>,
     mut avatar_state: ResMut<AvatarState>,

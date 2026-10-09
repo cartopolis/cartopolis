@@ -64,7 +64,7 @@ invented density in a measured one. It fails at all three candidate consumers:
 - **Lit windows.** Block liveliness hashes at `BLOCK_M = 25.0` m
   (`crates/cartopolis/src/systems/map/building_windows.rs:99`) — a buurt is one to
   two orders of magnitude coarser. The occupancy channel it multiplies
-  (`assets/shaders/building_windows.wgsl:163-164`) is already fed **per building**
+  (`assets/shaders/building_windows.wesl:163-164`) is already fed **per building**
   by the BAG's use bits through `osm_buildings::night_lit_scale`
   (`crates/cartopolis/src/systems/map/osm_buildings.rs:515`).
   `percentageOnbewoond` is a neighbourhood average of the same fact the client

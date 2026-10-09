@@ -28,12 +28,12 @@
 //! reason: it has to work on the web, where there are no OS threads.
 
 use crate::platform::sync::{Arc, Mutex};
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::model_file;
 use crate::resources::{AvatarState, EditDialogState, GameState, OnlineSession, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::model_assets;
 use crate::systems::{icons, theme};
 
@@ -508,7 +508,7 @@ pub fn poll_model_library(mut state: ResMut<ModelLibraryState>) {
 /// The panel.
 #[allow(clippy::too_many_lines)]
 pub fn render_model_library_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<ModelLibraryState>,
     mut game_state: ResMut<GameState>,

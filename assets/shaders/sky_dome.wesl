@@ -16,8 +16,8 @@
 //
 // Sampled by per-pixel view direction, like starfield.wgsl and horizonhaze.wgsl,
 // so the mesh is only a cheap shell — its shape does not enter the shading.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
 
 // xyz: world direction to the sun. w: sun-disc brightness, as a multiplier on
 // `source` (0 once the disc has set).

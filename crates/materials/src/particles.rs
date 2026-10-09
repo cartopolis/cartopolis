@@ -10,7 +10,7 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use cartopolis_core::ParticleEffect;
 
-/// The uniforms `particles.wgsl` reads. Grouped as `vec4`s rather than as twenty
+/// The uniforms `particles.wesl` reads. Grouped as `vec4`s rather than as twenty
 /// scalars because a uniform block is padded to 16 bytes per binding either way,
 /// so packing is free and unpacking is not.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -34,11 +34,11 @@ pub struct ParticleMaterial {
 
 impl Material for ParticleMaterial {
     fn vertex_shader() -> ShaderRef {
-        "shaders/particles.wgsl".into()
+        "shaders/particles.wesl".into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        "shaders/particles.wgsl".into()
+        "shaders/particles.wesl".into()
     }
 
     /// Additive, which under bevy is premultiplied blending — the shader outputs

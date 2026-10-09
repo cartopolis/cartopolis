@@ -85,10 +85,10 @@
 //! [`TouchGestures::ui_held`]: crate::systems::touch::TouchGestures::ui_held
 //! [`TouchGestures::ui_released`]: crate::systems::touch::TouchGestures::ui_released
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::{CameraMode, CameraState, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
 /// Diameter (points) of one round control — [`theme::ROUND_BUTTON_SIZE`], the
@@ -359,7 +359,7 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 /// the cheaper half of the trade: inverting either link would move the camera or
 /// the driver tick to answer a translation control that cannot feel it.
 pub fn render_map_osd(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut osd: ResMut<OsdInput>,
     mut regions: ResMut<crate::systems::touch::UiClaimRegions>,
     mut stick_finger: Local<Option<u64>>,

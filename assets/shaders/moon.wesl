@@ -6,7 +6,7 @@
 // of the quad carries a soft glow that scales with how much of the lit face is
 // turned toward the viewer. Alpha-blended: the disc (even its dark side) covers
 // the stars behind it, and the halo gently veils them.
-#import bevy_pbr::forward_io::VertexOutput
+import bevy_pbr::render::forward_io::VertexOutput;
 
 @group(3) @binding(0) var<uniform> sun_local: vec4<f32>;
 

@@ -36,7 +36,7 @@ const OCEAN_TINT: Vec3 = Vec3::new(0.42, 0.55, 0.72);
 /// `update_globe_albedo` still has one material type to walk.
 pub type GlobeSurfaceMaterial = ExtendedMaterial<StandardMaterial, GlobeOcean>;
 
-/// Ocean uniforms for `shaders/globe_ocean.wgsl`.
+/// Ocean uniforms for `shaders/globe_ocean.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug, Default)]
 pub struct GlobeOcean {
     /// x: effect strength, ramped with `space_factor` (0 = the surface behaves
@@ -86,6 +86,6 @@ impl GlobeOcean {
 
 impl MaterialExtension for GlobeOcean {
     fn fragment_shader() -> ShaderRef {
-        "shaders/globe_ocean.wgsl".into()
+        "shaders/globe_ocean.wesl".into()
     }
 }

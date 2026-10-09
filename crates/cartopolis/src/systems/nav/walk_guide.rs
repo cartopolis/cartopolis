@@ -27,6 +27,7 @@
 //! It needs an avatar, which only a session has; the planner says so instead of
 //! offering a Walk that cannot move anything.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::components::Avatar;
@@ -35,7 +36,6 @@ use crate::systems::avatar::RouteWalk;
 use crate::systems::driver::{
     countdown, point_along, project_onto_route, DriverState, Progress, RouteGeom,
 };
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
 use crate::systems::icons;
 use crate::systems::locomotion::Gait;
@@ -232,7 +232,7 @@ struct WalkActions {
 /// The walking chrome: the next turn at the top left, and the bar above the
 /// dock with what is left and what to do about it.
 pub fn render_walk_guide(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut guide: ResMut<WalkGuide>,
     route: Res<RouteState>,
     right_panel: Res<RightPanel>,

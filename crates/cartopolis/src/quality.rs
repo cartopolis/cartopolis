@@ -100,7 +100,7 @@ pub struct Budget {
     /// water shader. Individually modest, collectively a large slice of both the
     /// draw list and the per-cell meshing the main thread does while streaming.
     pub detail_layers: bool,
-    /// Octaves the water shader sums per fragment (`assets/shaders/water.wgsl`).
+    /// Octaves the water shader sums per fragment (`assets/shaders/water.wesl`).
     ///
     /// Each one is two sines, a cosine and two powers, and the finest ones are the
     /// centimetre ripples that only exist within a few tens of metres of the

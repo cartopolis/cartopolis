@@ -23,7 +23,7 @@ use crate::ground_detail::{GroundKey, GroundUniform};
 pub const ATTRIBUTE_ROAD_RUNG: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadRung", 970_412_233, VertexFormat::Float32);
 
-/// The shader location `road_depth.wgsl` reads the rung from. Bevy's own mesh
+/// The shader location `road_depth.wesl` reads the rung from. Bevy's own mesh
 /// attributes occupy 0–7, so this is the first free one.
 const RUNG_SHADER_LOCATION: u32 = 8;
 
@@ -115,14 +115,14 @@ impl Default for RoadDepthExtension {
 
 impl MaterialExtension for RoadDepthExtension {
     fn vertex_shader() -> ShaderRef {
-        "shaders/road_depth.wgsl".into()
+        "shaders/road_depth.wesl".into()
     }
 
     /// `ground_detail`'s, not one of our own: the ladder is a *vertex* trick and the
     /// fragment has nothing to add to it beyond the slope every other ground surface
     /// already gets.
     fn fragment_shader() -> ShaderRef {
-        "shaders/ground_detail.wgsl".into()
+        "shaders/ground_detail.wesl".into()
     }
 
     // `prepass_vertex_shader` is deliberately left at bevy's default. The rung is

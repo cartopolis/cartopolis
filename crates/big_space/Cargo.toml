@@ -1,6 +1,6 @@
 # Vendored fork of big_space 0.10.0 (upstream: https://github.com/aevyrie/big_space,
 # MIT OR Apache-2.0). Copied verbatim so we can port it to newer Bevy in place —
-# upstream tops out at Bevy 0.18 and has no 0.19 release. Examples, benches, and
+# upstream tops out at Bevy 0.18 and has no 0.19 or 0.20 release. Examples, benches, and
 # dev-dependencies from upstream are dropped; only the library is kept.
 [package]
 name = "big_space"
@@ -37,30 +37,30 @@ libm = ["bevy_math/libm", "dep:libm"]
 
 [dependencies]
 smallvec = { version = "1.13.2", default-features = false } # Already used by bevy in commands
-bevy_app = { version = "0.19.0", default-features = false, features = [
+bevy_app = { version = "0.20.0", default-features = false, features = [
     "bevy_reflect",
 ] }
-bevy_ecs = { version = "0.19.0", default-features = false }
-bevy_log = { version = "0.19.0", default-features = false }
-bevy_math = { version = "0.19.0", default-features = false }
-bevy_reflect = { version = "0.19.0", default-features = false, features = [
+bevy_ecs = { version = "0.20.0", default-features = false }
+bevy_log = { version = "0.20.0", default-features = false }
+bevy_math = { version = "0.20.0", default-features = false }
+bevy_reflect = { version = "0.20.0", default-features = false, features = [
     "glam",
 ] }
-bevy_tasks = { version = "0.19.0", default-features = false }
-bevy_transform = { version = "0.19.0", default-features = false, features = [
+bevy_tasks = { version = "0.20.0", default-features = false }
+bevy_transform = { version = "0.20.0", default-features = false, features = [
     "bevy-support",
     "bevy_reflect",
 ] }
-bevy_utils = { version = "0.19.0", default-features = false }
-bevy_platform = { version = "0.19.0", default-features = false, features = [
+bevy_utils = { version = "0.20.0", default-features = false }
+bevy_platform = { version = "0.20.0", default-features = false, features = [
     "alloc",
 ] }
 # Optional
-bevy_color = { version = "0.19.0", default-features = false, optional = true }
-bevy_gizmos = { version = "0.19.0", default-features = false, optional = true }
-bevy_render = { version = "0.19.0", default-features = false, optional = true }
-bevy_input = { version = "0.19.0", default-features = false, optional = true }
-bevy_time = { version = "0.19.0", default-features = false, optional = true }
+bevy_color = { version = "0.20.0", default-features = false, optional = true }
+bevy_gizmos = { version = "0.20.0", default-features = false, optional = true }
+bevy_render = { version = "0.20.0", default-features = false, optional = true }
+bevy_input = { version = "0.20.0", default-features = false, optional = true }
+bevy_time = { version = "0.20.0", default-features = false, optional = true }
 libm = { version = "0.2", default-features = false, optional = true }
 
 # The vendor drop removed upstream's dev-dependencies along with its examples and
@@ -73,7 +73,7 @@ libm = { version = "0.2", default-features = false, optional = true }
 # platform backend is selected per-target in cartopolis's own manifest, so it will
 # not build from here. The tests need the ECS, an `App` to run it in, and
 # `Visibility` — nothing that opens a window.
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.20", default-features = false, features = [
     "bevy_render",
     "async_executor",
     "std",

@@ -427,6 +427,7 @@ pub fn travel_mode(mode: TravelMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// **Every icon in the table must be in the shipped subset.**
     ///
@@ -442,7 +443,7 @@ mod tests {
         // first frame, and asking before one has run answers about a stack that
         // does not exist yet.
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let _ = ctx.run_ui(
+        let _ = ctx.run_ui_unpainted(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()

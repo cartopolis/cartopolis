@@ -1,6 +1,6 @@
 //! Sunbeams: light fanning out from the sun through the gaps in the clouds and
 //! past the edges of buildings, drawn as one pass over the finished frame
-//! (`assets/shaders/sun_rays.wgsl`, Settings ▸ Graphics ▸ Sun rays).
+//! (`assets/shaders/sun_rays.wesl`, Settings ▸ Graphics ▸ Sun rays).
 //!
 //! # Why a screen-space pass, when the light shafts already exist
 //!

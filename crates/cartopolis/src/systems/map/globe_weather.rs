@@ -2,7 +2,7 @@
 //!
 //! Fetches NOAA **GFS Total Cloud Cover** (entire atmosphere) from the NOMADS
 //! GRIB filter, decodes the GRIB2 with `gribberish`, and folds it into the coarse
-//! equirectangular texture that `shaders/globe_clouds.wgsl` samples as its
+//! equirectangular texture that `shaders/globe_clouds.wesl` samples as its
 //! coverage field. Real weather sets *where* clouds are; the shader's noise still
 //! synthesizes their shape and motion (so this is data, not a pasted satellite
 //! photo — see the ADR).

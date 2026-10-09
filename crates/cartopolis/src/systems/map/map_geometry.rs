@@ -3907,7 +3907,7 @@ fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
 /// Everything a road's surface is made of *except* its place in the depth ladder,
 /// which is per vertex and belongs to `RoadDepthExtension`. `depth_bias` here is
 /// only the **foot** of the road band — every road group returns the same value
-/// from `depth_bias()` now, and `road_depth.wgsl` adds the rung on top.
+/// from `depth_bias()` now, and `road_depth.wesl` adds the rung on top.
 fn road_base_material(group: SurfaceGroup, images: &mut Assets<Image>) -> StandardMaterial {
     let [r, g, b] = group.base_color();
     StandardMaterial {
@@ -5069,16 +5069,16 @@ mod tests {
         assert_eq!(build_meshes_owned(small, 0.0, 0.0, Stand::Placed).len(), 1);
     }
 
-    /// `water.wgsl` fades its waves out toward the edge of this module's ring,
+    /// `water.wesl` fades its waves out toward the edge of this module's ring,
     /// which it cannot ask about — so it carries the radius as a constant, and
     /// this is what stops the two drifting. A shader that believed the ring was
     /// bigger would put the fade's end past the last cell: waves right up to a
     /// hard line again.
     #[test]
     fn the_water_shader_knows_the_ring_radius() {
-        let src = include_str!("../../../../../assets/shaders/water.wgsl");
+        let src = include_str!("../../../../../assets/shaders/water.wesl");
         let decl = format!("const RING_RADIUS_CELLS: f32 = {CELL_RADIUS}.0;");
-        assert!(src.contains(&decl), "water.wgsl must declare `{decl}`");
+        assert!(src.contains(&decl), "water.wesl must declare `{decl}`");
     }
 
     /// The ground of `terrain::tests::canal` as a placement: a 20 m canal at −3 m

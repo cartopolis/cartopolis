@@ -43,7 +43,7 @@
 
 use bevy::animation::animation_curves::AnimatableCurve;
 use bevy::animation::{animated_field, AnimationTargetId};
-use bevy::math::curve::{ConstantCurve, Interval};
+use bevy::curve::{ConstantCurve, Interval};
 use bevy::prelude::*;
 
 use crate::systems::user_store::AvatarSex;

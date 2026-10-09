@@ -8,8 +8,8 @@
 // indistinguishable from fog at infinite distance and no line forms at the
 // horizon. Sampled by per-pixel view direction (like starsky.wgsl), so the mesh
 // shape is irrelevant — it's just a cheap shell around the camera.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::{view, lights}
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::{view, lights};
 
 @group(3) @binding(0) var<uniform> color: vec4<f32>;
 // params.x: falloff scale — elevation (view-dir y) over which the haze decays by 1/e.

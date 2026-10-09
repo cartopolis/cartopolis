@@ -90,7 +90,7 @@
 //! ## The one shader that had to change
 //!
 //! Bevy's rule is "in shaders, use `View::main_pass_viewport` instead of
-//! `View::viewport`". `rain.wgsl` derives its screen UV from the fragment
+//! `View::viewport`". `rain.wesl` derives its screen UV from the fragment
 //! coordinate over the viewport size and was moved onto `main_pass_viewport` when
 //! this module used the override. It is left there deliberately: with no override
 //! in the graph the two fields are equal (`prepare_view_uniforms` copies one from
@@ -144,6 +144,7 @@ use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 /// process. The tier still supplies the starting value; the Settings slider moves
 /// it, and the render world re-extracts it every frame.
 #[derive(Resource, Clone, Copy, Debug, ExtractResource, PartialEq)]
+#[extract_app(RenderApp)]
 pub struct RenderScale(pub f32);
 
 impl RenderScale {

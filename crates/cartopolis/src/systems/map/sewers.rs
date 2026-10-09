@@ -28,7 +28,7 @@
 //! **Seeing them means opening the ground**, and the ground is a stack of
 //! opaque sheets ordered by a depth ladder (`ground_stack`), so it cannot simply
 //! be made translucent: sorting would put every sheet in a fight with the others.
-//! It is a screen door instead — `ground_detail.wgsl`'s `GROUND_SEE_THROUGH`
+//! It is a screen door instead — `ground_detail.wesl`'s `GROUND_SEE_THROUGH`
 //! variant discards a fixed ordered-dither share of the ground's pixels near the
 //! camera, the same pixels on every sheet, while the rest stays opaque and keeps
 //! writing depth. Behind the holes there would be sky, so a dark [`Backdrop`]

@@ -1,7 +1,7 @@
 //! The outside of a designed building: the surveyed walls redrawn with the doors
 //! and windows its owner drew (`docs/notes/building-designs.md`).
 //!
-//! A 3DBAG shell is a solid with painted windows: `building_windows.wgsl` lays a
+//! A 3DBAG shell is a solid with painted windows: `building_windows.wesl` lays a
 //! lattice of panes over every wall, guessing their size from the building's
 //! era. That is right for a building nobody has described and wrong for one
 //! somebody has — the panes would be in different places from the windows they

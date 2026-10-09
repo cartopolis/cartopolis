@@ -19,6 +19,7 @@
 use crate::components::FreeCamera;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::sync::{Arc, LazyLock, Mutex};
+use crate::systems::egui_manager::EguiMut;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -31,7 +32,6 @@ use serde::{Deserialize, Serialize};
 use crate::components::Avatar;
 use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::navigation::{Endpoint, RouteState};
@@ -1849,9 +1849,9 @@ pub fn render_search_panel(
     // Spelled plainly rather than through its module path on purpose: the guard
     // that every root-`Ui` panel is in the panel chain
     // (`egui_manager::every_root_ui_panel_is_in_the_chain`) recognises a panel
-    // system by the literal `ResMut<EguiManager>`, so a qualified path here would
+    // system by the literal `EguiMut`, so a qualified path here would
     // quietly opt this panel out of the one check that catches an unordered one.
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -2368,6 +2368,7 @@ pub fn place_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
     use crate::systems::globe::{sub_point, GlobeState};
 
     const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
@@ -2720,7 +2721,7 @@ mod tests {
                 3 => raw.events.push(button(target, false)),
                 _ => {}
             }
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 let pick = destination_row(ui, &s, Some((53.0, 6.0)), 360.0, false);
                 target = aim(pick.response.rect);
                 clicked |= pick.clicked();

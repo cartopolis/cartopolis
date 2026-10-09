@@ -19,13 +19,13 @@
 //! no panel that could hold them without making a camera turn a trip into a
 //! menu.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
 use crate::resources::CameraState;
 use crate::systems::driver::GpsQuality;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
 /// Diameter (points) of the compass overlay — [`theme::ROUND_BUTTON_SIZE`], the
@@ -622,7 +622,7 @@ fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved
 /// the module is.
 #[allow(clippy::too_many_arguments)]
 pub fn render_map_controls(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut camera_state: ResMut<CameraState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,

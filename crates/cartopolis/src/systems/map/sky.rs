@@ -560,7 +560,7 @@ pub(crate) const STAR_SHELL_RADIUS: f32 = 150_000.0;
 pub(crate) struct Moon;
 
 /// Angular radius of the moon *quad* in radians. The disc proper fills the inner
-/// ~42% of it (`DISC_R` in moon.wgsl) — ~0.7°, ~2.5× the real moon, which is how
+/// ~42% of it (`DISC_R` in moon.wesl) — ~0.7°, ~2.5× the real moon, which is how
 /// cameras exaggerate it too; the rest of the quad carries the radiant glow halo.
 pub(crate) const MOON_ANGULAR_RADIUS: f32 = 0.028;
 /// Moon shell distance: inside the star shell so the disc occludes stars behind it.
@@ -666,7 +666,7 @@ pub(crate) fn update_moon(
     }
 }
 
-/// Marker for the fog-colored horizon-haze shell (see `shaders/horizonhaze.wgsl`).
+/// Marker for the fog-colored horizon-haze shell (see `shaders/horizonhaze.wesl`).
 #[derive(Component)]
 pub(crate) struct HorizonHaze;
 
@@ -1154,7 +1154,7 @@ pub(crate) fn star_color(bv: f32) -> Vec3 {
 }
 
 /// Spawns the fog-colored horizon-haze shell: a slightly smaller sibling of the star
-/// box whose shader paints a band of fog color at the horizon (see horizonhaze.wgsl).
+/// box whose shader paints a band of fog color at the horizon (see horizonhaze.wesl).
 pub(crate) fn setup_horizon_haze(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1174,7 +1174,7 @@ pub(crate) fn setup_horizon_haze(
     // the one edge the haze can't hide, so it has to sit at the same elevation in
     // every direction. A cube's rim runs from `r` at the face to `r√2` at the
     // corner, which swept up and down as a ring as the camera pivoted.
-    // `ico(3)` — 1,280 triangles, not `ico(5)`'s 20,480. `horizonhaze.wgsl` samples
+    // `ico(3)` — 1,280 triangles, not `ico(5)`'s 20,480. `horizonhaze.wesl` samples
     // by per-pixel view direction and says so in its own header ("the mesh shape is
     // irrelevant — it's just a cheap shell around the camera"), so the subdivision
     // buys no shading quality whatsoever; it only decides how round the *rim* is,
@@ -1385,7 +1385,7 @@ pub(crate) fn update_star_sky(
     }
 }
 
-/// Marker for the procedural cloud-ceiling shell (see `shaders/clouds.wgsl`).
+/// Marker for the procedural cloud-ceiling shell (see `shaders/clouds.wesl`).
 #[derive(Component)]
 pub(crate) struct Clouds;
 
@@ -1444,6 +1444,21 @@ pub(crate) fn deck_wind(surface: Vec2) -> Vec2 {
     veered * DECK_WIND_SCALE * CLOUD_TIME_LAPSE
 }
 
+/// `gpu` laid out the way WGSL reads it, for [`CLOUD_FIELD_BUFFER`]. Bevy 0.20's
+/// `ShaderBuffer` holds plain bytes and lost the `set_data` that ran encase for
+/// us, so the std430 layout is written here instead.
+fn cloud_field_bytes(gpu: &CloudFieldGpu) -> Vec<u8> {
+    let mut buffer = bevy::render::render_resource::encase::StorageBuffer::new(Vec::new());
+    buffer
+        .write(gpu)
+        .expect("a fixed-size struct always fits a growable buffer");
+    buffer.into_inner()
+}
+
+fn cloud_field_buffer(gpu: CloudFieldGpu) -> ShaderBuffer {
+    ShaderBuffer::new(cloud_field_bytes(&gpu), Default::default())
+}
+
 /// What the ground cloud deck looks like this frame, shared with the water that
 /// mirrors it.
 ///
@@ -1461,30 +1476,29 @@ pub struct CloudField {
     drift: bevy::math::DVec2,
     /// The drift's current velocity, eased toward [`deck_wind`].
     velocity: Vec2,
-    /// Keeps `cartopolis::cloud_field` alive in `Assets<Shader>`: `clouds.wgsl`,
-    /// `water.wgsl` and `ground_detail.wgsl` all import it, and an import module
+    /// Keeps the `cloud_field` module alive in `Assets<Shader>`: `clouds.wesl`,
+    /// `water.wesl` and `ground_detail.wesl` all import it, and an import module
     /// is only importable while something holds it.
     _module: Handle<Shader>,
 }
 
-/// The shared cloud module (`cloud_field.wgsl`). Compiled in rather than loaded,
+/// The shared cloud module (`cloud_field.wesl`). Compiled in rather than loaded,
 /// for the reason `water_common` is: on Android there is no asset directory to
 /// lose it in, and an import that is not there yet is a pipeline that waits.
-const CLOUD_FIELD_WGSL: &str = include_str!("../../../../../assets/shaders/cloud_field.wgsl");
+const CLOUD_FIELD_WESL: &str = include_str!("../../../../../assets/shaders/cloud_field.wesl");
 
 impl FromWorld for CloudField {
     fn from_world(world: &mut World) -> Self {
         let module = world
             .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wgsl(
-                CLOUD_FIELD_WGSL,
-                "shaders/cloud_field.wgsl",
+            .add(Shader::from_wesl(
+                CLOUD_FIELD_WESL,
+                "shaders/cloud_field.wesl",
             ));
         // Coverage 0 until `update_clouds` writes the first frame: water mirrors no
         // cloud rather than a guessed one — and stays that way under
         // `CARTO_NO_CLOUDS`, where nothing ever writes it.
-        let mut storage = ShaderBuffer::default();
-        storage.set_data(CloudFieldGpu::default());
+        let storage = cloud_field_buffer(CloudFieldGpu::default());
         world
             .resource_mut::<Assets<ShaderBuffer>>()
             .insert(&CLOUD_FIELD_BUFFER, storage)
@@ -1658,7 +1672,7 @@ pub(crate) fn update_clouds(
     // horizon band, with a hard step between them — the single ugliest thing in
     // the Fairphone screenshots. Both are written into the same post-exposure
     // linear space (bevy's `apply_fog` mixes toward `DistanceFog::color` after
-    // exposure, and `horizonhaze.wgsl` paints it un-exposed to match), so this is
+    // exposure, and `horizonhaze.wesl` paints it un-exposed to match), so this is
     // not a units mismatch to be scaled away — they were simply two different
     // greys, and taking the one already on the camera makes them one.
     //
@@ -1721,7 +1735,7 @@ pub(crate) fn update_clouds(
             gpu.shape.x = 0.0;
         }
         if let Some(mut storage) = buffers.get_mut(&CLOUD_FIELD_BUFFER) {
-            storage.set_data(gpu);
+            *storage = cloud_field_buffer(gpu);
         }
     }
 }
@@ -1753,7 +1767,7 @@ pub(crate) fn fog_density_coefficient(falloff: &FogFalloff) -> f32 {
     }
 }
 
-/// Marker for the screen-space rain quad (see `shaders/rain.wgsl`).
+/// Marker for the screen-space rain quad (see `shaders/rain.wesl`).
 #[derive(Component)]
 pub(crate) struct Rain;
 
@@ -1850,7 +1864,7 @@ pub(crate) fn update_rain(
     }
 }
 
-/// Marker for the planet-wrapping cloud sphere (see `shaders/globe_clouds.wgsl`).
+/// Marker for the planet-wrapping cloud sphere (see `shaders/globe_clouds.wesl`).
 #[derive(Component)]
 pub(crate) struct GlobeClouds;
 
@@ -1956,7 +1970,7 @@ pub(crate) fn update_globe_clouds(
     // why it exists: coverage here is the `GLOBE_CLOUD_COVER` constant blended
     // with live GFS, deliberately not the weather slider (see the `params` write
     // below), so neither `--clouds` nor Settings ▸ World moves it — and
-    // `globe_clouds.wgsl` evaluates nine 6-octave `fbm3` fields before it ever
+    // `globe_clouds.wesl` evaluates nine 6-octave `fbm3` fields before it ever
     // consults coverage, so there is no cheap value to set it to either. A shell
     // at planet radius fills the screen from low orbit, so this is the largest
     // single per-fragment cost in the space tier and nothing could measure it.
@@ -2101,7 +2115,7 @@ mod overcast_tests {
     /// horizon-haze shell paints, or the two meet in the step the Fairphone
     /// screenshots showed — a grey lid over a white band.
     ///
-    /// This is the arithmetic of `update_clouds` + `clouds.wgsl`'s ambient term
+    /// This is the arithmetic of `update_clouds` + `clouds.wesl`'s ambient term
     /// for an opaque core (`shape_low == 1`), which is what a solid overcast is
     /// made of; the sun term is negligible under an optical depth of 7.
     #[test]
@@ -2150,17 +2164,17 @@ mod overcast_tests {
         assert_eq!(deck_wind(Vec2::ZERO), Vec2::ZERO);
     }
 
-    /// `CloudFieldGpu` is what the shared buffer holds and `cloud_field.wgsl`'s
+    /// `CloudFieldGpu` is what the shared buffer holds and `cloud_field.wesl`'s
     /// `Deck` is how three shaders read it. A vector added, dropped or reordered on
     /// one side reads every later one from the wrong offset, and nothing but the
     /// picture would say so.
     #[test]
     fn the_shared_deck_has_one_layout_on_both_sides() {
-        let body = CLOUD_FIELD_WGSL
+        let body = CLOUD_FIELD_WESL
             .split("struct Deck {")
             .nth(1)
             .and_then(|rest| rest.split('}').next())
-            .expect("cloud_field.wgsl declares `struct Deck`");
+            .expect("cloud_field.wesl declares `struct Deck`");
         let fields: Vec<&str> = body
             .lines()
             .map(str::trim)
@@ -2200,9 +2214,7 @@ mod overcast_tests {
             haze_color: Vec4::splat(6.0),
             light: Vec4::splat(7.0),
         };
-        let mut storage = ShaderBuffer::default();
-        storage.set_data(gpu);
-        let bytes = storage.data.expect("set_data writes the bytes");
+        let bytes = cloud_field_bytes(&gpu);
         for (i, chunk) in bytes.chunks_exact(16).enumerate() {
             let first = f32::from_le_bytes(chunk[..4].try_into().unwrap());
             assert_eq!(first, i as f32, "vector {i} ({}) is out of place", rust[i]);

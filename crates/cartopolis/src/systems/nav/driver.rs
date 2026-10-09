@@ -141,6 +141,7 @@
 
 use crate::components::DriverArrow;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::egui_manager::EguiRef;
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -1669,7 +1670,7 @@ pub fn steady_driver_camera(
     mut input: DriveInput,
     mut driver: ResMut<DriverState>,
     mut camera_state: ResMut<CameraState>,
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     time: Res<Time>,
     avatars: Query<(), With<Avatar>>,
 ) {
@@ -2260,7 +2261,7 @@ const PILL_BOTTOM: f32 = 62.0;
 /// resolution `hud::render_map_controls` reached for the status box. The manoeuvre
 /// card, the compass and the speed pill are all clear of that edge and stay.
 pub fn render_driver_hud(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut driver: ResMut<DriverState>,
     route: Res<RouteState>,
     ahead: Res<RouteAhead>,

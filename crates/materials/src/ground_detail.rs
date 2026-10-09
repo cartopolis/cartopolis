@@ -15,7 +15,7 @@ use bevy::shader::ShaderRef;
 /// The ground material every flat surface and every relief tile carries.
 pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundDetailExtension>;
 
-/// Which variant of `shaders/ground_detail.wgsl` a ground material compiles.
+/// Which variant of `shaders/ground_detail.wesl` a ground material compiles.
 ///
 /// One flag so far: [`GroundKey::see_through`], the screen-door the underground
 /// layer looks through (`systems::sewers`). It is a *variant* rather than a
@@ -84,7 +84,7 @@ impl From<&GroundDetailExtension> for GroundUniform {
     }
 }
 
-/// The sub-metre half of the ground, for `shaders/ground_detail.wgsl`.
+/// The sub-metre half of the ground, for `shaders/ground_detail.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 #[bind_group_data(GroundKey)]
 #[data(100, GroundUniform, binding_array(110))]
@@ -158,7 +158,7 @@ impl Default for GroundDetailExtension {
 
 impl MaterialExtension for GroundDetailExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/ground_detail.wgsl".into()
+        "shaders/ground_detail.wesl".into()
     }
 
     fn specialize(

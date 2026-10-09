@@ -19,13 +19,13 @@
 //! by whatever owns the screen it would float over — driver mode, the main menu,
 //! the on-screen keyboard and, on a phone, an open panel.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::RightPanel;
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::cutaway::Cutaway;
 use crate::systems::data_layers::{open_url, open_url_supported};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
 
@@ -35,7 +35,7 @@ const WIDTH: f32 = 150.0;
 /// Draw the picker while the building card is looking inside a building.
 #[allow(clippy::too_many_arguments)]
 pub fn render_floor_picker(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut cutaway: ResMut<Cutaway>,
     facts: Res<BuildingFacts>,
     right_panel: Res<RightPanel>,

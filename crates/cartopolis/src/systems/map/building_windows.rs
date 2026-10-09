@@ -16,7 +16,7 @@
 //! instead of a patch around the camera. `systems::grass` made this call for the
 //! same reason and states it as a rule; `globe_ocean` is the other precedent.
 //!
-//! The consequence worth knowing is in `shaders/building_windows.wgsl`: with no
+//! The consequence worth knowing is in `shaders/building_windows.wesl`: with no
 //! per-vertex anchor available the lattice has to *divide* `WORLD_CELL_EDGE`, or
 //! the pattern shifts when big_space recentres.
 //! [`WINDOW_LATTICE`](cartopolis_materials::building_windows::WINDOW_LATTICE) documents the

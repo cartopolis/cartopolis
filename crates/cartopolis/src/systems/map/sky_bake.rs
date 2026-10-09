@@ -38,6 +38,7 @@ use bevy::pbr::generate::RenderEnvironmentMap;
 use bevy::prelude::*;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::sync_world::RenderEntity;
+use bevy::render::RenderApp;
 
 use crate::components::{FreeCamera, PlanetAtmosphere};
 use crate::systems::render_features::EnvMapComponent;
@@ -76,7 +77,7 @@ pub struct SkyBakeOrder {
     pub map_type: Option<TypeId>,
 }
 
-impl ExtractResource for SkyBakeOrder {
+impl ExtractResource<RenderApp> for SkyBakeOrder {
     type Source = Self;
 
     fn extract_resource(source: &Self) -> Self {

@@ -130,7 +130,7 @@ ask at any time.
   cannot know any of it. `year: None` reproduces the old generated palette
   exactly, which is what every building outside the coverage still gets.
 - **Night window lighting by use** (`osm_buildings::night_lit_scale`, read by
-  `building_windows.wgsl`). The shader already varied liveliness by a per-block
+  `building_windows.wesl`). The shader already varied liveliness by a per-block
   hash so whole buildings stand dark; this makes it true rather than random — the
   office park goes quiet after six, the flats above the shops do not, the hospital
   stays on. It rides in the **alpha of the existing vertex colour**, which was a

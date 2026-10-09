@@ -44,11 +44,11 @@
 //! two dismissals for one press and precisely the bug the single-rung rule
 //! exists to prevent.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::{ContextMenuState, EditDialogState, RightPanel};
 use crate::systems::driver::DriverState;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::login_screen::LoginScreen;
 use crate::systems::navigation::RouteState;
 use crate::systems::onscreen_keyboard::OnScreenKeyboard;
@@ -236,7 +236,7 @@ impl Dismissable<'_> {
 /// Escape walks the ladder and stops. It never quits — that rung belongs to Back
 /// alone, and an Escape that could close the application from a bare map is a
 /// keystroke nobody wants to discover by accident.
-pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, egui: Res<EguiManager>, mut d: Dismissable) {
+pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, egui: EguiRef, mut d: Dismissable) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
@@ -383,7 +383,7 @@ mod tests {
 /// that quits on the first back press while a panel is open would be unusable.
 pub fn handle_back_gesture(
     keys: Res<ButtonInput<KeyCode>>,
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut dismissable: Dismissable,
     mut exit: MessageWriter<AppExit>,
 ) {

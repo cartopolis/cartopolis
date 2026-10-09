@@ -52,47 +52,47 @@
 // the break-even at a couple of hundred metres in a calm. `water-surface.md` has
 // the table, and `Budget::water_octaves` is the knob if the trade is wrong.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings::{view, lights, globals},
     // The module alias as well as the three items above: `fog` only exists when
-    // the view has one, so it can only be named behind `#ifdef DISTANCE_FOG`, and
-    // a conditional *item* import is a shape naga_oil is not asked for anywhere
+    // the view has one, so it can only be named behind `@if(DISTANCE_FOG)`, and
+    // a conditional *item* import is a shape naga_oil was not asked for anywhere
     // else in bevy. Reaching it through the module is what bevy's own
     // `pbr_functions` does.
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
-}
-#import cartopolis::water_common::{
+};
+import super::water_common::{
     water_reflected, water_transmitted, sky_fallback, with_clouds, cloud_mirror_fade,
-}
-#import cartopolis::cloud_field as cf
+};
+import super::cloud_field as cf;
 
 // x: RMS slope of the wave field (see `water::sea_state`). y: base wavelength in
 // metres. z: wave speed scalar (metres/second at the base wavelength).
 // w: detail cut-off — larger retires the fine octaves closer to the camera.
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> wave: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> wave: vec4<f32>;
 
 // x: base (micro) roughness, perceptual — what is left when every wave the field
 // models has been resolved. y: crest sub-surface scattering strength.
 // z: top-down depth darkening (0 = none). w: foam amount on the wave crests.
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> surface: vec4<f32>;
 
 // xy: unit wind direction the waves travel along. z: chop (0 = rolling swell,
 // 1 = sharp wind chop — raises the crest exponent). w: how clear the sky is,
 // 1 = cloudless, 0 = overcast (read only by the no-environment-map reflection).
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<uniform> wind: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var<uniform> wind: vec4<f32>;
 
 // This cell's shore field placement. xy: the cell's north-west corner in the
 // same anchor-metre frame as UV0. z: the cell's ground size in metres.
 // w: metres a fully-saturated texel stands for.
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> field: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var<uniform> field: vec4<f32>;
 
 // Distance from the nearest bank, rasterised per cell (`water_shore_field`).
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var shore_field: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var shore_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var shore_field: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var shore_sampler: sampler;
 
 // The octave sum's shape, all of it derived on the CPU in `water::octave_norms`
 // so the fragment pays no series arithmetic and the maths is unit-testable.
@@ -100,19 +100,19 @@
 // y: gradient normaliser, chosen so the summed slope has RMS `wave.x`.
 // z: 1 / Σ amplitude — turns the surviving-amplitude tally into a 0..1 "how much
 // detail is left" fraction. w: 1 / Σ amplitude over the short octaves only.
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> octaves: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var<uniform> octaves: vec4<f32>;
 
 // Distance from the nearest *building*, in the same frame and at the same metre
 // scale, a quarter of the resolution (`ShoreField::bank`). Only the
 // bank-in-the-mirror term below reads it, and only to ask whether anything is
 // actually standing where it is about to darken the water.
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var bank_field: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var bank_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var bank_field: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var bank_sampler: sampler;
 
 // The ground cloud deck this frame (`sky::CLOUD_FIELD_BUFFER`) — one buffer every
 // water material and every ground material shares, rewritten in place as the
 // deck drifts. Read a field at a time, never whole (see `cf::Deck`).
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var<storage, read> clouds: cf::Deck;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var<storage, read> clouds: cf::Deck;
 
 /// Share of the long waves' slope that bends the ray the clouds are mirrored
 /// along; the rest blurs them instead (see where the clouds are mirrored).
@@ -534,12 +534,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let dist = length(to_view);
     let v = to_view / max(dist, 1e-4);
 
-#ifdef VERTEX_UVS_A
-    // Map metres from the anchor — stable while the floating origin moves.
-    let p = in.uv;
-#else
-    let p = in.world_position.xz;
-#endif
+    var p: vec2<f32>;
+    @if(VERTEX_UVS_A) {
+        // Map metres from the anchor — stable while the floating origin moves.
+        p = in.uv;
+    } @else {
+        p = in.world_position.xz;
+    }
 
     // Distance to the nearest bank, in metres. UV0 is anchor metres, so the cell's
     // own corner and size turn it into this cell's 0..1 texture frame.
@@ -762,7 +763,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         foam,
     );
 
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
@@ -773,38 +778,36 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     let key = key_light();
 
-#ifndef ENVIRONMENT_MAP
-#ifdef DISTANCE_FOG
-    // No environment map on this view, so the standard path has *no* reflection
-    // to give the surface at all — which is what Android's `balanced` rung renders
-    // in (`sky_ibl` off), as do the laptop and any run with sky lighting switched
-    // off. Water with nothing in it is the one thing water can never look like, so
-    // `water_common::sky_fallback` stands in with a two-stop sky built on the haze
-    // colour the ground already fades into, and gives it the ambient's reflection
-    // where the sky is open. It carries the argument and the measurements; the
-    // flat map's water past the ring (`ground_detail.wgsl`) calls the same thing.
-    //
-    // Deliberately not compiled at all when there *is* an environment map: this
-    // would be a second reflection stacked on the real one. Weighted by the *same*
-    // `reflected` the body colour was taken out of, so the two halves of the
-    // surface still add up to one; foam keeps the ambient, being a rough white mat
-    // and not a mirror. Only the cloud cover is sent (`wind.w`), because an
-    // overcast sky has no blue in it.
-    out.color = vec4<f32>(
-        sky_fallback(
-            out.color.rgb,
-            pbr_input,
-            view_bindings::fog.base_color.rgb,
-            wind.w,
-            reflect(-v, n).y,
-            reflected,
-            mirror * (1.0 - foam),
-            foam,
-        ),
-        out.color.a,
-    );
-#endif
-#endif
+    @if(!ENVIRONMENT_MAP && DISTANCE_FOG) {
+        // No environment map on this view, so the standard path has *no* reflection
+        // to give the surface at all — which is what Android's `balanced` rung renders
+        // in (`sky_ibl` off), as do the laptop and any run with sky lighting switched
+        // off. Water with nothing in it is the one thing water can never look like, so
+        // `water_common::sky_fallback` stands in with a two-stop sky built on the haze
+        // colour the ground already fades into, and gives it the ambient's reflection
+        // where the sky is open. It carries the argument and the measurements; the
+        // flat map's water past the ring (`ground_detail.wgsl`) calls the same thing.
+        //
+        // Deliberately not compiled at all when there *is* an environment map: this
+        // would be a second reflection stacked on the real one. Weighted by the *same*
+        // `reflected` the body colour was taken out of, so the two halves of the
+        // surface still add up to one; foam keeps the ambient, being a rough white mat
+        // and not a mirror. Only the cloud cover is sent (`wind.w`), because an
+        // overcast sky has no blue in it.
+        out.color = vec4<f32>(
+            sky_fallback(
+                out.color.rgb,
+                pbr_input,
+                view_bindings::fog.base_color.rgb,
+                wind.w,
+                reflect(-v, n).y,
+                reflected,
+                mirror * (1.0 - foam),
+                foam,
+            ),
+            out.color.a,
+        );
+    }
 
     // **The clouds, in the mirror.** Neither the environment map nor the stand-in
     // sky above has any: the deck is a shell drawn over the sky after both, so a

@@ -193,7 +193,7 @@ had the bug — which is the kind of asymmetry to check both sides of.
   shell arrives as a finished triangle soup and a hole would mean re-triangulating
   around it. A panel cannot leave a crack, and reads as a doorway at any distance
   this is visible from.
-- **Its height is a constraint, not a taste.** `building_windows.wgsl` paints no
+- **Its height is a constraint, not a taste.** `building_windows.wesl` paints no
   window below `FIRST_SILL_M` (2.2 m), so a 2.1 m door sits in the one band of the
   facade the window shader leaves alone. A taller door would come out with panes
   across it.

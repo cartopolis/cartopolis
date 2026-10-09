@@ -6,7 +6,7 @@
 
 use crate::components::{Prim, Selected};
 use crate::resources::{EditDialogState, OnlineSession};
-use crate::systems::egui_manager::EguiManager;
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use cartopolis_core::NetMessage;
@@ -49,7 +49,7 @@ pub struct GizmoState {
 pub fn handle_gizmo_mode_input(
     mut gizmo_state: ResMut<GizmoState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     selected: Query<(), With<Selected>>,
 ) {
     // Ignore T/R/S when a text field is focused or a Ctrl chord is held; stays live
@@ -270,7 +270,7 @@ pub fn handle_gizmo_interaction(
     >,
     mut gizmo_state: ResMut<GizmoState>,
     mut edit_dialog: ResMut<EditDialogState>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<crate::components::FreeCamera>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,

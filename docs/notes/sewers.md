@@ -72,7 +72,7 @@ stops at a short page. A 4 km box is ~1.6 MB per 1,000 pipes and ~0.6 s.
 
 The ground is a stack of opaque sheets ordered by a depth ladder
 (`the-ground-stack.md`), so alpha blending it is out: the sheets would sort
-against each other. It is a **screen door** — `ground_detail.wgsl`'s
+against each other. It is a **screen door** — `ground_detail.wesl`'s
 `GROUND_SEE_THROUGH` variant discards an ordered-dither share of pixels near
 the camera, the same pixels on every sheet. Two consequences:
 

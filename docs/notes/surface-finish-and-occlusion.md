@@ -4,7 +4,7 @@ triggers: [ScreenSpaceAmbientOcclusion, ssao, "ambient occlusion", Fxaa, Msaa,
   main_pass_msaa, wants_edge_filter, VolumetricFog, FogVolume, VolumetricLight,
   light_shafts.rs, wet_surfaces.rs, "light shafts", "god rays", "wet road", "rain",
   metallic_roughness_texture, road_material_image, "roughness", "reflectance",
-  GLASS_ROUGHNESS, building_windows.wgsl, "looks flat", "looks like a model",
+  GLASS_ROUGHNESS, building_windows.wesl, "looks flat", "looks like a model",
   density_factor, "the world went dark", "too dark", "everything is dark",
   ContactShadows, "contact shadow", wall_base_tone, wall_shade, ground_texture,
   ground_finish_texture, WALL_FINISH_RANGE, "buildings look like they are floating",
@@ -132,7 +132,7 @@ prepass**, matched on `descriptor.label` containing "prepass". The mesh key
 carries the prepass bits in both calls (the main pass is told which prepasses
 exist), so the key cannot tell them apart.
 
-The other custom vertex shader, `grass.wgsl`, is safe by accident and it is worth
+The other custom vertex shader, `grass.wesl`, is safe by accident and it is worth
 knowing why: a blade's five lattice vertices are all at the same point, so
 without the vertex stage that expands them every triangle is degenerate and the
 prepass rasterises nothing at all.
@@ -255,7 +255,7 @@ low. Noise puts standing water on a camber and up a kerb.
 
 ## Glass is the facade half
 
-`building_windows.wgsl` now writes `perceptual_roughness` and `reflectance` per
+`building_windows.wesl` now writes `perceptual_roughness` and `reflectance` per
 fragment, blended by `pane` — the *distance-blurred* coverage, not the raw
 `inside` test. That matters for the same reason the emissive uses it: at range the
 windows have to converge on the wall's finish, or the far half of the city is a
@@ -340,7 +340,7 @@ ground-contact effect over thirty metres of facade.
 
 ### The wall between the windows was one roughness, everywhere
 
-`building_windows.wgsl` had already given the panes their own finish, and the
+`building_windows.wesl` had already given the panes their own finish, and the
 argument for it applies just as well to what surrounds them: one
 `perceptual_roughness: 0.95` on every square metre of every building in the
 country means a whole street catches a low sun identically. `WALL_FINISH_RANGE`

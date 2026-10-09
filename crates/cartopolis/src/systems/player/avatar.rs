@@ -2035,7 +2035,7 @@ pub fn handle_avatar_movement(
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
     camera_state: Res<crate::resources::CameraState>,
-    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
+    egui_manager: crate::systems::egui_manager::EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,

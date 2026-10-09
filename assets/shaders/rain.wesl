@@ -3,8 +3,8 @@
 // derived from the framebuffer coordinate and the viewport size — so the mesh's
 // exact size and orientation don't matter, only that it covers the view. Fixed
 // per-pixel cost, no geometry churn: safe on the iGPU (see CLAUDE.md notes).
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
 
 // x: intensity 0..1. y: time seconds. z: wind slant. w: unused.
 @group(3) @binding(0) var<uniform> params: vec4<f32>;

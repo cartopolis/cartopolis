@@ -2,7 +2,7 @@
 //! every patch of them draws.
 //!
 //! The ECS half (the patch pool, the mask upload, the wind and the altitude ramp)
-//! is `systems::grass`, and `assets/shaders/grass.wgsl` is where a blade actually
+//! is `systems::grass`, and `assets/shaders/grass.wesl` is where a blade actually
 //! becomes geometry.
 //!
 //! # Why this layer looks nothing like [`crate::scatter`]

@@ -36,9 +36,28 @@ use crate::resources::HeadlessSurface;
 
 // ─── Main-world resource ─────────────────────────────────────────────────────
 
+/// How a system reads [`EguiManager`]. A plain resource everywhere but the web.
+///
+/// egui 0.36 holds dropped files as `Arc<dyn DroppedFile>` without `Send + Sync`
+/// on `wasm32` with atomics — a `web_sys::File` is not thread-safe there — so its
+/// `Context`, and with it this whole struct, cannot be a Bevy `Resource` on the
+/// web build. It is a non-send resource there instead, behind these two names, so
+/// no system signature has to carry a `cfg`. Not an `unsafe impl Send`: that
+/// would assert something about Bevy's executor a future Bevy is free to change
+/// (the rule `platform::location` states for its callbacks).
+#[cfg(not(target_arch = "wasm32"))]
+pub type EguiRef<'w> = Res<'w, EguiManager>;
+/// The mutable half of [`EguiRef`].
+#[cfg(not(target_arch = "wasm32"))]
+pub type EguiMut<'w> = ResMut<'w, EguiManager>;
+#[cfg(target_arch = "wasm32")]
+pub type EguiRef<'w> = bevy::ecs::system::NonSend<'w, EguiManager>;
+#[cfg(target_arch = "wasm32")]
+pub type EguiMut<'w> = bevy::ecs::system::NonSendMut<'w, EguiManager>;
+
 /// Holds the egui context for the main Bevy world.
 /// Call [`EguiManager::ctx_mut`] inside Update systems to build UI.
-#[derive(Resource)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Resource))]
 pub struct EguiManager {
     pub ctx: egui::Context,
     /// Full-viewport background `Ui` rebuilt each frame in `begin_egui_frame`.
@@ -562,6 +581,35 @@ impl EguiManager {
 
 // ─── Extracted render data ────────────────────────────────────────────────────
 
+/// egui's [`egui::TexturesDelta`], owned the way this bridge owns it.
+///
+/// egui 0.36 debug-asserts that a delta is never dropped unapplied, which assumes
+/// one painter consuming each delta exactly once. Here the delta is *cloned* into
+/// the render world on every extract and the main-world copy is replaced once
+/// [`APPLIED_GENERATION`] says it landed, so dropping a copy is the normal end of
+/// its life — the generation, not the drop, is what tracks whether it was applied.
+#[derive(Clone, Default)]
+pub struct TextureUpdates(pub egui::TexturesDelta);
+
+impl Drop for TextureUpdates {
+    fn drop(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl std::ops::Deref for TextureUpdates {
+    type Target = egui::TexturesDelta;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TextureUpdates {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Tessellated egui output, extracted to the render world when it changes.
 ///
 /// Deliberately *not* rewritten every frame — see [`end_egui_frame`]. `ExtractResource`'s
@@ -569,9 +617,10 @@ impl EguiManager {
 /// resource is unchanged, so an unconditional write meant deep-copying the whole UI
 /// vertex/index geometry into the render world 60×/s for a pixel-identical picture.
 #[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct EguiRenderOutput {
     pub clipped_primitives: Vec<egui::ClippedPrimitive>,
-    pub textures_delta: egui::TexturesDelta,
+    pub textures_delta: TextureUpdates,
     /// Physical window size in pixels (for `ScreenDescriptor`).
     pub size_in_pixels: [u32; 2],
     pub pixels_per_point: f32,
@@ -628,8 +677,11 @@ pub struct EguiPlugin;
 
 impl Plugin for EguiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EguiManager>()
-            .init_resource::<EguiRenderOutput>()
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<EguiManager>();
+        #[cfg(target_arch = "wasm32")]
+        app.init_non_send::<EguiManager>();
+        app.init_resource::<EguiRenderOutput>()
             .add_plugins(ExtractResourcePlugin::<EguiRenderOutput>::default())
             // MUST run after Bevy has written this frame's input: begin_egui_frame
             // reads `ButtonInput`, cursor position and the keyboard/mouse events to
@@ -929,7 +981,7 @@ pub(crate) fn take_pass_events(pending: &mut Vec<egui::Event>) -> Vec<egui::Even
 
 /// Collect Bevy input and begin an egui frame (runs in PreUpdate).
 pub fn begin_egui_frame(
-    mut egui_manager: ResMut<EguiManager>,
+    mut egui_manager: EguiMut,
     windows: Query<&Window>,
     headless: Option<Res<HeadlessSurface>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1177,7 +1229,7 @@ fn press_over_ui(ctx: &egui::Context, map_rect: Option<egui::Rect>, at: egui::Po
 }
 
 pub fn end_egui_frame(
-    mut egui_manager: ResMut<EguiManager>,
+    mut egui_manager: EguiMut,
     mut render_output: ResMut<EguiRenderOutput>,
     time: Res<Time<Real>>,
     // Wall-clock seconds since the last real write, for the repaint-delay test
@@ -1401,8 +1453,10 @@ pub fn egui_pass(
 
     let extra_cmd_bufs = if needs_upload {
         // Upload new / changed textures (font atlas, custom images).
-        for (id, delta) in &render_data.textures_delta.set {
-            renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
+        for (id, deltas) in &render_data.textures_delta.set {
+            for delta in deltas {
+                renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
+            }
         }
         // Tell the main world these landed, so `end_egui_frame` stops carrying them
         // forward. Set here rather than at the end of the pass because this loop is
@@ -1505,6 +1559,40 @@ pub fn egui_pass(
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+/// A test's own egui passes, whose output nobody paints.
+///
+/// egui 0.36 debug-asserts that a `TexturesDelta` is never dropped unapplied, and
+/// a test that runs a `Context` by hand has no painter to apply one, so these
+/// clear the texture half of the output and hand back the rest.
+#[cfg(test)]
+pub(crate) trait UnpaintedPasses {
+    fn run_ui_unpainted(
+        &self,
+        input: egui::RawInput,
+        run_ui: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput;
+    fn end_pass_unpainted(&self) -> egui::FullOutput;
+}
+
+#[cfg(test)]
+impl UnpaintedPasses for egui::Context {
+    fn run_ui_unpainted(
+        &self,
+        input: egui::RawInput,
+        run_ui: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let mut out = self.run_ui(input, run_ui);
+        out.textures_delta.clear();
+        out
+    }
+
+    fn end_pass_unpainted(&self) -> egui::FullOutput {
+        let mut out = self.end_pass();
+        out.textures_delta.clear();
+        out
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1613,7 +1701,7 @@ mod tests {
             });
             map_rect = Some(root.available_rect_before_wrap());
             drop(root);
-            let _ = ctx.end_pass();
+            let _ = ctx.end_pass_unpainted();
         };
 
         let on_map = egui::pos2(300.0, 300.0);
@@ -1876,7 +1964,7 @@ mod tests {
             let rect = std::cell::Cell::new(None);
             let checked_ref = &mut checked;
             // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 egui::Panel::right("panel")
                     .default_size(260.0)
                     .show(ui, |ui| {
@@ -1957,7 +2045,7 @@ mod tests {
             overlay(&ctx, root.available_rect_before_wrap());
             drop(root);
             // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.end_pass();
+            let _ = ctx.end_pass_unpainted();
 
             if settled.is_none() {
                 if let Some(r) = rect.get() {
@@ -2039,7 +2127,7 @@ mod tests {
     }
 
     /// The first thing every panel system does.
-    fn touch_root_ui(mut egui: ResMut<EguiManager>) {
+    fn touch_root_ui(mut egui: EguiMut) {
         let _ = egui.ui_mut();
     }
 
@@ -2310,7 +2398,7 @@ mod tests {
                 // still needs its place in the chain.
                 let draws_root_ui =
                     chunk.contains("ui_mut()") || chunk.contains("egui_manager::right_panel(");
-                if !draws_root_ui || !chunk.contains("ResMut<EguiManager>") {
+                if !draws_root_ui || !chunk.contains("EguiMut") {
                     continue;
                 }
                 let name = chunk

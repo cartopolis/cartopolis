@@ -8,7 +8,7 @@
 //
 // Runs in HDR before tonemapping, on pre-exposed colour, and measures what counts
 // as bright against the sky round the sun rather than against a fixed number.
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 
 // `systems::sun_rays::SunRays`, field for field.
 struct SunRays {

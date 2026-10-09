@@ -252,7 +252,7 @@ const DOOR_COLOR: [f32; 4] = [0.115, 0.075, 0.055, 1.0];
 /// face `WallFaces` found), not on the register's outline, which can run a few
 /// centimetres off the surveyed wall and hung doors in the air or inside it.
 ///
-/// Every part carries a negative UV0.y, which `building_windows.wgsl` reads as
+/// Every part carries a negative UV0.y, which `building_windows.wesl` reads as
 /// "not a wall": the surround and step are drawn plain, the leaf with its
 /// panels, glass and handle from its own coordinates (`x` across it plus ten
 /// times its style, `-1 - height` up it).
@@ -2277,7 +2277,7 @@ fn build_lod22_from_body(
         // finished soup. A panel standing 4 cm off the brick reads as a doorway
         // at every distance this is visible from, and cannot leave a crack.
         //
-        // Note the height. `building_windows.wgsl` paints its lattice only above
+        // Note the height. `building_windows.wesl` paints its lattice only above
         // `FIRST_SILL_M` (2.2 m), so a door topping out below that is in the one
         // band of the facade the window shader leaves alone — otherwise every
         // front door in the city would have window panes painted across it.

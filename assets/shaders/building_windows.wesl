@@ -45,12 +45,12 @@
 // its own wall. Real streets do share floor levels, so this reads as a minor
 // misalignment rather than as a mistake.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
-}
+};
 
 // x: column pitch (m). y: floor pitch (m). z: window width (m). w: window height (m).
 // → `facade.lattice`, in `Facade` below.
@@ -101,7 +101,7 @@ struct Facade {
     ghost_bounds: vec4<f32>,
     ghost_ring: array<vec4<f32>, 16>,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> facade: Facade;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> facade: Facade;
 
 /// Ring points this shader can hold. A BAG outline simplified at 10 cm is about
 /// nine points; anything longer is simplified again on the CPU before it is sent,
@@ -686,11 +686,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Only in the cutaway variant (`BuildingKey`): a shader holding a `discard`
     // loses early depth testing on every draw, taken or not, so the shells
     // compile without one while nobody is indoors.
-#ifdef BUILDING_CUTAWAY
+    @if(BUILDING_CUTAWAY)
     if (is_wall || facade.ghost.y > 0.5) && in_ghost(in.world_position.xz) {
         discard;
     }
-#endif
 
     // Computed **outside** the branch on purpose: `fwidth` below is a derivative,
     // and a derivative taken in non-uniform control flow is undefined — naga
@@ -743,11 +742,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // metres along the face from its corner, UV0.y an integer carrying the bay
     // width that fits the face and where its door is. Negative UV0.y is a
     // doorway part, 0 is no layout (the OSM lane) and keeps the world lattice.
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     let face_uv = in.uv;
-#else
+    @else
     let face_uv = vec2<f32>(0.0, 0.0);
-#endif
     let door_part = face_uv.y < -0.25;
     let laid_out = face_uv.y > 0.5;
     let face_code = u32(round(max(face_uv.y, 0.0)));
@@ -804,11 +802,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // The netting is meshed onto the screen-door material, which always
             // compiles the cutaway variant (`lod22`'s inside pieces); a panel
             // somehow drawn on a shell material is opaque rather than wrong.
-#ifdef BUILDING_CUTAWAY
+            @if(BUILDING_CUTAWAY)
             if see_through(cover, in.position.xy) {
                 discard;
             }
-#endif
         }
     } else if is_wall {
         let idx = floor(cell);
@@ -1110,7 +1107,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         );
     }
 
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
 
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {

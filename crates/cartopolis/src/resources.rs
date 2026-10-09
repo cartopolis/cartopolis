@@ -867,7 +867,7 @@ pub struct DevPanelState {
     ///
     /// It is also the *only* reachable off-switch for the space-tier shell, whose
     /// coverage is the `sky::GLOBE_CLOUD_COVER` constant blended with live GFS and
-    /// never the slider — and `globe_clouds.wgsl` evaluates nine 6-octave `fbm3`
+    /// never the slider — and `globe_clouds.wesl` evaluates nine 6-octave `fbm3`
     /// fields before it consults coverage, so there is no cheap value to set
     /// either source to. Hiding the shell is the only thing that removes the cost.
     pub clouds_enabled: bool,

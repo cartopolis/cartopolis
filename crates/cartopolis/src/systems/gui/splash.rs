@@ -32,13 +32,13 @@
 //! very first frame with no decode, no texture upload and no HTTP round trip on
 //! the web, and no dependency on the icon PNG having survived Git LFS.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::components::StreamTileReady;
 use crate::grid::AnchoredCamera;
 use crate::resources::AuthIdentity;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::session::{SessionMode, SessionState, SessionStatus};
@@ -355,7 +355,7 @@ impl BootSplash {
 /// Draw the splash until the first map tiles are up, then fade it out.
 pub fn boot_splash(
     mut splash: ResMut<BootSplash>,
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     time: Res<Time<Real>>,
     stream: Res<MapStream>,
     globe: Res<GlobeState>,

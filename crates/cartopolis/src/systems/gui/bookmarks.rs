@@ -36,6 +36,7 @@
 
 use crate::platform::sync::{Arc, Mutex};
 use crate::resources::MapAnchor;
+use crate::systems::egui_manager::EguiMut;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -44,7 +45,6 @@ use bevy::tasks::IoTaskPool;
 use crate::grid::AnchoredCamera;
 use crate::platform::http;
 use crate::resources::CameraState;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
     nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };
@@ -434,7 +434,7 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
 /// on a desktop) rather than in the row — see [`place_row`] for why.
 #[allow(clippy::too_many_arguments)]
 pub fn render_bookmarks_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut bookmarks: ResMut<BookmarksState>,
     mut store: ResMut<UserStore>,
     mut nav: ResMut<GeoNavState>,
@@ -1596,6 +1596,7 @@ fn photo_texture(ctx: &egui::Context, stem: &str, bytes: &[u8]) -> Option<egui::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// Drive `place_row` through egui for a few frames, clicking or dragging at
     /// the row's name. Returns the actions the last frame produced and whether a
@@ -1637,7 +1638,7 @@ mod tests {
             let mut act = Actions::default();
             let mut editing = None;
             let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 egui::Panel::right("places_test")
                     .default_size(300.0)
                     .show(ui, |ui| {
@@ -1713,7 +1714,7 @@ mod tests {
             let mut act = Actions::default();
             let mut editing = None;
             let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 egui::Panel::right("places_test")
                     .default_size(300.0)
                     .show(ui, |ui| {
@@ -1873,7 +1874,7 @@ mod tests {
             let mut act = Actions::default();
             let mut editing = None;
             let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 egui::Panel::right("places_test")
                     .default_size(300.0)
                     .show(ui, |ui| {
@@ -2022,7 +2023,7 @@ mod tests {
             let mut raw = egui::RawInput::default();
             raw.screen_rect = Some(screen);
             let mut act = Actions::default();
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 let panel = crate::systems::egui_manager::responsive_right_panel(
                     "bookmarks_panel",
                     false,
@@ -2105,7 +2106,7 @@ mod tests {
             let mut act = Actions::default();
             let mut editing = None;
             let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 egui::Panel::right("places_test")
                     .default_size(300.0)
                     .show(ui, |ui| {

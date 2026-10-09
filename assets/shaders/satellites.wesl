@@ -13,18 +13,18 @@
 // below a pixel at its true size from anywhere this is shown, and a world-sized
 // marker would vanish from orbit and swamp the view from close by.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_functions,
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
-}
+};
 
 // xyz: the Earth's centre in the mesh's frame, metres. w: seconds since the
 // snapshot.
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> motion: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> motion: vec4<f32>;
 
 // x: GM, m³/s². y: brightness. z: point-size multiplier. w: spare.
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var<uniform> params: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> params: vec4<f32>;
 
 struct SatVertex {
     @builtin(instance_index) instance_index: u32,

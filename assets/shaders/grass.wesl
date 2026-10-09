@@ -31,12 +31,12 @@
 // re-derive all of it, and would light grass differently from the ground it
 // stands on.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::VertexOutput,
     mesh_functions,
     mesh_view_bindings::{view, globals},
     view_transformations::position_world_to_clip,
-}
+};
 
 // xy: the mask's minimum corner in anchor metres. z: the ground size of the
 // whole mask, in metres. w: the ground plane the blades stand on (the vector
@@ -86,11 +86,11 @@ struct Turf {
     clump: vec4<f32>,
     range2: vec4<f32>,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> turf: Turf;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> turf: Turf;
 
 // r: grass coverage. g: ground height, encoded over `turf.range.zw`.
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var mask_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var mask_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var mask_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var mask_sampler: sampler;
 
 // The lattice mesh's vertices. Declared here rather than imported from
 // `forward_io` because that struct's fields are behind shader-defs and this one
@@ -372,12 +372,11 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     let root = 1.0 - turf.tint.a;
     out.color = vec4<f32>(turf.tint.rgb * tone * mix(root, 1.0, t), 1.0);
 
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Not optional: the standard fragment reads its material out of a bindless
     // array indexed by this. Dropping it renders the lawn in some other
     // material's colours, or in none.
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
     out.instance_index = v.instance_index;
-#endif
 
     return out;
 }

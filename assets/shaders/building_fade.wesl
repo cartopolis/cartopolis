@@ -16,11 +16,11 @@
 // main-pass vertex stage alone. `systems::building_fade` says what a prepass would
 // owe it.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_functions,
     view_transformations::position_world_to_clip,
     forward_io::VertexOutput,
-}
+};
 
 // xy: the camera's ground position in render-space XZ. z: the scale turning a
 // distance in metres into *ramp widths*. w: the distance, in those units, at
@@ -30,7 +30,7 @@
 //
 // Ramp widths, so the ramp's own size lives in `building_fade::FADE_CELLS` and
 // nowhere else: the `1.0` below is structural, not a number to keep in step.
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ring: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> ring: vec4<f32>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -77,9 +77,8 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         vertex.normal,
         vertex.instance_index,
     );
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     out.color = vertex.color;
-#endif
     out.instance_index = vertex.instance_index;
     return out;
 }

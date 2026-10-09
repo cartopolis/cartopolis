@@ -222,7 +222,7 @@ impl Plugin for GuiPlugin {
         //
         // Every system here draws into the *same* shared root `Ui`, so their call
         // order fixes their right-to-left placement, and every one of them takes
-        // `ResMut<EguiManager>`, so Bevy already runs them one at a time
+        // `crate::systems::egui_manager::EguiMut`, so Bevy already runs them one at a time
         // regardless. The only thing ordering decides is *which* order — and where
         // two are unconstrained, Bevy is free to pick differently from frame to
         // frame.

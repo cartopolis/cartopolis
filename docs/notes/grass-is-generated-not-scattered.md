@@ -1,6 +1,6 @@
 ---
 triggers:
-  - working on `systems::grass`, `cartopolis_geo::turf`, or `assets/shaders/grass.wgsl`
+  - working on `systems::grass`, `cartopolis_geo::turf`, or `assets/shaders/grass.wesl`
   - "why isn't grass scattered like the trees are"
   - adding another dense near-field layer (flowers, gravel, crowds, litter)
   - reaching for an off-the-shelf Bevy grass crate
@@ -56,7 +56,7 @@ Three fixed things and one small moving one:
   is the ground height. Rasterised on a worker when the camera walks out of it,
   which is every twenty-odd metres.
 
-`assets/shaders/grass.wgsl` turns a slot into a blade: hash the slot's world
+`assets/shaders/grass.wesl` turns a slot into a blade: hash the slot's world
 position for jitter, yaw, height, lean and tone; sample the mask for existence
 and ground height; bend in the wind; shrink back into the ground with distance.
 
@@ -116,7 +116,7 @@ mask's edge.
 hash against it would reshuffle every blade in sight at the instant it jumped.
 The frame is reconstructed from the patch's `MeshTag`, packed as two signed
 16-bit patch indices — which is also why it is not taken from the floating
-origin's grid cell: the tag depends on nothing outside the entity. `water.wgsl`
+origin's grid cell: the tag depends on nothing outside the entity. `water.wesl`
 documents the same trap for its wave phase and solves it with UV0, which is not
 available here because the mesh is shared by every patch.
 
@@ -143,7 +143,7 @@ single-pixel specks over the whole near view. They are invisible over pale pavin
 and obvious over water, so they were reported from a phone as speckles on the
 canals rather than as anything wrong with the lawn; and because which degenerate
 triangle lands on a pixel centre is a property of the projection, they re-roll on
-every camera move, which reads as crawling. `assets/shaders/particles.wgsl` had
+every camera move, which reads as crawling. `assets/shaders/particles.wesl` had
 the same shape of problem to solve and already solved it the same way (`size`
 carries `alive`, so a dead particle's four corners coincide) — any future pooled
 layer owes the same.

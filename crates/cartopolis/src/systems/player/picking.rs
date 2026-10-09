@@ -9,7 +9,7 @@
 use crate::components::PrimMesh;
 use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
-use crate::systems::egui_manager::EguiManager;
+use crate::systems::egui_manager::{EguiMut, EguiRef};
 use crate::systems::theme;
 use bevy::prelude::*;
 
@@ -74,7 +74,7 @@ pub fn prim_picking(
     mut game_state: ResMut<GameState>,
     mut context_menu: ResMut<ContextMenuState>,
     mut marquee: ResMut<MarqueeState>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     keyboard: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
@@ -305,7 +305,7 @@ pub fn update_marquee(
     cameras: Query<(&Camera, &GlobalTransform)>,
     prim_query: Query<(Entity, &Prim, &GlobalTransform), With<PrimMesh>>,
     selected_query: Query<Entity, With<Selected>>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
 ) {
     if egui_manager.ctx.egui_wants_pointer_input() {
         marquee.press_pos = None;
@@ -385,7 +385,7 @@ fn reset_marquee(m: &mut MarqueeState) {
 // ─── Marquee rendering ────────────────────────────────────────────────────────
 
 /// Draws the rubber-band rectangle as an egui overlay.
-pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>) {
+pub fn render_marquee(mut egui: EguiMut, marquee: Res<MarqueeState>) {
     if !marquee.active {
         return;
     }
@@ -425,7 +425,7 @@ pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>)
 pub fn handle_delete_key(
     mut game_state: ResMut<GameState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     selected_query: Query<&Prim, With<Selected>>,
 ) {
     // `ui_owns_keyboard`, not `egui_wants_keyboard_input()`. The latter is

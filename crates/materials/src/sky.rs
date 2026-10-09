@@ -13,7 +13,7 @@ use bevy::render::render_resource::{
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
-/// Material for the catalog star field (see `shaders/starfield.wgsl`): additive
+/// Material for the catalog star field (see `shaders/starfield.wesl`): additive
 /// gaussian points, with per-star tint and twinkle seed in the vertex colors.
 /// `params.x` = overall brightness (night factor × fog veil), `.y` = twinkle clock.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -24,7 +24,7 @@ pub struct StarFieldMaterial {
 
 impl Material for StarFieldMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/starfield.wgsl".into()
+        "shaders/starfield.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -67,7 +67,7 @@ impl Material for StarFieldMaterial {
     }
 }
 
-/// Material for the moon disc (see `shaders/moon.wgsl`): a sphere-shaded quad lit
+/// Material for the moon disc (see `shaders/moon.wesl`): a sphere-shaded quad lit
 /// by the sun direction expressed in the quad's local frame (xyz), so the lunar
 /// phase and the terminator's orientation emerge from the real sun–moon geometry.
 /// `sun_local.w` = overall brightness; alpha-blended so the disc covers stars.
@@ -79,7 +79,7 @@ pub struct MoonMaterial {
 
 impl Material for MoonMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/moon.wgsl".into()
+        "shaders/moon.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -124,7 +124,7 @@ pub struct HorizonHazeMaterial {
 
 impl Material for HorizonHazeMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/horizonhaze.wgsl".into()
+        "shaders/horizonhaze.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -159,7 +159,7 @@ pub const CLOUD_FIELD_BUFFER: Handle<ShaderBuffer> =
     bevy::asset::uuid_handle!("0aec065d-2710-4c8e-a7e1-02ad5c193299");
 
 /// [`CLOUD_FIELD_BUFFER`]'s layout: [`CloudMaterial`]'s uniforms, in binding order,
-/// under the names `cloud_field.wgsl`'s `Deck` gives them — `shape` is the
+/// under the names `cloud_field.wesl`'s `Deck` gives them — `shape` is the
 /// material's `params0`, `motion` its `params1`, `place` its `params2` and `light`
 /// its `params3`. naga renames a struct member that ends in a digit, and naga_oil
 /// refuses an imported struct whose names would not survive it. All `vec4` so it
@@ -206,7 +206,7 @@ pub fn low_clouds() -> bool {
 /// colours are the *same* day/night model the sunlight and the fog are built
 /// from, so the deck can't drift off the sky's palette (see `update_clouds`).
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
-// One uniform buffer, not one per field: see `clouds.wgsl`'s binding for the
+// One uniform buffer, not one per field: see `clouds.wesl`'s binding for the
 // browser limit eight of them broke.
 #[uniform(0, CloudFieldGpu)]
 pub struct CloudMaterial {
@@ -266,7 +266,7 @@ impl From<&CloudMaterial> for CloudFieldGpu {
 
 impl Material for CloudMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/clouds.wgsl".into()
+        "shaders/clouds.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -320,7 +320,7 @@ pub struct RainMaterial {
 
 impl Material for RainMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/rain.wgsl".into()
+        "shaders/rain.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -374,7 +374,7 @@ pub struct GlobeCloudMaterial {
     pub cloud_field: Handle<Image>,
 }
 
-/// [`GlobeCloudMaterial`]'s vectors as `globe_clouds.wgsl`'s `GlobeClouds` lays
+/// [`GlobeCloudMaterial`]'s vectors as `globe_clouds.wesl`'s `GlobeClouds` lays
 /// them out. All `vec4`, so it has one layout on every driver.
 #[derive(ShaderType, Clone, Copy, Default, Debug, PartialEq)]
 pub struct GlobeCloudGpu {
@@ -404,7 +404,7 @@ impl From<&GlobeCloudMaterial> for GlobeCloudGpu {
 
 impl Material for GlobeCloudMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/globe_clouds.wgsl".into()
+        "shaders/globe_clouds.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {

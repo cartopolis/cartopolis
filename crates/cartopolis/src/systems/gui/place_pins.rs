@@ -35,6 +35,7 @@
 use crate::components::{Avatar, FreeCamera, RemoteAvatar};
 use crate::resources::MapAnchor;
 use crate::systems::chat_people;
+use crate::systems::egui_manager::EguiMut;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -128,7 +129,7 @@ const MAX_FLAT_RANGE_M: f64 = 250_000.0;
 /// the module docs) and after the camera has moved, so pins sit on the frame the
 /// user is actually looking at rather than the previous one.
 pub fn render_place_pins(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     store: Res<UserStore>,
     mut nav: ResMut<GeoNavState>,
     globe: Res<GlobeState>,

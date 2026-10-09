@@ -26,6 +26,7 @@
 //! panel: a call rings over whichever panel is open, and must be hang-up-able
 //! from anywhere.
 
+use crate::systems::egui_manager::EguiMut;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -34,7 +35,6 @@ use crate::resources::{AuthIdentity, OnlineSession};
 use crate::systems::calls::{camera_available, CallRequest, Calls, Ringing, SELF_TILE};
 use crate::systems::chat::ChatState;
 use crate::systems::chats::{paint_avatar, ChatKind};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::private_chat::channel_key;
 use crate::systems::theme::{self, CallTone, CALL_BUTTON_LARGE, CALL_BUTTON_SMALL};
@@ -88,7 +88,7 @@ enum Mode<'a> {
 /// Draw the call screen, the folded bar, ringing banners and call notices.
 #[allow(clippy::too_many_arguments)]
 pub fn render_call_screen(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut calls: ResMut<Calls>,
     identity: Res<AuthIdentity>,
     chat: Res<ChatState>,

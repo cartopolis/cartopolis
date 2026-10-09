@@ -1,5 +1,3 @@
-#define_import_path cartopolis::cloud_field
-
 // The ground cloud deck as a *field*: where the cloud is, how it is lit, and how
 // it churns. Three shaders draw it and all import this, so they cannot disagree:
 // `clouds.wgsl` paints the deck overhead, and `water.wgsl` and `ground_detail.wgsl`
@@ -7,7 +5,7 @@
 // reflected ray — `mirrored`, at the bottom — so a lake mirrors the clouds that
 // are actually there. `docs/notes/cloud-lighting.md` has the lighting derivation.
 
-#import bevy_pbr::mesh_view_bindings as view_bindings
+import bevy_pbr::render::mesh_view_bindings as view_bindings;
 
 // The deck as the shared buffer lays it out (`sky::CloudFieldGpu`): the shell
 // material's eight uniforms, in binding order. Each field means what the
@@ -265,11 +263,11 @@ fn warp(uv_base: vec2<f32>, time_s: f32, detail: f32) -> vec2<f32> {
 // `warp` on the full tier, and nothing on the cheap one — for the shell, which
 // knows its tier by shader def.
 fn low_warped(uv_base: vec2<f32>, time_s: f32, detail: f32) -> vec2<f32> {
-#ifdef CLOUDS_LOW
-    return uv_base;
-#else
-    return warp(uv_base, time_s, detail);
-#endif
+    @if(CLOUDS_LOW) {
+        return uv_base;
+    } @else {
+        return warp(uv_base, time_s, detail);
+    }
 }
 
 // Coverage of the low deck at a warped sample point, 0..1 after the threshold.
@@ -360,14 +358,14 @@ fn multi_scatter(sun_od: f32, cos_theta: f32, octaves: i32) -> f32 {
 // what the fallback carries besides the colour: the sun disc's own occlusion at
 // sunrise and sunset, and the deck's brightness gain.
 fn deck_sunlight(sun: vec3<f32>, above_camera_m: f32, fallback: vec3<f32>, scale: f32) -> vec3<f32> {
-#ifdef ATMOSPHERE
-    return scale * atmosphere_transmittance(sun, above_camera_m);
-#else
-    return fallback;
-#endif
+    @if(ATMOSPHERE) {
+        return scale * atmosphere_transmittance(sun, above_camera_m);
+    } @else {
+        return fallback;
+    }
 }
 
-#ifdef ATMOSPHERE
+@if(ATMOSPHERE)
 // bevy's transmittance lookup (`bruneton_functions::transmittance_lut_r_mu_to_uv`),
 // for a point `above_camera_m` over the camera looking toward `sun`. The radii are
 // read through the binding one field at a time and never as a whole struct: the
@@ -395,7 +393,6 @@ fn atmosphere_transmittance(sun: vec3<f32>, above_camera_m: f32) -> vec3<f32> {
         0.0,
     ).rgb;
 }
-#endif
 
 // ---- the deck in a mirror ---------------------------------------------------
 

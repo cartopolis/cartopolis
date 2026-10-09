@@ -22,11 +22,11 @@
 // untouched, and `prepass_vertex_shader` stays at bevy's default deliberately: the
 // shadow map sees honest geometry.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::VertexOutput,
     mesh_functions,
     view_transformations::position_world_to_clip,
-}
+};
 
 // One depth-buffer ULP as a fraction of the depth value, for `Depth32Float`:
 // a bias unit at depth `D` is `2^(e-23) ~= D * 1.19e-7`. Scaling clip `z` by this
@@ -59,7 +59,7 @@ fn vertex(v: RoadVertex) -> VertexOutput {
         vec4<f32>(v.position, 1.0),
     );
     out.world_normal = mesh_functions::mesh_normal_local_to_world(v.normal, v.instance_index);
-    // Unguarded, as `grass.wgsl` does: `specialize` requires `ATTRIBUTE_UV_0` in
+    // Unguarded, as `grass.wesl` does: `specialize` requires `ATTRIBUTE_UV_0` in
     // the layout, so `VERTEX_UVS_A` is always defined for this pipeline — and a
     // road without its UVs could not register its markings anyway.
     out.uv = v.uv;
@@ -68,9 +68,8 @@ fn vertex(v: RoadVertex) -> VertexOutput {
     // fails to build, and bevy answers by skipping the pass — i.e. the roads
     // simply would not be drawn, with healthy mesh counts and nothing in the log
     // but `systems::pipeline_health`.
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
     out.instance_index = v.instance_index;
-#endif
 
     out.position = position_world_to_clip(out.world_position.xyz);
     // Reversed-Z: nearer is *larger*, so a higher rung scales up and wins the

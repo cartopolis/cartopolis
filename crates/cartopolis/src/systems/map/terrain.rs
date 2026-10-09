@@ -2545,7 +2545,7 @@ fn bake_fine(
 /// Metres of rise per metre of run that a fully-saturated texel of the slope texture
 /// stands for. A 12 cm kerb over half a metre is 0.24, so a full ±1 covers anything a
 /// street has and quantises to 1/127 ≈ 0.5°. Must equal `SLOPE_RANGE` in
-/// `shaders/ground_detail.wgsl`.
+/// `shaders/ground_detail.wesl`.
 pub const DETAIL_SLOPE_RANGE: f32 = 1.0;
 
 /// Texels of the fine grid the *geometry* already carries between its own vertices.

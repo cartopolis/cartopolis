@@ -10,7 +10,7 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 /// One quad per satellite, placed and sized in the vertex stage
-/// (`shaders/satellites.wgsl`).
+/// (`shaders/satellites.wesl`).
 ///
 /// The mesh is a snapshot: each satellite's position and velocity at one
 /// instant, in the anchor's frame. The shader carries every quad forward from
@@ -31,11 +31,11 @@ pub struct SatelliteMaterial {
 
 impl Material for SatelliteMaterial {
     fn vertex_shader() -> ShaderRef {
-        "shaders/satellites.wgsl".into()
+        "shaders/satellites.wesl".into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        "shaders/satellites.wgsl".into()
+        "shaders/satellites.wesl".into()
     }
 
     /// Additive, as the particles are: a satellite is a point of light, and

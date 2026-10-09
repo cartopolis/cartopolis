@@ -85,12 +85,16 @@ axum = { version = "0.8", features = ["ws"] }
 argon2 = { version = "0.5", features = ["std"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 # Slimmer than `default`: drops UI, the 2D sprite stack, gamepads and picking — less LLVM work per build.
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.20", default-features = false, features = [
     # Auto-registers all `#[derive(Reflect)]` types (inventory-based). Required so
     # bevy_world_serialization can reflect-spawn glTF scenes (the avatar fox) —
     # without it, spawning panics on the first unregistered component type.
     "reflect_auto_register",
     "bevy_animation",
+    # `bevy::curve`, which the sit pose builds its clip from. Split out of
+    # `bevy_math` in 0.20; `bevy_animation` already depends on the crate, so this
+    # only adds the re-export.
+    "bevy_curve",
     # FXAA, and it is the price of ambient occlusion rather than a taste.
     # `ScreenSpaceAmbientOcclusion` refuses to run unless `Msaa` is `Off` (it
     # reads a depth and a normal prepass, neither of which is multisampled), so
@@ -167,11 +171,11 @@ bevy = { version = "0.19", default-features = false, features = [
 ] }
 # bevy_atmosphere removed in the 0.19 migration — replaced by Bevy's built-in
 # bevy_pbr atmosphere (Atmosphere/AtmosphereSettings on the camera).
-bevy_image = { version = "0.19", features = ["zstd_rust"] }
+bevy_image = { version = "0.20", features = ["zstd_rust"] }
 big_space = { path = "crates/big_space" }
 bytes = "1.9"
-egui = "0.35"
-egui-wgpu = { version = "0.35", default-features = false }
+egui = "0.36"
+egui-wgpu = { version = "0.36", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
 earcutr = "0.4"
 figment = { version = "0.10", features = ["toml", "env"] }
@@ -182,7 +186,9 @@ figment = { version = "0.10", features = ["toml", "env"] }
 # lattice is the same two points for both pieces and so cannot open into a crack.
 i_overlay = { version = "8.1", default-features = false }
 fontdue = "0.9"
-glam = { version = "0.32", features = ["serde"] }
+# The same minor version bevy_math pins, or every `Vec3` crossing between the
+# shared crates and the client is two incompatible types (bevy 0.20 → glam 0.33).
+glam = { version = "0.33", features = ["serde"] }
 # Only the formats something in this tree can actually hand it. `image`'s default
 # feature set is `default-formats` + `rayon`, and the expensive half of that is
 # **avif**, which is an AV1 *encoder*: `ravif` → `rav1e` and ~27 further crates,

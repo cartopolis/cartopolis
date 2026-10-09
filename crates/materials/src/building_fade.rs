@@ -51,7 +51,7 @@ pub struct BuildingFade {
 
 impl MaterialExtension for BuildingFade {
     fn vertex_shader() -> ShaderRef {
-        "shaders/building_fade.wgsl".into()
+        "shaders/building_fade.wesl".into()
     }
 
     fn specialize(

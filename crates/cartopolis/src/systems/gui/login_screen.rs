@@ -44,11 +44,11 @@
 //! the pointer (see the note in CLAUDE.md), so a merely *painted* dim layer would
 //! let a drag on it spin the camera behind the card.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 use cartopolis_core::AuthCredential;
 
 use crate::resources::AuthIdentity;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::network;
 use crate::systems::session::{
     can_simulate, SessionKind, SessionPrefs, SessionRequest, SessionState, SessionStatus,
@@ -304,7 +304,7 @@ fn free_band(viewport: egui::Vec2, slab: Option<egui::Rect>) -> egui::Rect {
 }
 
 pub fn render_login_screen(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut screen: ResMut<LoginScreen>,
     mut session: ResMut<SessionState>,
     mut store: ResMut<UserStore>,
@@ -709,6 +709,7 @@ fn dim(c: egui::Color32, a: f32) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// **A bare hostname is left bare**, because `resolve_target` sends it to
     /// `wss://host/ws` on 443. Completing it with the TCP sim port produced
@@ -936,7 +937,7 @@ mod tests {
             let screen_ref = &mut screen;
             let backdrop_id =
                 egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sign_in_dim"));
-            let _ = ctx.run_ui(raw, |root| {
+            let _ = ctx.run_ui_unpainted(raw, |root| {
                 let ctx = &root.ctx().clone();
                 let hit = egui::Area::new(backdrop_id.id)
                     .order(egui::Order::Foreground)

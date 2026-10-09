@@ -27,11 +27,11 @@
 //! `BigSpace` root at `GridCell::default()` with an identity transform has
 //! mesh-local coordinates in exactly this frame.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
 use crate::resources::CameraMode;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
 /// Frames without a report before an attachment is dropped.
@@ -184,7 +184,7 @@ impl CameraAttach {
 /// The chip at the top of the screen while attached: what the camera follows,
 /// and the way to let go. Escape lets go as well.
 pub fn render_attach_chip(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut attach: ResMut<CameraAttach>,
 ) {

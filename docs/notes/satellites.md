@@ -1,6 +1,6 @@
 ---
 topic: satellites
-triggers: [satellites.rs, satellites.wgsl, --satellites, CelesTrak, SGP4, sgp4, TLE, "element sets", "orbit", "in orbit", CARTO_SATELLITES_URL, CARTO_FOLLOW_SATELLITE, "/satellites/active.tle", satellites_source, "far plane", "geostationary"]
+triggers: [satellites.rs, satellites.wesl, --satellites, CelesTrak, SGP4, sgp4, TLE, "element sets", "orbit", "in orbit", CARTO_SATELLITES_URL, CARTO_FOLLOW_SATELLITE, "/satellites/active.tle", satellites_source, "far plane", "geostationary"]
 updated: 2026-10-08
 ---
 

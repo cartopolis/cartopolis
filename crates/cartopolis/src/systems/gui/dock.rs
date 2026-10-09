@@ -42,10 +42,10 @@
 //! the note above says it cannot hold six, which is exactly why chat had to take
 //! a slot rather than add one.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::{OnlineSession, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
 /// Gap between the discs, on a viewport with room for it.
@@ -129,7 +129,7 @@ pub fn reserved_top() -> f32 {
 /// Draw the dock and the layers disc, and route clicks into the (mutually
 /// exclusive) panel slot.
 pub fn render_dock(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut right_panel: ResMut<RightPanel>,
     mut menu: ResMut<crate::systems::ui::MainMenu>,
     mut camera_state: ResMut<crate::resources::CameraState>,

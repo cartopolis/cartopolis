@@ -8,7 +8,7 @@ use crate::resources::RightPanel;
 use crate::resources::{
     ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
 };
-use crate::systems::egui_manager::EguiManager;
+use crate::systems::egui_manager::EguiMut;
 use crate::systems::icons;
 use crate::systems::theme;
 use bevy::pbr::StandardMaterial;
@@ -74,7 +74,7 @@ pub struct SignInMenu<'w> {
 /// deliberately *not* in the panel chain.
 #[allow(clippy::too_many_arguments)]
 pub fn render_main_menu(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
@@ -353,7 +353,7 @@ pub fn render_main_menu(
 /// What is actually wrong is a panel left standing after a sign-out, and that is
 /// an edge.
 pub fn render_avatar_chooser(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut chooser: ResMut<crate::resources::AvatarChooserState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<RightPanel>,
@@ -731,7 +731,7 @@ pub fn sync_dialog_to_selection(
 /// list — `camera_controls` hit the same wall and that is what it did.
 pub fn render_context_menu(
     mut commands: Commands,
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut context_menu: ResMut<ContextMenuState>,
     mut edit_dialog: ResMut<EditDialogState>,
     mut game_state: ResMut<GameState>,
@@ -1008,7 +1008,7 @@ fn dialog_frame(style: &egui::Style) -> egui::Frame {
 /// card's: `title_bar(false)`, a themed frame, and the shared header for the
 /// title and the way out.
 pub fn render_edit_dialog(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut edit_dialog: ResMut<EditDialogState>,
     mut game_state: ResMut<GameState>,
     texture_lib: Res<TextureLibrary>,
@@ -1572,7 +1572,7 @@ fn dialog_buttons(
 
 /// The texture library picker the Surface tab opens.
 fn render_texture_picker(
-    egui: &mut ResMut<EguiManager>,
+    egui: &mut EguiMut,
     edit_dialog: &mut ResMut<EditDialogState>,
     texture_lib: &TextureLibrary,
     texture_cache: &mut ResMut<PrimTextureCache>,
@@ -2148,6 +2148,7 @@ fn shape_display_name(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// **A bottom-anchored `Area` taller than the sizing pass allows settles at
     /// a wrong height and stays there.** egui lays an `Area` out once against
@@ -2188,7 +2189,7 @@ mod tests {
                     screen_rect: Some(screen),
                     ..Default::default()
                 };
-                let _ = ctx.run_ui(raw, |ui| {
+                let _ = ctx.run_ui_unpainted(raw, |ui| {
                     let mut area = egui::Area::new(egui::Id::new("card"))
                         .order(egui::Order::Foreground)
                         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -60.0));

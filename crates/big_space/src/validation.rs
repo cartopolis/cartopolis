@@ -109,7 +109,7 @@ pub fn validate_hierarchy<V: 'static + ValidHierarchyNode + Default>(world: &mut
                         .flatten()
                         .for_each(|info| {
                             inspect.push_str("  - ");
-                            inspect.push_str(&info.name().to_string());
+                            inspect.push_str(&info.1.name().to_string());
                             inspect.push('\n');
                         });
 

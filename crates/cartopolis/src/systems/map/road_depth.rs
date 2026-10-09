@@ -30,7 +30,7 @@
 //! a couple of hundred metres the ordering simply dissolved. Scaling clip-space
 //! `z` instead offsets a surface by a fixed number of units of its *own* depth,
 //! which is exactly what a hardware depth-bias unit is, so the separation neither
-//! decays nor runs away with range. `assets/shaders/road_depth.wgsl` does it in
+//! decays nor runs away with range. `assets/shaders/road_depth.wesl` does it in
 //! the vertex stage.
 //!
 //! One rung is [`ROAD_RUNG_ULP`] = 64 depth units, matching
@@ -62,11 +62,11 @@ mod tests {
     /// that notices.
     #[test]
     fn the_shader_and_the_ladder_agree_on_the_step() {
-        let src = include_str!("../../../../../assets/shaders/road_depth.wgsl");
+        let src = include_str!("../../../../../assets/shaders/road_depth.wesl");
         let line = src
             .lines()
             .find(|l| l.trim_start().starts_with("const RUNG_ULP"))
-            .expect("road_depth.wgsl declares RUNG_ULP");
+            .expect("road_depth.wesl declares RUNG_ULP");
         let value: f32 = line
             .split('=')
             .nth(1)
@@ -74,7 +74,7 @@ mod tests {
             .expect("RUNG_ULP parses as a float");
         assert!(
             (value - ROAD_RUNG_ULP).abs() < f32::EPSILON,
-            "road_depth.wgsl says {value} ULPs per rung, the ladder says {ROAD_RUNG_ULP}",
+            "road_depth.wesl says {value} ULPs per rung, the ladder says {ROAD_RUNG_ULP}",
         );
     }
 

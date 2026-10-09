@@ -1,5 +1,6 @@
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::egui_manager::EguiRef;
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::{AmbientLight, Atmosphere, NotShadowCaster};
@@ -1228,7 +1229,7 @@ pub fn next_camera_mode(mode: CameraMode, follow: bool) -> CameraMode {
 
 pub fn camera_mode_toggle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
+    egui_manager: crate::systems::egui_manager::EguiRef,
     mut camera_state: ResMut<CameraState>,
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -1408,7 +1409,7 @@ pub fn camera_controls(
     avatar_state: Res<AvatarState>,
     time: Res<Time>,
     gizmo_state: Res<GizmoState>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     globe: Res<crate::systems::globe::GlobeState>,
     windows: Query<&Window>,
     // Read-only view of the same camera for viewport→ray conversion (disjoint

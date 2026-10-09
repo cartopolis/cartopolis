@@ -1,6 +1,6 @@
 ---
 topic: water-surface
-triggers: [water.wgsl, water.rs, "water looks", waves, ocean, sea, foam, whitecaps,
+triggers: [water.wesl, water.rs, "water looks", waves, ocean, sea, foam, whitecaps,
   glitter, "specular aliasing", Cox-Munk, "RMS slope", octave, LEAN, Toksvig,
   moire, corduroy, reflectance, F0, shore field, bank field, canal, "sea state",
   WaterSeaState, "shadow around the shore", "rim of shadow",
@@ -12,7 +12,7 @@ updated: 2026-09-29
 
 # The water surface: what is measured, and what only looked measured
 
-`systems::water` + `assets/shaders/water.wgsl`. The polygons are flat — earcut
+`systems::water` + `assets/shaders/water.wesl`. The polygons are flat — earcut
 gives a canal two triangles — so every wave lives in the *normal*, and the
 surface is an `ExtendedMaterial` over `StandardMaterial` so the sun, shadows, fog
 and the atmosphere's environment map reach it for free.
@@ -318,7 +318,7 @@ Scaled, mean water colour over a fixed crop:
 | `lowsun` (17:12) | 199, 162, 128 | 198, 160, 125 |
 | `ringedge` (12 km, the palette seam) | 76, 105, 132 | 76, 105, 132 |
 
-The sky, the fresnel and the ambient give-way live in `water_common.wgsl`
+The sky, the fresnel and the ambient give-way live in `water_common.wesl`
 (`cartopolis::water_common`), registered as a shader library from
 `WaterSeaState::from_world` and imported by both water shaders below.
 
@@ -408,7 +408,7 @@ Past the streamed ring the only water was the clipmap's *painted* colour, matche
 to the lit surface by hand at one time of day. Now `TilePayload::decode` packs the
 water mask into a vector tile's alpha as **land** coverage (255 = land, so an
 image source or a tile without a mask reads as land and is untouched), and
-`ground_detail.wgsl` lights those texels with the surface's deep body colour, its
+`ground_detail.wesl` lights those texels with the surface's deep body colour, its
 roughness with every octave retired (`α² = surface.x⁴ + wave.x²`, which a test
 checks against the shader's own series) and its reflectance, through the same
 `water_common` fresnel and sky. `WaterSeaState::far_water` supplies them, at
@@ -437,7 +437,7 @@ Most "holes" in the surface are not missing geometry. A per-cell comparison of
 `tessellate_surfaces`' water area against the tile's mask agrees to the third
 decimal everywhere it was checked; the surface is drawn **under a clipmap tile**.
 The discriminating test is to discard the tile's water texels
-(`if water > 0.5 { discard; }` in `ground_detail.wgsl`): the hole turns into
+(`if water > 0.5 { discard; }` in `ground_detail.wesl`): the hole turns into
 surface.
 
 * **Unregistered water** was flat at the median of its outline, and AHN has no

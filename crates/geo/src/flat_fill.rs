@@ -15,7 +15,7 @@ use crate::vector_tiles::{SurfaceGroup, SurfaceMesh, INDEX_BYTES, VERTEX_BYTES};
 pub(crate) struct FlatFill<'a> {
     pub rings: &'a [Vec<[f32; 2]>],
     pub rgb: u32,
-    /// The surface pattern `ground_detail.wgsl` draws over it, carried in the
+    /// The surface pattern `ground_detail.wesl` draws over it, carried in the
     /// vertex colour's alpha as `1 + pattern` — 0 is none, and alpha 1.0 is
     /// what every fill carried before, so a fill with no pattern is unchanged.
     /// See `paving::PavingMaterial::pattern`.

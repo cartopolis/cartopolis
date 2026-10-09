@@ -3,7 +3,7 @@
 //! `map_geometry` spawns one batched mesh per [`SurfaceGroup`]; every group but
 //! water gets a plain `StandardMaterial`. Water gets this one: a
 //! [`MaterialExtension`] over `StandardMaterial` whose fragment shader
-//! (`assets/shaders/water.wgsl`) replaces the flat +Y normal with an animated
+//! (`assets/shaders/water.wesl`) replaces the flat +Y normal with an animated
 //! wave field, trades distance-faded ripple detail for roughness, tints the
 //! albedo by fresnel so the surface darkens looking down and brightens at
 //! grazing angles, and adds the two things the standard path has no notion of —
@@ -72,7 +72,7 @@ use crate::systems::weather::WeatherState;
 /// **Past the ring the paint no longer stands in for it** (2026-09-26). The
 /// clipmap's vector-drawn tiles carry a water mask in their alpha and light those
 /// texels as this surface's far field (`WaterSeaState::far_water`,
-/// `ground_detail.wgsl`), so this constant now *is* the far water's colour and
+/// `ground_detail.wesl`), so this constant now *is* the far water's colour and
 /// can be changed without re-matching anything there. What follows still holds
 /// for the paint itself, which remains what an image basemap, the globe tier and
 /// a tile drawn before the mask existed show.
@@ -156,7 +156,7 @@ const CLEAR_SKY_EPSILON: f32 = 0.05;
 /// normaliser (`octave_norms`), so a slope asked for is a slope rendered; and the
 /// detail the distance fade retires comes back as roughness rather than as a
 /// flattened sea, so a steep surface no longer has to be held down to stop it
-/// aliasing (`water.wgsl` has that argument in full).
+/// aliasing (`water.wesl` has that argument in full).
 ///
 /// The numbers this yields, against what stood here before: dead calm 0.055 where
 /// the old constant rendered ≈0.012, and Beaufort 6 0.254 against ≈0.11. The old
@@ -166,7 +166,7 @@ const CLEAR_SKY_EPSILON: f32 = 0.05;
 const SLOPE_VAR_CALM: f32 = 0.003;
 const SLOPE_VAR_PER_WIND: f32 = 0.00512;
 
-/// Per-octave amplitude roll-off. Must match `AMP_FALLOFF` in `water.wgsl`; the
+/// Per-octave amplitude roll-off. Must match `AMP_FALLOFF` in `water.wesl`; the
 /// normalisers below are the series that shape it, and the shader walks the same
 /// series one octave at a time.
 const AMP_FALLOFF: f32 = 0.72;
@@ -176,7 +176,7 @@ const AMP_FALLOFF: f32 = 0.72;
 const LO_OCTAVES: u32 = 2;
 
 /// Mean square of one octave's shaped derivative, as a quadratic in the chop —
-/// the same three coefficients `water.wgsl` evaluates, integrated numerically
+/// the same three coefficients `water.wesl` evaluates, integrated numerically
 /// over `d/dφ mix(s², s⁵, chop)`. It is the conversion factor between the octave
 /// amplitudes and a real slope variance, so it belongs on both sides: here to
 /// build the normaliser, there to turn the retired octaves back into roughness.
@@ -320,13 +320,13 @@ pub struct WaterSeaState {
     /// and `WaterSeaState::material` already has a documented fallback for a cell
     /// that has no field at all.
     pub shading: bool,
-    /// Keeps `cartopolis::water_common` alive in `Assets<Shader>` — a shader
+    /// Keeps the `water_common` module alive in `Assets<Shader>` — a shader
     /// import module is only importable while something holds it.
     _common: Handle<Shader>,
 }
 
-/// The shared water module both water shaders import (`water_common.wgsl`).
-const WATER_COMMON_WGSL: &str = include_str!("../../../../../assets/shaders/water_common.wgsl");
+/// The shared water module both water shaders import (`water_common.wesl`).
+const WATER_COMMON_WESL: &str = include_str!("../../../../../assets/shaders/water_common.wesl");
 
 /// Bevy's `reflectance` for water — not F0: `F0 = 0.16 · reflectance²`, and
 /// water's F0 is `((n-1)/(n+1))²` at n = 1.333, i.e. 0.0204. Shared by the
@@ -339,16 +339,16 @@ impl FromWorld for WaterSeaState {
             world
                 .resource_mut::<Assets<Image>>()
                 .add(shore_image(&[u8::MAX], 1, "open water"));
-        // `water.wgsl` and `ground_detail.wgsl` both import it, so it has to be in
+        // `water.wesl` and `ground_detail.wesl` both import it, so it has to be in
         // `Assets<Shader>` before either pipeline composes. Compiled in rather
         // than loaded, for the reason `atmosphere_patch` gives: on Android there
         // is no asset directory to lose it in, and an import that is not there
         // yet is a pipeline that waits.
         let common = world
             .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wgsl(
-                WATER_COMMON_WGSL,
-                "shaders/water_common.wgsl",
+            .add(Shader::from_wesl(
+                WATER_COMMON_WESL,
+                "shaders/water_common.wesl",
             ));
         let s = sea_state(
             crate::systems::weather::wind_velocity(
@@ -417,7 +417,7 @@ impl WaterSeaState {
                 // the reflectance that produces it is √(0.0204 / 0.16). The 0.25
                 // that stood here was aimed at 0.02 and landed on **0.01**, which
                 // is half of water's reflectance — and the reflection is very
-                // nearly all of what a water surface is. `water.wgsl` uses the
+                // nearly all of what a water surface is. `water.wesl` uses the
                 // same 0.0204 for the fresnel it does itself, so the body colour
                 // and the reflection cannot disagree about where the light went.
                 reflectance: WATER_REFLECTANCE,
@@ -475,7 +475,7 @@ fn shore_image(data: &[u8], size: u32, label: &str) -> Image {
         TextureFormat::R8Unorm,
         // `RENDER_WORLD` only, exactly as `tile_loader::TILE_TEXTURE_USAGE` argues:
         // a shore field is rasterised on a worker, uploaded, and thereafter only
-        // sampled by `water.wgsl` — nothing reads a texel back. The default keeps
+        // sampled by `water.wesl` — nothing reads a texel back. The default keeps
         // the decoded bytes in `Assets<Image>` as well, and this is the one texture
         // there is **one of per water cell** (1024² R8 = 1 MiB each), so over a
         // canal city the duplicate is the largest image cost in the app.
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn the_reflectance_produces_waters_own_f0() {
-        // Bevy computes `F0 = 0.16 · reflectance²`, and `water.wgsl` does its own
+        // Bevy computes `F0 = 0.16 · reflectance²`, and `water.wesl` does its own
         // Schlick against a hard-coded 0.0204 — so if these two ever disagree the
         // body colour is taken out at one reflectance and put back at another,
         // and the surface stops conserving light without saying so.
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn the_sea_slope_is_the_measured_one() {
-        // `wave.x` is the rendered RMS slope directly (`water.wgsl` normalises
+        // `wave.x` is the rendered RMS slope directly (`water.wesl` normalises
         // its octave sum to it), so this is the one place the Cox–Munk relation
         // can be checked against what the shader will actually be handed.
         // Guarding the numbers, not just the direction: an earlier version of

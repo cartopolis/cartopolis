@@ -34,6 +34,7 @@ use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
+use crate::systems::egui_manager::EguiMut;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
@@ -44,7 +45,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
@@ -1405,7 +1405,7 @@ pub fn update_data_layers(
 /// world-space ray against thin, short poles.
 pub fn handle_poi_click(
     mouse: Res<ButtonInput<MouseButton>>,
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut dl: ResMut<DataLayers>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
@@ -1495,7 +1495,7 @@ pub fn handle_poi_click(
 /// The clicked-POI info card: name, category/address, and Website / OSM
 /// buttons. Anchored above the POI's pole; closes via ✕ or a click elsewhere.
 pub fn render_poi_popup(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut dl: ResMut<DataLayers>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
 ) {
@@ -2564,7 +2564,7 @@ fn options_box(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui))
 /// their own switches (`layer_tiles`, `docs/mockups/layers-and-ring/`), plus the
 /// required attributions.
 pub fn render_data_layers_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut dl: ResMut<DataLayers>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     layer_view: LayerView,
@@ -3211,6 +3211,7 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// The two sources must agree about what a stop *is*, or a bus stop placed
     /// from the tile and the same stop described by Overpass end up in different
@@ -3472,7 +3473,7 @@ mod tests {
             let rect = std::cell::Cell::new(None);
             let dl_ref = &mut dl;
             // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 // Force a second pass every frame, like an unstable Area does.
                 ui.ctx().request_discard("test");
                 crate::systems::egui_manager::responsive_right_panel(
@@ -3535,7 +3536,7 @@ mod tests {
             let rect = std::cell::Cell::new(None);
             let dl_ref = &mut dl;
             // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
                 crate::systems::egui_manager::responsive_right_panel(
                     "layers_panel",
                     false,

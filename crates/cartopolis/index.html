@@ -1018,7 +1018,7 @@
             // cause. A text asset, deliberately: the binaries here are LFS-tracked
             // and a pointer file would still answer 200.
             run: async function () {
-              var r = await fetch("assets/shaders/water.wgsl", { cache: "no-store" });
+              var r = await fetch("assets/shaders/water.wesl", { cache: "no-store" });
               if (!r.ok) return { ok: "no", note: "assets/ → HTTP " + r.status };
               var head = (await r.text()).slice(0, 200);
               if (head.indexOf("git-lfs") !== -1) {

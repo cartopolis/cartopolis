@@ -4,10 +4,10 @@ use crate::components::{
 use crate::resources::PrimTextureCache;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::math::primitives::{Cuboid, Cylinder, Sphere, Torus};
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::shape::{Cuboid, Cylinder, Sphere, Torus};
 use cartopolis_core::PrimSurface;
 use std::collections::HashMap;
 

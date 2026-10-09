@@ -38,7 +38,7 @@ The order used to be stated in five places in three denominations:
 (a second ladder in millimetres, written independently), `road_rung` (a third,
 per vertex, inside a band the first had to leave room for), **six** free constants
 in four client modules — zebra paint 10.5, route casing 18, route line 20, route
-pins 22, street label 23, driver arrow 24 — and `assets/shaders/road_depth.wgsl`'s
+pins 22, street label 23, driver arrow 24 — and `assets/shaders/road_depth.wesl`'s
 hard-coded step.
 
 Six, not the five anyone knew about. `navigation.rs` had a bare `rung(22.0)` for

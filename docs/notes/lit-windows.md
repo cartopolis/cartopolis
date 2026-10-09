@@ -1,6 +1,6 @@
 ---
 topic: lit-windows
-triggers: [building_windows.rs, building_windows.wgsl, lod22.rs, osm_buildings.rs,
+triggers: [building_windows.rs, building_windows.wesl, lod22.rs, osm_buildings.rs,
   "lit windows", "windows at night", "night", "3dbag windows", "facade", sky.rs,
   update_window_glow, WindowGlow]
 updated: 2026-08-26
@@ -39,8 +39,8 @@ scattered") and `globe_ocean` makes for the ocean ("a BRDF split, not water").
 
 ## The lattice has to divide the floating origin
 
-The shader has no stable per-vertex anchor to work from. `water.wgsl` uses UV0
-in anchor metres and `grass.wgsl` reconstructs one from `MeshTag`; neither is
+The shader has no stable per-vertex anchor to work from. `water.wesl` uses UV0
+in anchor metres and `grass.wesl` reconstructs one from `MeshTag`; neither is
 available here, because `lod22` dedupes its vertices and a shared corner vertex
 belongs to two walls with **different tangents**, so no per-vertex coordinate can
 serve both.

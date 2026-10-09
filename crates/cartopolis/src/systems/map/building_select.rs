@@ -23,7 +23,7 @@
 //!
 //! **The highlight and the ghost are the same prism drawn twice over.** Selecting
 //! a building lays glass over its shell; walking into one takes the shell's walls
-//! *out* of the opaque pass (`building_windows.wgsl`'s `in_ghost`) and puts glass
+//! *out* of the opaque pass (`building_windows.wesl`'s `in_ghost`) and puts glass
 //! where they were. Both are one translucent mesh built from the outline, and
 //! that is deliberate: a mesh cut to the shell's real triangles would have to be
 //! recovered from a merged buffer, and a fragment tint on the shell itself cannot
@@ -37,6 +37,7 @@
 //! follow camera's boom coming in after it — already works without anyone naming
 //! the building.
 
+use crate::systems::egui_manager::EguiRef;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -47,7 +48,6 @@ use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{AvatarState, MapAnchor};
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::building_windows::{BuildingMaterial, GHOST_MAX_POINTS, GHOST_RING_VEC4S};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
 use crate::systems::interiors::InteriorFloors;
 use crate::systems::lod22::{Lod22Buildings, ShellMeasure};
@@ -243,7 +243,7 @@ pub fn pick_building(
     keyboard: Res<ButtonInput<KeyCode>>,
     touch: Res<crate::systems::touch::TouchGestures>,
     time: Res<Time>,
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
     lod: Res<Lod22Buildings>,
@@ -325,7 +325,7 @@ fn closes_a_double_click(last: Option<(Vec2, f32)>, at: Vec2, now: f32) -> bool 
 /// origin's grid cell, in metres.
 ///
 /// Every `big_space` entity's `GlobalTransform` is its anchored position minus
-/// this, which is the jump `building_windows.wgsl`'s lattice note is about.
+/// this, which is the jump `building_windows.wesl`'s lattice note is about.
 fn cell_offset(cell: &GridCell) -> Vec3 {
     Vec3::new(cell.x as f32, cell.y as f32, cell.z as f32) * WORLD_CELL_EDGE
 }
@@ -839,7 +839,7 @@ fn write_ghost_uniform(
             max = max.max(*p);
         }
         ghost.x = pts.len() as f32;
-        // The roof goes too (`building_windows.wgsl`): a cutaway, not a glass box.
+        // The roof goes too (`building_windows.wesl`): a cutaway, not a glass box.
         ghost.y = 1.0;
         bounds = Vec4::new(min.x, min.y, max.x, max.y);
         for (i, p) in pts.iter().enumerate() {

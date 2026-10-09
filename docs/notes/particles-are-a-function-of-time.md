@@ -1,6 +1,6 @@
 ---
 triggers:
-  - working on `systems::particles`, `assets/shaders/particles.wgsl`, or `cartopolis_core::particles`
+  - working on `systems::particles`, `assets/shaders/particles.wesl`, or `cartopolis_core::particles`
   - "why don't the particles collide / why can't I move one"
   - adding an effect (smoke, spray, sparks, weather on a prim)
   - reaching for an off-the-shelf Bevy particle crate (`bevy_hanabi`, …)
@@ -14,7 +14,7 @@ updated: 2026-08-29
 `cartopolis_core::ParticleEffect` is fourteen numbers on a prim. It travels in
 every `WorldSnapshot`, it is one JSON column in SQLite, `particles` writes it
 and the client hands it to a shader. **No particle exists anywhere as data**:
-`assets/shaders/particles.wgsl` computes where each one is, how big, what colour
+`assets/shaders/particles.wesl` computes where each one is, how big, what colour
 and whether it is alive, from those numbers, the clock and the particle's own
 index. After the shared quad pool is built at startup, an emitter uploads
 nothing.

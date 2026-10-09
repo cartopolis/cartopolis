@@ -5,7 +5,7 @@
 //! A prim carrying an emitter grows exactly one child entity: a shared mesh, a
 //! material of its own, and [`ParticleEmitter`] recording which effect it is
 //! showing. Everything a particle does — where it is, how big, what colour, when
-//! it dies — is computed in `assets/shaders/particles.wgsl` from that material's
+//! it dies — is computed in `assets/shaders/particles.wesl` from that material's
 //! twenty floats and the clock. Nothing is simulated on the CPU and nothing is
 //! uploaded after the emitter is built.
 //!

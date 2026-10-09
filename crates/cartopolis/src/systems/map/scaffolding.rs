@@ -11,7 +11,7 @@
 //! **Geometry, in the shell's own mesh.** A scaffold is tubes and boards, the
 //! one thing on a facade the window shader cannot paint: it stands off the
 //! wall, throws a shadow onto it and is seen past from the street. Every part
-//! carries the doorway parts' negative UV0.y, which `building_windows.wgsl`
+//! carries the doorway parts' negative UV0.y, which `building_windows.wesl`
 //! reads as "not a wall", so no window lattice is painted on a standard. It is
 //! built on a `Near` cell only, as the doors are, and it is a few hundred
 //! triangles a face on a few dozen buildings a city.

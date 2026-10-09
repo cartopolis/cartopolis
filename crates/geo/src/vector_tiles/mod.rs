@@ -70,7 +70,7 @@ pub use water::*;
 /// Re-exported from [`crate::ground_stack`], which is where the ladder itself
 /// lives. It stays visible under this name because most of the tree reaches the
 /// stack through `systems::vector_tiles`, and because the step is what
-/// `assets/shaders/road_depth.wgsl` has to agree with.
+/// `assets/shaders/road_depth.wesl` has to agree with.
 pub use crate::ground_stack::DEPTH_BIAS_STEP;
 
 /// 0xRRGGBB palette. Deliberately flatter and less saturated than osm-carto: this

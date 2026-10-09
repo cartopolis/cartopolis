@@ -1402,7 +1402,7 @@ pub fn create_egui_texture_handles(
     mut texture_lib: ResMut<TextureLibrary>,
     texture_cache: Res<PrimTextureCache>,
     images: Res<Assets<Image>>,
-    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
+    egui_manager: crate::systems::egui_manager::EguiRef,
 ) {
     let entries: Vec<String> = texture_lib
         .entries
@@ -1482,7 +1482,7 @@ pub fn send_network_intent(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     camera_state: Res<crate::resources::CameraState>,
     mut avatar_state: ResMut<AvatarState>,
-    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
+    egui_manager: crate::systems::egui_manager::EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,

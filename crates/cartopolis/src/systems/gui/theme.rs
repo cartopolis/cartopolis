@@ -2679,6 +2679,7 @@ fn paint_eye(p: &egui::Painter, rect: egui::Rect, shown: bool, ink: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// Relative luminance per WCAG 2.x, on a `Color32`'s sRGB bytes.
     fn luminance(c: Color32) -> f64 {
@@ -3192,7 +3193,7 @@ mod tests {
         let ctx = egui::Context::default();
         install(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let _ = ctx.run_ui(
+        let _ = ctx.run_ui_unpainted(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
@@ -3215,7 +3216,7 @@ mod tests {
         let ctx = egui::Context::default();
         install(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let out = ctx.run_ui(
+        let out = ctx.run_ui_unpainted(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
@@ -3289,7 +3290,7 @@ mod tests {
         let ctx = egui::Context::default();
         install(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let _ = ctx.run_ui(
+        let _ = ctx.run_ui_unpainted(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
@@ -3613,7 +3614,7 @@ mod tests {
         let ctx = egui::Context::default();
         install(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let _ = ctx.run_ui(
+        let _ = ctx.run_ui_unpainted(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
@@ -3793,6 +3794,7 @@ mod tests {
 #[cfg(test)]
 mod mark_preview {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// Sizes: the splash, a mid size, the sign-in card, and one below
     /// [`mark::DETAIL_RADIUS`] to see what the cutoff leaves.
@@ -3809,7 +3811,7 @@ mod mark_preview {
             install(&ctx);
             ctx.set_pixels_per_point(ppp);
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(side, side));
-            let out = ctx.run_ui(
+            let out = ctx.run_ui_unpainted(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     ..Default::default()

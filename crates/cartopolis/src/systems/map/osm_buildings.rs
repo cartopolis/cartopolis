@@ -2420,7 +2420,7 @@ impl MeshData {
     /// float of its own (`building_windows::ATTRIBUTE_FACADE_CODE`).
     ///
     /// **Only for meshes drawn with `BuildingMaterial`**, whose vertex stage
-    /// (`building_vertex.wgsl`) puts the two back together. Any other material
+    /// (`building_vertex.wesl`) puts the two back together. Any other material
     /// would read the colour's alpha byte and never see the code. Twenty bytes a
     /// vertex became eight on the LoD2.2 cells, which are most of what the client
     /// holds in graphics memory over a city.

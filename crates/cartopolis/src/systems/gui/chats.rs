@@ -25,13 +25,13 @@
 //! bottom of the screen. The chat state itself, the encryption and the network
 //! are all unchanged — this module only draws them.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 use cartopolis_core::{NetMessage, ReportReason};
 use std::collections::HashMap;
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{person_menu, ChatLine, ChatState, PersonAction, ReportDraft};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::user_store::SavedScreen;
 use crate::systems::{icons, theme};
 
@@ -678,7 +678,7 @@ fn call_button(calls: &crate::systems::calls::Calls, key: &str) -> CallButton {
 /// to otherwise, and the switch that opens it is hidden on the same test.
 #[allow(clippy::too_many_arguments)]
 pub fn render_chats_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut chat: ResMut<ChatState>,
     mut view: ResMut<ChatsView>,
     online: Option<Res<OnlineSession>>,
@@ -2855,7 +2855,7 @@ pub fn restore_screen(
 /// a chat's World view has the top of the screen, or while driving.
 #[allow(clippy::too_many_arguments)]
 pub fn render_chats_switch(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     chat: Res<ChatState>,
     mut view: ResMut<ChatsView>,
     online: Option<Res<OnlineSession>>,
@@ -2898,7 +2898,7 @@ pub fn render_chats_switch(
 /// field at the bottom. The chat's points are pinned by `place_pins`.
 #[allow(clippy::too_many_arguments)]
 pub fn render_chat_world(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut chat: ResMut<ChatState>,
     mut view: ResMut<ChatsView>,
     online: Option<Res<OnlineSession>>,

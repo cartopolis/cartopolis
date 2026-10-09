@@ -109,7 +109,7 @@ impl From<&BuildingWindows> for BuildingKey {
     }
 }
 
-/// Uniforms for `shaders/building_windows.wgsl`.
+/// Uniforms for `shaders/building_windows.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 // One uniform buffer, not one per field: see the shader's `Facade` for the
 // browser limit seven of them broke.
@@ -157,7 +157,7 @@ pub struct BuildingWindows {
     pub screen_door: bool,
 }
 
-/// [`BuildingWindows`]' uniforms as `building_windows.wgsl`'s `Facade` lays
+/// [`BuildingWindows`]' uniforms as `building_windows.wesl`'s `Facade` lays
 /// them out, in that order.
 #[derive(ShaderType, Clone, Copy, Debug)]
 pub struct BuildingWindowsGpu {
@@ -219,11 +219,11 @@ impl Default for BuildingWindows {
 
 impl MaterialExtension for BuildingWindows {
     fn vertex_shader() -> ShaderRef {
-        "shaders/building_vertex.wgsl".into()
+        "shaders/building_vertex.wesl".into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        "shaders/building_windows.wgsl".into()
+        "shaders/building_windows.wesl".into()
     }
 
     fn specialize(
@@ -279,7 +279,7 @@ impl MaterialExtension for BuildingWindows {
 /// at four floats (sixteen bytes) on the largest meshes in the app: the code
 /// runs far past 1.0, so no normalised byte can hold it. Split out, the colour
 /// is four bytes and the code four more — eight bytes a vertex back.
-/// `shaders/building_vertex.wgsl` puts the two back together.
+/// `shaders/building_vertex.wesl` puts the two back together.
 ///
 /// The id is arbitrary but must not collide with bevy's own (below 10),
 /// `building_fade::ATTRIBUTE_BUILDING_BASE` or `road_depth::ATTRIBUTE_ROAD_RUNG`.

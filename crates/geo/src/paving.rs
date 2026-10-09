@@ -114,7 +114,7 @@ impl PavingKind {
     /// worth of paving is a handful of draw calls.
     ///
     /// These were pale cartographic tones while a surface was one flat colour.
-    /// Since `ground_detail.wgsl` draws each material's stones over it
+    /// Since `ground_detail.wesl` draws each material's stones over it
     /// (2026-10-01) they are the materials' own colours — a brick street is the
     /// red-brown of its bricks and a carriageway the grey of asphalt — because a
     /// pattern over a pastel reads as a printed sheet, not as paving.
@@ -244,7 +244,7 @@ impl PavingMaterial {
     }
 }
 
-/// The surface patterns `ground_detail.wgsl` can draw: what a surface is made
+/// The surface patterns `ground_detail.wesl` can draw: what a surface is made
 /// of, at the scale of its stones. **The numbers are the shader's** — its
 /// `paving_pattern` switches on them.
 pub mod pattern {
@@ -311,7 +311,7 @@ pub fn area_rgb(kind: PavingKind, material: Option<PavingMaterial>) -> u32 {
 
 /// What a pattern's stones average to once they are smaller than a pixel, as a
 /// linear multiplier on the surface's colour — the far end of `paving_look` in
-/// `ground_detail.wgsl`, which blurs each pattern to exactly these values. **The
+/// `ground_detail.wesl`, which blurs each pattern to exactly these values. **The
 /// numbers are the shader's** and move with it; `the_far_tone_is_the_shaders`
 /// keeps the list in step with the pattern table.
 #[must_use]
@@ -469,7 +469,7 @@ mod tests {
     /// at the altitude where the image takes over.
     #[test]
     fn the_far_tone_is_the_shaders() {
-        let wgsl = include_str!("../../../assets/shaders/ground_detail.wgsl");
+        let wgsl = include_str!("../../../assets/shaders/ground_detail.wesl");
         for (p, name) in [
             (pattern::CONCRETE, "case 2u"),
             (pattern::BRICK, "case 3u"),

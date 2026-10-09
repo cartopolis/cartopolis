@@ -68,9 +68,9 @@
 //! context menu on a long press). Nothing here is a substitute for a platform
 //! IME; it is what makes a text field usable at all on a platform that has none.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
 
@@ -699,7 +699,7 @@ pub(crate) fn restore_focus(ctx: &egui::Context, id: egui::Id) {
 ///
 /// **Must be registered after every system that draws a text field** — see the
 /// module note; the ordering is what makes the focus restore work at all.
-pub fn render_onscreen_keyboard(mut egui: ResMut<EguiManager>, mut kb: ResMut<OnScreenKeyboard>) {
+pub fn render_onscreen_keyboard(mut egui: EguiMut, mut kb: ResMut<OnScreenKeyboard>) {
     if !kb.enabled {
         return;
     }
@@ -1231,6 +1231,7 @@ fn paint_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// The client's frame loop, minus Bevy: a sign-in card with a text field in
     /// it, the keyboard drawn after it in the same pass, and a touch bridge that
@@ -1357,7 +1358,7 @@ mod tests {
             self.field = field;
 
             self.injected = self.kb.pass(&self.ctx, 1.5, 2.75);
-            let _ = self.ctx.end_pass();
+            let _ = self.ctx.end_pass_unpainted();
         }
 
         /// A finger down and up at one point, then a quiet frame — the shape
@@ -1787,7 +1788,7 @@ mod tests {
                 Vec::new()
             };
             let text_ref = &mut text;
-            let _ = ctx.run_ui(
+            let _ = ctx.run_ui_unpainted(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     events,

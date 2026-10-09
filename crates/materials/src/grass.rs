@@ -9,7 +9,7 @@ use bevy::shader::ShaderRef;
 /// The one material every grass patch draws with.
 pub type GrassMaterial = ExtendedMaterial<StandardMaterial, GrassExtension>;
 
-/// Uniforms for `shaders/grass.wgsl`. Every one is read in the **vertex** stage —
+/// Uniforms for `shaders/grass.wesl`. Every one is read in the **vertex** stage —
 /// this extension has no fragment shader at all, which is the point: the blade is
 /// built here and then handed to `StandardMaterial` to be lit like any other
 /// surface in the scene.
@@ -46,7 +46,7 @@ pub struct GrassExtension {
     pub mask: Handle<Image>,
 }
 
-/// [`GrassExtension`]'s uniforms as `grass.wgsl`'s `Turf` lays them out, in
+/// [`GrassExtension`]'s uniforms as `grass.wesl`'s `Turf` lays them out, in
 /// that order.
 #[derive(ShaderType, Clone, Copy, Debug)]
 pub struct GrassGpu {
@@ -76,6 +76,6 @@ impl From<&GrassExtension> for GrassGpu {
 
 impl MaterialExtension for GrassExtension {
     fn vertex_shader() -> ShaderRef {
-        "shaders/grass.wgsl".into()
+        "shaders/grass.wesl".into()
     }
 }

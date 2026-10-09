@@ -31,7 +31,10 @@ use std::io::Read;
 
 mod bridges;
 
-use anyhow::{Context, Result};
+// Bound to the name `ContextExt` on purpose: bevy 0.20's prelude glob-imports its own
+// `ContextExt`, whose `.context()` is ambiguous with anyhow's. An explicit import
+// shadows a glob one, which takes bevy's trait out of scope here.
+use anyhow::{Context as ContextExt, Result};
 use bevy::asset::RenderAssetUsages;
 // `RenderTarget` is its own component in Bevy 0.19 (required by `Camera`), and it
 // lives in `bevy::camera` rather than the prelude.

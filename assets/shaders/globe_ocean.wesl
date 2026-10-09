@@ -16,18 +16,18 @@
 // `ocean.x` ramps the whole effect with `space_factor`, so the transition from
 // the flat map tiles below the tier boundary carries no step.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
-}
+};
 
 // x: effect strength (space_factor ramp). y: 1 when alpha carries a real mask.
 // z: ocean roughness. w: ocean reflectance (StandardMaterial's 0..1 remap).
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ocean: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> ocean: vec4<f32>;
 // rgb: water tint applied to the imagery. a unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> tint: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> tint: vec4<f32>;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -61,7 +61,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         mask,
     );
 
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {

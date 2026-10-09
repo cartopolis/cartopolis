@@ -21,13 +21,13 @@
 //! viewport) an open panel each own the screen it would float over. Suppression
 //! *hides* it: the building stays selected, and its glass stays on the map.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::RightPanel;
 use crate::systems::building_facts::{use_labels, AddressFact, BuildingFact, BuildingFacts};
 use crate::systems::building_select::BuildingSelection;
 use crate::systems::data_layers::{open_url, open_url_supported};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::lod22::{Lod22Buildings, ShellMeasure};
 use crate::systems::theme;
@@ -79,7 +79,7 @@ pub(crate) fn override_url(id: &str) -> String {
 
 /// Draw the card for the selected building.
 pub fn render_building_card(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
     lod: Res<Lod22Buildings>,

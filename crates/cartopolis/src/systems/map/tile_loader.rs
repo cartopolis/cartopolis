@@ -199,7 +199,7 @@ impl TilePayload {
 /// land, 0 is water.
 ///
 /// Inverted against the globe's (`GlobeTilePayload::decode`, 255 = water) on
-/// purpose. `ground_detail.wgsl` lights the water texels as the water surface's
+/// purpose. `ground_detail.wesl` lights the water texels as the water surface's
 /// far field, and every tile that carries no mask — an image source, a PNG from
 /// before the mask existed, a mask that failed — decodes opaque, i.e. 255. With
 /// 255 meaning land, "no mask" and "no water" are the same answer, and nothing

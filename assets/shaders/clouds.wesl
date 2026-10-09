@@ -30,9 +30,9 @@
 // fly under them. The wind's drift arrives already integrated (`params1.xy`,
 // metres): the live wind changes speed and direction, and a velocity times the
 // clock would jump the whole field every time it did.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
-#import cartopolis::cloud_field as cf
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
+import super::cloud_field as cf;
 
 // x: coverage 0..1 (fraction of sky filled). y: edge softness. z: the sky's clock
 // in seconds (drives the churn). w: low deck height above the camera, in metres.
@@ -72,7 +72,7 @@
 // pipeline invalid in every browser — the renderer halted the moment the deck
 // was first drawn. `cf::Deck` is the layout `CloudMaterial` writes
 // (`CloudFieldGpu`), the same one the water reads its mirrored deck from.
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> deck: cf::Deck;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> deck: cf::Deck;
 
 // ---- quality tier -----------------------------------------------------------
 // `CLOUDS_LOW` is set by `CloudMaterial::specialize` on `quality::Tier::Phone`.
@@ -91,19 +91,24 @@
 // The low deck's octave counts are `cf::low_octaves` / `cf::low_billow`, picked
 // by `CHEAP`: the water mirroring this deck needs the same numbers without the
 // shader def, so they live in the shared module.
-#ifdef CLOUDS_LOW
+@if(CLOUDS_LOW)
 const CHEAP: bool = true;
-const OCT_HIGH: i32 = 2;
-const SUN_STEPS: i32 = 1;
-const MS_OCTAVES: i32 = 2;
-#else
+@else
 const CHEAP: bool = false;
+@if(CLOUDS_LOW)
+const OCT_HIGH: i32 = 2;
+@else
 const OCT_HIGH: i32 = 4;
 // Taps in the sun march (`cf::sun_optical_depth`). Three is enough because the
 // field it marches is low-frequency; each tap costs a whole (small) FBM.
+@if(CLOUDS_LOW)
+const SUN_STEPS: i32 = 1;
+@else
 const SUN_STEPS: i32 = 3;
+@if(CLOUDS_LOW)
+const MS_OCTAVES: i32 = 2;
+@else
 const MS_OCTAVES: i32 = 3;
-#endif
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {

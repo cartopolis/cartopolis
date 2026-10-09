@@ -3,8 +3,8 @@
 // carries the star's temperature tint × magnitude luminance, with a twinkle
 // seed in the alpha channel. Drawn additively: black adds nothing, so only the
 // gaussian point cores register.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
 
 // x: brightness (night factor × fog veil), y: twinkle clock in seconds,
 // z: 1 in the space tier (above the atmosphere), 0 on the ground (w unused).

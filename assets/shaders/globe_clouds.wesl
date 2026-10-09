@@ -22,8 +22,8 @@
 // Shaded by the sun terminator and faded in with `params.y` (space_factor) so
 // it's absent on the ground, where the camera-relative ceiling (clouds.wgsl)
 // takes over. One static sphere mesh — fixed cost, no churn.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
 
 // One uniform rather than seven: WebGPU allows 12 uniform buffers per shader
 // stage and bevy's view bindings already spend five, so seven left this

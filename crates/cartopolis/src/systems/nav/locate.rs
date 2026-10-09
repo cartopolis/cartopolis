@@ -507,7 +507,7 @@ const HEADING_MIN_SCREEN: f32 = 0.75;
 /// and it can never take a tap meant for the dock underneath it.
 #[allow(clippy::too_many_arguments)]
 pub fn render_locate_arrow(
-    mut egui: ResMut<crate::systems::egui_manager::EguiManager>,
+    mut egui: crate::systems::egui_manager::EguiMut,
     tracking: Res<LocateTracking>,
     camera_state: Res<CameraState>,
     cameras: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,

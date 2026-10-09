@@ -2205,7 +2205,7 @@ pub fn open_scripted_ui(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut cards: ScriptedCards,
     mut store: ResMut<crate::systems::user_store::UserStore>,
-    egui: Res<crate::systems::egui_manager::EguiManager>,
+    egui: crate::systems::egui_manager::EguiRef,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {

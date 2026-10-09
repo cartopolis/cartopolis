@@ -13,7 +13,7 @@
 //! across, so half-metre vertices over one of them is about nine million quads,
 //! rebuilt on every re-anchor. There is no budget in which that is drawn.
 //!
-//! So this is the other half of the same answer `water.wgsl` gives: a 12 cm kerb, the
+//! So this is the other half of the same answer `water.wesl` gives: a 12 cm kerb, the
 //! camber of a carriageway, the lip of a quay and a rut across a verge are **shading,
 //! not silhouette**. The tier's slope goes into a texture, the ground materials
 //! perturb their normal by it, and the cost is one fetch per ground fragment and no

@@ -22,7 +22,7 @@
 //! * Five free constants in four client modules — the zebra paint at 10.5, the
 //!   route casing at 18, the route line at 20, the street label at 23, the driver
 //!   arrow at 24 — on this same ladder, declared nowhere near it and picked by eye.
-//! * `assets/shaders/road_depth.wgsl`, which hard-codes the step.
+//! * `assets/shaders/road_depth.wesl`, which hard-codes the step.
 //!
 //! Every recurring bug in this area was one of those disagreeing with another. Two
 //! ladders in different units **crossed over** in the middle distance, so a

@@ -12,10 +12,10 @@
 //! floating box here follows: egui paints `Area`s above panels even at
 //! `Order::Background`, so disappearing is the only way to be *behind* one.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use super::{McpBridge, Outcome};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
 /// How long a finished line stays up after it lands.
@@ -31,7 +31,7 @@ const LINGER_S: f64 = 12.0;
 const WIDTH: f32 = 268.0;
 
 pub fn render_mcp_activity(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     bridge: Res<McpBridge>,
     right_panel: Res<crate::resources::RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,

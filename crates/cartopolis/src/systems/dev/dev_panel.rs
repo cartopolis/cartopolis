@@ -45,13 +45,13 @@
 //! frame, jitter, triangles by producer, upload and residency), and does not
 //! need a second per-frame moving average of its own kept alive to say it.
 
+use crate::systems::egui_manager::EguiMut;
 use web_time::Instant;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
 
@@ -174,7 +174,7 @@ pub struct DevView<'w, 's> {
 
 /// Draw the developer panel.
 pub fn render_dev_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut tools: ResMut<DevTools>,
     mut shot: ResMut<crate::resources::ScreenshotState>,

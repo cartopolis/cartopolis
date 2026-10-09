@@ -195,7 +195,7 @@ not landed.
 
 ## Seeing in: the walls go, the roof stays
 
-`building_windows.wgsl` gained an `in_ghost` test — an even-odd polygon test
+`building_windows.wesl` gained an `in_ghost` test — an even-odd polygon test
 against a ring carried in a uniform — and discards a fragment that is both inside
 it and on a **wall**. `is_wall` was already computed, for the windows.
 

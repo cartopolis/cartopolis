@@ -1,5 +1,3 @@
-#define_import_path cartopolis::water_common
-
 // What a sheet of water looks like with its waves taken away: the fresnel split
 // between the body colour and the reflection, and the stand-in sky it reflects on
 // a view with no environment map.
@@ -12,15 +10,15 @@
 // ring agree by construction, and a change to the water reaches the horizon
 // without anything to re-match. See `docs/notes/water-surface.md`.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_view_bindings::{view, lights},
     // The module as well, for the bindings that exist only under a shader def
     // (the fog, the environment map) — the reason `water.wgsl` gives.
     mesh_view_bindings as view_bindings,
     pbr_functions::calculate_F0,
     pbr_types::PbrInput,
-    lighting::{EnvBRDFApprox, F_AB, perceptualRoughnessToRoughness},
-}
+    pbr_lighting::{EnvBRDFApprox, F_AB, perceptualRoughnessToRoughness},
+};
 
 /// Water's reflectance at normal incidence, from its refractive index:
 /// `((1.333 - 1) / (1.333 + 1))²`. The one number the whole surface turns on —
@@ -96,12 +94,12 @@ fn ambient_specular(pbr_input: PbrInput) -> vec3<f32> {
         * view.exposure;
 }
 
-#ifdef ENVIRONMENT_MAP
 /// The environment map's radiance along this surface's reflection, sampled
 /// exactly as bevy's `environment_map::compute_radiances` samples it — the same
 /// bent direction, the same mip for the roughness, the same intensity — and
 /// pre-exposed like the lit colour. Zero when the view turns out to have no map,
 /// which is bevy's own bail-out.
+@if(ENVIRONMENT_MAP)
 fn environment_radiance(pbr_input: PbrInput) -> vec3<f32> {
     let probes = view_bindings::light_probes.view_cubemap_index;
     if probes < 0 {
@@ -121,24 +119,24 @@ fn environment_radiance(pbr_input: PbrInput) -> vec3<f32> {
     dir.z = -dir.z;
     let level = perceptual_roughness
         * f32(view_bindings::light_probes.smallest_specular_mip_level_for_view);
-#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
-    let radiance = textureSampleLevel(
-        view_bindings::specular_environment_maps[probes],
-        view_bindings::environment_map_sampler,
-        dir,
-        level,
-    ).rgb;
-#else
-    let radiance = textureSampleLevel(
-        view_bindings::specular_environment_map,
-        view_bindings::environment_map_sampler,
-        dir,
-        level,
-    ).rgb;
-#endif
+    var radiance: vec3<f32>;
+    @if(MULTIPLE_LIGHT_PROBES_IN_ARRAY) {
+        radiance = textureSampleLevel(
+            view_bindings::specular_environment_maps[probes],
+            view_bindings::environment_map_sampler,
+            dir,
+            level,
+        ).rgb;
+    } @else {
+        radiance = textureSampleLevel(
+            view_bindings::specular_environment_map,
+            view_bindings::environment_map_sampler,
+            dir,
+            level,
+        ).rgb;
+    }
     return radiance * view_bindings::light_probes.intensity_for_view * view.exposure;
 }
-#endif
 
 /// Reflected fraction below which the clouds are not looked up at all; they are
 /// at full strength from twice it. Water's own F0 is 0.0204, so this spares water
@@ -180,28 +178,31 @@ fn with_clouds(
     if cloud.a <= 0.0 {
         return lit;
     }
-#ifdef ENVIRONMENT_MAP
-    let sky = environment_radiance(pbr_input);
-    let w = specular_weight(pbr_input) * pbr_input.specular_occlusion;
-#else ifdef DISTANCE_FOG
-    // The sky this reflection holds is the stand-in *and* the part of bevy's
-    // ambient specular `sky_fallback` left in place, and a cloud stands in front
-    // of both. Taking out only the stand-in left the ambient as a flat bright
-    // sheen over every cloud — and under overcast, where the ambient is raised
-    // and barely gives way, that sheen was nearly all of the reflection: a lake
-    // under a dark grey deck came out white-grey with no clouds in it (Deck,
-    // `balanced`, 2026-09-29).
-    let ray_y = reflect(-pbr_input.V, pbr_input.N).y;
-    let t = sky_t(ray_y, pbr_input.material.perceptual_roughness);
-    let w = reflected * weight;
-    let kept_ambient = ambient_specular(pbr_input) * (1.0 - t * clamp(clear, 0.0, 1.0)) * weight;
-    let sky = sky_colour(view_bindings::fog.base_color.rgb, clear, t) * w + kept_ambient;
-    return max(lit + cloud.a * (cloud.rgb * w - sky), vec3<f32>(0.0));
-#else
-    let sky = vec3<f32>(0.0);
-    let w = vec3<f32>(0.0);
-#endif
-    return max(lit + w * cloud.a * (cloud.rgb - sky), vec3<f32>(0.0));
+    // The final `max(lit + w * …)` is repeated in each branch: the `sky` and `w`
+    // each branch declares are scoped to its block.
+    @if(ENVIRONMENT_MAP) {
+        let sky = environment_radiance(pbr_input);
+        let w = specular_weight(pbr_input) * pbr_input.specular_occlusion;
+        return max(lit + w * cloud.a * (cloud.rgb - sky), vec3<f32>(0.0));
+    } @elif(DISTANCE_FOG) {
+        // The sky this reflection holds is the stand-in *and* the part of bevy's
+        // ambient specular `sky_fallback` left in place, and a cloud stands in front
+        // of both. Taking out only the stand-in left the ambient as a flat bright
+        // sheen over every cloud — and under overcast, where the ambient is raised
+        // and barely gives way, that sheen was nearly all of the reflection: a lake
+        // under a dark grey deck came out white-grey with no clouds in it (Deck,
+        // `balanced`, 2026-09-29).
+        let ray_y = reflect(-pbr_input.V, pbr_input.N).y;
+        let t = sky_t(ray_y, pbr_input.material.perceptual_roughness);
+        let w = reflected * weight;
+        let kept_ambient = ambient_specular(pbr_input) * (1.0 - t * clamp(clear, 0.0, 1.0)) * weight;
+        let sky = sky_colour(view_bindings::fog.base_color.rgb, clear, t) * w + kept_ambient;
+        return max(lit + cloud.a * (cloud.rgb * w - sky), vec3<f32>(0.0));
+    } @else {
+        let sky = vec3<f32>(0.0);
+        let w = vec3<f32>(0.0);
+        return max(lit + w * cloud.a * (cloud.rgb - sky), vec3<f32>(0.0));
+    }
 }
 
 /// What a view with **no environment map** adds for the sky the water reflects,

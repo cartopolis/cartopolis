@@ -619,7 +619,7 @@ per-pixel. (The `worst` figures — 52 and 90 ms in the same session — are a
 different question and *are* plausibly the upload path: 12.4 MB peak against a
 4 MB/frame ceiling.)
 
-The candidate is `shaders/globe_clouds.wgsl`. Per fragment it runs **nine
+The candidate is `shaders/globe_clouds.wesl`. Per fragment it runs **nine
 6-octave `fbm3` fields** (~54 3D value-noise lookups) plus two domain warps and a
 Coriolis curl, on a shell at planet radius — so from low orbit it covers every
 pixel of a 2772×1272 native-scale HDR target.
@@ -673,7 +673,7 @@ Fragment counts repeat to the unit across configurations. And the machine was id
 one fragment per pixel, nothing wasted — and the cost scales with resolution
 (3.11 → 9.37 ms for 4× the pixels, a 3.0× rise; invocations scale exactly 4×). So
 the problem is not how much is drawn, it is what each fragment costs:
-`globe_clouds.wgsl` runs **nine 6-octave `fbm3` fields, i.e. 54 `vnoise3` calls and
+`globe_clouds.wesl` runs **nine 6-octave `fbm3` fields, i.e. 54 `vnoise3` calls and
 432 hash lookups, per pixel**.
 
 **Do not extrapolate the millisecond figure to an Adreno.** This shader is
@@ -684,7 +684,7 @@ of the 1280×720 row above.
 
 ### And it was made ~50 % cheaper, with the floor measured
 
-`globe_clouds.wgsl` ran nine 6-octave `fbm3` fields per fragment. Six of them are
+`globe_clouds.wesl` ran nine 6-octave `fbm3` fields per fragment. Six of them are
 *warps* — their output is scaled by 2.2 and added to a sample coordinate, so their
 top octaves displace the sample by a fraction of a noise cell. Those six, and the
 wisp (whose own comment calls it "gentle, LARGE-scale… low frequency and shallow"),

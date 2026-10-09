@@ -527,7 +527,7 @@ pub fn apply_sky(
         // `entity_sync_system` refuses (a panic) while `RenderEntity` is still
         // there. Both go in this order, in one command each.
         cmd.remove::<(SyncToRenderWorld, RenderEntity)>();
-        cmd.insert(SyncToRenderWorld);
+        cmd.insert(SyncToRenderWorld::default());
     }
 }
 

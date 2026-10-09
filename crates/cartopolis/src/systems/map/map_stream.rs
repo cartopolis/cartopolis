@@ -805,7 +805,7 @@ fn ring_half_extent_m(radius: i64, tile_m: f32) -> f32 {
 }
 
 /// Write each clipmap tile's ring into its material, so the shader can soften the
-/// tile towards the level beneath it (`assets/shaders/ground_detail.wgsl`).
+/// tile towards the level beneath it (`assets/shaders/ground_detail.wesl`).
 ///
 /// **Why the ring and not the camera.** The seam is at the ring's edge, not at a
 /// distance — a level ends where its tiles end, and on a square boundary. Chebyshev
@@ -1369,8 +1369,12 @@ struct TileView {
 impl TileView {
     fn new(eye: Vec3, rotation: Quat, fov_y: f32, aspect: f32) -> Self {
         let view = Mat4::from_rotation_translation(rotation, eye).inverse();
-        let proj =
-            Mat4::perspective_rh((fov_y * VIEW_MARGIN).min(3.0), aspect.max(0.1), 1.0, 1.0e8);
+        let proj = bevy::math::proj::perspective(
+            (fov_y * VIEW_MARGIN).min(3.0),
+            aspect.max(0.1),
+            1.0,
+            1.0e8,
+        );
         Self {
             eye,
             view_proj: Some(proj * view),
@@ -2261,7 +2265,7 @@ pub fn apply_stream_textures(
                 // drawn exactly as it was before.
                 extension.basemap = Some(handle.clone());
                 // The tile's water texels are lit as the water surface's far
-                // field (`ground_detail.wgsl`), from the sea state as it is now;
+                // field (`ground_detail.wesl`), from the sea state as it is now;
                 // `water::update_water_waves` keeps them in step after. A tile
                 // with no mask in its alpha reads as all land and is untouched.
                 (extension.water_body, extension.water_sea) = water.far_water();

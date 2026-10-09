@@ -11,7 +11,7 @@ use bevy::shader::ShaderRef;
 /// (`cartopolis::systems::vector_tiles::SurfaceGroup::Water`).
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-/// Wave/surface uniforms for `shaders/water.wgsl`.
+/// Wave/surface uniforms for `shaders/water.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 pub struct WaterExtension {
     /// x: RMS slope of the wave field (see `cartopolis::systems::water::rms_slope`).
@@ -71,6 +71,6 @@ pub struct WaterExtension {
 
 impl MaterialExtension for WaterExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/water.wgsl".into()
+        "shaders/water.wesl".into()
     }
 }

@@ -53,6 +53,7 @@
 //! **Everything ages on [`ChatState::clock`], not on `sent_at_ms`.** See that
 //! field: a fade is about how long *this screen* has shown a line.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -261,7 +262,7 @@ fn clear_of_keyboard(mut rect: egui::Rect, slab: Option<egui::Rect>) -> egui::Re
 /// camera-relative delta in f64 so the f32 projection never has to cancel the
 /// camera's own offset back out.
 pub fn render_chat_bubbles(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     chat: Res<ChatState>,
     overlay: Res<ChatOverlay>,
     online: Option<Res<OnlineSession>>,
@@ -429,7 +430,7 @@ fn bubble(
 
 /// The last few lines from every channel, bottom-left, fading.
 pub fn render_chat_transcript(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut chat: ResMut<ChatState>,
     overlay: Res<ChatOverlay>,
     online: Option<Res<OnlineSession>>,
@@ -671,7 +672,7 @@ pub fn stack_bottoms(composing: bool, keyboard_reserve: f32, corner: f32) -> (f3
 
 /// The composer pill: scope, field, send.
 pub fn render_chat_composer(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut chat: ResMut<ChatState>,
     mut overlay: ResMut<ChatOverlay>,
     online: Option<Res<OnlineSession>>,

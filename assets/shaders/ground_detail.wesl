@@ -42,21 +42,25 @@
 // the ring the surface has already retired every wave it can resolve, so a flat
 // sheet with that roughness *is* what it would draw there.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-}
-#import cartopolis::water_common::{
+};
+import bevy_pbr::render::mesh_view_bindings as view_bindings;
+import super::water_common::{
     water_reflected, water_transmitted, sky_fallback, with_clouds, cloud_mirror_fade,
-}
-#import cartopolis::cloud_field as cf
+};
+import super::cloud_field as cf;
 
-#import bevy_pbr::mesh_bindings::mesh
-#ifdef BINDLESS
-#import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d}
-#endif
+import bevy_pbr::render::mesh_bindings::mesh;
+@if(BINDLESS)
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
+
+// `ground_clouds` below is a `binding_array`; bevy's own bindless modules
+// enable the extension the same way.
+@if(BINDLESS)
+enable wgpu_binding_array;
 
 // The material's four vectors, one buffer (`ground_detail::GroundUniform`):
 //
@@ -90,8 +94,8 @@ struct GroundUniform {
 // basemap bound a second time for the cross-fade (`lod_basemap`), and the ground
 // cloud deck (`sky::CLOUD_FIELD_BUFFER`) the water texels mirror exactly as the
 // streamed surface inside the ring does.
-#ifdef BINDLESS
 // One entry per material, field i naming bindless index 100 + i.
+@if(BINDLESS)
 struct GroundIndices {
     material: u32,        // 100
     slope: u32,           // 101
@@ -100,17 +104,19 @@ struct GroundIndices {
     basemap_sampler: u32, // 104
     clouds: u32,          // 105
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var<storage> ground_indices: array<GroundIndices>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(110) var<storage> ground_array: array<GroundUniform>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(111) var<storage> ground_clouds: binding_array<cf::Deck>;
-#else
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ground_single: GroundUniform;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var detail_slope: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var detail_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var lod_basemap: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var lod_basemap_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var<storage, read> clouds_single: cf::Deck;
-#endif
+@if(BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var<storage> ground_indices: array<GroundIndices>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var<storage> ground_array: array<GroundUniform>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var<storage> ground_clouds: binding_array<cf::Deck>;
+}
+@else {
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> ground_single: GroundUniform;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var detail_slope: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var detail_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var lod_basemap: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var lod_basemap_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var<storage, read> clouds_single: cf::Deck;
+}
 
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
 // `terrain::DETAIL_SLOPE_RANGE`.
@@ -279,12 +285,12 @@ fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32) -> PavingLook {
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-#ifdef BINDLESS
+    @if(BINDLESS)
     let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    @if(BINDLESS)
     let ground = ground_array[ground_indices[slot].material];
-#else
+    @else
     let ground = ground_single;
-#endif
     let detail = ground.detail;
     let lod = ground.lod;
     let water_body = ground.water_body;
@@ -304,7 +310,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // derivative in non-uniform control flow is undefined.
     let metres_per_px = max(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
     pbr_input.material.base_color =
-        alpha_discard(pbr_input.material, pbr_input.material.base_color);
+        alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
 
     // A clipmap level meets the coarser one beneath it along the edge of its own
     // ring, and across that edge the texel density halves in one step — a hard square
@@ -329,7 +335,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // `in.uv` unguarded does not fail on the tiles, which have it; it fails to
     // compile the *specialisation* the fills need, which is a pipeline that never
     // builds and a shader error at the first draw of a grass polygon.
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     if lod.w > 0.0 {
         let ring = (in.world_position.xz - lod.xy) * lod.z;
         // Chebyshev, because the ring is a square of tiles and not a disc: this is
@@ -337,16 +343,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // takes over.
         let edge = max(abs(ring.x), abs(ring.y));
         let t = smoothstep(LOD_BLEND_START, 1.0, edge);
-#ifdef BINDLESS
+        @if(BINDLESS)
         let soft = textureSampleBias(
             bindless_textures_2d[ground_indices[slot].basemap],
             bindless_samplers_filtering[ground_indices[slot].basemap_sampler],
             in.uv,
             lod.w * t,
         );
-#else
+        @else
         let soft = textureSampleBias(lod_basemap, lod_basemap_sampler, in.uv, lod.w * t);
-#endif
         // `mix`, not an assignment: at `t = 0` the inner ring must be bit-for-bit
         // what it was, and this fetch and bevy's own are not obliged to agree in the
         // last bit. Only the colour is taken — `alpha_discard` has already run
@@ -357,7 +362,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             pbr_input.material.base_color.a,
         );
     }
-#endif
 
     if paving_code > 0.5 {
         let look = paving_look(u32(round(paving_code)), in.world_position.xz, metres_per_px);
@@ -378,16 +382,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let w = detail.w * (1.0 - smoothstep(RIM_START, 1.0, rim)) * (1.0 - water);
         if w > 0.0 {
             let uv = d * 0.5 + vec2<f32>(0.5, 0.5);
-#ifdef BINDLESS
+            @if(BINDLESS)
             let slope = textureSampleLevel(
                 bindless_textures_2d[ground_indices[slot].slope],
                 bindless_samplers_filtering[ground_indices[slot].slope_sampler],
                 uv,
                 0.0,
             );
-#else
+            @else
             let slope = textureSampleLevel(detail_slope, detail_sampler, uv, 0.0);
-#endif
             let s = slope.xy * SLOPE_RANGE * w;
             // The ground's own normal already carries the coarse slope, and the
             // texture is the residual, so this is an addition rather than a
@@ -433,11 +436,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
 
-#ifndef ENVIRONMENT_MAP
-#ifdef DISTANCE_FOG
     // The same stand-in sky the surface reflects where there is no environment
     // map, weighted by the mask; the land part of a coastal texel keeps all of
     // bevy's ambient.
+    @if(!ENVIRONMENT_MAP && DISTANCE_FOG)
     if water > 0.0 {
         out.color = vec4<f32>(
             sky_fallback(
@@ -453,19 +455,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             out.color.a,
         );
     }
-#endif
-#endif
 
     // And the clouds in it, as the surface inside the ring mirrors them
     // (`water.wgsl`): without this a lake's clouds would stop at the ring's edge.
     // The pixel's footprint on the deck is taken out here, for every ground pixel,
     // because a derivative is not allowed inside the water-only branch — the mask
     // varies from texel to texel. It is a handful of arithmetic and one load.
-#ifdef BINDLESS
+    @if(BINDLESS)
     let clouds = ground_clouds[ground_indices[slot].clouds];
-#else
+    @else
     let clouds = clouds_single;
-#endif
     let offset = in.world_position.xyz - view_bindings::view.world_position.xyz;
     let mirror_ray = reflect(-pbr_input.V, pbr_input.N);
     let spread = length(fwidth(cf::mirror_hit(clouds.shape.w, offset, mirror_ray)));
@@ -511,29 +510,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // `discard` before them would put them in non-uniform control flow. Only in
     // this variant (`ground_detail::GroundKey`): the statement's mere presence
     // costs early depth testing.
-#ifdef GROUND_SEE_THROUGH
-    let horizontal = length(in.world_position.xz - view_bindings::view.world_position.xz);
-    let open = SEE_THROUGH * (1.0 - smoothstep(SEE_THROUGH_NEAR_M, SEE_THROUGH_FAR_M, horizontal));
-    let cell = vec2<u32>(in.position.xy) % vec2<u32>(4u);
-    if bayer4(cell.x, cell.y) < open {
-        discard;
+    @if(GROUND_SEE_THROUGH) {
+        let horizontal = length(in.world_position.xz - view_bindings::view.world_position.xz);
+        let open = SEE_THROUGH * (1.0 - smoothstep(SEE_THROUGH_NEAR_M, SEE_THROUGH_FAR_M, horizontal));
+        let cell = vec2<u32>(in.position.xy) % vec2<u32>(4u);
+        if bayer4(cell.x, cell.y) < open {
+            discard;
+        }
     }
-#endif
     return out;
 }
 
-#ifdef GROUND_SEE_THROUGH
 // How much of the ground opens near the camera. Over half, because the
 // pipes are the point; under all of it, because a street you cannot see is
 // a street you cannot place them in.
+@if(GROUND_SEE_THROUGH)
 const SEE_THROUGH: f32 = 0.6;
 // Horizontal metres from the camera over which the ground closes again, so
 // the far city reads as a city and the opening reads as looking down.
+@if(GROUND_SEE_THROUGH)
 const SEE_THROUGH_NEAR_M: f32 = 250.0;
+@if(GROUND_SEE_THROUGH)
 const SEE_THROUGH_FAR_M: f32 = 450.0;
 
 // A 4×4 ordered-dither threshold in [0, 1): the pattern with the most even
 // spread of holes at every density.
+@if(GROUND_SEE_THROUGH)
 fn bayer4(x: u32, y: u32) -> f32 {
     var m = array<f32, 16>(
         0.0, 8.0, 2.0, 10.0,
@@ -543,4 +545,3 @@ fn bayer4(x: u32, y: u32) -> f32 {
     );
     return (m[y * 4u + x] + 0.5) / 16.0;
 }
-#endif

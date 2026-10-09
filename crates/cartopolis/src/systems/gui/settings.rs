@@ -80,12 +80,12 @@
 //! and a source that is credited in the tarball but not in the app becomes
 //! impossible rather than merely unlikely.
 
+use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 
 use crate::platform::audio::{self, AudioInput};
 use crate::resources::{AppPrefs, QualityPreset, RightPanel, SunMode, Units};
 use crate::systems::cache_reset::CacheReset;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
 
@@ -242,7 +242,7 @@ const PEAK_FALL: f32 = 0.6;
 /// — see the note there; an unordered panel loses egui's hit test at random.
 #[allow(clippy::too_many_arguments)]
 pub fn render_settings_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<SettingsState>,
     mut prefs: ResMut<AppPrefs>,
@@ -2015,7 +2015,7 @@ pub fn parse_notices(text: &str) -> Vec<Notice> {
 /// In the panel `.chain()` with the other panels — it draws into the shared
 /// root `Ui`, so leaving it out is the dead-click failure that note describes.
 pub fn render_about_panel(
-    mut egui: ResMut<EguiManager>,
+    mut egui: EguiMut,
     mut right_panel: ResMut<RightPanel>,
     mut notices: Local<Option<Vec<Notice>>>,
 ) {

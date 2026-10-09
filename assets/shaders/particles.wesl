@@ -22,30 +22,30 @@
 // `forward_io::VertexOutput` — every field of that one is behind a shader-def
 // keyed to a mesh attribute, and this mesh deliberately carries only two.
 
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_functions,
     mesh_view_bindings::{view, globals},
     view_transformations::position_world_to_clip,
-}
+};
 
 const TAU: f32 = 6.283185307;
 
 // x: particle count. y: lifetime, seconds. z: source sphere radius, metres.
 // w: turbulence, metres of wander at one second.
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> emitter: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> emitter: vec4<f32>;
 
 // x: initial speed, m/s. y: cone half-angle, radians. z: acceleration on world up,
 // m/s² (positive is up — a flame rises). w: the time a one-shot burst started, or
 // a negative number for a continuous emitter.
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var<uniform> motion: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> motion: vec4<f32>;
 
 // x: size at birth, metres. y: size at death. z: overall opacity. w: spare.
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> sizing: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> sizing: vec4<f32>;
 
 // rgb: linear colour at birth / at death. These are emissive and routinely above
 // 1 — the core of a flame is meant to clip the tonemapper.
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> hot: vec4<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> cool: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var<uniform> hot: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(4) var<uniform> cool: vec4<f32>;
 
 struct ParticleVertex {
     @builtin(instance_index) instance_index: u32,

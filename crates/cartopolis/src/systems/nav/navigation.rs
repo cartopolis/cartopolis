@@ -24,6 +24,7 @@ use crate::components::FreeCamera;
 use crate::components::RouteVisual;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::sync::{Arc, Mutex};
+use crate::systems::egui_manager::EguiRef;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use web_time::Instant;
@@ -1321,7 +1322,7 @@ fn build_and_search(
 /// reconstruction `free_camera` does when it seeds the orbit focus.
 pub fn handle_route_map_pick(
     mut route: ResMut<RouteState>,
-    egui_manager: Res<EguiManager>,
+    egui_manager: EguiRef,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
@@ -1989,7 +1990,7 @@ fn start_action(mode: TravelMode, gps: bool, avatar: bool) -> Result<&'static st
 /// The route planner: a bottom sheet, over a map that stays visible.
 #[allow(clippy::too_many_arguments)]
 pub fn render_route_sheet(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut route: ResMut<RouteState>,
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,

@@ -1,7 +1,7 @@
 ---
 triggers:
   - "the sky is black on the phone / on this device"
-  - working on `systems::sky_dome`, `assets/shaders/sky_dome.wgsl`, or `SkyMode`
+  - working on `systems::sky_dome`, `assets/shaders/sky_dome.wesl`, or `SkyMode`
   - touching the `FLOAT32_FILTERABLE` gate in `free_camera::setup_camera`
   - bumping Bevy, or reading `bevy_pbr::medium` / `ScatteringMedium`
   - considering vendoring or patching `bevy_pbr`
@@ -194,7 +194,7 @@ The maths is unit-tested (`systems::map::sky_dome::tests`) and the WGSL was
 validated with naga against bevy's binding layout. **Nothing here has been seen
 on a screen by the agent that wrote it** — this container has no GPU, and the
 brightness calibration in particular (radiance = lux/π, taken through
-`view.exposure` the way `horizonhaze.wgsl` does) is arithmetic that agrees with
+`view.exposure` the way `horizonhaze.wesl` does) is arithmetic that agrees with
 the scene's physical exposure on paper. The knobs to reach for if it reads wrong
 are `NIGHT_SKY_LUMINANCE` (night too dark or too milky), `SUN_DISC_GAIN`, and
 `sky_daylight`'s bounds (dusk ending too early or lingering).

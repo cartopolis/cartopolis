@@ -114,7 +114,7 @@ It shares the client's geometry and the client's depth **ladder**, and it does n
 share the client's depth **shader**. Each surface group is offset by
 `GroundLayer::y_offset()` and that is all — the per-vertex rung
 (`vector_tiles::road_rung` / `road_casing_rung`, drawn by
-`assets/shaders/road_depth.wgsl`) is not applied.
+`assets/shaders/road_depth.wesl`) is not applied.
 
 That matters for exactly one region of the stack, because the road sheet is a
 single `GroundLayer`. `ground_stack.rs` says it outright: *"Roads do not get a

@@ -19,7 +19,7 @@
 //! non-filtering sampler where the feature is missing).
 //!
 //! **What it is.** One shell around the camera and about twenty instructions of
-//! arithmetic per pixel (`assets/shaders/sky_dome.wgsl`): single scattering
+//! arithmetic per pixel (`assets/shaders/sky_dome.wesl`): single scattering
 //! through a uniform slab, per channel, with the Rayleigh and aerosol optical
 //! depths [`crate::utils::sun`] already uses for the sun beam. Sharing those is
 //! the point — the sun's colour, the fog's colour, the clouds' lighting and now
@@ -209,7 +209,7 @@ const SUN_DISC_GAIN: f32 = 2.0;
 
 /// Everything the shader needs, as one struct so it can be computed — and
 /// tested — without a GPU. Radiances are photometric and pre-exposure; the
-/// shader multiplies by `view.exposure`, the same convention `horizonhaze.wgsl`
+/// shader multiplies by `view.exposure`, the same convention `horizonhaze.wesl`
 /// follows for its light term.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkyDomeParams {

@@ -91,7 +91,7 @@ pub(crate) fn handle_render_error(
             "render error — halting the renderer, keeping the app alive"
         );
         // Before `abandon_lost_surface`, which takes the render device's
-        // `WindowSurfaces` away — and on every platform, not just the one that
+        // window surfaces away — and on every platform, not just the one that
         // writes a file, because the same census goes to the log a desktop halt
         // leaves behind.
         tracing::error!("{}", gpu_memory_census(main_world, render_world));
@@ -319,7 +319,7 @@ fn halt_card() {
 ///
 /// A device loss therefore leaves an acquire semaphore that *cannot* be released
 /// by anyone. The only move left is to make sure nothing ever tries: take
-/// `WindowSurfaces` out of the render world and leak it, so no `wgpu::Surface`
+/// every window's `SurfaceData` out of the render world and leak it, so no `wgpu::Surface`
 /// here is ever dropped and `release_resources` is never reached — not when
 /// Android suspends and `extract_windows` drops the surface, and not at shutdown.
 ///
@@ -336,13 +336,26 @@ fn halt_card() {
 /// the registry. The measurement is a phone: lose the device, background the app,
 /// and look for a tombstone that no longer arrives.
 fn abandon_lost_surface(render_world: &mut World) {
-    let Some(surfaces) = render_world.remove_resource::<bevy::render::view::WindowSurfaces>()
-    else {
-        tracing::warn!("no WindowSurfaces to abandon at the halt — nothing held a swapchain");
+    use bevy::render::view::SurfaceData;
+    // Since bevy 0.20 each window's surface is a `SurfaceData` component on its
+    // render-world entity rather than one `WindowSurfaces` resource. Taking them
+    // out leaves `ExtractedWindow` without a surface, which would make
+    // `create_surfaces` build a fresh one — but that system is in `Render`, which
+    // bevy gates on `RenderState::Ready` and so never runs again after a halt.
+    let holders: Vec<Entity> = render_world
+        .query_filtered::<Entity, With<SurfaceData>>()
+        .iter(render_world)
+        .collect();
+    if holders.is_empty() {
+        tracing::warn!("no window surface to abandon at the halt — nothing held a swapchain");
         return;
-    };
-    // Not `drop`. See above: dropping is the thing that aborts.
-    std::mem::forget(surfaces);
+    }
+    for entity in holders {
+        if let Some(surface) = render_world.entity_mut(entity).take::<SurfaceData>() {
+            // Not `drop`. See above: dropping is the thing that aborts.
+            std::mem::forget(surface);
+        }
+    }
     tracing::warn!(
         "abandoned the window surfaces — a lost device cannot release its acquired \
          swapchain image, so nothing may destroy the swapchain that holds it"
@@ -354,7 +367,7 @@ fn abandon_lost_surface(render_world: &mut World) {
 /// `ecs::error::warn` writes one line per failure, and a system that keeps
 /// failing fails on every frame. On the web each line is a synchronous
 /// `console.error` call into the browser: after a halted renderer
-/// ([`abandon_lost_surface`] removes `WindowSurfaces`, and bevy's
+/// ([`abandon_lost_surface`] removes the window surfaces, and bevy's
 /// `extract_windows` keeps running against it) that was 2,140 warnings in 50 s,
 /// most of what the console cost the main thread. The first occurrence of each
 /// distinct failure logs in full and then every 1,000th says how many there have

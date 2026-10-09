@@ -23,11 +23,11 @@
 //! own the screen the card would float over. Suppression *hides* the card rather
 //! than closing it — the place survives a trip through the Route panel.
 
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
 use crate::systems::icons;
 use crate::systems::theme;
@@ -64,7 +64,7 @@ const CARD_WIDTH: f32 = 300.0;
 /// The place card, above the dock. See the module note.
 #[allow(clippy::too_many_arguments)]
 pub fn render_place_card(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mut card: ResMut<PlaceCard>,
     mut nav: ResMut<GeoNavState>,
     mut right_panel: ResMut<RightPanel>,

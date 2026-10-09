@@ -21,6 +21,7 @@
 //! because the server refuses to hand out somebody's keys to a person with no
 //! request to them — starting the chat first would race the request and lose.
 
+use crate::systems::egui_manager::{EguiMut, EguiRef};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -34,7 +35,6 @@ use crate::components::{FreeCamera, RemoteAvatar};
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{ChatNotice, ChatState, ReportDraft};
 use crate::systems::chats::{avatar, glass_frame, raised_frame, ChatKind, ChatsView};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::{icons, theme};
 
 /// Request ids for contact traffic live in their own range, so a refusal
@@ -697,7 +697,7 @@ fn refresh_card_relation(contacts: &mut Contacts) {
 /// not also a tap on the building behind it.
 #[allow(clippy::too_many_arguments)]
 pub fn tap_avatar(
-    egui: Res<EguiManager>,
+    egui: EguiRef,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     touch: Res<crate::systems::touch::TouchGestures>,
@@ -747,7 +747,7 @@ pub fn tap_avatar(
 /// on-screen keyboard has to find.
 #[allow(clippy::too_many_arguments)]
 pub fn render_person_card(
-    egui: ResMut<EguiManager>,
+    egui: EguiMut,
     mut contacts: ResMut<Contacts>,
     mut chat: ResMut<ChatState>,
     mut view: ResMut<ChatsView>,

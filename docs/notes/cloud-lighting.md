@@ -1,6 +1,6 @@
 ---
 triggers:
-  - working on assets/shaders/clouds.wgsl, cloud_field.wgsl or `update_clouds` / `CloudMaterial` / `CloudField`
+  - working on assets/shaders/clouds.wesl, cloud_field.wesl or `update_clouds` / `CloudMaterial` / `CloudField`
   - "the clouds look flat / painted / wrong at sunset"
   - considering raymarched or volumetric clouds
   - changing the sun colour, the fog colour, or `utils::sun`
@@ -51,7 +51,7 @@ that starts by adding a march through a 3D density field.
    the phone drew a mid-grey lid butted against a near-white horizon band, with a
    hard step between them. Both values live in the same post-exposure linear space
    (bevy's `apply_fog` mixes toward `DistanceFog::color` *after* exposure, and
-   `horizonhaze.wgsl` paints it un-exposed to match), so there was no unit
+   `horizonhaze.wesl` paints it un-exposed to match), so there was no unit
    mismatch to explain it — just two different greys. The deck's ambient is now
    the camera's fog colour itself, floored at a night value (see below).
 
@@ -120,11 +120,11 @@ sample it is a 3 m/s south-westerly.
 
 ## The water mirrors this deck
 
-`water.wgsl` and the flat map's water past the ring (`ground_detail.wgsl`) find the
-deck along their reflected ray, through the same `cloud_field.wgsl` the shell
+`water.wesl` and the flat map's water past the ring (`ground_detail.wesl`) find the
+deck along their reflected ray, through the same `cloud_field.wesl` the shell
 draws from, reading its uniforms out of one shared buffer. That is why the field,
 its octave counts, its sun march and its lighting live in the shared module
-rather than in `clouds.wgsl`: two copies would drift, and a lake would mirror
+rather than in `clouds.wesl`: two copies would drift, and a lake would mirror
 clouds that are not overhead. `water-surface.md` has the rest.
 
 Plus two terms from the volumetric-cloud literature, both ALU-only:
@@ -212,7 +212,7 @@ shader change to a workstation:
 ```bash
 cargo install naga-cli   # once
 { printf 'struct VertexOutput { @builtin(position) position: vec4<f32>,\n@location(0) world_position: vec4<f32> };\nstruct View { world_position: vec3<f32> };\n@group(0) @binding(0) var<uniform> view: View;\n'
-  grep -v '^#import' assets/shaders/clouds.wgsl; } > /tmp/c.wgsl
+  grep -v '^#import' assets/shaders/clouds.wesl; } > /tmp/c.wgsl
 naga /tmp/c.wgsl
 ```
 
