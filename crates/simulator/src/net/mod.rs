@@ -42,6 +42,7 @@ mod prims;
 pub mod request;
 mod textures;
 mod voice;
+mod workspaces;
 
 pub use request::ClientRequest;
 
@@ -1138,6 +1139,31 @@ async fn dispatch<T: FrameTransport>(
             request_id,
             usernames,
         } => contacts::on_where(ctx, request_id, usernames).await,
+        ClientRequest::WorkspaceCreate { request_id, name } => {
+            workspaces::on_create(ctx, request_id, name).await
+        }
+        ClientRequest::WorkspaceList { request_id } => workspaces::on_list(ctx, request_id).await,
+        ClientRequest::WorkspaceAddMember {
+            request_id,
+            workspace,
+            address,
+        } => workspaces::on_add_member(ctx, request_id, workspace, address).await,
+        ClientRequest::ChannelCreate {
+            request_id,
+            workspace,
+            group,
+            name,
+            topic,
+            private,
+        } => {
+            workspaces::on_channel_create(ctx, request_id, workspace, group, name, topic, private)
+                .await
+        }
+        ClientRequest::ChannelJoin {
+            request_id,
+            workspace,
+            group,
+        } => workspaces::on_channel_join(ctx, request_id, workspace, group).await,
     }
 }
 

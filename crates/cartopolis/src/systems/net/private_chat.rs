@@ -563,6 +563,9 @@ pub fn drive_private_chats(
             Event::Notice(text) => {
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
             }
+            // Workspaces are the web UI's for now; a channel the app is in
+            // still arrives here as an ordinary group chat.
+            Event::Workspaces(_) => {}
         }
     }
     for msg in out {

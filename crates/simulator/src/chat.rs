@@ -216,6 +216,22 @@ impl ChatHub {
         }
     }
 
+    /// Deliver a frame to **one** connected private-chat device of any of
+    /// `accounts`, and say whether there was one. For a job one device should
+    /// do rather than every device racing to (`ChannelJoinRequest`: each
+    /// device that tried would spend one of the joiner's key packages).
+    pub fn deliver_to_one_device(&self, accounts: &[String], frame: &Bytes) -> bool {
+        let clients = locked(&self.clients);
+        let Some((id, c)) = clients
+            .iter()
+            .find(|(_, c)| c.device.is_some() && accounts.contains(&c.account))
+        else {
+            return false;
+        };
+        c.enqueue(*id, Lane::Text, frame.clone());
+        true
+    }
+
     /// Deliver a frame to whichever connection has registered `device`.
     pub fn deliver_to_device(&self, device: uuid::Uuid, frame: &Bytes) {
         for (id, c) in locked(&self.clients).iter() {

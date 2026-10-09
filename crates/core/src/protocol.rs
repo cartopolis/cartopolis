@@ -180,6 +180,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "full addresses — ServerHelloAck.server_name; every person in an encrypted chat is name@server (E2eeClaimKeyPackages/E2eeKeyPackages.address, direct_with, E2eeWelcome.members, E2eeDeliver.sender, E2eeInvite.from, and each device's MLS credential), and a chat's id begins with its home server, so chats can later span servers (docs/notes/web-chat.md)",
     },
+    ProtocolRevision {
+        version: 38,
+        adr: "",
+        summary: "workspaces — WorkspaceCreate / WorkspaceList / Workspaces / WorkspaceAddMember, and channels: ChannelCreate lists an encrypted chat as a workspace channel, ChannelJoin asks into a public one, ChannelJoinRequest hands that to a member device to add them (docs/notes/web-chat.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -270,6 +275,13 @@ pub enum MessageKind {
     Permissions = 72,
     HandPose = 73,
     PrimTone = 74,
+    WorkspaceCreate = 75,
+    WorkspaceList = 76,
+    Workspaces = 77,
+    WorkspaceAddMember = 78,
+    ChannelCreate = 79,
+    ChannelJoin = 80,
+    ChannelJoinRequest = 81,
 }
 
 impl MessageKind {
@@ -349,6 +361,13 @@ impl MessageKind {
             72 => Some(Self::Permissions),
             73 => Some(Self::HandPose),
             74 => Some(Self::PrimTone),
+            75 => Some(Self::WorkspaceCreate),
+            76 => Some(Self::WorkspaceList),
+            77 => Some(Self::Workspaces),
+            78 => Some(Self::WorkspaceAddMember),
+            79 => Some(Self::ChannelCreate),
+            80 => Some(Self::ChannelJoin),
+            81 => Some(Self::ChannelJoinRequest),
             _ => None,
         }
     }
@@ -1372,6 +1391,123 @@ pub enum NetMessage {
         prim_id: i64,
         tone: Option<ToneSpec>,
     },
+
+    // ── Workspaces (protocol 38, `docs/notes/web-chat.md`) ───────────────────
+    //
+    // A workspace is a named set of people and channels; a channel is an
+    // encrypted group chat (the E2ee messages above) with a name and a topic
+    // the server keeps in the clear, so it can list them to people who are not
+    // in them yet. What is said in a channel stays sealed.
+    /// Client creates a workspace on this server, with itself as its owner.
+    WorkspaceCreate { request_id: u32, name: String },
+    /// Client asks for every workspace it belongs to.
+    WorkspaceList { request_id: u32 },
+    /// Server: every workspace this account belongs to, whole. The answer to
+    /// each workspace request, and pushed unasked (`request_id` 0) whenever one
+    /// of them changes, so a client never patches its own copy.
+    Workspaces {
+        request_id: u32,
+        workspaces: Vec<WorkspaceDto>,
+    },
+    /// An owner or admin adds somebody (a full address on this server) to a
+    /// workspace.
+    WorkspaceAddMember {
+        request_id: u32,
+        workspace: Uuid,
+        address: String,
+    },
+    /// Client lists a chat it has just registered (`E2eeCreateGroup`) as a
+    /// channel of a workspace it is in.
+    ChannelCreate {
+        request_id: u32,
+        workspace: Uuid,
+        group: Vec<u8>,
+        name: String,
+        topic: String,
+        private: bool,
+    },
+    /// Client asks to join a workspace's public channel. Only a member's device
+    /// can add it (the server holds no key), so the server records the request
+    /// and hands it to one member device ([`NetMessage::ChannelJoinRequest`]),
+    /// now if one is online and otherwise when one connects.
+    ChannelJoin {
+        request_id: u32,
+        workspace: Uuid,
+        group: Vec<u8>,
+    },
+    /// Server, to one device already in the channel: add `address` to it, by
+    /// claiming its key packages and committing. The request is settled when a
+    /// commit whose invitation names them is accepted.
+    ChannelJoinRequest {
+        workspace: Uuid,
+        group: Vec<u8>,
+        address: String,
+    },
+}
+
+/// A member's standing in a workspace ([`WorkspaceDto`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkspaceRole {
+    /// Created it; may do everything an admin may, and cannot be removed.
+    Owner,
+    /// May add people and manage channels.
+    Admin,
+    Member,
+}
+
+/// One workspace, as one of its members sees it ([`NetMessage::Workspaces`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceDto {
+    pub id: Uuid,
+    pub name: String,
+    /// The server it lives on, which orders all of its channels.
+    pub home: String,
+    /// The asking account's own role.
+    pub role: WorkspaceRole,
+    pub members: Vec<WorkspaceMemberDto>,
+    /// Every public channel, and the private ones this account is in.
+    pub channels: Vec<ChannelDto>,
+}
+
+/// One member of a workspace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceMemberDto {
+    /// Full address (`name@server`).
+    pub address: String,
+    pub role: WorkspaceRole,
+}
+
+/// A channel's name as it is stored and shown after a `#`: lower case, spaces
+/// as dashes, only letters, digits, `-` and `_`. One rule for the server that
+/// stores it and the device that labels the chat, so the two always agree.
+#[must_use]
+pub fn channel_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().trim_start_matches('#').chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' {
+            out.extend(c.to_lowercase());
+        } else if c.is_whitespace() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// One channel of a workspace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChannelDto {
+    /// The encrypted chat it is (`E2eeCreateGroup`'s id).
+    pub group: Vec<u8>,
+    pub name: String,
+    pub topic: String,
+    pub private: bool,
+    /// Whether the asking account is in it.
+    pub joined: bool,
+    /// Whether the asking account has asked to join and is waiting for a
+    /// member's device to add it.
+    pub pending: bool,
+    /// How many accounts are in it.
+    pub members: u32,
 }
 
 /// One physical prim's pose and velocity ([`NetMessage::PrimMotion`]).
@@ -1752,6 +1888,13 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::Permissions { .. } => MessageKind::Permissions,
         NetMessage::HandPose { .. } => MessageKind::HandPose,
         NetMessage::PrimTone { .. } => MessageKind::PrimTone,
+        NetMessage::WorkspaceCreate { .. } => MessageKind::WorkspaceCreate,
+        NetMessage::WorkspaceList { .. } => MessageKind::WorkspaceList,
+        NetMessage::Workspaces { .. } => MessageKind::Workspaces,
+        NetMessage::WorkspaceAddMember { .. } => MessageKind::WorkspaceAddMember,
+        NetMessage::ChannelCreate { .. } => MessageKind::ChannelCreate,
+        NetMessage::ChannelJoin { .. } => MessageKind::ChannelJoin,
+        NetMessage::ChannelJoinRequest { .. } => MessageKind::ChannelJoinRequest,
     }
 }
 
@@ -1800,6 +1943,12 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::PersonInfo { request_id, .. } => *request_id,
         NetMessage::GetNearbyPeople { request_id } => *request_id,
         NetMessage::NearbyPeople { request_id, .. } => *request_id,
+        NetMessage::WorkspaceCreate { request_id, .. } => *request_id,
+        NetMessage::WorkspaceList { request_id } => *request_id,
+        NetMessage::Workspaces { request_id, .. } => *request_id,
+        NetMessage::WorkspaceAddMember { request_id, .. } => *request_id,
+        NetMessage::ChannelCreate { request_id, .. } => *request_id,
+        NetMessage::ChannelJoin { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -2298,7 +2447,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 73] = [
+        const ALL: [MessageKind; 80] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2372,6 +2521,13 @@ mod tests {
             Permissions,
             HandPose,
             PrimTone,
+            WorkspaceCreate,
+            WorkspaceList,
+            Workspaces,
+            WorkspaceAddMember,
+            ChannelCreate,
+            ChannelJoin,
+            ChannelJoinRequest,
         ];
         for k in ALL {
             assert_eq!(
@@ -2385,7 +2541,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(PrimTone as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(ChannelJoinRequest as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

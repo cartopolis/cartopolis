@@ -659,9 +659,15 @@ pub fn load_prim_owners(conn: &Connection) -> anyhow::Result<HashMap<i64, String
 /// transfer: handing a build to a disabled account puts it somewhere nobody can
 /// reach, which is a way to lose work rather than to move it.
 pub fn enabled_account_id(conn: &Connection, username: &str) -> anyhow::Result<Option<String>> {
+    // Case-insensitive, because a full address is lower-cased
+    // (`cartopolis_core::address`, protocol 37) while an account made by
+    // `--create-admin` keeps the capitals it was typed with. Two accounts that
+    // differ only in case can exist (the column is case-sensitive), so an exact
+    // match wins.
     Ok(conn
         .query_row(
-            "SELECT id FROM accounts WHERE username = ?1 AND disabled = 0",
+            "SELECT id FROM accounts WHERE username = ?1 COLLATE NOCASE AND disabled = 0
+             ORDER BY username = ?1 DESC LIMIT 1",
             rusqlite::params![username],
             |r| r.get(0),
         )

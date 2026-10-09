@@ -225,6 +225,31 @@ pub enum ClientRequest {
         request_id: u32,
         usernames: Vec<String>,
     },
+    WorkspaceCreate {
+        request_id: u32,
+        name: String,
+    },
+    WorkspaceList {
+        request_id: u32,
+    },
+    WorkspaceAddMember {
+        request_id: u32,
+        workspace: Uuid,
+        address: String,
+    },
+    ChannelCreate {
+        request_id: u32,
+        workspace: Uuid,
+        group: Vec<u8>,
+        name: String,
+        topic: String,
+        private: bool,
+    },
+    ChannelJoin {
+        request_id: u32,
+        workspace: Uuid,
+        group: Vec<u8>,
+    },
 }
 
 impl TryFrom<NetMessage> for ClientRequest {
@@ -521,6 +546,43 @@ impl TryFrom<NetMessage> for ClientRequest {
                 request_id,
                 usernames,
             },
+            NetMessage::WorkspaceCreate { request_id, name } => {
+                Self::WorkspaceCreate { request_id, name }
+            }
+            NetMessage::WorkspaceList { request_id } => Self::WorkspaceList { request_id },
+            NetMessage::WorkspaceAddMember {
+                request_id,
+                workspace,
+                address,
+            } => Self::WorkspaceAddMember {
+                request_id,
+                workspace,
+                address,
+            },
+            NetMessage::ChannelCreate {
+                request_id,
+                workspace,
+                group,
+                name,
+                topic,
+                private,
+            } => Self::ChannelCreate {
+                request_id,
+                workspace,
+                group,
+                name,
+                topic,
+                private,
+            },
+            NetMessage::ChannelJoin {
+                request_id,
+                workspace,
+                group,
+            } => Self::ChannelJoin {
+                request_id,
+                workspace,
+                group,
+            },
 
             // Everything below is server-to-client. Listed rather than folded into
             // a `_` arm, so a new message has to be put on one side or the other
@@ -559,7 +621,9 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }
-            | NetMessage::PeopleWhere { .. } => return Err(msg),
+            | NetMessage::PeopleWhere { .. }
+            | NetMessage::Workspaces { .. }
+            | NetMessage::ChannelJoinRequest { .. } => return Err(msg),
         })
     }
 }

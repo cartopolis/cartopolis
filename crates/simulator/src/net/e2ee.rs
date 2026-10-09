@@ -71,7 +71,10 @@ pub(super) async fn on_register_device<T: FrameTransport>(
                 request_id,
                 key_packages: left,
             })
-            .await
+            .await?;
+            // Somebody may have asked into one of this account's channels while
+            // none of its devices was online.
+            super::workspaces::hand_pending_joins(ctx).await
         }
         Err(refusal) => {
             ctx.send(&server_error(request_id, 403, refusal.to_string()))
@@ -357,6 +360,10 @@ pub(super) async fn on_send<T: FrameTransport>(
                     welcome: inv.welcome,
                 })?);
                 ctx.chat.deliver_to_device(inv.device, &frame);
+            }
+            if commit {
+                // A channel's members changed: its workspace's lists did too.
+                super::workspaces::after_commit(ctx, &group).await;
             }
             Ok(())
         }

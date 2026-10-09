@@ -405,6 +405,8 @@ pub fn append(
                 params![group, acc],
             )?;
         }
+        // Whoever was waiting to be let into this channel is in now.
+        crate::workspaces::settle_joins(&tx, group, &added)?;
         for d in w.devices {
             tx.execute(
                 "INSERT INTO e2ee_invites (device, group_id, sender_name, after, welcome)

@@ -18,7 +18,8 @@ use std::collections::VecDeque;
 use cartopolis_chat::{channel_key, group_of, Engine, Event};
 use cartopolis_core::point::Point;
 use cartopolis_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, PROTOCOL_VERSION,
+    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, WorkspaceDto, WorkspaceRole,
+    PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -306,6 +307,107 @@ impl ChatCore {
         self.dirty = true;
         self.flush(out, Vec::new())
     }
+
+    // ── Workspaces and channels (protocol 38) ──────────────────────────────
+    //
+    // Answers arrive as a `workspaces` event, the whole list each time.
+
+    /// Create a workspace with this account as its owner.
+    pub fn create_workspace(&mut self, name: &str) -> Result<(), Error> {
+        let engine = self.engine_mut()?;
+        let mut out = Vec::new();
+        engine.create_workspace(name, &mut out);
+        self.flush(out, Vec::new())
+    }
+
+    /// Ask for every workspace this account belongs to.
+    pub fn list_workspaces(&mut self) -> Result<(), Error> {
+        let engine = self.engine_mut()?;
+        let mut out = Vec::new();
+        engine.list_workspaces(&mut out);
+        self.flush(out, Vec::new())
+    }
+
+    /// Add somebody (a name on this server, or a full address) to a workspace.
+    pub fn add_workspace_member(&mut self, workspace: &str, who: &str) -> Result<(), Error> {
+        let workspace = workspace_id(workspace)?;
+        let engine = self.engine_mut()?;
+        let mut out = Vec::new();
+        engine.add_workspace_member(workspace, who, &mut out);
+        self.flush(out, Vec::new())
+    }
+
+    /// Start a channel in a workspace.
+    pub fn start_channel(
+        &mut self,
+        workspace: &str,
+        name: &str,
+        topic: &str,
+        private: bool,
+    ) -> Result<(), Error> {
+        let workspace = workspace_id(workspace)?;
+        let engine = self.engine_mut()?;
+        let (mut out, mut events) = (Vec::new(), Vec::new());
+        engine.start_channel(workspace, name, topic, private, &mut out, &mut events);
+        self.dirty = true;
+        self.flush(out, events)
+    }
+
+    /// Ask into a workspace's public channel (`channel` is its `dm:…` key).
+    pub fn join_channel(&mut self, workspace: &str, channel: &str) -> Result<(), Error> {
+        let workspace = workspace_id(workspace)?;
+        let group = group_of(channel).ok_or_else(|| Error("not a channel".into()))?;
+        let engine = self.engine_mut()?;
+        let mut out = Vec::new();
+        engine.join_channel(workspace, &group, &mut out);
+        self.flush(out, Vec::new())
+    }
+
+    /// Add somebody to a group chat or channel this device is in.
+    pub fn add_to_chat(&mut self, channel: &str, who: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let engine = self.engine_mut()?;
+        let (mut out, mut events) = (Vec::new(), Vec::new());
+        engine.add_to_chat(&group, who, &mut out, &mut events);
+        self.dirty = true;
+        self.flush(out, events)
+    }
+}
+
+fn workspace_id(s: &str) -> Result<uuid::Uuid, Error> {
+    uuid::Uuid::parse_str(s).map_err(|_| Error(format!("{s:?} is not a workspace id")))
+}
+
+fn role_name(r: WorkspaceRole) -> &'static str {
+    match r {
+        WorkspaceRole::Owner => "owner",
+        WorkspaceRole::Admin => "admin",
+        WorkspaceRole::Member => "member",
+    }
+}
+
+/// A workspace as the JSON the worker hands to pages: channels by the same
+/// `dm:<hex>` key their chats have, so a page needs one key for both.
+fn workspace_json(w: WorkspaceDto) -> Value {
+    json!({
+        "id": w.id.to_string(),
+        "name": w.name,
+        "home": w.home,
+        "role": role_name(w.role),
+        "members": w.members.into_iter().map(|m| json!({
+            "address": m.address,
+            "role": role_name(m.role),
+        })).collect::<Vec<_>>(),
+        "channels": w.channels.into_iter().map(|c| json!({
+            "channel": channel_key(&c.group),
+            "name": c.name,
+            "topic": c.topic,
+            "private": c.private,
+            "joined": c.joined,
+            "pending": c.pending,
+            "members": c.members,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 impl ChatCore {
@@ -381,6 +483,10 @@ fn event_json(event: Event) -> Value {
             json!({ "kind": "named", "channel": channel_key(&group), "name": name })
         }
         Event::Notice(text) => json!({ "kind": "notice", "text": text }),
+        Event::Workspaces(list) => json!({
+            "kind": "workspaces",
+            "workspaces": list.into_iter().map(workspace_json).collect::<Vec<_>>(),
+        }),
     }
 }
 

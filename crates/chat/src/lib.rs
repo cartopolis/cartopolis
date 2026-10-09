@@ -56,7 +56,9 @@ pub fn is_private_message(msg: &NetMessage) -> bool {
         | NetMessage::E2eeSent { .. }
         | NetMessage::E2eeSynced { .. }
         | NetMessage::E2eeDeliver { .. }
-        | NetMessage::E2eeInvite { .. } => true,
+        | NetMessage::E2eeInvite { .. }
+        | NetMessage::Workspaces { .. }
+        | NetMessage::ChannelJoinRequest { .. } => true,
         NetMessage::ServerError { request_id, .. } => is_private_request(*request_id),
         _ => false,
     }
@@ -127,6 +129,9 @@ pub enum Event {
     Named { group: Vec<u8>, name: String },
     /// Something the person should be told, in words.
     Notice(String),
+    /// Every workspace this account belongs to, whole (`NetMessage::Workspaces`):
+    /// the answer to each workspace request and whenever one changes.
+    Workspaces(Vec<cartopolis_core::WorkspaceDto>),
 }
 
 /// What a sealed payload says, as a line of text and the point it carries.
@@ -248,6 +253,39 @@ struct GroupStart {
     committing: bool,
 }
 
+/// A workspace channel being started: a chat with nobody else in it yet,
+/// registered, then listed in its workspace (`NetMessage::ChannelCreate`).
+#[derive(Debug)]
+struct ChannelStart {
+    workspace: Uuid,
+    name: String,
+    topic: String,
+    private: bool,
+    /// The `E2eeCreateGroup` in flight.
+    request: u32,
+    group: Vec<u8>,
+}
+
+/// Somebody being added to a chat this device is already in: by its own
+/// person (a private channel, a group), or because the server handed this
+/// device a join request (`NetMessage::ChannelJoinRequest`).
+#[derive(Debug)]
+struct Adding {
+    group: Vec<u8>,
+    person: String,
+    /// The claim, then the commit, in flight.
+    request: u32,
+    committing: bool,
+    /// The devices the commit invites, for its welcome.
+    devices: Vec<Uuid>,
+    /// Attempts left after a commit refused because somebody else changed the
+    /// chat first.
+    retries: u8,
+}
+
+/// How often an add is retried after losing a race with another commit.
+const ADD_RETRIES: u8 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct SavedEngine {
     device: Vec<u8>,
@@ -270,6 +308,8 @@ pub struct Engine {
     groups: std::collections::BTreeSet<Vec<u8>>,
     starting: Vec<Starting>,
     group_starts: Vec<GroupStart>,
+    channel_starts: Vec<ChannelStart>,
+    adding: Vec<Adding>,
     next_request: u32,
 }
 
@@ -283,6 +323,8 @@ impl Engine {
             groups: std::collections::BTreeSet::new(),
             starting: Vec::new(),
             group_starts: Vec::new(),
+            channel_starts: Vec::new(),
+            adding: Vec::new(),
             next_request: 1,
         })
     }
@@ -296,6 +338,8 @@ impl Engine {
             groups: saved.groups,
             starting: Vec::new(),
             group_starts: Vec::new(),
+            channel_starts: Vec::new(),
+            adding: Vec::new(),
             next_request: 1,
         })
     }
@@ -566,6 +610,288 @@ impl Engine {
         });
     }
 
+    // ── Workspaces and channels (protocol 38) ──────────────────────────────
+
+    /// Create a workspace with this account as its owner. The answer arrives
+    /// as [`Event::Workspaces`].
+    pub fn create_workspace(&mut self, name: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::WorkspaceCreate {
+            request_id: self.request(),
+            name: name.trim().to_string(),
+        });
+    }
+
+    /// Ask for every workspace this account belongs to.
+    pub fn list_workspaces(&mut self, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::WorkspaceList {
+            request_id: self.request(),
+        });
+    }
+
+    /// Add somebody to a workspace (an owner or admin's request).
+    pub fn add_workspace_member(&mut self, workspace: Uuid, who: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::WorkspaceAddMember {
+            request_id: self.request(),
+            workspace,
+            address: self.qualify(who),
+        });
+    }
+
+    /// Start a channel in a workspace: a chat with only this account in it,
+    /// listed under `name`. Others join a public one themselves
+    /// ([`Self::join_channel`]) and are added to a private one
+    /// ([`Self::add_to_chat`]).
+    pub fn start_channel(
+        &mut self,
+        workspace: Uuid,
+        name: &str,
+        topic: &str,
+        private: bool,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        // Checked here as well as on the server: a name the server refuses
+        // after the chat is registered would leave an unlisted chat behind.
+        if cartopolis_core::channel_name(name).is_empty() {
+            events.push(Event::Notice(
+                "a channel name needs at least one letter or digit".into(),
+            ));
+            return;
+        }
+        let group = match self.device.create_group(&self.new_group_id()) {
+            Ok(g) => g,
+            Err(e) => {
+                events.push(Event::Notice(format!("could not start the channel: {e}")));
+                return;
+            }
+        };
+        let request = self.request();
+        out.push(NetMessage::E2eeCreateGroup {
+            request_id: request,
+            group: group.clone(),
+            direct_with: None,
+        });
+        self.channel_starts.push(ChannelStart {
+            workspace,
+            name: cartopolis_core::channel_name(name),
+            topic: topic.trim().to_string(),
+            private,
+            request,
+            group,
+        });
+    }
+
+    /// Ask into a workspace's public channel. A member's device adds this one;
+    /// the chat then arrives as an invitation, like any other.
+    pub fn join_channel(&mut self, workspace: Uuid, group: &[u8], out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::ChannelJoin {
+            request_id: self.request(),
+            workspace,
+            group: group.to_vec(),
+        });
+    }
+
+    /// Add `who` to a group chat or channel this device is in: claim their key
+    /// packages, then commit them in. Nothing happens for a direct chat (it is
+    /// two people) or for somebody already in it.
+    pub fn add_to_chat(
+        &mut self,
+        group: &[u8],
+        who: &str,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        if !self.groups.contains(group) {
+            events.push(Event::Notice(
+                "people can only be added to a group or a channel".into(),
+            ));
+            return;
+        }
+        let person = self.qualify(who);
+        let already = self
+            .device
+            .members(group)
+            .iter()
+            .any(|m| m.address.eq_ignore_ascii_case(&person));
+        let underway = self
+            .adding
+            .iter()
+            .any(|a| a.group == group && a.person.eq_ignore_ascii_case(&person));
+        if already || underway {
+            return;
+        }
+        let request = self.request();
+        out.push(NetMessage::E2eeClaimKeyPackages {
+            request_id: request,
+            address: person.clone(),
+        });
+        self.adding.push(Adding {
+            group: group.to_vec(),
+            person,
+            request,
+            committing: false,
+            devices: Vec::new(),
+            retries: ADD_RETRIES,
+        });
+    }
+
+    /// The server registered a channel's chat: list it in its workspace and
+    /// open it. Returns whether `request_id` was a channel start.
+    fn on_channel_registered(
+        &mut self,
+        request_id: u32,
+        group: &[u8],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .channel_starts
+            .iter()
+            .position(|c| c.request == request_id)
+        else {
+            return false;
+        };
+        let c = self.channel_starts.remove(i);
+        if c.group != group {
+            self.device.forget(&c.group);
+            return true;
+        }
+        let label = format!("#{}", c.name);
+        self.cursors.insert(c.group.clone(), 0);
+        self.peers.insert(c.group.clone(), label.clone());
+        self.groups.insert(c.group.clone());
+        out.push(NetMessage::ChannelCreate {
+            request_id: self.request(),
+            workspace: c.workspace,
+            group: c.group.clone(),
+            name: c.name,
+            topic: c.topic,
+            private: c.private,
+        });
+        events.push(Event::Opened {
+            group: c.group,
+            peer: label,
+        });
+        true
+    }
+
+    /// A claim answer for an add. Returns whether it was one.
+    fn on_adding_packages(
+        &mut self,
+        request_id: u32,
+        packages: &[cartopolis_core::E2eeKeyPackage],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .adding
+            .iter()
+            .position(|a| a.request == request_id && !a.committing)
+        else {
+            return false;
+        };
+        if packages.is_empty() {
+            let a = self.adding.remove(i);
+            events.push(Event::Notice(format!(
+                "{} can't be added yet: they have no device that can receive private messages.",
+                a.person
+            )));
+            return true;
+        }
+        let group = self.adding[i].group.clone();
+        let bytes: Vec<Vec<u8>> = packages.iter().map(|p| p.bytes.clone()).collect();
+        match self.device.add(&group, &bytes) {
+            Ok(add) => {
+                let request = self.request();
+                let a = &mut self.adding[i];
+                a.devices = packages.iter().map(|p| p.device).collect();
+                out.push(NetMessage::E2eeSend {
+                    request_id: request,
+                    group,
+                    epoch: add.epoch,
+                    commit: true,
+                    message: add.message,
+                    welcome: add.welcome.map(|w| E2eeWelcome {
+                        devices: a.devices.clone(),
+                        members: vec![a.person.clone()],
+                        bytes: w,
+                    }),
+                });
+                a.request = request;
+                a.committing = true;
+            }
+            Err(e) => {
+                let a = self.adding.remove(i);
+                events.push(Event::Notice(format!("could not add {}: {e}", a.person)));
+            }
+        }
+        true
+    }
+
+    /// The server's answer to an add's commit. Returns whether it was one.
+    fn on_adding_committed(
+        &mut self,
+        request_id: u32,
+        seq: Option<u64>,
+        refused: Option<String>,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .adding
+            .iter()
+            .position(|a| a.request == request_id && a.committing)
+        else {
+            return false;
+        };
+        let a = self.adding.remove(i);
+        if seq.is_none() {
+            let _ = self.device.discard_pending(&a.group);
+            if a.retries > 0 {
+                // Somebody else changed the chat first. Their commit is on its
+                // way here; claim again and commit on top of it.
+                let request = self.request();
+                out.push(NetMessage::E2eeClaimKeyPackages {
+                    request_id: request,
+                    address: a.person.clone(),
+                });
+                self.adding.push(Adding {
+                    request,
+                    committing: false,
+                    devices: Vec::new(),
+                    retries: a.retries - 1,
+                    ..a
+                });
+            } else {
+                events.push(Event::Notice(format!(
+                    "could not add {}: {}",
+                    a.person,
+                    refused.unwrap_or_else(|| "refused".into())
+                )));
+            }
+            return true;
+        }
+        if let Err(e) = self.device.confirm_pending(&a.group) {
+            events.push(Event::Notice(format!("could not add {}: {e}", a.person)));
+            return true;
+        }
+        // A newcomer reads from after the commit that added them, so the name
+        // the chat was given at its start never reaches them: say it again.
+        if let Some(label) = self.peers.get(&a.group).cloned() {
+            if let Err(e) = self.send_payload(
+                &a.group,
+                &Payload::GroupName {
+                    name: label,
+                    sent_at_ms: 0,
+                },
+                out,
+            ) {
+                tracing::warn!(error = %e, "could not repeat a chat's name for a newcomer");
+            }
+        }
+        true
+    }
+
     /// Seal and send a line. The caller shows it straight away: this device
     /// cannot read its own entry back when the server replays it.
     pub fn send_text(
@@ -705,6 +1031,9 @@ impl Engine {
                 packages,
                 ..
             } => {
+                if self.on_adding_packages(request_id, &packages, out, events) {
+                    return;
+                }
                 if !self.on_group_key_packages(request_id, Some(packages.clone()), out, events) {
                     self.on_key_packages(request_id, packages, out, events);
                 }
@@ -714,6 +1043,9 @@ impl Engine {
                 group,
                 existing,
             } => {
+                if self.on_channel_registered(request_id, &group, out, events) {
+                    return;
+                }
                 if !self.on_group_registered(request_id, &group, out, events) {
                     self.on_group_created(request_id, group, existing, out, events);
                 }
@@ -724,6 +1056,9 @@ impl Engine {
                 seq,
                 refused,
             } => {
+                if self.on_adding_committed(request_id, seq, refused.clone(), out, events) {
+                    return;
+                }
                 if !self.on_group_committed(request_id, seq, refused.clone(), out, events) {
                     self.on_sent(request_id, &group, seq, refused, events);
                 }
@@ -755,8 +1090,32 @@ impl Engine {
                 if !self.on_group_key_packages(request_id, None, out, events) {
                     self.starting.retain(|s| s.request != request_id);
                     self.group_starts.retain(|g| g.request != Some(request_id));
+                    if let Some(i) = self
+                        .channel_starts
+                        .iter()
+                        .position(|c| c.request == request_id)
+                    {
+                        let c = self.channel_starts.remove(i);
+                        self.device.forget(&c.group);
+                    }
+                    if let Some(i) = self.adding.iter().position(|a| a.request == request_id) {
+                        let a = self.adding.remove(i);
+                        if a.committing {
+                            let _ = self.device.discard_pending(&a.group);
+                        }
+                    }
                 }
                 events.push(Event::Notice(message));
+            }
+            NetMessage::Workspaces { workspaces, .. } => {
+                events.push(Event::Workspaces(workspaces));
+            }
+            NetMessage::ChannelJoinRequest { group, address, .. } => {
+                // Only a device already in the channel can add anybody to it;
+                // the server hands the request to one.
+                if self.groups.contains(&group) {
+                    self.add_to_chat(&group, &address, out, events);
+                }
             }
             _ => {}
         }
@@ -1600,5 +1959,129 @@ mod loopback {
         bob.engine.start_direct("alice", &mut out, &mut bob.events);
         assert!(out.is_empty(), "no new chat is set up");
         assert_eq!(bob.opened(), Some(first));
+    }
+
+    /// The latest workspace list a peer was told about.
+    fn workspaces(p: &Peer) -> Vec<cartopolis_core::WorkspaceDto> {
+        p.events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Workspaces(w) => Some(w.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Alice makes a workspace with Bob in it and a public channel; Bob asks
+    /// into the channel, Alice's device adds him, and he can read it — named,
+    /// although the name was said before he arrived.
+    async fn a_channel_with_bob_asking_in(
+        alice_online_when_he_asks: bool,
+    ) -> (Peer, Peer, Vec<u8>, tempfile::TempDir, String) {
+        let (dir, _h, addr) = server(&["alice", "bob"]).await;
+        std::mem::forget(_h);
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+
+        let mut out = Vec::new();
+        alice.engine.create_workspace("Atelier Noord", &mut out);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        let ws = workspaces(&alice)[0].id;
+        let mut out = Vec::new();
+        alice.engine.add_workspace_member(ws, "bob", &mut out);
+        alice.engine.start_channel(
+            ws,
+            "#General",
+            "everything",
+            false,
+            &mut out,
+            &mut alice.events,
+        );
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        let channel = workspaces(&alice)[0].channels[0].clone();
+        assert_eq!(channel.name, "general");
+        assert!(channel.joined);
+
+        bob.pump(PUMP).await;
+        let seen = workspaces(&bob);
+        assert_eq!(
+            seen[0].channels[0].group, channel.group,
+            "bob sees the channel"
+        );
+        assert!(!seen[0].channels[0].joined);
+
+        let saved = alice.engine.save();
+        // Alice's app closes before Bob asks, in the second case.
+        let still_here = if alice_online_when_he_asks {
+            Some(alice)
+        } else {
+            drop(alice);
+            None
+        };
+        let mut out = Vec::new();
+        bob.engine.join_channel(ws, &channel.group, &mut out);
+        bob.send_all(out).await;
+        bob.pump(PUMP).await;
+        assert!(
+            workspaces(&bob)[0].channels[0].pending,
+            "waiting for a member"
+        );
+        let mut alice = match still_here {
+            Some(alice) => alice,
+            None => {
+                let mut alice = Peer::connect(&addr, "alice").await;
+                alice.engine = Engine::load(&saved).unwrap();
+                let mut out = Vec::new();
+                alice.engine.on_connected(&mut out);
+                alice.send_all(out).await;
+                alice
+            }
+        };
+        // Alice's device is handed the request, adds Bob, and he joins.
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        (alice, bob, channel.group, dir, addr)
+    }
+
+    #[tokio::test]
+    async fn a_member_asks_into_a_public_channel_and_a_member_device_lets_him_in() {
+        let (mut alice, mut bob, group, _dir, _addr) = a_channel_with_bob_asking_in(true).await;
+        assert!(
+            bob.events
+                .iter()
+                .any(|e| matches!(e, Event::Named { group: g, name } if *g == group && name == "#general")),
+            "the newcomer learns the channel's name: {:?}",
+            bob.events
+        );
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_text(&group, "welcome bob", 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        assert_eq!(bob.lines(), vec![("alice".into(), "welcome bob".into())]);
+        let seen = workspaces(&bob);
+        assert!(seen[0].channels[0].joined && !seen[0].channels[0].pending);
+    }
+
+    #[tokio::test]
+    async fn a_request_made_while_every_member_is_away_is_settled_when_one_returns() {
+        let (_alice, bob, group, _dir, _addr) = a_channel_with_bob_asking_in(false).await;
+        assert!(
+            bob.events
+                .iter()
+                .any(|e| matches!(e, Event::Opened { group: g, .. } if *g == group)),
+            "bob is in once alice's device comes back: {:?}",
+            bob.events
+        );
     }
 }
