@@ -172,7 +172,7 @@ pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x26, 0x3F, 0x42);
 
 /// **The brand orange, kept for the brand.**
 ///
-/// Its scope is the logo — the roofs and the pin of [`paint_mark`], the tail
+/// Its scope is the logo — the pin of [`paint_mark`], the tail
 /// of the wordmark ([`WORDMARK_TAIL_COLOR`]) and, in `index.html`, the
 /// loader's mark and progress bar — plus the few things that must shout: an
 /// unread badge, the live dot. The live *controls* are [`ACCENT`], its softer
@@ -774,9 +774,9 @@ pub fn install(ctx: &egui::Context) {
 
 // ─── The mark ─────────────────────────────────────────────────────────────────
 
-/// The app mark, **drawn rather than sampled**: the isometric map-tower cluster —
-/// a city whose buildings are clad in map paper, seven towers on a gridded
-/// plinth with the place pin planted on the tallest, orange roofs throughout.
+/// The app mark, **drawn rather than sampled**: the brand pin standing on
+/// Groningen's street plan, the streets cleared in a band around it so the pin
+/// reads as cut out of the map.
 ///
 /// It is a vector for the reason every other icon in this file is painted from
 /// primitives: it is wanted at 84 pt on the splash and 22 pt on the sign-in
@@ -787,260 +787,55 @@ pub fn install(ctx: &egui::Context) {
 /// what the platform wants, but nothing *inside* the app depends on that file
 /// decoding any more.
 ///
-/// **The table below is `assets/icon/cartopolis.svg` in its own 512-unit square**
-/// (`UNIT` = half of it), not a second set of numbers in fractions of the radius:
-/// the launcher icon is the source of truth for the shape, and a coordinate here
-/// can be read straight off a path over there. `index.html`'s loader carries the
-/// same table again as inline SVG — the web splash and this one are one screen
+/// **The street plan is data, not a hand-written table**: `mark_table.rs` is
+/// written by `tools/brand-mark.ts` from OpenStreetMap in the same run that
+/// writes `assets/icon/cartopolis.svg`, its light variant, the PNG, the .ico and
+/// `index.html`'s loader copy — the web splash and this one are one screen
 /// handed over mid-load (see `systems::splash`), and a mark that changes at the
-/// handover is the tell that they are not. Change one, change all three.
-///
-/// Three deliberate simplifications against the launcher art, because this is
-/// painted from egui primitives at a tenth of the size and every one of them
-/// costs shapes on the very first frame: the tile's vertical gradient is its
-/// middle tone (egui has no gradient primitive), each facade carries one motif
-/// rather than the source's per-tower collage, and the teardrop pin is a disc
-/// over a triangle. The silhouette, the palette and the placement — which is all
-/// anyone reads at 44 px — are the source's exactly.
+/// handover is the tell that they are not. Rerun the tool; do not edit any of
+/// them by hand. The one painting simplification against the icon is the tile's
+/// vertical gradient, which is its middle tone here (egui has no gradient
+/// primitive).
 mod mark {
     use egui::Color32;
 
-    /// Half the icon's square. Every coordinate below is in that square's units
-    /// with `(UNIT, UNIT)` at the centre, so `paint_mark` maps them with one
-    /// scale factor of `radius / UNIT`.
+    /// Half the icon's square. Every coordinate in the table is in that square's
+    /// units with `(UNIT, UNIT)` at the centre, so `paint_mark` maps them with
+    /// one scale factor of `radius / UNIT`.
     pub const UNIT: f32 = 256.0;
     /// The launcher tile's corner radius.
     pub const PLATE_CORNER: f32 = 115.0;
-    /// The isometric ratio: a unit across the ground is half a unit down the
-    /// screen. Every roof, plinth edge and face shear in the table is this one
-    /// number, which is what keeps the cluster on a single projection.
-    pub const ISO: f32 = 0.5;
 
-    /// Below this radius the facades, the plinth's grid and the body outlines
-    /// are a smudge rather than detail — a 30 pt mark gives each tower face
-    /// about 3 px of width — so they are dropped instead of drawn. Silhouette,
-    /// roofs and pin carry the mark at that size.
+    /// Below this radius the side streets are a grey smudge rather than a plan —
+    /// a 22 pt mark gives a residential street a fifth of a pixel — so only the
+    /// main roads and the canals are drawn. The pin carries the mark there.
     pub const DETAIL_RADIUS: f32 = 30.0;
+    /// The narrowest line still drawn below [`DETAIL_RADIUS`].
+    pub const MAJOR_WIDTH: f32 = 5.4;
 
-    /// The plinth: centre of its top face, half its width, and the slab's depth.
-    pub const PLINTH_C: [f32; 2] = [240.0, 335.0];
-    pub const PLINTH_HALF: f32 = 195.0;
-    pub const PLINTH_DEPTH: f32 = 16.0;
-    /// Where the grid lines cross it, as fractions along each edge.
-    pub const PLINTH_GRID: [f32; 3] = [0.25, 0.5, 0.75];
-
-    /// The pin: centre of its head, the head's radius, its tip, and the dot.
-    pub const PIN_C: [f32; 2] = [190.0, 73.0];
-    pub const PIN_R: f32 = 27.3;
-    pub const PIN_TIP_Y: f32 = 112.0;
-    pub const PIN_DOT_R: f32 = 8.45;
-    /// Width of the cream keyline around the pin. The pin is the only thing that
-    /// overlaps the towers, and without it the orange sits straight on the
-    /// paper-cream facade behind.
-    pub const PIN_KEYLINE: f32 = 5.0;
-
-    /// The ground shadow.
-    pub const SHADOW_C: [f32; 2] = [240.0, 430.0];
-    pub const SHADOW_R: [f32; 2] = [205.0, 42.0];
-
-    /// What one tower's two visible faces are clad in. Every tower in the source
-    /// wears a different fragment of map; at this size they reduce to three
-    /// readable kinds.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub enum Facade {
-        /// City blocks: a park, streets across, one amber route down.
-        Blocks,
-        /// Coastline: sea below a shore, land above.
-        Coast,
-        /// Polder: strips of field with a canal down them.
-        Polder,
-    }
-
-    /// One tower, on the front edge where its two faces meet.
-    pub struct Tower {
-        /// That edge: its `x`, and the `y` of its top (the roof's front vertex).
-        pub x: f32,
-        pub y: f32,
-        /// How far the left and right faces reach from it.
-        pub wl: f32,
-        pub wr: f32,
-        /// Body height, down the screen from `y`.
-        pub h: f32,
-        pub facade: Facade,
-    }
-
-    /// Back to front — the paint order *is* the depth order, so this array is
-    /// not sortable by anything else.
-    pub const TOWERS: [Tower; 7] = [
-        Tower {
-            x: 256.0,
-            y: 159.0,
-            wl: 26.0,
-            wr: 26.0,
-            h: 118.0,
-            facade: Facade::Blocks,
-        },
-        Tower {
-            x: 190.0,
-            y: 142.0,
-            wl: 30.0,
-            wr: 30.0,
-            h: 170.0,
-            facade: Facade::Blocks,
-        },
-        Tower {
-            x: 322.0,
-            y: 225.0,
-            wl: 24.0,
-            wr: 24.0,
-            h: 84.0,
-            facade: Facade::Coast,
-        },
-        Tower {
-            x: 124.0,
-            y: 274.0,
-            wl: 24.0,
-            wr: 24.0,
-            h: 68.0,
-            facade: Facade::Polder,
-        },
-        Tower {
-            x: 256.0,
-            y: 199.0,
-            wl: 30.0,
-            wr: 30.0,
-            h: 146.0,
-            facade: Facade::Coast,
-        },
-        Tower {
-            x: 190.0,
-            y: 326.0,
-            wl: 22.0,
-            wr: 22.0,
-            h: 48.0,
-            facade: Facade::Polder,
-        },
-        Tower {
-            x: 314.5,
-            y: 286.0,
-            wl: 26.0,
-            wr: 56.0,
-            h: 90.0,
-            facade: Facade::Blocks,
-        },
-    ];
-
-    // The map palette, off the icon source. These are not the UI palette: the
-    // towers are printed maps, so they carry paper, ink, park green and water
-    // blue rather than the chrome's graphite. The brand colours meet them at the
-    // roofs and the pin, which is [`super::BRAND`] in both files. Note the plate
-    // is still the *old* chrome slate — the mark is the logo, it did not go
-    // monochrome with the UI, and it is a picture rather than a surface.
     /// The tile, as one tone: the source's `#2e424e` → `#1B2830` gradient in the
-    /// middle, which is what an unlit slate reads as at any size.
+    /// middle, which is what an unlit slate reads as at any size. The mark is the
+    /// logo: it did not go monochrome with the UI.
     pub const PLATE: Color32 = Color32::from_rgb(0x25, 0x35, 0x3F);
-    /// The ground shadow's ink, at the source's 40 % — carried in the constant
-    /// rather than applied at the call site, so every colour in this table is a
-    /// finished colour and `paint_mark`'s fade is the only thing that touches
-    /// alpha.
-    pub const SHADOW: Color32 = Color32::from_rgba_unmultiplied_const(0x0D, 0x15, 0x1A, 102);
-    /// Every outline in the cluster: roof edges and the tower bodies.
-    pub const EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x10, 0x18, 0x1E, 102);
-    /// The plinth: top face, its grid, and the two side faces.
-    pub const PLINTH_TOP: Color32 = Color32::from_rgb(0xE6, 0xDF, 0xCF);
-    pub const PLINTH_GRID_INK: Color32 = Color32::from_rgb(0xD8, 0xD1, 0xBF);
-    pub const PLINTH_LEFT: Color32 = Color32::from_rgb(0xC3, 0xBC, 0xAB);
-    pub const PLINTH_RIGHT: Color32 = Color32::from_rgb(0xB1, 0xA9, 0x96);
-    /// Map paper, and the streets printed on it.
-    pub const PAPER: Color32 = Color32::from_rgb(0xF2, 0xEF, 0xEA);
-    pub const STREET: Color32 = Color32::from_rgb(0xB4, 0xAC, 0x99);
-    pub const PARK: Color32 = Color32::from_rgb(0x9D, 0xB0, 0x8D);
-    pub const WATER: Color32 = Color32::from_rgb(0x5B, 0x81, 0x99);
-    pub const WATER_EDGE: Color32 = Color32::from_rgb(0x46, 0x68, 0x7E);
-    /// The lit line just off a shore.
-    pub const WATER_LIGHT: Color32 = Color32::from_rgb(0x8F, 0xB0, 0xC0);
-    /// A route highlighted on the map — the amber the UI reserves for a held
-    /// state, muted to sit on paper.
-    pub const ROUTE: Color32 = Color32::from_rgb(0xDF, 0xA4, 0x4E);
-    /// How far the two faces are shaded apart. The right face takes the source's
-    /// 16 % ink wash and the left its 5 % lift, which is the whole of what makes
-    /// a cream box read as a solid rather than a hexagon.
-    pub const FACE_SHADE: f32 = 0.16;
-    pub const FACE_LIFT: f32 = 0.05;
-}
+    /// The street plan's two inks — cream at 50 % and 30 % over the plate,
+    /// pre-mixed so crossing strokes do not double up.
+    pub const STREET: Color32 = Color32::from_rgb(0x8C, 0x92, 0x95);
+    pub const WATER: Color32 = Color32::from_rgb(0x62, 0x6D, 0x72);
 
-/// `over` mixed into `base` by `k`, straight down the channels.
-///
-/// The mark's two face tones and nothing else: a tower's right face is the
-/// source's 16 % ink wash over map paper and its left face a 5 % lift, which is
-/// what makes a cream box read as a solid rather than as a hexagon.
-fn mix(base: Color32, over: Color32, k: f32) -> Color32 {
-    let ch = |b: u8, o: u8| (b as f32 + (o as f32 - b as f32) * k).round() as u8;
-    Color32::from_rgb(
-        ch(base.r(), over.r()),
-        ch(base.g(), over.g()),
-        ch(base.b(), over.b()),
-    )
-}
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Ink {
+        Street,
+        Water,
+    }
 
-/// One tower face, in the sheared frame it is drawn in: `u` runs across the
-/// face from its far edge, `v` down it, and the face's own slope carries the
-/// isometric projection so a motif can be written as if it were on flat paper.
-///
-/// The left face slopes *down* to the right (its far edge is the leftmost point
-/// of the tower and its near edge is the front edge); the right face slopes up.
-/// That sign is the only difference between the two, which is why one struct
-/// draws both.
-#[derive(Clone, Copy)]
-struct MarkFace {
-    ox: f32,
-    oy: f32,
-    slope: f32,
-    w: f32,
-    h: f32,
-    /// The right face, which takes the shade rather than the lift.
-    dark: bool,
-}
+    /// One polyline of the plan.
+    pub struct Line {
+        pub width: f32,
+        pub ink: Ink,
+        pub points: &'static [[f32; 2]],
+    }
 
-impl MarkFace {
-    fn left(t: &mark::Tower) -> Self {
-        Self {
-            ox: t.x - t.wl,
-            oy: t.y - t.wl * mark::ISO,
-            slope: mark::ISO,
-            w: t.wl,
-            h: t.h,
-            dark: false,
-        }
-    }
-    fn right(t: &mark::Tower) -> Self {
-        Self {
-            ox: t.x,
-            oy: t.y,
-            slope: -mark::ISO,
-            w: t.wr,
-            h: t.h,
-            dark: true,
-        }
-    }
-    /// Face-local (`u` across, `v` down) → the icon's 512-unit square.
-    fn at(&self, u: f32, v: f32) -> [f32; 2] {
-        [self.ox + u, self.oy + self.slope * u + v]
-    }
-    /// The same, in fractions of the face — how every motif below is written, so
-    /// a tower's cladding does not have to know how wide or tall it is.
-    fn frac(&self, u: f32, v: f32) -> [f32; 2] {
-        self.at(u * self.w, v * self.h)
-    }
-    /// The face's own outline, in the order it is drawn.
-    fn corners(&self) -> [[f32; 2]; 4] {
-        [
-            self.frac(0.0, 0.0),
-            self.frac(1.0, 0.0),
-            self.frac(1.0, 1.0),
-            self.frac(0.0, 1.0),
-        ]
-    }
+    include!("mark_table.rs");
 }
 
 /// Draw [the mark](mark) centred on `center`, out to `radius` (half the tile, so
@@ -1049,208 +844,53 @@ impl MarkFace {
 pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32) {
     // `gamma_multiply` rather than a rebuilt `from_rgba_unmultiplied`: `Color32`
     // is premultiplied, so re-wrapping its channels as straight ones darkens
-    // anything in the table that already carries an alpha (the shadow, every
-    // outline).
+    // anything that already carries an alpha.
     let a = |c: Color32| c.gamma_multiply(alpha);
     let s = radius / mark::UNIT;
-    // Icon units → screen. Everything below is written in the source SVG's
-    // coordinates and passes through here, which is what lets the two be
-    // compared line by line.
+    // Icon units → screen.
     let q = |v: [f32; 2]| {
         egui::pos2(
             center.x + (v[0] - mark::UNIT) * s,
             center.y + (v[1] - mark::UNIT) * s,
         )
     };
-    // A stroke thinner than a pixel is a stroke nobody can see: on the sign-in
-    // card's 22 pt mark a 2-unit street is a third of a pixel, and this rule is
-    // what keeps the roofs' outlines from disappearing entirely.
-    let w = |units: f32| (units * s).max(0.8);
-    let fill = |pts: Vec<egui::Pos2>, c: Color32| {
-        p.add(egui::Shape::convex_polygon(pts, a(c), Stroke::NONE));
-    };
     let detail = radius >= mark::DETAIL_RADIUS;
 
-    // ── The tile ─────────────────────────────────────────────────────────────
     p.rect_filled(
         egui::Rect::from_center_size(center, egui::Vec2::splat(radius * 2.0)),
         CornerRadius::same((mark::PLATE_CORNER * s).round().clamp(0.0, 255.0) as u8),
         a(mark::PLATE),
     );
-    p.add(egui::Shape::ellipse_filled(
-        q(mark::SHADOW_C),
-        egui::vec2(mark::SHADOW_R[0] * s, mark::SHADOW_R[1] * s),
-        a(mark::SHADOW),
-    ));
 
-    // ── The plinth ───────────────────────────────────────────────────────────
-    // A diamond seen at [`mark::ISO`], with a slab of depth under its two front
-    // edges. Its four corners are named because the grid below is written as
-    // fractions along them.
-    let (cx, cy) = (mark::PLINTH_C[0], mark::PLINTH_C[1]);
-    let (half, rise) = (mark::PLINTH_HALF, mark::PLINTH_HALF * mark::ISO);
-    let (left, back) = ([cx - half, cy], [cx, cy - rise]);
-    let (right, front) = ([cx + half, cy], [cx, cy + rise]);
-    let down = |v: [f32; 2]| [v[0], v[1] + mark::PLINTH_DEPTH];
-    fill(
-        vec![q(left), q(front), q(down(front)), q(down(left))],
-        mark::PLINTH_LEFT,
-    );
-    fill(
-        vec![q(front), q(right), q(down(right)), q(down(front))],
-        mark::PLINTH_RIGHT,
-    );
-    fill(vec![q(left), q(back), q(right), q(front)], mark::PLINTH_TOP);
-    if detail {
-        let lerp = |from: [f32; 2], to: [f32; 2], k: f32| {
-            [
-                from[0] + (to[0] - from[0]) * k,
-                from[1] + (to[1] - from[1]) * k,
-            ]
+    // The plan is already cut to the tile and clear of the pin, so it is drawn
+    // with no clip — egui has none to give it.
+    for line in mark::LINES {
+        if !detail && line.width < mark::MAJOR_WIDTH {
+            continue;
+        }
+        let ink = match line.ink {
+            mark::Ink::Street => mark::STREET,
+            mark::Ink::Water => mark::WATER,
         };
-        let grid = Stroke::new(w(1.8), a(mark::PLINTH_GRID_INK));
-        for k in mark::PLINTH_GRID {
-            // One family parallel to each pair of edges — a street grid on the
-            // ground, in the same projection the towers stand in.
-            p.line_segment([q(lerp(left, back, k)), q(lerp(front, right, k))], grid);
-            p.line_segment([q(lerp(left, front, k)), q(lerp(back, right, k))], grid);
-        }
-    }
-
-    // ── The towers ───────────────────────────────────────────────────────────
-    let shade = |c: Color32| mix(c, INK, mark::FACE_SHADE);
-    let lift = |c: Color32| mix(c, Color32::WHITE, mark::FACE_LIFT);
-    for t in &mark::TOWERS {
-        let faces = [MarkFace::left(t), MarkFace::right(t)];
-        for f in faces {
-            let tone = |c: Color32| {
-                if f.dark {
-                    shade(c)
-                } else {
-                    lift(c)
-                }
-            };
-            fill(f.corners().map(&q).to_vec(), tone(mark::PAPER));
-            if detail {
-                paint_facade(p, &q, &w, &f, t.facade, &|c| a(tone(c)));
-            }
-        }
-        // The roof is the same diamond as the plinth, one tower wide, and it is
-        // the brand orange in both files — [`BRAND`], not the chrome accent.
-        let roof = vec![
-            q([t.x, t.y]),
-            q([t.x + t.wr, t.y - t.wr * mark::ISO]),
-            q([t.x + t.wr - t.wl, t.y - (t.wr + t.wl) * mark::ISO]),
-            q([t.x - t.wl, t.y - t.wl * mark::ISO]),
-        ];
-        let edge = Stroke::new(w(1.4), a(mark::EDGE));
-        p.add(egui::Shape::convex_polygon(
-            roof,
-            a(BRAND),
-            if detail { edge } else { Stroke::NONE },
+        p.add(egui::Shape::line(
+            line.points.iter().map(|&v| q(v)).collect(),
+            Stroke::new((line.width * s).max(0.6), a(ink)),
         ));
-        if detail {
-            // The body outlines, over the roof rather than under it — without
-            // them a tower standing in front of another dissolves into it, same
-            // paper and same tone.
-            for f in faces {
-                p.add(egui::Shape::closed_line(f.corners().map(&q).to_vec(), edge));
-            }
-        }
     }
 
-    // ── The pin ──────────────────────────────────────────────────────────────
-    // A disc over a triangle rather than the source's teardrop path: at this
-    // size the two are the same picture, and egui has no path primitive that
-    // would carry the curve without tessellating it here. Drawn twice — cream
-    // keyline first, orange body inside it — because the pin is the one element
-    // that overlaps a facade, and the outline is what lifts it off the paper.
-    let pin = q(mark::PIN_C);
-    let tip = q([mark::PIN_C[0], mark::PIN_TIP_Y]);
-    let pin_r = mark::PIN_R * s;
-    let key = mark::PIN_KEYLINE * s;
-    let skirt = |r: f32, tip: egui::Pos2| {
-        vec![
-            egui::pos2(pin.x - r * 0.87, pin.y + r * 0.49),
-            egui::pos2(pin.x + r * 0.87, pin.y + r * 0.49),
-            tip,
-        ]
-    };
-    fill(skirt(pin_r + key, egui::pos2(tip.x, tip.y + key)), CREAM);
-    p.circle_filled(pin, pin_r + key, a(CREAM));
-    fill(skirt(pin_r, tip), BRAND);
-    p.circle_filled(pin, pin_r, a(BRAND));
-    p.circle_filled(pin, mark::PIN_DOT_R * s, a(CREAM));
+    // The teardrop is convex, so it is one polygon; its keyline is the polygon's
+    // own stroke, centred on the edge as the SVG's is.
+    p.add(egui::Shape::convex_polygon(
+        mark::PIN_OUTLINE.iter().map(|&v| q(v)).collect(),
+        a(BRAND),
+        Stroke::new((mark::PIN_KEYLINE * s).max(1.0), a(MARK_CREAM)),
+    ));
+    p.circle_filled(q(mark::PIN_DOT_C), mark::PIN_DOT_R * s, a(MARK_CREAM));
 }
 
-/// One facade's motif, written in fractions of the face so the seven towers
-/// share three drawings.
-///
-/// Kept out of [`paint_mark`] because it is the part that is *decoration*: the
-/// mark reads without any of it (see [`mark::DETAIL_RADIUS`]), and separating
-/// the two keeps that obvious.
-fn paint_facade(
-    p: &egui::Painter,
-    q: &impl Fn([f32; 2]) -> egui::Pos2,
-    w: &impl Fn(f32) -> f32,
-    f: &MarkFace,
-    facade: mark::Facade,
-    a: &impl Fn(Color32) -> Color32,
-) {
-    let band = |v0: f32, v1: f32, c: Color32| {
-        p.add(egui::Shape::convex_polygon(
-            vec![
-                q(f.frac(0.0, v0)),
-                q(f.frac(1.0, v0)),
-                q(f.frac(1.0, v1)),
-                q(f.frac(0.0, v1)),
-            ],
-            a(c),
-            Stroke::NONE,
-        ));
-    };
-    let across = |v: f32, c: Color32, units: f32| {
-        p.line_segment(
-            [q(f.frac(0.0, v)), q(f.frac(1.0, v))],
-            Stroke::new(w(units), a(c)),
-        );
-    };
-    match facade {
-        mark::Facade::Blocks => {
-            band(0.10, 0.20, mark::PARK);
-            for v in [0.34, 0.62, 0.88] {
-                across(v, mark::STREET, 2.0);
-            }
-            // The route down the block — the one warm line on the paper.
-            p.line_segment(
-                [q(f.frac(0.68, 0.0)), q(f.frac(0.68, 1.0))],
-                Stroke::new(w(3.0), a(mark::ROUTE)),
-            );
-        }
-        mark::Facade::Coast => {
-            band(0.58, 1.0, mark::WATER);
-            across(0.58, mark::WATER_EDGE, 2.4);
-            across(0.66, mark::WATER_LIGHT, 1.6);
-            band(0.16, 0.26, mark::PARK);
-            across(0.10, mark::ROUTE, 2.8);
-        }
-        mark::Facade::Polder => {
-            // Strips of field, and the canal that drains them.
-            for (i, v) in [0.06_f32, 0.28, 0.50, 0.72].into_iter().enumerate() {
-                band(
-                    v,
-                    v + 0.16,
-                    if i % 2 == 0 { mark::PARK } else { mark::PAPER },
-                );
-                across(v, mark::WATER, 1.4);
-            }
-            p.line_segment(
-                [q(f.frac(0.45, 0.0)), q(f.frac(0.45, 1.0))],
-                Stroke::new(w(2.4), a(mark::WATER)),
-            );
-        }
-    }
-}
+/// The mark's cream: the pin's keyline and dot, `#F2EFEA` in every copy of the
+/// icon. Not [`CREAM`], which is the chrome's text colour and a cooler white.
+const MARK_CREAM: Color32 = Color32::from_rgb(0xF2, 0xEF, 0xEA);
 
 // ─── Wordmark ─────────────────────────────────────────────────────────────────
 
@@ -3198,95 +2838,65 @@ mod tests {
         assert_eq!(format!("{WORDMARK_HEAD}{WORDMARK_TAIL}"), "cartopolis");
     }
 
-    /// The pin is planted on the tallest tower, and "planted" is exact: its tip
-    /// lands on that tower's roof apex rather than near it.
-    ///
-    /// Worth a test because the two are separate rows of the table — a tower
-    /// grown a few units taller, or the cluster restacked, leaves the pin
-    /// floating over a gap or buried in a roof, and at 44 px that reads as a
-    /// blurry mark rather than as a mistake.
+    /// The pin is one `convex_polygon`, and epaint fills a polygon that is not
+    /// convex wrongly rather than refusing it — a teardrop regenerated with a
+    /// dent would paint as a wedge with nothing to say why.
     #[test]
-    fn the_pin_is_planted_on_the_tallest_tower() {
-        let tallest = mark::TOWERS
-            .iter()
-            .max_by(|a, b| a.h.total_cmp(&b.h))
-            .expect("the cluster has towers");
-        assert_eq!(
-            mark::PIN_C[0],
-            tallest.x,
-            "the pin is not over the tallest tower's front edge"
-        );
-        // The roof's far vertex, which is where the front edge's top plus both
-        // face widths lands in this projection.
-        let apex = tallest.y - (tallest.wl + tallest.wr) * mark::ISO;
-        assert!(
-            (mark::PIN_TIP_Y - apex).abs() < 1.0,
-            "the pin's tip is at {}, the roof it stands on at {apex}",
-            mark::PIN_TIP_Y
-        );
+    fn the_pin_outline_is_convex() {
+        let o = &mark::PIN_OUTLINE;
+        let mut sign = 0.0_f32;
+        for i in 0..o.len() {
+            let (a, b, c) = (o[i], o[(i + 1) % o.len()], o[(i + 2) % o.len()]);
+            let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+            if cross.abs() < 1e-3 {
+                continue;
+            }
+            assert!(
+                sign == 0.0 || sign == cross.signum(),
+                "the pin outline turns the other way at point {i}"
+            );
+            sign = cross.signum();
+        }
     }
 
-    /// Every tower stands on the plinth — all three of its base corners inside
-    /// the ground diamond.
-    ///
-    /// The cluster is hand-placed, and a tower whose base overhangs the slab is
-    /// the one error in an isometric drawing that cannot be seen at icon size:
-    /// it reads as a tower that is merely *further away*, right up until someone
-    /// looks at the splash at 168 px.
+    /// Nothing in the plan reaches outside the tile or into the pin's halo. The
+    /// mark is painted with no clip of any kind — a `Painter` at the sign-in
+    /// card's 22 pt will happily draw a street across the card's own text — so
+    /// the generator's cut is the only clip there is.
     #[test]
-    fn every_tower_stands_on_the_plinth() {
-        // |dx| / half + |dy| / rise <= 1 is the diamond, and the plinth is a
-        // diamond because it is a square at `ISO`.
-        let on_slab = |x: f32, y: f32| {
-            let dx = (x - mark::PLINTH_C[0]).abs() / mark::PLINTH_HALF;
-            let dy = (y - mark::PLINTH_C[1]).abs() / (mark::PLINTH_HALF * mark::ISO);
-            dx + dy <= 1.0
+    fn the_plan_stays_inside_the_tile_and_clear_of_the_pin() {
+        let square = 2.0 * mark::UNIT;
+        let o = &mark::PIN_OUTLINE;
+        let to_pin = |p: [f32; 2]| {
+            (0..o.len())
+                .map(|i| {
+                    let (a, b) = (o[i], o[(i + 1) % o.len()]);
+                    let d = [b[0] - a[0], b[1] - a[1]];
+                    let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1])
+                        / (d[0] * d[0] + d[1] * d[1]))
+                        .clamp(0.0, 1.0);
+                    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+                })
+                .fold(f32::INFINITY, f32::min)
         };
-        for (i, t) in mark::TOWERS.iter().enumerate() {
-            let base = t.y + t.h;
-            for (name, x, y) in [
-                ("front", t.x, base),
-                ("left", t.x - t.wl, base - t.wl * mark::ISO),
-                ("right", t.x + t.wr, base - t.wr * mark::ISO),
-            ] {
+        assert!(!mark::LINES.is_empty(), "the plan is empty");
+        for (i, line) in mark::LINES.iter().enumerate() {
+            for &p in line.points {
                 assert!(
-                    on_slab(x, y),
-                    "tower {i}'s {name} corner ({x}, {y}) hangs off the plinth"
+                    (0.0..=square).contains(&p[0]) && (0.0..=square).contains(&p[1]),
+                    "line {i} reaches ({}, {}), outside the tile",
+                    p[0],
+                    p[1]
+                );
+                // One unit of slack for the generator's rounding to whole units.
+                assert!(
+                    to_pin(p) >= mark::PIN_HALO + line.width / 2.0 - 1.0,
+                    "line {i} runs into the pin's halo at ({}, {})",
+                    p[0],
+                    p[1]
                 );
             }
         }
-    }
-
-    /// Nothing in the table reaches outside the tile it is drawn in. The mark is
-    /// painted with no clip of any kind — a `Painter` at the sign-in card's 22 pt
-    /// will happily draw a tower across the card's own text.
-    #[test]
-    fn the_cluster_stays_inside_the_tile() {
-        let square = 2.0 * mark::UNIT;
-        let check = |what: &str, x: f32, y: f32| {
-            assert!(
-                (0.0..=square).contains(&x) && (0.0..=square).contains(&y),
-                "{what} lands at ({x}, {y}), outside the tile"
-            );
-        };
-        for (i, t) in mark::TOWERS.iter().enumerate() {
-            check(
-                &format!("tower {i} left"),
-                t.x - t.wl,
-                t.y - t.wl * mark::ISO,
-            );
-            check(&format!("tower {i} right"), t.x + t.wr, t.y + t.h);
-        }
-        check(
-            "the plinth",
-            mark::PLINTH_C[0] - mark::PLINTH_HALF,
-            mark::PLINTH_C[1] + mark::PLINTH_HALF * mark::ISO + mark::PLINTH_DEPTH,
-        );
-        check(
-            "the pin",
-            mark::PIN_C[0] - mark::PIN_R - mark::PIN_KEYLINE,
-            mark::PIN_C[1] - mark::PIN_R - mark::PIN_KEYLINE,
-        );
     }
 
     /// The brand family must be bound before anything paints a heading —
@@ -3331,8 +2941,8 @@ mod tests {
                 paint_wordmark(p, egui::pos2(200.0, 220.0), SPLASH_WORDMARK, 1.0);
             },
         );
-        // The tile, the shadow, the plinth and its grid, seven towers of two
-        // faces and a roof each, the pin, and the wordmark's two galleys.
+        // The tile, the street plan, the pin and its dot, and the wordmark's
+        // two galleys.
         assert!(
             out.shapes.len() >= 30,
             "the brand painted only {} shapes",

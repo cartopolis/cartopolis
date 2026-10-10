@@ -320,7 +320,8 @@ export class Chat extends MithrilComponent {
                 {/* A real <form>, so the phone keyboard shows a Go key and Enter submits. */}
                 <form class="auth chat-door" novalidate onsubmit={this.signIn}>
                     <Card>
-                        <img alt="" class="chat-welcome-mark" src="/icon.svg" />
+                        <img alt="" class="chat-welcome-mark mark-dark" src="/icon.svg" />
+                        <img alt="" class="chat-welcome-mark mark-light" src="/icon-light.svg" />
                         <div class="wordmark">carto<b>polis</b></div>
                         <p class="auth__lede">
                             Chat with your communities and your friends, end-to-end encrypted, and meet them

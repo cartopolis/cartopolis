@@ -68,9 +68,10 @@ async function build() {
     }
 
     await Bun.write(path.join(dist, 'index.html'), Bun.file(path.join(root, 'src/index.html')))
-    // The app's mark, for the chat's rail and the welcome card: the same file
-    // the viewer uses.
+    // The app's mark, for the favicon and the welcome card: the same files the
+    // viewer uses, one per theme.
     await Bun.write(path.join(dist, 'icon.svg'), Bun.file(path.join(root, '../../../assets/icon/cartopolis.svg')))
+    await Bun.write(path.join(dist, 'icon-light.svg'), Bun.file(path.join(root, '../../../assets/icon/cartopolis-light.svg')))
     // The same font files the client embeds, so the two cannot drift to
     // different cuts of the face.
     for (const face of ['PlusJakartaSans-Regular.ttf', 'PlusJakartaSans-SemiBold.ttf']) {

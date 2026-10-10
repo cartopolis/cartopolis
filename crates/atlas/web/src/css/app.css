@@ -116,6 +116,32 @@ h3 {
     }
 }
 
+/* The mark comes in two files, one per theme (`tools/brand-mark.ts`), and a
+   page carries both and shows one. The theme is the switch's choice when there
+   is one (`html[data-theme]`) and the system's otherwise, the same rule
+   `light-dark()` follows for every token. */
+.mark-light {
+    display: none;
+}
+
+@media (prefers-color-scheme: light) {
+    html:not([data-theme='dark']) .mark-dark {
+        display: none;
+    }
+
+    html:not([data-theme='dark']) .mark-light {
+        display: block;
+    }
+}
+
+html[data-theme='light'] .mark-dark {
+    display: none;
+}
+
+html[data-theme='light'] .mark-light {
+    display: block;
+}
+
 /* The admin frame is a Shell, and the Shell is the whole viewport. */
 .m-shell.admin {
     height: 100dvh;

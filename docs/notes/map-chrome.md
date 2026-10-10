@@ -165,9 +165,10 @@ look like, and three list rows for it pushed Exit below the fold.
 ## The mark and the wordmark are drawn, not shipped
 
 `theme::paint_mark` is a geometry table in the launcher icon's own 512-unit
-square — the isometric map-tower cluster of `assets/icon/cartopolis.svg`, seven
-towers clad in map paper on a gridded plinth with the place pin planted on the
-tallest — and
+square — the brand pin on Groningen's street plan, as in
+`assets/icon/cartopolis.svg`, the table and the icons all written by
+`tools/brand-mark.ts` (the isometric tower cluster before it was retired
+2026-10-10) — and
 `theme::paint_wordmark` splits the name in two tones (cream `carto`, accent
 `polis`), which is how the account GUI writes it (the atlas web UI's
 `.app-header .wordmark`, in `crates/atlas/web`). Three reasons it is not a PNG:

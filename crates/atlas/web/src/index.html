@@ -6,6 +6,10 @@
     <!-- No robots tag: this page is also the front page. Caddy sends
          `X-Robots-Tag: noindex` on the operator's and players' paths instead. -->
     <title>Cartopolis</title>
+    <!-- The tab icon follows the system's scheme; the page's own theme switch
+         cannot reach a favicon. -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/icon-light.svg" media="(prefers-color-scheme: light)" />
     <!-- The page background of each theme (`--m-bg`), painted here rather than
          waiting for the stylesheet so a phone never flashes the wrong one first.
          The script pins the theme the switch remembered (`m-theme`, the

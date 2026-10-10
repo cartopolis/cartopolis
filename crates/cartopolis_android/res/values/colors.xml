@@ -16,7 +16,7 @@
          entire point of the file. -->
     <color name="brand_surface">#FF1B2830</color>
     <!-- The lighter end of the logo's gradient; used for the splash icon's
-         backdrop so the fox does not sit on a flat plate. -->
+         backdrop so the mark does not sit on a flat plate. -->
     <color name="brand_surface_light">#FF2e424e</color>
     <!-- Accent orange. Not used by the launcher icon (whose background must stay
          calm under every launcher mask) but kept here so the palette is one
