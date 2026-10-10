@@ -15,7 +15,7 @@ sentence the whole redesign follows from.
 `systems::chat_overlay` is chat with no panel: a bubble over whoever spoke, an
 ambient transcript that fades, and a composer that exists only while you write.
 `systems::chat` keeps the state and one panel that is now a **log and its
-settings** — the backlog, the rooms, the blocks, the microphone, the report form
+settings** — the backlog, the blocks, the microphone, the report form
 — reached from ☰ rather than from the dock.
 
 ## What was measured against the old panel, and lost

@@ -1097,6 +1097,7 @@ pub fn render_person_card(
             reason: cartopolis_core::ReportReason::Harassment,
             note: String::new(),
             asset: None,
+            community: None,
         });
     }
 }
@@ -1300,6 +1301,7 @@ pub fn screen(
             reason: cartopolis_core::ReportReason::Harassment,
             note: String::new(),
             asset: None,
+            community: None,
         });
     }
     if let Some(name) = act.withdraw.or(act.remove) {

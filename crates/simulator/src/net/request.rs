@@ -107,10 +107,6 @@ pub enum ClientRequest {
         scope: ChatScope,
         body: String,
     },
-    ChatSubscribe {
-        room: String,
-        join: bool,
-    },
     GetPrimScript {
         request_id: u32,
         prim_id: i64,
@@ -225,31 +221,10 @@ pub enum ClientRequest {
         request_id: u32,
         usernames: Vec<String>,
     },
-    WorkspaceCreate {
-        request_id: u32,
-        name: String,
-    },
-    WorkspaceList {
-        request_id: u32,
-    },
-    WorkspaceAddMember {
-        request_id: u32,
-        workspace: Uuid,
-        address: String,
-    },
-    ChannelCreate {
-        request_id: u32,
-        workspace: Uuid,
-        group: Vec<u8>,
-        name: String,
-        topic: String,
-        private: bool,
-    },
-    ChannelJoin {
-        request_id: u32,
-        workspace: Uuid,
-        group: Vec<u8>,
-    },
+    /// One of the community messages (protocol 39), kept whole: there are
+    /// seventeen, and `net::communities::dispatch` matches them exhaustively
+    /// against this same list.
+    Community(NetMessage),
 }
 
 impl TryFrom<NetMessage> for ClientRequest {
@@ -378,7 +353,6 @@ impl TryFrom<NetMessage> for ClientRequest {
                 texture_id,
             },
             NetMessage::ChatSend { scope, body, .. } => Self::ChatSend { scope, body },
-            NetMessage::ChatSubscribe { room, join } => Self::ChatSubscribe { room, join },
             NetMessage::GetPrimScript {
                 request_id,
                 prim_id,
@@ -546,43 +520,23 @@ impl TryFrom<NetMessage> for ClientRequest {
                 request_id,
                 usernames,
             },
-            NetMessage::WorkspaceCreate { request_id, name } => {
-                Self::WorkspaceCreate { request_id, name }
-            }
-            NetMessage::WorkspaceList { request_id } => Self::WorkspaceList { request_id },
-            NetMessage::WorkspaceAddMember {
-                request_id,
-                workspace,
-                address,
-            } => Self::WorkspaceAddMember {
-                request_id,
-                workspace,
-                address,
-            },
-            NetMessage::ChannelCreate {
-                request_id,
-                workspace,
-                group,
-                name,
-                topic,
-                private,
-            } => Self::ChannelCreate {
-                request_id,
-                workspace,
-                group,
-                name,
-                topic,
-                private,
-            },
-            NetMessage::ChannelJoin {
-                request_id,
-                workspace,
-                group,
-            } => Self::ChannelJoin {
-                request_id,
-                workspace,
-                group,
-            },
+            NetMessage::CommunityList { .. }
+            | NetMessage::CommunityCreate { .. }
+            | NetMessage::CommunityEdit { .. }
+            | NetMessage::CommunityDirectory { .. }
+            | NetMessage::CommunityJoin { .. }
+            | NetMessage::CommunityLeave { .. }
+            | NetMessage::CommunityDecide { .. }
+            | NetMessage::CommunityAddMember { .. }
+            | NetMessage::CommunitySetRole { .. }
+            | NetMessage::CommunityRemove { .. }
+            | NetMessage::CommunityDelete { .. }
+            | NetMessage::TopicCreate { .. }
+            | NetMessage::TopicEdit { .. }
+            | NetMessage::TopicRemoved { .. }
+            | NetMessage::ModerateDelete { .. }
+            | NetMessage::CommunityReport { .. }
+            | NetMessage::CommunityReportResolve { .. } => Self::Community(msg),
 
             // Everything below is server-to-client. Listed rather than folded into
             // a `_` arm, so a new message has to be put on one side or the other
@@ -622,9 +576,14 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }
             | NetMessage::PeopleWhere { .. }
-            | NetMessage::Workspaces { .. }
-            | NetMessage::ChannelJoinRequest { .. }
-            | NetMessage::E2eeAddDevices { .. } => return Err(msg),
+            | NetMessage::E2eeAddDevices { .. }
+            | NetMessage::Communities { .. }
+            | NetMessage::CommunityCreated { .. }
+            | NetMessage::CommunityListings { .. }
+            | NetMessage::TopicAddPeople { .. }
+            | NetMessage::TopicRemovePeople { .. }
+            | NetMessage::TopicLeft { .. }
+            | NetMessage::E2eeRedacted { .. } => return Err(msg),
         })
     }
 }

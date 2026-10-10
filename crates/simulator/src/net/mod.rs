@@ -34,6 +34,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 mod avatar;
 mod calls;
 mod chat;
+mod communities;
 mod contacts;
 mod e2ee;
 mod hand;
@@ -42,7 +43,6 @@ mod prims;
 pub mod request;
 mod textures;
 mod voice;
-mod workspaces;
 
 pub use request::ClientRequest;
 
@@ -53,7 +53,6 @@ const MAX_CHAT_LEN: usize = 500;
 const CHAT_REPLAY: i64 = 50;
 const MIN_LOCAL_INTERVAL: Duration = Duration::from_millis(500);
 const MIN_GLOBAL_INTERVAL: Duration = Duration::from_secs(5);
-const MIN_ROOM_INTERVAL: Duration = Duration::from_millis(2000);
 
 /// Voice channel key, and limits sized for media rather than typing.
 ///
@@ -100,27 +99,10 @@ const MAX_WHERE_PEOPLE: usize = 32;
 
 /// Longest username the moderation messages will act on.
 ///
-/// Same reasoning as `MAX_ROOM_LEN`: `SetBlocked`/`ReportUser` carry a `String`
-/// straight off the wire whose only other bound is `MAX_FRAME`, and both end up
-/// as a row in SQLite. Comfortably past any account name — `accounts.username`
+/// `SetBlocked`/`ReportUser` carry a `String` straight off the wire whose only
+/// other bound is `MAX_FRAME`, and both end up as a row in SQLite. Comfortably past any account name — `accounts.username`
 /// is what these have to match, and nobody signs up with a paragraph.
 const MAX_USERNAME_LEN: usize = 64;
-
-/// Turn a client-supplied room name into a channel key, or refuse it.
-///
-/// `ChatScope::Room` is a `String` straight off the wire and was bounded only by
-/// `MAX_FRAME` — 32 MiB. Every use of it allocates again: `format!("room:{room}")`,
-/// a clone into the message, and a re-encode per delivery, on a path a client may
-/// drive at tens of frames a second. Refusing rather than truncating, because a
-/// truncated room name is a *different room* and would silently put someone in a
-/// conversation they did not ask for.
-fn room_channel(room: &str) -> Option<String> {
-    let room = room.trim();
-    if room.is_empty() || room.chars().count() > cartopolis_core::MAX_ROOM_LEN {
-        return None;
-    }
-    Some(format!("room:{room}"))
-}
 
 /// Milliseconds since the Unix epoch, for chat timestamps.
 fn now_millis() -> u64 {
@@ -445,7 +427,6 @@ struct RateGates {
     last_touch: Instant,
     last_local: Instant,
     last_global: Instant,
-    last_room: Instant,
     last_voice: Instant,
     /// The script-save bucket ([`take_token`]).
     script_store: Instant,
@@ -469,7 +450,6 @@ impl RateGates {
             last_touch: ago(MIN_TOUCH_INTERVAL),
             last_local: ago(MIN_LOCAL_INTERVAL),
             last_global: ago(MIN_GLOBAL_INTERVAL),
-            last_room: ago(MIN_ROOM_INTERVAL),
             last_voice: ago(MIN_VOICE_INTERVAL),
             script_store: ago(MIN_SCRIPT_STORE_INTERVAL * SCRIPT_STORE_BURST),
             claim: ago(MIN_CLAIM_INTERVAL * CLAIM_BURST),
@@ -1012,7 +992,6 @@ async fn dispatch<T: FrameTransport>(
             texture_id,
         } => textures::on_texture(ctx, request_id, texture_id).await,
         ClientRequest::ChatSend { scope, body } => chat::on_send(ctx, scope, body).await,
-        ClientRequest::ChatSubscribe { room, join } => chat::on_subscribe(ctx, room, join).await,
         ClientRequest::VoiceFrame {
             scope,
             seq,
@@ -1139,31 +1118,7 @@ async fn dispatch<T: FrameTransport>(
             request_id,
             usernames,
         } => contacts::on_where(ctx, request_id, usernames).await,
-        ClientRequest::WorkspaceCreate { request_id, name } => {
-            workspaces::on_create(ctx, request_id, name).await
-        }
-        ClientRequest::WorkspaceList { request_id } => workspaces::on_list(ctx, request_id).await,
-        ClientRequest::WorkspaceAddMember {
-            request_id,
-            workspace,
-            address,
-        } => workspaces::on_add_member(ctx, request_id, workspace, address).await,
-        ClientRequest::ChannelCreate {
-            request_id,
-            workspace,
-            group,
-            name,
-            topic,
-            private,
-        } => {
-            workspaces::on_channel_create(ctx, request_id, workspace, group, name, topic, private)
-                .await
-        }
-        ClientRequest::ChannelJoin {
-            request_id,
-            workspace,
-            group,
-        } => workspaces::on_channel_join(ctx, request_id, workspace, group).await,
+        ClientRequest::Community(msg) => communities::dispatch(ctx, msg).await,
     }
 }
 
@@ -1534,30 +1489,6 @@ mod tests {
     use super::*;
     use crate::prims::{Actor, ModelCheck, PrimError, PrimFields, PrimSeed, PrimService};
     use cartopolis_core::GeoAnchor;
-
-    /// A room name off the wire is client input, and the only bound it had was the
-    /// 32 MiB frame limit.
-    #[test]
-    fn a_room_name_is_bounded_before_it_becomes_a_channel() {
-        assert_eq!(room_channel("lobby"), Some("room:lobby".to_string()));
-        // Trimmed, so the key matches the one the client's own tab derives from
-        // its trimmed input.
-        assert_eq!(room_channel("  lobby \n"), Some("room:lobby".to_string()));
-        assert_eq!(room_channel(""), None, "an empty room is not a room");
-        assert_eq!(room_channel("   "), None);
-
-        let long = "x".repeat(cartopolis_core::MAX_ROOM_LEN + 1);
-        assert_eq!(room_channel(&long), None, "an over-long name is refused");
-        let at_limit = "x".repeat(cartopolis_core::MAX_ROOM_LEN);
-        assert!(
-            room_channel(&at_limit).is_some(),
-            "the limit itself is allowed"
-        );
-        // Counted in characters, not bytes, so a name in a non-Latin script gets
-        // the same length as one in ASCII.
-        let multibyte = "ま".repeat(cartopolis_core::MAX_ROOM_LEN);
-        assert!(room_channel(&multibyte).is_some());
-    }
 
     /// The bucket lets a burst through, then one per interval. A full bucket is
     /// `burst` banked intervals *plus* the one due now — the rule the three

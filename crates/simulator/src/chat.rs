@@ -1,6 +1,6 @@
 //! In-process chat routing (ADR-028). Keyed by `avatar_id` (one per connection).
 //!
-//! Global and room delivery reuse one encoded frame; proximity (`Local`) encodes
+//! Global delivery reuses one encoded frame; proximity (`Local`) encodes
 //! per recipient because each carries its own `distance_m`. This is the concrete
 //! form of the ADR's `ChatBus` seam — a trait can wrap it when multi-sim lands.
 //!
@@ -10,8 +10,8 @@
 //! string — including the per-recipient encode, which distance attenuation needs
 //! for exactly the reason `distance_m` already needed it.
 //!
-//! `Bytes` and not `Vec<u8>` for the fan-out's sake: a global line or a room's
-//! voice frame is handed to every member, and cloning a `Vec` there is a copy of
+//! `Bytes` and not `Vec<u8>` for the fan-out's sake: a global line is handed to every
+//! connection, and cloning a `Vec` there is a copy of
 //! the whole frame per recipient where a `Bytes` is a reference count.
 //!
 //! # Why every outbox is bounded, and why there are two of them
@@ -87,7 +87,6 @@ const VOICE_BACKLOG: usize = 64;
 struct Client {
     text: mpsc::Sender<Bytes>,
     voice: mpsc::Sender<Bytes>,
-    rooms: HashSet<String>,
     /// Usernames this connection refuses to hear, lowercased. Loaded from
     /// `blocks` at register time and updated in place by [`ChatHub::set_blocked`].
     ///
@@ -181,7 +180,6 @@ impl ChatHub {
             Client {
                 text,
                 voice,
-                rooms: HashSet::new(),
                 blocked: blocked.into_iter().map(|u| u.to_lowercase()).collect(),
                 account: account.to_string(),
                 device: None,
@@ -328,32 +326,6 @@ impl ChatHub {
         locked(&self.clients).remove(&avatar_id);
     }
 
-    /// Join (`join = true`) or leave a room for a connection.
-    pub fn set_room(&self, avatar_id: u64, room: &str, join: bool) {
-        if let Some(c) = locked(&self.clients).get_mut(&avatar_id) {
-            if join {
-                c.rooms.insert(room.to_string());
-            } else {
-                c.rooms.remove(room);
-            }
-        }
-    }
-
-    /// Whether a connection has joined a room.
-    ///
-    /// Membership used to be consulted for *recipients* only, so a client could
-    /// address any room it could name without ever joining it — a broadcast into
-    /// a conversation it is not part of, and (for text) a row in that room's
-    /// history. A sender is a member first.
-    #[must_use]
-    pub fn in_room(&self, avatar_id: u64, room: &str) -> bool {
-        self.clients
-            .lock()
-            .unwrap()
-            .get(&avatar_id)
-            .is_some_and(|c| c.rooms.contains(room))
-    }
-
     /// Deliver one encoded frame to every connected client (Global).
     ///
     /// Text only: global voice is deliberately not carried (see `net`'s
@@ -370,36 +342,6 @@ impl ChatHub {
                 continue;
             }
             c.enqueue(*id, Lane::Text, frame.clone());
-        }
-    }
-
-    /// Deliver one encoded frame to members of a room.
-    pub fn deliver_room(&self, room: &str, from: &str, lane: Lane, frame: &Bytes) {
-        let from = from.to_lowercase();
-        for (id, c) in locked(&self.clients).iter() {
-            if c.rooms.contains(room) && !c.blocked.contains(&from) {
-                c.enqueue(*id, lane, frame.clone());
-            }
-        }
-    }
-
-    /// Deliver one encoded frame to members of a room, skipping `except`.
-    ///
-    /// Voice needs this and text does not: seeing your own message appear is
-    /// confirmation it was sent, but hearing your own voice come back is an echo.
-    pub fn deliver_room_except(
-        &self,
-        room: &str,
-        except: u64,
-        from: &str,
-        lane: Lane,
-        frame: &Bytes,
-    ) {
-        let from = from.to_lowercase();
-        for (id, c) in locked(&self.clients).iter() {
-            if *id != except && c.rooms.contains(room) && !c.blocked.contains(&from) {
-                c.enqueue(*id, lane, frame.clone());
-            }
         }
     }
 
@@ -494,39 +436,16 @@ mod tests {
         );
     }
 
-    /// A sender must be in a room to address it — the check the hub only ever
-    /// applied to recipients.
-    #[test]
-    fn room_membership_is_visible_to_the_sender_side() {
-        let hub = ChatHub::new();
-        let (_t, _v) = hub.register(1, "a", []);
-        assert!(!hub.in_room(1, "room:secret"), "not joined");
-        hub.set_room(1, "room:secret", true);
-        assert!(hub.in_room(1, "room:secret"));
-        hub.set_room(1, "room:secret", false);
-        assert!(!hub.in_room(1, "room:secret"), "left");
-        // An unknown avatar is in no room, rather than a lookup failure.
-        assert!(!hub.in_room(99, "room:secret"));
-    }
-
     /// The block has to hold on every tier a person can be heard on, which is the
-    /// whole reason `from` threads through all four delivery entry points.
+    /// whole reason `from` threads through every delivery entry point.
     #[test]
-    fn a_blocked_speaker_reaches_none_of_the_three_channels() {
+    fn a_blocked_speaker_reaches_none_of_the_channels() {
         let hub = ChatHub::new();
         let (mut rx, _v) = hub.register(1, "a", ["loud".to_string()]);
-        hub.set_room(1, "room:x", true);
 
         hub.deliver_all("loud", &Bytes::from_static(b"global"));
-        hub.deliver_room("room:x", "loud", Lane::Text, &Bytes::from_static(b"room"));
         hub.deliver_to(1, "loud", Lane::Text, Bytes::from_static(b"local"));
-        hub.deliver_room_except(
-            "room:x",
-            99,
-            "loud",
-            Lane::Voice,
-            &Bytes::from_static(b"voice"),
-        );
+        hub.deliver_to(1, "loud", Lane::Voice, Bytes::from_static(b"voice"));
         assert!(rx.try_recv().is_err(), "a blocked speaker got through");
 
         // …and everyone else still arrives.

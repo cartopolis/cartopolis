@@ -206,8 +206,8 @@ to it in the morning.
 
 ## Not built
 
-Stored direct messages. There are none: `ChatScope` is `Local` / `Global` /
-`Room`, nothing is persisted, and so a message to someone who is offline still
+Stored direct messages. There are none: `ChatScope` is `Local` / `Global` (rooms
+went with protocol 39), nothing is persisted, and so a message to someone who is offline still
 does not exist as a case. Everything above makes a *connected* client reachable
 while its screen is off, which is a different thing from delivering to one that
 is gone. That is the next piece, and it is a server-side feature with no Android

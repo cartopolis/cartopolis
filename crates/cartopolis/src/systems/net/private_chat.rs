@@ -316,6 +316,7 @@ pub fn drive_private_chats(
     mut private: ResMut<PrivateChats>,
     mut chat: ResMut<crate::systems::chat::ChatState>,
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
+    mut communities: ResMut<crate::systems::communities::Communities>,
 ) {
     let (Some(online), Some(username), Some(server_name)) = (
         online,
@@ -377,6 +378,43 @@ pub fn drive_private_chats(
             engine.forget(&group);
             chat.drop_channel(&key);
             private.dirty = true;
+        }
+    }
+    for op in std::mem::take(&mut communities.ops) {
+        use crate::systems::communities::CommunityOp as Op;
+        match op {
+            Op::Create {
+                settings,
+                topics,
+                people,
+            } => engine.create_community(settings, &topics, &people, &mut out),
+            Op::Edit(id, s) => engine.edit_community(id, s, &mut out),
+            Op::Find(q, order) => engine.find_communities(&q, order, &mut out),
+            Op::Join(id, m) => engine.join_community(id, &m, &mut out),
+            Op::Leave(id) => engine.leave_community(id, &mut out),
+            Op::Decide(id, who, accept) => engine.decide_request(id, &who, accept, &mut out),
+            Op::Add(id, who) => engine.add_to_community(id, &who, &mut out),
+            Op::SetRole(id, who, role) => engine.set_community_role(id, &who, role, &mut out),
+            Op::Remove {
+                id,
+                who,
+                topic,
+                block,
+            } => engine.remove_from_community(id, &who, topic.as_deref(), block, &mut out),
+            Op::Delete(id) => engine.delete_community(id, &mut out),
+            Op::StartTopic(id, name) => {
+                engine.start_topic(id, &name, &mut out, &mut events);
+                private.dirty = true;
+            }
+            Op::EditTopic {
+                id,
+                group,
+                name,
+                position,
+                archived,
+            } => engine.edit_topic(id, &group, &name, position, archived, &mut out),
+            Op::ModerateDelete(group, seq) => engine.moderate_delete(&group, seq, &mut out),
+            Op::ResolveReport(id, report) => engine.resolve_report(id, report, &mut out),
         }
     }
     for name in std::mem::take(&mut chat.private_start) {
@@ -511,6 +549,7 @@ pub fn drive_private_chats(
             }
             Event::Line {
                 group,
+                seq,
                 from,
                 body,
                 point,
@@ -526,6 +565,7 @@ pub fn drive_private_chats(
                 if let Some(picture) = picture {
                     chat.receive_picture(&channel, 0, shown(&engine, &from), body, picture);
                     chat.date_last(&channel, sent_at_ms);
+                    chat.set_last_log_seq(&channel, seq);
                     continue;
                 }
                 // A point's own text is masked too: it is shown in the same log.
@@ -536,6 +576,7 @@ pub fn drive_private_chats(
                 });
                 chat.receive_point(&channel, 0, shown(&engine, &from), body, None, point);
                 chat.date_last(&channel, sent_at_ms);
+                chat.set_last_log_seq(&channel, seq);
             }
             Event::Location {
                 group,
@@ -564,12 +605,47 @@ pub fn drive_private_chats(
             Event::Notice(text) => {
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
             }
-            // Workspaces are the web UI's for now; a channel the app is in
-            // still arrives here as an ordinary group chat. So are reactions,
-            // edits and deletes: the app shows a reply as an ordinary line and
-            // keeps no message ids to hang the rest on.
-            Event::Workspaces(_)
-            | Event::Reaction { .. }
+            Event::Communities(list) => {
+                if let Some(id) = communities.created {
+                    if list.iter().any(|c| c.id == id) {
+                        communities.created = None;
+                        communities.show(id);
+                    }
+                }
+                communities.list = list;
+            }
+            Event::CommunityCreated(id) => communities.created = Some(id),
+            Event::Directory(listings) => communities.directory = listings,
+            Event::Redacted { group, seq, .. } => chat.redact(&channel_key(&group), seq),
+            Event::Left {
+                group,
+                community,
+                by,
+            } => {
+                let key = channel_key(&group);
+                let name = communities
+                    .list
+                    .iter()
+                    .find(|c| c.id == community)
+                    .map(|c| c.settings.name.clone());
+                chat.drop_channel(&key);
+                private.dirty = true;
+                if !by.is_empty() {
+                    chat.notice = Some(crate::systems::chat::ChatNotice {
+                        text: match name {
+                            Some(n) => {
+                                format!("{} took you out of a topic of {n}.", shown(&engine, &by))
+                            }
+                            None => format!("{} took you out of a topic.", shown(&engine, &by)),
+                        },
+                        error: false,
+                    });
+                }
+            }
+            // Reactions, edits and deletes: the app shows a reply as an
+            // ordinary line and keeps no message ids of its own to hang the
+            // rest on.
+            Event::Reaction { .. }
             | Event::Edited { .. }
             | Event::Deleted { .. }
             | Event::Sent { .. } => {}

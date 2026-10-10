@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// Somebody on another server is refused in words: every identity is already
 /// a full address so that chats can span servers later, but nothing forwards
 /// to another server yet. A bare name is read as a local one.
-fn local_name<T>(ctx: &ConnCtx<T>, who: &str) -> Result<String, String> {
+pub(super) fn local_name<T>(ctx: &ConnCtx<T>, who: &str) -> Result<String, String> {
     match address::split(who.trim()) {
         Some((name, server)) if server.eq_ignore_ascii_case(&ctx.config.server_name()) => {
             Ok(name.to_string())
@@ -73,10 +73,7 @@ pub(super) async fn on_register_device<T: FrameTransport>(
                 request_id,
                 key_packages: left,
             })
-            .await?;
-            // Somebody may have asked into one of this account's channels while
-            // none of its devices was online.
-            super::workspaces::hand_pending_joins(ctx).await
+            .await
         }
         Err(refusal) => {
             ctx.send(&server_error(request_id, 403, refusal.to_string()))
@@ -370,7 +367,7 @@ pub(super) async fn on_send<T: FrameTransport>(
             }
             if commit {
                 // A channel's members changed: its workspace's lists did too.
-                super::workspaces::after_commit(ctx, &group).await;
+                super::communities::after_commit(ctx, &group).await?;
                 // Whoever this commit added may have more devices than it named,
                 // and so may the writer.
                 ask_for_missing_devices(ctx, Some(group.clone())).await?;
@@ -403,15 +400,25 @@ pub(super) async fn on_sync<T: FrameTransport>(
         // Read fresh rather than from the list at connect: a block made since
         // must hold on the replay too.
         let blocked = blocked_lowercase(c, &account);
-        crate::e2ee::sync(c, &account, device, &cursors, &blocked)
+        let gone = crate::e2ee::topics_left(c, &account, &cursors).unwrap_or_default();
+        crate::e2ee::sync(c, &account, device, &cursors, &blocked).map(|s| (s, gone))
     })
     .await
     {
         Ok(result) => result,
         Err(_) => return Ok(()),
     };
-    let (entries, invites) = result.unwrap_or_default();
+    let ((entries, invites), gone) = result.unwrap_or_default();
     for e in entries {
+        if let Some(by) = &e.redacted_by {
+            ctx.send(&NetMessage::E2eeRedacted {
+                group: e.group,
+                seq: e.seq,
+                by: full(ctx, by),
+            })
+            .await?;
+            continue;
+        }
         ctx.send(&NetMessage::E2eeDeliver {
             group: e.group,
             seq: e.seq,
@@ -432,11 +439,25 @@ pub(super) async fn on_sync<T: FrameTransport>(
         })
         .await?;
     }
+    // Topics this device still holds that its account was taken out of while
+    // it was away: say so, so it forgets them rather than waiting for ever.
+    for (group, community) in gone {
+        ctx.send(&NetMessage::TopicLeft {
+            group,
+            community,
+            by: String::new(),
+        })
+        .await?;
+    }
     ctx.send(&NetMessage::E2eeSynced { request_id }).await?;
     // A device that has just caught up is the moment to settle who is missing
     // from its chats: itself, from chats started on another device, or
-    // somebody else's device, from chats it can add them to.
-    ask_for_missing_devices(ctx, None).await
+    // somebody else's device, from chats it can add them to. And the
+    // community work only a device in a topic can do.
+    ask_for_missing_devices(ctx, None).await?;
+    super::communities::hand_work(ctx, super::communities::Scope::HeldBy(device)).await?;
+    let me = ctx.principal_key.clone();
+    super::communities::hand_work(ctx, super::communities::Scope::Joining(me)).await
 }
 
 /// Find member devices missing from this account's chats (or from `only`) and

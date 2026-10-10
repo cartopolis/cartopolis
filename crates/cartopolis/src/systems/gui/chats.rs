@@ -127,6 +127,8 @@ pub struct ChatsView {
     pub draft: String,
     /// The list's "New chat" section is open.
     pub new_chat: bool,
+    /// Which of its forms.
+    pub new_kind: NewKind,
     /// The open chat's "+" menu is open.
     pub attach: bool,
     /// How many of each chat's lines have been seen, for the unread counts.
@@ -170,7 +172,10 @@ pub enum ChatKind {
     Private,
     Here,
     Everyone,
-    Room,
+    /// A topic of a community: a private chat, drawn as a place people gather.
+    Topic,
+    /// A community itself (its row in the list and its screens).
+    Community,
 }
 
 #[must_use]
@@ -179,10 +184,9 @@ pub fn kind_of(key: &str) -> ChatKind {
         ChatKind::Private
     } else if key == "local" {
         ChatKind::Here
-    } else if key == "geo:" {
-        ChatKind::Everyone
     } else {
-        ChatKind::Room
+        // "geo:", and anything else public: rooms are gone (protocol 39).
+        ChatKind::Everyone
     }
 }
 
@@ -193,7 +197,8 @@ pub fn subtitle(kind: ChatKind) -> String {
         ChatKind::Private => format!("{} Private · end-to-end encrypted", icons::LOCK),
         ChatKind::Here => "Nearby · public, whoever is within earshot".into(),
         ChatKind::Everyone => "Everyone on this server · public".into(),
-        ChatKind::Room => "Room · public".into(),
+        ChatKind::Topic => format!("{} A topic · end-to-end encrypted", icons::LOCK),
+        ChatKind::Community => "A community".into(),
     }
 }
 
@@ -205,7 +210,7 @@ pub fn display_name(key: &str, label: &str) -> String {
         ChatKind::Private => crate::systems::private_chat::peer_of_label(label).to_string(),
         ChatKind::Here => "Here".into(),
         ChatKind::Everyone => "Everyone".into(),
-        ChatKind::Room => format!("#{label}"),
+        ChatKind::Topic | ChatKind::Community => label.to_string(),
     }
 }
 
@@ -255,16 +260,21 @@ pub(crate) fn paint_avatar(
     let (tone, text, scale) = match kind {
         ChatKind::Here => (HERE_TONE, icons::PIN.to_string(), 0.45),
         ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), 0.45),
-        ChatKind::Room => (AVATAR_TONES[5], "#".to_string(), 0.42),
+        ChatKind::Topic => (AVATAR_TONES[5], "#".to_string(), 0.42),
+        ChatKind::Community => (
+            tone_for(name),
+            name.chars().next().unwrap_or('?').to_uppercase().collect(),
+            0.4,
+        ),
         ChatKind::Private => (
             tone_for(name),
             name.chars().next().unwrap_or('?').to_uppercase().collect(),
             0.38,
         ),
     };
-    // A room is a place people gather rather than a person, so it is the
-    // design's rounded square (`.room`), not a circle.
-    if kind == ChatKind::Room {
+    // A topic or a community is a place people gather rather than a person,
+    // so it is the design's rounded square (`.room`), not a circle.
+    if matches!(kind, ChatKind::Topic | ChatKind::Community) {
         let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
         p.rect_filled(rect, egui::CornerRadius::same((size * 0.29) as u8), tone);
     } else {
@@ -594,6 +604,37 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     resp
 }
 
+/// What an open chat needs to know when it is a topic of a community.
+#[derive(Clone)]
+struct TopicContext {
+    /// "# general".
+    name: String,
+    /// "Garage 44 · 12 people".
+    sub: String,
+    community: uuid::Uuid,
+    community_name: String,
+    /// Whether this account moderates the community.
+    moderates: bool,
+    group: Vec<u8>,
+}
+
+impl TopicContext {
+    fn of(communities: &crate::systems::communities::Communities, key: &str) -> Option<Self> {
+        let (c, t) = communities.topic(key)?;
+        let (name, sub, community) = crate::systems::communities::topic_header(communities, key)?;
+        Some(Self {
+            name,
+            sub,
+            community,
+            community_name: c.settings.name.clone(),
+            moderates: c
+                .role
+                .is_some_and(cartopolis_core::CommunityRole::moderates),
+            group: t.group.clone(),
+        })
+    }
+}
+
 /// Everything the panel decided while it was drawing, acted on afterwards
 /// because the drawing closure holds the state borrowed.
 #[derive(Default)]
@@ -610,8 +651,18 @@ struct Actions {
     go_to: Option<cartopolis_core::point::Point>,
     start_private: Option<String>,
     create_group: bool,
-    join_room: bool,
-    leave: Option<String>,
+    /// Work for a community, handed to `Communities::ops`.
+    community_ops: Vec<crate::systems::communities::CommunityOp>,
+    /// Open a community's screen.
+    show_community: Option<uuid::Uuid>,
+    /// Open the directory, or the form for starting a community.
+    community_find: bool,
+    community_start: bool,
+    /// Report a line to its community's moderators: (who, line, community,
+    /// topic, seq).
+    report_to_mods: Option<(String, Option<String>, uuid::Uuid, Vec<u8>, u64)>,
+    /// A server admin suspends (`false`) or deletes (`true`) an account.
+    admin: Option<(String, bool)>,
     share: Option<(String, u64)>,
     stop_share: Option<String>,
     show_location: Option<(f64, f64, String)>,
@@ -691,7 +742,14 @@ pub fn render_chats_panel(
     identity: Res<crate::resources::AuthIdentity>,
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
     mut screenshot: ResMut<crate::resources::ScreenshotState>,
+    mut communities: ResMut<crate::systems::communities::Communities>,
 ) {
+    for said in communities.take_admin_results() {
+        chat.notice = Some(crate::systems::chat::ChatNotice {
+            text: said,
+            error: false,
+        });
+    }
     // A picture being picked keeps arriving whether or not the panel is open:
     // the camera app or the file dialog is in front of it.
     poll_picture_capture(&mut view, &mut chat);
@@ -732,6 +790,23 @@ pub fn render_chats_panel(
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
             let me = identity.username.clone().unwrap_or_default();
+            let me_full = cartopolis_core::address::person(
+                &me,
+                identity.server_name.as_deref().unwrap_or_default(),
+            );
+            let admin = identity.may(cartopolis_core::permissions::Permission::AccountsManage);
+            if communities.screen.is_some() && view.sub.is_none() && view.open.is_none() {
+                let out = crate::systems::communities::screen(ui, &mut communities, &me_full);
+                if let Some(key) = out.open {
+                    communities.screen = None;
+                    act.open = Some(key);
+                }
+                if let Some(who) = out.message {
+                    communities.screen = None;
+                    act.message = Some(who);
+                }
+                return;
+            }
             match (view.sub.clone(), view.open.clone()) {
                 (Some(sub), _) => crate::systems::contacts::screen(
                     ui,
@@ -743,7 +818,14 @@ pub fn render_chats_panel(
                     &me,
                 ),
                 (None, None) => list_screen(
-                    ui, &mut chat, &mut view, &mut voice, &contacts, &mut act, now,
+                    ui,
+                    &mut chat,
+                    &mut view,
+                    &mut voice,
+                    &contacts,
+                    &communities,
+                    &mut act,
+                    now,
                 ),
                 (None, Some(key)) => {
                     let call = call_button(&calls, &key);
@@ -758,6 +840,8 @@ pub fn render_chats_panel(
                         lift,
                         call,
                         &mut pictures,
+                        TopicContext::of(&communities, &key),
+                        admin,
                     );
                 }
             }
@@ -768,6 +852,35 @@ pub fn render_chats_panel(
     if let Some(request) = act.call.take() {
         calls.request = Some(request);
     }
+    communities.ops.append(&mut act.community_ops);
+    if let Some(id) = act.show_community.take() {
+        view.open = None;
+        communities.show(id);
+    }
+    if std::mem::take(&mut act.community_find) {
+        view.new_chat = false;
+        communities.find();
+    }
+    if std::mem::take(&mut act.community_start) {
+        view.new_chat = false;
+        communities.start();
+    }
+    if let Some((who, line, id, group, seq)) = act.report_to_mods.take() {
+        chat.report = Some(ReportDraft {
+            username: who,
+            message: line,
+            reason: ReportReason::Spam,
+            note: String::new(),
+            asset: None,
+            community: Some((id, group, seq)),
+        });
+    }
+    match act.admin.take() {
+        Some((who, false)) => communities.admin_act(who, false),
+        Some((who, true)) => communities.confirm_delete = Some(who),
+        None => {}
+    }
+    crate::systems::communities::confirm_account_delete(&egui.ctx, &mut communities);
     if let Some(channel) = act.pick_picture.take() {
         view.picture_error = None;
         match crate::platform::photo::start() {
@@ -813,6 +926,7 @@ fn list_screen(
     view: &mut ChatsView,
     voice: &mut crate::systems::voice::VoiceState,
     contacts: &crate::systems::contacts::Contacts,
+    communities: &crate::systems::communities::Communities,
     act: &mut Actions,
     now: u64,
 ) {
@@ -881,7 +995,9 @@ fn list_screen(
     }
 
     if view.new_chat {
-        new_chat_section(ui, chat, act);
+        let mut kind = view.new_kind;
+        new_chat_section(ui, chat, &mut kind, act);
+        view.new_kind = kind;
     }
 
     // Message requests wait in one row above the chats, and the chats that
@@ -895,7 +1011,12 @@ fn list_screen(
         let mut out: Vec<(u64, Row)> = chat
             .channels
             .iter()
-            .filter(|c| filter(kind_of(&c.key)) && !requests.contains(&c.key))
+            .filter(|c| {
+                filter(kind_of(&c.key))
+                    && !requests.contains(&c.key)
+                    // Topics are listed under their community.
+                    && !communities.is_topic(&c.key)
+            })
             .map(|c| {
                 let visible: Vec<&ChatLine> = c
                     .lines
@@ -951,14 +1072,17 @@ fn list_screen(
     // conversation by its latest line, Everyone last. Which chats are private
     // is said on the row itself (the padlock), where it cannot be missed.
     let here = rows(&|k| k == ChatKind::Here);
-    let middle = rows(&|k| matches!(k, ChatKind::Private | ChatKind::Room));
+    let middle = rows(&|k| k == ChatKind::Private);
     let everyone = rows(&|k| k == ChatKind::Everyone);
 
     let panel = ui.max_rect();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for row in here.iter().chain(&middle).chain(&everyone) {
+            // The world's two public chats, then communities with their topics
+            // folded under them, then people and groups (`docs/mockups/
+            // communities/v1.html`, A).
+            let pick = |ui: &mut egui::Ui, row: &Row, act: &mut Actions| {
                 if chat_row(ui, row, sending).clicked() {
                     if sending && row.kind == ChatKind::Private {
                         act.send_point_to = Some(row.key.clone());
@@ -966,6 +1090,28 @@ fn list_screen(
                         act.open = Some(row.key.clone());
                     }
                 }
+            };
+            for row in here.iter().chain(&everyone) {
+                pick(ui, row, act);
+            }
+            let unread = |key: &str| {
+                chat.channels
+                    .iter()
+                    .find(|c| c.key == key)
+                    .map_or(0, |c| view.unread(chat, key, &c.lines))
+            };
+            match crate::systems::communities::list_band(ui, communities, chat, &unread) {
+                Some(crate::systems::communities::ListPick::Open(key)) => act.open = Some(key),
+                Some(crate::systems::communities::ListPick::Community(id)) => {
+                    act.show_community = Some(id);
+                }
+                None => {}
+            }
+            if !middle.is_empty() {
+                theme::section(ui, "People and groups");
+            }
+            for row in &middle {
+                pick(ui, row, act);
             }
             if !middle.iter().any(|r| r.kind == ChatKind::Private) {
                 ui.add_space(6.0);
@@ -1016,7 +1162,7 @@ fn list_screen(
         .on_hover_text(if view.new_chat {
             "Close"
         } else {
-            "New chat: a person, a group or a room"
+            "New: a person, a group or a community"
         });
     let p = ui.painter();
     p.add(
@@ -1050,84 +1196,183 @@ fn list_screen(
     );
     if resp.clicked() {
         view.new_chat = !view.new_chat;
+        view.new_kind = NewKind::Choose;
     }
 }
 
-fn new_chat_section(ui: &mut egui::Ui, chat: &mut ChatState, act: &mut Actions) {
-    raised_frame().show(ui, |ui| {
-        ui.label(egui::RichText::new("Message someone").color(theme::CREAM));
-        ui.horizontal(|ui| {
+/// Which of the "+" sheet's forms is open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NewKind {
+    /// The four choices.
+    #[default]
+    Choose,
+    Person,
+    Group,
+}
+
+/// One big choice on the "+" sheet: an icon, what it is, one line on it.
+fn new_choice(ui: &mut egui::Ui, icon: &str, title: &str, line: &str, brand: bool) -> bool {
+    let id = ui.next_auto_id().with("new_choice");
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let inner = egui::Frame::NONE
+        .fill(if hovered {
+            theme::SURFACE_HOVER
+        } else {
+            egui::Color32::TRANSPARENT
+        })
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(6, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::same(12), theme::SURFACE_RAISED);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icon,
+                    egui::FontId::proportional(20.0),
+                    if brand { theme::BRAND } else { theme::ACCENT },
+                );
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(egui::RichText::new(title).size(15.0).color(theme::CREAM));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(line).size(12.5).color(theme::TEXT_DIM),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+        });
+    ui.interact(inner.response.rect, id, egui::Sense::click())
+        .clicked()
+}
+
+/// The "+" sheet: one question — a person, a group, or a community — and then
+/// the form for whichever was picked (`docs/mockups/communities/v2.html`, H).
+fn new_chat_section(
+    ui: &mut egui::Ui,
+    chat: &mut ChatState,
+    kind: &mut NewKind,
+    act: &mut Actions,
+) {
+    raised_frame().show(ui, |ui| match *kind {
+        NewKind::Choose => {
+            ui.label(
+                egui::RichText::new("Start something")
+                    .size(17.0)
+                    .color(theme::CREAM),
+            );
+            ui.add_space(4.0);
+            if new_choice(
+                ui,
+                icons::CHAT,
+                "Message a person",
+                "Just the two of you",
+                false,
+            ) {
+                *kind = NewKind::Person;
+            }
+            if new_choice(
+                ui,
+                icons::GROUP,
+                "Start a group",
+                "A few people you pick. Private.",
+                false,
+            ) {
+                *kind = NewKind::Group;
+            }
+            if new_choice(
+                ui,
+                icons::SEARCH,
+                "Find a community",
+                "Clubs, teams and neighbourhoods on this server",
+                true,
+            ) {
+                act.community_find = true;
+            }
+            if new_choice(
+                ui,
+                icons::CAT_CITY,
+                "Start a community",
+                "People who share several topics, like a club or a team",
+                true,
+            ) {
+                act.community_start = true;
+            }
+            ui.add_space(4.0);
+            theme::note(
+                ui,
+                &format!(
+                    "{} All of these are end-to-end encrypted: the server passes them on \
+                     without being able to read them. Here and Everyone are public.",
+                    icons::LOCK
+                ),
+            );
+        }
+        NewKind::Person => {
+            ui.label(egui::RichText::new("Message a person").color(theme::CREAM));
             let field = crate::systems::text_touch::field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.private_input)
                     .id(egui::Id::new("chats_new_private"))
-                    .desired_width(ui.available_width() * 0.6)
+                    .desired_width(ui.available_width())
                     .hint_text("Username"),
             );
             let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let ready = !chat.private_input.trim().is_empty();
-            if (theme::action_enabled_because(ui, ready, "Start", "Type who to write to first")
-                .clicked()
-                || entered)
-                && ready
-            {
-                act.start_private = Some(chat.private_input.trim().to_string());
-            }
-        });
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("New group").color(theme::CREAM));
-        crate::systems::text_touch::field(
-            ui,
-            egui::TextEdit::singleline(&mut chat.group_name_input)
-                .id(egui::Id::new("chats_group_name"))
-                .desired_width(ui.available_width())
-                .hint_text("Group name"),
-        );
-        crate::systems::text_touch::field(
-            ui,
-            egui::TextEdit::singleline(&mut chat.group_members_input)
-                .id(egui::Id::new("chats_group_members"))
-                .desired_width(ui.available_width())
-                .hint_text("Usernames, separated by commas"),
-        );
-        let ready =
-            !chat.group_name_input.trim().is_empty() && !chat.group_members_input.trim().is_empty();
-        if theme::action_enabled_because(
-            ui,
-            ready,
-            "Create group",
-            "Give it a name and at least one person",
-        )
-        .clicked()
-            && ready
-        {
-            act.create_group = true;
+            ui.horizontal(|ui| {
+                if theme::action_button(ui, "Back").clicked() {
+                    *kind = NewKind::Choose;
+                }
+                if (theme::action_enabled_because(ui, ready, "Start", "Type who to write to first")
+                    .clicked()
+                    || entered)
+                    && ready
+                {
+                    act.start_private = Some(chat.private_input.trim().to_string());
+                }
+            });
         }
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Join a public room").color(theme::CREAM));
-        ui.horizontal(|ui| {
-            let field = crate::systems::text_touch::field(
+        NewKind::Group => {
+            ui.label(egui::RichText::new("Start a group").color(theme::CREAM));
+            crate::systems::text_touch::field(
                 ui,
-                egui::TextEdit::singleline(&mut chat.join_input)
-                    .id(egui::Id::new("chats_join_room"))
-                    .desired_width(ui.available_width() * 0.6)
-                    .hint_text("Room name"),
+                egui::TextEdit::singleline(&mut chat.group_name_input)
+                    .id(egui::Id::new("chats_group_name"))
+                    .desired_width(ui.available_width())
+                    .hint_text("Group name"),
             );
-            let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let ready = !chat.join_input.trim().is_empty();
-            if (theme::action_enabled_because(ui, ready, "Join", "Type a room name first")
+            crate::systems::text_touch::field(
+                ui,
+                egui::TextEdit::singleline(&mut chat.group_members_input)
+                    .id(egui::Id::new("chats_group_members"))
+                    .desired_width(ui.available_width())
+                    .hint_text("Usernames, separated by commas"),
+            );
+            let ready = !chat.group_name_input.trim().is_empty()
+                && !chat.group_members_input.trim().is_empty();
+            ui.horizontal(|ui| {
+                if theme::action_button(ui, "Back").clicked() {
+                    *kind = NewKind::Choose;
+                }
+                if theme::action_enabled_because(
+                    ui,
+                    ready,
+                    "Create group",
+                    "Give it a name and at least one person",
+                )
                 .clicked()
-                || entered)
-                && ready
-            {
-                act.join_room = true;
-            }
-        });
-        theme::note(
-            ui,
-            "Private chats and groups are end-to-end encrypted: the server passes them on \
-             without being able to open them. Rooms, Here and Everyone are public.",
-        );
+                    && ready
+                {
+                    act.create_group = true;
+                }
+            });
+        }
     });
     ui.add_space(6.0);
 }
@@ -1143,6 +1388,7 @@ fn chat_header(
     act: &mut Actions,
     now: u64,
     call: CallButton,
+    topic: Option<&TopicContext>,
 ) {
     // The design's thread header (`.thead`): a bare chevron, the small avatar,
     // the name over one line of status.
@@ -1181,6 +1427,22 @@ fn chat_header(
                     .size(12.0)
                     .color(theme::REAL_LOCATION),
                 );
+            } else if let Some(t) = topic {
+                // A topic says which community it is in, and opens it.
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{} {}", t.sub, icons::CHEVRON_RIGHT))
+                                .size(12.0)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    act.show_community = Some(t.community);
+                }
             } else {
                 ui.label(
                     egui::RichText::new(subtitle(kind))
@@ -1189,13 +1451,6 @@ fn chat_header(
                 );
             }
         });
-        if kind == ChatKind::Room {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::action_button(ui, "Leave").clicked() {
-                    act.leave = Some(key.to_string());
-                }
-            });
-        }
         // A private chat can be called. Encrypted like its lines, so the
         // button lives only where the padlock does.
         let label = match call {
@@ -1231,20 +1486,28 @@ fn chat_screen(
     lift: f32,
     call: CallButton,
     pictures: &mut crate::systems::chat_pictures::ChatPictures,
+    topic: Option<TopicContext>,
+    admin: bool,
 ) {
     let Some(channel) = chat.channels.iter().find(|c| c.key == key) else {
         act.back = true;
         return;
     };
-    let kind = kind_of(key);
-    let name = display_name(key, &channel.label);
+    let kind = if topic.is_some() {
+        ChatKind::Topic
+    } else {
+        kind_of(key)
+    };
+    let name = topic
+        .as_ref()
+        .map_or_else(|| display_name(key, &channel.label), |t| t.name.clone());
     let lines: Vec<ChatLine> = channel
         .lines
         .iter()
         .filter(|l| !chat.is_blocked(&l.sender))
         .cloned()
         .collect();
-    chat_header(ui, chat, key, &name, kind, act, now, call);
+    chat_header(ui, chat, key, &name, kind, act, now, call, topic.as_ref());
     ui.add_space(8.0);
     if segmented(ui, "Chat", 0, false, false) == Some(true) {
         act.world_of = Some(key.to_string());
@@ -1317,11 +1580,11 @@ fn chat_screen(
                         .color(theme::WARN),
                 );
             }
-            composer(ui, chat, view, key, kind, act, now);
+            composer(ui, chat, view, key, kind_of(key), act, now);
             ui.add_space(6.0 + lift);
         });
 
-    let group = kind != ChatKind::Private || !channel_is_direct(chat, key);
+    let group = !matches!(kind, ChatKind::Private) || !channel_is_direct(chat, key);
     egui::ScrollArea::vertical()
         .stick_to_bottom(true)
         .auto_shrink([false, false])
@@ -1370,7 +1633,17 @@ fn chat_screen(
                     number += 1;
                     number
                 });
-                bubble(ui, chat, line, group, n, act, pictures);
+                bubble(
+                    ui,
+                    chat,
+                    line,
+                    group,
+                    n,
+                    act,
+                    pictures,
+                    topic.as_ref(),
+                    admin,
+                );
                 ui.add_space(4.0);
             }
         });
@@ -1714,7 +1987,22 @@ fn bubble(
     number: Option<usize>,
     act: &mut Actions,
     pictures: &mut crate::systems::chat_pictures::ChatPictures,
+    topic: Option<&TopicContext>,
+    admin: bool,
 ) {
+    // A line a moderator deleted keeps its place, as a marker, so a reply to
+    // it still reads and nobody thinks it was never there.
+    if line.removed {
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("Message removed by a moderator")
+                    .italics()
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+        });
+        return;
+    }
     let mine = is_mine(chat, line);
     let max_w = (ui.available_width() * 0.78).max(120.0);
     let layout = if mine {
@@ -1853,13 +2141,66 @@ fn bubble(
                             )
                             .sense(egui::Sense::click()),
                         );
-                        person_menu(&name, &line.sender, Some(&line.body), |a| match a {
-                            PersonAction::Message => act.message = Some(line.sender.clone()),
-                            PersonAction::Block => act.block = Some(line.sender.clone()),
-                            PersonAction::Report(msg) => {
-                                act.report = Some((line.sender.clone(), msg));
-                            }
-                        });
+                        let extras = crate::systems::chat::PersonExtras {
+                            community: topic.map(|t| t.community_name.clone()),
+                            moderate_topic: topic.filter(|t| t.moderates).map(|t| t.name.clone()),
+                            admin,
+                        };
+                        let seq = line.log_seq;
+                        person_menu(
+                            &name,
+                            &line.sender,
+                            Some(&line.body),
+                            &extras,
+                            |a| match a {
+                                PersonAction::Message => act.message = Some(line.sender.clone()),
+                                PersonAction::Block => act.block = Some(line.sender.clone()),
+                                PersonAction::Report(msg) => {
+                                    act.report = Some((line.sender.clone(), msg));
+                                }
+                                PersonAction::ReportToModerators(msg) => {
+                                    if let (Some(t), Some(seq)) = (topic, seq) {
+                                        act.report_to_mods = Some((
+                                            line.sender.clone(),
+                                            msg,
+                                            t.community,
+                                            t.group.clone(),
+                                            seq,
+                                        ));
+                                    }
+                                }
+                                PersonAction::DeleteForEveryone => {
+                                    if let (Some(t), Some(seq)) = (topic, seq) {
+                                        act.community_ops.push(
+                                        crate::systems::communities::CommunityOp::ModerateDelete(
+                                            t.group.clone(),
+                                            seq,
+                                        ),
+                                    );
+                                    }
+                                }
+                                PersonAction::RemoveFromTopic
+                                | PersonAction::RemoveFromCommunity => {
+                                    if let Some(t) = topic {
+                                        let whole = matches!(a, PersonAction::RemoveFromCommunity);
+                                        act.community_ops.push(
+                                            crate::systems::communities::CommunityOp::Remove {
+                                                id: t.community,
+                                                who: line.sender.clone(),
+                                                topic: (!whole).then(|| t.group.clone()),
+                                                block: false,
+                                            },
+                                        );
+                                    }
+                                }
+                                PersonAction::Suspend => {
+                                    act.admin = Some((line.sender.clone(), false))
+                                }
+                                PersonAction::DeleteAccount => {
+                                    act.admin = Some((line.sender.clone(), true));
+                                }
+                            },
+                        );
                     }
                     ui.add(
                         egui::Label::new(egui::RichText::new(&line.body).size(14.5).color(ink))
@@ -2604,35 +2945,6 @@ fn apply(
         chat.group_members_input.clear();
         view.new_chat = false;
     }
-    if act.join_room {
-        let room = chat.join_input.trim().to_string();
-        let key = format!("room:{room}");
-        if let Some(online) = online {
-            online.send(
-                "chat subscribe",
-                NetMessage::ChatSubscribe {
-                    room: room.clone(),
-                    join: true,
-                },
-            );
-        }
-        chat.open_channel(&key, &room);
-        chat.join_input.clear();
-        view.new_chat = false;
-        view.open_chat(&key);
-        chat.focus_channel(&key);
-    }
-    if let Some(key) = act.leave {
-        let room = key.strip_prefix("room:").unwrap_or(&key).to_string();
-        if let Some(online) = online {
-            online.send(
-                "chat unsubscribe",
-                NetMessage::ChatSubscribe { room, join: false },
-            );
-        }
-        chat.drop_channel(&key);
-        view.open = None;
-    }
     if let Some((key, duration)) = act.share {
         chat.start_sharing(&key, duration, now);
         view.attach = false;
@@ -2673,6 +2985,7 @@ fn apply(
             reason: ReportReason::Harassment,
             note: String::new(),
             asset: None,
+            community: None,
         });
     }
 }
@@ -2964,6 +3277,7 @@ pub fn render_chat_world(
                     &mut act,
                     now,
                     CallButton::Hidden,
+                    None,
                 );
                 ui.add_space(8.0);
                 if segmented(ui, "Chat", 0, true, false) == Some(false) {
@@ -3279,7 +3593,7 @@ mod tests {
         assert!(subtitle(kind_of("dm:ab")).contains("end-to-end"));
         assert!(subtitle(kind_of("local")).contains("public"));
         assert!(subtitle(kind_of("geo:")).contains("public"));
-        assert!(subtitle(kind_of("room:x")).contains("public"));
+        assert!(subtitle(ChatKind::Topic).contains("end-to-end"));
         assert_eq!(
             display_name(
                 "dm:ab",
@@ -3287,7 +3601,6 @@ mod tests {
             ),
             "Sanne"
         );
-        assert_eq!(display_name("room:fietsers", "fietsers"), "#fietsers");
         assert_eq!(display_name("local", "Local"), "Here");
     }
 

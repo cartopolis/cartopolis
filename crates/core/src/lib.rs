@@ -33,14 +33,16 @@ pub use particles::{
 };
 pub use permissions::{Permission, PermissionSet};
 pub use protocol::{
-    channel_name, decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
-    message_request_id, AuthCredential, AvatarStateDto, CallMember, CallTrack, ChannelDto,
-    ChatScope, ContactDto, ContactRequestDto, ContactSettings, E2eeCursor, E2eeKeyPackage, E2eeNewDevice,
-    E2eeWelcome, Emote, EmoteState, GeoAnchor, MessageKind, MetDto, NearbyPersonDto, NetMessage,
-    PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo,
+    decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
+    message_request_id, topic_name, AuthCredential, AvatarStateDto, CallMember, CallTrack,
+    ChatScope, CommunityDto, CommunityListing, CommunityMemberDto, CommunityReportDto,
+    CommunityRole, CommunitySettings, ContactDto, ContactRequestDto, ContactSettings,
+    DirectoryOrder, E2eeCursor, E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, Emote, EmoteState,
+    GeoAnchor, JoinRequestDto, JoinRule, ListingState, MessageKind, MetDto, NearbyPersonDto,
+    NetMessage, PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo,
     ProtocolRevision, Relation, ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry,
-    WorkspaceDto, WorkspaceMemberDto, WorkspaceRole, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
-    MAX_REPORT_NOTE_LEN, MAX_ROOM_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    TopicDto, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN, MAX_SEAT_OFFSET_M,
+    PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use shot_env::ShotEnv;

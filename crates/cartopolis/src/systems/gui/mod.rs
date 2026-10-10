@@ -13,6 +13,7 @@ pub mod chat;
 pub mod chat_overlay;
 pub mod chat_people;
 pub mod chats;
+pub mod communities;
 pub mod contacts;
 pub mod data_layers;
 pub mod dismiss;

@@ -1,8 +1,8 @@
-//! Text chat (ADR-028): sending a line, and joining or leaving a room.
+//! Text chat (ADR-028): sending a line to Here or Everyone.
 
 use super::{
-    chat_history, now_millis, room_channel, ConnCtx, FrameTransport, GLOBAL_CHANNEL, LOCAL_CHANNEL,
-    MAX_CHAT_LEN, MIN_GLOBAL_INTERVAL, MIN_LOCAL_INTERVAL, MIN_ROOM_INTERVAL,
+    now_millis, ConnCtx, FrameTransport, GLOBAL_CHANNEL, LOCAL_CHANNEL, MAX_CHAT_LEN,
+    MIN_GLOBAL_INTERVAL, MIN_LOCAL_INTERVAL,
 };
 use crate::db::{self, SharedConn};
 use bytes::Bytes;
@@ -11,8 +11,8 @@ use std::time::Instant;
 
 /// Store a line for scrollback, on a blocking thread.
 ///
-/// Awaited before the line is delivered, as it always was: a room joined a moment
-/// later replays from the table, and a line that was delivered but not yet stored
+/// Awaited before the line is delivered, as it always was: a client connecting a
+/// moment later replays Everyone from the table, and a line that was delivered but not yet stored
 /// would be missing from that replay.
 async fn store_line(
     conn: &SharedConn,
@@ -83,48 +83,6 @@ pub(super) async fn on_send<T: FrameTransport>(
             })?;
             ctx.chat.deliver_all(&ctx.display_name, &Bytes::from(frame));
         }
-        ChatScope::Room(room) => {
-            // A member first, and a valid name first of all. Membership was only
-            // ever consulted for *recipients*, so any client could address — and
-            // write history into — a room it had never joined, just by naming it.
-            let Some(channel) = room_channel(&room) else {
-                return Ok(());
-            };
-            if !ctx.chat.in_room(avatar_id, &channel) {
-                tracing::debug!(avatar_id, "room message from a non-member");
-                return Ok(());
-            }
-            if ctx.gates.last_room.elapsed() < MIN_ROOM_INTERVAL {
-                return Ok(());
-            }
-            ctx.gates.last_room = Instant::now();
-            if let Err(e) = store_line(
-                &ctx.conn,
-                channel.clone(),
-                avatar_id,
-                ctx.display_name.clone(),
-                now_ms,
-                body.clone(),
-            )
-            .await
-            {
-                tracing::warn!(avatar_id, channel = %channel, "storing room chat failed: {e:#}");
-            }
-            let frame = encode_app_frame(&NetMessage::ChatMessage {
-                channel: channel.clone(),
-                sender_id: avatar_id,
-                sender_name: ctx.display_name.clone(),
-                sent_at_ms: now_ms,
-                body,
-                distance_m: None,
-            })?;
-            ctx.chat.deliver_room(
-                &channel,
-                &ctx.display_name,
-                crate::chat::Lane::Text,
-                &Bytes::from(frame),
-            );
-        }
         ChatScope::Local { shout } => {
             if ctx.gates.last_local.elapsed() < MIN_LOCAL_INTERVAL {
                 return Ok(());
@@ -166,31 +124,6 @@ pub(super) async fn on_send<T: FrameTransport>(
                     );
                 }
             }
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn on_subscribe<T: FrameTransport>(
-    ctx: &mut ConnCtx<T>,
-    room: String,
-    join: bool,
-) -> anyhow::Result<()> {
-    let Some(channel) = room_channel(&room) else {
-        return Ok(());
-    };
-    ctx.chat.set_room(ctx.avatar_id, &channel, join);
-    if join {
-        for r in chat_history(&ctx.conn, &channel).await {
-            ctx.send(&NetMessage::ChatMessage {
-                channel: channel.clone(),
-                sender_id: r.sender_id as u64,
-                sender_name: r.sender_name,
-                sent_at_ms: r.sent_at_ms as u64,
-                body: r.body,
-                distance_m: None,
-            })
-            .await?;
         }
     }
     Ok(())

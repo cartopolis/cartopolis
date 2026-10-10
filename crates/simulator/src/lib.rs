@@ -13,6 +13,7 @@ pub mod buildings;
 pub mod calls;
 pub mod chat;
 pub mod cli;
+pub mod communities;
 pub mod config;
 pub mod contacts;
 pub mod content;
@@ -32,7 +33,6 @@ pub mod scripting;
 pub mod state;
 pub mod textures;
 pub mod videos;
-pub mod workspaces;
 
 pub use auth::{ensure_account, ensure_admin_account, Sessions};
 pub use chat::ChatHub;

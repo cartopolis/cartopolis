@@ -181,6 +181,16 @@ pub async fn api_post(path: &str, body: Option<String>) -> Result<String, String
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
+/// `PATCH` a JSON document to the API.
+pub async fn api_patch(path: &str, body: String) -> Result<String, String> {
+    let request = api_request(http::Request::patch, path)
+        .ok_or("not signed in")?
+        .header("Content-Type", "application/json")
+        .body(body.into_bytes());
+    let bytes = http::fetch(request).await?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
 /// `DELETE` a path on the model API.
 pub async fn api_delete(path: &str) -> Result<(), String> {
     let request = api_request(http::Request::delete, path).ok_or("not signed in")?;

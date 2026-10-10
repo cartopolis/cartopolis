@@ -39,6 +39,8 @@ export interface Message {
     /** An ActivityStreams Note with a Place, when the message is a point. */
     point: string | null
     picture: Picture | null
+    /** Who took it down, when a moderator deleted it rather than its author. */
+    removedBy?: string
 }
 
 /** One chat's history, oldest first, plus how far its reader has read. */
@@ -206,6 +208,23 @@ export function changeLocally(chat: Chat, target: number, me: string, body: stri
         m.body = body
         m.edited = true
     }
+    return true
+}
+
+/**
+ * A community's moderator deleted the message at `seq` for everybody. Unlike
+ * an author's delete this names nobody's own message, so it is not checked
+ * against who sent it: the server only delivers it from a moderator.
+ */
+export function redactLocally(chat: Chat, seq: number, by: string): boolean {
+    const m = find(chat, seq)
+    if (!m || m.removedBy) return false
+    m.deleted = true
+    m.body = ''
+    m.reactions = {}
+    m.point = null
+    m.picture = null
+    m.removedBy = by
     return true
 }
 

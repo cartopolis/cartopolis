@@ -68,6 +68,8 @@ pub enum Refusal {
     ForeignDevice,
     #[error("too large")]
     TooLarge,
+    #[error("this topic is archived: it keeps its history and takes no new messages")]
+    Archived,
     #[error("the server could not store that: {0}")]
     Storage(String),
 }
@@ -89,6 +91,8 @@ pub struct Entry {
     pub is_commit: bool,
     pub sent_at_ms: u64,
     pub message: Vec<u8>,
+    /// The moderator who deleted it (`communities::redact`), if one did.
+    pub redacted_by: Option<String>,
 }
 
 /// An invitation waiting for a device.
@@ -336,6 +340,9 @@ pub fn append(
     if is_commit && epoch != current_epoch as u64 {
         return Err(Refusal::StaleEpoch);
     }
+    if !is_commit && crate::communities::is_archived(&tx, group)? {
+        return Err(Refusal::Archived);
+    }
 
     // Resolve who the invitation adds before writing anything, so a bad one
     // refuses the whole entry rather than half of it.
@@ -406,7 +413,7 @@ pub fn append(
             )?;
         }
         // Whoever was waiting to be let into this channel is in now.
-        crate::workspaces::settle_joins(&tx, group, &added)?;
+        crate::communities::settle_joins(&tx, group, &added)?;
         for d in w.devices {
             tx.execute(
                 "INSERT INTO e2ee_invites (device, group_id, sender_name, after, welcome)
@@ -441,6 +448,7 @@ pub fn append(
             is_commit,
             sent_at_ms: now_ms,
             message: message.to_vec(),
+            redacted_by: None,
         },
         members: everyone,
         invites,
@@ -465,7 +473,7 @@ pub fn sync(
             continue;
         }
         let mut stmt = conn.prepare(
-            "SELECT seq, sender, sender_name, device, is_commit, sent_at_ms, message
+            "SELECT seq, sender, sender_name, device, is_commit, sent_at_ms, message, redacted_by
              FROM e2ee_log WHERE group_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![group, *after as i64, SYNC_BATCH], |r| {
@@ -478,6 +486,7 @@ pub fn sync(
                 is_commit: r.get(4)?,
                 sent_at_ms: r.get::<_, i64>(5)? as u64,
                 message: r.get(6)?,
+                redacted_by: r.get(7)?,
             })
         })?;
         for e in rows {
@@ -517,6 +526,45 @@ pub fn sync(
         rows.collect::<Result<Vec<_>, _>>()?
     };
     Ok((entries, invites))
+}
+
+/// Of the chats a device reports cursors for, the topics `account` is no
+/// longer in (taken out, left, or the community deleted while the device was
+/// away), with their community when it still exists. Only topics: a direct
+/// chat somebody was taken out of (`contacts::leave_direct_chat`) is left to
+/// fall quiet, as it always has.
+pub fn topics_left(
+    conn: &Connection,
+    account: &str,
+    cursors: &[(Vec<u8>, u64)],
+) -> Result<Vec<(Vec<u8>, Uuid)>, Refusal> {
+    let mut out = Vec::new();
+    for (group, _) in cursors {
+        if is_member(conn, group, account)? {
+            continue;
+        }
+        let topic: Option<String> = conn
+            .query_row(
+                "SELECT community FROM topics WHERE group_id = ?1",
+                params![group],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let gone = conn
+            .query_row(
+                "SELECT 1 FROM e2ee_groups WHERE id = ?1",
+                params![group],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_none();
+        match topic {
+            Some(id) => out.push((group.clone(), Uuid::parse_str(&id).unwrap_or_default())),
+            None if gone => out.push((group.clone(), Uuid::nil())),
+            None => {}
+        }
+    }
+    Ok(out)
 }
 
 /// Record that `device` holds `group`.

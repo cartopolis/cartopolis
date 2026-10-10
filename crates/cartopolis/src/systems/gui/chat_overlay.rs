@@ -574,6 +574,7 @@ pub fn render_chat_transcript(
                                 &name,
                                 &line.sender,
                                 Some(&line.body),
+                                &crate::systems::chat::PersonExtras::default(),
                                 |action| match action {
                                     PersonAction::Message => {
                                         message_now = Some(line.sender.clone())
@@ -582,6 +583,9 @@ pub fn render_chat_transcript(
                                     PersonAction::Report(msg) => {
                                         open_report = Some((line.sender.clone(), msg))
                                     }
+                                    // The transcript is public chat: no community, no
+                                    // moderation, and the admin section lives on the panel.
+                                    _ => {}
                                 },
                             );
                         } else {
@@ -621,6 +625,7 @@ pub fn render_chat_transcript(
             // Raised from a chat line, so it is about what somebody said rather
             // than about an object they put in the street.
             asset: None,
+            community: None,
         });
     }
 }

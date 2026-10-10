@@ -20,7 +20,8 @@ pictures and shared real locations. It **can** see who has which devices, who
 is in which chat, and when each entry was written and by whom (`e2ee_*` tables,
 V20). That metadata is visible to the operator and is not hidden.
 
-Here (nearby), Global and public rooms are **not** encrypted and cannot be: the
+Here (nearby) and Global are **not** encrypted (public rooms were removed with
+protocol 39, `communities.md`) and cannot be: the
 server picks who hears a nearby line by where people stand. The UI must say
 which kind a chat is: every private chat's label starts with a padlock
 (`private_chat::private_label`, `icons::LOCK`), and nothing else carries one.

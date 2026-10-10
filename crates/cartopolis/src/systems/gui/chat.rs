@@ -48,7 +48,6 @@ pub struct ChatState {
     pub input: String,
     /// Local say/shout toggle.
     pub shout: bool,
-    pub join_input: String,
     /// Seconds since app start, as of the last frame the overlay ran.
     ///
     /// **Chat is timed on the client, not on `sent_at_ms`.** Everything the
@@ -195,6 +194,9 @@ pub struct ReportDraft {
     /// says *which file*, so hiding it reaches every prim wearing it rather than
     /// the one the reporter was standing in front of.
     pub asset: Option<String>,
+    /// Set when the report goes to a community's moderators rather than to the
+    /// server's operator: the community, the topic and the line's place in it.
+    pub community: Option<(uuid::Uuid, Vec<u8>, u64)>,
 }
 
 pub struct ChatChannel {
@@ -234,6 +236,11 @@ pub struct ChatLine {
     /// after the last line I saw", which needs a number no two lines share.
     #[cfg_attr(not(mcp), allow(dead_code))]
     pub seq: u64,
+    /// For a line in a private chat, its place in the chat's log: the id a
+    /// moderator deletes it by and a report names it by. `None` elsewhere.
+    pub log_seq: Option<u64>,
+    /// A moderator deleted it: drawn as a marker, its text gone.
+    pub removed: bool,
 }
 
 #[cfg(mcp)]
@@ -270,7 +277,6 @@ impl Default for ChatState {
             active: 0,
             input: String::new(),
             shout: false,
-            join_input: String::new(),
             clock: 0.0,
             next_seq: 1,
             my_id: None,
@@ -304,7 +310,7 @@ impl Default for ChatState {
 }
 
 impl ChatState {
-    /// Index of a channel by key, creating a room tab if absent.
+    /// Index of a channel by key, creating it if absent.
     fn channel_index(&mut self, key: &str) -> usize {
         if let Some(i) = self.channels.iter().position(|c| c.key == key) {
             return i;
@@ -445,7 +451,7 @@ impl ChatState {
     /// still exists.
     ///
     /// The clamp is the whole reason this is a method: `active` is an index, and
-    /// leaving the room you were speaking in would otherwise leave the composer
+    /// leaving the chat you were speaking in would otherwise leave the composer
     /// pointing one past the end — where `scope_for` never runs and Send is a
     /// button that does nothing.
     pub fn drop_channel(&mut self, key: &str) {
@@ -503,6 +509,8 @@ impl ChatState {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             seq,
+            log_seq: None,
+            removed: false,
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
@@ -531,6 +539,27 @@ impl ChatState {
             line.arrived = f64::NEG_INFINITY;
         }
         line.at_ms = sent_at_ms;
+    }
+
+    /// Record the log place of the line just received on `channel`.
+    pub fn set_last_log_seq(&mut self, channel: &str, seq: u64) {
+        let idx = self.channel_index(channel);
+        if let Some(line) = self.channels[idx].lines.last_mut() {
+            line.log_seq = Some(seq);
+        }
+    }
+
+    /// A moderator deleted the line at `seq` in `channel`: blank it.
+    pub fn redact(&mut self, channel: &str, seq: u64) {
+        let Some(c) = self.channels.iter_mut().find(|c| c.key == channel) else {
+            return;
+        };
+        for line in c.lines.iter_mut().filter(|l| l.log_seq == Some(seq)) {
+            line.removed = true;
+            line.body.clear();
+            line.point = None;
+            line.picture = None;
+        }
     }
 
     /// [`Self::receive`], for a line that is a picture.
@@ -585,16 +614,17 @@ fn channel_label(key: &str) -> String {
     match key {
         "local" => "Local".into(),
         "geo:" => "Global".into(),
-        _ => key.strip_prefix("room:").unwrap_or(key).to_string(),
+        _ => key.to_string(),
     }
 }
 
-/// Scope to send into for a channel key.
+/// Scope to send into for a public channel key (private chats go through the
+/// engine, not here).
 pub fn scope_for(key: &str, shout: bool) -> ChatScope {
     match key {
         "geo:" => ChatScope::Global,
         "local" => ChatScope::Local { shout },
-        _ => ChatScope::Room(key.strip_prefix("room:").unwrap_or(key).to_string()),
+        _ => ChatScope::Local { shout },
     }
 }
 
@@ -605,6 +635,32 @@ pub enum PersonAction {
     Block,
     /// Report, carrying the line that prompted it when there is one.
     Report(Option<String>),
+    /// Report the line to the community's moderators.
+    ReportToModerators(Option<String>),
+    /// A moderator deletes the line for everybody.
+    DeleteForEveryone,
+    /// A moderator takes them out of this topic.
+    RemoveFromTopic,
+    /// A moderator takes them out of the community.
+    RemoveFromCommunity,
+    /// A server admin suspends their account.
+    Suspend,
+    /// A server admin deletes their account.
+    DeleteAccount,
+}
+
+/// What else the person menu offers, by who is looking (`docs/mockups/
+/// communities/v3.html`): one menu, with a section per role, and nothing
+/// greyed out — what you cannot do is not there.
+#[derive(Default)]
+pub struct PersonExtras {
+    /// The line is in a topic: its community's name, for "Report to the
+    /// moderators".
+    pub community: Option<String>,
+    /// This person moderates that community: the topic's name.
+    pub moderate_topic: Option<String>,
+    /// This person may suspend and delete accounts on this server.
+    pub admin: bool,
 }
 
 /// The menu behind a speaker's name: block them, or report them.
@@ -617,6 +673,7 @@ pub fn person_menu(
     response: &egui::Response,
     sender: &str,
     message: Option<&str>,
+    extras: &PersonExtras,
     mut act: impl FnMut(PersonAction),
 ) {
     response.context_menu(|ui| {
@@ -630,9 +687,69 @@ pub fn person_menu(
             act(PersonAction::Block);
             ui.close();
         }
-        if ui.button("Report…").clicked() {
+        if extras.community.is_some() && message.is_some() {
+            if ui.button("Report to the moderators…").clicked() {
+                act(PersonAction::ReportToModerators(
+                    message.map(str::to_string),
+                ));
+                ui.close();
+            }
+        }
+        if ui.button("Report to the server…").clicked() {
             act(PersonAction::Report(message.map(str::to_string)));
             ui.close();
+        }
+        if let (Some(topic), Some(community)) = (&extras.moderate_topic, &extras.community) {
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!("Moderator · {community}"))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+            if message.is_some()
+                && ui
+                    .button(egui::RichText::new("Delete for everyone").color(theme::ERROR))
+                    .clicked()
+            {
+                act(PersonAction::DeleteForEveryone);
+                ui.close();
+            }
+            if ui
+                .button(egui::RichText::new(format!("Remove from {topic}")).color(theme::ERROR))
+                .clicked()
+            {
+                act(PersonAction::RemoveFromTopic);
+                ui.close();
+            }
+            if ui
+                .button(egui::RichText::new("Remove from the community").color(theme::ERROR))
+                .clicked()
+            {
+                act(PersonAction::RemoveFromCommunity);
+                ui.close();
+            }
+        }
+        if extras.admin {
+            ui.separator();
+            ui.label(
+                egui::RichText::new("On this server · you are an admin")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+            if ui
+                .button(egui::RichText::new("Suspend account").color(theme::ERROR))
+                .clicked()
+            {
+                act(PersonAction::Suspend);
+                ui.close();
+            }
+            if ui
+                .button(egui::RichText::new("Delete account…").color(theme::ERROR))
+                .clicked()
+            {
+                act(PersonAction::DeleteAccount);
+                ui.close();
+            }
         }
     });
 }
@@ -796,8 +913,13 @@ pub(crate) fn render_report_dialog(
             );
             theme::note(
                 ui,
-                "Reports go to the people who run this world. Blocking is separate \
-                 and takes effect immediately.",
+                if draft.community.is_some() {
+                    "This goes to the community's moderators, with your copy of the line: \
+                     they cannot read the topic otherwise. Blocking is separate."
+                } else {
+                    "Reports go to the people who run this world. Blocking is separate \
+                     and takes effect immediately."
+                },
             );
             ui.horizontal(|ui| {
                 submit = theme::action_button(ui, "Send report").clicked();
@@ -805,7 +927,22 @@ pub(crate) fn render_report_dialog(
             });
         });
 
-    if submit {
+    let to_community = draft.community.clone().filter(|_| submit);
+    if let Some((id, group, seq)) = to_community {
+        online.send(
+            "report to moderators",
+            NetMessage::CommunityReport {
+                request_id: 0,
+                id,
+                address: draft.username.clone(),
+                group,
+                seq,
+                reason: draft.reason,
+                note: draft.note.clone(),
+                line: draft.message.clone().unwrap_or_default(),
+            },
+        );
+    } else if submit {
         online.send(
             "report user",
             NetMessage::ReportUser {

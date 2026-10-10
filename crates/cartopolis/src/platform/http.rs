@@ -100,6 +100,9 @@ pub enum Method {
     /// and inventing a second spelling for one of its two callers is how the two
     /// stop matching.
     Delete,
+    /// Change part of a resource, with a JSON body: suspending an account from
+    /// the person menu (`PATCH /api/admin/accounts/{id}`), as the web UI does.
+    Patch,
 }
 
 /// One HTTP request. Build with [`Request::get`] / [`Request::post`] and the
@@ -139,6 +142,14 @@ impl Request {
     pub fn delete(url: impl Into<String>) -> Self {
         Self {
             method: Method::Delete,
+            ..Self::get(url)
+        }
+    }
+
+    /// A PATCH for `url`; set the payload with [`Request::body`].
+    pub fn patch(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Patch,
             ..Self::get(url)
         }
     }
@@ -492,6 +503,7 @@ mod imp {
             Method::Get => AGENT.get(&req.url),
             Method::Post => AGENT.post(&req.url),
             Method::Delete => AGENT.delete(&req.url),
+            Method::Patch => AGENT.request("PATCH", &req.url),
         };
         builder = builder.timeout(req.timeout);
 
@@ -635,6 +647,11 @@ mod imp {
             Method::Delete => {
                 let mut r = ehttp::Request::get(&req.url);
                 r.method = "DELETE".into();
+                r
+            }
+            Method::Patch => {
+                let mut r = ehttp::Request::post(&req.url, req.body.clone().unwrap_or_default());
+                r.method = "PATCH".into();
                 r
             }
         };

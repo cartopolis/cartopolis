@@ -1,7 +1,7 @@
 ---
 topic: web-chat
 triggers: [cartopolis_chat, cartopolis_web_chat, web_chat, address.rs, server_name, federation, MIMI, "full address", group_id, chat-worker.ts, "src/worker", SharedWorker, "Web Lock", "chat in the web UI", embodied, embodied_position, build-chat-core.ts, chat-e2e.ts]
-updated: 2026-10-09
+updated: 2026-10-10
 ---
 
 # Private chats in the web UI run the app's engine, once per browser
@@ -86,31 +86,14 @@ clients show a person on their own server by bare name
 The split with the fediverse stands: ActivityPub is for public posts about
 places, and private chats and channels never go over it.
 
-## Workspaces and channels (protocol 38)
+## Communities (protocol 39)
 
-A workspace is a named set of people and channels on one server
-(`simulator::workspaces`, V29). A channel is an ordinary encrypted group chat
-that the server also lists by **name and topic, in the clear**, so people not
-yet in it can see it and ask in. Those two strings, the member list and who is
-in which channel are what the server knows; what is said stays sealed.
-
-**The server cannot add anybody to an encrypted chat.** Only a member's device
-can, by claiming the newcomer's key packages and committing. So asking into a
-public channel records a row in `channel_joins` and the server hands it to
-**one** connected member device (`ChannelJoinRequest`), or to the next one that
-connects. One, not all: every device that tried would spend one of the
-joiner's key packages, and all but the first commit would be refused anyway.
-The row goes when a commit whose invitation names the joiner is accepted
-(`e2ee::append`). Two consequences: a public channel nobody's device is online
-for is joined when somebody comes back, and the engine repeats a chat's name
-after every add, because a newcomer reads from after the commit that added
-them and never sees the name said at the start.
-
-Not built yet, and both are what make channels feel like Slack: **history for
-a newcomer** (a member's device packs the history up, seals it like a picture
-and hands the key over inside the channel) and **joining with nobody online**
-(MLS external commits, which openmls supports; the server would keep the
-channel's latest GroupInfo).
+Workspaces and channels (protocol 38) were replaced by communities and their
+topics on 2026-10-10: `communities.md` has what they are and how a member is
+added to a topic by a device already in it. The page shows them as the app
+does: one list, communities with their topics folded under them, then people
+and groups, and the community's own pages (find, preview, start, run, edit) in
+the middle.
 
 ## A message's id is its place in the log
 
@@ -143,8 +126,8 @@ the real module, a real simulator over its WebSocket, a direct chat both ways,
 and one side coming back from its saved state to read what it missed.
 
 `chat-browser.ts` drives the page itself in two headless Chromium profiles
-(two people): sign-in through the form, a workspace, a channel joined through
-the other browser, a line each way with a mention and a reaction, and a reload
+(two people): sign-in through the form, a community started with a topic and
+the other person in it, added by the first browser, a line each way with a mention and a reaction, and a reload
 that reads the history back out of IndexedDB. It is what exercises the
 `SharedWorker`, the Web Lock and the storage, which nothing else does.
 

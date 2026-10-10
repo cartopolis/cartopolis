@@ -1,8 +1,6 @@
-//! Proximity and room voice: one frame in, fanned out to whoever may hear it.
+//! Proximity voice: one frame in, fanned out to whoever may hear it.
 
-use super::{
-    room_channel, ConnCtx, FrameTransport, MAX_VOICE_BYTES, MIN_VOICE_INTERVAL, VOICE_CHANNEL,
-};
+use super::{ConnCtx, FrameTransport, MAX_VOICE_BYTES, MIN_VOICE_INTERVAL, VOICE_CHANNEL};
 use bytes::Bytes;
 use cartopolis_core::{encode_app_frame, ChatScope, NetMessage};
 use std::time::Instant;
@@ -59,34 +57,6 @@ pub(super) async fn on_frame<T: FrameTransport>(
                     );
                 }
             }
-        }
-        ChatScope::Room(room) => {
-            // The same membership rule as room text, and it matters more here:
-            // this is the one path that runs at ~66 frames a second, so an
-            // unchecked room name was a way to shout into any conversation on the
-            // server at the cost of naming it — and to make the server allocate
-            // three copies of a 32 MB string per frame while doing it.
-            let Some(channel) = room_channel(&room) else {
-                return Ok(());
-            };
-            if !ctx.chat.in_room(avatar_id, &channel) {
-                tracing::debug!(avatar_id, "room voice from a non-member");
-                return Ok(());
-            }
-            let frame = encode_app_frame(&NetMessage::VoiceData {
-                channel: channel.clone(),
-                sender_id: avatar_id,
-                seq,
-                payload,
-                distance_m: None,
-            })?;
-            ctx.chat.deliver_room_except(
-                &channel,
-                avatar_id,
-                &ctx.display_name,
-                crate::chat::Lane::Voice,
-                &Bytes::from(frame),
-            );
         }
         // Global voice is deliberately not carried: it is an unbounded fan-out and
         // the loudest abuse surface chat has, and ADR-028 already suggests

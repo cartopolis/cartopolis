@@ -18,8 +18,9 @@ use std::collections::VecDeque;
 use cartopolis_chat::{channel_key, group_of, Engine, Event};
 use cartopolis_core::point::Point;
 use cartopolis_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, WorkspaceDto, WorkspaceRole,
-    PROTOCOL_VERSION,
+    decode_app_frame, encode_app_frame, AuthCredential, CommunityDto, CommunityListing,
+    CommunityMemberDto, CommunityRole, CommunitySettings, DirectoryOrder, JoinRule, ListingState,
+    NetMessage, ReportReason, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -347,62 +348,160 @@ impl ChatCore {
         })
     }
 
-    // ── Workspaces and channels (protocol 38) ──────────────────────────────
+    // ── Communities and topics (protocol 39) ───────────────────────────────
     //
-    // Answers arrive as a `workspaces` event, the whole list each time.
+    // Answers arrive as a `communities` event (the whole list each time), a
+    // `directory` event, or a `notice` when refused. Ids are uuid strings,
+    // topics are named by the same `dm:<hex>` key their chats have.
 
-    /// Create a workspace with this account as its owner.
-    pub fn create_workspace(&mut self, name: &str) -> Result<(), Error> {
-        let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine.create_workspace(name, &mut out);
-        self.flush(out, Vec::new())
+    /// Ask for every community this account is in or waiting for.
+    pub fn list_communities(&mut self) -> Result<(), Error> {
+        self.call(|e, out, _| e.list_communities(out))
     }
 
-    /// Ask for every workspace this account belongs to.
-    pub fn list_workspaces(&mut self) -> Result<(), Error> {
-        let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine.list_workspaces(&mut out);
-        self.flush(out, Vec::new())
-    }
-
-    /// Add somebody (a name on this server, or a full address) to a workspace.
-    pub fn add_workspace_member(&mut self, workspace: &str, who: &str) -> Result<(), Error> {
-        let workspace = workspace_id(workspace)?;
-        let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine.add_workspace_member(workspace, who, &mut out);
-        self.flush(out, Vec::new())
-    }
-
-    /// Start a channel in a workspace.
-    pub fn start_channel(
+    /// Start a community: `settings` is `{name, about, join, listed,
+    /// members_start_topics}` as JSON (`join` one of open/ask/invite), with
+    /// its first topics and people.
+    pub fn create_community(
         &mut self,
-        workspace: &str,
-        name: &str,
-        topic: &str,
-        private: bool,
+        settings: &str,
+        topics: Vec<String>,
+        people: Vec<String>,
     ) -> Result<(), Error> {
-        let workspace = workspace_id(workspace)?;
-        let engine = self.engine_mut()?;
-        let (mut out, mut events) = (Vec::new(), Vec::new());
-        engine.start_channel(workspace, name, topic, private, &mut out, &mut events);
+        let s = settings_of(settings)?;
         self.dirty = true;
-        self.flush(out, events)
+        self.call(|e, out, _| e.create_community(s, &topics, &people, out))
     }
 
-    /// Ask into a workspace's public channel (`channel` is its `dm:…` key).
-    pub fn join_channel(&mut self, workspace: &str, channel: &str) -> Result<(), Error> {
-        let workspace = workspace_id(workspace)?;
-        let group = group_of(channel).ok_or_else(|| Error("not a channel".into()))?;
+    /// A moderator changes a community's settings (same JSON as creating).
+    pub fn edit_community(&mut self, id: &str, settings: &str) -> Result<(), Error> {
+        let (id, s) = (community_id(id)?, settings_of(settings)?);
+        self.call(|e, out, _| e.edit_community(id, s, out))
+    }
+
+    /// Search the listed communities; `order` is `popular` or `new`.
+    pub fn find_communities(&mut self, query: &str, order: &str) -> Result<(), Error> {
+        let order = if order == "new" {
+            DirectoryOrder::New
+        } else {
+            DirectoryOrder::Popular
+        };
+        self.call(|e, out, _| e.find_communities(query, order, out))
+    }
+
+    /// Join an open community, or ask to join one that asks first.
+    pub fn join_community(&mut self, id: &str, message: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.join_community(id, message, out))
+    }
+
+    /// Leave a community, or withdraw a request to join it.
+    pub fn leave_community(&mut self, id: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.leave_community(id, out))
+    }
+
+    /// A moderator lets somebody in, or turns them down.
+    pub fn decide_request(&mut self, id: &str, who: &str, accept: bool) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.decide_request(id, who, accept, out))
+    }
+
+    /// A moderator adds somebody to a community.
+    pub fn add_to_community(&mut self, id: &str, who: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.add_to_community(id, who, out))
+    }
+
+    /// The owner sets somebody's role: `owner` (hand over), `moderator` or
+    /// `member`.
+    pub fn set_community_role(&mut self, id: &str, who: &str, role: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        let role = match role {
+            "owner" => CommunityRole::Owner,
+            "moderator" => CommunityRole::Moderator,
+            _ => CommunityRole::Member,
+        };
+        self.call(|e, out, _| e.set_community_role(id, who, role, out))
+    }
+
+    /// A moderator takes somebody out of one topic (`channel`, or empty for
+    /// the whole community), and with `block` stops them asking again.
+    pub fn remove_from_community(
+        &mut self,
+        id: &str,
+        who: &str,
+        channel: &str,
+        block: bool,
+    ) -> Result<(), Error> {
+        let id = community_id(id)?;
+        let topic = group_of(channel);
+        self.call(|e, out, _| e.remove_from_community(id, who, topic.as_deref(), block, out))
+    }
+
+    /// The owner deletes a community.
+    pub fn delete_community(&mut self, id: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.delete_community(id, out))
+    }
+
+    /// Start a topic in a community.
+    pub fn start_topic(&mut self, id: &str, name: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.dirty = true;
+        self.call(|e, out, events| e.start_topic(id, name, out, events))
+    }
+
+    /// A moderator renames, moves or archives a topic.
+    pub fn edit_topic(
+        &mut self,
+        id: &str,
+        channel: &str,
+        name: &str,
+        position: u32,
+        archived: bool,
+    ) -> Result<(), Error> {
+        let id = community_id(id)?;
+        let group = group_of(channel).ok_or_else(|| Error("not a topic".into()))?;
+        self.call(|e, out, _| e.edit_topic(id, &group, name, position, archived, out))
+    }
+
+    /// A moderator deletes message `target` from a topic, for everybody.
+    pub fn moderate_delete(&mut self, channel: &str, target: f64) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a topic".into()))?;
+        self.call(|e, out, _| e.moderate_delete(&group, target as u64, out))
+    }
+
+    /// Report message `target` in a topic to the community's moderators.
+    /// `reason` is one of the report reasons' stable names (`spam`, …).
+    pub fn report_to_moderators(
+        &mut self,
+        channel: &str,
+        target: f64,
+        who: &str,
+        reason: &str,
+        note: &str,
+        line: &str,
+    ) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a topic".into()))?;
         let engine = self.engine_mut()?;
-        let mut out = Vec::new();
-        engine.join_channel(workspace, &group, &mut out);
-        self.flush(out, Vec::new())
+        let id = engine
+            .community_of(&group)
+            .map(|c| c.id)
+            .ok_or_else(|| Error("not a topic of a community".into()))?;
+        let reason = ReportReason::from_wire(reason);
+        self.call(|e, out, _| {
+            e.report_to_moderators(id, who, &group, target as u64, reason, note, line, out);
+        })
     }
 
-    /// Add somebody to a group chat or channel this device is in.
+    /// A moderator closes a report.
+    pub fn resolve_report(&mut self, id: &str, report: f64) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.resolve_report(id, report as i64, out))
+    }
+
+    /// Add somebody to a group chat this device is in.
     pub fn add_to_chat(&mut self, channel: &str, who: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         let engine = self.engine_mut()?;
@@ -413,40 +512,123 @@ impl ChatCore {
     }
 }
 
-fn workspace_id(s: &str) -> Result<uuid::Uuid, Error> {
-    uuid::Uuid::parse_str(s).map_err(|_| Error(format!("{s:?} is not a workspace id")))
+fn community_id(s: &str) -> Result<uuid::Uuid, Error> {
+    uuid::Uuid::parse_str(s).map_err(|_| Error(format!("{s:?} is not a community id")))
 }
 
-fn role_name(r: WorkspaceRole) -> &'static str {
+fn rule_name(r: JoinRule) -> &'static str {
     match r {
-        WorkspaceRole::Owner => "owner",
-        WorkspaceRole::Admin => "admin",
-        WorkspaceRole::Member => "member",
+        JoinRule::Open => "open",
+        JoinRule::Ask => "ask",
+        JoinRule::Invite => "invite",
     }
 }
 
-/// A workspace as the JSON the worker hands to pages: channels by the same
-/// `dm:<hex>` key their chats have, so a page needs one key for both.
-fn workspace_json(w: WorkspaceDto) -> Value {
+fn role_name(r: CommunityRole) -> &'static str {
+    match r {
+        CommunityRole::Owner => "owner",
+        CommunityRole::Moderator => "moderator",
+        CommunityRole::Member => "member",
+    }
+}
+
+/// Settings as a page writes them.
+fn settings_of(json: &str) -> Result<CommunitySettings, Error> {
+    let v: Value = serde_json::from_str(json).map_err(|e| Error(e.to_string()))?;
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    Ok(CommunitySettings {
+        name: text("name"),
+        about: text("about"),
+        join: match text("join").as_str() {
+            "open" => JoinRule::Open,
+            "ask" => JoinRule::Ask,
+            _ => JoinRule::Invite,
+        },
+        listed: flag("listed"),
+        members_start_topics: flag("members_start_topics"),
+    })
+}
+
+fn settings_json(s: &CommunitySettings) -> Value {
     json!({
-        "id": w.id.to_string(),
-        "name": w.name,
-        "home": w.home,
-        "role": role_name(w.role),
-        "members": w.members.into_iter().map(|m| json!({
-            "address": m.address,
-            "role": role_name(m.role),
+        "name": s.name,
+        "about": s.about,
+        "join": rule_name(s.join),
+        "listed": s.listed,
+        "members_start_topics": s.members_start_topics,
+    })
+}
+
+fn member_json(m: &CommunityMemberDto) -> Value {
+    json!({"address": m.address, "role": role_name(m.role)})
+}
+
+/// A community as the JSON the worker hands to pages: topics by the same
+/// `dm:<hex>` key their chats have, so a page needs one key for both.
+fn community_json(c: CommunityDto) -> Value {
+    json!({
+        "id": c.id.to_string(),
+        "home": c.home,
+        "settings": settings_json(&c.settings),
+        "role": c.role.map(role_name),
+        "members": c.members.iter().map(member_json).collect::<Vec<_>>(),
+        "topics": c.topics.into_iter().map(|t| json!({
+            "channel": channel_key(&t.group),
+            "name": t.name,
+            "position": t.position,
+            "archived": t.archived,
+            "joined": t.joined,
         })).collect::<Vec<_>>(),
-        "channels": w.channels.into_iter().map(|c| json!({
-            "channel": channel_key(&c.group),
-            "name": c.name,
-            "topic": c.topic,
-            "private": c.private,
-            "joined": c.joined,
-            "pending": c.pending,
-            "members": c.members,
+        "requests": c.requests.into_iter().map(|r| json!({
+            "address": r.address,
+            "message": r.message,
+            "requested_ms": r.requested_ms,
+        })).collect::<Vec<_>>(),
+        "reports": c.reports.into_iter().map(|r| json!({
+            "id": r.id,
+            "reporter": r.reporter,
+            "reported": r.reported,
+            "channel": channel_key(&r.group),
+            "seq": r.seq,
+            "reason": r.reason.as_str(),
+            "note": r.note,
+            "line": r.line,
+            "created_ms": r.created_ms,
         })).collect::<Vec<_>>(),
     })
+}
+
+fn listing_json(l: CommunityListing) -> Value {
+    json!({
+        "id": l.id.to_string(),
+        "name": l.name,
+        "about": l.about,
+        "join": rule_name(l.join),
+        "members": l.members,
+        "topics": l.topics,
+        "moderators": l.moderators.iter().map(member_json).collect::<Vec<_>>(),
+        "mine": match l.mine {
+            ListingState::Outside => "outside",
+            ListingState::Asked => "asked",
+            ListingState::Member => "member",
+            ListingState::Refused => "refused",
+        },
+        "created_ms": l.created_ms,
+    })
+}
+
+impl ChatCore {
+    /// One engine call that may queue frames and events.
+    fn call(
+        &mut self,
+        f: impl FnOnce(&mut Engine, &mut Vec<NetMessage>, &mut Vec<Event>),
+    ) -> Result<(), Error> {
+        let engine = self.engine_mut()?;
+        let (mut out, mut events) = (Vec::new(), Vec::new());
+        f(engine, &mut out, &mut events);
+        self.flush(out, events)
+    }
 }
 
 impl ChatCore {
@@ -589,9 +771,33 @@ fn event_json(event: Event) -> Value {
             "request": request,
             "seq": seq,
         }),
-        Event::Workspaces(list) => json!({
-            "kind": "workspaces",
-            "workspaces": list.into_iter().map(workspace_json).collect::<Vec<_>>(),
+        Event::Communities(list) => json!({
+            "kind": "communities",
+            "communities": list.into_iter().map(community_json).collect::<Vec<_>>(),
+        }),
+        Event::CommunityCreated(id) => json!({
+            "kind": "community_created",
+            "id": id.to_string(),
+        }),
+        Event::Directory(list) => json!({
+            "kind": "directory",
+            "listings": list.into_iter().map(listing_json).collect::<Vec<_>>(),
+        }),
+        Event::Redacted { group, seq, by } => json!({
+            "kind": "redacted",
+            "channel": channel_key(&group),
+            "seq": seq,
+            "by": by,
+        }),
+        Event::Left {
+            group,
+            community,
+            by,
+        } => json!({
+            "kind": "left",
+            "channel": channel_key(&group),
+            "community": community.to_string(),
+            "by": by,
         }),
     }
 }

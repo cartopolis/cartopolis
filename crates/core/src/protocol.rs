@@ -188,7 +188,7 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
     ProtocolRevision {
         version: 39,
         adr: "",
-        summary: "every device of every member is in every chat — E2eeAddDevices hands a device already in a chat the key packages of member devices that are not, so a phone signed in after a chat started is added to it (docs/notes/encrypted-chat.md)",
+        summary: "communities and every device in every chat — workspaces, channels and rooms are gone (kinds 19 and 75–81 retired, ChatScope::Room removed); Community* and Topic* messages, moderators who delete (E2eeRedacted) and remove (TopicRemovePeople), and E2eeAddDevices, which hands a device in a chat the key packages of member devices that are not in it (docs/notes/communities.md, docs/notes/encrypted-chat.md)",
     },
 ];
 
@@ -224,7 +224,6 @@ pub enum MessageKind {
     TextureNotFound = 16,
     ChatSend = 17,
     ChatMessage = 18,
-    ChatSubscribe = 19,
     GetPrimScript = 20,
     SetPrimScript = 21,
     PrimScript = 22,
@@ -280,14 +279,31 @@ pub enum MessageKind {
     Permissions = 72,
     HandPose = 73,
     PrimTone = 74,
-    WorkspaceCreate = 75,
-    WorkspaceList = 76,
-    Workspaces = 77,
-    WorkspaceAddMember = 78,
-    ChannelCreate = 79,
-    ChannelJoin = 80,
-    ChannelJoinRequest = 81,
     E2eeAddDevices = 82,
+    CommunityList = 83,
+    Communities = 84,
+    CommunityCreate = 85,
+    CommunityCreated = 86,
+    CommunityEdit = 87,
+    CommunityDirectory = 88,
+    CommunityListings = 89,
+    CommunityJoin = 90,
+    CommunityLeave = 91,
+    CommunityDecide = 92,
+    CommunityAddMember = 93,
+    CommunitySetRole = 94,
+    CommunityRemove = 95,
+    CommunityDelete = 96,
+    TopicCreate = 97,
+    TopicEdit = 98,
+    TopicAddPeople = 99,
+    TopicRemovePeople = 100,
+    TopicRemoved = 101,
+    TopicLeft = 102,
+    ModerateDelete = 103,
+    E2eeRedacted = 104,
+    CommunityReport = 105,
+    CommunityReportResolve = 106,
 }
 
 impl MessageKind {
@@ -311,7 +327,6 @@ impl MessageKind {
             16 => Some(Self::TextureNotFound),
             17 => Some(Self::ChatSend),
             18 => Some(Self::ChatMessage),
-            19 => Some(Self::ChatSubscribe),
             20 => Some(Self::GetPrimScript),
             21 => Some(Self::SetPrimScript),
             22 => Some(Self::PrimScript),
@@ -367,14 +382,31 @@ impl MessageKind {
             72 => Some(Self::Permissions),
             73 => Some(Self::HandPose),
             74 => Some(Self::PrimTone),
-            75 => Some(Self::WorkspaceCreate),
-            76 => Some(Self::WorkspaceList),
-            77 => Some(Self::Workspaces),
-            78 => Some(Self::WorkspaceAddMember),
-            79 => Some(Self::ChannelCreate),
-            80 => Some(Self::ChannelJoin),
-            81 => Some(Self::ChannelJoinRequest),
             82 => Some(Self::E2eeAddDevices),
+            83 => Some(Self::CommunityList),
+            84 => Some(Self::Communities),
+            85 => Some(Self::CommunityCreate),
+            86 => Some(Self::CommunityCreated),
+            87 => Some(Self::CommunityEdit),
+            88 => Some(Self::CommunityDirectory),
+            89 => Some(Self::CommunityListings),
+            90 => Some(Self::CommunityJoin),
+            91 => Some(Self::CommunityLeave),
+            92 => Some(Self::CommunityDecide),
+            93 => Some(Self::CommunityAddMember),
+            94 => Some(Self::CommunitySetRole),
+            95 => Some(Self::CommunityRemove),
+            96 => Some(Self::CommunityDelete),
+            97 => Some(Self::TopicCreate),
+            98 => Some(Self::TopicEdit),
+            99 => Some(Self::TopicAddPeople),
+            100 => Some(Self::TopicRemovePeople),
+            101 => Some(Self::TopicRemoved),
+            102 => Some(Self::TopicLeft),
+            103 => Some(Self::ModerateDelete),
+            104 => Some(Self::E2eeRedacted),
+            105 => Some(Self::CommunityReport),
+            106 => Some(Self::CommunityReportResolve),
             _ => None,
         }
     }
@@ -699,21 +731,6 @@ pub struct EmoteState {
 /// plays it, and short enough that it does not replay on a much later snapshot.
 pub const EMOTE_REPLICATE_SECS: f32 = 2.5;
 
-/// Longest room name the server will act on.
-///
-/// `ChatScope::Room` is a `String` off the wire, so its only other bound is
-/// `MAX_FRAME` — 32 MiB. The server turns it into a channel key (`format!(
-/// "room:{room}")`), clones that per recipient and re-encodes it into every
-/// outgoing frame, so a name that size is an allocation multiplier on a message
-/// path that runs at tens of frames a second. 64 characters is past any name
-/// anyone types and nowhere near the range where the cost matters.
-///
-/// Not a wire-format change (nothing is added to or removed from a message), so
-/// it appends no row to [`PROTOCOL_HISTORY`]: a client that ignores it gets its
-/// oversized room send refused, exactly as it gets an over-long chat body
-/// truncated today.
-pub const MAX_ROOM_LEN: usize = 64;
-
 /// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
 /// channel. Geo tiers (country/province/municipality) land with `cartopolis_geo`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -722,8 +739,6 @@ pub enum ChatScope {
     Local { shout: bool },
     /// Everyone online.
     Global,
-    /// A named, opt-in room.
-    Room(String),
 }
 
 /// Credential presented in the [`NetMessage::ClientHello`] handshake (ADR-016).
@@ -921,8 +936,6 @@ pub enum NetMessage {
         body: String,
         distance_m: Option<f32>,
     },
-    /// ADR-028: client joins (`join = true`) or leaves a room channel.
-    ChatSubscribe { room: String, join: bool },
     /// Fetch a prim's script source for the editor. Scripts are *not* carried in
     /// `WorldSnapshot`: source is authoring data, an order of magnitude larger
     /// than the rest of a `PrimDto`, and it would be re-sent to every observer
@@ -1399,56 +1412,171 @@ pub enum NetMessage {
         tone: Option<ToneSpec>,
     },
 
-    // ── Workspaces (protocol 38, `docs/notes/web-chat.md`) ───────────────────
+    // ── Communities (protocol 39, `docs/notes/communities.md`) ────────────────
     //
-    // A workspace is a named set of people and channels; a channel is an
-    // encrypted group chat (the E2ee messages above) with a name and a topic
-    // the server keeps in the clear, so it can list them to people who are not
-    // in them yet. What is said in a channel stays sealed.
-    /// Client creates a workspace on this server, with itself as its owner.
-    WorkspaceCreate { request_id: u32, name: String },
-    /// Client asks for every workspace it belongs to.
-    WorkspaceList { request_id: u32 },
-    /// Server: every workspace this account belongs to, whole. The answer to
-    /// each workspace request, and pushed unasked (`request_id` 0) whenever one
-    /// of them changes, so a client never patches its own copy.
-    Workspaces {
+    // A community is a named set of people with a few topics; a topic is an
+    // encrypted group chat (the E2ee messages above) that every member is in.
+    // The server keeps the community's name, description, topic names and
+    // members in the clear so it can list it and route to it; what is said in
+    // a topic stays sealed. Being in a community is being in all its topics,
+    // so the server, which decides who is a member, also decides who must be
+    // added to or taken out of each topic, and hands that work to a device
+    // already in it (the server holds no key and cannot do it itself).
+    /// Client asks for every community it is in or has asked to join.
+    CommunityList { request_id: u32 },
+    /// Server: every community this account is in or waiting for, whole. The
+    /// answer to every community request, and pushed unasked (`request_id` 0)
+    /// whenever one of them changes, so a client never patches its own copy.
+    Communities {
         request_id: u32,
-        workspaces: Vec<WorkspaceDto>,
+        communities: Vec<CommunityDto>,
     },
-    /// An owner or admin adds somebody (a full address on this server) to a
-    /// workspace.
-    WorkspaceAddMember {
+    /// Client starts a community, as its owner. Topics and people follow as
+    /// [`NetMessage::TopicCreate`] and [`NetMessage::CommunityAddMember`].
+    CommunityCreate {
         request_id: u32,
-        workspace: Uuid,
+        settings: CommunitySettings,
+    },
+    /// Server: the community exists.
+    CommunityCreated { request_id: u32, id: Uuid },
+    /// A moderator changes a community's settings.
+    CommunityEdit {
+        request_id: u32,
+        id: Uuid,
+        settings: CommunitySettings,
+    },
+    /// Client searches the listed communities on this server. An empty query
+    /// lists the most popular.
+    CommunityDirectory {
+        request_id: u32,
+        query: String,
+        order: DirectoryOrder,
+    },
+    /// Server: the answer to a directory search.
+    CommunityListings {
+        request_id: u32,
+        listings: Vec<CommunityListing>,
+    },
+    /// Client joins an open community, or asks to join one that asks first,
+    /// with an optional line to its moderators.
+    CommunityJoin {
+        request_id: u32,
+        id: Uuid,
+        message: String,
+    },
+    /// Client leaves a community, or withdraws its request to join one. An
+    /// owner must hand the community over first.
+    CommunityLeave { request_id: u32, id: Uuid },
+    /// A moderator lets somebody in, or turns their request down.
+    CommunityDecide {
+        request_id: u32,
+        id: Uuid,
+        address: String,
+        accept: bool,
+    },
+    /// A moderator adds somebody (a full address on this server).
+    CommunityAddMember {
+        request_id: u32,
+        id: Uuid,
         address: String,
     },
-    /// Client lists a chat it has just registered (`E2eeCreateGroup`) as a
-    /// channel of a workspace it is in.
-    ChannelCreate {
+    /// The owner makes somebody a moderator or a member again, or hands the
+    /// community over (`role` Owner: they become owner, the old owner a
+    /// moderator).
+    CommunitySetRole {
         request_id: u32,
-        workspace: Uuid,
+        id: Uuid,
+        address: String,
+        role: CommunityRole,
+    },
+    /// A moderator takes somebody out of one topic (`topic`) or the whole
+    /// community, and with `block` stops them asking to join again.
+    CommunityRemove {
+        request_id: u32,
+        id: Uuid,
+        address: String,
+        topic: Option<Vec<u8>>,
+        block: bool,
+    },
+    /// The owner (or a server operator who triages reports) deletes a
+    /// community and all its topics.
+    CommunityDelete { request_id: u32, id: Uuid },
+    /// Client lists a chat it has just registered (`E2eeCreateGroup`) as a
+    /// topic of a community it is in. Every other member is then added to it.
+    TopicCreate {
+        request_id: u32,
+        community: Uuid,
         group: Vec<u8>,
         name: String,
-        topic: String,
-        private: bool,
     },
-    /// Client asks to join a workspace's public channel. Only a member's device
-    /// can add it (the server holds no key), so the server records the request
-    /// and hands it to one member device ([`NetMessage::ChannelJoinRequest`]),
-    /// now if one is online and otherwise when one connects.
-    ChannelJoin {
+    /// A moderator renames, moves or archives a topic. An archived topic keeps
+    /// its history and takes no new messages.
+    TopicEdit {
         request_id: u32,
-        workspace: Uuid,
+        community: Uuid,
         group: Vec<u8>,
+        name: String,
+        position: u32,
+        archived: bool,
     },
-    /// Server, to one device already in the channel: add `address` to it, by
-    /// claiming its key packages and committing. The request is settled when a
-    /// commit whose invitation names them is accepted.
-    ChannelJoinRequest {
-        workspace: Uuid,
+    /// Server, to a device in `group`: add these people (one key package per
+    /// device, claimed by the server for this) with one commit. They are
+    /// members of the topic's community who are not in the topic yet.
+    TopicAddPeople {
         group: Vec<u8>,
+        people: Vec<E2eeNewDevice>,
+    },
+    /// Server, to a device in `group`: take every device of these people out
+    /// of it with one commit. The server has already stopped delivering to
+    /// them; the commit is what stops their keys opening anything new.
+    TopicRemovePeople {
+        group: Vec<u8>,
+        addresses: Vec<String>,
+    },
+    /// Client: its commit taking `addresses` out of `group` was accepted, so
+    /// the server can stop asking.
+    TopicRemoved {
+        group: Vec<u8>,
+        addresses: Vec<String>,
+    },
+    /// Server, to the devices of somebody taken out of a topic: it is gone.
+    /// The device forgets it; `by` is the moderator, or empty when they left.
+    TopicLeft {
+        group: Vec<u8>,
+        community: Uuid,
+        by: String,
+    },
+    /// A moderator deletes a message from a topic of their community. The
+    /// server stops delivering it and tells every member to hide it.
+    ModerateDelete {
+        request_id: u32,
+        group: Vec<u8>,
+        seq: u64,
+    },
+    /// Server: entry `seq` of `group` was deleted by a moderator (`by`). Sent
+    /// live and, in place of the entry, on every later sync.
+    E2eeRedacted {
+        group: Vec<u8>,
+        seq: u64,
+        by: String,
+    },
+    /// Client reports something said in a community to its moderators. The
+    /// line is the reporter's own copy: the server cannot read the topic.
+    CommunityReport {
+        request_id: u32,
+        id: Uuid,
         address: String,
+        group: Vec<u8>,
+        seq: u64,
+        reason: ReportReason,
+        note: String,
+        line: String,
+    },
+    /// A moderator closes a report.
+    CommunityReportResolve {
+        request_id: u32,
+        id: Uuid,
+        report: i64,
     },
     /// Server, to a device already in `group`: these devices belong to its
     /// members but are not in it (signed in after it started, or had no key
@@ -1461,43 +1589,155 @@ pub enum NetMessage {
     },
 }
 
-/// A member's standing in a workspace ([`WorkspaceDto`]).
+/// A person's standing in a community ([`CommunityDto`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkspaceRole {
-    /// Created it; may do everything an admin may, and cannot be removed.
+pub enum CommunityRole {
+    /// Started it, or was handed it. Appoints moderators, hands it over,
+    /// deletes it. There is exactly one.
     Owner,
-    /// May add people and manage channels.
-    Admin,
+    /// Lets people in, adds and removes them, deletes messages, edits the
+    /// community and its topics.
+    Moderator,
     Member,
 }
 
-/// One workspace, as one of its members sees it ([`NetMessage::Workspaces`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceDto {
-    pub id: Uuid,
-    pub name: String,
-    /// The server it lives on, which orders all of its channels.
-    pub home: String,
-    /// The asking account's own role.
-    pub role: WorkspaceRole,
-    pub members: Vec<WorkspaceMemberDto>,
-    /// Every public channel, and the private ones this account is in.
-    pub channels: Vec<ChannelDto>,
+impl CommunityRole {
+    /// Whether this role moderates (the owner does too).
+    #[must_use]
+    pub fn moderates(self) -> bool {
+        matches!(self, Self::Owner | Self::Moderator)
+    }
 }
 
-/// One member of a workspace.
+/// How somebody gets into a community.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JoinRule {
+    /// Anyone who finds it joins straight away.
+    Open,
+    /// Anyone may ask; a moderator confirms.
+    Ask,
+    /// Only people a moderator adds.
+    Invite,
+}
+
+/// How a directory search is sorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DirectoryOrder {
+    /// Most members first.
+    Popular,
+    /// Newest first.
+    New,
+}
+
+/// What a community's owner and moderators set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceMemberDto {
+pub struct CommunitySettings {
+    pub name: String,
+    /// One line about it. May be empty.
+    pub about: String,
+    pub join: JoinRule,
+    /// Shown in the directory. Its name, description, topic names, moderators
+    /// and size are then public on this server.
+    pub listed: bool,
+    /// Whether members, not only moderators, may start topics.
+    pub members_start_topics: bool,
+}
+
+/// One community, as one of its members (or somebody waiting to join) sees
+/// it ([`NetMessage::Communities`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityDto {
+    pub id: Uuid,
+    /// The server it lives on, which orders all of its topics.
+    pub home: String,
+    pub settings: CommunitySettings,
+    /// The asking account's role; `None` while its request to join waits.
+    pub role: Option<CommunityRole>,
+    /// Everybody in it. Empty while waiting.
+    pub members: Vec<CommunityMemberDto>,
+    /// Its topics, in their order. Empty while waiting.
+    pub topics: Vec<TopicDto>,
+    /// Requests to join. Only a moderator is sent these.
+    pub requests: Vec<JoinRequestDto>,
+    /// Open reports. Only a moderator is sent these.
+    pub reports: Vec<CommunityReportDto>,
+}
+
+/// One member of a community.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityMemberDto {
     /// Full address (`name@server`).
     pub address: String,
-    pub role: WorkspaceRole,
+    pub role: CommunityRole,
 }
 
-/// A channel's name as it is stored and shown after a `#`: lower case, spaces
+/// One topic of a community.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TopicDto {
+    /// The encrypted chat it is (`E2eeCreateGroup`'s id).
+    pub group: Vec<u8>,
+    pub name: String,
+    pub position: u32,
+    pub archived: bool,
+    /// Whether the asking account is in it: false for a moment after joining
+    /// the community, until a member's device has added it, and for good
+    /// after a moderator took it out of this one topic.
+    pub joined: bool,
+}
+
+/// Somebody asking to join ([`CommunityDto::requests`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JoinRequestDto {
+    pub address: String,
+    pub message: String,
+    pub requested_ms: u64,
+}
+
+/// A report made to a community's moderators.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityReportDto {
+    pub id: i64,
+    pub reporter: String,
+    pub reported: String,
+    pub group: Vec<u8>,
+    pub seq: u64,
+    pub reason: ReportReason,
+    pub note: String,
+    pub line: String,
+    pub created_ms: u64,
+}
+
+/// A listed community, as the directory shows it to anybody on the server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityListing {
+    pub id: Uuid,
+    pub name: String,
+    pub about: String,
+    pub join: JoinRule,
+    pub members: u32,
+    pub topics: Vec<String>,
+    /// The owner and the moderators.
+    pub moderators: Vec<CommunityMemberDto>,
+    /// The asking account's standing: in it, waiting, or neither.
+    pub mine: ListingState,
+    pub created_ms: u64,
+}
+
+/// Where the asking account stands with a listed community.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ListingState {
+    Outside,
+    Asked,
+    Member,
+    /// Removed and blocked from rejoining, or turned down within the last week.
+    Refused,
+}
+
+/// A topic's name as it is stored and shown after a `#`: lower case, spaces
 /// as dashes, only letters, digits, `-` and `_`. One rule for the server that
 /// stores it and the device that labels the chat, so the two always agree.
 #[must_use]
-pub fn channel_name(name: &str) -> String {
+pub fn topic_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.trim().trim_start_matches('#').chars() {
         if c.is_alphanumeric() || c == '-' || c == '_' {
@@ -1507,23 +1747,6 @@ pub fn channel_name(name: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
-}
-
-/// One channel of a workspace.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChannelDto {
-    /// The encrypted chat it is (`E2eeCreateGroup`'s id).
-    pub group: Vec<u8>,
-    pub name: String,
-    pub topic: String,
-    pub private: bool,
-    /// Whether the asking account is in it.
-    pub joined: bool,
-    /// Whether the asking account has asked to join and is waiting for a
-    /// member's device to add it.
-    pub pending: bool,
-    /// How many accounts are in it.
-    pub members: u32,
 }
 
 /// One physical prim's pose and velocity ([`NetMessage::PrimMotion`]).
@@ -1816,8 +2039,8 @@ impl ReportReason {
 
 /// Longest report note the server will store, in characters.
 ///
-/// Same reasoning as [`MAX_ROOM_LEN`]: the field is a `String` off the wire and
-/// its only other bound is `MAX_FRAME`. Long enough for a paragraph explaining
+/// The field is a `String` off the wire and its only other bound is
+/// `MAX_FRAME`, which makes an unbounded one an allocation multiplier. Long enough for a paragraph explaining
 /// what happened, short enough that a report table cannot be used as storage.
 pub const MAX_REPORT_NOTE_LEN: usize = 2000;
 
@@ -1856,7 +2079,6 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::TextureNotFound { .. } => MessageKind::TextureNotFound,
         NetMessage::ChatSend { .. } => MessageKind::ChatSend,
         NetMessage::ChatMessage { .. } => MessageKind::ChatMessage,
-        NetMessage::ChatSubscribe { .. } => MessageKind::ChatSubscribe,
         NetMessage::GetPrimScript { .. } => MessageKind::GetPrimScript,
         NetMessage::SetPrimScript { .. } => MessageKind::SetPrimScript,
         NetMessage::PrimScript { .. } => MessageKind::PrimScript,
@@ -1912,14 +2134,31 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::Permissions { .. } => MessageKind::Permissions,
         NetMessage::HandPose { .. } => MessageKind::HandPose,
         NetMessage::PrimTone { .. } => MessageKind::PrimTone,
-        NetMessage::WorkspaceCreate { .. } => MessageKind::WorkspaceCreate,
-        NetMessage::WorkspaceList { .. } => MessageKind::WorkspaceList,
-        NetMessage::Workspaces { .. } => MessageKind::Workspaces,
-        NetMessage::WorkspaceAddMember { .. } => MessageKind::WorkspaceAddMember,
-        NetMessage::ChannelCreate { .. } => MessageKind::ChannelCreate,
-        NetMessage::ChannelJoin { .. } => MessageKind::ChannelJoin,
-        NetMessage::ChannelJoinRequest { .. } => MessageKind::ChannelJoinRequest,
         NetMessage::E2eeAddDevices { .. } => MessageKind::E2eeAddDevices,
+        NetMessage::CommunityList { .. } => MessageKind::CommunityList,
+        NetMessage::Communities { .. } => MessageKind::Communities,
+        NetMessage::CommunityCreate { .. } => MessageKind::CommunityCreate,
+        NetMessage::CommunityCreated { .. } => MessageKind::CommunityCreated,
+        NetMessage::CommunityEdit { .. } => MessageKind::CommunityEdit,
+        NetMessage::CommunityDirectory { .. } => MessageKind::CommunityDirectory,
+        NetMessage::CommunityListings { .. } => MessageKind::CommunityListings,
+        NetMessage::CommunityJoin { .. } => MessageKind::CommunityJoin,
+        NetMessage::CommunityLeave { .. } => MessageKind::CommunityLeave,
+        NetMessage::CommunityDecide { .. } => MessageKind::CommunityDecide,
+        NetMessage::CommunityAddMember { .. } => MessageKind::CommunityAddMember,
+        NetMessage::CommunitySetRole { .. } => MessageKind::CommunitySetRole,
+        NetMessage::CommunityRemove { .. } => MessageKind::CommunityRemove,
+        NetMessage::CommunityDelete { .. } => MessageKind::CommunityDelete,
+        NetMessage::TopicCreate { .. } => MessageKind::TopicCreate,
+        NetMessage::TopicEdit { .. } => MessageKind::TopicEdit,
+        NetMessage::TopicAddPeople { .. } => MessageKind::TopicAddPeople,
+        NetMessage::TopicRemovePeople { .. } => MessageKind::TopicRemovePeople,
+        NetMessage::TopicRemoved { .. } => MessageKind::TopicRemoved,
+        NetMessage::TopicLeft { .. } => MessageKind::TopicLeft,
+        NetMessage::ModerateDelete { .. } => MessageKind::ModerateDelete,
+        NetMessage::E2eeRedacted { .. } => MessageKind::E2eeRedacted,
+        NetMessage::CommunityReport { .. } => MessageKind::CommunityReport,
+        NetMessage::CommunityReportResolve { .. } => MessageKind::CommunityReportResolve,
     }
 }
 
@@ -1968,12 +2207,25 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::PersonInfo { request_id, .. } => *request_id,
         NetMessage::GetNearbyPeople { request_id } => *request_id,
         NetMessage::NearbyPeople { request_id, .. } => *request_id,
-        NetMessage::WorkspaceCreate { request_id, .. } => *request_id,
-        NetMessage::WorkspaceList { request_id } => *request_id,
-        NetMessage::Workspaces { request_id, .. } => *request_id,
-        NetMessage::WorkspaceAddMember { request_id, .. } => *request_id,
-        NetMessage::ChannelCreate { request_id, .. } => *request_id,
-        NetMessage::ChannelJoin { request_id, .. } => *request_id,
+        NetMessage::CommunityList { request_id, .. } => *request_id,
+        NetMessage::Communities { request_id, .. } => *request_id,
+        NetMessage::CommunityCreate { request_id, .. } => *request_id,
+        NetMessage::CommunityCreated { request_id, .. } => *request_id,
+        NetMessage::CommunityEdit { request_id, .. } => *request_id,
+        NetMessage::CommunityDirectory { request_id, .. } => *request_id,
+        NetMessage::CommunityListings { request_id, .. } => *request_id,
+        NetMessage::CommunityJoin { request_id, .. } => *request_id,
+        NetMessage::CommunityLeave { request_id, .. } => *request_id,
+        NetMessage::CommunityDecide { request_id, .. } => *request_id,
+        NetMessage::CommunityAddMember { request_id, .. } => *request_id,
+        NetMessage::CommunitySetRole { request_id, .. } => *request_id,
+        NetMessage::CommunityRemove { request_id, .. } => *request_id,
+        NetMessage::CommunityDelete { request_id, .. } => *request_id,
+        NetMessage::TopicCreate { request_id, .. } => *request_id,
+        NetMessage::TopicEdit { request_id, .. } => *request_id,
+        NetMessage::ModerateDelete { request_id, .. } => *request_id,
+        NetMessage::CommunityReport { request_id, .. } => *request_id,
+        NetMessage::CommunityReportResolve { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -2220,7 +2472,7 @@ mod tests {
             },
             NetMessage::ChatSend {
                 request_id: 8,
-                scope: ChatScope::Room("helpdesk".into()),
+                scope: ChatScope::Global,
                 body: "yo".into(),
             },
             NetMessage::ChatMessage {
@@ -2230,10 +2482,6 @@ mod tests {
                 sent_at_ms: 1234,
                 body: "hello".into(),
                 distance_m: Some(12.5),
-            },
-            NetMessage::ChatSubscribe {
-                room: "helpdesk".into(),
-                join: true,
             },
         ] {
             let b = encode_app_frame(&m).unwrap();
@@ -2309,7 +2557,7 @@ mod tests {
                 payload: vec![0x00, 0xff, 0x7f],
             },
             NetMessage::VoiceFrame {
-                scope: ChatScope::Room("standup".into()),
+                scope: ChatScope::Global,
                 seq: u32::MAX,
                 payload: vec![1; 1500],
             },
@@ -2321,7 +2569,7 @@ mod tests {
                 distance_m: Some(31.25),
             },
             NetMessage::VoiceData {
-                channel: "room:standup".into(),
+                channel: "voice:global".into(),
                 sender_id: 9,
                 seq: 44,
                 payload: vec![],
@@ -2472,7 +2720,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 81] = [
+        const ALL: [MessageKind; 97] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2490,7 +2738,6 @@ mod tests {
             TextureNotFound,
             ChatSend,
             ChatMessage,
-            ChatSubscribe,
             GetPrimScript,
             SetPrimScript,
             PrimScript,
@@ -2546,14 +2793,31 @@ mod tests {
             Permissions,
             HandPose,
             PrimTone,
-            WorkspaceCreate,
-            WorkspaceList,
-            Workspaces,
-            WorkspaceAddMember,
-            ChannelCreate,
-            ChannelJoin,
-            ChannelJoinRequest,
             E2eeAddDevices,
+            CommunityList,
+            Communities,
+            CommunityCreate,
+            CommunityCreated,
+            CommunityEdit,
+            CommunityDirectory,
+            CommunityListings,
+            CommunityJoin,
+            CommunityLeave,
+            CommunityDecide,
+            CommunityAddMember,
+            CommunitySetRole,
+            CommunityRemove,
+            CommunityDelete,
+            TopicCreate,
+            TopicEdit,
+            TopicAddPeople,
+            TopicRemovePeople,
+            TopicRemoved,
+            TopicLeft,
+            ModerateDelete,
+            E2eeRedacted,
+            CommunityReport,
+            CommunityReportResolve,
         ];
         for k in ALL {
             assert_eq!(
@@ -2567,12 +2831,20 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(E2eeAddDevices as u16 + 1), None);
+        assert_eq!(
+            MessageKind::from_wire(CommunityReportResolve as u16 + 1),
+            None
+        );
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is
         // therefore no longer contiguous on purpose.
         assert_eq!(MessageKind::from_wire(5), None);
+        // 19 (`ChatSubscribe`) and 75–81 (workspaces and channels) went with
+        // rooms and workspaces in protocol 39, and stay retired for the same reason.
+        for retired in [19, 75, 76, 77, 78, 79, 80, 81] {
+            assert_eq!(MessageKind::from_wire(retired), None);
+        }
     }
 
     /// The header guards in `decode_app_frame` — the checks that keep a

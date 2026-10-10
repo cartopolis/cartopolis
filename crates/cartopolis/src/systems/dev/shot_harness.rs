@@ -2100,6 +2100,9 @@ pub struct ScriptedChat<'w, 's> {
     overlay: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
     /// The messenger's screens (`--ui chats` / `chatthread` / `chatworld`).
     chats: ResMut<'w, crate::systems::chats::ChatsView>,
+    /// Communities in the messenger (`--ui communities` / `community` /
+    /// `findcommunity` / `newchat`).
+    communities: ResMut<'w, crate::systems::communities::Communities>,
     /// The contacts screens (`--ui contacts` / `requests` / `request` /
     /// `addcontact` / `privacy` / `personcard`).
     contacts: ResMut<'w, crate::systems::contacts::Contacts>,
@@ -2158,6 +2161,10 @@ const UI_ELEMENTS: &[&str] = &[
     "signin",
     "chat",
     "chats",
+    "communities",
+    "community",
+    "findcommunity",
+    "newchat",
     "chatthread",
     "chatworld",
     "chatswitch",
@@ -2337,14 +2344,31 @@ pub fn open_scripted_ui(
         Some("world")
     } else if want("chatthread") {
         Some("chat")
-    } else if want("chats") {
+    } else if want("community") {
+        Some("community")
+    } else if want("findcommunity") {
+        Some("find")
+    } else if want("newchat") {
+        Some("new")
+    } else if want("chats") || want("communities") {
         Some("list")
     } else {
         None
     };
     match messenger {
         Some(screen) => {
+            let base = if matches!(screen, "community" | "find" | "new") {
+                "list"
+            } else {
+                screen
+            };
             *right_panel = crate::systems::chats::seed_demo_chats(
+                &mut cards.chat.state,
+                &mut cards.chat.chats,
+                base,
+            );
+            crate::systems::communities::seed_demo(
+                &mut cards.chat.communities,
                 &mut cards.chat.state,
                 &mut cards.chat.chats,
                 screen,
@@ -2359,6 +2383,7 @@ pub fn open_scripted_ui(
         }
         None => {
             crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats);
+            crate::systems::communities::clear_demo(&mut cards.chat.communities);
             // `--ui friends`: the Friends layer's markers, no chat open.
             if want("friends") {
                 crate::systems::contacts::seed_demo_friends(&mut cards.chat.contacts);

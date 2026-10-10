@@ -10,26 +10,61 @@ import type {Message} from './history.ts'
 /** How the worker signs in: the session token the web UI already holds. */
 export type Credential = {token: string} | {password: string; username: string}
 
-export interface ChannelView {
-    /** The channel's chat, as the same `dm:<hex>` key every chat has. */
-    channel: string
-    joined: boolean
-    members: number
+export type Role = 'member' | 'moderator' | 'owner'
+export type JoinRule = 'ask' | 'invite' | 'open'
+
+export interface CommunitySettings {
+    about: string
+    join: JoinRule
+    listed: boolean
+    members_start_topics: boolean
     name: string
-    pending: boolean
-    private: boolean
-    topic: string
 }
 
-export type Role = 'admin' | 'member' | 'owner'
+export interface TopicView {
+    archived: boolean
+    /** The topic's chat, as the same `dm:<hex>` key every chat has. */
+    channel: string
+    /** Whether this account is in it yet (a member's device adds it). */
+    joined: boolean
+    name: string
+    position: number
+}
 
-export interface WorkspaceView {
-    channels: ChannelView[]
+export interface CommunityReport {
+    channel: string
+    created_ms: number
+    id: number
+    line: string
+    note: string
+    reason: string
+    reported: string
+    reporter: string
+    seq: number
+}
+
+export interface CommunityView {
     home: string
     id: string
     members: {address: string; role: Role}[]
+    reports: CommunityReport[]
+    requests: {address: string; message: string; requested_ms: number}[]
+    /** `null` while this account's request to join waits for a moderator. */
+    role: Role | null
+    settings: CommunitySettings
+    topics: TopicView[]
+}
+
+export interface CommunityListing {
+    about: string
+    created_ms: number
+    id: string
+    join: JoinRule
+    members: number
+    mine: 'asked' | 'member' | 'outside' | 'refused'
+    moderators: {address: string; role: Role}[]
     name: string
-    role: Role
+    topics: string[]
 }
 
 export type ChatEvent =
@@ -66,7 +101,11 @@ export type ChatEvent =
     | {channel: string; from: string; kind: 'location_stopped'}
     | {channel: string; kind: 'named'; name: string}
     | {kind: 'notice'; text: string}
-    | {kind: 'workspaces'; workspaces: WorkspaceView[]}
+    | {communities: CommunityView[]; kind: 'communities'}
+    | {id: string; kind: 'community_created'}
+    | {kind: 'directory'; listings: CommunityListing[]}
+    | {by: string; channel: string; kind: 'redacted'; seq: number}
+    | {by: string; channel: string; community: string; kind: 'left'}
     /** Not the engine's: the connection reporting on itself. */
     | {kind: 'disconnected'}
     | {kind: 'error'; message: string}
@@ -99,10 +138,21 @@ export type Command =
     | {channel: string; emoji: string; remove: boolean; target: number; type: 'react'}
     | {body: string; channel: string; target: number; type: 'edit'}
     | {channel: string; target: number; type: 'delete'}
-    | {name: string; type: 'create_workspace'}
-    | {type: 'add_workspace_member'; who: string; workspace: string}
-    | {name: string; private: boolean; topic: string; type: 'start_channel'; workspace: string}
-    | {channel: string; type: 'join_channel'; workspace: string}
+    | {people: string[]; settings: CommunitySettings; topics: string[]; type: 'create_community'}
+    | {id: string; settings: CommunitySettings; type: 'edit_community'}
+    | {order: 'new' | 'popular'; query: string; type: 'find_communities'}
+    | {id: string; message: string; type: 'join_community'}
+    | {id: string; type: 'leave_community'}
+    | {accept: boolean; id: string; type: 'decide_request'; who: string}
+    | {id: string; type: 'add_to_community'; who: string}
+    | {id: string; role: Role; type: 'set_community_role'; who: string}
+    | {block: boolean; channel: string; id: string; type: 'remove_from_community'; who: string}
+    | {id: string; type: 'delete_community'}
+    | {id: string; name: string; type: 'start_topic'}
+    | {archived: boolean; channel: string; id: string; name: string; position: number; type: 'edit_topic'}
+    | {channel: string; target: number; type: 'moderate_delete'}
+    | {channel: string; line: string; note: string; reason: string; target: number; type: 'report_to_moderators'; who: string}
+    | {id: string; report: number; type: 'resolve_report'}
     | {channel: string; type: 'add_to_chat'; who: string}
     /** The page is showing this chat: send its history, and count it read. */
     | {channel: string; type: 'open'}
@@ -117,6 +167,7 @@ export type Update =
         status: 'connected' | 'connecting' | 'signed_out' | 'waiting'
         type: 'state'
         username: string | null
-        workspaces: WorkspaceView[]
+        communities: CommunityView[]
+        directory: CommunityListing[]
     }
     | {channel: string; messages: Message[]; type: 'history'}

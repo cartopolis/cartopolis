@@ -472,6 +472,25 @@ impl Device {
         key_packages: &[Vec<u8>],
     ) -> Result<Option<(Outgoing, Vec<Identity>)>, Error> {
         let members = self.members(group);
+        self.add_allowed(group, key_packages, |address| {
+            members
+                .iter()
+                .any(|m| m.address.eq_ignore_ascii_case(address))
+        })
+    }
+
+    /// Add the devices whose key packages name somebody `allowed` admits, and
+    /// no device already in the chat. Answers who was added, or `None` when
+    /// nobody was left. The rule for *who* belongs is the caller's: the
+    /// members already here ([`Self::add_member_devices`]), or the people of
+    /// the community a topic belongs to.
+    pub fn add_allowed(
+        &mut self,
+        group: &[u8],
+        key_packages: &[Vec<u8>],
+        allowed: impl Fn(&str) -> bool,
+    ) -> Result<Option<(Outgoing, Vec<Identity>)>, Error> {
+        let members = self.members(group);
         if members.is_empty() {
             return Err(Error::UnknownGroup);
         }
@@ -490,9 +509,7 @@ impl Device {
             let Some(id) = Identity::from_credential(kp.leaf_node().credential()) else {
                 continue;
             };
-            let a_member = members
-                .iter()
-                .any(|m| m.address.eq_ignore_ascii_case(&id.address));
+            let a_member = allowed(&id.address);
             let already = members
                 .iter()
                 .chain(who.iter())
@@ -506,6 +523,42 @@ impl Device {
             return Ok(None);
         }
         Ok(Some((self.add(group, &keep)?, who)))
+    }
+
+    /// Take every device of each of `addresses` out of a chat, with one commit.
+    /// Pending like [`Self::add`]. `None` when none of them is in it.
+    pub fn remove_people(
+        &mut self,
+        group: &[u8],
+        addresses: &[String],
+    ) -> Result<Option<Outgoing>, Error> {
+        let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
+        let me = g.own_leaf_index();
+        let leaves: Vec<LeafNodeIndex> = g
+            .members()
+            .filter(|m| m.index != me)
+            .filter(|m| {
+                Identity::from_credential(&m.credential).is_some_and(|id| {
+                    addresses
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&id.address))
+                })
+            })
+            .map(|m| m.index)
+            .collect();
+        if leaves.is_empty() {
+            return Ok(None);
+        }
+        let epoch = g.epoch().as_u64();
+        let (commit, _welcome, _) = g
+            .remove_members(&self.provider, &self.signer, &leaves)
+            .map_err(mls)?;
+        Ok(Some(Outgoing {
+            group: group.to_vec(),
+            epoch,
+            message: commit.tls_serialize_detached().map_err(mls)?,
+            welcome: None,
+        }))
     }
 
     /// The server accepted this device's commit: apply it.
@@ -1020,5 +1073,47 @@ mod tests {
         laptop.confirm_pending(&g).unwrap();
         assert_eq!(phone.join(&out.welcome.unwrap()).unwrap(), g);
         assert_eq!(laptop.members(&g).len(), 3);
+    }
+
+    #[test]
+    fn removing_somebody_takes_every_device_of_theirs_out_and_they_read_nothing_after() {
+        let mut ann = Device::new("ann@x", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@x", Uuid::new_v4()).unwrap();
+        let mut cas = Device::new("cas@x", Uuid::new_v4()).unwrap();
+        let mut cas_phone = Device::new("cas@x", Uuid::new_v4()).unwrap();
+        let g = ann.create_group(b"x/topic").unwrap();
+        let mut packages = bob.key_packages(1).unwrap();
+        packages.extend(cas.key_packages(1).unwrap());
+        packages.extend(cas_phone.key_packages(1).unwrap());
+        let add = ann.add(&g, &packages).unwrap();
+        ann.confirm_pending(&g).unwrap();
+        let welcome = add.welcome.unwrap();
+        for d in [&mut bob, &mut cas, &mut cas_phone] {
+            d.join(&welcome).unwrap();
+        }
+
+        assert!(ann
+            .remove_people(&g, &["nobody@x".into()])
+            .unwrap()
+            .is_none());
+        let out = ann.remove_people(&g, &["CAS@x".into()]).unwrap().unwrap();
+        ann.confirm_pending(&g).unwrap();
+        assert_eq!(ann.members(&g).len(), 2, "both of Cas's devices went");
+        bob.receive(&g, &out.message).unwrap();
+
+        let line = ann
+            .encrypt(
+                &g,
+                &Payload::Text {
+                    body: "after".into(),
+                    sent_at_ms: 0,
+                },
+            )
+            .unwrap();
+        assert!(bob.receive(&g, &line.message).is_ok());
+        assert!(
+            cas.receive(&g, &line.message).is_err(),
+            "a removed device must not read what is said after"
+        );
     }
 }

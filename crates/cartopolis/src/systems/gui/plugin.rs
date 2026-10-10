@@ -54,6 +54,7 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::chat::ChatState>()
             .init_resource::<systems::chat_overlay::ChatOverlay>()
             .init_resource::<systems::chats::ChatsView>()
+            .init_resource::<systems::communities::Communities>()
             .init_resource::<systems::script_editor::ScriptEditorState>()
             .init_resource::<systems::model_library::ModelLibraryState>()
             // Drawn over everything until the first tiles are up. Mirrors the

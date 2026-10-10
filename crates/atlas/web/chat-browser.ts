@@ -7,7 +7,7 @@
  *
  * What `chat-e2e.ts` cannot reach: the `SharedWorker`, its Web Lock, IndexedDB,
  * and the page itself. Two headless Chromium profiles (two people, two
- * browsers) sign in through the form, start a workspace and a channel, talk in
+ * browsers) sign in through the form, start a community with a topic, talk in
  * it, and one reloads to read the history back out of its own storage. Driven
  * over the DevTools Protocol, as `tools/cdp_probe.ts` is, so it needs no npm
  * package. `--shots DIR` writes a screenshot of each browser at the end.
@@ -179,7 +179,7 @@ class Browser {
         await this.type('input[autocomplete=username]', username)
         await this.type('input[autocomplete=current-password]', 'pw')
         await this.submit('form.chat-door')
-        await waitFor(`${this.name} signed in`, () => this.eval('!!document.querySelector(".chat-rail")'))
+        await waitFor(`${this.name} signed in`, () => this.eval('!!document.querySelector(".chat-side")'))
         await waitFor(`${this.name}'s chat connected`, () => this.eval('!document.querySelector(".chat-status")'))
     }
 
@@ -216,33 +216,22 @@ try {
     await bob.signIn('bob')
     step('both signed in through the form; the shared worker holds their keys')
 
-    // Ann: a workspace, Bob in it, a channel.
-    await ann.click('New workspace')
-    await ann.type('.chat-dialog input', 'Atelier Noord')
-    await ann.submit('.chat-dialog form')
-    await waitFor('the workspace in the rail', () => ann.eval('document.querySelectorAll(".chat-ws").length >= 3'))
-    await ann.click('Atelier Noord')
-    await ann.click('Add people')
-    await ann.type('.chat-dialog input', 'bob')
-    await ann.submit('.chat-dialog form')
-    await ann.until('bob')
-    await ann.click('New channel')
-    await ann.type('.chat-dialog input', 'ebbinge quarter')
-    await ann.submit('.chat-dialog form')
-    await ann.until('ebbinge-quarter')
-    step('ann made a workspace, added bob, started #ebbinge-quarter')
+    // Ann: a community, with Bob in it and a first topic.
+    await ann.eval('document.querySelector("details.chat-new").open = true')
+    // The menu's buttons carry a line under their name, so match that.
+    if (!(await ann.click('People who share several topics'))) throw new Error('no Start a community')
+    await ann.type('input[placeholder="Garage 44"]', 'Atelier Noord')
+    await ann.type('input[placeholder="general, meet-ups"]', 'ebbinge quarter')
+    await ann.type('input[placeholder="Usernames, separated by commas"]', 'bob')
+    await ann.submit('.chat-form')
+    await waitFor('the community in the list', () =>
+        ann.eval('[...document.querySelectorAll(".chat-community")].some((b) => b.innerText.includes("Atelier Noord"))'), 30000)
+    step('ann started a community with #ebbinge-quarter and bob in it')
 
-    // Bob: the workspace appears; he asks into the channel.
-    await waitFor('the workspace for bob', () => bob.eval('document.querySelectorAll(".chat-ws").length >= 3'))
-    await bob.click('Atelier Noord')
-    await bob.until('Browse 1 more')
-    if (!(await bob.click('Browse 1 more'))) throw new Error('no Browse button')
-    await bob.until('Waiting for a member', 1).catch(() => undefined)
-    if (!(await bob.click('Join'))) throw new Error('no Join button')
-    await waitFor('bob let into the channel', () =>
+    // Bob: the community appears, and ann's browser adds him to its topic.
+    await waitFor('bob let into the topic', () =>
         bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 30000)
-    await bob.click('Close')
-    step("bob asked into the channel and ann's browser let him in")
+    step("bob is in the community, and ann's browser added him to its topic")
 
     // They talk.
     await ann.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
@@ -263,10 +252,9 @@ try {
 
     // Bob reloads: the history comes back out of his browser's own storage.
     await bob.send('Page.reload')
-    // Back in the direct-messages view; the workspace returns to the rail
-    // once the worker has signed in again.
-    await waitFor('bob reconnected', () => bob.eval('document.querySelectorAll(".chat-ws").length >= 3'), 30000)
-    await bob.click('Atelier Noord')
+    // The topic returns to the list once the worker has signed in again.
+    await waitFor('bob reconnected', () =>
+        bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 30000)
     await bob.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
     await bob.until('Scaffolding is down on the north side')
     step('after a reload bob reads the history back out of IndexedDB')
@@ -275,6 +263,14 @@ try {
         mkdirSync(shots, {recursive: true})
         await ann.shot(path.join(shots, 'ann.png'))
         await bob.shot(path.join(shots, 'bob.png'))
+        // The community's own page, and the directory.
+        await ann.eval('document.querySelector(".chat-community .chat-item").click()')
+        await ann.until('Everyone here is in every topic')
+        await ann.shot(path.join(shots, 'community.png'))
+        await ann.click('Find a community')
+        await ann.until('Atelier Noord')
+        await Bun.sleep(200)
+        await ann.shot(path.join(shots, 'find.png'))
         // The other theme, pinned the way the theme switch pins it.
         await ann.eval('document.documentElement.dataset.theme = "dark"')
         await Bun.sleep(100)

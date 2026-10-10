@@ -962,6 +962,9 @@ pub fn erase_account_traces(
     // A house held by an account that no longer exists is claimable by nobody
     // and visible to no one — the worst of both, so deletion frees it.
     crate::buildings::erase_for(conn, principal)?;
+    // Communities first: leaving one needs the topic memberships the next
+    // step deletes. A community the account owned passes on or goes.
+    crate::communities::erase_account(conn, principal)?;
     // Devices, key packages and memberships go; the sealed logs stay, being
     // the other members' history (`e2ee::erase_account` says why that is safe).
     crate::e2ee::erase_account(conn, principal)?;

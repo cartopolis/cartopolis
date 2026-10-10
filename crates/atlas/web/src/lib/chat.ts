@@ -4,7 +4,7 @@
  * history.
  *
  * A page never touches the keys. It sends commands and keeps what the worker
- * tells it — the chat list, the workspaces, the history of whichever chat it
+ * tells it — the chat list, the communities, the history of whichever chat it
  * opened — and every open tab sees the same, because they all talk to the same
  * worker.
  */
@@ -13,12 +13,15 @@ import type {
     ChatEvent,
     ChatSummary,
     Command,
+    CommunityListing,
+    CommunitySettings,
+    CommunityView,
     Credential,
+    Role,
     Update,
-    WorkspaceView,
 } from '../worker/protocol.ts'
 
-export type {ChatEvent, ChatSummary, Message, WorkspaceView}
+export type {ChatEvent, ChatSummary, CommunityListing, CommunitySettings, CommunityView, Message, Role}
 
 interface Port {
     postMessage(message: Command): void
@@ -31,7 +34,9 @@ export class ChatClient {
     chats: ChatSummary[] = []
     status: Status = 'signed_out'
     username: string | null = null
-    workspaces: WorkspaceView[] = []
+    communities: CommunityView[] = []
+    /** The last directory search's answer. */
+    directory: CommunityListing[] = []
     /** The last thing the worker or the server refused, for the page to show. */
     notice: string | null = null
     /** Histories of the chats this page has opened, by channel key. */
@@ -113,20 +118,74 @@ export class ChatClient {
         this.send({channel, target, type: 'delete'})
     }
 
-    createWorkspace(name: string): void {
-        this.send({name, type: 'create_workspace'})
+    createCommunity(settings: CommunitySettings, topics: string[], people: string[]): void {
+        this.send({people, settings, topics, type: 'create_community'})
     }
 
-    addWorkspaceMember(workspace: string, who: string): void {
-        this.send({type: 'add_workspace_member', who, workspace})
+    editCommunity(id: string, settings: CommunitySettings): void {
+        this.send({id, settings, type: 'edit_community'})
     }
 
-    startChannel(workspace: string, name: string, topic: string, isPrivate: boolean): void {
-        this.send({name, private: isPrivate, topic, type: 'start_channel', workspace})
+    findCommunities(query: string, order: 'new' | 'popular'): void {
+        this.send({order, query, type: 'find_communities'})
     }
 
-    joinChannel(workspace: string, channel: string): void {
-        this.send({channel, type: 'join_channel', workspace})
+    joinCommunity(id: string, message: string): void {
+        this.send({id, message, type: 'join_community'})
+    }
+
+    leaveCommunity(id: string): void {
+        this.send({id, type: 'leave_community'})
+    }
+
+    decideRequest(id: string, who: string, accept: boolean): void {
+        this.send({accept, id, type: 'decide_request', who})
+    }
+
+    addToCommunity(id: string, who: string): void {
+        this.send({id, type: 'add_to_community', who})
+    }
+
+    setCommunityRole(id: string, who: string, role: Role): void {
+        this.send({id, role, type: 'set_community_role', who})
+    }
+
+    /** Take somebody out of one topic (`channel`), or the whole community (`''`). */
+    removeFromCommunity(id: string, who: string, channel: string, block: boolean): void {
+        this.send({block, channel, id, type: 'remove_from_community', who})
+    }
+
+    deleteCommunity(id: string): void {
+        this.send({id, type: 'delete_community'})
+    }
+
+    startTopic(id: string, name: string): void {
+        this.send({id, name, type: 'start_topic'})
+    }
+
+    editTopic(id: string, channel: string, name: string, position: number, archived: boolean): void {
+        this.send({archived, channel, id, name, position, type: 'edit_topic'})
+    }
+
+    moderateDelete(channel: string, target: number): void {
+        this.send({channel, target, type: 'moderate_delete'})
+    }
+
+    reportToModerators(channel: string, target: number, who: string, reason: string, note: string, line: string): void {
+        this.send({channel, line, note, reason, target, type: 'report_to_moderators', who})
+    }
+
+    resolveReport(id: string, report: number): void {
+        this.send({id, report, type: 'resolve_report'})
+    }
+
+    /** The community a chat is a topic of, and the topic. */
+    topicOf(channel: string): {community: CommunityView; topic: CommunityView['topics'][number]} | null {
+        for (const community of this.communities) {
+            const topic = community.topics.find((t) => t.channel === channel)
+            if (topic) return {community, topic}
+        }
+        return null
     }
 
     addToChat(channel: string, who: string): void {
@@ -140,7 +199,8 @@ export class ChatClient {
                 this.chats = update.chats
                 this.status = update.status
                 this.username = update.username
-                this.workspaces = update.workspaces
+                this.communities = update.communities
+                this.directory = update.directory
                 break
             case 'history':
                 this.histories.set(update.channel, update.messages)

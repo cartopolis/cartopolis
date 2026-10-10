@@ -12,7 +12,7 @@
  * copies of one device's keys, saving over each other.
  *
  * Pages hold no keys and no history of their own. They send commands and get
- * back three things: the state (chats, workspaces, who is signed in), a chat's
+ * back three things: the state (chats, communities, who is signed in), a chat's
  * history when they open it, and every event as it happens.
  */
 import init, {ChatCore} from './pkg/cartopolis_web_chat.js'
@@ -20,6 +20,7 @@ import {ChatConnection, type ChatCoreModule} from './connection.ts'
 import {
     apply,
     changeLocally,
+    redactLocally,
     type Chat,
     emptyChat,
     markRead,
@@ -29,7 +30,15 @@ import {
     unread,
 } from './history.ts'
 import {IndexedDbKeyStore} from './keystore.ts'
-import type {ChatEvent, ChatSummary, Command, Credential, Update, WorkspaceView} from './protocol.ts'
+import type {
+    ChatEvent,
+    ChatSummary,
+    Command,
+    CommunityListing,
+    CommunityView,
+    Credential,
+    Update,
+} from './protocol.ts'
 
 declare const self: (SharedWorkerGlobalScope | DedicatedWorkerGlobalScope) & typeof globalThis
 
@@ -54,7 +63,8 @@ let release: (() => void) | null = null
 let status: 'connected' | 'connecting' | 'signed_out' | 'waiting' = 'signed_out'
 /** This person's full address, once signed in. */
 let me: string | null = null
-let workspaces: WorkspaceView[] = []
+let communities: CommunityView[] = []
+let directory: CommunityListing[] = []
 const histories = new Map<string, Chat>()
 const dirty = new Set<string>()
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -134,7 +144,8 @@ function state(to?: Port): void {
         status,
         type: 'state',
         username: conn?.username ?? null,
-        workspaces,
+        communities,
+        directory,
     }, to)
 }
 
@@ -169,8 +180,17 @@ async function handle(event: ChatEvent): Promise<void> {
                 sentEarly.set(event.request, event.seq)
             }
             break
-        case 'workspaces':
-            workspaces = event.workspaces
+        case 'communities':
+            communities = event.communities
+            break
+        case 'directory':
+            directory = event.listings
+            break
+        case 'redacted':
+            if (redactLocally(chat(event.channel), event.seq, event.by)) {
+                changed(event.channel)
+                history(event.channel)
+            }
             break
         case 'disconnected':
             if (status === 'connected') status = 'connecting'
@@ -209,7 +229,8 @@ function signOut(): void {
     token = null
     me = null
     status = 'signed_out'
-    workspaces = []
+    communities = []
+    directory = []
     histories.clear()
     release?.()
     release = null
@@ -301,14 +322,51 @@ async function run(command: Command, from: Port): Promise<void> {
             changed(command.channel)
             history(command.channel)
             return
-        case 'create_workspace':
-            return c.createWorkspace(command.name)
-        case 'add_workspace_member':
-            return c.addWorkspaceMember(command.workspace, command.who)
-        case 'start_channel':
-            return c.startChannel(command.workspace, command.name, command.topic, command.private)
-        case 'join_channel':
-            return c.joinChannel(command.workspace, command.channel)
+        case 'create_community':
+            return c.community((core) =>
+                core.create_community(JSON.stringify(command.settings), command.topics, command.people),
+            )
+        case 'edit_community':
+            return c.community((core) => core.edit_community(command.id, JSON.stringify(command.settings)))
+        case 'find_communities':
+            return c.community((core) => core.find_communities(command.query, command.order))
+        case 'join_community':
+            return c.community((core) => core.join_community(command.id, command.message))
+        case 'leave_community':
+            return c.community((core) => core.leave_community(command.id))
+        case 'decide_request':
+            return c.community((core) => core.decide_request(command.id, command.who, command.accept))
+        case 'add_to_community':
+            return c.community((core) => core.add_to_community(command.id, command.who))
+        case 'set_community_role':
+            return c.community((core) => core.set_community_role(command.id, command.who, command.role))
+        case 'remove_from_community':
+            return c.community((core) =>
+                core.remove_from_community(command.id, command.who, command.channel, command.block),
+            )
+        case 'delete_community':
+            return c.community((core) => core.delete_community(command.id))
+        case 'start_topic':
+            return c.community((core) => core.start_topic(command.id, command.name))
+        case 'edit_topic':
+            return c.community((core) =>
+                core.edit_topic(command.id, command.channel, command.name, command.position, command.archived),
+            )
+        case 'moderate_delete':
+            return c.community((core) => core.moderate_delete(command.channel, command.target))
+        case 'report_to_moderators':
+            return c.community((core) =>
+                core.report_to_moderators(
+                    command.channel,
+                    command.target,
+                    command.who,
+                    command.reason,
+                    command.note,
+                    command.line,
+                ),
+            )
+        case 'resolve_report':
+            return c.community((core) => core.resolve_report(command.id, command.report))
         case 'add_to_chat':
             return c.addToChat(command.channel, command.who)
     }

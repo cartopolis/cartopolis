@@ -145,21 +145,26 @@ try {
         throw new Error('bob came back as a new device and opened a different chat')
     }
 
-    // A workspace with a channel: Bob asks in and Ann's connection — not Ann —
-    // lets him in, because only a member's device can add anybody.
-    await ann.conn.createWorkspace('Atelier Noord')
-    const ws = await ann.until('workspace', (e) => (e.kind === 'workspaces' && e.workspaces[0] ? e.workspaces[0].id : undefined))
-    await ann.conn.addWorkspaceMember(ws, 'bob')
-    await ann.conn.startChannel(ws, 'General', 'everything', false)
-    const general = await ann.until('channel', (e) =>
-        e.kind === 'workspaces' && e.workspaces[0]?.channels[0]?.joined ? e.workspaces[0].channels[0].channel : undefined)
-    step('workspace and #general created')
-    await bob.until('workspace seen', (e) =>
-        e.kind === 'workspaces' && e.workspaces[0]?.channels.some((c) => c.channel === general) ? true : undefined)
-    await bob.conn.joinChannel(ws, general)
+    // A community that asks first: Bob finds it, asks in, Ann lets him in, and
+    // Ann's connection — not Ann — adds him to its topic, because only a
+    // member's device can add anybody.
+    const settings = {about: 'lost cats', join: 'ask' as const, listed: true, members_start_topics: true, name: 'Atelier Noord'}
+    await ann.conn.community((core) => core.create_community(JSON.stringify(settings), ['General'], []))
+    const general = await ann.until('topic', (e) =>
+        e.kind === 'communities' && e.communities[0]?.topics[0]?.joined ? e.communities[0].topics[0].channel : undefined)
+    const id = await ann.until('community', (e) => (e.kind === 'communities' && e.communities[0] ? e.communities[0].id : undefined))
+    step('community and #general created')
+    await bob.conn.community((core) => core.find_communities('noord', 'popular'))
+    const found = await bob.until('directory', (e) => (e.kind === 'directory' && e.listings[0] ? e.listings[0].id : undefined))
+    if (found !== id) throw new Error('bob did not find the community')
+    await bob.conn.community((core) => core.join_community(id, 'I live in Noord'))
+    const asked = await ann.until('request', (e) =>
+        e.kind === 'communities' && e.communities[0]?.requests[0] ? e.communities[0].requests[0].message : undefined)
+    if (asked !== 'I live in Noord') throw new Error(`the request said ${asked}`)
+    await ann.conn.community((core) => core.decide_request(id, 'bob', true))
     await bob.until('#general opened', (e) => (e.kind === 'opened' && e.channel === general ? true : undefined))
     await bob.until('#general named', (e) => (e.kind === 'named' && e.channel === general && e.name === '#general' ? true : undefined))
-    step('bob asked into #general and ann\'s device let him in')
+    step('bob found the community, asked in, ann let him in and her device added him to #general')
 
     // A line, a reply in its thread, a reaction: all name it by its seq.
     const request = await ann.conn.sendText(general, 'standup at ten')
@@ -171,6 +176,16 @@ try {
     await bob.conn.react(general, seq, '👍', false)
     await ann.until('reaction', (e) => (e.kind === 'reaction' && e.target === seq && e.emoji === '👍' ? true : undefined))
     step('a thread reply and a reaction, both naming the line by its place in the log')
+
+    // Ann moderates: she deletes Bob's line for everybody, then takes him out.
+    const spam = await bob.conn.sendText(general, 'buy my crypto')
+    const spamSeq = await bob.until('sent spam', (e) => (e.kind === 'sent' && e.request === spam ? e.seq : undefined))
+    await ann.line('bob@localhost', 'buy my crypto')
+    await ann.conn.community((core) => core.moderate_delete(general, spamSeq))
+    await bob.until('redacted', (e) => (e.kind === 'redacted' && e.seq === spamSeq ? true : undefined))
+    await ann.conn.community((core) => core.remove_from_community(id, 'bob', '', false))
+    await bob.until('left', (e) => (e.kind === 'left' && e.channel === general ? true : undefined))
+    step('ann deleted bob\'s line for everybody and took him out of the community')
 
     ann.conn.stop()
     bob.conn.stop()

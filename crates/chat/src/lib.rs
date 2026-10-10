@@ -61,9 +61,14 @@ pub fn is_private_message(msg: &NetMessage) -> bool {
         | NetMessage::E2eeSynced { .. }
         | NetMessage::E2eeDeliver { .. }
         | NetMessage::E2eeInvite { .. }
-        | NetMessage::Workspaces { .. }
-        | NetMessage::ChannelJoinRequest { .. }
-        | NetMessage::E2eeAddDevices { .. } => true,
+        | NetMessage::E2eeAddDevices { .. }
+        | NetMessage::E2eeRedacted { .. }
+        | NetMessage::Communities { .. }
+        | NetMessage::CommunityCreated { .. }
+        | NetMessage::CommunityListings { .. }
+        | NetMessage::TopicAddPeople { .. }
+        | NetMessage::TopicRemovePeople { .. }
+        | NetMessage::TopicLeft { .. } => true,
         NetMessage::ServerError { request_id, .. } => is_private_request(*request_id),
         _ => false,
     }
@@ -168,9 +173,28 @@ pub enum Event {
     Named { group: Vec<u8>, name: String },
     /// Something the person should be told, in words.
     Notice(String),
-    /// Every workspace this account belongs to, whole (`NetMessage::Workspaces`):
-    /// the answer to each workspace request and whenever one changes.
-    Workspaces(Vec<cartopolis_core::WorkspaceDto>),
+    /// Every community this account is in or waiting for, whole
+    /// (`NetMessage::Communities`): the answer to each community request and
+    /// whenever one changes.
+    Communities(Vec<cartopolis_core::CommunityDto>),
+    /// A community this device started exists (its topics and people follow).
+    CommunityCreated(Uuid),
+    /// The answer to a directory search.
+    Directory(Vec<cartopolis_core::CommunityListing>),
+    /// A moderator (`by`) deleted the message at `seq`. Hide it.
+    Redacted {
+        group: Vec<u8>,
+        seq: u64,
+        by: String,
+    },
+    /// This account is no longer in a topic: taken out by `by` (a moderator),
+    /// or left (`by` empty), or the community was deleted. The device has
+    /// forgotten it.
+    Left {
+        group: Vec<u8>,
+        community: Uuid,
+        by: String,
+    },
 }
 
 /// What a sealed payload says, as a line of text and the point it carries.
@@ -299,22 +323,20 @@ struct GroupStart {
     committing: bool,
 }
 
-/// A workspace channel being started: a chat with nobody else in it yet,
-/// registered, then listed in its workspace (`NetMessage::ChannelCreate`).
+/// A topic being started: a chat with nobody else in it yet, registered, then
+/// listed in its community (`NetMessage::TopicCreate`), after which the server
+/// hands this device everybody else to add.
 #[derive(Debug)]
-struct ChannelStart {
-    workspace: Uuid,
+struct TopicStart {
+    community: Uuid,
     name: String,
-    topic: String,
-    private: bool,
     /// The `E2eeCreateGroup` in flight.
     request: u32,
     group: Vec<u8>,
 }
 
 /// Somebody being added to a chat this device is already in: by its own
-/// person (a private channel, a group), or because the server handed this
-/// device a join request (`NetMessage::ChannelJoinRequest`).
+/// person, into a group.
 #[derive(Debug)]
 struct Adding {
     group: Vec<u8>,
@@ -354,7 +376,15 @@ pub struct Engine {
     groups: std::collections::BTreeSet<Vec<u8>>,
     starting: Vec<Starting>,
     group_starts: Vec<GroupStart>,
-    channel_starts: Vec<ChannelStart>,
+    topic_starts: Vec<TopicStart>,
+    /// Communities this device asked to start, waiting for their id: the
+    /// request, the topics and the people to give them.
+    community_starts: Vec<(u32, Vec<String>, Vec<String>)>,
+    /// Commits in flight taking people out of a topic: request, chat, who.
+    removing: Vec<(u32, Vec<u8>, Vec<String>)>,
+    /// The latest community list, for checking what the server asks of this
+    /// device against (who may be added to which topic).
+    communities: Vec<cartopolis_core::CommunityDto>,
     adding: Vec<Adding>,
     /// Commits in flight that add more devices of people already in a chat
     /// (`NetMessage::E2eeAddDevices`): the request and the chat.
@@ -372,7 +402,10 @@ impl Engine {
             groups: std::collections::BTreeSet::new(),
             starting: Vec::new(),
             group_starts: Vec::new(),
-            channel_starts: Vec::new(),
+            topic_starts: Vec::new(),
+            community_starts: Vec::new(),
+            removing: Vec::new(),
+            communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
             next_request: 1,
@@ -388,7 +421,10 @@ impl Engine {
             groups: saved.groups,
             starting: Vec::new(),
             group_starts: Vec::new(),
-            channel_starts: Vec::new(),
+            topic_starts: Vec::new(),
+            community_starts: Vec::new(),
+            removing: Vec::new(),
+            communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
             next_request: 1,
@@ -549,6 +585,9 @@ impl Engine {
         self.starting.clear();
         self.group_starts.clear();
         self.device_adds.clear();
+        self.removing.clear();
+        // Communities are part of the chat list, so ask for them now too.
+        self.list_communities(out);
     }
 
     /// Start a group chat called `name` with `members` (names on this server,
@@ -662,58 +701,176 @@ impl Engine {
         });
     }
 
-    // ── Workspaces and channels (protocol 38) ──────────────────────────────
+    // ── Communities and topics (protocol 39, `docs/notes/communities.md`) ──
 
-    /// Create a workspace with this account as its owner. The answer arrives
-    /// as [`Event::Workspaces`].
-    pub fn create_workspace(&mut self, name: &str, out: &mut Vec<NetMessage>) {
-        out.push(NetMessage::WorkspaceCreate {
-            request_id: self.request(),
-            name: name.trim().to_string(),
-        });
-    }
-
-    /// Ask for every workspace this account belongs to.
-    pub fn list_workspaces(&mut self, out: &mut Vec<NetMessage>) {
-        out.push(NetMessage::WorkspaceList {
+    /// Ask for every community this account is in or waiting for. The answer
+    /// arrives as [`Event::Communities`].
+    pub fn list_communities(&mut self, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityList {
             request_id: self.request(),
         });
     }
 
-    /// Add somebody to a workspace (an owner or admin's request).
-    pub fn add_workspace_member(&mut self, workspace: Uuid, who: &str, out: &mut Vec<NetMessage>) {
-        out.push(NetMessage::WorkspaceAddMember {
+    /// Start a community with this account as its owner, with `topics` (names)
+    /// and `people` (names or full addresses). [`Event::CommunityCreated`] says
+    /// when it exists; the topics and people follow by themselves.
+    pub fn create_community(
+        &mut self,
+        settings: cartopolis_core::CommunitySettings,
+        topics: &[String],
+        people: &[String],
+        out: &mut Vec<NetMessage>,
+    ) {
+        let request = self.request();
+        out.push(NetMessage::CommunityCreate {
+            request_id: request,
+            settings,
+        });
+        let topics: Vec<String> = topics
+            .iter()
+            .map(|t| cartopolis_core::topic_name(t))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let people: Vec<String> = people
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .map(|p| self.qualify(p))
+            .filter(|p| !p.eq_ignore_ascii_case(self.address()))
+            .collect();
+        self.community_starts.push((request, topics, people));
+    }
+
+    /// A moderator changes a community's settings.
+    pub fn edit_community(
+        &mut self,
+        id: Uuid,
+        settings: cartopolis_core::CommunitySettings,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::CommunityEdit {
             request_id: self.request(),
-            workspace,
+            id,
+            settings,
+        });
+    }
+
+    /// Search the listed communities. The answer is [`Event::Directory`].
+    pub fn find_communities(
+        &mut self,
+        query: &str,
+        order: cartopolis_core::DirectoryOrder,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::CommunityDirectory {
+            request_id: self.request(),
+            query: query.trim().to_string(),
+            order,
+        });
+    }
+
+    /// Join an open community, or ask to join one that asks first.
+    pub fn join_community(&mut self, id: Uuid, message: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityJoin {
+            request_id: self.request(),
+            id,
+            message: message.trim().to_string(),
+        });
+    }
+
+    /// Leave a community, or withdraw a request to join it.
+    pub fn leave_community(&mut self, id: Uuid, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityLeave {
+            request_id: self.request(),
+            id,
+        });
+    }
+
+    /// A moderator lets somebody in, or turns them down.
+    pub fn decide_request(&mut self, id: Uuid, who: &str, accept: bool, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityDecide {
+            request_id: self.request(),
+            id,
+            address: self.qualify(who),
+            accept,
+        });
+    }
+
+    /// A moderator adds somebody to a community.
+    pub fn add_to_community(&mut self, id: Uuid, who: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityAddMember {
+            request_id: self.request(),
+            id,
             address: self.qualify(who),
         });
     }
 
-    /// Start a channel in a workspace: a chat with only this account in it,
-    /// listed under `name`. Others join a public one themselves
-    /// ([`Self::join_channel`]) and are added to a private one
-    /// ([`Self::add_to_chat`]).
-    pub fn start_channel(
+    /// The owner makes somebody a moderator or a member, or hands the
+    /// community over (`CommunityRole::Owner`).
+    pub fn set_community_role(
         &mut self,
-        workspace: Uuid,
+        id: Uuid,
+        who: &str,
+        role: cartopolis_core::CommunityRole,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::CommunitySetRole {
+            request_id: self.request(),
+            id,
+            address: self.qualify(who),
+            role,
+        });
+    }
+
+    /// A moderator takes somebody out of one topic, or the whole community.
+    pub fn remove_from_community(
+        &mut self,
+        id: Uuid,
+        who: &str,
+        topic: Option<&[u8]>,
+        block: bool,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::CommunityRemove {
+            request_id: self.request(),
+            id,
+            address: self.qualify(who),
+            topic: topic.map(<[u8]>::to_vec),
+            block,
+        });
+    }
+
+    /// The owner deletes a community.
+    pub fn delete_community(&mut self, id: Uuid, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityDelete {
+            request_id: self.request(),
+            id,
+        });
+    }
+
+    /// Start a topic in a community: a chat with only this account in it,
+    /// listed under `name`; the server then hands this device everybody else in
+    /// the community to add.
+    pub fn start_topic(
+        &mut self,
+        community: Uuid,
         name: &str,
-        topic: &str,
-        private: bool,
         out: &mut Vec<NetMessage>,
         events: &mut Vec<Event>,
     ) {
         // Checked here as well as on the server: a name the server refuses
         // after the chat is registered would leave an unlisted chat behind.
-        if cartopolis_core::channel_name(name).is_empty() {
+        let name = cartopolis_core::topic_name(name);
+        if name.is_empty() {
             events.push(Event::Notice(
-                "a channel name needs at least one letter or digit".into(),
+                "a topic name needs at least one letter or digit".into(),
             ));
             return;
         }
         let group = match self.device.create_group(&self.new_group_id()) {
             Ok(g) => g,
             Err(e) => {
-                events.push(Event::Notice(format!("could not start the channel: {e}")));
+                events.push(Event::Notice(format!("could not start the topic: {e}")));
                 return;
             }
         };
@@ -723,24 +880,251 @@ impl Engine {
             group: group.clone(),
             direct_with: None,
         });
-        self.channel_starts.push(ChannelStart {
-            workspace,
-            name: cartopolis_core::channel_name(name),
-            topic: topic.trim().to_string(),
-            private,
+        self.topic_starts.push(TopicStart {
+            community,
+            name,
             request,
             group,
         });
     }
 
-    /// Ask into a workspace's public channel. A member's device adds this one;
-    /// the chat then arrives as an invitation, like any other.
-    pub fn join_channel(&mut self, workspace: Uuid, group: &[u8], out: &mut Vec<NetMessage>) {
-        out.push(NetMessage::ChannelJoin {
+    /// A moderator renames, moves or archives a topic.
+    pub fn edit_topic(
+        &mut self,
+        community: Uuid,
+        group: &[u8],
+        name: &str,
+        position: u32,
+        archived: bool,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::TopicEdit {
             request_id: self.request(),
-            workspace,
+            community,
             group: group.to_vec(),
+            name: cartopolis_core::topic_name(name),
+            position,
+            archived,
         });
+    }
+
+    /// A moderator deletes the message at `seq` from a topic, for everybody.
+    pub fn moderate_delete(&mut self, group: &[u8], seq: u64, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::ModerateDelete {
+            request_id: self.request(),
+            group: group.to_vec(),
+            seq,
+        });
+    }
+
+    /// Report something said in a community's topic to its moderators. `line`
+    /// is this device's own copy of it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn report_to_moderators(
+        &mut self,
+        id: Uuid,
+        who: &str,
+        group: &[u8],
+        seq: u64,
+        reason: cartopolis_core::ReportReason,
+        note: &str,
+        line: &str,
+        out: &mut Vec<NetMessage>,
+    ) {
+        out.push(NetMessage::CommunityReport {
+            request_id: self.request(),
+            id,
+            address: self.qualify(who),
+            group: group.to_vec(),
+            seq,
+            reason,
+            note: note.trim().to_string(),
+            line: line.to_string(),
+        });
+    }
+
+    /// A moderator closes a report.
+    pub fn resolve_report(&mut self, id: Uuid, report: i64, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityReportResolve {
+            request_id: self.request(),
+            id,
+            report,
+        });
+    }
+
+    /// The community a chat is a topic of, as the latest list says.
+    #[must_use]
+    pub fn community_of(&self, group: &[u8]) -> Option<&cartopolis_core::CommunityDto> {
+        self.communities
+            .iter()
+            .find(|c| c.topics.iter().any(|t| t.group == group))
+    }
+
+    /// The latest community list.
+    #[must_use]
+    pub fn communities(&self) -> &[cartopolis_core::CommunityDto] {
+        &self.communities
+    }
+
+    /// The server found members of a topic's community who are not in the
+    /// topic, claimed a key package for each of their devices, and handed them
+    /// to this device: commit them in. Only people the latest community list
+    /// says are members are added, so the request cannot bring in a stranger.
+    fn add_topic_people(
+        &mut self,
+        group: &[u8],
+        people: &[cartopolis_core::E2eeNewDevice],
+        out: &mut Vec<NetMessage>,
+    ) {
+        if !self.cursors.contains_key(group) || self.changing(group) {
+            return;
+        }
+        let Some(community) = self.community_of(group) else {
+            return;
+        };
+        let members: Vec<String> = community
+            .members
+            .iter()
+            .map(|m| m.address.clone())
+            .collect();
+        let bytes: Vec<Vec<u8>> = people.iter().map(|d| d.package.bytes.clone()).collect();
+        let added = self.device.add_allowed(group, &bytes, |a| {
+            members.iter().any(|m| m.eq_ignore_ascii_case(a))
+        });
+        let (add, who) = match added {
+            Ok(Some(added)) => added,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not add people to a topic");
+                return;
+            }
+        };
+        self.commit_add(group, add, &who, out);
+    }
+
+    /// The server asks this device to take people out of a topic.
+    fn remove_topic_people(
+        &mut self,
+        group: &[u8],
+        addresses: &[String],
+        out: &mut Vec<NetMessage>,
+    ) {
+        if !self.cursors.contains_key(group) || self.changing(group) {
+            return;
+        }
+        let commit = match self.device.remove_people(group, addresses) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                // Nobody by those names is in it any more: say so, so the
+                // server stops asking.
+                out.push(NetMessage::TopicRemoved {
+                    group: group.to_vec(),
+                    addresses: addresses.to_vec(),
+                });
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not take people out of a topic");
+                return;
+            }
+        };
+        let request = self.request();
+        out.push(NetMessage::E2eeSend {
+            request_id: request,
+            group: group.to_vec(),
+            epoch: commit.epoch,
+            commit: true,
+            message: commit.message,
+            welcome: None,
+        });
+        self.removing
+            .push((request, group.to_vec(), addresses.to_vec()));
+    }
+
+    /// The server's answer to a removal's commit. Returns whether it was one.
+    fn on_removal_committed(
+        &mut self,
+        request_id: u32,
+        seq: Option<u64>,
+        out: &mut Vec<NetMessage>,
+    ) -> bool {
+        let Some(i) = self.removing.iter().position(|(r, ..)| *r == request_id) else {
+            return false;
+        };
+        let (_, group, addresses) = self.removing.remove(i);
+        if seq.is_some() {
+            if let Err(e) = self.device.confirm_pending(&group) {
+                tracing::warn!(error = %e, "could not apply a removal");
+                return true;
+            }
+            out.push(NetMessage::TopicRemoved { group, addresses });
+        } else {
+            let _ = self.device.discard_pending(&group);
+        }
+        true
+    }
+
+    /// A moderator deleted entry `seq`: it takes its place in the log like any
+    /// other, so the cursor moves past it in order.
+    fn on_redacted(
+        &mut self,
+        group: Vec<u8>,
+        seq: u64,
+        by: String,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(&cursor) = self.cursors.get(&group) else {
+            return;
+        };
+        if seq > cursor + 1 {
+            let sync = self.sync_request(Some(&group));
+            out.push(sync);
+            return;
+        }
+        if seq == cursor + 1 {
+            self.cursors.insert(group.clone(), seq);
+        }
+        events.push(Event::Redacted { group, seq, by });
+    }
+
+    /// This account is out of a topic: forget it.
+    fn on_left(&mut self, group: Vec<u8>, community: Uuid, by: String, events: &mut Vec<Event>) {
+        if !self.cursors.contains_key(&group) {
+            return;
+        }
+        self.forget(&group);
+        events.push(Event::Left {
+            group,
+            community,
+            by,
+        });
+    }
+
+    /// The community this device asked to start exists: start its topics and
+    /// add its people.
+    fn on_community_created(
+        &mut self,
+        request_id: u32,
+        id: Uuid,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(i) = self
+            .community_starts
+            .iter()
+            .position(|(r, ..)| *r == request_id)
+        else {
+            return;
+        };
+        let (_, topics, people) = self.community_starts.remove(i);
+        for t in topics {
+            self.start_topic(id, &t, out, events);
+        }
+        for p in people {
+            self.add_to_community(id, &p, out);
+        }
+        events.push(Event::CommunityCreated(id));
     }
 
     /// Add `who` to a group chat or channel this device is in: claim their key
@@ -811,8 +1195,20 @@ impl Engine {
                 return;
             }
         };
+        self.commit_add(group, add, &who, out);
+    }
+
+    /// Send the commit an add made, with an invitation naming `who`, and wait
+    /// for the server's answer (`on_device_add_committed`).
+    fn commit_add(
+        &mut self,
+        group: &[u8],
+        add: cartopolis_e2ee::Outgoing,
+        who: &[cartopolis_e2ee::Identity],
+        out: &mut Vec<NetMessage>,
+    ) {
         let mut members: Vec<String> = Vec::new();
-        for w in &who {
+        for w in who {
             if !members.iter().any(|m| m.eq_ignore_ascii_case(&w.address)) {
                 members.push(w.address.clone());
             }
@@ -836,6 +1232,7 @@ impl Engine {
     /// Whether this device has a change to `group`'s membership in flight.
     fn changing(&self, group: &[u8]) -> bool {
         self.device_adds.iter().any(|(_, g)| g == group)
+            || self.removing.iter().any(|(_, g, _)| g == group)
             || self.adding.iter().any(|a| a.group == group)
             || self
                 .starting
@@ -885,9 +1282,9 @@ impl Engine {
         true
     }
 
-    /// The server registered a channel's chat: list it in its workspace and
-    /// open it. Returns whether `request_id` was a channel start.
-    fn on_channel_registered(
+    /// The server registered a topic's chat: list it in its community and open
+    /// it. Returns whether `request_id` was a topic start.
+    fn on_topic_registered(
         &mut self,
         request_id: u32,
         group: &[u8],
@@ -895,13 +1292,13 @@ impl Engine {
         events: &mut Vec<Event>,
     ) -> bool {
         let Some(i) = self
-            .channel_starts
+            .topic_starts
             .iter()
             .position(|c| c.request == request_id)
         else {
             return false;
         };
-        let c = self.channel_starts.remove(i);
+        let c = self.topic_starts.remove(i);
         if c.group != group {
             self.device.forget(&c.group);
             return true;
@@ -910,13 +1307,11 @@ impl Engine {
         self.cursors.insert(c.group.clone(), 0);
         self.peers.insert(c.group.clone(), label.clone());
         self.groups.insert(c.group.clone());
-        out.push(NetMessage::ChannelCreate {
+        out.push(NetMessage::TopicCreate {
             request_id: self.request(),
-            workspace: c.workspace,
+            community: c.community,
             group: c.group.clone(),
             name: c.name,
-            topic: c.topic,
-            private: c.private,
         });
         events.push(Event::Opened {
             group: c.group,
@@ -1285,7 +1680,7 @@ impl Engine {
                 group,
                 existing,
             } => {
-                if self.on_channel_registered(request_id, &group, out, events) {
+                if self.on_topic_registered(request_id, &group, out, events) {
                     return;
                 }
                 if !self.on_group_registered(request_id, &group, out, events) {
@@ -1299,6 +1694,9 @@ impl Engine {
                 refused,
             } => {
                 if self.on_device_add_committed(request_id, &group, seq, out) {
+                    return;
+                }
+                if self.on_removal_committed(request_id, seq, out) {
                     return;
                 }
                 if self.on_adding_committed(request_id, seq, refused.clone(), out, events) {
@@ -1336,11 +1734,11 @@ impl Engine {
                     self.starting.retain(|s| s.request != request_id);
                     self.group_starts.retain(|g| g.request != Some(request_id));
                     if let Some(i) = self
-                        .channel_starts
+                        .topic_starts
                         .iter()
                         .position(|c| c.request == request_id)
                     {
-                        let c = self.channel_starts.remove(i);
+                        let c = self.topic_starts.remove(i);
                         self.device.forget(&c.group);
                     }
                     if let Some(i) = self.adding.iter().position(|a| a.request == request_id) {
@@ -1353,21 +1751,40 @@ impl Engine {
                         let (_, group) = self.device_adds.remove(i);
                         let _ = self.device.discard_pending(&group);
                     }
+                    if let Some(i) = self.removing.iter().position(|(r, ..)| *r == request_id) {
+                        let (_, group, _) = self.removing.remove(i);
+                        let _ = self.device.discard_pending(&group);
+                    }
+                    self.community_starts.retain(|(r, ..)| *r != request_id);
                 }
                 events.push(Event::Notice(message));
             }
-            NetMessage::Workspaces { workspaces, .. } => {
-                events.push(Event::Workspaces(workspaces));
+            NetMessage::Communities { communities, .. } => {
+                self.communities = communities.clone();
+                events.push(Event::Communities(communities));
+            }
+            NetMessage::CommunityCreated { request_id, id } => {
+                self.on_community_created(request_id, id, out, events);
+            }
+            NetMessage::CommunityListings { listings, .. } => {
+                events.push(Event::Directory(listings));
+            }
+            NetMessage::TopicAddPeople { group, people } => {
+                self.add_topic_people(&group, &people, out);
+            }
+            NetMessage::TopicRemovePeople { group, addresses } => {
+                self.remove_topic_people(&group, &addresses, out);
+            }
+            NetMessage::TopicLeft {
+                group,
+                community,
+                by,
+            } => self.on_left(group, community, by, events),
+            NetMessage::E2eeRedacted { group, seq, by } => {
+                self.on_redacted(group, seq, by, out, events);
             }
             NetMessage::E2eeAddDevices { group, devices } => {
                 self.add_member_devices(&group, &devices, out);
-            }
-            NetMessage::ChannelJoinRequest { group, address, .. } => {
-                // Only a device already in the channel can add anybody to it;
-                // the server hands the request to one.
-                if self.groups.contains(&group) {
-                    self.add_to_chat(&group, &address, out, events);
-                }
             }
             _ => {}
         }
@@ -2256,103 +2673,73 @@ mod loopback {
         assert_eq!(bob.opened(), Some(first));
     }
 
-    /// The latest workspace list a peer was told about.
-    fn workspaces(p: &Peer) -> Vec<cartopolis_core::WorkspaceDto> {
+    /// The latest community list a peer was told about.
+    fn communities(p: &Peer) -> Vec<cartopolis_core::CommunityDto> {
         p.events
             .iter()
             .rev()
             .find_map(|e| match e {
-                Event::Workspaces(w) => Some(w.clone()),
+                Event::Communities(c) => Some(c.clone()),
                 _ => None,
             })
             .unwrap_or_default()
     }
 
-    /// Alice makes a workspace with Bob in it and a public channel; Bob asks
-    /// into the channel, Alice's device adds him, and he can read it — named,
-    /// although the name was said before he arrived.
-    async fn a_channel_with_bob_asking_in(
-        alice_online_when_he_asks: bool,
-    ) -> (Peer, Peer, Vec<u8>, tempfile::TempDir, String) {
-        let (dir, _h, addr) = server(&["alice", "bob"]).await;
-        std::mem::forget(_h);
+    fn open_settings(join: cartopolis_core::JoinRule) -> cartopolis_core::CommunitySettings {
+        cartopolis_core::CommunitySettings {
+            name: "Buurt Oosterpoort".into(),
+            about: "lost cats".into(),
+            join,
+            listed: true,
+            members_start_topics: true,
+        }
+    }
+
+    /// Pump everybody a few rounds: a join is several hops between devices.
+    async fn settle(peers: &mut [&mut Peer]) {
+        for _ in 0..3 {
+            for p in peers.iter_mut() {
+                p.pump(PUMP).await;
+            }
+        }
+    }
+
+    /// Alice starts a community with a topic and Bob in it; Bob is in the
+    /// topic without asking, and reads it.
+    async fn community_with_bob() -> (Peer, Peer, Uuid, Vec<u8>, tempfile::TempDir, String) {
+        let (dir, h, addr) = server(&["alice", "bob", "cas"]).await;
+        std::mem::forget(h);
         let mut alice = Peer::connect(&addr, "alice").await;
         let mut bob = Peer::connect(&addr, "bob").await;
-        alice.pump(PUMP).await;
-        bob.pump(PUMP).await;
-
+        settle(&mut [&mut alice, &mut bob]).await;
         let mut out = Vec::new();
-        alice.engine.create_workspace("Atelier Noord", &mut out);
-        alice.send_all(out).await;
-        alice.pump(PUMP).await;
-        let ws = workspaces(&alice)[0].id;
-        let mut out = Vec::new();
-        alice.engine.add_workspace_member(ws, "bob", &mut out);
-        alice.engine.start_channel(
-            ws,
-            "#General",
-            "everything",
-            false,
+        alice.engine.create_community(
+            open_settings(cartopolis_core::JoinRule::Open),
+            &["General".into()],
+            &["bob".into()],
             &mut out,
-            &mut alice.events,
         );
         alice.send_all(out).await;
-        alice.pump(PUMP).await;
-        let channel = workspaces(&alice)[0].channels[0].clone();
-        assert_eq!(channel.name, "general");
-        assert!(channel.joined);
-
-        bob.pump(PUMP).await;
-        let seen = workspaces(&bob);
-        assert_eq!(
-            seen[0].channels[0].group, channel.group,
-            "bob sees the channel"
-        );
-        assert!(!seen[0].channels[0].joined);
-
-        let saved = alice.engine.save();
-        // Alice's app closes before Bob asks, in the second case.
-        let still_here = if alice_online_when_he_asks {
-            Some(alice)
-        } else {
-            drop(alice);
-            None
-        };
-        let mut out = Vec::new();
-        bob.engine.join_channel(ws, &channel.group, &mut out);
-        bob.send_all(out).await;
-        bob.pump(PUMP).await;
-        assert!(
-            workspaces(&bob)[0].channels[0].pending,
-            "waiting for a member"
-        );
-        let mut alice = match still_here {
-            Some(alice) => alice,
-            None => {
-                let mut alice = Peer::connect(&addr, "alice").await;
-                alice.engine = Engine::load(&saved).unwrap();
-                let mut out = Vec::new();
-                alice.engine.on_connected(&mut out);
-                alice.send_all(out).await;
-                alice
-            }
-        };
-        // Alice's device is handed the request, adds Bob, and he joins.
-        alice.pump(PUMP).await;
-        bob.pump(PUMP).await;
-        alice.pump(PUMP).await;
-        bob.pump(PUMP).await;
-        (alice, bob, channel.group, dir, addr)
+        settle(&mut [&mut alice, &mut bob]).await;
+        let mine = communities(&alice);
+        assert_eq!(mine.len(), 1, "{:?}", alice.events);
+        let id = mine[0].id;
+        let topic = mine[0].topics[0].clone();
+        assert_eq!(topic.name, "general");
+        let seen = communities(&bob);
+        assert_eq!(seen[0].topics[0].group, topic.group, "bob sees the topic");
+        assert!(seen[0].topics[0].joined, "and is in it: {:?}", bob.events);
+        (alice, bob, id, topic.group, dir, addr)
     }
 
     #[tokio::test]
-    async fn a_member_asks_into_a_public_channel_and_a_member_device_lets_him_in() {
-        let (mut alice, mut bob, group, _dir, _addr) = a_channel_with_bob_asking_in(true).await;
+    async fn a_community_puts_every_member_in_every_topic() {
+        let (mut alice, mut bob, _id, group, _dir, _addr) = community_with_bob().await;
         assert!(
             bob.events
                 .iter()
                 .any(|e| matches!(e, Event::Named { group: g, name } if *g == group && name == "#general")),
-            "the newcomer learns the channel's name: {:?}",
+            "the newcomer learns the topic's name: {:?}",
             bob.events
         );
         let mut out = Vec::new();
@@ -2361,21 +2748,173 @@ mod loopback {
             .send_text(&group, "welcome bob", 0, &mut out)
             .unwrap();
         alice.send_all(out).await;
-        alice.pump(PUMP).await;
-        bob.pump(PUMP).await;
+        settle(&mut [&mut alice, &mut bob]).await;
         assert_eq!(bob.lines(), vec![("alice".into(), "welcome bob".into())]);
-        let seen = workspaces(&bob);
-        assert!(seen[0].channels[0].joined && !seen[0].channels[0].pending);
     }
 
     #[tokio::test]
-    async fn a_request_made_while_every_member_is_away_is_settled_when_one_returns() {
-        let (_alice, bob, group, _dir, _addr) = a_channel_with_bob_asking_in(false).await;
+    async fn somebody_finds_an_open_community_joins_it_and_a_moderator_takes_them_out() {
+        let (mut alice, mut bob, id, group, _dir, addr) = community_with_bob().await;
+        let mut cas = Peer::connect(&addr, "cas").await;
+        cas.pump(PUMP).await;
+        let mut out = Vec::new();
+        cas.engine
+            .find_communities("CATS", cartopolis_core::DirectoryOrder::Popular, &mut out);
+        cas.send_all(out).await;
+        cas.pump(PUMP).await;
+        let found = cas
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Directory(l) => Some(l.clone()),
+                _ => None,
+            })
+            .expect("a directory answer");
+        assert_eq!(found[0].id, id);
+        assert_eq!(found[0].members, 2);
+        assert_eq!(found[0].topics, vec!["general".to_string()]);
+
+        let mut out = Vec::new();
+        cas.engine.join_community(id, "", &mut out);
+        cas.send_all(out).await;
+        settle(&mut [&mut cas, &mut alice, &mut bob]).await;
+        assert!(
+            cas.events
+                .iter()
+                .any(|e| matches!(e, Event::Opened { group: g, .. } if *g == group)),
+            "cas is in the topic: {:?}",
+            cas.events
+        );
+
+        // Alice takes Cas out again. Cas's device forgets the topic, and what
+        // is said after does not reach it; Bob still reads everything.
+        let mut out = Vec::new();
+        alice
+            .engine
+            .remove_from_community(id, "cas", None, true, &mut out);
+        alice.send_all(out).await;
+        settle(&mut [&mut alice, &mut cas, &mut bob]).await;
+        assert!(
+            cas.events
+                .iter()
+                .any(|e| matches!(e, Event::Left { group: g, .. } if *g == group)),
+            "cas is told: {:?}",
+            cas.events
+        );
+        cas.events.clear();
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_text(&group, "cas has gone", 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        settle(&mut [&mut alice, &mut cas, &mut bob]).await;
+        assert!(cas.lines().is_empty());
+        assert!(bob
+            .lines()
+            .contains(&("alice".into(), "cas has gone".into())));
+        // And Cas cannot simply join again.
+        let mut out = Vec::new();
+        cas.engine.join_community(id, "", &mut out);
+        cas.send_all(out).await;
+        cas.pump(PUMP).await;
+        assert!(
+            cas.events
+                .iter()
+                .any(|e| matches!(e, Event::Notice(n) if n.contains("again"))),
+            "{:?}",
+            cas.events
+        );
+    }
+
+    #[tokio::test]
+    async fn a_moderator_deletes_a_message_for_everybody() {
+        let (mut alice, mut bob, _id, group, _dir, _addr) = community_with_bob().await;
+        let mut out = Vec::new();
+        let request = bob
+            .engine
+            .send_text(&group, "buy my crypto", 0, &mut out)
+            .unwrap();
+        bob.send_all(out).await;
+        settle(&mut [&mut bob, &mut alice]).await;
+        let seq = bob
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Sent {
+                    request: r, seq, ..
+                } if *r == request => Some(*seq),
+                _ => None,
+            })
+            .unwrap();
+        let mut out = Vec::new();
+        alice.engine.moderate_delete(&group, seq, &mut out);
+        alice.send_all(out).await;
+        settle(&mut [&mut alice, &mut bob]).await;
+        for p in [&alice, &bob] {
+            assert!(
+                p.events.iter().any(
+                    |e| matches!(e, Event::Redacted { group: g, seq: s, .. } if *g == group && *s == seq)
+                ),
+                "{:?}",
+                p.events
+            );
+        }
+        // A member is not a moderator.
+        bob.events.clear();
+        let mut out = Vec::new();
+        bob.engine.moderate_delete(&group, seq, &mut out);
+        bob.send_all(out).await;
+        bob.pump(PUMP).await;
+        assert!(bob
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Notice(n) if n.contains("moderator"))));
+    }
+
+    #[tokio::test]
+    async fn asking_first_waits_for_a_moderator() {
+        let (dir, _h, addr) = server(&["alice", "bob"]).await;
+        let _dir = dir;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        settle(&mut [&mut alice, &mut bob]).await;
+        let mut out = Vec::new();
+        alice.engine.create_community(
+            open_settings(cartopolis_core::JoinRule::Ask),
+            &["general".into()],
+            &[],
+            &mut out,
+        );
+        alice.send_all(out).await;
+        settle(&mut [&mut alice]).await;
+        let id = communities(&alice)[0].id;
+        let group = communities(&alice)[0].topics[0].group.clone();
+
+        let mut out = Vec::new();
+        bob.engine
+            .join_community(id, "I live on the Hereweg", &mut out);
+        bob.send_all(out).await;
+        settle(&mut [&mut bob, &mut alice]).await;
+        assert_eq!(communities(&bob)[0].role, None, "waiting");
+        let asks = communities(&alice)[0].requests.clone();
+        assert_eq!(asks[0].message, "I live on the Hereweg");
+
+        let mut out = Vec::new();
+        alice
+            .engine
+            .decide_request(id, &asks[0].address, true, &mut out);
+        alice.send_all(out).await;
+        settle(&mut [&mut alice, &mut bob]).await;
+        assert_eq!(
+            communities(&bob)[0].role,
+            Some(cartopolis_core::CommunityRole::Member)
+        );
         assert!(
             bob.events
                 .iter()
                 .any(|e| matches!(e, Event::Opened { group: g, .. } if *g == group)),
-            "bob is in once alice's device comes back: {:?}",
+            "{:?}",
             bob.events
         );
     }

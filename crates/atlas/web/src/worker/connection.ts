@@ -22,13 +22,9 @@ import type {ChatEvent, Credential} from './protocol.ts'
 /** The slice of `ChatCore` (wasm-bindgen's class) this file uses. */
 export interface ChatCoreApi {
     add_to_chat(channel: string, who: string): void
-    add_workspace_member(workspace: string, who: string): void
     chats(): string
-    create_workspace(name: string): void
     free(): void
     is_open(): boolean
-    join_channel(workspace: string, channel: string): void
-    list_workspaces(): void
     next_frame(): Uint8Array | undefined
     open(saved?: Uint8Array | null): void
     receive(frame: Uint8Array): void
@@ -39,7 +35,6 @@ export interface ChatCoreApi {
     send_reaction(channel: string, target: number, emoji: string, remove: boolean, nowMs: number): number
     send_reply(channel: string, parent: number, body: string, nowMs: number): number
     send_text(channel: string, body: string, nowMs: number): number
-    start_channel(workspace: string, name: string, topic: string, isPrivate: boolean): void
     start_direct(username: string): void
     start_group(name: string, members: string[]): void
     take_events(): string
@@ -47,6 +42,24 @@ export interface ChatCoreApi {
     username(): string | undefined
     /** The same person as a full address, `name@server` (protocol 37). */
     address(): string | undefined
+    // Communities (protocol 39): ids are uuid strings, settings JSON, topics
+    // by their `dm:<hex>` chat key.
+    add_to_community(id: string, who: string): void
+    create_community(settings: string, topics: string[], people: string[]): void
+    decide_request(id: string, who: string, accept: boolean): void
+    delete_community(id: string): void
+    edit_community(id: string, settings: string): void
+    edit_topic(id: string, channel: string, name: string, position: number, archived: boolean): void
+    find_communities(query: string, order: string): void
+    join_community(id: string, message: string): void
+    leave_community(id: string): void
+    list_communities(): void
+    moderate_delete(channel: string, target: number): void
+    remove_from_community(id: string, who: string, channel: string, block: boolean): void
+    report_to_moderators(channel: string, target: number, who: string, reason: string, note: string, line: string): void
+    resolve_report(id: string, report: number): void
+    set_community_role(id: string, who: string, role: string): void
+    start_topic(id: string, name: string): void
 }
 
 /** The module's exports, as `wasm-bindgen --target web` writes them. */
@@ -162,20 +175,9 @@ export class ChatConnection {
         return this.step((core) => core.send_delete(channel, target, Date.now()))
     }
 
-    createWorkspace(name: string): Promise<void> {
-        return this.step((core) => core.create_workspace(name))
-    }
-
-    addWorkspaceMember(workspace: string, who: string): Promise<void> {
-        return this.step((core) => core.add_workspace_member(workspace, who))
-    }
-
-    startChannel(workspace: string, name: string, topic: string, isPrivate: boolean): Promise<void> {
-        return this.step((core) => core.start_channel(workspace, name, topic, isPrivate))
-    }
-
-    joinChannel(workspace: string, channel: string): Promise<void> {
-        return this.step((core) => core.join_channel(workspace, channel))
+    /** One community call: the engine queues its frames, which are then sent. */
+    community(call: (core: ChatCoreApi) => void): Promise<void> {
+        return this.step(call)
     }
 
     addToChat(channel: string, who: string): Promise<void> {
@@ -285,9 +287,8 @@ export class ChatConnection {
     private async openKeys(core: ChatCoreApi, username: string): Promise<void> {
         const saved = await this.opts.store.get(stateKey(this.opts.server, username))
         try {
+            // Opening connects the engine, which asks for the communities too.
             core.open(saved ?? null)
-            // The workspaces come with being signed in: every page wants them.
-            core.list_workspaces()
         } catch (e) {
             // Never start a new device over keys that would not load: that would
             // orphan every chat they were in. Say so and stay closed.
