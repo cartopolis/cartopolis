@@ -52,6 +52,7 @@
     --c-accent-top: #a8dcd8;
     --c-accent-bottom: #3fa9a2;
     --c-map: light-dark(rgb(15 20 22 / 7%), rgb(170 194 198 / 9%));
+    --c-traffic: light-dark(rgb(63 169 162 / 45%), rgb(92 198 192 / 40%));
     --m-font: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --m-radius-sm: 4px;
     --m-radius: 8px;

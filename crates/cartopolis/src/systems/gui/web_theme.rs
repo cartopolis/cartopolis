@@ -201,6 +201,11 @@ fn tokens() -> Vec<(&'static str, Value)> {
         // a grid were tried first (2026-10-10) and were too even to read as
         // anything behind the glass.
         ("--c-map", Pair(alpha(INK, 7.0), alpha(TEXT_DIM, 9.0))),
+        // And the traffic moving along its main roads, in the accent.
+        (
+            "--c-traffic",
+            Pair(alpha(ACCENT_PRESSED, 45.0), alpha(ACCENT, 40.0)),
+        ),
         // Shape and type
         (
             "--m-font",

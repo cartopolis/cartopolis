@@ -32,15 +32,33 @@ body {
     background: transparent;
 }
 
-body::before {
+body::before,
+body::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
+}
+
+body::before {
     background: var(--c-map);
     -webkit-mask: url('/img/groningen.svg') center / cover no-repeat;
     mask: url('/img/groningen.svg') center / cover no-repeat;
+}
+
+/* Traffic: short teal streaks drifting along the main roads, the city alive
+   behind the glass. The motion is CSS inside the file (atlas's
+   `pipeline::backdrop`), slow on purpose — about a finger's width a second —
+   and same drawing, same placement, so every streak stays on its road. */
+body::after {
+    background: var(--c-traffic);
+    -webkit-mask: url('/img/groningen-pulses.svg') center / cover no-repeat;
+    mask: url('/img/groningen-pulses.svg') center / cover no-repeat;
+
+    @media (prefers-reduced-motion: reduce) {
+        display: none;
+    }
 }
 
 .m-shell,

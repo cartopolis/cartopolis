@@ -75,6 +75,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs", get(list_jobs).post(start_job))
         .route("/jobs/{id}/log", get(job_log))
         .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/backdrop.svg", get(get_backdrop))
         .route("/buildings/{pand}", get(get_building))
         .route(
             "/buildings/{pand}/design",
@@ -96,6 +97,50 @@ pub fn router(state: ApiState) -> Router {
         )
         .fallback(|| async { fail(StatusCode::NOT_FOUND, "No such endpoint") })
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct BackdropQuery {
+    /// `south,west,north,east` in degrees; Groningen's centre when absent.
+    bbox: Option<String>,
+    /// `streets` (the default) or `pulses`.
+    layer: Option<String>,
+}
+
+/// A city's streets as the web UI's backdrop (`pipeline::backdrop`). Operator
+/// only, like the rest of this surface: every call is a query on an Overpass
+/// other people share. The site serves a committed copy; this is how it is made.
+async fn get_backdrop(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<BackdropQuery>,
+) -> Response {
+    use crate::pipeline::backdrop::{self, Layer};
+    if let Err(r) = admin(&state, &headers).await {
+        return r;
+    }
+    let layer = match q.layer.as_deref().map(Layer::parse) {
+        None => Layer::Streets,
+        Some(Some(l)) => l,
+        Some(None) => return fail(StatusCode::BAD_REQUEST, "The layer is streets or pulses."),
+    };
+    let bbox = match q.bbox.as_deref() {
+        None => backdrop::GRONINGEN,
+        Some(text) => {
+            let numbers: Result<Vec<f64>, _> = text.split(',').map(|v| v.trim().parse()).collect();
+            match numbers
+                .map_err(|_| "A bbox is four numbers.".to_string())
+                .and_then(|v| backdrop::validate(&v))
+            {
+                Ok(b) => b,
+                Err(e) => return fail(StatusCode::BAD_REQUEST, &e),
+            }
+        }
+    };
+    match blocking(move || backdrop::fetch(bbox, layer)).await {
+        Ok(svg) => ([("content-type", "image/svg+xml")], svg).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, &format!("Overpass: {e}")),
+    }
 }
 
 /// Unauthenticated and deliberately says nothing: what a supervisor polls.

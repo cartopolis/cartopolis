@@ -76,8 +76,11 @@ async function build() {
     for (const face of ['PlusJakartaSans-Regular.ttf', 'PlusJakartaSans-SemiBold.ttf']) {
         await Bun.write(path.join(dist, 'fonts', face), Bun.file(path.join(root, '../../../assets/fonts', face)))
     }
-    // The street map behind the glass (`depth.css`): a mask, fetched once.
-    await Bun.write(path.join(dist, 'img/groningen.svg'), Bun.file(path.join(root, 'src/img/groningen.svg')))
+    // The street map behind the glass and the traffic on it (`depth.css`):
+    // masks, made by atlas's backdrop route and committed.
+    for (const img of ['groningen.svg', 'groningen-pulses.svg']) {
+        await Bun.write(path.join(dist, 'img', img), Bun.file(path.join(root, 'src/img', img)))
+    }
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)

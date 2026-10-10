@@ -18,6 +18,7 @@
 //! web UI drive it: the log is a stream somebody watches, the progress is a bar,
 //! and the cancel is a button checked inside every paging loop.
 
+pub mod backdrop;
 pub mod bag;
 pub mod bgt;
 pub mod bgt_extract;
