@@ -22,7 +22,7 @@ import {requestedPand} from '@/lib/overrides'
 import {may, visibleTabs} from '@/lib/roles'
 import {ADMIN} from '@/lib/base'
 
-/** The wordmark, as the client draws it: "carto" in cream, "polis" in the accent. */
+/** The wordmark, as the client draws it: "carto" in cream, "polis" in the brand orange. */
 class Wordmark extends MithrilComponent {
     view() {
         return (

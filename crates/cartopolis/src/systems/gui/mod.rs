@@ -35,3 +35,7 @@ pub mod splash;
 pub mod text_touch;
 pub mod theme;
 pub mod ui;
+/// cartopolis.org's palette, generated from [`theme`] (test-only: it writes a
+/// checked-in stylesheet and nothing at run time reads it).
+#[cfg(test)]
+mod web_theme;

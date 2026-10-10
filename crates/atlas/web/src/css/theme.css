@@ -1,0 +1,50 @@
+/*
+ * GENERATED from crates/cartopolis/src/systems/gui/theme.rs by
+ * crates/cartopolis/src/systems/gui/web_theme.rs — do not edit. Change the
+ * constant there and run
+ *
+ *     CARTO_WRITE_WEB_THEME=1 cargo test -p cartopolis web_theme
+ *
+ * The dark half is the client's palette, value for value; the light half
+ * is the web's own, chosen beside it. Imported after the component
+ * library's tokens, which these override (same selector, later wins).
+ */
+
+:root,
+[data-theme] {
+    --c-brand: #fd6012;
+    --m-accent: #ff8a4c;
+    --m-accent-hover: light-dark(#e8723a, #ffb48a);
+    --m-accent-text: light-dark(#a94510, #ffb48a);
+    --m-accent-soft: light-dark(#ffe8da, #6e361a);
+    --m-on-accent: #0e0d0c;
+    --m-bg: light-dark(#f5f3f1, #0e0d0c);
+    --m-surface: light-dark(#ffffff, #171615);
+    --m-surface-raised: light-dark(#faf9f7, #22201e);
+    --m-surface-sunken: light-dark(#eeebe8, #141312);
+    --c-glass: light-dark(rgb(255 255 255 / 84%), rgb(23 22 21 / 84%));
+    --m-hover: light-dark(rgb(14 13 12 / 5%), rgb(250 248 246 / 6%));
+    --m-pressed: light-dark(rgb(14 13 12 / 10%), rgb(250 248 246 / 11%));
+    --m-text: light-dark(#22201e, #ece9e6);
+    --m-text-strong: light-dark(#0e0d0c, #faf8f6);
+    --m-text-dim: light-dark(#5f5955, #b2aca7);
+    --m-text-faint: light-dark(#8f8883, #78726e);
+    --m-border: light-dark(#e6e2de, #2e2b29);
+    --m-border-strong: light-dark(#8f8883, #78726e);
+    --m-control-bg: light-dark(#ffffff, #0e0d0c);
+    --m-info: light-dark(#1f6ab0, #4fb2ff);
+    --m-info-soft: light-dark(#e4f0fb, #152736);
+    --m-success: light-dark(#1c7442, #7ccf9b);
+    --m-success-soft: light-dark(#e3f4e9, #152c1e);
+    --m-warning: light-dark(#855700, #d8c07a);
+    --m-warning-soft: light-dark(#fbf1da, #302916);
+    --m-danger: light-dark(#b3361e, #f2a296);
+    --m-danger-soft: light-dark(#fce8e4, #361d19);
+    --m-focus: light-dark(rgb(255 138 76 / 50%), rgb(255 138 76 / 55%));
+    --m-backdrop: light-dark(rgb(14 13 12 / 40%), rgb(0 0 0 / 60%));
+    --m-shadow-color: light-dark(rgb(14 13 12 / 8%), rgb(0 0 0 / 45%));
+    --m-font: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --m-radius-sm: 4px;
+    --m-radius: 8px;
+    --m-radius-lg: 14px;
+}

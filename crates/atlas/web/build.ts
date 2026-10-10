@@ -50,6 +50,11 @@ async function build() {
         // second output beside the script: app.js and app.css, as index.html names them.
         naming: 'app.[ext]',
         minify: !serve,
+        // The client's typeface (`app.css`'s @font-face), copied into
+        // `dist/fonts/` below. External so Bun leaves the URL alone: given a
+        // path it can resolve, it inlines the font as base64, and 190 KB of that
+        // in the stylesheet would block the first paint of every page.
+        external: ['/fonts/*'],
         outdir: dist,
         sourcemap: serve ? 'inline' : 'none',
         target: 'browser',
@@ -66,6 +71,11 @@ async function build() {
     // The app's mark, for the chat's rail and the welcome card: the same file
     // the viewer uses.
     await Bun.write(path.join(dist, 'icon.svg'), Bun.file(path.join(root, '../../../assets/icon/cartopolis.svg')))
+    // The same font files the client embeds, so the two cannot drift to
+    // different cuts of the face.
+    for (const face of ['PlusJakartaSans-Regular.ttf', 'PlusJakartaSans-SemiBold.ttf']) {
+        await Bun.write(path.join(dist, 'fonts', face), Bun.file(path.join(root, '../../../assets/fonts', face)))
+    }
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
