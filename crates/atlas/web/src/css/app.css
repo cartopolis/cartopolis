@@ -23,7 +23,7 @@
  * `crates/cartopolis/src/systems/gui/theme.rs` — the only place UI colour lives
  * in this project — by `web_theme.rs` beside it, and a test fails when the two
  * disagree. It used to be copied by hand into the library's defaults, and the
- * copy stayed slate blue for a month after the client went charcoal and ember.
+ * copy stayed slate blue for a month after the client changed palette.
  *
  * So nothing here names a colour: every rule, here and in the page stylesheets,
  * uses the `--m-*` tokens (and `--c-brand`, `--c-glass`), which is what makes
@@ -61,7 +61,7 @@ h3 {
 
 /* ── The client's chrome, on a page ──────────────────────────────────────────
    The rules below carry the client's state language over: a selected row is a
-   dark ember with light text (ACCENT_MUTED), not an orange slab; the accent is
+   deep teal with light text (ACCENT_MUTED), not a solid slab; the accent is
    for what is live; what sits over content is glass (GLASS, 84 % with a blur). */
 
 .m-nav-item {

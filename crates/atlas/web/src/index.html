@@ -10,8 +10,8 @@
          waiting for the stylesheet so a phone never flashes the wrong one first.
          The script pins the theme the switch remembered (`m-theme`, the
          library's `storedTheme`) before anything is drawn. -->
-    <meta name="theme-color" content="#f5f3f1" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0e0d0c" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f1f5f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1416" media="(prefers-color-scheme: dark)" />
     <script>
       try {
         const theme = localStorage.getItem('m-theme')
@@ -19,10 +19,10 @@
       } catch {}
     </script>
     <style>
-      html { background: #f5f3f1; }
-      @media (prefers-color-scheme: dark) { html { background: #0e0d0c; } }
-      html[data-theme="light"] { background: #f5f3f1; }
-      html[data-theme="dark"] { background: #0e0d0c; }
+      html { background: #f1f5f5; }
+      @media (prefers-color-scheme: dark) { html { background: #0f1416; } }
+      html[data-theme="light"] { background: #f1f5f5; }
+      html[data-theme="dark"] { background: #0f1416; }
     </style>
     <link rel="stylesheet" href="/app.css" />
     <script type="module" src="/app.js"></script>

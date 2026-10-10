@@ -3,7 +3,7 @@
 //! cartopolis.org is a Mithril app in another language, styled by the fork's
 //! component library through its `--m-*` custom properties. It used to take its
 //! palette from [`theme`] by hand, and the copy stopped being one: the client
-//! went from slate blue to charcoal and ember (2026-09/10) while the web page
+//! went from slate blue to charcoal and orange (2026-09/10) while the web page
 //! stayed slate blue, so the two halves of the product looked like two products.
 //! So the web's tokens are now **generated** from the constants the client draws
 //! with, and a test fails when the checked-in file is not what this module
@@ -17,8 +17,8 @@
 //! constant; none is a fresh hex. **The light half is the web's own** — the
 //! client has no light mode, and a phone in daylight on a form needs one — and
 //! lives here so it is still in the one place UI colour is chosen, beside the
-//! dark value it answers to. It is the same ramp turned over: warm by a hair,
-//! neutral otherwise, with the same [`theme::ACCENT`] ember carrying
+//! dark value it answers to. It is the same ramp turned over, with the same
+//! teal cast, and the same [`theme::ACCENT`] carrying
 //! [`theme::INK`] in both modes, so a primary button is the same object in the
 //! client, on the dark page and on the light one.
 //!
@@ -43,26 +43,27 @@ const FONT_FAMILY: &str = "Plus Jakarta Sans";
 
 // ─── The light half ───────────────────────────────────────────────────────────
 
-/// Page background: a warm off-white, the light twin of [`theme::INK`].
-const L_BG: Color32 = Color32::from_rgb(0xF5, 0xF3, 0xF1);
+/// Page background: an off-white with the ramp's teal cast, the light twin of
+/// [`theme::INK`].
+const L_BG: Color32 = Color32::from_rgb(0xF1, 0xF5, 0xF5);
 const L_SURFACE: Color32 = Color32::WHITE;
-const L_SURFACE_RAISED: Color32 = Color32::from_rgb(0xFA, 0xF9, 0xF7);
-const L_SURFACE_SUNKEN: Color32 = Color32::from_rgb(0xEE, 0xEB, 0xE8);
+const L_SURFACE_RAISED: Color32 = Color32::from_rgb(0xF8, 0xFA, 0xFA);
+const L_SURFACE_SUNKEN: Color32 = Color32::from_rgb(0xE7, 0xED, 0xED);
 /// Body text is the client's raised surface: the ramp, read the other way.
 const L_TEXT: Color32 = theme::SURFACE_RAISED;
-const L_TEXT_DIM: Color32 = Color32::from_rgb(0x5F, 0x59, 0x55);
-const L_TEXT_FAINT: Color32 = Color32::from_rgb(0x8F, 0x88, 0x83);
-const L_BORDER: Color32 = Color32::from_rgb(0xE6, 0xE2, 0xDE);
+const L_TEXT_DIM: Color32 = Color32::from_rgb(0x54, 0x65, 0x68);
+const L_TEXT_FAINT: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
+const L_BORDER: Color32 = Color32::from_rgb(0xDA, 0xE3, 0xE3);
 /// A control's boundary. Clears 3:1 on white for the reason [`theme::LINE`]
 /// does on the dark ramp (WCAG 1.4.11): a field at rest has no other edge.
-const L_BORDER_STRONG: Color32 = Color32::from_rgb(0x8F, 0x88, 0x83);
+const L_BORDER_STRONG: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
 /// Pushed under the pointer: the same move as [`theme::ACCENT_PRESSED`].
 const L_ACCENT_HOVER: Color32 = theme::ACCENT_PRESSED;
-/// Links and accent-coloured words on white. The ember itself is 2.2:1 there,
-/// so the text tint is a burnt version of it.
-const L_ACCENT_TEXT: Color32 = Color32::from_rgb(0xA9, 0x45, 0x10);
+/// Links and accent-coloured words on white. The teal itself is too light to
+/// read there, so the text tint is a deep version of it.
+const L_ACCENT_TEXT: Color32 = Color32::from_rgb(0x17, 0x69, 0x6A);
 /// Selected rows, a pressed nav item: the light twin of [`theme::ACCENT_MUTED`].
-const L_ACCENT_SOFT: Color32 = Color32::from_rgb(0xFF, 0xE8, 0xDA);
+const L_ACCENT_SOFT: Color32 = Color32::from_rgb(0xD9, 0xF0, 0xEE);
 
 // ─── Status tones (the client has two: WARN and ERROR) ───────────────────────
 
@@ -123,8 +124,8 @@ fn tokens() -> Vec<(&'static str, Value)> {
         ("--c-brand", both(BRAND)),
         ("--m-accent", both(ACCENT)),
         ("--m-accent-hover", pair(L_ACCENT_HOVER, ACCENT_RING)),
-        // Dark: the pale ember, not the ember — words in it sit on the selected
-        // fill too ([`ACCENT_MUTED`]), where the ember itself is only 4.1:1.
+        // Dark: the pale teal, so words in it read as well on the selected
+        // fill ([`ACCENT_MUTED`]) as on a panel.
         ("--m-accent-text", pair(L_ACCENT_TEXT, ACCENT_RING)),
         ("--m-accent-soft", pair(L_ACCENT_SOFT, ACCENT_MUTED)),
         ("--m-on-accent", both(INK)),
