@@ -1,0 +1,145 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Communities v3</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><path d="M6 4h3l1.5 4-2 1.5a10 10 0 005 5l1.5-2 4 1.5v3a2 2 0 01-2 2A16 16 0 014 6a2 2 0 012-2z"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="town" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l4-3 4 3v10M13 20V6l3-2 3 2v14M8 13h2M8 16h2M15.5 9h1M15.5 12h1M15.5 15h1"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+</svg>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></symbol>
+</svg>
+<h1>Communities v3: <b>one menu for a person</b>, sections by role</h1>
+<p class="lede">Decided after v2: only the <b style="color:var(--cream);font-weight:inherit">owner</b> appoints moderators; <b style="color:var(--cream);font-weight:inherit">moderators delete messages</b> and <b style="color:var(--cream);font-weight:inherit">remove people</b> from a topic or the whole community, because moderation is the community's; and the server's own admins act on a person from the <b style="color:var(--cream);font-weight:inherit">same menu</b>, in a section only they see. "Topic" stays. Everything here is new except the server actions, which exist today in the web admin pages.</p>
+
+<div class="row">
+
+<!-- O. MESSAGE MENU, MODERATOR -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5" style="border-radius:10px">B</div><div class="who"><b># for sale</b><span style="color:var(--dim)">Buurt Oosterpoort · 131 people</span></div></div>
+  <div class="msgs">
+    <div class="sender">Tom</div>
+    <div class="m them">Kids' bike, €40, pick up Sunday<small>11:02</small></div>
+    <div class="sender b">Pieter</div>
+    <div class="m them picked">Cheap phones, DM me, crypto only 🚀🚀<small>11:40</small></div>
+  </div>
+  <div class="scrim"></div>
+  <div class="choose psheet">
+    <div class="handle"></div>
+    <div class="mi"><span class="ic2">↩</span>Reply</div>
+    <div class="mi"><span class="ic2">☺</span>React</div>
+    <div class="mi"><span class="ic2">⚑</span>Report to the moderators</div>
+    <div class="msec">Moderator<span class="why" style="background:#23392f;color:#9fd3b4">you moderate Buurt Oosterpoort</span></div>
+    <div class="mi bad"><span class="ic2">🗑</span><div>Delete for everyone<span class="sub">Shows as "removed by a moderator"</span></div></div>
+    <div class="mi bad"><span class="ic2">−</span>Remove Pieter from # for sale</div>
+    <div class="mi bad"><span class="ic2">⊘</span>Remove Pieter from the community</div>
+  </div>
+</div>
+<h2><span>O</span>Acting on a message</h2>
+<ul>
+  <li>A long press on a line. Everyone gets Reply, React and <b>Report to the moderators</b> (which now goes to the community, not only to the server's operator).</li>
+  <li>A moderator also gets the three actions underneath: delete it, take its author out of this topic, or out of the community.</li>
+</ul>
+</div>
+
+<!-- P. AFTER -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5" style="border-radius:10px">B</div><div class="who"><b># for sale</b><span style="color:var(--dim)">Buurt Oosterpoort · 130 people</span></div></div>
+  <div class="msgs">
+    <div class="sender">Tom</div>
+    <div class="m them">Kids' bike, €40, pick up Sunday<small>11:02</small></div>
+    <div class="gone">Message removed by a moderator</div>
+    <div class="sys">Karim removed Pieter from the community</div>
+    <div class="sender">Tom</div>
+    <div class="m them">Thanks Karim<small>11:46</small></div>
+  </div>
+  <div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message # for sale</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+</div>
+<h2><span>P</span>What everyone sees</h2>
+<ul>
+  <li>A deleted message leaves a marker, so a reply to it still makes sense and nobody thinks it was never there.</li>
+  <li>A removal is said in the topic it happened in. Removed from one topic: only that topic says so, and they stay in the rest.</li>
+</ul>
+</div>
+
+<!-- Q. PERSON MENU, MOD + ADMIN -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3 style="font-size:22px">People</h3></div></div>
+  <div class="scrim"></div>
+  <div class="choose psheet">
+    <div class="handle"></div>
+    <div class="who-h"><div class="av c6">P</div><div><b>Pieter</b><span>pieter@cartopolis.org · member since today</span></div></div>
+    <div class="mi"><span class="ic2">✉</span>Message Pieter</div>
+    <div class="mi"><span class="ic2">⊘</span>Block</div>
+    <div class="msec">In Buurt Oosterpoort<span class="why" style="background:#23392f;color:#9fd3b4">moderator</span></div>
+    <div class="mi bad"><span class="ic2">−</span>Remove from a topic…</div>
+    <div class="mi bad"><span class="ic2">⊘</span><div>Remove from the community<span class="sub">Can ask again; also block them from rejoining?</span></div></div>
+    <div class="msec">On this server<span class="why" style="background:rgba(253,96,18,.18);color:#ffb48a">you are an admin</span></div>
+    <div class="mi"><span class="ic2">⚑</span>Reports about Pieter (2)</div>
+    <div class="mi bad"><span class="ic2">⏸</span><div>Suspend account<span class="sub">Can't sign in until an admin lifts it</span></div></div>
+    <div class="mi bad"><span class="ic2">✕</span>Delete account</div>
+  </div>
+</div>
+<h2><span>Q</span>One menu, sections by role</h2>
+<ul>
+  <li>Tap anybody's name anywhere (a message, a people list, the map) and this opens. What it holds depends on who <i>you</i> are.</li>
+  <li><b>Moderator</b> section: for each community you moderate that they are in. The <b>owner</b> also sees <i>Make moderator</i> there.</li>
+  <li><b>On this server</b>: only for accounts whose role grants managing accounts or triaging reports. The same actions as the web admin page, not a second set.</li>
+</ul>
+</div>
+
+<!-- R. MEMBER VIEW + RULES -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3 style="font-size:22px">People</h3></div></div>
+  <div class="scrim"></div>
+  <div class="choose psheet">
+    <div class="handle"></div>
+    <div class="who-h"><div class="av c6">P</div><div><b>Pieter</b><span>pieter@cartopolis.org</span></div></div>
+    <div class="mi"><span class="ic2">✉</span>Message Pieter</div>
+    <div class="mi"><span class="ic2">⊘</span>Block</div>
+    <div class="mi"><span class="ic2">⚑</span><div>Report<span class="sub">To Buurt Oosterpoort's moderators, or to the server</span></div></div>
+  </div>
+</div>
+<h2><span>R</span>The same menu, for a member</h2>
+<ul>
+  <li>No sections at all: message, block, report. Nothing is greyed out; what you can't do isn't there.</li>
+  <li>A report asks where it goes when it is about something said in a community.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="sec" style="max-width:1100px">
+<h2>Who may do what (replaces v2's table)</h2>
+<table>
+  <tr><th></th><th>Server admin</th><th>Owner</th><th>Moderator</th><th>Member</th></tr>
+  <tr><td>Talk, start topics*</td><td>as a member</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Confirm join requests, add people</td><td></td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Delete anybody's message</td><td></td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Remove from a topic / the community, block from rejoining</td><td></td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Edit the community, its topics</td><td></td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Appoint and remove moderators</td><td></td><td>✓</td><td></td><td></td></tr>
+  <tr><td>Hand over, delete the community</td><td>delete only</td><td>✓</td><td></td><td></td></tr>
+  <tr><td>Suspend or delete an account, read reports</td><td>✓</td><td></td><td></td><td></td></tr>
+</table>
+<p class="cap">* if "Members may start topics" is on. Server admins have no say inside a community they are not running: they can't read it (it is encrypted) and they don't delete its messages. Their reach is the account and, for a community that breaks the server's rules, deleting the community. A deleted message is hidden by every member's app; the server also stops delivering it to anybody who syncs later, which is what makes it more than a request.</p>
+</div>
+</body></html>
