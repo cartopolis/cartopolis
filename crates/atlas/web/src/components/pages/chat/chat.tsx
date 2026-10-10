@@ -1,8 +1,10 @@
 import m, {MithrilComponent} from '@garage44/mithril'
+import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldText} from '@garage44/mithril/components'
+import {required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
 import {ChatClient, type Message, type WorkspaceView} from '@/lib/chat'
-import {local} from '@/lib/reactive'
+import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
 
@@ -117,6 +119,11 @@ export class Chat extends MithrilComponent {
         workspace: '',
     })
 
+    v = validations({
+        password: validation(bind(this.s, 'password'), [required]),
+        username: validation(bind(this.s, 'username'), [required]),
+    })
+
     oncreate() {
         if ($s.signup.token) chat().signIn({token: $s.signup.token})
     }
@@ -129,12 +136,13 @@ export class Chat extends MithrilComponent {
     signIn = async (e: Event) => {
         e.preventDefault()
         const s = this.s
-        if (s.busy || !s.username || !s.password) return
+        if (s.busy || !this.v.$validate()) return
         s.busy = true
         const ok = await playerSignIn(s.username, s.password)
         s.busy = false
         if (ok) {
             s.password = ''
+            this.v.$reset()
             chat().signIn({token: $s.signup.token})
         }
     }
@@ -179,51 +187,51 @@ export class Chat extends MithrilComponent {
         const s = this.s
         return (
             <div class="chat-signin">
-                <form class="card signin chat-welcome-card" onsubmit={this.signIn}>
-                    <img alt="" class="chat-welcome-mark" src="/icon.svg" />
-                    <div class="wordmark">carto<b>polis</b></div>
-                    <p class="hint">
-                        Chat with your team, end-to-end encrypted, and meet them in a shared 3D world
-                        on the real map.
-                    </p>
-                    <label class="field">
-                        <span>Username</span>
-                        <input
+                {/* A real <form>, so the phone keyboard shows a Go key and Enter submits. */}
+                <form class="auth chat-door" novalidate onsubmit={this.signIn}>
+                    <Card>
+                        <img alt="" class="chat-welcome-mark" src="/icon.svg" />
+                        <div class="wordmark">carto<b>polis</b></div>
+                        <p class="auth__lede">
+                            Chat with your team, end-to-end encrypted, and meet them in a shared 3D world
+                            on the real map.
+                        </p>
+                        <FieldText
                             autocomplete="username"
                             disabled={s.busy}
-                            oninput={(e: Event) => (s.username = (e.target as HTMLInputElement).value)}
-                            type="text"
-                            value={s.username}
+                            label="Username"
+                            model={bind(s, 'username')}
+                            validation={this.v.username}
                         />
-                    </label>
-                    <label class="field">
-                        <span>Password</span>
-                        <input
+                        <FieldText
                             autocomplete="current-password"
                             disabled={s.busy}
-                            oninput={(e: Event) => (s.password = (e.target as HTMLInputElement).value)}
+                            label="Password"
+                            model={bind(s, 'password')}
                             type="password"
-                            value={s.password}
+                            validation={this.v.password}
                         />
-                    </label>
-                    <button class="primary" disabled={s.busy || !s.username || !s.password} type="submit">
-                        {s.busy ? 'Signing in…' : 'Sign in'}
-                    </button>
-                    <p class="hint chat-welcome-new">
-                        New here? {Link('/register', 'Create an account')}
-                    </p>
-                    <nav class="chat-options">
-                        <a href="/viewer/">
-                            <b>Open the map</b>
-                            <span>The world in your browser, no account needed</span>
-                        </a>
-                        <a href="/apk/">
-                            <b>Android app</b>
-                            <span>Chat, the world and calls on your phone</span>
-                        </a>
-                        {Link('/buildings', <><b>Your buildings</b><span>Claim a building, draw its floors</span></>)}
-                        {Link(ADMIN, <><b>Operators</b><span>Accounts, map data, the library</span></>)}
-                    </nav>
+                        <div class="auth__actions">
+                            <Button disabled={!this.v.$valid} loading={s.busy} type="submit" variant="primary">
+                                Sign in
+                            </Button>
+                            <Button disabled={s.busy} onclick={() => m.route.set('/register')} variant="ghost">
+                                Create an account
+                            </Button>
+                        </div>
+                        <nav class="chat-options">
+                            <a href="/viewer/">
+                                <b>Open the map</b>
+                                <span>The world in your browser, no account needed</span>
+                            </a>
+                            <a href="/apk/">
+                                <b>Android app</b>
+                                <span>Chat, the world and calls on your phone</span>
+                            </a>
+                            {Link('/buildings', <><b>Your buildings</b><span>Claim a building, draw its floors</span></>)}
+                            {Link(ADMIN, <><b>Operators</b><span>Accounts, map data, the library</span></>)}
+                        </nav>
+                    </Card>
                 </form>
             </div>
         )
@@ -434,7 +442,7 @@ export class Chat extends MithrilComponent {
                     <a href="/apk/">App</a>
                     {Link('/buildings', 'Buildings')}
                 </nav>
-                <button class="ghost" onclick={() => void this.signOut()} type="button">Sign out</button>
+                <Button onclick={() => void this.signOut()} size="sm" variant="ghost">Sign out</Button>
             </footer>
         )
     }
@@ -443,7 +451,7 @@ export class Chat extends MithrilComponent {
         return (
             <div class="chat-welcome">
                 <h1>{ws ? ws.name : 'Direct messages'}</h1>
-                <p class="hint">
+                <p class="chat-hint">
                     {ws
                         ? 'Pick a channel, or start one. Everything said here is end-to-end encrypted: the server stores it sealed and cannot read it.'
                         : chat().workspaces.length
@@ -470,7 +478,7 @@ export class Chat extends MithrilComponent {
         return (
             <>
                 <header class="chat-head">
-                    <button class="ghost chat-back" onclick={() => this.open(null)} title="Back" type="button">‹</button>
+                    <Button class="chat-back" iconOnly onclick={() => this.open(null)} title="Back" variant="ghost">‹</Button>
                     <div class="chat-head-title">
                         <b>
                             {meta ? (meta.private ? '🔒 ' : '# ') : ''}
@@ -483,7 +491,7 @@ export class Chat extends MithrilComponent {
                         </span>
                     </div>
                     {sum?.group && (
-                        <button class="ghost" onclick={() => this.dialog('members')} type="button">People</button>
+                        <Button onclick={() => this.dialog('members')} size="sm" variant="ghost">People</Button>
                     )}
                 </header>
                 <div class="chat-messages" onupdate={stickToBottom} oncreate={stickToBottom}>
@@ -557,7 +565,7 @@ export class Chat extends MithrilComponent {
                                 }}
                                 value={s.editing?.body}
                             />
-                            <span class="hint">Enter to save · Esc to cancel</span>
+                            <span class="chat-hint">Enter to save · Esc to cancel</span>
                         </form>
                     ) : (
                         <p class="chat-msg-text">
@@ -657,7 +665,7 @@ export class Chat extends MithrilComponent {
                     <div class="chat-head-title">
                         <b>Thread</b>
                     </div>
-                    <button class="ghost" onclick={() => (this.s.thread = null)} title="Close" type="button">✕</button>
+                    <CloseButton label="Close thread" onclick={() => (this.s.thread = null)} />
                 </header>
                 <div class="chat-messages" onupdate={stickToBottom} oncreate={stickToBottom}>
                     {root && this.messageView(channel, root, false, [], me)}
@@ -700,7 +708,7 @@ export class Chat extends MithrilComponent {
                 />
                 <div class="chat-composer-tools">
                     <span class="chat-sub">🔐 end-to-end encrypted · Enter to send, Shift+Enter for a new line</span>
-                    <button class="primary" disabled={!(s.draft[key] ?? '').trim()} type="submit">Send</button>
+                    <Button disabled={!(s.draft[key] ?? '').trim()} size="sm" type="submit" variant="primary">Send</Button>
                 </div>
             </form>
         )
@@ -710,44 +718,58 @@ export class Chat extends MithrilComponent {
         const c = chat()
         const s = this.s
         const close = () => (s.dialog = null)
+        // The library's dialog is open while its model is true; Escape, the
+        // backdrop and its close button write false, which closes ours.
+        const open = {
+            get value() {
+                return s.dialog !== null
+            },
+            set value(v: boolean) {
+                if (!v) close()
+            },
+        }
         const input = (label: string, field: 'field' | 'field2', placeholder = '') => (
-            <label class="field">
-                <span>{label}</span>
-                <input
-                    oncreate={field === 'field' ? (v: m.VnodeDOM) => (v.dom as HTMLInputElement).focus() : undefined}
-                    oninput={(e: Event) => (s[field] = (e.target as HTMLInputElement).value)}
-                    placeholder={placeholder}
-                    type="text"
-                    value={s[field]}
-                />
-            </label>
+            <FieldText label={label} model={bind(s, field)} placeholder={placeholder} />
         )
-        const form = (title: string, body: m.Children, submit: string, ok: () => void, valid = true) => (
-            <div class="chat-dialog-back" onclick={(e: Event) => e.target === e.currentTarget && close()}>
-                <form
-                    class="card chat-dialog"
-                    onsubmit={(e: Event) => {
-                        e.preventDefault()
-                        if (!valid) return
-                        ok()
-                        close()
-                    }}
+        const form = (title: string, body: m.Children, submit: string, ok: () => void, valid = true) => {
+            const go = () => {
+                if (!valid) return
+                ok()
+                close()
+            }
+            return (
+                <Dialog
+                    class="chat-dialog"
+                    footer={
+                        <>
+                            <Button onclick={close} variant="ghost">Cancel</Button>
+                            <Button disabled={!valid} onclick={go} variant="primary">{submit}</Button>
+                        </>
+                    }
+                    model={open}
+                    title={title}
                 >
-                    <h2>{title}</h2>
-                    {body}
-                    <div class="row-actions">
-                        <button class="ghost" onclick={close} type="button">Cancel</button>
-                        <button class="primary" disabled={!valid} type="submit">{submit}</button>
-                    </div>
-                </form>
-            </div>
-        )
+                    {/* A form, so Enter in a field submits. */}
+                    <form
+                        class="chat-dialog-form"
+                        novalidate
+                        onsubmit={(e: Event) => {
+                            e.preventDefault()
+                            go()
+                        }}
+                    >
+                        {body}
+                        <button hidden type="submit" />
+                    </form>
+                </Dialog>
+            )
+        }
         switch (s.dialog) {
             case 'workspace':
                 return form(
                     'New workspace',
                     <>
-                        <p class="hint">A workspace is a team: its people and its channels. You will be its owner.</p>
+                        <p class="chat-hint">A workspace is a team: its people and its channels. You will be its owner.</p>
                         {input('Name', 'field', 'Atelier Noord')}
                     </>,
                     'Create',
@@ -760,14 +782,10 @@ export class Chat extends MithrilComponent {
                     <>
                         {input('Name', 'field', 'ebbinge-quarter')}
                         {input('Topic', 'field2', 'What it is about (optional)')}
-                        <label class="check">
-                            <input
-                                checked={s.privateChannel}
-                                onchange={(e: Event) => (s.privateChannel = (e.target as HTMLInputElement).checked)}
-                                type="checkbox"
-                            />
-                            <span>Private: only people you add can see it</span>
-                        </label>
+                        <FieldCheckbox
+                            label="Private: only people you add can see it"
+                            model={bind(s, 'privateChannel')}
+                        />
                     </>,
                     'Create',
                     () => c.startChannel(ws.id, s.field, s.field2, s.privateChannel),
@@ -775,34 +793,33 @@ export class Chat extends MithrilComponent {
                 )
             case 'browse':
                 return ws && (
-                    <div class="chat-dialog-back" onclick={(e: Event) => e.target === e.currentTarget && close()}>
-                        <div class="card chat-dialog">
-                            <h2>Channels in {ws.name}</h2>
-                            {ws.channels.filter((ch) => !ch.joined).map((ch) => (
-                                <div class="chat-browse" key={ch.channel}>
-                                    <div>
-                                        <b># {ch.name}</b>
-                                        <span class="chat-sub"> · {ch.members} {ch.members === 1 ? 'member' : 'members'}</span>
-                                        {ch.topic && <p class="hint">{ch.topic}</p>}
-                                    </div>
-                                    {ch.pending ? (
-                                        <span class="chat-sub">Waiting for a member to let you in…</span>
-                                    ) : (
-                                        <button class="primary" onclick={() => c.joinChannel(ws.id, ch.channel)} type="button">Join</button>
-                                    )}
+                    <Dialog
+                        class="chat-dialog"
+                        footer={<Button onclick={close} variant="ghost">Close</Button>}
+                        model={open}
+                        title={`Channels in ${ws.name}`}
+                    >
+                        {ws.channels.filter((ch) => !ch.joined).map((ch) => (
+                            <div class="chat-browse" key={ch.channel}>
+                                <div>
+                                    <b># {ch.name}</b>
+                                    <span class="chat-sub"> · {ch.members} {ch.members === 1 ? 'member' : 'members'}</span>
+                                    {ch.topic && <p class="chat-sub">{ch.topic}</p>}
                                 </div>
-                            ))}
-                            <div class="row-actions">
-                                <button class="ghost" onclick={close} type="button">Close</button>
+                                {ch.pending ? (
+                                    <span class="chat-sub">Waiting for a member to let you in…</span>
+                                ) : (
+                                    <Button onclick={() => c.joinChannel(ws.id, ch.channel)} size="sm" variant="primary">Join</Button>
+                                )}
                             </div>
-                        </div>
-                    </div>
+                        ))}
+                    </Dialog>
                 )
             case 'direct':
                 return form(
                     'New message',
                     <>
-                        <p class="hint">A username on this server, or a full address. A first message to somebody who is not a contact yet arrives as a request.</p>
+                        <p class="chat-hint">A username on this server, or a full address. A first message to somebody who is not a contact yet arrives as a request.</p>
                         {input('To', 'field', 'sanne')}
                     </>,
                     'Start',
@@ -813,7 +830,7 @@ export class Chat extends MithrilComponent {
                 return ws && form(
                     `Add people to ${ws.name}`,
                     <>
-                        <p class="hint">Somebody with an account on {ws.home}. They will see its public channels and can join them.</p>
+                        <p class="chat-hint">Somebody with an account on {ws.home}. They will see its public channels and can join them.</p>
                         {input('Username', 'field', 'joris')}
                     </>,
                     'Add',

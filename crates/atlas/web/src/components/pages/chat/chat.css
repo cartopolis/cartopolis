@@ -1,29 +1,15 @@
 /* ── Chat (`components/pages/chat`) ───────────────────────────────────────── */
 
 /*
- * Drawn in the palette proposed in `docs/mockups/workspace/`: every value the
- * RGB midpoint of this file's slate and the app's charcoal (`systems::theme`),
- * so the two can meet in the middle. Scoped to the chat for now — repainting
- * the whole site is a separate decision. The brand orange stays the logo's and
- * the unread badge's; live controls take the softer accent.
+ * In the library's tokens (`@garage44/mithril/components`), so the chat
+ * follows the theme switch like every other page. The one colour named here is
+ * the white on an avatar or a workspace tile: those take a person's or a
+ * workspace's own hue (`hue()` in chat.tsx), the same in both themes.
  */
 .chat,
 .chat-signin {
-    --ink: #0f1215;
-    --panel: #13181a;
-    --surface: #191f22;
-    --surface-raised: #242c2e;
-    --surface-hover: #30393f;
-    --line: #5a6369;
-    --gline: rgba(255, 255, 255, 0.12);
-    --accent: #fe752f;
-    --accent-muted: #6b3a20;
-    --brand: #fd6012;
-    --cream: #f6f3f0;
-    --text: #e5e7e6;
-    --text-dim: #adaeb0;
-    background: var(--panel);
-    color: var(--text);
+    background: var(--m-bg);
+    color: var(--m-text);
 }
 
 .chat {
@@ -39,34 +25,33 @@
     min-height: 100vh;
 }
 
-.chat-signin .wordmark {
-    color: var(--cream);
-    font-size: 1.3rem;
-    font-weight: 600;
+/*
+ * The chat's own small controls (rail tiles, list rows, reaction pills) are
+ * plain buttons drawn by the rules below; everything with a label is the
+ * library's `Button`, which this leaves alone.
+ */
+.chat button:not(.m-button) {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
 }
 
-.chat-signin .wordmark b {
-    color: var(--brand);
-}
-
-.chat button {
-    min-height: 30px;
-}
-
-.chat .primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--ink);
-    font-weight: 600;
+.chat-hint {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
 }
 
 .chat-sub {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.78rem;
 }
 
 .chat-empty {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.85rem;
     padding: 8px 12px;
 }
@@ -74,8 +59,8 @@
 /* The rail: workspaces. */
 .chat-rail {
     align-items: center;
-    background: var(--ink);
-    border-right: 1px solid var(--gline);
+    background: var(--m-surface-sunken);
+    border-right: 1px solid var(--m-border);
     display: flex;
     flex: none;
     flex-direction: column;
@@ -91,7 +76,7 @@
 }
 
 .chat-ws {
-    background: var(--surface-raised);
+    background: var(--m-surface-raised);
     border: none;
     border-radius: 12px;
     color: #fff;
@@ -104,18 +89,18 @@
 }
 
 .chat-ws.is-current {
-    box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--accent);
+    box-shadow: 0 0 0 2px var(--m-surface-sunken), 0 0 0 4px var(--m-accent);
 }
 
 .chat-ws.is-add {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 20px;
 }
 
 .chat-badge {
-    background: var(--brand);
+    background: var(--m-accent);
     border-radius: 10px;
-    color: #fff;
+    color: var(--m-on-accent);
     font-size: 10px;
     font-weight: 700;
     min-width: 18px;
@@ -141,8 +126,8 @@
 
 /* The sidebar: channels, members, direct messages. */
 .chat-side {
-    background: var(--surface);
-    border-right: 1px solid var(--gline);
+    background: var(--m-surface);
+    border-right: 1px solid var(--m-border);
     display: flex;
     flex: none;
     flex-direction: column;
@@ -151,18 +136,18 @@
 }
 
 .chat-side-head {
-    border-bottom: 1px solid var(--gline);
+    border-bottom: 1px solid var(--m-border);
     padding: 14px 16px 10px;
 }
 
 .chat-side-head h2 {
-    color: var(--cream);
+    color: var(--m-text-strong);
     font-size: 1.05rem;
 }
 
 .chat-status {
-    background: var(--accent-muted);
-    color: var(--cream);
+    background: var(--m-accent-soft);
+    color: var(--m-text-strong);
     font-size: 0.8rem;
     padding: 6px 16px;
 }
@@ -173,7 +158,7 @@
 
 .chat-section h3 {
     align-items: center;
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     display: flex;
     font-size: 0.72rem;
     justify-content: space-between;
@@ -185,7 +170,7 @@
 .chat-plus {
     background: none !important;
     border: none !important;
-    color: var(--text-dim) !important;
+    color: var(--m-text-dim) !important;
     font-size: 1.1rem;
     min-height: 0 !important;
     padding: 0 4px;
@@ -196,7 +181,7 @@
     background: none;
     border: none;
     border-radius: 8px;
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     display: flex;
     font-weight: 400;
     gap: 8px;
@@ -206,16 +191,16 @@
 }
 
 .chat-item:hover:not(:disabled) {
-    background: var(--surface-raised);
+    background: var(--m-surface-raised);
 }
 
 .chat-item.is-current {
-    background: var(--accent-muted);
-    color: var(--cream);
+    background: var(--m-accent-soft);
+    color: var(--m-text-strong);
 }
 
 .chat-item.is-unread {
-    color: var(--cream);
+    color: var(--m-text-strong);
     font-weight: 600;
 }
 
@@ -231,31 +216,31 @@
 }
 
 .chat-hash {
-    color: var(--line);
+    color: var(--m-border-strong);
     text-align: center;
     width: 18px;
 }
 
 .chat-count {
-    background: var(--surface-hover);
+    background: var(--m-hover);
     border-radius: 10px;
-    color: var(--cream);
+    color: var(--m-text-strong);
     font-size: 0.72rem;
     padding: 0 7px;
 }
 
 .chat-count.is-mention {
-    background: var(--brand);
-    color: #fff;
+    background: var(--m-accent);
+    color: var(--m-on-accent);
 }
 
 .chat-role {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.7rem;
 }
 
 .chat-side-foot {
-    border-top: 1px solid var(--gline);
+    border-top: 1px solid var(--m-border);
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -264,8 +249,8 @@
 }
 
 .chat-notice {
-    background: var(--surface-raised);
-    border-left: 3px solid var(--accent);
+    background: var(--m-surface-raised);
+    border-left: 3px solid var(--m-accent);
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.8rem;
@@ -285,15 +270,15 @@
 }
 
 .chat-thread {
-    background: var(--surface);
-    border-left: 1px solid var(--gline);
+    background: var(--m-surface);
+    border-left: 1px solid var(--m-border);
     flex: none;
     width: 360px;
 }
 
 .chat-head {
     align-items: center;
-    border-bottom: 1px solid var(--gline);
+    border-bottom: 1px solid var(--m-border);
     display: flex;
     gap: 12px;
     min-height: 56px;
@@ -306,7 +291,7 @@
 }
 
 .chat-head-title b {
-    color: var(--cream);
+    color: var(--m-text-strong);
     display: block;
     font-size: 1rem;
 }
@@ -318,7 +303,7 @@
 }
 
 .chat-welcome h1 {
-    color: var(--cream);
+    color: var(--m-text-strong);
 }
 
 .chat-messages {
@@ -329,7 +314,7 @@
 
 .chat-day {
     align-items: center;
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     display: flex;
     font-size: 0.75rem;
     gap: 10px;
@@ -338,7 +323,7 @@
 
 .chat-day::before,
 .chat-day::after {
-    background: var(--gline);
+    background: var(--m-border);
     content: "";
     flex: 1;
     height: 1px;
@@ -352,7 +337,7 @@
 }
 
 .chat-msg:hover {
-    background: rgba(255, 255, 255, 0.025);
+    background: var(--m-hover);
 }
 
 .chat-msg.is-continued {
@@ -385,13 +370,13 @@
 }
 
 .chat-msg-head b {
-    color: var(--cream);
+    color: var(--m-text-strong);
     font-size: 0.92rem;
     margin-right: 6px;
 }
 
 .chat-msg-time {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.7rem;
 }
 
@@ -403,20 +388,20 @@
 
 .chat-msg-text.is-deleted,
 .chat-edited {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.8rem;
     font-style: italic;
 }
 
 .chat-mention {
-    background: rgba(254, 117, 47, 0.12);
+    background: var(--m-accent-soft);
     border-radius: 4px;
-    color: var(--cream);
+    color: var(--m-text-strong);
     padding: 0 2px;
 }
 
 .chat-mention.is-me {
-    background: rgba(254, 117, 47, 0.3);
+    background: var(--m-focus);
 }
 
 .chat-reactions {
@@ -427,8 +412,8 @@
 }
 
 .chat-reaction {
-    background: var(--surface-raised) !important;
-    border: 1px solid var(--gline) !important;
+    background: var(--m-surface-raised) !important;
+    border: 1px solid var(--m-border) !important;
     border-radius: 12px !important;
     font-size: 0.8rem;
     min-height: 24px !important;
@@ -436,13 +421,13 @@
 }
 
 .chat-reaction.is-mine {
-    border-color: var(--accent) !important;
+    border-color: var(--m-accent) !important;
 }
 
 .chat-replies {
     background: none !important;
     border: none !important;
-    color: var(--accent) !important;
+    color: var(--m-accent) !important;
     font-size: 0.82rem;
     min-height: 0 !important;
     padding: 2px 0;
@@ -450,8 +435,8 @@
 
 /* Hover actions on a message: react, reply, edit, delete. */
 .chat-actions {
-    background: var(--surface-raised);
-    border: 1px solid var(--gline);
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
     border-radius: 8px;
     display: none;
     gap: 2px;
@@ -483,8 +468,8 @@
 }
 
 .chat-more-emoji > div {
-    background: var(--surface-raised);
-    border: 1px solid var(--gline);
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
     border-radius: 8px;
     display: flex;
     position: absolute;
@@ -493,8 +478,8 @@
 }
 
 .chat-composer {
-    background: var(--surface);
-    border: 1px solid var(--gline);
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
     border-radius: 12px;
     margin: 0 18px 16px;
 }
@@ -507,8 +492,8 @@
 .chat-edit textarea {
     background: none;
     border: none;
-    color: var(--text);
-    font: var(--font);
+    color: var(--m-text);
+    font: inherit;
     max-height: 12rem;
     min-height: 2.6rem;
     outline: none;
@@ -518,8 +503,8 @@
 }
 
 .chat-edit textarea {
-    background: var(--ink);
-    border: 1px solid var(--accent);
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-accent);
     border-radius: 8px;
 }
 
@@ -532,30 +517,15 @@
 }
 
 /* Dialogs: new workspace, new channel, browse, add people. */
-.chat-dialog-back {
-    align-items: center;
-    background: rgba(0, 0, 0, 0.5);
+.chat-dialog-form {
     display: flex;
-    inset: 0;
-    justify-content: center;
-    position: fixed;
-    z-index: 20;
-}
-
-.chat-dialog {
-    background: var(--surface);
-    max-width: 30rem;
-    width: calc(100% - 32px);
-}
-
-.chat-dialog h2 {
-    color: var(--cream);
-    margin-bottom: 8px;
+    flex-direction: column;
+    gap: var(--m-space-4);
 }
 
 .chat-browse {
     align-items: center;
-    border-top: 1px solid var(--gline);
+    border-top: 1px solid var(--m-border);
     display: flex;
     gap: 12px;
     justify-content: space-between;
@@ -599,10 +569,12 @@
     }
 }
 /* The front door (`/` signed out): the chat's sign-in, and every other way in. */
-.chat-welcome-card {
-    max-width: 26rem;
-    text-align: left;
-    width: calc(100% - 32px);
+.chat-door .wordmark {
+    font-size: 1.3rem;
+}
+
+.chat-door {
+    margin: var(--m-space-5) auto;
 }
 
 .chat-welcome-mark {
@@ -612,25 +584,16 @@
     width: 56px;
 }
 
-.chat-welcome-new {
-    margin-top: 10px;
-}
-
-.chat-welcome-card a {
-    color: var(--accent);
-}
-
 .chat-options {
-    border-top: 1px solid var(--gline);
+    border-top: 1px solid var(--m-border);
     display: grid;
     gap: 2px;
-    margin-top: 18px;
-    padding-top: 12px;
+    padding-top: var(--m-space-3);
 }
 
 .chat-options a {
     border-radius: 8px;
-    color: var(--text) !important;
+    color: var(--m-text) !important;
     display: flex;
     flex-direction: column;
     padding: 8px 10px;
@@ -638,16 +601,16 @@
 }
 
 .chat-options a:hover {
-    background: var(--surface-raised);
+    background: var(--m-surface-raised);
 }
 
 .chat-options b {
-    color: var(--cream);
+    color: var(--m-text-strong);
     font-weight: 600;
 }
 
 .chat-options span {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     font-size: 0.8rem;
 }
 
@@ -658,10 +621,10 @@
 }
 
 .chat-side-links a {
-    color: var(--text-dim);
+    color: var(--m-text-dim);
     text-decoration: none;
 }
 
 .chat-side-links a:hover {
-    color: var(--cream);
+    color: var(--m-text-strong);
 }

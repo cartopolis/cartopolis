@@ -170,7 +170,7 @@ if (serve) {
      * is one binary message either way, so nothing here reads them. The mock
      * has no simulator behind it, so under `--mock` the chat stays signed out.
      */
-    type Bridge = {upstream: WebSocket; queued: (string | Uint8Array)[]}
+    type Bridge = {upstream: WebSocket; queued: (string | Uint8Array<ArrayBuffer>)[]}
     const wsUpstream = API.replace(/^http/, 'ws') + '/ws'
 
     Bun.serve<Bridge>({

@@ -178,7 +178,7 @@ class Browser {
         await this.until('Sign in')
         await this.type('input[autocomplete=username]', username)
         await this.type('input[autocomplete=current-password]', 'pw')
-        await this.submit('form.signin')
+        await this.submit('form.chat-door')
         await waitFor(`${this.name} signed in`, () => this.eval('!!document.querySelector(".chat-rail")'))
         await waitFor(`${this.name}'s chat connected`, () => this.eval('!document.querySelector(".chat-status")'))
     }
@@ -219,16 +219,16 @@ try {
     // Ann: a workspace, Bob in it, a channel.
     await ann.click('New workspace')
     await ann.type('.chat-dialog input', 'Atelier Noord')
-    await ann.submit('.chat-dialog')
+    await ann.submit('.chat-dialog form')
     await waitFor('the workspace in the rail', () => ann.eval('document.querySelectorAll(".chat-ws").length >= 3'))
     await ann.click('Atelier Noord')
     await ann.click('Add people')
     await ann.type('.chat-dialog input', 'bob')
-    await ann.submit('.chat-dialog')
+    await ann.submit('.chat-dialog form')
     await ann.until('bob')
     await ann.click('New channel')
     await ann.type('.chat-dialog input', 'ebbinge quarter')
-    await ann.submit('.chat-dialog')
+    await ann.submit('.chat-dialog form')
     await ann.until('ebbinge-quarter')
     step('ann made a workspace, added bob, started #ebbinge-quarter')
 
@@ -275,6 +275,10 @@ try {
         mkdirSync(shots, {recursive: true})
         await ann.shot(path.join(shots, 'ann.png'))
         await bob.shot(path.join(shots, 'bob.png'))
+        // The other theme, pinned the way the theme switch pins it.
+        await ann.eval('document.documentElement.dataset.theme = "dark"')
+        await Bun.sleep(100)
+        await ann.shot(path.join(shots, 'ann-dark.png'))
         step(`screenshots in ${shots}`)
     }
     console.log('ok')

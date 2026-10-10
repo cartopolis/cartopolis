@@ -173,5 +173,8 @@ nothing without it.
   **notifications when no tab is open** (Web Push).
 - **The app knows nothing of workspaces**: a channel it is in shows as an
   ordinary group chat, and replies show as plain lines.
-- **The page is drawn in the proposed halfway palette, scoped to the chat.**
-  The rest of the site keeps its own until that is decided.
+- **The chat is drawn in the site's component library and its tokens**
+  (`@garage44/mithril/components`), so it follows the light/dark switch like
+  every other page. The halfway palette of `docs/mockups/workspace/` was
+  dropped with it (2026-10-10); if the site's colours move towards the app's,
+  that is a change to the library's tokens, not to this page.

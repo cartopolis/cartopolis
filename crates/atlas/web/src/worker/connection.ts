@@ -205,9 +205,13 @@ export class ChatConnection {
 
         socket.onopen = () => {
             const c = this.opts.credential
-            socket.send('token' in c
-                ? this.mod.ChatCore.hello_token(c.token)
-                : this.mod.ChatCore.hello_password(c.username, c.password))
+            // The module hands back copies out of its memory, never a view of a
+            // shared buffer, which is what `send` (TypeScript 7) wants to be told.
+            socket.send(
+                ('token' in c
+                    ? this.mod.ChatCore.hello_token(c.token)
+                    : this.mod.ChatCore.hello_password(c.username, c.password)) as Uint8Array<ArrayBuffer>,
+            )
         }
         socket.onmessage = (ev: MessageEvent) => {
             if (!(ev.data instanceof ArrayBuffer)) return
@@ -269,7 +273,7 @@ export class ChatConnection {
             await this.opts.store.put(stateKey(this.opts.server, core.username() ?? ''), state)
         }
         for (let frame = core.next_frame(); frame; frame = core.next_frame()) {
-            this.socket?.send(frame)
+            this.socket?.send(frame as Uint8Array<ArrayBuffer>)
         }
         for (const event of events) this.opts.onEvent(event)
         // `openKeys` may have produced events of its own (none today, but the
