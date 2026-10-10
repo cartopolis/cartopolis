@@ -1447,7 +1447,13 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
     } else {
         ACCENT
     };
-    ui.add(
+    // Depth (see `LIFT_SHADOW`): the accent's glow under it and a lit top edge,
+    // both gone while it is held — a pressed key is down in the glass. The glow
+    // has to go *under* the button, so its slot is reserved before the button
+    // paints and filled once the rect is known.
+    let lit = ui.is_enabled() && !held;
+    let glow_slot = ui.painter().add(egui::Shape::Noop);
+    let resp = ui.add(
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new(label)
@@ -1464,7 +1470,24 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
         })
         .corner_radius(CornerRadius::same(RADIUS))
         .min_size(egui::vec2(min_width, height)),
-    )
+    );
+    if lit {
+        let r = resp.rect;
+        let p = ui.painter();
+        p.set(
+            glow_slot,
+            accent_glow().as_shape(r, CornerRadius::same(RADIUS)),
+        );
+        let inset = f32::from(RADIUS);
+        p.line_segment(
+            [
+                egui::pos2(r.left() + inset, r.top() + 1.0),
+                egui::pos2(r.right() - inset, r.top() + 1.0),
+            ],
+            Stroke::new(1.0, Color32::from_white_alpha(120)),
+        );
+    }
+    resp
 }
 
 /// Diameter of a round icon button, in points. Matches the compass disc in the
@@ -1778,8 +1801,74 @@ fn paint_contact_edge(p: &egui::Painter, center: egui::Pos2, radius: f32) {
     );
 }
 
+// ─── Depth ────────────────────────────────────────────────────────────────────
+//
+// One light, from above — the same scene the web UI draws in `depth.css`. A
+// control standing on the glass casts a soft shadow under it and catches the
+// light along its top; an engaged one glows in the accent instead of casting a
+// dark shadow, so "this is on" reads as lit rather than merely coloured.
+
+/// The shadow a floating control casts: a little below it and soft, so it
+/// reads as standing off the surface rather than printed on it.
+const LIFT_SHADOW: Shadow = Shadow {
+    offset: [0, 3],
+    blur: 12,
+    spread: 0,
+    color: Color32::from_black_alpha(100),
+};
+
+/// Alpha of the sheen at the very top of a lit control. Low on purpose: it
+/// fades to nothing by the middle, where the glyph is, so no contrast pair in
+/// this file is measured through it.
+const SHEEN_ALPHA: u8 = 46;
+
+/// The accent's glow under an engaged control, in place of [`LIFT_SHADOW`].
+fn accent_glow() -> Shadow {
+    Shadow {
+        offset: [0, 2],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 110),
+    }
+}
+
+/// A shadow (or glow) under a disc. Painted before the disc itself.
+fn paint_disc_shadow(p: &egui::Painter, center: egui::Pos2, radius: f32, shadow: Shadow) {
+    let rect = egui::Rect::from_center_size(center, egui::Vec2::splat(radius * 2.0));
+    let corner = CornerRadius::same(radius.min(f32::from(u8::MAX)) as u8);
+    p.add(shadow.as_shape(rect, corner));
+}
+
+/// Light from above on a disc: brightest along the top of its rim, fading to
+/// nothing towards the centre and the bottom, which is what makes a flat plate
+/// read as a dome. A vertex-coloured fan, because egui has no gradient fill.
+fn paint_sheen(p: &egui::Painter, center: egui::Pos2, radius: f32) {
+    const SEGMENTS: u32 = 48;
+    let top = Color32::from_white_alpha(SHEEN_ALPHA);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, Color32::TRANSPARENT);
+    for i in 0..=SEGMENTS {
+        let a = std::f32::consts::TAU * i as f32 / SEGMENTS as f32;
+        let pos = center + radius * egui::vec2(a.cos(), a.sin());
+        // 1 at the top of the rim, 0 by the equator and below.
+        let lit = ((center.y - pos.y) / radius).clamp(0.0, 1.0);
+        mesh.colored_vertex(pos, top.gamma_multiply(lit));
+    }
+    for i in 0..SEGMENTS {
+        mesh.add_triangle(0, i + 1, i + 2);
+    }
+    p.add(mesh);
+}
+
 fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
+    let shadow = if d.fill == ACCENT {
+        accent_glow()
+    } else {
+        LIFT_SHADOW
+    };
+    paint_disc_shadow(p, center, radius, shadow);
     p.circle_filled(center, radius, d.fill);
+    paint_sheen(p, center, radius);
     paint_contact_edge(p, center, radius + d.ring_width * 0.5);
     p.circle_stroke(center, radius, Stroke::new(d.ring_width, d.ring));
     p.text(

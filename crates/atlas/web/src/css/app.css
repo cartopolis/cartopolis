@@ -17,6 +17,8 @@
 @import '../components/pages/overrides/overrides.css';
 @import '../components/pages/pipeline/pipeline.css';
 @import '../components/pages/roles/roles.css';
+/* Glass and depth, last: it restyles the library's surfaces and the pages' rows. */
+@import './depth.css';
 
 /*
  * The palette is the client's. `theme.css` is generated from
@@ -60,17 +62,15 @@ h3 {
 }
 
 /* ── The client's chrome, on a page ──────────────────────────────────────────
-   The rules below carry the client's state language over: a selected row is a
-   deep teal with light text (ACCENT_MUTED), not a solid slab; the accent is
-   for what is live; what sits over content is glass (GLASS, 84 % with a blur). */
+   The client's state language: a selected row is a deep teal with light text
+   (ACCENT_MUTED), not a solid slab, and the accent is for what is live. The
+   glass and the depth — surfaces, buttons, fields — are `depth.css`. */
 
 .m-nav-item {
     font-weight: 500;
 
     &[aria-current='page'] {
-        background: var(--m-accent-soft);
         color: var(--m-text-strong);
-        box-shadow: inset 3px 0 0 var(--m-accent);
 
         & .m-nav-item__icon {
             color: var(--m-accent-text);
@@ -79,27 +79,11 @@ h3 {
     }
 }
 
-.m-shell__nav {
-    background: var(--m-surface-sunken);
-}
-
-.m-shell__nav-head,
-.m-shell__header {
-    background: var(--c-glass);
-    backdrop-filter: blur(16px) saturate(1.3);
-    -webkit-backdrop-filter: blur(16px) saturate(1.3);
-}
-
 .m-shell__header {
     & h1,
     & h2 {
         font-size: 1.15rem;
     }
-}
-
-.m-card {
-    border-radius: var(--m-radius-lg);
-    box-shadow: var(--m-shadow);
 }
 
 .m-button {
@@ -177,9 +161,6 @@ h3 {
     gap: var(--m-space-3);
     padding: var(--m-space-2) var(--m-space-4);
     border-bottom: 1px solid var(--m-border);
-    background: var(--c-glass);
-    backdrop-filter: blur(16px) saturate(1.3);
-    -webkit-backdrop-filter: blur(16px) saturate(1.3);
 
     & .spacer {
         flex: 1;

@@ -1,0 +1,438 @@
+/*
+ * Glass and depth: the page as a lit scene rather than flat paint.
+ *
+ * One light, from above. Every surface is a pane of glass over a faintly
+ * coloured page: a translucent fill, a blur of what is behind it, a rim of
+ * light along its top edge and a soft shadow under it. Every button is a thing
+ * standing on that pane: lit on top, shaded underneath, lifting under the
+ * pointer and sinking when pressed. Fields are the reverse — wells pressed into
+ * the glass — so "type here" and "press this" are told apart by shape before
+ * colour.
+ *
+ * The client draws the same thing in egui (`theme.rs`: GLASS over a blur for
+ * what floats over the map, a light rim and a drop shadow on its buttons).
+ * Every colour here is a token from `theme.css`, generated from that file.
+ */
+
+/* ── The page behind the glass ───────────────────────────────────────────────
+   Two faint pools of colour and a graticule — a map's grid, fading out from the
+   top — so a translucent pane has something to be in front of. A glass panel
+   over a flat colour is just a slightly different flat colour. */
+
+body {
+    background:
+        radial-gradient(70rem 42rem at 88% -12%, var(--c-aura-1), transparent 70%),
+        radial-gradient(56rem 40rem at -12% 112%, var(--c-aura-2), transparent 70%),
+        radial-gradient(ellipse 120% 90% at 50% 0%, transparent 30%, var(--m-bg) 80%),
+        linear-gradient(var(--c-grid) 1px, transparent 1px) 0 0 / 56px 56px,
+        linear-gradient(90deg, var(--c-grid) 1px, transparent 1px) 0 0 / 56px 56px,
+        var(--m-bg);
+    background-attachment: fixed;
+}
+
+.m-shell,
+.m-shell__main,
+.m-shell__content {
+    background: transparent;
+}
+
+/* ── Glass ───────────────────────────────────────────────────────────────── */
+
+.m-shell__nav,
+.m-shell__context,
+.m-shell__header,
+.page-header {
+    background: var(--c-glass-soft);
+    backdrop-filter: blur(22px) saturate(1.5);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    border-color: var(--c-rim);
+}
+
+.m-shell__nav {
+    box-shadow: inset -1px 0 0 var(--c-highlight);
+}
+
+/* Inside the nav pane already: no second sheet of glass. */
+.m-shell__nav-head,
+.m-shell__nav-foot {
+    background: transparent;
+    border-color: var(--c-rim);
+}
+
+.m-card,
+.record,
+.m-dialog,
+.m-toast,
+.m-alert,
+.empty {
+    background: var(--c-glass-soft);
+    backdrop-filter: blur(22px) saturate(1.5);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    border: 1px solid var(--c-rim);
+    box-shadow:
+        inset 0 1px 0 var(--c-highlight),
+        0 1px 2px var(--c-shade),
+        0 12px 32px -14px var(--m-shadow-color);
+}
+
+.m-card,
+.record {
+    border-radius: var(--m-radius-lg);
+}
+
+.m-card__foot {
+    background: transparent;
+    border-top-color: var(--c-rim);
+}
+
+.m-dialog {
+    box-shadow:
+        inset 0 1px 0 var(--c-highlight),
+        0 24px 64px -16px var(--m-shadow-color),
+        0 2px 6px var(--c-shade);
+}
+
+.m-dialog::backdrop {
+    backdrop-filter: blur(6px);
+}
+
+.empty {
+    border-style: dashed;
+    box-shadow: none;
+}
+
+/* A list row is a pane you can pick up. */
+.record {
+    transition:
+        transform var(--m-duration) var(--m-ease),
+        box-shadow var(--m-duration) var(--m-ease),
+        border-color var(--m-duration) var(--m-ease);
+
+    &:hover:not(.is-disabled) {
+        border-color: var(--c-rim-strong);
+        transform: translateY(-1px);
+        box-shadow:
+            inset 0 1px 0 var(--c-highlight),
+            0 2px 4px var(--c-shade),
+            0 18px 36px -16px var(--m-shadow-color);
+    }
+
+    &.is-selected {
+        border-color: var(--m-accent);
+        box-shadow:
+            inset 3px 0 0 var(--m-accent),
+            inset 0 1px 0 var(--c-highlight),
+            0 0 0 1px var(--m-accent),
+            0 12px 32px -12px var(--c-glow);
+    }
+}
+
+/* ── Buttons: things standing on the glass ───────────────────────────────── */
+
+.m-button {
+    background:
+        linear-gradient(180deg, var(--c-highlight), transparent 70%),
+        var(--bg);
+    border-color: var(--border);
+    box-shadow:
+        inset 0 1px 0 var(--c-rim-strong),
+        inset 0 -1px 0 var(--c-shade),
+        0 1px 2px var(--c-shade),
+        0 4px 12px -6px var(--m-shadow-color);
+
+    &:hover:not(:disabled, [aria-disabled='true']) {
+        background:
+            linear-gradient(180deg, var(--c-highlight), transparent 70%),
+            var(--bg-hover);
+        transform: translateY(-1px);
+        box-shadow:
+            inset 0 1px 0 var(--c-rim-strong),
+            inset 0 -1px 0 var(--c-shade),
+            0 2px 4px var(--c-shade),
+            0 10px 20px -8px var(--m-shadow-color);
+    }
+
+    &:active:not(:disabled, [aria-disabled='true']) {
+        transform: translateY(1px);
+        box-shadow:
+            inset 0 2px 5px var(--c-shade),
+            0 0 0 var(--c-shade);
+    }
+
+    &:focus-visible {
+        box-shadow:
+            inset 0 1px 0 var(--c-rim-strong),
+            0 0 0 3px var(--m-focus);
+    }
+
+    /* The call to action: a lit teal key, glowing on the glass under it. */
+    &[data-variant='primary'] {
+        background: linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--c-accent-top) 45%, var(--m-accent)) 0%,
+            var(--m-accent) 55%,
+            var(--c-accent-bottom) 100%
+        );
+        border-color: var(--c-accent-bottom);
+        box-shadow:
+            inset 0 1px 0 var(--c-accent-top),
+            inset 0 -1px 0 var(--c-accent-bottom),
+            0 1px 2px var(--c-shade),
+            0 8px 22px -8px var(--c-glow);
+
+        &:hover:not(:disabled, [aria-disabled='true']) {
+            background: linear-gradient(
+                180deg,
+                color-mix(in srgb, var(--c-accent-top) 65%, var(--m-accent)) 0%,
+                var(--m-accent) 60%,
+                var(--c-accent-bottom) 100%
+            );
+            box-shadow:
+                inset 0 1px 0 var(--c-accent-top),
+                inset 0 -1px 0 var(--c-accent-bottom),
+                0 2px 4px var(--c-shade),
+                0 14px 30px -10px var(--c-glow);
+        }
+
+        &:active:not(:disabled, [aria-disabled='true']) {
+            background: linear-gradient(180deg, var(--c-accent-bottom), var(--m-accent));
+            box-shadow:
+                inset 0 2px 6px var(--c-shade),
+                0 4px 12px -8px var(--c-glow);
+        }
+
+        &:disabled,
+        &[aria-disabled='true'] {
+            box-shadow: none;
+        }
+    }
+
+    /* A quiet key: an etched outline of glass at rest, so it still reads as
+       something to press, and the full lift under the pointer. */
+    &[data-variant='ghost'] {
+        background: transparent;
+        /* The border, not the rim: a white rim on a light page is no edge. */
+        border-color: var(--m-border);
+        box-shadow: inset 0 1px 0 var(--c-highlight);
+
+        &:hover:not(:disabled, [aria-disabled='true']) {
+            background:
+                linear-gradient(180deg, var(--c-highlight), transparent 70%),
+                var(--c-glass-soft);
+            border-color: var(--c-rim-strong);
+            box-shadow:
+                inset 0 1px 0 var(--c-rim-strong),
+                0 1px 2px var(--c-shade),
+                0 8px 18px -8px var(--m-shadow-color);
+        }
+    }
+
+    &:disabled,
+    &[aria-disabled='true'] {
+        box-shadow: none;
+    }
+}
+
+/* ── Fields: wells pressed into the glass ────────────────────────────────── */
+
+.m-input,
+.m-select {
+    box-shadow:
+        inset 0 1px 3px var(--c-shade),
+        0 1px 0 var(--c-highlight);
+
+    &:focus-within {
+        box-shadow:
+            inset 0 1px 3px var(--c-shade),
+            0 0 0 3px var(--m-focus),
+            0 0 18px -4px var(--c-glow);
+    }
+}
+
+.m-checkbox,
+.m-radio {
+    box-shadow: inset 0 1px 2px var(--c-shade);
+
+    &:checked,
+    &:indeterminate {
+        background: linear-gradient(180deg, var(--c-accent-top), var(--m-accent) 60%);
+        box-shadow:
+            inset 0 1px 0 var(--c-accent-top),
+            0 0 10px -2px var(--c-glow);
+    }
+}
+
+/* ── Choosers: a recessed track, a raised thumb ─────────────────────────── */
+
+.m-segmented,
+.m-theme-switch {
+    background: var(--m-surface-sunken);
+    border-color: var(--c-rim);
+    box-shadow:
+        inset 0 1px 3px var(--c-shade),
+        0 1px 0 var(--c-highlight);
+}
+
+.m-segmented__label {
+    :checked + & {
+        background: linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--c-accent-top) 45%, var(--m-accent)),
+            var(--m-accent) 60%
+        );
+        color: var(--m-on-accent);
+        box-shadow:
+            inset 0 1px 0 var(--c-accent-top),
+            0 1px 2px var(--c-shade),
+            0 4px 12px -4px var(--c-glow);
+    }
+}
+
+.m-theme-switch__option[aria-checked='true'] {
+    background:
+        linear-gradient(180deg, var(--c-highlight), transparent 70%),
+        var(--m-surface-raised);
+    color: var(--m-accent-text);
+    box-shadow:
+        inset 0 1px 0 var(--c-rim-strong),
+        0 1px 2px var(--c-shade),
+        0 3px 8px -2px var(--m-shadow-color);
+}
+
+/* ── Navigation ──────────────────────────────────────────────────────────── */
+
+.m-nav-item {
+    transition:
+        background var(--m-duration) var(--m-ease),
+        color var(--m-duration) var(--m-ease),
+        box-shadow var(--m-duration) var(--m-ease);
+
+    &:hover {
+        background: var(--c-glass-soft);
+        box-shadow: inset 0 1px 0 var(--c-highlight);
+    }
+
+    /* The live page: a lit pane with a glowing teal edge. */
+    &[aria-current='page'] {
+        background: linear-gradient(90deg, var(--m-accent-soft), var(--c-glass-soft));
+        box-shadow:
+            inset 3px 0 0 var(--m-accent),
+            inset 0 1px 0 var(--c-highlight),
+            0 1px 2px var(--c-shade),
+            -2px 0 14px -4px var(--c-glow);
+    }
+}
+
+/* ── Small things ────────────────────────────────────────────────────────── */
+
+.m-badge {
+    border: 1px solid color-mix(in srgb, var(--tone) 22%, transparent);
+    box-shadow: inset 0 1px 0 var(--c-highlight);
+}
+
+/* ── The chat ────────────────────────────────────────────────────────────────
+   Three panes of glass over the page: the rail, the list, the thread. The
+   conversation itself sits on the page, where the light is. */
+
+.chat,
+.chat-signin {
+    background: transparent;
+}
+
+.chat-rail,
+.chat-side,
+.chat-thread {
+    background: var(--c-glass-soft);
+    backdrop-filter: blur(22px) saturate(1.5);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    border-color: var(--c-rim);
+}
+
+.chat-rail {
+    background: var(--m-surface-sunken);
+    box-shadow: inset -1px 0 0 var(--c-highlight);
+}
+
+.chat-side-head,
+.chat-side-foot,
+.chat-head {
+    border-color: var(--c-rim);
+}
+
+/* A workspace tile is a key on the rail. */
+.chat-ws {
+    background:
+        linear-gradient(180deg, var(--c-highlight), transparent 70%),
+        var(--m-surface-raised);
+    box-shadow:
+        inset 0 1px 0 var(--c-rim-strong),
+        inset 0 -1px 0 var(--c-shade),
+        0 2px 6px var(--c-shade);
+    transition:
+        transform var(--m-duration) var(--m-ease),
+        box-shadow var(--m-duration) var(--m-ease);
+
+    &:hover {
+        transform: translateY(-1px);
+    }
+
+    &.is-current {
+        box-shadow:
+            0 0 0 2px var(--m-surface-sunken),
+            0 0 0 4px var(--m-accent),
+            0 0 18px -2px var(--c-glow);
+    }
+}
+
+.chat-item {
+    transition:
+        background var(--m-duration) var(--m-ease),
+        box-shadow var(--m-duration) var(--m-ease);
+
+    &:hover:not(:disabled) {
+        background: var(--c-glass-soft);
+        box-shadow: inset 0 1px 0 var(--c-highlight);
+    }
+
+    &.is-current {
+        background: linear-gradient(90deg, var(--m-accent-soft), var(--c-glass-soft));
+        box-shadow:
+            inset 3px 0 0 var(--m-accent),
+            inset 0 1px 0 var(--c-highlight),
+            -2px 0 14px -4px var(--c-glow);
+    }
+}
+
+.chat-status {
+    box-shadow: inset 0 -1px 0 var(--c-rim);
+}
+
+/* Popovers: the hover actions and the emoji tray. */
+.chat-actions,
+.chat-more-emoji > div {
+    background: var(--c-glass);
+    backdrop-filter: blur(18px) saturate(1.5);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    border-color: var(--c-rim);
+    box-shadow:
+        inset 0 1px 0 var(--c-highlight),
+        0 10px 28px -10px var(--m-shadow-color);
+}
+
+/* The composer is a well, like a field. */
+.chat-composer {
+    background: var(--m-control-bg);
+    border-color: var(--m-border-strong);
+    box-shadow:
+        inset 0 1px 3px var(--c-shade),
+        0 1px 0 var(--c-highlight);
+    transition: box-shadow var(--m-duration) var(--m-ease);
+
+    &:focus-within {
+        border-color: var(--m-accent);
+        box-shadow:
+            inset 0 1px 3px var(--c-shade),
+            0 0 0 3px var(--m-focus),
+            0 0 22px -6px var(--c-glow);
+    }
+}

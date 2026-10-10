@@ -166,6 +166,44 @@ fn tokens() -> Vec<(&'static str, Value)> {
             "--m-shadow-color",
             Pair(alpha(INK, 8.0), alpha(Color32::BLACK, 45.0)),
         ),
+        // Depth: what makes a surface read as a pane of glass and a button as
+        // a thing standing on it (`depth.css`). Light from above: a rim and an
+        // inner highlight along the top edge, a shade along the bottom, and the
+        // accent's own glow under whatever is live.
+        (
+            "--c-glass-soft",
+            Pair(alpha(L_SURFACE, 62.0), alpha(SURFACE_RAISED, 55.0)),
+        ),
+        (
+            "--c-rim",
+            Pair(alpha(Color32::WHITE, 85.0), alpha(CREAM, 9.0)),
+        ),
+        (
+            "--c-rim-strong",
+            Pair(alpha(Color32::WHITE, 100.0), alpha(CREAM, 16.0)),
+        ),
+        (
+            "--c-highlight",
+            Pair(alpha(Color32::WHITE, 90.0), alpha(CREAM, 8.0)),
+        ),
+        (
+            "--c-shade",
+            Pair(alpha(INK, 7.0), alpha(Color32::BLACK, 35.0)),
+        ),
+        (
+            "--c-glow",
+            Pair(alpha(ACCENT_PRESSED, 35.0), alpha(ACCENT, 32.0)),
+        ),
+        ("--c-accent-top", both(ACCENT_RING)),
+        ("--c-accent-bottom", both(ACCENT_PRESSED)),
+        // The page behind the glass: two faint pools of colour and a
+        // graticule, so a translucent pane has something to be in front of.
+        ("--c-aura-1", Pair(alpha(ACCENT, 26.0), alpha(ACCENT, 18.0))),
+        (
+            "--c-aura-2",
+            Pair(alpha(REAL_LOCATION, 16.0), alpha(REAL_LOCATION, 11.0)),
+        ),
+        ("--c-grid", Pair(alpha(INK, 4.0), alpha(CREAM, 3.0))),
         // Shape and type
         (
             "--m-font",

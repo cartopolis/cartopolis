@@ -43,6 +43,17 @@
     --m-focus: light-dark(rgb(92 198 192 / 50%), rgb(92 198 192 / 55%));
     --m-backdrop: light-dark(rgb(15 20 22 / 40%), rgb(0 0 0 / 60%));
     --m-shadow-color: light-dark(rgb(15 20 22 / 8%), rgb(0 0 0 / 45%));
+    --c-glass-soft: light-dark(rgb(255 255 255 / 62%), rgb(31 40 41 / 55%));
+    --c-rim: light-dark(rgb(255 255 255 / 85%), rgb(244 248 248 / 9%));
+    --c-rim-strong: light-dark(rgb(255 255 255 / 100%), rgb(244 248 248 / 16%));
+    --c-highlight: light-dark(rgb(255 255 255 / 90%), rgb(244 248 248 / 8%));
+    --c-shade: light-dark(rgb(15 20 22 / 7%), rgb(0 0 0 / 35%));
+    --c-glow: light-dark(rgb(63 169 162 / 35%), rgb(92 198 192 / 32%));
+    --c-accent-top: #a8dcd8;
+    --c-accent-bottom: #3fa9a2;
+    --c-aura-1: light-dark(rgb(92 198 192 / 26%), rgb(92 198 192 / 18%));
+    --c-aura-2: light-dark(rgb(79 178 255 / 16%), rgb(79 178 255 / 11%));
+    --c-grid: light-dark(rgb(15 20 22 / 4%), rgb(244 248 248 / 3%));
     --m-font: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --m-radius-sm: 4px;
     --m-radius: 8px;
