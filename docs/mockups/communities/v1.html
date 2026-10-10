@@ -1,0 +1,264 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Communities v1</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><path d="M6 4h3l1.5 4-2 1.5a10 10 0 005 5l1.5-2 4 1.5v3a2 2 0 01-2 2A16 16 0 014 6a2 2 0 012-2z"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="town" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l4-3 4 3v10M13 20V6l3-2 3 2v14M8 13h2M8 16h2M15.5 9h1M15.5 12h1M15.5 15h1"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+</svg>
+
+<h1>Communities: <b>one idea</b> instead of rooms, workspaces and channels</h1>
+<p class="lede">A design proposal, not code. Everything in a community is <b style="color:var(--brand);font-weight:inherit">new</b>.
+Today the app has rooms (unencrypted, join by typing a name) and the web has workspaces → public and private channels → asking to join.
+This replaces all of that with one rule: <i style="color:var(--cream);font-style:normal">being in a community means being in every one of its topics.</i>
+One-to-one chats, groups, Here and Everyone stay exactly as they are.</p>
+
+<div class="principles">
+  <div><h3>A person</h3><p>A one-to-one chat. Encrypted. <i>Unchanged.</i></p></div>
+  <div><h3>A group</h3><p>A private chat with people you pick. Encrypted. Only its members know it exists. <i>Unchanged.</i></p></div>
+  <div><h3>A community</h3><p>A named set of people with a few <i>topics</i>. Join it and you are in all of them. Encrypted; the server knows the names, not what is said.</p></div>
+  <div><h3>Here · Everyone</h3><p>The world's public chats: whoever is near you, and the whole server. Not encrypted, by nature. <i>Unchanged.</i></p></div>
+</div>
+
+<!-- ROW 1 -->
+<div class="row">
+
+<!-- A. CHAT LIST -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top">
+    <div class="titlebar"><h3>Chats</h3><div class="acts"><svg class="i"><use href="#search"/></svg><svg class="i"><use href="#person"/></svg></div></div>
+    <div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chats</div><div><span class="live"></span>World</div></div>
+  </div>
+  <div class="chat-row"><div class="av here-disc"><svg class="i"><use href="#pin"/></svg></div><div class="body"><div class="l1">Here</div><div class="l2"><span>Whoever is near your avatar</span></div></div></div>
+  <div class="chat-row"><div class="av c4"><svg class="i"><use href="#globe"/></svg></div><div class="body"><div class="l1">Everyone<time>20:18</time></div><div class="l2"><span>viberfox: waving from Groningen</span><span class="badge b">16</span></div></div></div>
+
+  <div class="sect">Communities<div class="rule"></div></div>
+  <div class="comm"><div class="av c3">G</div><div class="body"><b>Garage 44</b><span>12 people · 4 topics</span></div></div>
+  <div class="topic unread"><span class="hash">#</span><span class="t">general</span><span class="badge b">3</span></div>
+  <div class="topic"><span class="hash">#</span><span class="t">map data</span></div>
+  <div class="topic"><span class="hash">#</span><span class="t">meet-ups</span></div>
+  <div class="comm" style="padding-top:8px"><div class="av c6">F</div><div class="body"><b>Fietsers Groningen</b><span>48 people · tap to open</span></div></div>
+
+  <div class="sect">People and groups<div class="rule"></div></div>
+  <div class="chat-row"><div class="av c1">A</div><div class="body"><div class="l1">Anna<time>19:02</time></div><div class="l2"><span>See you at the Vismarkt</span></div></div></div>
+  <div class="chat-row"><div class="av c2 room"><svg class="i"><use href="#people"/></svg></div><div class="body"><div class="l1">Weekend trip<time>Fri</time></div><div class="l2"><span>Bas: I'll bring the map</span></div></div></div>
+
+  <div class="fab" style="background:var(--brand);color:#fff"><svg class="i"><use href="#plus"/></svg></div>
+</div>
+<h2><span>A</span>The list</h2>
+<ul>
+  <li>Three bands: the world's two public chats, <b>communities</b> with their topics folded underneath, then people and groups.</li>
+  <li>A community you rarely read stays folded (Fietsers): one line, its unread count when there is one.</li>
+  <li>No padlocks on every row: everything below the world chats is encrypted, so the list says so once (on the "+" sheet) rather than on each line.</li>
+</ul>
+</div>
+
+<!-- B. NEW -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3>Chats</h3></div></div>
+  <div class="scrim"></div>
+  <div class="choose">
+    <div class="handle"></div>
+    <h4>Start something</h4>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#person"/></svg></div><div><b>Message a person</b><span>Just the two of you</span></div></div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#people"/></svg></div><div><b>Start a group</b><span>A few people you pick. Private.</span></div></div>
+    <div class="opt"><div class="ic c"><svg class="i"><use href="#town"/></svg></div><div><b>Start a community</b><span>People who share several topics, like a club or a team</span></div></div>
+    <p class="hint" style="padding:12px 20px 0;display:flex;gap:8px"><svg class="i s"><use href="#lock"/></svg><span>All three are end-to-end encrypted: the server passes them on without being able to read them. You join a community when somebody in it adds you.</span></p>
+  </div>
+</div>
+<h2><span>B</span>"+" asks one question</h2>
+<ul>
+  <li>Replaces today's box with three forms in it (username, group name + usernames, room name). Each choice opens its own screen.</li>
+  <li>"Join a public room" is gone, with rooms.</li>
+</ul>
+</div>
+
+<!-- C. COMMUNITY -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"></div><svg class="i"><use href="#dots"/></svg></div>
+  <div class="hero">
+    <div class="av c3">G</div>
+    <h3>Garage 44</h3>
+    <p>Building cartopolis together</p>
+    <div class="faces"><div class="av c1">A</div><div class="av c2">B</div><div class="av c4">J</div><div class="av c5">S</div><div class="av c6">V</div><div class="av" style="background:var(--raised);color:var(--dim)">+7</div></div>
+    <div class="pills"><div class="p"><svg class="i s"><use href="#plus"/></svg>Add people</div><div><svg class="i s"><use href="#plus"/></svg>New topic</div><div><svg class="i s"><use href="#people"/></svg>12</div></div>
+  </div>
+  <div class="trow"><div class="tic">#</div><div class="body"><div class="l1">general<time>20:31</time></div><div class="l2">Jeroen: phone chat works now 🎉</div></div><span class="badge b">3</span></div>
+  <div class="trow"><div class="tic">#</div><div class="body"><div class="l1">map data<time>18:10</time></div><div class="l2">Bas: BGT run for Zwolle is done</div></div></div>
+  <div class="trow"><div class="tic">#</div><div class="body"><div class="l1">meet-ups<time>Tue</time></div><div class="l2">Sanne shared a place: Grote Markt</div></div></div>
+  <div class="trow muted"><div class="tic">#</div><div class="body"><div class="l1">random<time>Mon</time></div><div class="l2">muted</div></div></div>
+  <p class="hint" style="padding:10px 18px">Everyone in Garage 44 is in every topic. Somebody added later reads from the moment they joined.</p>
+</div>
+<h2><span>C</span>A community</h2>
+<ul>
+  <li>Its people and its topics on one screen. <b>Add people</b> and <b>New topic</b> are the two things you do here.</li>
+  <li>A topic you don't want to hear from is <b>muted</b>, not left: you stay in it, it stops counting.</li>
+  <li>⋯ holds rename, description, who may add people, and leave the community.</li>
+</ul>
+</div>
+
+<!-- D. TOPIC -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c3" style="border-radius:10px">G</div>
+    <div class="who"><b># general</b><span style="color:var(--dim)">Garage 44 · 12 people</span></div><svg class="i"><use href="#phone"/></svg></div>
+  <div class="tabs"><div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chat</div><div><span class="live"></span>World</div></div></div>
+  <div class="msgs">
+    <div class="day">Today</div>
+    <div class="sender">Bas</div>
+    <div class="m them">Did the phone fix land?<small>20:24</small></div>
+    <div class="m me">Yes, a new device is added to its chats now<small>20:29</small></div>
+    <div class="sender b">Anna</div>
+    <div class="m them">My phone shows everything from today on 👍<small>20:30</small></div>
+    <div class="sys">Jeroen added Sanne to Garage 44</div>
+    <div class="sender">Bas</div>
+    <div class="m them">Welcome Sanne!<small>20:31</small></div>
+  </div>
+  <div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message # general</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+</div>
+<h2><span>D</span>A topic is an ordinary chat</h2>
+<ul>
+  <li>Same screen as any group chat: Chat | World, calls, points, pictures. Only the header says which community it is in.</li>
+  <li>Joins show in every topic, so nobody wonders who the new name is.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ROW 2 -->
+<div class="row" style="margin-top:48px">
+
+<!-- E. START A COMMUNITY -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>New community</b></div></div>
+  <div class="form">
+    <label>Name</label>
+    <div class="inp">Garage 44</div>
+    <label>What is it for? (optional)</label>
+    <div class="inp">Building cartopolis together</div>
+    <label>Topics to start with</label>
+    <div class="inp"># general</div>
+    <div class="inp ph"># add another…</div>
+    <label>People</label>
+    <div class="inp ph"><svg class="i s" style="vertical-align:-3px"><use href="#search"/></svg>&nbsp; Name or address</div>
+    <div class="cand"><div class="av c2">B</div><b>Bas</b><div class="tick on"></div></div>
+    <div class="cand"><div class="av c1">A</div><b>Anna</b><div class="tick on"></div></div>
+    <div class="btn">Start Garage 44</div>
+  </div>
+</div>
+<h2><span>E</span>Starting one</h2>
+<ul>
+  <li>A name, a line about it, the first topic (one is filled in for you), and people. Everything but the name can come later.</li>
+  <li>Whoever starts it runs it, and can let others add people too.</li>
+</ul>
+</div>
+
+<!-- F. ADD PEOPLE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3 style="font-size:22px">Garage 44</h3></div></div>
+  <div class="scrim"></div>
+  <div class="choose">
+    <div class="handle"></div>
+    <h4>Add people to Garage 44</h4>
+    <div class="form">
+      <div class="inp ph"><svg class="i s" style="vertical-align:-3px"><use href="#search"/></svg>&nbsp; Name or address</div>
+      <div class="cand"><div class="av c5">S</div><b>Sanne</b><div class="tick on"></div></div>
+      <div class="cand"><div class="av c6">V</div><b>viberfox</b><div class="tick on"></div></div>
+      <div class="cand"><div class="av c4">J</div><b>Joost</b><div class="tick"></div></div>
+      <p class="hint">They'll be in all 4 topics and read from now on, not what was said before.</p>
+      <div class="btn">Add 2 people</div>
+    </div>
+  </div>
+</div>
+<h2><span>F</span>Adding people</h2>
+<ul>
+  <li>One action for the whole community: there is no "ask to join this channel" any more, and no channel someone is in and another isn't.</li>
+  <li>Under the hood each topic still has to add them, done by whichever member's device is online; that is the same mechanism as the phone fix.</li>
+</ul>
+</div>
+
+<!-- what changes -->
+<div style="flex:1;max-width:820px">
+<h2 style="font-size:20px;color:var(--cream);margin-top:6px">What goes, what stays</h2>
+<table>
+  <tr><th>Today</th><th>After</th></tr>
+  <tr><td>Rooms <span class="tag n">app</span></td><td>Gone. A public topic is a community; a public place is Here.</td></tr>
+  <tr><td>Workspaces <span class="tag n">web</span></td><td>Communities, on the web and the app alike.</td></tr>
+  <tr><td>Public channels</td><td>Topics. Everyone in the community is in all of them.</td></tr>
+  <tr><td>Private channels</td><td>Gone. Something private is an ordinary group with those people.</td></tr>
+  <tr><td>"Ask to join a channel"</td><td>Gone. You are in a community or you are not.</td></tr>
+  <tr><td>Owner / admin / member</td><td>The person who started it, plus whoever they let add people. Everyone may start a topic.</td></tr>
+  <tr><td>One-to-one chats, groups</td><td><span class="tag y">unchanged</span></td></tr>
+  <tr><td>Here, Everyone</td><td><span class="tag y">unchanged</span></td></tr>
+  <tr><td>App knows nothing of workspaces</td><td>The app shows communities like screen A; today it shows a channel as a bare group.</td></tr>
+</table>
+<h2 style="font-size:20px;color:var(--cream);margin-top:26px">Open questions</h2>
+<ul style="color:var(--dim);font-size:14px;padding-left:18px;margin-top:8px">
+  <li style="margin-bottom:6px">Can somebody <b style="color:var(--text);font-weight:inherit">find and join</b> a community themselves (a public directory or an invite link), or only by being added? This draws "only by being added", the simplest.</li>
+  <li style="margin-bottom:6px">Is "topic" the right word? Alternatives: "channel" (familiar, but it is what is being retired) or "thread" (taken: replies already use it).</li>
+  <li>A big community puts every member in every topic. Fine at tens of people; at hundreds the encryption gets slower to update, and that is when a public directory would want a different design.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ROW 3: desktop -->
+<div class="sec">
+<h2><span style="color:var(--brand)">G</span> The web: the same list, wider</h2>
+<p class="cap">cartopolis.org's chat page with the workspace switcher removed: the sidebar is screen A, the right side is screen D or C. Drawn in the app's colours for this sheet only; the page itself keeps the site's component library and light/dark theme.</p>
+<div class="desk two" style="height:620px">
+  <div class="col">
+    <div class="top"><div class="titlebar"><h3>Chats</h3><div class="acts"><svg class="i"><use href="#search"/></svg><svg class="i"><use href="#plus"/></svg></div></div></div>
+    <div class="chat-row"><div class="av sm here-disc"><svg class="i s"><use href="#pin"/></svg></div><div class="body"><div class="l1">Here</div></div></div>
+    <div class="chat-row"><div class="av sm c4"><svg class="i s"><use href="#globe"/></svg></div><div class="body"><div class="l1">Everyone<span class="badge b">16</span></div></div></div>
+    <div class="sect">Communities<div class="rule"></div></div>
+    <div class="comm"><div class="av sm c3">G</div><div class="body"><b>Garage 44</b></div></div>
+    <div class="topic unread" style="padding-left:64px;background:rgba(199,211,216,.08)"><span class="hash">#</span><span class="t">general</span></div>
+    <div class="topic" style="padding-left:64px"><span class="hash">#</span><span class="t">map data</span></div>
+    <div class="topic" style="padding-left:64px"><span class="hash">#</span><span class="t">meet-ups</span></div>
+    <div class="topic add" style="padding-left:64px"><span class="hash">+</span><span class="t">New topic</span></div>
+    <div class="comm"><div class="av sm c6">F</div><div class="body"><b>Fietsers Groningen</b></div><span class="badge">2</span></div>
+    <div class="sect">People and groups<div class="rule"></div></div>
+    <div class="chat-row"><div class="av sm c1">A</div><div class="body"><div class="l1">Anna</div></div></div>
+    <div class="chat-row"><div class="av sm c2 room"><svg class="i s"><use href="#people"/></svg></div><div class="body"><div class="l1">Weekend trip</div></div></div>
+  </div>
+  <div class="stage">
+    <div class="thead" style="padding:16px 26px;border-bottom:1px solid var(--gline)"><div class="av sm c3" style="border-radius:10px">G</div><div class="who"><b># general</b><span style="color:var(--dim)">Garage 44 · 12 people · Building cartopolis together</span></div><div class="seg" style="width:220px"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chat</div><div><span class="live"></span>World</div></div><svg class="i"><use href="#phone"/></svg><svg class="i"><use href="#people"/></svg></div>
+    <div class="msgs">
+      <div class="day">Today</div>
+      <div class="sender">Bas</div>
+      <div class="m them">Did the phone fix land?<small>20:24</small></div>
+      <div class="m me">Yes, a new device is added to its chats now<small>20:29</small></div>
+      <div class="sender b">Anna</div>
+      <div class="m them">My phone shows everything from today on 👍<small>20:30</small></div>
+      <div class="sys">Jeroen added Sanne to Garage 44</div>
+      <div class="sender">Bas</div>
+      <div class="m them">Welcome Sanne!<small>20:31</small></div>
+    </div>
+    <div class="composer" style="padding:14px 26px"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message # general</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+  </div>
+</div>
+</div>
+
+</body></html>
