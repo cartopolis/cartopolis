@@ -159,7 +159,7 @@ registry="$slots_dir/carto-slots"
 gate_owner="gate-$(basename "$root")"
 gate_slot=""
 release_gate_slot() {
-    [ -n "$gate_slot" ] && python3 "$registry" release --owner "$gate_owner" >/dev/null 2>&1
+    [ -n "$gate_slot" ] && "$registry" release --owner "$gate_owner" >/dev/null 2>&1
     # A claim file naming the gate outlives the lease and makes `carto-slots
     # claim` refuse the slot to everybody for six hours. On 2026-09-27 one left
     # behind after a finished gate kept the next gate waiting on a free slot.
@@ -171,15 +171,15 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && [ -x "$registry"
     && [ "${CARGO_TARGET_DIR:-}" = "$(dirname "$slots_dir")" ]; then
     waited=0
     while :; do
-        claim=$(python3 "$registry" mine --owner "$gate_owner" 2>/dev/null) \
-            || claim=$(python3 "$registry" claim --owner "$gate_owner" --host vps --ttl 10800 2>/dev/null) \
+        claim=$("$registry" mine --owner "$gate_owner" 2>/dev/null) \
+            || claim=$("$registry" claim --owner "$gate_owner" --host vps --ttl 10800 2>/dev/null) \
             || claim=""
         [ -n "$claim" ] && break
         if [ "$waited" -ge 3600 ]; then
             echo "no VPS slot came free in an hour; not building in the shared directory" >&2
             exit 3
         fi
-        [ "$waited" -eq 0 ] && echo "waiting for a VPS build slot ($(python3 "$registry" list 2>/dev/null | grep -c claimed) claimed)"
+        [ "$waited" -eq 0 ] && echo "waiting for a VPS build slot ($("$registry" list 2>/dev/null | grep -c claimed) claimed)"
         sleep 30
         waited=$((waited + 30))
     done
