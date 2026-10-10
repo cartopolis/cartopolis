@@ -1,0 +1,244 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Communities v2</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><path d="M6 4h3l1.5 4-2 1.5a10 10 0 005 5l1.5-2 4 1.5v3a2 2 0 01-2 2A16 16 0 014 6a2 2 0 012-2z"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="town" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l4-3 4 3v10M13 20V6l3-2 3 2v14M8 13h2M8 16h2M15.5 9h1M15.5 12h1M15.5 15h1"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+</svg>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></symbol>
+  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></symbol>
+</svg>
+
+<h1>Communities v2: <b>finding, joining, moderating</b></h1>
+<p class="lede">Builds on v1 (the list, a community, a topic). Added after review: people <b style="color:var(--cream);font-weight:inherit">find and join</b> communities themselves;
+a community can ask a <b style="color:var(--cream);font-weight:inherit">moderator to confirm</b> each newcomer first; and a community can be <b style="color:var(--cream);font-weight:inherit">edited</b> after it starts, including who its moderators are.
+Everything here is new.</p>
+
+<div class="principles">
+  <div><h3>Three ways in</h3><p><i>Open</i>: anyone who finds it joins. <i>Asks first</i>: a moderator confirms each request. <i>Invite only</i>: not joinable, only added by a moderator.</p></div>
+  <div><h3>Listed or not</h3><p>A listed community shows in <i>Find communities</i> with its name, description and size. An unlisted one is reached only by being added, or by its link.</p></div>
+  <div><h3>Three roles</h3><p><i>Owner</i>: started it, can delete it or hand it over. <i>Moderators</i>: confirm requests, add and remove people, edit it. <i>Members</i>: talk, and start topics if allowed.</p></div>
+  <div><h3>What the server sees</h3><p>A listed community's name, description, topic names and size are public on this server. What is said in it stays end-to-end encrypted, as in every topic.</p></div>
+</div>
+
+<!-- ROW 1: finding and joining -->
+<div class="row">
+
+<!-- H. + SHEET -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3>Chats</h3></div></div>
+  <div class="scrim"></div>
+  <div class="choose">
+    <div class="handle"></div>
+    <h4>Start something</h4>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#person"/></svg></div><div><b>Message a person</b><span>Just the two of you</span></div></div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#people"/></svg></div><div><b>Start a group</b><span>A few people you pick. Private.</span></div></div>
+    <div class="opt"><div class="ic c"><svg class="i"><use href="#compass"/></svg></div><div><b>Find a community</b><span>Clubs, teams and neighbourhoods on this server</span></div></div>
+    <div class="opt"><div class="ic c"><svg class="i"><use href="#town"/></svg></div><div><b>Start a community</b><span>People who share several topics</span></div></div>
+    <p class="hint" style="padding:12px 20px 0;display:flex;gap:8px"><svg class="i s"><use href="#lock"/></svg><span>What is said in all of these is end-to-end encrypted.</span></p>
+  </div>
+</div>
+<h2><span>H</span>"+" gains Find</h2>
+<ul>
+  <li>v1's sheet plus one line: <b>Find a community</b>.</li>
+  <li>An empty chat list shows the same choice, so a newcomer has somewhere to go.</li>
+</ul>
+</div>
+
+<!-- I. FIND -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>Find a community</b></div></div>
+  <div class="search"><svg class="i s"><use href="#search"/></svg>Search names and descriptions</div>
+  <div class="chips"><div class="on">Popular</div><div>New</div><div>Near you</div></div>
+  <div class="drow"><div class="av c6">F</div><div class="body"><b>Fietsers Groningen</b><div class="d">Routes, repairs and Sunday rides around the city</div><div class="m2"><span>48 people</span><span class="how open">Open</span></div></div></div>
+  <div class="drow"><div class="av c3">G</div><div class="body"><b>Garage 44</b><div class="d">Building cartopolis together</div><div class="m2"><span>12 people</span><span class="how mine">You're in</span></div></div></div>
+  <div class="drow"><div class="av c5">B</div><div class="body"><b>Buurt Oosterpoort</b><div class="d">For people living in the Oosterpoort: news, lost cats, the street party</div><div class="m2"><span>131 people</span><span class="how ask">Asks first</span></div></div></div>
+  <div class="drow"><div class="av c2">M</div><div class="body"><b>Map makers NL</b><div class="d">Buildings, paving and aerial imagery: what's wrong where</div><div class="m2"><span>27 people</span><span class="how open">Open</span></div></div></div>
+  <div class="drow"><div class="av c4">S</div><div class="body"><b>Schaakclub De Toren</b><div class="d">Club evenings Thursday, online games all week</div><div class="m2"><span>19 people</span><span class="how wait">Asked</span></div></div></div>
+</div>
+<h2><span>I</span>Find communities</h2>
+<ul>
+  <li>Every <b>listed</b> community on this server: name, one line, size, and how you get in.</li>
+  <li><b>Near you</b> sorts by a place a community may pin itself to (a neighbourhood, a club house). Optional; most will have none.</li>
+  <li>Unlisted and invite-only communities never appear here.</li>
+</ul>
+</div>
+
+<!-- J. PREVIEW, ASKS FIRST -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"></div></div>
+  <div class="hero">
+    <div class="av c5">B</div>
+    <h3>Buurt Oosterpoort</h3>
+    <p>For people living in the Oosterpoort: news, lost cats, the street party</p>
+    <div class="faces"><div class="av c1">M</div><div class="av c2">K</div><div class="av c4">T</div><div class="av" style="background:var(--raised);color:var(--dim)">+128</div></div>
+  </div>
+  <div class="group-h">Topics</div>
+  <div class="preview-topics"><div># general</div><div># lost and found</div><div># street party</div><div># for sale</div></div>
+  <div class="group-h">Moderators</div>
+  <div class="prow"><div class="av c1">M</div><b>Marieke</b><span class="role owner">Owner</span></div>
+  <div class="prow"><div class="av c2">K</div><b>Karim</b><span class="role mod">Moderator</span></div>
+  <div style="position:absolute;left:0;right:0;bottom:30px">
+    <div class="note"><b>A moderator confirms new members.</b> Say who you are; they see your name and this message, nothing else.</div>
+    <div class="inp ph" style="margin:0 18px 8px">I live on the Verlengde Hereweg…</div>
+    <div class="bigbtn">Ask to join</div>
+  </div>
+</div>
+<h2><span>J</span>Before you join</h2>
+<ul>
+  <li>Anyone can look before joining: description, topic names, size, who moderates. Not the messages.</li>
+  <li><b>Open</b> communities show <b>Join</b> and you are in at once. <b>Asks first</b> shows this: an optional line to the moderators, then <b>Ask to join</b>.</li>
+</ul>
+</div>
+
+<!-- K. WAITING -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top">
+    <div class="titlebar"><h3>Chats</h3><div class="acts"><svg class="i"><use href="#search"/></svg><svg class="i"><use href="#person"/></svg></div></div>
+    <div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chats</div><div><span class="live"></span>World</div></div>
+  </div>
+  <div class="chat-row"><div class="av here-disc"><svg class="i"><use href="#pin"/></svg></div><div class="body"><div class="l1">Here</div><div class="l2"><span>Whoever is near your avatar</span></div></div></div>
+  <div class="chat-row"><div class="av c4"><svg class="i"><use href="#globe"/></svg></div><div class="body"><div class="l1">Everyone<time>20:18</time></div><div class="l2"><span>viberfox: waving from Groningen</span></div></div></div>
+  <div class="sect">Communities<div class="rule"></div></div>
+  <div class="comm" style="opacity:.75"><div class="av c5">B</div><div class="body"><b>Buurt Oosterpoort</b><span>Waiting for a moderator · asked 10 min ago</span></div><span class="how wait">Asked</span></div>
+  <div class="comm"><div class="av c3">G</div><div class="body"><b>Garage 44</b><span>12 people · 4 topics</span></div></div>
+  <div class="topic"><span class="hash">#</span><span class="t">general</span></div>
+  <div class="topic"><span class="hash">#</span><span class="t">map data</span></div>
+  <div class="sect" style="margin-top:6px">Later, on the same list<div class="rule"></div></div>
+  <div class="chat-row" style="background:linear-gradient(90deg, rgba(253,96,18,.10), transparent 70%)"><div class="av c5" style="border-radius:14px">B</div><div class="body"><div class="l1">Buurt Oosterpoort<time>now</time></div><div class="l2"><span>Karim let you in. Welcome!</span><span class="badge b">1</span></div></div></div>
+</div>
+<h2><span>K</span>While you wait</h2>
+<ul>
+  <li>The request sits in your list, greyed, so you can see it went somewhere. Tap it to cancel.</li>
+  <li>When a moderator confirms, the community opens like any other and says who let you in. A refusal says so plainly, once, and the row goes.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ROW 2: moderating and editing -->
+<div class="row" style="margin-top:48px">
+
+<!-- L. MODERATOR VIEW + REQUESTS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>Buurt Oosterpoort</b><span style="color:var(--dim)">131 people</span></div><svg class="i"><use href="#gear"/></svg></div>
+  <div class="reqbar"><span>3 people asking to join</span><span>Review ›</span></div>
+  <div class="group-h">Asking to join</div>
+  <div class="req"><div class="av sm c5">S</div><div class="body"><b>Sanne</b><span>"I live on the Verlengde Hereweg, number 12"</span></div><div class="no">✕</div><div class="yes">✓</div></div>
+  <div class="req"><div class="av sm c6">P</div><div class="body"><b>Pieter</b><span>No message · joined the server in 2026</span></div><div class="no">✕</div><div class="yes">✓</div></div>
+  <div class="req"><div class="av sm c1">L</div><div class="body"><b>lotte@other.server</b><span>"Moving here in December!"</span></div><div class="no">✕</div><div class="yes">✓</div></div>
+  <div class="note">Confirming adds them to every topic. They read from then on, not what was said before. The other moderators see the same list; the first answer counts.</div>
+</div>
+<h2><span>L</span>Confirming requests</h2>
+<ul>
+  <li>Moderators see a bar on the community while anyone is waiting, and a count on the community's row in their list.</li>
+  <li>✓ lets them in, ✕ says no. A refusal can't be repeated for a week, so nobody is asked twice in a row.</li>
+</ul>
+</div>
+
+<!-- M. EDIT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>Edit community</b></div><span style="color:var(--brand);font-size:15px">Save</span></div>
+  <div class="form" style="gap:8px">
+    <div style="display:flex;gap:12px;align-items:center"><div class="av c5" style="border-radius:16px;width:56px;height:56px">B</div><span class="hint">Change picture</span></div>
+    <div class="inp">Buurt Oosterpoort</div>
+    <div class="inp" style="font-size:14px">For people living in the Oosterpoort: news, lost cats, the street party</div>
+  </div>
+  <div class="group-h">Who can join</div>
+  <div class="radio"><div class="dot"></div><div><b>Anyone</b><span>Joins straight away</span></div></div>
+  <div class="radio"><div class="dot on"></div><div><b>Anyone, after a moderator confirms</b></div></div>
+  <div class="radio"><div class="dot"></div><div><b>Only people a moderator adds</b></div></div>
+  <div class="toggle"><div>Show in Find communities<span class="sub">Name, description and size are public</span></div><div class="sw on"></div></div>
+  <div class="toggle"><div>Members may start topics</div><div class="sw on"></div></div>
+  <div class="group-h">Topics</div>
+  <div class="erow"><span class="grip">⋮⋮</span><span class="t"># general</span><span class="x">✎</span></div>
+  <div class="erow"><span class="grip">⋮⋮</span><span class="t"># lost and found</span><span class="x">✎</span></div>
+  <div class="erow"><span class="grip">⋮⋮</span><span class="t"># street party</span><span class="x">✎</span></div>
+</div>
+<h2><span>M</span>Editing a community</h2>
+<ul>
+  <li>Moderators and the owner. Name, picture, description, who can join, whether it is listed, whether members start topics.</li>
+  <li>Topics are renamed, reordered and archived here. Archived keeps the history readable but closes it.</li>
+  <li>Further down: the place it is pinned to (optional), its link, and (owner only) hand over or delete.</li>
+</ul>
+</div>
+
+<!-- N. PEOPLE AND ROLES -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>People</b><span style="color:var(--dim)">Buurt Oosterpoort · 131</span></div><svg class="i"><use href="#plus"/></svg></div>
+  <div class="search"><svg class="i s"><use href="#search"/></svg>Search people</div>
+  <div class="group-h">Running it</div>
+  <div class="prow"><div class="av c1">M</div><b>Marieke</b><span class="role owner">Owner</span></div>
+  <div class="prow"><div class="av c2">K</div><b>Karim</b><span class="role mod">Moderator</span></div>
+  <div class="group-h">Members</div>
+  <div class="prow"><div class="av c4">T</div><b>Tom</b><span class="x" style="color:var(--dim)">⋯</span></div>
+  <div class="prow" style="background:rgba(199,211,216,.06)"><div class="av c5">S</div><b>Sanne</b><span class="x" style="color:var(--dim)">⋯</span></div>
+  <div class="menu" style="top:470px">
+    <div><svg class="i s" style="vertical-align:-3px"><use href="#shield"/></svg>&nbsp; Make moderator</div>
+    <div>Message Sanne</div>
+    <div class="bad">Remove from community</div>
+    <div class="bad">Remove and block from rejoining</div>
+  </div>
+  <div class="prow" style="margin-top:150px"><div class="av c6">P</div><b>Pieter</b><span class="x" style="color:var(--dim)">⋯</span></div>
+  <div class="prow"><div class="av c3">J</div><b>Joost</b><span class="x" style="color:var(--dim)">⋯</span></div>
+</div>
+<h2><span>N</span>People and moderators</h2>
+<ul>
+  <li>Who runs it sits on top. ⋯ on anyone: make or stop being moderator, message them, remove them.</li>
+  <li>Moderators can't remove the owner or each other; only the owner can. The owner can hand over ownership, and must before leaving.</li>
+  <li>Removing someone takes them out of every topic; "and block" also stops them asking again.</li>
+</ul>
+</div>
+
+<!-- rules -->
+<div style="flex:1;max-width:400px">
+<h2 style="font-size:20px;color:var(--cream);margin-top:6px">Who may do what</h2>
+<table>
+  <tr><th></th><th>Owner</th><th>Mod</th><th>Member</th></tr>
+  <tr><td>Talk, start topics*</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Confirm requests</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Add people</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Remove a member</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Edit, topics</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Appoint moderators</td><td>✓</td><td></td><td></td></tr>
+  <tr><td>Remove a moderator</td><td>✓</td><td></td><td></td></tr>
+  <tr><td>Hand over, delete</td><td>✓</td><td></td><td></td></tr>
+</table>
+<p class="hint" style="margin-top:8px">* if "Members may start topics" is on.</p>
+<h2 style="font-size:20px;color:var(--cream);margin-top:24px">Open questions</h2>
+<ul style="color:var(--dim);font-size:13.5px;padding-left:18px;margin-top:8px">
+  <li style="margin-bottom:6px">Should moderators be able to appoint other moderators, or only the owner (as drawn)?</li>
+  <li style="margin-bottom:6px">Removing someone takes them out of the encrypted topics, but what they already read stays on their device. That is true of any chat and worth saying in the remove dialog.</li>
+  <li>Can a moderator delete somebody else's message? Possible (every device hides it), but it is a request the server can't enforce on a modified app.</li>
+</ul>
+</div>
+
+</div>
+</body></html>
