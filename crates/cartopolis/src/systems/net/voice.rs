@@ -1250,7 +1250,40 @@ mod loopback {
         .unwrap();
         c.send(Bytes::from(hello)).await.unwrap();
         let ack = decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap();
-        assert!(matches!(ack, NetMessage::ServerHelloAck { .. }), "{ack:?}");
+        let NetMessage::ServerHelloAck { your_avatar_id, .. } = ack else {
+            panic!("expected ServerHelloAck, got {ack:?}");
+        };
+        // An avatar is in the world, and in earshot, only once its client has
+        // placed it (an intent or a teleport); a session that never does is
+        // somebody reading chat in a browser. So stand here, and wait for a
+        // snapshot that shows it, or the speaker races its own arrival.
+        let stand = encode_app_frame(&NetMessage::ClientIntent {
+            request_id: 0,
+            move_x: 0.0,
+            move_z: 0.0,
+            display_yaw: 0.0,
+            flying: false,
+            fly_up: false,
+            fly_down: false,
+            jump: false,
+            emote: None,
+            seated: None,
+            geo: None,
+        })
+        .unwrap();
+        c.send(Bytes::from(stand)).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let frame = c.next().await.unwrap().unwrap();
+                if let Ok(NetMessage::WorldSnapshot { avatars, .. }) = decode_app_frame(&frame) {
+                    if avatars.iter().any(|a| a.id == your_avatar_id) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("this avatar never appeared in the world");
         c
     }
 
@@ -1309,8 +1342,12 @@ mod loopback {
             // **The pacing is part of the test.** `net.rs` refuses anything
             // closer together than `MIN_VOICE_INTERVAL` (15 ms) and says nothing
             // when it does, so a client that sent its backlog in a burst would
-            // lose all but the first frame and look like a codec bug.
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            // lose all but the first frame and look like a codec bug. The gap is
+            // measured when the server *handles* a frame, not when it arrived,
+            // so two frames held up behind a tick are handled back to back and
+            // the second is refused: at 25 ms apart, sent straight after a
+            // snapshot, the third frame was lost every run.
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         }
 
         // Receive through the real path, ring and all.
