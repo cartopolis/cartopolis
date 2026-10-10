@@ -7,7 +7,9 @@ use super::{
 };
 use crate::db;
 use bytes::Bytes;
-use cartopolis_core::{address, encode_app_frame, E2eeCursor, E2eeWelcome, NetMessage};
+use cartopolis_core::{
+    address, encode_app_frame, E2eeCursor, E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, NetMessage,
+};
 use uuid::Uuid;
 
 /// The local account a full address on the wire names (protocol 37), or why it
@@ -186,8 +188,13 @@ pub(super) async fn on_create_group<T: FrameTransport>(
     };
     let account = ctx.principal_key.clone();
     let id = group.clone();
+    let device = ctx.e2ee_device;
     let result = match db::call(&ctx.conn, move |c| {
-        crate::e2ee::create_group(c, &account, &id, direct_with.as_deref())
+        let created = crate::e2ee::create_group(c, &account, &id, direct_with.as_deref());
+        if let (Ok(None), Some(device)) = (&created, device) {
+            crate::e2ee::hold(c, &id, device)?;
+        }
+        created
     })
     .await
     {
@@ -364,6 +371,9 @@ pub(super) async fn on_send<T: FrameTransport>(
             if commit {
                 // A channel's members changed: its workspace's lists did too.
                 super::workspaces::after_commit(ctx, &group).await;
+                // Whoever this commit added may have more devices than it named,
+                // and so may the writer.
+                ask_for_missing_devices(ctx, Some(group.clone())).await?;
             }
             Ok(())
         }
@@ -422,5 +432,71 @@ pub(super) async fn on_sync<T: FrameTransport>(
         })
         .await?;
     }
-    ctx.send(&NetMessage::E2eeSynced { request_id }).await
+    ctx.send(&NetMessage::E2eeSynced { request_id }).await?;
+    // A device that has just caught up is the moment to settle who is missing
+    // from its chats: itself, from chats started on another device, or
+    // somebody else's device, from chats it can add them to.
+    ask_for_missing_devices(ctx, None).await
+}
+
+/// Find member devices missing from this account's chats (or from `only`) and
+/// hand each chat's to one device that holds it: this one when it does,
+/// otherwise another that is connected. A chat with no holder online waits
+/// until one syncs. `docs/notes/encrypted-chat.md`, "Every device of every
+/// member".
+async fn ask_for_missing_devices<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    only: Option<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let Some(me) = ctx.e2ee_device else {
+        return Ok(());
+    };
+    let account = ctx.principal_key.clone();
+    let now = now_millis();
+    let plans = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::missing_devices(c, &account, only.as_deref(), now)
+    })
+    .await
+    {
+        Ok(Ok(plans)) => plans,
+        _ => return Ok(()),
+    };
+    for plan in plans {
+        let adder = if plan.holders.contains(&me) {
+            Some(me)
+        } else {
+            ctx.chat.connected_device_among(&plan.holders)
+        };
+        let Some(adder) = adder else {
+            continue;
+        };
+        let names: std::collections::HashMap<Uuid, String> = plan.missing.iter().cloned().collect();
+        let devices: Vec<Uuid> = plan.missing.iter().map(|(d, _)| *d).collect();
+        let group = plan.group.clone();
+        let claimed = match db::call(&ctx.conn, move |c| {
+            crate::e2ee::claim_for_add(c, &group, &devices, now)
+        })
+        .await
+        {
+            Ok(Ok(claimed)) if !claimed.is_empty() => claimed,
+            _ => continue,
+        };
+        let msg = NetMessage::E2eeAddDevices {
+            group: plan.group,
+            devices: claimed
+                .into_iter()
+                .map(|(device, bytes)| E2eeNewDevice {
+                    address: full(ctx, names.get(&device).map_or("", String::as_str)),
+                    package: E2eeKeyPackage { device, bytes },
+                })
+                .collect(),
+        };
+        if adder == me {
+            ctx.send(&msg).await?;
+        } else {
+            ctx.chat
+                .deliver_to_device(adder, &Bytes::from(encode_app_frame(&msg)?));
+        }
+    }
+    Ok(())
 }

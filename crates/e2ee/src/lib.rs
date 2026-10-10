@@ -460,6 +460,54 @@ impl Device {
         })
     }
 
+    /// Add more devices of people already in a chat, and nobody else: a key
+    /// package naming somebody who is not a member, or a device that already
+    /// is one, is left out. Answers `None` when nothing is left to add.
+    ///
+    /// This is the check that keeps a request from the server to "add this
+    /// member's new phone" from being a way to add a stranger.
+    pub fn add_member_devices(
+        &mut self,
+        group: &[u8],
+        key_packages: &[Vec<u8>],
+    ) -> Result<Option<(Outgoing, Vec<Identity>)>, Error> {
+        let members = self.members(group);
+        if members.is_empty() {
+            return Err(Error::UnknownGroup);
+        }
+        let mut keep = Vec::new();
+        let mut who: Vec<Identity> = Vec::new();
+        for b in key_packages {
+            let Ok(kp) = KeyPackageIn::tls_deserialize(&mut b.as_slice())
+                .map_err(|e| Error::Decode(e.to_string()))
+                .and_then(|k| {
+                    k.validate(self.provider.crypto(), ProtocolVersion::Mls10)
+                        .map_err(mls)
+                })
+            else {
+                continue;
+            };
+            let Some(id) = Identity::from_credential(kp.leaf_node().credential()) else {
+                continue;
+            };
+            let a_member = members
+                .iter()
+                .any(|m| m.address.eq_ignore_ascii_case(&id.address));
+            let already = members
+                .iter()
+                .chain(who.iter())
+                .any(|m| m.device == id.device);
+            if a_member && !already {
+                keep.push(b.clone());
+                who.push(id);
+            }
+        }
+        if keep.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((self.add(group, &keep)?, who)))
+    }
+
     /// The server accepted this device's commit: apply it.
     pub fn confirm_pending(&mut self, group: &[u8]) -> Result<(), Error> {
         let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
@@ -947,5 +995,30 @@ mod tests {
         };
         assert_eq!(Identity::from_bytes(&me.to_bytes()), Some(me));
         assert_eq!(Identity::from_bytes(b"no separator"), None);
+    }
+
+    #[test]
+    fn a_request_to_add_member_devices_cannot_bring_in_anybody_new() {
+        let mut laptop = Device::new("alice@x", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@x", Uuid::new_v4()).unwrap();
+        let mut phone = Device::new("alice@x", Uuid::new_v4()).unwrap();
+        let mut carol = Device::new("carol@x", Uuid::new_v4()).unwrap();
+        let g = laptop.create_group(b"x/chat").unwrap();
+        let add = laptop.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        laptop.confirm_pending(&g).unwrap();
+        bob.join(&add.welcome.unwrap()).unwrap();
+
+        // A stranger, and a device already in the chat, are both left out.
+        let mut offered = carol.key_packages(1).unwrap();
+        offered.extend(bob.key_packages(1).unwrap());
+        assert!(laptop.add_member_devices(&g, &offered).unwrap().is_none());
+
+        // Alice's own other device goes in, and the stranger beside it does not.
+        offered.extend(phone.key_packages(1).unwrap());
+        let (out, who) = laptop.add_member_devices(&g, &offered).unwrap().unwrap();
+        assert_eq!(who, vec![phone.identity().clone()]);
+        laptop.confirm_pending(&g).unwrap();
+        assert_eq!(phone.join(&out.welcome.unwrap()).unwrap(), g);
+        assert_eq!(laptop.members(&g).len(), 3);
     }
 }

@@ -422,6 +422,13 @@ pub fn append(
             });
         }
     }
+    // The writer holds the chat, and so will every device its invitation names.
+    hold(&tx, group, device)?;
+    if let Some(w) = &welcome {
+        for d in w.devices {
+            hold(&tx, group, *d)?;
+        }
+    }
     let everyone = members(&tx, group)?;
     tx.commit()?;
     Ok(Appended {
@@ -490,6 +497,9 @@ pub fn sync(
             "DELETE FROM e2ee_invites WHERE device = ?1 AND group_id = ?2",
             params![dev, group],
         )?;
+        if is_member(conn, group, account)? {
+            hold(conn, group, device)?;
+        }
     }
     let invites = {
         let mut stmt = conn.prepare(
@@ -509,6 +519,148 @@ pub fn sync(
     Ok((entries, invites))
 }
 
+/// Record that `device` holds `group`.
+pub fn hold(conn: &Connection, group: &[u8], device: Uuid) -> Result<(), Refusal> {
+    conn.execute(
+        "INSERT OR IGNORE INTO e2ee_group_devices (group_id, device) VALUES (?1, ?2)",
+        params![group, device.to_string()],
+    )?;
+    Ok(())
+}
+
+/// How long a device in a chat is given to add a missing one before another
+/// is asked. Each ask spends one of the missing device's key packages.
+pub const ASK_AGAIN_MS: u64 = 2 * 60 * 1000;
+
+/// A device not seen for this long is not added to chats any more: it is most
+/// likely a browser whose storage was cleared, and every add would leave one
+/// more member nobody answers for.
+pub const STALE_DEVICE_DAYS: u32 = 30;
+
+/// One chat with devices of its members missing from it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissingDevices {
+    pub group: Vec<u8>,
+    /// Devices that hold the chat, any of which can add the missing ones.
+    pub holders: Vec<Uuid>,
+    /// The missing devices and the usernames they belong to.
+    pub missing: Vec<(Uuid, String)>,
+}
+
+/// Every chat `account` is in (or just `only`) that a member device is missing
+/// from: one of the member's devices signed in after the chat started, or had
+/// no key package left when it did. Devices asked about in the last
+/// [`ASK_AGAIN_MS`], devices with no package to claim and stale devices are
+/// left out, as is a chat no device holds.
+pub fn missing_devices(
+    conn: &Connection,
+    account: &str,
+    only: Option<&[u8]>,
+    now_ms: u64,
+) -> Result<Vec<MissingDevices>, Refusal> {
+    let groups: Vec<Vec<u8>> = match only {
+        Some(g) => vec![g.to_vec()],
+        None => {
+            let mut stmt = conn.prepare("SELECT group_id FROM e2ee_members WHERE account = ?1")?;
+            let rows = stmt.query_map(params![account], |r| r.get::<_, Vec<u8>>(0))?;
+            rows.collect::<Result<_, _>>()?
+        }
+    };
+    let mut out = Vec::new();
+    for group in groups {
+        let mut stmt = conn.prepare(
+            "SELECT d.device, a.username FROM e2ee_members m
+               JOIN e2ee_devices d ON d.account = m.account
+               JOIN accounts a ON a.id = m.account AND a.disabled = 0
+             WHERE m.group_id = ?1
+               AND d.last_seen >= datetime('now', ?3)
+               AND NOT EXISTS (SELECT 1 FROM e2ee_group_devices h
+                               WHERE h.group_id = ?1 AND h.device = d.device)
+               AND NOT EXISTS (SELECT 1 FROM e2ee_device_asks k
+                               WHERE k.group_id = ?1 AND k.device = d.device AND k.asked_ms > ?2)
+               AND EXISTS (SELECT 1 FROM e2ee_key_packages p WHERE p.device = d.device)
+             ORDER BY d.device",
+        )?;
+        let since = now_ms.saturating_sub(ASK_AGAIN_MS) as i64;
+        let stale = format!("-{STALE_DEVICE_DAYS} days");
+        let rows = stmt.query_map(params![group, since, stale], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let missing: Vec<(Uuid, String)> = rows
+            .filter_map(Result::ok)
+            .filter_map(|(d, name)| Uuid::parse_str(&d).ok().map(|d| (d, name)))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        // The missing devices' own people first: your laptop adds your phone
+        // before the person you are talking to is asked to.
+        let owners: Vec<String> = missing.iter().map(|(_, n)| n.to_lowercase()).collect();
+        let mut stmt = conn.prepare(
+            "SELECT h.device, lower(a.username) FROM e2ee_group_devices h
+               JOIN e2ee_devices d ON d.device = h.device
+               JOIN accounts a ON a.id = d.account
+             WHERE h.group_id = ?1 ORDER BY h.device",
+        )?;
+        let mut rows: Vec<(String, String)> = stmt
+            .query_map(params![group], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(Result::ok)
+            .collect();
+        rows.sort_by_key(|(_, owner)| !owners.contains(owner));
+        let holders: Vec<Uuid> = rows
+            .into_iter()
+            .filter_map(|(d, _)| Uuid::parse_str(&d).ok())
+            .collect();
+        if holders.is_empty() {
+            continue;
+        }
+        out.push(MissingDevices {
+            group,
+            holders,
+            missing,
+        });
+    }
+    Ok(out)
+}
+
+/// Claim one key package for each of `devices`, to be added to `group`, and
+/// record the ask so it is not repeated for [`ASK_AGAIN_MS`]. A device with no
+/// package left is absent from the answer.
+pub fn claim_for_add(
+    conn: &Connection,
+    group: &[u8],
+    devices: &[Uuid],
+    now_ms: u64,
+) -> Result<Vec<(Uuid, Vec<u8>)>, Refusal> {
+    let tx = conn.unchecked_transaction()?;
+    let mut out = Vec::new();
+    for d in devices {
+        let dev = d.to_string();
+        let row: Option<(i64, Vec<u8>)> = tx
+            .query_row(
+                "SELECT id, bytes FROM e2ee_key_packages WHERE device = ?1 ORDER BY id LIMIT 1",
+                params![dev],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((row_id, bytes)) = row else {
+            continue;
+        };
+        tx.execute(
+            "DELETE FROM e2ee_key_packages WHERE id = ?1",
+            params![row_id],
+        )?;
+        tx.execute(
+            "INSERT INTO e2ee_device_asks (group_id, device, asked_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (group_id, device) DO UPDATE SET asked_ms = ?3",
+            params![group, dev, now_ms as i64],
+        )?;
+        out.push((*d, bytes));
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// Remove an account's devices, key packages, pending invitations and
 /// memberships. The chats and their sealed logs stay: they are the other
 /// members' history, and nobody could read the deleted person's part of it
@@ -522,6 +674,14 @@ pub fn erase_account(conn: &Connection, account: &str) -> anyhow::Result<()> {
         "DELETE FROM e2ee_invites WHERE device IN (SELECT device FROM e2ee_devices WHERE account = ?1)",
         params![account],
     )?;
+    for table in ["e2ee_group_devices", "e2ee_device_asks"] {
+        conn.execute(
+            &format!(
+                "DELETE FROM {table} WHERE device IN (SELECT device FROM e2ee_devices WHERE account = ?1)"
+            ),
+            params![account],
+        )?;
+    }
     conn.execute(
         "DELETE FROM e2ee_devices WHERE account = ?1",
         params![account],
@@ -768,6 +928,56 @@ mod tests {
         assert_eq!(
             claim_key_packages(&t.c, "bob", None).unwrap_or_default(),
             Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_device_missing_from_a_chat_is_found_asked_about_once_and_settled_by_its_invitation() {
+        let t = two();
+        let g = b"chat".to_vec();
+        create_group(&t.c, &t.alice, &g, None).unwrap();
+        hold(&t.c, &g, t.ad).unwrap();
+        add_bob(&t, &g);
+        assert_eq!(missing_devices(&t.c, &t.alice, None, 10).unwrap(), vec![]);
+
+        // Alice signs in on a phone.
+        let phone = Uuid::new_v4();
+        register_device(&t.c, &t.alice, phone, &[b"p1".to_vec(), b"p2".to_vec()]).unwrap();
+        let found = missing_devices(&t.c, &t.bob, None, 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].missing, vec![(phone, "alice".to_string())]);
+        assert!(found[0].holders.contains(&t.ad) && found[0].holders.contains(&t.bd));
+
+        // Asked once; not again until ASK_AGAIN_MS has passed.
+        assert_eq!(claim_for_add(&t.c, &g, &[phone], 10).unwrap().len(), 1);
+        assert_eq!(missing_devices(&t.c, &t.alice, None, 20).unwrap(), vec![]);
+        let later = 10 + ASK_AGAIN_MS + 1;
+        assert_eq!(
+            missing_devices(&t.c, &t.alice, None, later).unwrap().len(),
+            1
+        );
+
+        // The commit whose invitation names it settles it for good.
+        append(
+            &t.c,
+            &t.alice,
+            "alice",
+            t.ad,
+            &g,
+            1,
+            true,
+            b"commit",
+            Some(WelcomeFor {
+                devices: &[phone],
+                members: &["alice".to_string()],
+                bytes: b"welcome",
+            }),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            missing_devices(&t.c, &t.alice, None, later).unwrap(),
+            vec![]
         );
     }
 }

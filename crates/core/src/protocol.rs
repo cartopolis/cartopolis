@@ -185,6 +185,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "workspaces — WorkspaceCreate / WorkspaceList / Workspaces / WorkspaceAddMember, and channels: ChannelCreate lists an encrypted chat as a workspace channel, ChannelJoin asks into a public one, ChannelJoinRequest hands that to a member device to add them (docs/notes/web-chat.md)",
     },
+    ProtocolRevision {
+        version: 39,
+        adr: "",
+        summary: "every device of every member is in every chat — E2eeAddDevices hands a device already in a chat the key packages of member devices that are not, so a phone signed in after a chat started is added to it (docs/notes/encrypted-chat.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -282,6 +287,7 @@ pub enum MessageKind {
     ChannelCreate = 79,
     ChannelJoin = 80,
     ChannelJoinRequest = 81,
+    E2eeAddDevices = 82,
 }
 
 impl MessageKind {
@@ -368,6 +374,7 @@ impl MessageKind {
             79 => Some(Self::ChannelCreate),
             80 => Some(Self::ChannelJoin),
             81 => Some(Self::ChannelJoinRequest),
+            82 => Some(Self::E2eeAddDevices),
             _ => None,
         }
     }
@@ -1443,6 +1450,15 @@ pub enum NetMessage {
         group: Vec<u8>,
         address: String,
     },
+    /// Server, to a device already in `group`: these devices belong to its
+    /// members but are not in it (signed in after it started, or had no key
+    /// package left then). Add them with one commit whose invitation names
+    /// them. The server claimed each package for this, so it is used once;
+    /// a device that is already in the chat is skipped.
+    E2eeAddDevices {
+        group: Vec<u8>,
+        devices: Vec<E2eeNewDevice>,
+    },
 }
 
 /// A member's standing in a workspace ([`WorkspaceDto`]).
@@ -1699,6 +1715,14 @@ pub struct E2eeKeyPackage {
     pub bytes: Vec<u8>,
 }
 
+/// A member's device missing from a chat ([`NetMessage::E2eeAddDevices`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct E2eeNewDevice {
+    /// The full address of the account it belongs to.
+    pub address: String,
+    pub package: E2eeKeyPackage,
+}
+
 /// An invitation riding on a commit ([`NetMessage::E2eeSend`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct E2eeWelcome {
@@ -1895,6 +1919,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ChannelCreate { .. } => MessageKind::ChannelCreate,
         NetMessage::ChannelJoin { .. } => MessageKind::ChannelJoin,
         NetMessage::ChannelJoinRequest { .. } => MessageKind::ChannelJoinRequest,
+        NetMessage::E2eeAddDevices { .. } => MessageKind::E2eeAddDevices,
     }
 }
 
@@ -2447,7 +2472,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 80] = [
+        const ALL: [MessageKind; 81] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2528,6 +2553,7 @@ mod tests {
             ChannelCreate,
             ChannelJoin,
             ChannelJoinRequest,
+            E2eeAddDevices,
         ];
         for k in ALL {
             assert_eq!(
@@ -2541,7 +2567,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(ChannelJoinRequest as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(E2eeAddDevices as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

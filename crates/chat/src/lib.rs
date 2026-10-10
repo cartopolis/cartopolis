@@ -62,7 +62,8 @@ pub fn is_private_message(msg: &NetMessage) -> bool {
         | NetMessage::E2eeDeliver { .. }
         | NetMessage::E2eeInvite { .. }
         | NetMessage::Workspaces { .. }
-        | NetMessage::ChannelJoinRequest { .. } => true,
+        | NetMessage::ChannelJoinRequest { .. }
+        | NetMessage::E2eeAddDevices { .. } => true,
         NetMessage::ServerError { request_id, .. } => is_private_request(*request_id),
         _ => false,
     }
@@ -355,6 +356,9 @@ pub struct Engine {
     group_starts: Vec<GroupStart>,
     channel_starts: Vec<ChannelStart>,
     adding: Vec<Adding>,
+    /// Commits in flight that add more devices of people already in a chat
+    /// (`NetMessage::E2eeAddDevices`): the request and the chat.
+    device_adds: Vec<(u32, Vec<u8>)>,
     next_request: u32,
 }
 
@@ -370,6 +374,7 @@ impl Engine {
             group_starts: Vec::new(),
             channel_starts: Vec::new(),
             adding: Vec::new(),
+            device_adds: Vec::new(),
             next_request: 1,
         })
     }
@@ -385,6 +390,7 @@ impl Engine {
             group_starts: Vec::new(),
             channel_starts: Vec::new(),
             adding: Vec::new(),
+            device_adds: Vec::new(),
             next_request: 1,
         })
     }
@@ -542,6 +548,7 @@ impl Engine {
         // Whatever was half set up belonged to the previous connection's requests.
         self.starting.clear();
         self.group_starts.clear();
+        self.device_adds.clear();
     }
 
     /// Start a group chat called `name` with `members` (names on this server,
@@ -778,6 +785,104 @@ impl Engine {
             devices: Vec::new(),
             retries: ADD_RETRIES,
         });
+    }
+
+    /// The server found devices of this chat's members that are not in it (a
+    /// phone signed in after the chat was started on a browser) and handed
+    /// this device their key packages: commit them in. Only devices of people
+    /// already in the chat are added (`Device::add_member_devices`), so this
+    /// cannot bring in anybody new. While another change to the chat is in
+    /// flight it is skipped; the server asks again later.
+    fn add_member_devices(
+        &mut self,
+        group: &[u8],
+        devices: &[cartopolis_core::E2eeNewDevice],
+        out: &mut Vec<NetMessage>,
+    ) {
+        if !self.cursors.contains_key(group) || self.changing(group) {
+            return;
+        }
+        let bytes: Vec<Vec<u8>> = devices.iter().map(|d| d.package.bytes.clone()).collect();
+        let (add, who) = match self.device.add_member_devices(group, &bytes) {
+            Ok(Some(added)) => added,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not add a member's other devices");
+                return;
+            }
+        };
+        let mut members: Vec<String> = Vec::new();
+        for w in &who {
+            if !members.iter().any(|m| m.eq_ignore_ascii_case(&w.address)) {
+                members.push(w.address.clone());
+            }
+        }
+        let request = self.request();
+        out.push(NetMessage::E2eeSend {
+            request_id: request,
+            group: group.to_vec(),
+            epoch: add.epoch,
+            commit: true,
+            message: add.message,
+            welcome: add.welcome.map(|w| E2eeWelcome {
+                devices: who.iter().map(|w| w.device).collect(),
+                members,
+                bytes: w,
+            }),
+        });
+        self.device_adds.push((request, group.to_vec()));
+    }
+
+    /// Whether this device has a change to `group`'s membership in flight.
+    fn changing(&self, group: &[u8]) -> bool {
+        self.device_adds.iter().any(|(_, g)| g == group)
+            || self.adding.iter().any(|a| a.group == group)
+            || self
+                .starting
+                .iter()
+                .any(|s| matches!(&s.stage, Stage::Committing { group: g } if g == group))
+            || self
+                .group_starts
+                .iter()
+                .any(|g| g.committing && g.group.as_deref() == Some(group))
+    }
+
+    /// The server's answer to a device add's commit. Returns whether it was
+    /// one. A refusal is dropped: the chat changed first, and the server asks
+    /// again.
+    fn on_device_add_committed(
+        &mut self,
+        request_id: u32,
+        group: &[u8],
+        seq: Option<u64>,
+        out: &mut Vec<NetMessage>,
+    ) -> bool {
+        let Some(i) = self.device_adds.iter().position(|(r, _)| *r == request_id) else {
+            return false;
+        };
+        self.device_adds.remove(i);
+        let result = if seq.is_some() {
+            self.device.confirm_pending(group)
+        } else {
+            self.device.discard_pending(group)
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not settle a device add");
+        }
+        // The new device reads from after this commit: a group's name has to be
+        // said again for it, as for a newcomer.
+        if seq.is_some() && self.groups.contains(group) {
+            if let Some(label) = self.peers.get(group).cloned() {
+                let name = Payload::GroupName {
+                    name: label,
+                    sent_at_ms: 0,
+                };
+                if let Err(e) = self.send_payload(group, &name, out) {
+                    tracing::warn!(error = %e, "could not repeat a chat's name for a new device");
+                }
+            }
+        }
+        true
     }
 
     /// The server registered a channel's chat: list it in its workspace and
@@ -1193,6 +1298,9 @@ impl Engine {
                 seq,
                 refused,
             } => {
+                if self.on_device_add_committed(request_id, &group, seq, out) {
+                    return;
+                }
                 if self.on_adding_committed(request_id, seq, refused.clone(), out, events) {
                     return;
                 }
@@ -1241,11 +1349,18 @@ impl Engine {
                             let _ = self.device.discard_pending(&a.group);
                         }
                     }
+                    if let Some(i) = self.device_adds.iter().position(|(r, _)| *r == request_id) {
+                        let (_, group) = self.device_adds.remove(i);
+                        let _ = self.device.discard_pending(&group);
+                    }
                 }
                 events.push(Event::Notice(message));
             }
             NetMessage::Workspaces { workspaces, .. } => {
                 events.push(Event::Workspaces(workspaces));
+            }
+            NetMessage::E2eeAddDevices { group, devices } => {
+                self.add_member_devices(&group, &devices, out);
             }
             NetMessage::ChannelJoinRequest { group, address, .. } => {
                 // Only a device already in the channel can add anybody to it;
@@ -1473,8 +1588,8 @@ impl Engine {
                 });
             } else {
                 events.push(Event::Notice(format!(
-                    "You already have a private chat with {peer}, started on another device. \
-                     It isn't on this one yet."
+                    "Your chat with {peer} was started on another device. It appears here \
+                     as soon as that device, or one of {peer}'s, is online to add this one."
                 )));
             }
             return;
@@ -1581,10 +1696,18 @@ impl Engine {
         match self.device.join(welcome) {
             Ok(joined) if joined == group => {
                 self.cursors.insert(group.clone(), after);
-                self.peers.insert(group.clone(), from.clone());
+                // Labelled by who else is in it, not by who sent the invitation:
+                // that is this person themselves when their own other device
+                // added this one. A group's name follows as a sealed message.
+                let others = self.people_in(&group);
+                let label = match others.as_slice() {
+                    [only] => only.clone(),
+                    _ => from,
+                };
+                self.peers.insert(group.clone(), label.clone());
                 events.push(Event::Opened {
                     group: group.clone(),
-                    peer: from,
+                    peer: label,
                 });
                 // Reporting the cursor is also what tells the server the
                 // invitation is spent.

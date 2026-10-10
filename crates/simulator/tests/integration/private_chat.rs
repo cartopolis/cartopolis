@@ -653,3 +653,129 @@ async fn a_chat_and_its_people_must_live_on_this_server() {
     .expect("key packages");
     assert_eq!(who, "bob@localhost");
 }
+
+/// A phone signed in after a chat was started on the laptop: the server hands
+/// the laptop the phone's key package, the laptop commits it in, and from then
+/// on the phone reads what the other side says. Before protocol 39 nothing
+/// ever added it, and the phone heard nothing at all.
+#[tokio::test]
+async fn a_device_signed_in_after_a_chat_started_is_added_to_it() {
+    let s = start(&["alice", "bob"]).await;
+    let mut laptop = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
+    let mut a = online(&s.addr, &mut laptop).await;
+    let mut b = online(&s.addr, &mut bob).await;
+    let group = start_direct(&mut a, &mut laptop, "bob").await;
+    let (welcome, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("bob invited");
+    bob.join(&welcome).unwrap();
+
+    // Alice signs in on her phone and catches up.
+    let mut phone = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut p = online(&s.addr, &mut phone).await;
+    send(
+        &mut p,
+        &NetMessage::E2eeSync {
+            request_id: 5,
+            cursors: Vec::new(),
+        },
+    )
+    .await;
+
+    // The laptop holds the chat and is online: it is the one asked.
+    let ((asked, devices), _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::E2eeAddDevices { group, devices } => Some((group, devices)),
+        _ => None,
+    })
+    .await
+    .expect("the laptop is asked to add the phone");
+    assert_eq!(asked, group);
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].package.device, phone.identity().device);
+    assert_eq!(devices[0].address, "alice@localhost");
+
+    let bytes: Vec<Vec<u8>> = devices.iter().map(|d| d.package.bytes.clone()).collect();
+    let (add, who) = laptop
+        .add_member_devices(&group, &bytes)
+        .unwrap()
+        .expect("the phone is a device of a member");
+    send(
+        &mut a,
+        &NetMessage::E2eeSend {
+            request_id: 6,
+            group: group.clone(),
+            epoch: add.epoch,
+            commit: true,
+            message: add.message,
+            welcome: Some(E2eeWelcome {
+                devices: who.iter().map(|w| w.device).collect(),
+                members: vec!["alice@localhost".into()],
+                bytes: add.welcome.unwrap(),
+            }),
+        },
+    )
+    .await;
+    let (seq, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::E2eeSent { seq, refused, .. } => Some((seq, refused)),
+        _ => None,
+    })
+    .await
+    .expect("commit answered");
+    assert_eq!(seq, (Some(2), None));
+    laptop.confirm_pending(&group).unwrap();
+
+    let (welcome, _) = next_matching(&mut p, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("the phone is invited");
+    assert_eq!(phone.join(&welcome).unwrap(), group);
+
+    // Bob applies the commit, then speaks; the phone reads it.
+    let (commit, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeDeliver {
+            message, seq: 2, ..
+        } => Some(message),
+        _ => None,
+    })
+    .await
+    .expect("bob sees the commit");
+    bob.receive(&group, &commit).unwrap();
+    let seq = say(&mut b, &mut bob, &group, "hello, phone").await;
+    let (message, _) = next_matching(&mut p, PATIENT, |m| match m {
+        NetMessage::E2eeDeliver {
+            message, seq: s, ..
+        } if s == seq => Some(message),
+        _ => None,
+    })
+    .await
+    .expect("delivered to the phone");
+    assert_eq!(text(&mut phone, &group, &message), "hello, phone");
+
+    // Settled: the phone syncing again asks nobody for anything.
+    send(
+        &mut p,
+        &NetMessage::E2eeSync {
+            request_id: 7,
+            cursors: vec![E2eeCursor {
+                group: group.clone(),
+                after: seq,
+            }],
+        },
+    )
+    .await;
+    assert!(
+        next_matching(&mut a, QUIET, |m| match m {
+            NetMessage::E2eeAddDevices { .. } => Some(()),
+            _ => None,
+        })
+        .await
+        .is_none(),
+        "nothing is missing any more"
+    );
+}

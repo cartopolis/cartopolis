@@ -232,6 +232,15 @@ impl ChatHub {
         true
     }
 
+    /// The first of `devices` that has a connection right now.
+    pub fn connected_device_among(&self, devices: &[uuid::Uuid]) -> Option<uuid::Uuid> {
+        let clients = locked(&self.clients);
+        devices
+            .iter()
+            .find(|d| clients.values().any(|c| c.device == Some(**d)))
+            .copied()
+    }
+
     /// Deliver a frame to whichever connection has registered `device`.
     pub fn deliver_to_device(&self, device: uuid::Uuid, frame: &Bytes) {
         for (id, c) in locked(&self.clients).iter() {

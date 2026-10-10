@@ -35,7 +35,7 @@ pub use permissions::{Permission, PermissionSet};
 pub use protocol::{
     channel_name, decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, CallMember, CallTrack, ChannelDto,
-    ChatScope, ContactDto, ContactRequestDto, ContactSettings, E2eeCursor, E2eeKeyPackage,
+    ChatScope, ContactDto, ContactRequestDto, ContactSettings, E2eeCursor, E2eeKeyPackage, E2eeNewDevice,
     E2eeWelcome, Emote, EmoteState, GeoAnchor, MessageKind, MetDto, NearbyPersonDto, NetMessage,
     PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo,
     ProtocolRevision, Relation, ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry,

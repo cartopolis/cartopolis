@@ -1,7 +1,7 @@
 ---
 topic: encrypted-chat
 triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql]
-updated: 2026-09-26
+updated: 2026-10-10
 ---
 
 # Private chats are end-to-end encrypted, and the server is only a relay
@@ -59,14 +59,45 @@ without it the wasm build stops at `getrandom`.
   (`e2ee/<server>/<user>.bin`), preloaded on the web because IndexedDB has no
   synchronous read. Losing that blob loses every private chat on the device.
 - **History on a new device: encrypted backup unlocked by a recovery key.** Not
-  built yet. Until it is, a new device only sees chats started after it
-  registered.
+  built yet. Until it is, a new device is added to its chats (below) but reads
+  only what is said after it was added.
 - **Web client: encrypted like the apps**, with a note that a browser runs
   whatever code the server sends it.
 - **Identity proofs are out of scope for now.** The server vouches for each
   person's full address (`name@server`, protocol 37, `web-chat.md`) at sign-in
   and nothing checks further; a key-change warning is the only
   defence against a swapped key until proofs or in-person verification exist.
+
+## Every device of every member (protocol 39)
+
+A chat is joined by *devices*, and until 2026-10-10 only the devices that had a
+key package when the chat started were ever in it. A phone signed in after a
+chat was started on a browser was in none of them: it heard nothing, and
+starting the chat again found the existing one and said so. The server cannot
+fix that itself, since only a device in the chat can commit somebody in, so it
+finds who is missing and asks one that is.
+
+- **The server tracks which devices hold which chat** (`e2ee_group_devices`,
+  V30), from what it already sees: the device that registered the chat, the
+  devices an invitation names, a device that writes to it, and every cursor a
+  device syncs with. The last is what backfilled chats from before the table.
+- **After every sync and every accepted commit** it looks for member devices
+  not holding the chat (`e2ee::missing_devices`), claims one key package each,
+  and sends `E2eeAddDevices` to a device that does hold it: the asking one if
+  it can, otherwise any that is connected. Nobody holding it online means it
+  waits for the next one to sync.
+- **An ask is not repeated for two minutes** (`ASK_AGAIN_MS`), because each
+  spends one of the missing device's key packages. Devices not seen for 30
+  days are not added: a browser whose storage was cleared would otherwise
+  collect a member slot in every chat for ever.
+- **A device adds only devices of people already in the chat**
+  (`Device::add_member_devices` drops any other key package, and any device
+  already in it). The request comes from the server, and this is what keeps it
+  from being a way to add a stranger. The server could always hand out a key
+  package of its choosing when a chat starts, so this is no weaker than that.
+- **A device that joins this way is labelled by who else is in the chat**, not
+  by who invited it: when your own laptop adds your phone, the inviter is you.
+  A group's name is sent again after the add, as for a newcomer.
 
 ## Moderation in encrypted chats
 

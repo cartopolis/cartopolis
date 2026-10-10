@@ -623,7 +623,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::NearbyPeople { .. }
             | NetMessage::PeopleWhere { .. }
             | NetMessage::Workspaces { .. }
-            | NetMessage::ChannelJoinRequest { .. } => return Err(msg),
+            | NetMessage::ChannelJoinRequest { .. }
+            | NetMessage::E2eeAddDevices { .. } => return Err(msg),
         })
     }
 }
