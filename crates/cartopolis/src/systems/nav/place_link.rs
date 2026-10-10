@@ -99,6 +99,38 @@ pub fn contact_from_link(input: &str) -> Option<(String, String)> {
     (!user.is_empty() && !code.is_empty()).then(|| (user.to_string(), code.to_string()))
 }
 
+/// The query key a community invite carries (`systems::communities`).
+pub const COMMUNITY_KEY: &str = "community";
+
+/// A community's invite link: `https://cartopolis.org/go?community=3f9a1c7e22b0`.
+///
+/// On `/go` for the reason a contact link is: it is the one path the app claims
+/// on Android, and the web client serves it, so the link opens whichever of the
+/// two the person has.
+pub fn invite_link(code: &str) -> String {
+    format!("{WEB_ORIGIN}/{LINK_PATH}?{COMMUNITY_KEY}={code}")
+}
+
+/// The code an invite link carries, from either scheme and any host; a bare
+/// code is accepted too, since that is what somebody reads out.
+pub fn invite_from_link(input: &str) -> Option<String> {
+    let input = input.trim();
+    let code = if is_link(input) {
+        let no_fragment = input.split('#').next()?;
+        let (_, query) = no_fragment.split_once('?')?;
+        query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| key.trim().eq_ignore_ascii_case(COMMUNITY_KEY))
+            .map(|(_, v)| percent_decode(v))?
+    } else {
+        input.to_string()
+    };
+    let code = code.trim();
+    (!code.is_empty() && code.len() <= 64 && code.chars().all(|c| c.is_ascii_alphanumeric()))
+        .then(|| code.to_string())
+}
+
 // There is deliberately no `app_link` beside `web_link`. The custom-scheme URL has
 // exactly one writer and it is not Rust: `index.html`'s loader builds
 // `cartopolis://go?place=…` in JavaScript, before any of this exists, because the
@@ -227,6 +259,23 @@ fn percent_decode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_invite_link_round_trips() {
+        let link = invite_link("3f9a1c7e22b0");
+        assert_eq!(link, "https://cartopolis.org/go?community=3f9a1c7e22b0");
+        assert_eq!(invite_from_link(&link).as_deref(), Some("3f9a1c7e22b0"));
+        assert_eq!(
+            invite_from_link("cartopolis://go?community=abc123").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(invite_from_link(" abc123 ").as_deref(), Some("abc123"));
+        assert_eq!(
+            invite_from_link("https://cartopolis.org/go?place=1,2"),
+            None
+        );
+        assert_eq!(invite_from_link("../etc"), None);
+    }
 
     #[test]
     fn a_contact_link_reads_back_as_the_name_and_code_it_was_made_from() {

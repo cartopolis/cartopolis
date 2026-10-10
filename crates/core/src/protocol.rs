@@ -190,6 +190,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "communities and every device in every chat — workspaces, channels and rooms are gone (kinds 19 and 75–81 retired, ChatScope::Room removed); Community* and Topic* messages, moderators who delete (E2eeRedacted) and remove (TopicRemovePeople), and E2eeAddDevices, which hands a device in a chat the key packages of member devices that are not in it (docs/notes/communities.md, docs/notes/encrypted-chat.md)",
     },
+    ProtocolRevision {
+        version: 40,
+        adr: "",
+        summary: "community pictures, places and invite links — CommunitySettings.picture and .place, CommunityListing.picture, .place and .distance_m, DirectoryOrder::Near with CommunityDirectory.near, and CommunityInviteCreate / CommunityInvite / CommunityInviteLookup / CommunityJoinInvite (docs/notes/communities.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -304,6 +309,10 @@ pub enum MessageKind {
     E2eeRedacted = 104,
     CommunityReport = 105,
     CommunityReportResolve = 106,
+    CommunityInviteCreate = 107,
+    CommunityInvite = 108,
+    CommunityInviteLookup = 109,
+    CommunityJoinInvite = 110,
 }
 
 impl MessageKind {
@@ -407,6 +416,10 @@ impl MessageKind {
             104 => Some(Self::E2eeRedacted),
             105 => Some(Self::CommunityReport),
             106 => Some(Self::CommunityReportResolve),
+            107 => Some(Self::CommunityInviteCreate),
+            108 => Some(Self::CommunityInvite),
+            109 => Some(Self::CommunityInviteLookup),
+            110 => Some(Self::CommunityJoinInvite),
             _ => None,
         }
     }
@@ -1451,6 +1464,8 @@ pub enum NetMessage {
         request_id: u32,
         query: String,
         order: DirectoryOrder,
+        /// Where the asker is (latitude, longitude), for [`DirectoryOrder::Near`].
+        near: Option<(f64, f64)>,
     },
     /// Server: the answer to a directory search.
     CommunityListings {
@@ -1578,6 +1593,20 @@ pub enum NetMessage {
         id: Uuid,
         report: i64,
     },
+    /// A moderator makes an invite link: anyone holding its code may join,
+    /// whatever the community's way in, for [`COMMUNITY_INVITE_DAYS`].
+    CommunityInviteCreate { request_id: u32, id: Uuid },
+    /// Server: the invite's code, for `https://cartopolis.org/c/<code>`.
+    CommunityInvite {
+        request_id: u32,
+        id: Uuid,
+        code: String,
+    },
+    /// Client looks an invite up before joining with it: the answer is a
+    /// [`NetMessage::CommunityListings`] with the one community in it, listed or not.
+    CommunityInviteLookup { request_id: u32, code: String },
+    /// Client joins with an invite.
+    CommunityJoinInvite { request_id: u32, code: String },
     /// Server, to a device already in `group`: these devices belong to its
     /// members but are not in it (signed in after it started, or had no key
     /// package left then). Add them with one commit whose invitation names
@@ -1588,6 +1617,9 @@ pub enum NetMessage {
         devices: Vec<E2eeNewDevice>,
     },
 }
+
+/// How long an invite link works, in days.
+pub const COMMUNITY_INVITE_DAYS: u64 = 14;
 
 /// A person's standing in a community ([`CommunityDto`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1627,6 +1659,9 @@ pub enum DirectoryOrder {
     Popular,
     /// Newest first.
     New,
+    /// Nearest first, to the `near` point of the search; a community pinned
+    /// to no place sorts last.
+    Near,
 }
 
 /// What a community's owner and moderators set.
@@ -1641,6 +1676,20 @@ pub struct CommunitySettings {
     pub listed: bool,
     /// Whether members, not only moderators, may start topics.
     pub members_start_topics: bool,
+    /// Its picture, by its hash in the picture store (`/api/pictures`): a small
+    /// JPEG, not sealed, since everybody it is listed to may see it.
+    pub picture: Option<String>,
+    /// Where it is, for a neighbourhood or a club house: what "Near you" sorts by.
+    pub place: Option<CommunityPlace>,
+}
+
+/// The place a community is pinned to ([`CommunitySettings::place`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityPlace {
+    pub latitude: f64,
+    pub longitude: f64,
+    /// How people know it ("Oosterpoort", "the club house").
+    pub name: String,
 }
 
 /// One community, as one of its members (or somebody waiting to join) sees
@@ -1721,6 +1770,10 @@ pub struct CommunityListing {
     /// The asking account's standing: in it, waiting, or neither.
     pub mine: ListingState,
     pub created_ms: u64,
+    pub picture: Option<String>,
+    pub place: Option<CommunityPlace>,
+    /// Metres from the search's `near` point, when it had one and this has a place.
+    pub distance_m: Option<f64>,
 }
 
 /// Where the asking account stands with a listed community.
@@ -2159,6 +2212,10 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::E2eeRedacted { .. } => MessageKind::E2eeRedacted,
         NetMessage::CommunityReport { .. } => MessageKind::CommunityReport,
         NetMessage::CommunityReportResolve { .. } => MessageKind::CommunityReportResolve,
+        NetMessage::CommunityInviteCreate { .. } => MessageKind::CommunityInviteCreate,
+        NetMessage::CommunityInvite { .. } => MessageKind::CommunityInvite,
+        NetMessage::CommunityInviteLookup { .. } => MessageKind::CommunityInviteLookup,
+        NetMessage::CommunityJoinInvite { .. } => MessageKind::CommunityJoinInvite,
     }
 }
 
@@ -2226,6 +2283,10 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::ModerateDelete { request_id, .. } => *request_id,
         NetMessage::CommunityReport { request_id, .. } => *request_id,
         NetMessage::CommunityReportResolve { request_id, .. } => *request_id,
+        NetMessage::CommunityInviteCreate { request_id, .. } => *request_id,
+        NetMessage::CommunityInvite { request_id, .. } => *request_id,
+        NetMessage::CommunityInviteLookup { request_id, .. } => *request_id,
+        NetMessage::CommunityJoinInvite { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -2720,7 +2781,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 97] = [
+        const ALL: [MessageKind; 101] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2818,6 +2879,10 @@ mod tests {
             E2eeRedacted,
             CommunityReport,
             CommunityReportResolve,
+            CommunityInviteCreate,
+            CommunityInvite,
+            CommunityInviteLookup,
+            CommunityJoinInvite,
         ];
         for k in ALL {
             assert_eq!(
@@ -2831,10 +2896,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(
-            MessageKind::from_wire(CommunityReportResolve as u16 + 1),
-            None
-        );
+        assert_eq!(MessageKind::from_wire(CommunityJoinInvite as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

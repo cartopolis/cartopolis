@@ -456,7 +456,10 @@ pub fn drive_private_chats(
                 people,
             } => engine.create_community(settings, &topics, &people, &mut out),
             Op::Edit(id, s) => engine.edit_community(id, s, &mut out),
-            Op::Find(q, order) => engine.find_communities(&q, order, &mut out),
+            Op::Find(q, order, near) => engine.find_communities(&q, order, near, &mut out),
+            Op::CreateInvite(id) => engine.create_invite(id, &mut out),
+            Op::LookupInvite(code) => engine.lookup_invite(&code, &mut out),
+            Op::JoinInvite(code) => engine.join_invite(&code, &mut out),
             Op::Join(id, m) => engine.join_community(id, &m, &mut out),
             Op::Leave(id) => engine.leave_community(id, &mut out),
             Op::Decide(id, who, accept) => engine.decide_request(id, &who, accept, &mut out),
@@ -672,6 +675,14 @@ pub fn drive_private_chats(
                 chat.open_channel(&channel_key(&group), &private_label(&name));
             }
             Event::Notice(text) => {
+                if communities.directory.is_empty()
+                    && matches!(
+                        communities.screen,
+                        Some(crate::systems::communities::Screen::Invite(_))
+                    )
+                {
+                    communities.invite_refused = true;
+                }
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
             }
             Event::Communities(list) => {
@@ -685,6 +696,7 @@ pub fn drive_private_chats(
             }
             Event::CommunityCreated(id) => communities.created = Some(id),
             Event::Directory(listings) => communities.directory = listings,
+            Event::Invite { id, code } => communities.invite = Some((id, code)),
             Event::Redacted { group, seq, .. } => chat.redact(&channel_key(&group), seq),
             Event::Left {
                 group,

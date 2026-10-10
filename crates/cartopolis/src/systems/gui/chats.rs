@@ -823,7 +823,7 @@ pub fn render_chats_panel(
                     &mut view,
                     &mut voice,
                     &contacts,
-                    &communities,
+                    &mut communities,
                     &mut act,
                     now,
                 ),
@@ -881,6 +881,27 @@ pub fn render_chats_panel(
         None => {}
     }
     crate::systems::communities::confirm_account_delete(&egui.ctx, &mut communities);
+    if std::mem::take(&mut communities.pick_picture) {
+        match crate::platform::photo::start() {
+            Ok(capture) => communities.capture = Some(capture),
+            Err(why) => communities.picture_note = Some(why),
+        }
+    }
+    if let Some(capture) = communities.capture.as_mut() {
+        use crate::platform::photo::Outcome;
+        match capture.poll() {
+            Outcome::Pending => {}
+            Outcome::Ready(bytes) => {
+                communities.capture = None;
+                communities.upload_picture(bytes);
+            }
+            Outcome::Cancelled => communities.capture = None,
+            Outcome::Failed(why) => {
+                communities.capture = None;
+                communities.picture_note = Some(why);
+            }
+        }
+    }
     if let Some(channel) = act.pick_picture.take() {
         view.picture_error = None;
         match crate::platform::photo::start() {
@@ -926,7 +947,7 @@ fn list_screen(
     view: &mut ChatsView,
     voice: &mut crate::systems::voice::VoiceState,
     contacts: &crate::systems::contacts::Contacts,
-    communities: &crate::systems::communities::Communities,
+    communities: &mut crate::systems::communities::Communities,
     act: &mut Actions,
     now: u64,
 ) {

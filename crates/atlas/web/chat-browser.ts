@@ -47,7 +47,7 @@ const procs: {kill(): void}[] = []
 async function bootSim(): Promise<number> {
     const dir = mkdtempSync(path.join(tmpdir(), 'chat-browser-'))
     const db = path.join(dir, 'world.db')
-    for (const name of ['ann', 'bob']) {
+    for (const name of ['ann', 'bob', 'carol']) {
         const p = Bun.spawnSync([sim, '--database-path', db, '--create-admin', name], {
             env: {...process.env, CARTO_ADMIN_PASSWORD: 'pw'},
             stderr: 'pipe',
@@ -275,6 +275,8 @@ try {
     }
     await ann.click('Hang up')
     await waitFor('bob\'s call ended', () => bob.eval('!document.querySelector(".chat-call")'), 20000)
+    await Bun.sleep(1000)
+    if (await ann.has('Missed call')) throw new Error('the caller was told of a missed call after hanging up')
     step('a video call in the topic: rang, answered, each saw the other, hung up')
 
     // Bob reloads: the history comes back out of his browser's own storage.
@@ -298,6 +300,36 @@ try {
     await bob2.until('shared by', 30000)
     await bob2.until('Scaffolding is down on the north side')
     step('a second device of bob\'s was added to the topic and handed the earlier messages')
+
+    // Ann makes an invite link; Carol, who is in nothing, opens it and joins
+    // straight away although the community asks first.
+    await ann.eval('document.querySelector(".chat-community .chat-item").click()')
+    if (!(await ann.click('Make an invite link'))) throw new Error('no Make an invite link')
+    await waitFor('the invite link', () => ann.eval('!!document.querySelector(".chat-invite-link")'), 20000)
+    const link = await ann.eval<string>('document.querySelector(".chat-invite-link").innerText')
+    const code = new URL(link).searchParams.get('community')
+    const carol = new Browser('carol')
+    browsers.push(carol)
+    await carol.launch(url)
+    await carol.signIn('carol')
+    await carol.eval(`location.search = '?community=${code}'`)
+    await carol.until('You were invited', 30000)
+    if (!(await carol.click('Join'))) throw new Error('no Join on the invitation')
+    await waitFor('carol let into the topic', () =>
+        carol.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 60000)
+    step('carol joined with an invite link and was added to the topic')
+
+    // Bob mutes the topic: it says so, and counts nothing.
+    await bob.eval('document.querySelector(".chat-community .chat-item").click()')
+    if (!(await bob.click('Mute'))) throw new Error('no Mute')
+    await waitFor('the topic marked muted', () =>
+        bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("muted"))'))
+    await ann.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await ann.type('.chat-composer textarea', 'Muted, this one')
+    await ann.submit('.chat-composer')
+    await Bun.sleep(1500)
+    if (await bob.eval('!!document.querySelector(".chat-community .chat-count")')) throw new Error('a muted topic counted')
+    step('bob muted the topic: marked, and a new line counts nothing')
 
     if (shots) {
         mkdirSync(shots, {recursive: true})

@@ -66,6 +66,7 @@ pub fn is_private_message(msg: &NetMessage) -> bool {
         | NetMessage::Communities { .. }
         | NetMessage::CommunityCreated { .. }
         | NetMessage::CommunityListings { .. }
+        | NetMessage::CommunityInvite { .. }
         | NetMessage::TopicAddPeople { .. }
         | NetMessage::TopicRemovePeople { .. }
         | NetMessage::TopicLeft { .. } => true,
@@ -194,6 +195,8 @@ pub enum Event {
     CommunityCreated(Uuid),
     /// The answer to a directory search.
     Directory(Vec<cartopolis_core::CommunityListing>),
+    /// An invite link a moderator asked for: `https://<server>/c/<code>`.
+    Invite { id: Uuid, code: String },
     /// A moderator (`by`) deleted the message at `seq`. Hide it.
     Redacted {
         group: Vec<u8>,
@@ -824,12 +827,39 @@ impl Engine {
         &mut self,
         query: &str,
         order: cartopolis_core::DirectoryOrder,
+        near: Option<(f64, f64)>,
         out: &mut Vec<NetMessage>,
     ) {
         out.push(NetMessage::CommunityDirectory {
             request_id: self.request(),
             query: query.trim().to_string(),
             order,
+            near,
+        });
+    }
+
+    /// A moderator makes an invite link; the code arrives as [`Event::Invite`].
+    pub fn create_invite(&mut self, id: Uuid, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityInviteCreate {
+            request_id: self.request(),
+            id,
+        });
+    }
+
+    /// Look an invite up before joining: the community arrives as an
+    /// [`Event::Directory`] with only it in it.
+    pub fn lookup_invite(&mut self, code: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityInviteLookup {
+            request_id: self.request(),
+            code: code.trim().to_string(),
+        });
+    }
+
+    /// Join a community with an invite.
+    pub fn join_invite(&mut self, code: &str, out: &mut Vec<NetMessage>) {
+        out.push(NetMessage::CommunityJoinInvite {
+            request_id: self.request(),
+            code: code.trim().to_string(),
         });
     }
 
@@ -1866,6 +1896,7 @@ impl Engine {
             NetMessage::CommunityListings { listings, .. } => {
                 events.push(Event::Directory(listings));
             }
+            NetMessage::CommunityInvite { id, code, .. } => events.push(Event::Invite { id, code }),
             NetMessage::TopicAddPeople { group, people } => {
                 self.add_topic_people(&group, &people, out);
             }
@@ -2837,6 +2868,8 @@ mod loopback {
             join,
             listed: true,
             members_start_topics: true,
+            picture: None,
+            place: None,
         }
     }
 
@@ -2903,8 +2936,12 @@ mod loopback {
         let mut cas = Peer::connect(&addr, "cas").await;
         cas.pump(PUMP).await;
         let mut out = Vec::new();
-        cas.engine
-            .find_communities("CATS", cartopolis_core::DirectoryOrder::Popular, &mut out);
+        cas.engine.find_communities(
+            "CATS",
+            cartopolis_core::DirectoryOrder::Popular,
+            None,
+            &mut out,
+        );
         cas.send_all(out).await;
         cas.pump(PUMP).await;
         let found = cas

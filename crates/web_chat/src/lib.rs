@@ -19,8 +19,8 @@ use cartopolis_chat::{channel_key, group_of, Engine, Event, HistoryItem, Picture
 use cartopolis_core::point::Point;
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, CommunityDto, CommunityListing,
-    CommunityMemberDto, CommunityRole, CommunitySettings, DirectoryOrder, JoinRule, ListingState,
-    NetMessage, ReportReason, PROTOCOL_VERSION,
+    CommunityMemberDto, CommunityPlace, CommunityRole, CommunitySettings, DirectoryOrder, JoinRule,
+    ListingState, NetMessage, ReportReason, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -645,13 +645,38 @@ impl ChatCore {
     }
 
     /// Search the listed communities; `order` is `popular` or `new`.
-    pub fn find_communities(&mut self, query: &str, order: &str) -> Result<(), Error> {
-        let order = if order == "new" {
-            DirectoryOrder::New
-        } else {
-            DirectoryOrder::Popular
+    /// `order` is `popular`, `new` or `near`; `latitude`/`longitude` are where
+    /// the person is for `near` (NaN when the page has no location).
+    pub fn find_communities(
+        &mut self,
+        query: &str,
+        order: &str,
+        latitude: f64,
+        longitude: f64,
+    ) -> Result<(), Error> {
+        let order = match order {
+            "new" => DirectoryOrder::New,
+            "near" => DirectoryOrder::Near,
+            _ => DirectoryOrder::Popular,
         };
-        self.call(|e, out, _| e.find_communities(query, order, out))
+        let near = (latitude.is_finite() && longitude.is_finite()).then_some((latitude, longitude));
+        self.call(|e, out, _| e.find_communities(query, order, near, out))
+    }
+
+    /// A moderator makes an invite link; the code arrives as an `invite` event.
+    pub fn create_invite(&mut self, id: &str) -> Result<(), Error> {
+        let id = community_id(id)?;
+        self.call(|e, out, _| e.create_invite(id, out))
+    }
+
+    /// Look an invite up: the community arrives as a `directory` event.
+    pub fn lookup_invite(&mut self, code: &str) -> Result<(), Error> {
+        self.call(|e, out, _| e.lookup_invite(code, out))
+    }
+
+    /// Join a community with an invite.
+    pub fn join_invite(&mut self, code: &str) -> Result<(), Error> {
+        self.call(|e, out, _| e.join_invite(code, out))
     }
 
     /// Join an open community, or ask to join one that asks first.
@@ -812,7 +837,29 @@ fn settings_of(json: &str) -> Result<CommunitySettings, Error> {
         },
         listed: flag("listed"),
         members_start_topics: flag("members_start_topics"),
+        picture: v
+            .get("picture")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
+        place: v.get("place").and_then(place_of),
     })
+}
+
+fn place_of(v: &Value) -> Option<CommunityPlace> {
+    Some(CommunityPlace {
+        latitude: v.get("latitude")?.as_f64()?,
+        longitude: v.get("longitude")?.as_f64()?,
+        name: v
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+fn place_json(p: &CommunityPlace) -> Value {
+    json!({"latitude": p.latitude, "longitude": p.longitude, "name": p.name})
 }
 
 fn settings_json(s: &CommunitySettings) -> Value {
@@ -822,6 +869,8 @@ fn settings_json(s: &CommunitySettings) -> Value {
         "join": rule_name(s.join),
         "listed": s.listed,
         "members_start_topics": s.members_start_topics,
+        "picture": s.picture,
+        "place": s.place.as_ref().map(place_json),
     })
 }
 
@@ -880,6 +929,9 @@ fn listing_json(l: CommunityListing) -> Value {
             ListingState::Refused => "refused",
         },
         "created_ms": l.created_ms,
+        "picture": l.picture,
+        "place": l.place.as_ref().map(place_json),
+        "distance_m": l.distance_m,
     })
 }
 
@@ -1059,6 +1111,11 @@ fn event_json(event: Event) -> Value {
         Event::CommunityCreated(id) => json!({
             "kind": "community_created",
             "id": id.to_string(),
+        }),
+        Event::Invite { id, code } => json!({
+            "kind": "invite",
+            "id": id.to_string(),
+            "code": code,
         }),
         Event::Directory(list) => json!({
             "kind": "directory",

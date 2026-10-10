@@ -56,7 +56,10 @@ export interface ChatCoreApi {
     delete_community(id: string): void
     edit_community(id: string, settings: string): void
     edit_topic(id: string, channel: string, name: string, position: number, archived: boolean): void
-    find_communities(query: string, order: string): void
+    find_communities(query: string, order: string, latitude: number, longitude: number): void
+    create_invite(id: string): void
+    lookup_invite(code: string): void
+    join_invite(code: string): void
     join_community(id: string, message: string): void
     leave_community(id: string): void
     list_communities(): void

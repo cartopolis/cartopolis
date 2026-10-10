@@ -148,15 +148,21 @@ try {
     // A community that asks first: Bob finds it, asks in, Ann lets him in, and
     // Ann's connection — not Ann — adds him to its topic, because only a
     // member's device can add anybody.
-    const settings = {about: 'lost cats', join: 'ask' as const, listed: true, members_start_topics: true, name: 'Atelier Noord'}
+    const settings = {about: 'lost cats', join: 'ask' as const, listed: true, members_start_topics: true, name: 'Atelier Noord',
+        picture: null, place: {latitude: 53.2194, longitude: 6.5665, name: 'Grote Markt'}}
     await ann.conn.community((core) => core.create_community(JSON.stringify(settings), ['General'], []))
     const general = await ann.until('topic', (e) =>
         e.kind === 'communities' && e.communities[0]?.topics[0]?.joined ? e.communities[0].topics[0].channel : undefined)
     const id = await ann.until('community', (e) => (e.kind === 'communities' && e.communities[0] ? e.communities[0].id : undefined))
     step('community and #general created')
-    await bob.conn.community((core) => core.find_communities('noord', 'popular'))
+    await bob.conn.community((core) => core.find_communities('noord', 'popular', NaN, NaN))
     const found = await bob.until('directory', (e) => (e.kind === 'directory' && e.listings[0] ? e.listings[0].id : undefined))
     if (found !== id) throw new Error('bob did not find the community')
+    await bob.conn.community((core) => core.find_communities('', 'near', 53.2215, 6.5665))
+    const away = await bob.until('near', (e) =>
+        e.kind === 'directory' && e.listings[0]?.distance_m != null ? e.listings[0].distance_m : undefined)
+    if (away < 200 || away > 260) throw new Error(`Near you said ${away} m, not ~233 m`)
+    step(`Near you found it ${Math.round(away)} m away`)
     await bob.conn.community((core) => core.join_community(id, 'I live in Noord'))
     const asked = await ann.until('request', (e) =>
         e.kind === 'communities' && e.communities[0]?.requests[0] ? e.communities[0].requests[0].message : undefined)

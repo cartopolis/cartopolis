@@ -70,6 +70,7 @@ impl Plugin for GuiPlugin {
             (
                 systems::chats::restore_screen,
                 systems::chats::remember_screen,
+                systems::communities::sync_device,
             )
                 .chain()
                 .in_set(ClientPhase::Input)

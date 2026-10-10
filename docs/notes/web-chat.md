@@ -143,12 +143,9 @@ nothing without it.
 
 ## Not done yet
 
-- **History for newcomers and new devices**, and **joining with nobody
-  online**: see "Workspaces and channels" above.
+- **Joining with nobody online**: a newcomer's history comes from a device
+  that is (`docs/notes/communities.md`, "History for people added later").
 - **A recovery key.** A person who loses every device loses every chat.
-- **Calls in the chat page.** The browser's call worker
-  (`crates/cartopolis/web/call-worker.js`) needs the chat's call key per epoch
-  (`Engine::call_epoch`), which the browser module does not export yet.
 - **World.** The mockups' Chat | World switch with the viewer embedded in the
   page; the viewer would then have to use this worker's connection, or it is
   a second device in the same browser.

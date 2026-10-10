@@ -14,10 +14,12 @@
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
+use bevy::tasks::Task;
 use cartopolis_core::{
-    CommunityDto, CommunityListing, CommunityRole, CommunitySettings, DirectoryOrder, JoinRule,
-    ListingState, TopicDto,
+    CommunityDto, CommunityListing, CommunityPlace, CommunityRole, CommunitySettings,
+    DirectoryOrder, JoinRule, ListingState, TopicDto,
 };
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -35,7 +37,11 @@ pub enum CommunityOp {
         people: Vec<String>,
     },
     Edit(Uuid, CommunitySettings),
-    Find(String, DirectoryOrder),
+    /// Search the directory; the point is where the person is, for Near you.
+    Find(String, DirectoryOrder, Option<(f64, f64)>),
+    CreateInvite(Uuid),
+    LookupInvite(String),
+    JoinInvite(String),
     Join(Uuid, String),
     Leave(Uuid),
     Decide(Uuid, String, bool),
@@ -69,6 +75,8 @@ pub enum Screen {
     Edit(Uuid),
     People(Uuid),
     Create,
+    /// An invite link was opened: the community it names, and Join.
+    Invite(String),
 }
 
 /// A form being filled in: starting or editing a community.
@@ -79,6 +87,9 @@ pub struct Draft {
     pub join: JoinRule,
     pub listed: bool,
     pub members_start_topics: bool,
+    /// The picture's hash in the picture store.
+    pub picture: Option<String>,
+    pub place: Option<CommunityPlace>,
     /// Starting: the first topics and people, comma separated.
     pub topics: String,
     pub people: String,
@@ -94,6 +105,8 @@ impl Default for Draft {
             join: JoinRule::Ask,
             listed: true,
             members_start_topics: true,
+            picture: None,
+            place: None,
             topics: "general".into(),
             people: String::new(),
             topic_edits: Vec::new(),
@@ -109,6 +122,8 @@ impl Draft {
             join: c.settings.join,
             listed: c.settings.listed,
             members_start_topics: c.settings.members_start_topics,
+            picture: c.settings.picture.clone(),
+            place: c.settings.place.clone(),
             topics: String::new(),
             people: String::new(),
             topic_edits: c.topics.clone(),
@@ -122,12 +137,22 @@ impl Draft {
             join: self.join,
             listed: self.listed,
             members_start_topics: self.members_start_topics,
+            picture: self.picture.clone(),
+            place: self.place.clone(),
         }
     }
 }
 
 /// An admin's account action finished, in words for the notice line.
 type AdminInbox = Arc<Mutex<Vec<String>>>;
+
+/// A community picture: loading, decoded (pixels until the texture is made), or
+/// not there.
+enum Picture {
+    Loading(Task<Result<(Vec<u8>, [usize; 2]), String>>),
+    Ready(Option<(Vec<u8>, [usize; 2])>, Option<egui::TextureHandle>),
+    Failed,
+}
 
 #[derive(Resource, Default)]
 pub struct Communities {
@@ -154,6 +179,28 @@ pub struct Communities {
     adding: bool,
     starting_topic: bool,
     admin: AdminInbox,
+    /// Where the person is looking, for Near you and for pinning a place.
+    pub here: Option<(f64, f64)>,
+    /// Topics muted on this device, by channel key: no count, no badge. Kept
+    /// in `user.json` (`sync_device`), because muting is a choice about this
+    /// screen and nobody else is told.
+    pub muted: BTreeSet<String>,
+    muted_loaded: bool,
+    /// The last invite link a moderator made here, for the community it is to.
+    pub invite: Option<(Uuid, String)>,
+    /// A code or link typed into Find.
+    invite_input: String,
+    /// An invite this launch was opened with, until the session is up.
+    pub pending_invite: Option<String>,
+    /// The invite being looked up was refused: expired, or never was.
+    pub invite_refused: bool,
+    /// The Edit screen asked for a picture to be picked (`chats` starts it).
+    pub pick_picture: bool,
+    pub capture: Option<crate::platform::photo::Capture>,
+    upload: Option<Task<Result<String, String>>>,
+    /// Something went wrong with the picture, in words.
+    pub picture_note: Option<String>,
+    pictures: HashMap<String, Picture>,
     /// Seeded for a scripted capture (`seed_demo`), to be cleared after.
     demo: bool,
 }
@@ -191,13 +238,107 @@ impl Communities {
         self.screen = Some(Screen::Find);
         let order = self.order.unwrap_or(DirectoryOrder::Popular);
         self.order = Some(order);
-        self.ops.push(CommunityOp::Find(self.query.clone(), order));
+        self.ops
+            .push(CommunityOp::Find(self.query.clone(), order, self.here));
     }
 
     /// Open the form for starting one.
     pub fn start(&mut self) {
         self.draft = Draft::default();
         self.screen = Some(Screen::Create);
+    }
+
+    /// Whether a topic is muted on this device.
+    #[must_use]
+    pub fn is_muted(&self, key: &str) -> bool {
+        self.muted.contains(key)
+    }
+
+    pub fn set_muted(&mut self, key: &str, muted: bool) {
+        if muted {
+            self.muted.insert(key.to_string());
+        } else {
+            self.muted.remove(key);
+        }
+    }
+
+    /// Open the community an invite code or link names.
+    pub fn open_invite(&mut self, code: String) {
+        self.directory.clear();
+        self.invite_refused = false;
+        self.ops.push(CommunityOp::LookupInvite(code.clone()));
+        self.screen = Some(Screen::Invite(code));
+    }
+
+    /// A picked picture: shrink it to a square thumbnail and store it. Not
+    /// encrypted, unlike a chat's pictures: a community's picture is its face
+    /// in the directory, shown to anybody who finds it.
+    pub fn upload_picture(&mut self, bytes: Vec<u8>) {
+        self.picture_note = Some("Uploading the picture…".into());
+        self.upload = Some(IoTaskPool::get().spawn(async move {
+            let prepared = crate::utils::photo::prepare(&bytes)?;
+            crate::systems::model_assets::api_upload_picture(prepared.thumb).await
+        }));
+    }
+
+    /// Fold in a finished upload and any picture that finished loading.
+    pub fn poll_pictures(&mut self) {
+        if let Some(task) = self.upload.as_mut() {
+            if let Some(result) = crate::platform::http::poll_task(task) {
+                self.upload = None;
+                match result {
+                    Ok(hash) => {
+                        self.draft.picture = Some(hash);
+                        self.picture_note = None;
+                    }
+                    Err(why) => self.picture_note = Some(why),
+                }
+            }
+        }
+        for p in self.pictures.values_mut() {
+            if let Picture::Loading(task) = p {
+                if let Some(result) = crate::platform::http::poll_task(task) {
+                    *p = match result {
+                        Ok(pixels) => Picture::Ready(Some(pixels), None),
+                        Err(why) => {
+                            tracing::warn!(error = %why, "a community picture did not load");
+                            Picture::Failed
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    /// A community's picture as a texture, fetching it on first sight.
+    pub fn picture(
+        &mut self,
+        ctx: &egui::Context,
+        hash: Option<&str>,
+    ) -> Option<egui::TextureHandle> {
+        let hash = hash?;
+        let slot = self.pictures.entry(hash.to_string()).or_insert_with(|| {
+            let h = hash.to_string();
+            Picture::Loading(IoTaskPool::get().spawn(async move {
+                let jpeg = crate::systems::model_assets::fetch_picture(&h).await?;
+                crate::utils::photo::decode_rgba(&jpeg)
+            }))
+        });
+        match slot {
+            Picture::Ready(pixels, texture) => {
+                if texture.is_none() {
+                    let (rgba, size) = pixels.take()?;
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                    *texture = Some(ctx.load_texture(
+                        format!("community_picture_{}", &hash[..hash.len().min(16)]),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+                texture.clone()
+            }
+            _ => None,
+        }
     }
 
     /// Lines an admin's account action wants on the notice line.
@@ -222,6 +363,64 @@ impl Communities {
             })
             .detach();
     }
+}
+
+/// Keep the panel's view of this device current: where the person is looking
+/// (for Near you and for pinning a place), the muted topics in `user.json`,
+/// and an invite link the app was launched with.
+pub fn sync_device(
+    mut cs: ResMut<Communities>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    cameras: crate::grid::AnchoredCamera,
+    online: Option<Res<crate::resources::OnlineSession>>,
+    mut launched: Local<bool>,
+) {
+    if !*launched {
+        *launched = true;
+        cs.pending_invite = launch_invite();
+    }
+    if let (Some(anchor), Some((cell, tf))) = (map_anchor.geo, cameras.get()) {
+        cs.here = Some(crate::systems::geo_nav::camera_geo(
+            anchor, &globe, cell, tf,
+        ));
+    }
+    if !cs.muted_loaded {
+        cs.muted_loaded = true;
+        cs.muted = store.data.muted_topics.iter().cloned().collect();
+    } else if !cs.demo {
+        let now: Vec<String> = cs.muted.iter().cloned().collect();
+        if store.data.muted_topics != now {
+            store.data.muted_topics = now;
+            store.dirty = true;
+        }
+    }
+    if online.is_some() && cs.screen.is_none() {
+        if let Some(code) = cs.pending_invite.take() {
+            cs.open_invite(code);
+        }
+    }
+    if cs.upload.is_some()
+        || cs
+            .pictures
+            .values()
+            .any(|p| matches!(p, Picture::Loading(_)))
+    {
+        cs.poll_pictures();
+    }
+}
+
+/// The invite a launch was opened with, if any: the Android intent, or
+/// `CARTO_COMMUNITY` (`?community=` on the web).
+fn launch_invite() -> Option<String> {
+    #[cfg(target_os = "android")]
+    if let Some(url) = crate::platform::android::launch_url() {
+        if let Some(code) = crate::systems::place_link::invite_from_link(&url) {
+            return Some(code);
+        }
+    }
+    crate::systems::place_link::invite_from_link(&crate::env_value("CARTO_COMMUNITY")?)
 }
 
 async fn admin_request(username: &str, delete: bool) -> String {
@@ -343,6 +542,40 @@ fn card_row(
     sub_tone: egui::Color32,
     right: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
+    card_row_with(ui, salt, name, kind, None, sub, sub_tone, right)
+}
+
+/// A community's picture where it has one, its lettered square where not.
+fn face(
+    ui: &mut egui::Ui,
+    name: &str,
+    kind: ChatKind,
+    picture: Option<&egui::TextureHandle>,
+    size: f32,
+) {
+    match picture {
+        Some(t) => {
+            ui.add(
+                egui::Image::new(t)
+                    .fit_to_exact_size(egui::Vec2::splat(size))
+                    .corner_radius(egui::CornerRadius::same((size * 0.28) as u8)),
+            );
+        }
+        None => avatar(ui, name, kind, size),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn card_row_with(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    name: &str,
+    kind: ChatKind,
+    picture: Option<&egui::TextureHandle>,
+    sub: &str,
+    sub_tone: egui::Color32,
+    right: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
     let id = egui::Id::new(("community_row", salt));
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
     let inner = egui::Frame::NONE
@@ -356,7 +589,7 @@ fn card_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                avatar(ui, name, kind, 40.0);
+                face(ui, name, kind, picture, 40.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     right(ui);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -400,7 +633,7 @@ pub enum ListPick {
 /// topics this account is in. `unread` counts a chat's unread lines.
 pub fn list_band(
     ui: &mut egui::Ui,
-    communities: &Communities,
+    communities: &mut Communities,
     chat: &ChatState,
     unread: &dyn Fn(&str) -> usize,
 ) -> Option<ListPick> {
@@ -409,7 +642,8 @@ pub fn list_band(
     }
     let mut pick = None;
     theme::section(ui, "Communities");
-    for c in &communities.list {
+    for c in communities.list.clone() {
+        let picture = communities.picture(ui.ctx(), c.settings.picture.as_deref());
         let sub = match c.role {
             None => "Waiting for a moderator".to_string(),
             Some(_) => format!(
@@ -431,14 +665,17 @@ pub fn list_band(
         let waiting: usize = c
             .topics
             .iter()
-            .map(|t| unread(&channel_key(&t.group)))
+            .map(|t| channel_key(&t.group))
+            .filter(|k| !communities.is_muted(k))
+            .map(|k| unread(&k))
             .sum::<usize>()
             + c.requests.len();
-        let row = card_row(
+        let row = card_row_with(
             ui,
             ("band", c.id),
             &c.settings.name,
             ChatKind::Community,
+            picture.as_ref(),
             &sub,
             if c.role.is_none() {
                 theme::WARN
@@ -456,7 +693,8 @@ pub fn list_band(
         }
         for t in c.topics.iter().filter(|t| t.joined && !t.archived) {
             let key = channel_key(&t.group);
-            let n = unread(&key);
+            let muted = communities.is_muted(&key);
+            let n = if muted { 0 } else { unread(&key) };
             let last = chat
                 .channels
                 .iter()
@@ -480,6 +718,8 @@ pub fn list_band(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if n > 0 {
                             badge(ui, &n.to_string(), theme::BRAND);
+                        } else if muted {
+                            badge(ui, "Muted", theme::TEXT_DIM);
                         }
                         ui.add(
                             egui::Label::new(
@@ -519,6 +759,7 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
             Screen::Community(id) => community_screen(ui, communities, id, me, &mut out),
             Screen::Edit(id) => edit_screen(ui, communities, id),
             Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
+            Screen::Invite(code) => invite_screen(ui, communities, &code),
         });
     out
 }
@@ -541,12 +782,20 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities) {
         &mut order,
         &[
             (DirectoryOrder::Popular, "Popular"),
+            (DirectoryOrder::Near, "Near you"),
             (DirectoryOrder::New, "New"),
         ],
     );
     if changed || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
         cs.order = Some(order);
-        cs.ops.push(CommunityOp::Find(cs.query.clone(), order));
+        cs.ops
+            .push(CommunityOp::Find(cs.query.clone(), order, cs.here));
+    }
+    if order == DirectoryOrder::Near {
+        theme::note(
+            ui,
+            "Communities pinned to a place, nearest to where the map is first.",
+        );
     }
     ui.add_space(6.0);
     if cs.directory.is_empty() {
@@ -557,7 +806,7 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities) {
         );
     }
     for l in cs.directory.clone() {
-        let sub = format!(
+        let mut sub = format!(
             "{} · {} {}",
             if l.about.is_empty() {
                 "No description"
@@ -567,11 +816,16 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities) {
             l.members,
             if l.members == 1 { "person" } else { "people" },
         );
-        let resp = card_row(
+        if let Some(d) = l.distance_m {
+            sub = format!("{} · {sub}", distance_words(d));
+        }
+        let picture = cs.picture(ui.ctx(), l.picture.as_deref());
+        let resp = card_row_with(
             ui,
             ("find", l.id),
             &l.name,
             ChatKind::Community,
+            picture.as_ref(),
             &sub,
             theme::TEXT_DIM,
             |ui| match l.mine {
@@ -589,11 +843,45 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities) {
             });
         }
     }
+    theme::section(ui, "Have an invite?");
+    ui.horizontal(|ui| {
+        crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(&mut cs.invite_input)
+                .id(egui::Id::new("communities_invite_input"))
+                .desired_width(ui.available_width() - 70.0)
+                .hint_text("Paste the link or the code"),
+        );
+        let code = crate::systems::place_link::invite_from_link(&cs.invite_input);
+        if theme::action_button(ui, "Open").clicked() {
+            if let Some(code) = code {
+                cs.invite_input.clear();
+                cs.open_invite(code);
+            }
+        }
+    });
 }
 
-fn hero(ui: &mut egui::Ui, name: &str, about: &str, line: &str) {
+/// "350 m away", "4.2 km away".
+fn distance_words(m: f64) -> String {
+    if m < 1000.0 {
+        format!("{} m away", (m / 10.0).round() * 10.0)
+    } else if m < 10_000.0 {
+        format!("{:.1} km away", m / 1000.0)
+    } else {
+        format!("{:.0} km away", m / 1000.0)
+    }
+}
+
+fn hero(
+    ui: &mut egui::Ui,
+    name: &str,
+    picture: Option<&egui::TextureHandle>,
+    about: &str,
+    line: &str,
+) {
     ui.vertical_centered(|ui| {
-        avatar(ui, name, ChatKind::Community, 64.0);
+        face(ui, name, ChatKind::Community, picture, 64.0);
         ui.add_space(6.0);
         ui.label(egui::RichText::new(name).size(21.0).color(theme::CREAM));
         if !about.is_empty() {
@@ -609,6 +897,56 @@ fn hero(ui: &mut egui::Ui, name: &str, about: &str, line: &str) {
     ui.add_space(8.0);
 }
 
+/// A listing's picture, name, description, size and place.
+fn listing_hero(ui: &mut egui::Ui, cs: &mut Communities, l: &CommunityListing) {
+    let picture = cs.picture(ui.ctx(), l.picture.as_deref());
+    let mut line = format!("{} people · {}", l.members, rule_word(l.join));
+    if let Some(p) = &l.place {
+        line = format!("{line}\n{} {}", icons::PIN, place_words(p));
+    }
+    hero(ui, &l.name, picture.as_ref(), &l.about, &line);
+}
+
+/// "Grote Markt, Groningen" or the coordinates, when it was given no name.
+fn place_words(p: &CommunityPlace) -> String {
+    if p.name.trim().is_empty() {
+        format!("{:.4}, {:.4}", p.latitude, p.longitude)
+    } else {
+        p.name.clone()
+    }
+}
+
+/// Somebody opened an invite link: the community it names, and Join.
+fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str) {
+    if title_row(ui, "Invitation") {
+        cs.screen = None;
+        return;
+    }
+    let Some(l) = cs.directory.first().cloned() else {
+        if cs.invite_refused {
+            theme::note(
+                ui,
+                "This invite does not work any more. Ask whoever sent it for a new one.",
+            );
+        } else {
+            theme::note(ui, "Looking the invite up…");
+        }
+        return;
+    };
+    listing_hero(ui, cs, &l);
+    if l.mine == ListingState::Member {
+        if theme::primary_button_sized(ui, "Open", ui.available_width()).clicked() {
+            cs.show(l.id);
+        }
+        return;
+    }
+    theme::note(ui, "You were invited, so you join straight away.");
+    if theme::primary_button_sized(ui, "Join", ui.available_width()).clicked() {
+        cs.ops.push(CommunityOp::JoinInvite(code.to_string()));
+        cs.show(l.id);
+    }
+}
+
 fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
     if title_row(ui, "Community") {
         cs.screen = Some(Screen::Find);
@@ -618,12 +956,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
         theme::note(ui, "This community is no longer listed.");
         return;
     };
-    hero(
-        ui,
-        &l.name,
-        &l.about,
-        &format!("{} people · {}", l.members, rule_word(l.join)),
-    );
+    listing_hero(ui, cs, &l);
     if !l.topics.is_empty() {
         theme::section(ui, "Topics");
         ui.horizontal_wrapped(|ui| {
@@ -755,12 +1088,86 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
     ui.checkbox(&mut d.members_start_topics, "Members may start topics");
 }
 
+/// The picture and the place, under the settings when starting or editing.
+fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
+    theme::section(ui, "Picture");
+    let picture = cs.picture(ui.ctx(), cs.draft.picture.clone().as_deref());
+    ui.horizontal(|ui| {
+        face(
+            ui,
+            &cs.draft.name,
+            ChatKind::Community,
+            picture.as_ref(),
+            48.0,
+        );
+        let busy = cs.upload.is_some() || cs.capture.is_some();
+        if crate::platform::photo::is_available()
+            && !busy
+            && theme::action_button(ui, format!("{} Choose", icons::CAMERA)).clicked()
+        {
+            cs.picture_note = None;
+            cs.pick_picture = true;
+        }
+        if cs.draft.picture.is_some() && !busy && theme::action_button(ui, "Remove").clicked() {
+            cs.draft.picture = None;
+        }
+    });
+    if let Some(note) = &cs.picture_note {
+        theme::note(ui, note);
+    }
+    theme::section(ui, "Place");
+    match cs.draft.place.clone() {
+        Some(mut p) => {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icons::PIN).color(theme::BRAND));
+                crate::systems::text_touch::field(
+                    ui,
+                    egui::TextEdit::singleline(&mut p.name)
+                        .id(egui::Id::new("communities_place_name"))
+                        .desired_width(ui.available_width() - 80.0)
+                        .hint_text("Name the place"),
+                );
+                if theme::action_button(ui, "Remove").clicked() {
+                    cs.draft.place = None;
+                } else {
+                    cs.draft.place = Some(p.clone());
+                }
+            });
+            theme::note(
+                ui,
+                &format!(
+                    "Pinned at {:.4}, {:.4}. Near you lists it for people around here.",
+                    p.latitude, p.longitude
+                ),
+            );
+        }
+        None => {
+            if let Some((latitude, longitude)) = cs.here {
+                if theme::action_button(ui, format!("{} Pin it where the map is", icons::PIN))
+                    .clicked()
+                {
+                    cs.draft.place = Some(CommunityPlace {
+                        latitude,
+                        longitude,
+                        name: String::new(),
+                    });
+                }
+            }
+            theme::note(
+                ui,
+                "A community about somewhere can be pinned there, so people nearby find it.",
+            );
+        }
+    }
+}
+
 fn create_screen(ui: &mut egui::Ui, cs: &mut Communities) {
     if title_row(ui, "New community") {
         cs.screen = None;
         return;
     }
     settings_form(ui, &mut cs.draft);
+    picture_and_place(ui, cs);
     theme::section(ui, "Topics to start with");
     crate::systems::text_touch::field(
         ui,
@@ -814,8 +1221,15 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         theme::note(ui, "You are no longer in this community.");
         return;
     };
+    let picture = cs.picture(ui.ctx(), c.settings.picture.as_deref());
     let Some(role) = c.role else {
-        hero(ui, &c.settings.name, &c.settings.about, "");
+        hero(
+            ui,
+            &c.settings.name,
+            picture.as_ref(),
+            &c.settings.about,
+            "",
+        );
         theme::note(ui, "You asked to join. A moderator will answer.");
         if theme::action_button(ui, "Withdraw the request").clicked() {
             cs.ops.push(CommunityOp::Leave(id));
@@ -824,12 +1238,19 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         return;
     };
     let moderates = role.moderates();
+    let place = c
+        .settings
+        .place
+        .as_ref()
+        .map(|p| format!("\n{} {}", icons::PIN, place_words(p)))
+        .unwrap_or_default();
     hero(
         ui,
         &c.settings.name,
+        picture.as_ref(),
         &c.settings.about,
         &format!(
-            "{} people · {} · {}",
+            "{} people · {} · {}{place}",
             c.members.len(),
             rule_word(c.settings.join),
             if c.settings.listed {
@@ -869,7 +1290,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             );
             theme::note(
                 ui,
-                "They'll be in every topic, and read from now on, not what was said before.",
+                "They'll be in every topic, and get the recent history from whoever adds them.",
             );
             if theme::action_button(ui, "Add").clicked() {
                 for p in people(&cs.add_people) {
@@ -877,6 +1298,38 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 }
                 cs.add_people.clear();
                 cs.adding = false;
+            }
+            ui.separator();
+            match cs.invite.clone().filter(|(i, _)| *i == id) {
+                Some((_, code)) => {
+                    let link = crate::systems::place_link::invite_link(&code);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&link).color(theme::CREAM).size(13.0))
+                            .wrap(),
+                    );
+                    ui.horizontal(|ui| {
+                        if theme::action_button(ui, format!("{} Copy", icons::COPY)).clicked() {
+                            crate::utils::clipboard::set_text(&link);
+                        }
+                        if theme::action_button(ui, "New link").clicked() {
+                            cs.ops.push(CommunityOp::CreateInvite(id));
+                        }
+                    });
+                    theme::note(
+                        ui,
+                        &format!(
+                            "Whoever has the link joins straight away, for {} days. People you removed with a block still can't.",
+                            cartopolis_core::COMMUNITY_INVITE_DAYS
+                        ),
+                    );
+                }
+                None => {
+                    if theme::action_button(ui, format!("{} Make an invite link", icons::SHARE))
+                        .clicked()
+                    {
+                        cs.ops.push(CommunityOp::CreateInvite(id));
+                    }
+                }
             }
         });
     }
@@ -1000,7 +1453,17 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             ChatKind::Topic,
             sub,
             theme::TEXT_DIM,
-            |_| {},
+            |ui| {
+                if t.joined {
+                    let muted = cs.is_muted(&key);
+                    if theme::action_button(ui, if muted { "Unmute" } else { "Mute" })
+                        .on_hover_text("Muted topics show no count. Only this device knows.")
+                        .clicked()
+                    {
+                        cs.set_muted(&key, !muted);
+                    }
+                }
+            },
         );
         if r.clicked() && t.joined {
             out.open = Some(key);
@@ -1008,7 +1471,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     }
     theme::note(
         ui,
-        "Everyone here is in every topic. Somebody added later reads from the moment they joined.",
+        "Everyone here is in every topic. Somebody added later is given the last 300 messages of each by whoever adds them.",
     );
     ui.add_space(10.0);
     if role == CommunityRole::Owner {
@@ -1038,6 +1501,7 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
         return;
     };
     settings_form(ui, &mut cs.draft);
+    picture_and_place(ui, cs);
     if !cs.draft.topic_edits.is_empty() {
         theme::section(ui, "Topics");
         for (i, t) in cs.draft.topic_edits.iter_mut().enumerate() {
@@ -1309,6 +1773,12 @@ pub fn seed_demo(
                 join: JoinRule::Ask,
                 listed: true,
                 members_start_topics: true,
+                picture: None,
+                place: Some(CommunityPlace {
+                    latitude: 53.2194,
+                    longitude: 6.5665,
+                    name: "Grote Markt, Groningen".into(),
+                }),
             },
             role: Some(CommunityRole::Owner),
             members: vec![
@@ -1345,6 +1815,8 @@ pub fn seed_demo(
                 join: JoinRule::Open,
                 listed: true,
                 members_start_topics: false,
+                picture: None,
+                place: None,
             },
             role: Some(CommunityRole::Member),
             members: vec![
@@ -1364,6 +1836,8 @@ pub fn seed_demo(
                 join: JoinRule::Ask,
                 listed: true,
                 members_start_topics: false,
+                picture: None,
+                place: None,
             },
             role: None,
             members: Vec::new(),
@@ -1404,6 +1878,9 @@ pub fn seed_demo(
             moderators: vec![member("joris", CommunityRole::Owner)],
             mine: ListingState::Member,
             created_ms: 0,
+            picture: None,
+            place: None,
+            distance_m: None,
         },
         CommunityListing {
             id: buurt,
@@ -1415,6 +1892,9 @@ pub fn seed_demo(
             moderators: vec![member("marieke", CommunityRole::Owner)],
             mine: ListingState::Asked,
             created_ms: 0,
+            picture: None,
+            place: None,
+            distance_m: Some(850.0),
         },
         CommunityListing {
             id: Uuid::from_bytes([4; 16]),
@@ -1426,6 +1906,9 @@ pub fn seed_demo(
             moderators: vec![member("bas", CommunityRole::Owner)],
             mine: ListingState::Outside,
             created_ms: 0,
+            picture: None,
+            place: None,
+            distance_m: None,
         },
     ];
     cs.demo = true;

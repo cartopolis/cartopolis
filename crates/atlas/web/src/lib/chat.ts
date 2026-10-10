@@ -14,6 +14,7 @@ import type {
     ChatSummary,
     Command,
     CommunityListing,
+    CommunityPlace,
     CommunitySettings,
     CommunityView,
     Credential,
@@ -21,13 +22,16 @@ import type {
     Update,
 } from '../worker/protocol.ts'
 
-export type {ChatEvent, ChatSummary, CommunityListing, CommunitySettings, CommunityView, Message, Role}
+export type {ChatEvent, ChatSummary, CommunityListing, CommunityPlace, CommunitySettings, CommunityView, Message, Role}
 
 interface Port {
     postMessage(message: Command): void
 }
 
 import {Calls} from './call'
+
+/** Where muted topics are kept: a choice about this browser, told to nobody. */
+const MUTED_KEY = 'cartopolis.chat.muted'
 
 export type Status = 'connected' | 'connecting' | 'signed_out' | 'waiting'
 
@@ -45,6 +49,12 @@ export class ChatClient {
     readonly histories = new Map<string, Message[]>()
     /** The chat this page is showing, if any: its new lines count as read. */
     current: string | null = null
+    /** The last invite link made here: the community and its code. */
+    invite: {code: string; id: string} | null = null
+    /** Topics muted in this browser, by channel: no count and no notification. */
+    readonly muted = new Set<string>(
+        JSON.parse((typeof localStorage === 'undefined' ? null : localStorage.getItem(MUTED_KEY)) ?? '[]') as string[],
+    )
 
     /** The call this page runs, and the calls ringing in its chats. */
     readonly calls: Calls
@@ -134,8 +144,34 @@ export class ChatClient {
         this.send({id, settings, type: 'edit_community'})
     }
 
-    findCommunities(query: string, order: 'new' | 'popular'): void {
-        this.send({order, query, type: 'find_communities'})
+    /** Search the directory; `near` is where the person is, for `near`. */
+    findCommunities(query: string, order: 'near' | 'new' | 'popular', near: [number, number] | null = null): void {
+        this.send({latitude: near?.[0] ?? null, longitude: near?.[1] ?? null, order, query, type: 'find_communities'})
+    }
+
+    createInvite(id: string): void {
+        this.send({id, type: 'create_invite'})
+    }
+
+    /** Look an invite up: the community arrives as the directory's one entry. */
+    lookupInvite(code: string): void {
+        this.directory = []
+        this.send({code, type: 'lookup_invite'})
+    }
+
+    joinInvite(code: string): void {
+        this.send({code, type: 'join_invite'})
+    }
+
+    isMuted(channel: string): boolean {
+        return this.muted.has(channel)
+    }
+
+    setMuted(channel: string, muted: boolean): void {
+        if (muted) this.muted.add(channel)
+        else this.muted.delete(channel)
+        if (typeof localStorage !== 'undefined') localStorage.setItem(MUTED_KEY, JSON.stringify([...this.muted]))
+        this.changed()
     }
 
     joinCommunity(id: string, message: string): void {
@@ -246,11 +282,12 @@ export class ChatClient {
             this.notice = event.kind === 'notice' ? event.text : event.message
         }
         if (event.kind === 'refused') this.notice = event.message
+        if (event.kind === 'invite') this.invite = {code: event.code, id: event.id}
         if (event.kind === 'line' && event.from !== this.address) {
             if (event.channel === this.current && !document.hidden) {
                 // On screen: read as it arrives.
                 this.send({channel: event.channel, type: 'open'})
-            } else {
+            } else if (!this.muted.has(event.channel)) {
                 notify(this, event)
             }
         }

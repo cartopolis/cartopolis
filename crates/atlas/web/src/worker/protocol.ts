@@ -13,12 +13,22 @@ export type Credential = {token: string} | {password: string; username: string}
 export type Role = 'member' | 'moderator' | 'owner'
 export type JoinRule = 'ask' | 'invite' | 'open'
 
+/** A place a community is pinned to, for Near you. */
+export interface CommunityPlace {
+    latitude: number
+    longitude: number
+    name: string
+}
+
 export interface CommunitySettings {
     about: string
     join: JoinRule
     listed: boolean
     members_start_topics: boolean
     name: string
+    /** The hash of its picture in the picture store (a plain JPEG: it is public). */
+    picture: string | null
+    place: CommunityPlace | null
 }
 
 export interface TopicView {
@@ -65,6 +75,10 @@ export interface CommunityListing {
     moderators: {address: string; role: Role}[]
     name: string
     topics: string[]
+    picture: string | null
+    place: CommunityPlace | null
+    /** How far away its place is, for a Near you search. */
+    distance_m: number | null
 }
 
 export type ChatEvent =
@@ -104,6 +118,7 @@ export type ChatEvent =
     | {communities: CommunityView[]; kind: 'communities'}
     | {id: string; kind: 'community_created'}
     | {kind: 'directory'; listings: CommunityListing[]}
+    | {code: string; id: string; kind: 'invite'}
     | {by: string; channel: string; kind: 'redacted'; seq: number}
     | {by: string; channel: string; community: string; kind: 'left'}
     | {channel: string; kind: 'history_wanted'}
@@ -153,7 +168,16 @@ export type Command =
     | {channel: string; target: number; type: 'delete'}
     | {people: string[]; settings: CommunitySettings; topics: string[]; type: 'create_community'}
     | {id: string; settings: CommunitySettings; type: 'edit_community'}
-    | {order: 'new' | 'popular'; query: string; type: 'find_communities'}
+    | {
+        latitude: number | null
+        longitude: number | null
+        order: 'near' | 'new' | 'popular'
+        query: string
+        type: 'find_communities'
+    }
+    | {id: string; type: 'create_invite'}
+    | {code: string; type: 'lookup_invite'}
+    | {code: string; type: 'join_invite'}
     | {id: string; message: string; type: 'join_community'}
     | {id: string; type: 'leave_community'}
     | {accept: boolean; id: string; type: 'decide_request'; who: string}

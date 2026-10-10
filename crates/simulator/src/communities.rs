@@ -27,9 +27,9 @@
 //! the rules against a real database with no network.
 
 use cartopolis_core::{
-    address, topic_name, CommunityDto, CommunityListing, CommunityMemberDto, CommunityReportDto,
-    CommunityRole, CommunitySettings, DirectoryOrder, JoinRequestDto, JoinRule, ListingState,
-    ReportReason, TopicDto,
+    address, topic_name, CommunityDto, CommunityListing, CommunityMemberDto, CommunityPlace,
+    CommunityReportDto, CommunityRole, CommunitySettings, DirectoryOrder, JoinRequestDto, JoinRule,
+    ListingState, ReportReason, TopicDto,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
@@ -95,6 +95,12 @@ pub enum Refusal {
     NoSuchMessage,
     #[error("no such report")]
     NoSuchReport,
+    #[error("a community's picture is a hash in the picture store")]
+    BadPicture,
+    #[error("that is not a place on Earth")]
+    BadPlace,
+    #[error("that invite has expired or does not exist")]
+    NoSuchInvite,
     #[error("the server could not store that: {0}")]
     Storage(String),
 }
@@ -153,6 +159,21 @@ fn clean_settings(s: &CommunitySettings) -> Result<CommunitySettings, Refusal> {
     let about = s.about.trim().to_string();
     if about.chars().count() > MAX_ABOUT {
         return Err(Refusal::TooLong);
+    }
+    // A picture is a hash in the picture store, nothing else: never a URL a
+    // client would be sent off to fetch.
+    if let Some(p) = &s.picture {
+        if p.len() != 64 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Refusal::BadPicture);
+        }
+    }
+    if let Some(p) = &s.place {
+        let ok = (-90.0..=90.0).contains(&p.latitude)
+            && (-180.0..=180.0).contains(&p.longitude)
+            && p.name.chars().count() <= MAX_NAME;
+        if !ok {
+            return Err(Refusal::BadPlace);
+        }
     }
     Ok(CommunitySettings {
         name: clean_name(&s.name)?,
@@ -250,8 +271,9 @@ pub fn create(
     let id = Uuid::new_v4();
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO communities (id, name, about, join_rule, listed, members_start_topics, created_by, created_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO communities (id, name, about, join_rule, listed, members_start_topics, created_by, created_ms,
+                                  picture, place_lat, place_lng, place_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             id.to_string(),
             s.name,
@@ -260,7 +282,11 @@ pub fn create(
             s.listed,
             s.members_start_topics,
             account,
-            now_ms
+            now_ms,
+            s.picture,
+            s.place.as_ref().map(|p| p.latitude),
+            s.place.as_ref().map(|p| p.longitude),
+            s.place.as_ref().map(|p| p.name.clone()),
         ],
     )?;
     tx.execute(
@@ -282,14 +308,19 @@ pub fn edit(
     let s = clean_settings(settings)?;
     conn.execute(
         "UPDATE communities SET name = ?2, about = ?3, join_rule = ?4, listed = ?5,
-         members_start_topics = ?6 WHERE id = ?1",
+         members_start_topics = ?6, picture = ?7, place_lat = ?8, place_lng = ?9, place_name = ?10
+         WHERE id = ?1",
         params![
             id.to_string(),
             s.name,
             s.about,
             rule_number(s.join),
             s.listed,
-            s.members_start_topics
+            s.members_start_topics,
+            s.picture,
+            s.place.as_ref().map(|p| p.latitude),
+            s.place.as_ref().map(|p| p.longitude),
+            s.place.as_ref().map(|p| p.name.clone()),
         ],
     )?;
     Ok(())
@@ -897,10 +928,12 @@ pub fn concerned_accounts(conn: &Connection, id: Uuid) -> Result<Vec<String>, Re
 /// are full addresses on `server`.
 pub fn list(conn: &Connection, account: &str, server: &str) -> Result<Vec<CommunityDto>, Refusal> {
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.about, c.join_rule, c.listed, c.members_start_topics, m.role
+        "SELECT c.id, c.name, c.about, c.join_rule, c.listed, c.members_start_topics, m.role,
+                c.picture, c.place_lat, c.place_lng, c.place_name
          FROM communities c JOIN community_members m ON m.community = c.id AND m.account = ?1
          UNION ALL
-         SELECT c.id, c.name, c.about, c.join_rule, c.listed, c.members_start_topics, NULL
+         SELECT c.id, c.name, c.about, c.join_rule, c.listed, c.members_start_topics, NULL,
+                c.picture, c.place_lat, c.place_lng, c.place_name
          FROM communities c JOIN community_requests r ON r.community = c.id AND r.account = ?1
          ORDER BY 2",
     )?;
@@ -914,6 +947,8 @@ pub fn list(conn: &Connection, account: &str, server: &str) -> Result<Vec<Commun
                     join: rule_of(r.get(3)?),
                     listed: r.get(4)?,
                     members_start_topics: r.get(5)?,
+                    picture: r.get(7)?,
+                    place: place_of(r.get(8)?, r.get(9)?, r.get(10)?),
                 },
                 r.get::<_, Option<i64>>(6)?.map(role_of),
             ))
@@ -1012,94 +1047,250 @@ fn members(conn: &Connection, id: &str, server: &str) -> Result<Vec<CommunityMem
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// Search the listed communities (an empty query lists them all, in `order`).
+fn place_of(lat: Option<f64>, lng: Option<f64>, name: Option<String>) -> Option<CommunityPlace> {
+    Some(CommunityPlace {
+        latitude: lat?,
+        longitude: lng?,
+        name: name.unwrap_or_default(),
+    })
+}
+
+/// Great-circle distance in metres.
+fn distance_m(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, lo1) = (a.0.to_radians(), a.1.to_radians());
+    let (la2, lo2) = (b.0.to_radians(), b.1.to_radians());
+    let h = ((la2 - la1) / 2.0).sin().powi(2)
+        + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    2.0 * 6_371_000.0 * h.sqrt().asin()
+}
+
+/// Communities a directory search looks through before "Near you" sorts them:
+/// far more than it shows, so the nearest are among them.
+const NEAR_CANDIDATES: i64 = 1000;
+
+/// Search the listed communities (an empty query lists them all, in `order`;
+/// `near` is where the asker is, for [`DirectoryOrder::Near`]).
+#[allow(clippy::too_many_arguments)]
 pub fn directory(
     conn: &Connection,
     account: &str,
     server: &str,
     query: &str,
     order: DirectoryOrder,
+    near: Option<(f64, f64)>,
     now_ms: i64,
 ) -> Result<Vec<CommunityListing>, Refusal> {
     let q = query.trim().to_lowercase();
-    let order_by = match order {
-        DirectoryOrder::Popular => "n DESC, c.created_ms DESC",
-        DirectoryOrder::New => "c.created_ms DESC",
+    let (order_by, limit) = match order {
+        DirectoryOrder::Popular => ("n DESC, c.created_ms DESC", DIRECTORY_LIMIT),
+        DirectoryOrder::New => ("c.created_ms DESC", DIRECTORY_LIMIT),
+        DirectoryOrder::Near => ("n DESC", NEAR_CANDIDATES),
     };
-    let mut stmt = conn.prepare(&format!(
-        "SELECT c.id, c.name, c.about, c.join_rule, c.created_ms,
-                (SELECT COUNT(*) FROM community_members m WHERE m.community = c.id) AS n
-         FROM communities c
-         WHERE c.listed = 1
-           AND (?1 = '' OR instr(lower(c.name), ?1) > 0 OR instr(lower(c.about), ?1) > 0)
-         ORDER BY {order_by} LIMIT ?2"
-    ))?;
-    let rows = stmt
-        .query_map(params![q, DIRECTORY_LIMIT], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                rule_of(r.get(3)?),
-                r.get::<_, i64>(4)?,
-                r.get::<_, i64>(5)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT c.id, (SELECT COUNT(*) FROM community_members m WHERE m.community = c.id) AS n
+             FROM communities c
+             WHERE c.listed = 1
+               AND (?1 = '' OR instr(lower(c.name), ?1) > 0 OR instr(lower(c.about), ?1) > 0)
+             ORDER BY {order_by} LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![q, limit], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
     let mut out = Vec::new();
-    for (id, name, about, join, created_ms, n) in rows {
-        let Ok(uuid) = Uuid::parse_str(&id) else {
-            continue;
-        };
-        let mut t = conn.prepare(
-            "SELECT name FROM topics WHERE community = ?1 AND archived = 0 ORDER BY position, name",
-        )?;
-        let topics = t
-            .query_map(params![id], |r| r.get::<_, String>(0))?
-            .collect::<Result<_, _>>()?;
-        let moderators = members(conn, &id, server)?
-            .into_iter()
-            .filter(|m| m.role.moderates())
-            .collect();
-        let mine = if role(conn, uuid, account)?.is_some() {
-            ListingState::Member
-        } else if conn
-            .query_row(
-                "SELECT 1 FROM community_requests WHERE community = ?1 AND account = ?2",
-                params![id, account],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-        {
-            ListingState::Asked
-        } else if conn
-            .query_row(
-                "SELECT 1 FROM community_blocks WHERE community = ?1 AND account = ?2
-                   AND (until_ms IS NULL OR until_ms > ?3)",
-                params![id, account, now_ms],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-        {
-            ListingState::Refused
-        } else {
-            ListingState::Outside
-        };
-        out.push(CommunityListing {
-            id: uuid,
-            name,
-            about,
-            join,
-            members: n.max(0) as u32,
-            topics,
-            moderators,
-            mine,
-            created_ms: created_ms.max(0) as u64,
+    for id in ids {
+        if let Some(l) = listing(conn, account, server, &id, near, now_ms)? {
+            out.push(l);
+        }
+    }
+    if order == DirectoryOrder::Near {
+        out.sort_by(|a, b| {
+            a.distance_m
+                .unwrap_or(f64::INFINITY)
+                .total_cmp(&b.distance_m.unwrap_or(f64::INFINITY))
         });
+        out.truncate(DIRECTORY_LIMIT as usize);
     }
     Ok(out)
+}
+
+/// One community as the directory shows it to `account`, listed or not.
+fn listing(
+    conn: &Connection,
+    account: &str,
+    server: &str,
+    id: &str,
+    near: Option<(f64, f64)>,
+    now_ms: i64,
+) -> Result<Option<CommunityListing>, Refusal> {
+    let Ok(uuid) = Uuid::parse_str(id) else {
+        return Ok(None);
+    };
+    let row = conn
+        .query_row(
+            "SELECT c.name, c.about, c.join_rule, c.created_ms, c.picture, c.place_lat, c.place_lng,
+                    c.place_name, (SELECT COUNT(*) FROM community_members m WHERE m.community = c.id)
+             FROM communities c WHERE c.id = ?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    rule_of(r.get(2)?),
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    place_of(r.get(5)?, r.get(6)?, r.get(7)?),
+                    r.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((name, about, join, created_ms, picture, place, n)) = row else {
+        return Ok(None);
+    };
+    let mut t = conn.prepare(
+        "SELECT name FROM topics WHERE community = ?1 AND archived = 0 ORDER BY position, name",
+    )?;
+    let topics = t
+        .query_map(params![id], |r| r.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    let moderators = members(conn, id, server)?
+        .into_iter()
+        .filter(|m| m.role.moderates())
+        .collect();
+    let mine = if role(conn, uuid, account)?.is_some() {
+        ListingState::Member
+    } else if conn
+        .query_row(
+            "SELECT 1 FROM community_requests WHERE community = ?1 AND account = ?2",
+            params![id, account],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        ListingState::Asked
+    } else if conn
+        .query_row(
+            "SELECT 1 FROM community_blocks WHERE community = ?1 AND account = ?2
+               AND (until_ms IS NULL OR until_ms > ?3)",
+            params![id, account, now_ms],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        ListingState::Refused
+    } else {
+        ListingState::Outside
+    };
+    let distance_m = near
+        .zip(place.as_ref())
+        .map(|(at, p)| distance_m(at, (p.latitude, p.longitude)));
+    Ok(Some(CommunityListing {
+        id: uuid,
+        name,
+        about,
+        join,
+        members: n.max(0) as u32,
+        topics,
+        moderators,
+        mine,
+        created_ms: created_ms.max(0) as u64,
+        picture,
+        place,
+        distance_m,
+    }))
+}
+
+/// A moderator makes an invite link to a community. Answers its code.
+pub fn create_invite(
+    conn: &Connection,
+    by: &str,
+    id: Uuid,
+    now_ms: i64,
+) -> Result<String, Refusal> {
+    must_moderate(conn, id, by)?;
+    let code: String = Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(12)
+        .collect();
+    let days = cartopolis_core::COMMUNITY_INVITE_DAYS as i64;
+    conn.execute(
+        "INSERT INTO community_invites (code, community, created_by, created_ms, expires_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            code,
+            id.to_string(),
+            by,
+            now_ms,
+            now_ms + days * 24 * 60 * 60 * 1000
+        ],
+    )?;
+    Ok(code)
+}
+
+fn invite_community(conn: &Connection, code: &str, now_ms: i64) -> Result<Uuid, Refusal> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT community FROM community_invites WHERE code = ?1 AND expires_ms > ?2",
+            params![code.trim(), now_ms],
+            |r| r.get(0),
+        )
+        .optional()?;
+    id.and_then(|i| Uuid::parse_str(&i).ok())
+        .ok_or(Refusal::NoSuchInvite)
+}
+
+/// What an invite leads to, before joining with it.
+pub fn lookup_invite(
+    conn: &Connection,
+    account: &str,
+    server: &str,
+    code: &str,
+    now_ms: i64,
+) -> Result<CommunityListing, Refusal> {
+    let id = invite_community(conn, code, now_ms)?;
+    listing(conn, account, server, &id.to_string(), None, now_ms)?.ok_or(Refusal::NoSuchInvite)
+}
+
+/// Join with an invite: whatever the community's way in, unless a moderator
+/// removed this account with a block.
+pub fn join_invite(
+    conn: &Connection,
+    account: &str,
+    code: &str,
+    now_ms: i64,
+) -> Result<Uuid, Refusal> {
+    let id = invite_community(conn, code, now_ms)?;
+    if role(conn, id, account)?.is_some() {
+        return Ok(id);
+    }
+    let blocked: bool = conn
+        .query_row(
+            "SELECT 1 FROM community_blocks WHERE community = ?1 AND account = ?2 AND until_ms IS NULL",
+            params![id.to_string(), account],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if blocked {
+        return Err(Refusal::Refused);
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM community_blocks WHERE community = ?1 AND account = ?2",
+        params![id.to_string(), account],
+    )?;
+    admit(&tx, id, account, now_ms)?;
+    tx.execute(
+        "UPDATE community_invites SET uses = uses + 1 WHERE code = ?1",
+        params![code.trim()],
+    )?;
+    tx.commit()?;
+    Ok(id)
 }
 
 /// Settle the joins of `added` (account ids) to `group`: they are in. Called
@@ -1355,6 +1546,8 @@ mod tests {
             join,
             listed: true,
             members_start_topics: false,
+            picture: None,
+            place: None,
         }
     }
 
@@ -1442,12 +1635,12 @@ mod tests {
         let cid = create(&c, &ann, &s, 0).unwrap();
         assert_eq!(join(&c, &bob, cid, "", 1), Err(Refusal::InviteOnly));
         assert!(
-            directory(&c, &bob, "localhost", "", DirectoryOrder::Popular, 1)
+            directory(&c, &bob, "localhost", "", DirectoryOrder::Popular, None, 1)
                 .unwrap()
                 .is_empty()
         );
         let listed = create(&c, &ann, &settings(JoinRule::Open), 0).unwrap();
-        let found = directory(&c, &bob, "localhost", "CATS", DirectoryOrder::New, 1).unwrap();
+        let found = directory(&c, &bob, "localhost", "CATS", DirectoryOrder::New, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, listed);
         assert_eq!(found[0].mine, ListingState::Outside);
@@ -1589,6 +1782,69 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn near_you_sorts_by_distance_and_a_community_with_no_place_sorts_last() {
+        let (_d, c) = world();
+        let (ann, bob) = (id(&c, "ann"), id(&c, "bob"));
+        let place = |lat: f64, lng: f64| CommunitySettings {
+            place: Some(CommunityPlace {
+                latitude: lat,
+                longitude: lng,
+                name: "here".into(),
+            }),
+            ..settings(JoinRule::Open)
+        };
+        let far = create(&c, &ann, &place(52.37, 4.90), 0).unwrap(); // Amsterdam
+        let none = create(&c, &ann, &settings(JoinRule::Open), 0).unwrap();
+        let near = create(&c, &ann, &place(53.22, 6.57), 0).unwrap(); // Groningen
+        let found = directory(
+            &c,
+            &bob,
+            "localhost",
+            "",
+            DirectoryOrder::Near,
+            Some((53.21, 6.56)),
+            1,
+        )
+        .unwrap();
+        let order: Vec<Uuid> = found.iter().map(|l| l.id).collect();
+        assert_eq!(order, vec![near, far, none]);
+        assert!(found[0].distance_m.unwrap() < 2_000.0);
+        assert!(found[2].distance_m.is_none());
+        let bad = CommunitySettings {
+            picture: Some("../etc/passwd".into()),
+            ..settings(JoinRule::Open)
+        };
+        assert_eq!(create(&c, &ann, &bad, 0), Err(Refusal::BadPicture));
+    }
+
+    #[test]
+    fn an_invite_lets_anyone_in_until_it_expires_but_not_somebody_blocked() {
+        let (_d, c) = world();
+        let (ann, bob, cas) = (id(&c, "ann"), id(&c, "bob"), id(&c, "cas"));
+        let mut s = settings(JoinRule::Invite);
+        s.listed = false;
+        let cid = create(&c, &ann, &s, 0).unwrap();
+        assert_eq!(create_invite(&c, &bob, cid, 0), Err(Refusal::NotAModerator));
+        let code = create_invite(&c, &ann, cid, 0).unwrap();
+        let seen = lookup_invite(&c, &bob, "localhost", &code, 1).unwrap();
+        assert_eq!(
+            seen.id, cid,
+            "an unlisted community shows through its invite"
+        );
+        assert_eq!(join_invite(&c, &bob, &code, 2).unwrap(), cid);
+        assert_eq!(role(&c, cid, &bob).unwrap(), Some(CommunityRole::Member));
+        // Cas is removed with a block; the invite does not undo that.
+        join_invite(&c, &cas, &code, 3).unwrap();
+        remove(&c, &ann, cid, "cas", None, true).unwrap();
+        assert_eq!(join_invite(&c, &cas, &code, 4), Err(Refusal::Refused));
+        let later = 5 + cartopolis_core::COMMUNITY_INVITE_DAYS as i64 * 24 * 60 * 60 * 1000;
+        assert_eq!(
+            lookup_invite(&c, &bob, "localhost", &code, later),
+            Err(Refusal::NoSuchInvite)
         );
     }
 }

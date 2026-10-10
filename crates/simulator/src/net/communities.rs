@@ -260,6 +260,7 @@ pub(super) async fn on_directory<T: FrameTransport>(
     request_id: u32,
     query: String,
     order: DirectoryOrder,
+    near: Option<(f64, f64)>,
 ) -> anyhow::Result<()> {
     let account = ctx.principal_key.clone();
     let server = ctx.config.server_name();
@@ -268,7 +269,7 @@ pub(super) async fn on_directory<T: FrameTransport>(
         ctx,
         request_id,
         (),
-        move |c| crate::communities::directory(c, &account, &server, &query, order, now),
+        move |c| crate::communities::directory(c, &account, &server, &query, order, near, now),
         |l| l
     );
     ctx.send(&NetMessage::CommunityListings {
@@ -658,7 +659,17 @@ pub(super) async fn dispatch<T: FrameTransport>(
             request_id,
             query,
             order,
-        } => on_directory(ctx, request_id, query, order).await,
+            near,
+        } => on_directory(ctx, request_id, query, order, near).await,
+        NetMessage::CommunityInviteCreate { request_id, id } => {
+            on_invite_create(ctx, request_id, id).await
+        }
+        NetMessage::CommunityInviteLookup { request_id, code } => {
+            on_invite_lookup(ctx, request_id, code).await
+        }
+        NetMessage::CommunityJoinInvite { request_id, code } => {
+            on_join_invite(ctx, request_id, code).await
+        }
         NetMessage::CommunityJoin {
             request_id,
             id,
@@ -730,4 +741,68 @@ pub(super) async fn dispatch<T: FrameTransport>(
         // `ClientRequest::try_from` lets nothing else through.
         _ => Ok(()),
     }
+}
+
+pub(super) async fn on_invite_create<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    id: Uuid,
+) -> anyhow::Result<()> {
+    let by = ctx.principal_key.clone();
+    let now = now_millis() as i64;
+    let code = act!(
+        ctx,
+        request_id,
+        id,
+        move |c| crate::communities::create_invite(c, &by, id, now),
+        |code| code
+    );
+    ctx.send(&NetMessage::CommunityInvite {
+        request_id,
+        id,
+        code,
+    })
+    .await
+}
+
+pub(super) async fn on_invite_lookup<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    code: String,
+) -> anyhow::Result<()> {
+    let account = ctx.principal_key.clone();
+    let server = ctx.config.server_name();
+    let now = now_millis() as i64;
+    let listing = act!(
+        ctx,
+        request_id,
+        (),
+        move |c| crate::communities::lookup_invite(c, &account, &server, &code, now),
+        |l| l
+    );
+    ctx.send(&NetMessage::CommunityListings {
+        request_id,
+        listings: vec![listing],
+    })
+    .await
+}
+
+pub(super) async fn on_join_invite<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    code: String,
+) -> anyhow::Result<()> {
+    let account = ctx.principal_key.clone();
+    let now = now_millis() as i64;
+    let id = act!(
+        ctx,
+        request_id,
+        (),
+        move |c| crate::communities::join_invite(c, &account, &code, now),
+        |id| id
+    );
+    answer(ctx, request_id).await?;
+    tell(ctx, id, Vec::new()).await;
+    let me = ctx.principal_key.clone();
+    hand_work(ctx, Scope::Joining(me)).await
 }

@@ -298,6 +298,24 @@ And what a test has to know:
   removed panics where a release build only logs. Build the test with debug
   assertions and overflow checks off, as the shipped build has them.
 
+### On the chat page (2026-10-10)
+
+The chat page (`crates/atlas/web`, `src/lib/call.ts`) calls with the same
+`webcall.js`, and the split is forced by where things can live: media
+(`getUserMedia`, `RTCPeerConnection`) exists in a page and not in a worker,
+while the keys and the connection live in the chat worker. So the page runs
+the call and the worker carries its signalling (`call_join`, `call_answer`,
+`call_leave`, `call_decline`) and answers `call_keys` — the chat's 16-byte
+SFrame key for its current epoch, from the MLS exporter — which the page asks
+for again every second so a commit mid-call moves the key with it. One call at
+a time, in the tab that placed or answered it; other tabs only see it ring.
+The rules are the app's: a roster without you rings, an empty one is the call
+over, a minute without an answer ends a call placed here. `webcall.js` gained
+an `onStream` option so a page with its own layout gets the streams instead of
+the viewer's elements, and `deploy-web.yml` watches the three files it shares
+with the viewer. `chat-browser.ts` checks it end to end: two headless
+Chromium with fake devices ring, answer, and each sees the other's video.
+
 ## Ringing a closed app (2026-09-30, protocol 29)
 
 A phone with a **UnifiedPush distributor** installed (ntfy is the common one)

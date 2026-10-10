@@ -890,3 +890,40 @@
 .chat-call-bar .chat-sub {
     flex: 1;
 }
+
+/* A topic in the community pane, with its Mute beside it. */
+.chat-topic-row {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+}
+
+.chat-topic-row .chat-card {
+    flex: 1;
+}
+
+/* Choosing a community's picture: a file input dressed as a button. */
+.chat-file {
+    border: 1px solid var(--m-border, rgb(255 255 255 / 15%));
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9em;
+    padding: 4px 10px;
+}
+
+.chat-file input {
+    display: none;
+}
+
+.chat-invite {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+.chat-invite-link {
+    overflow-wrap: anywhere;
+    user-select: all;
+}

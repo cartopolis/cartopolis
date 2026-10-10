@@ -388,7 +388,15 @@ async function run(command: Command, from: Port): Promise<void> {
         case 'edit_community':
             return c.community((core) => core.edit_community(command.id, JSON.stringify(command.settings)))
         case 'find_communities':
-            return c.community((core) => core.find_communities(command.query, command.order))
+            return c.community((core) =>
+                core.find_communities(command.query, command.order, command.latitude ?? NaN, command.longitude ?? NaN),
+            )
+        case 'create_invite':
+            return c.community((core) => core.create_invite(command.id))
+        case 'lookup_invite':
+            return c.community((core) => core.lookup_invite(command.code))
+        case 'join_invite':
+            return c.community((core) => core.join_invite(command.code))
         case 'join_community':
             return c.community((core) => core.join_community(command.id, command.message))
         case 'leave_community':

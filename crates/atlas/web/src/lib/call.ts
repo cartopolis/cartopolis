@@ -277,6 +277,9 @@ export class Calls {
         const a = this.active
         if (!a) return
         this.active = null
+        // Left here: neither "ringing" while the others are still in it, nor
+        // "missed" when it ends.
+        this.dismissed.add(a.channel)
         clearInterval(a.keyTimer)
         a.web.close()
         this.client.callSignal({channel: a.channel, type: 'call_leave'})

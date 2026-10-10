@@ -6,6 +6,7 @@ import {$s, signupApi} from '@/app'
 import {
     ChatClient,
     type CommunityListing,
+    type CommunityPlace,
     type CommunitySettings,
     type CommunityView,
     type Message,
@@ -87,8 +88,32 @@ function Media(stream: MediaStream, kind: 'audio' | 'video', muted: boolean) {
         : <audio autoplay oncreate={attach} onupdate={attach} />
 }
 
-/** A community's tile: a rounded square with its initial. */
-function Tile(name: string, size = 32) {
+/** Community pictures as object URLs, by hash: fetched once, with the session. */
+const pictures = new Map<string, string | 'loading' | 'failed'>()
+
+function pictureUrl(hash: string | null | undefined): string | null {
+    if (!hash) return null
+    const have = pictures.get(hash)
+    if (have === undefined) {
+        pictures.set(hash, 'loading')
+        void fetch(`/api/pictures/${hash}`, {headers: {Authorization: `Bearer ${$s.signup.token}`}})
+            .then(async (r) => {
+                if (!r.ok) throw new Error(String(r.status))
+                pictures.set(hash, URL.createObjectURL(await r.blob()))
+            })
+            .catch(() => pictures.set(hash, 'failed'))
+            .finally(() => m.redraw())
+        return null
+    }
+    return have === 'loading' || have === 'failed' ? null : have
+}
+
+/** A community's tile: its picture, or a rounded square with its initial. */
+function Tile(name: string, size = 32, picture: string | null = null) {
+    const url = pictureUrl(picture)
+    if (url) {
+        return <img alt="" class="chat-avatar is-tile" src={url} style={`width:${size}px;height:${size}px;object-fit:cover`} />
+    }
     return (
         <span
             class="chat-avatar is-tile"
@@ -147,6 +172,7 @@ type Pane =
     | {kind: 'find'}
     | {kind: 'preview'; id: string}
     | {kind: 'create'}
+    | {code: string; kind: 'invite'}
     | {kind: 'welcome'}
 
 interface Draft {
@@ -156,6 +182,8 @@ interface Draft {
     members_start_topics: boolean
     name: string
     people: string
+    picture: string | null
+    place: CommunityPlace | null
     topics: string
     /** Editing: each topic's name and whether it is archived, by channel. */
     topicEdits: {archived: boolean; channel: string; name: string}[]
@@ -192,6 +220,8 @@ function emptyDraft(): Draft {
         members_start_topics: true,
         name: '',
         people: '',
+        picture: null,
+        place: null,
         topicEdits: [],
         topics: 'general',
     }
@@ -204,6 +234,8 @@ function settingsOf(d: Draft): CommunitySettings {
         listed: d.listed,
         members_start_topics: d.members_start_topics,
         name: d.name.trim(),
+        picture: d.picture,
+        place: d.place && {...d.place, name: d.place.name.trim()},
     }
 }
 
@@ -239,12 +271,19 @@ export class Chat extends MithrilComponent {
 
     oncreate() {
         if ($s.signup.token) chat().signIn({token: $s.signup.token})
+        // An invite link (`/go?community=…` on the viewer, or `?community=` here).
+        const code = inviteCode(new URLSearchParams(location.search).get('community') ?? '')
+        if (code) {
+            history.replaceState(null, '', location.pathname)
+            this.openInvite(code)
+        }
     }
 
     onupdate() {
         // Signed in on this page since the last draw: start the chat too.
         if ($s.signup.token && chat().status === 'signed_out') chat().signIn({token: $s.signup.token})
         if ($s.signup.token && !this.s.adminChecked) void this.checkAdmin()
+        this.askInvite()
     }
 
     /** Whether this account may manage accounts: the person menu then has a server section. */
@@ -297,8 +336,102 @@ export class Chat extends MithrilComponent {
     }
 
     find() {
-        chat().findCommunities(this.s.query, this.s.order as 'new' | 'popular')
+        this.search()
         this.show({kind: 'find'})
+    }
+
+    /** Where this browser is, for Near you; `null` until it says (or if it won't). */
+    near: [number, number] | null = null
+    /** Something to say about the picture or the place being set. */
+    formNote: string | null = null
+    /** A code or link typed into Find. */
+    inviteInput = ''
+
+    search() {
+        const c = chat()
+        const s = this.s
+        if (s.order === 'near' && !this.near) {
+            this.locate((at) => c.findCommunities(s.query, 'near', at))
+            return
+        }
+        c.findCommunities(s.query, s.order as 'near' | 'new' | 'popular', this.near)
+    }
+
+    /** Ask the browser where it is. */
+    locate(then: (at: [number, number]) => void) {
+        if (!navigator.geolocation) {
+            this.formNote = 'This browser cannot tell where it is.'
+            return
+        }
+        navigator.geolocation.getCurrentPosition(
+            (p) => {
+                this.near = [p.coords.latitude, p.coords.longitude]
+                this.formNote = null
+                then(this.near)
+                m.redraw()
+            },
+            () => {
+                this.formNote = 'The browser did not say where it is. Allow location for this site and try again.'
+                m.redraw()
+            },
+            {maximumAge: 600_000, timeout: 15_000},
+        )
+    }
+
+    /** Open the community an invite code names. */
+    openInvite(code: string) {
+        chat().notice = null
+        chat().directory = []
+        this.inviteAsked = null
+        this.show({code, kind: 'invite'})
+        this.askInvite()
+    }
+
+    /** The invite this page has looked up, so it is asked once the chat is connected. */
+    inviteAsked: string | null = null
+
+    askInvite() {
+        const pane = this.s.pane
+        if (pane.kind !== 'invite' || this.inviteAsked === pane.code || chat().status !== 'connected') return
+        this.inviteAsked = pane.code
+        chat().lookupInvite(pane.code)
+    }
+
+    /** A picked picture: shrunk to a square and stored. Public: it is the community's face. */
+    async choosePicture(file: File, d: Draft) {
+        this.formNote = 'Uploading the picture…'
+        m.redraw()
+        try {
+            const bitmap = await createImageBitmap(file)
+            const edge = 256
+            const canvas = document.createElement('canvas')
+            canvas.width = edge
+            canvas.height = edge
+            const side = Math.min(bitmap.width, bitmap.height)
+            canvas.getContext('2d')!.drawImage(
+                bitmap,
+                (bitmap.width - side) / 2,
+                (bitmap.height - side) / 2,
+                side,
+                side,
+                0,
+                0,
+                edge,
+                edge,
+            )
+            const blob = await new Promise<Blob>((ok, fail) =>
+                canvas.toBlob((b) => (b ? ok(b) : fail(new Error('could not encode it'))), 'image/jpeg', 0.82))
+            const {hash} = await signupApi.upload<{hash: string}>(
+                '/api/pictures',
+                await blob.arrayBuffer(),
+                'application/octet-stream',
+            )
+            d.picture = hash
+            this.formNote = null
+        } catch (e) {
+            this.formNote = `The picture could not be used: ${(e as Error).message}`
+        }
+        m.redraw()
     }
 
     view() {
@@ -316,6 +449,7 @@ export class Chat extends MithrilComponent {
                     {pane.kind === 'find' && this.findView()}
                     {pane.kind === 'preview' && this.previewView(pane.id)}
                     {pane.kind === 'create' && this.createView()}
+                    {pane.kind === 'invite' && this.inviteView(pane.code)}
                     {pane.kind === 'welcome' && this.welcome()}
                 </main>
                 {pane.kind === 'chat' && s.thread !== null && this.threadView(pane.channel, s.thread)}
@@ -452,7 +586,7 @@ export class Chat extends MithrilComponent {
                     <section class="chat-section">
                         <h3>Communities</h3>
                         {c.communities.map((community) => {
-                            const unread = community.topics.reduce(
+                            const unread = community.topics.filter((t) => !c.isMuted(t.channel)).reduce(
                                 (n, t) => n + (c.chats.find((x) => x.channel === t.channel)?.unread ?? 0), 0)
                             const asks = community.requests.length + community.reports.length
                             return (
@@ -462,7 +596,7 @@ export class Chat extends MithrilComponent {
                                         onclick={() => this.show({id: community.id, kind: 'community'})}
                                         type="button"
                                     >
-                                        {Tile(community.settings.name, 22)}
+                                        {Tile(community.settings.name, 22, community.settings.picture)}
                                         <span class="chat-label">{community.settings.name}</span>
                                         {community.role === null && <span class="chat-role">waiting</span>}
                                         {asks > 0 && <span class="chat-count is-mention">{asks}</span>}
@@ -470,13 +604,15 @@ export class Chat extends MithrilComponent {
                                     </button>
                                     {community.topics.filter((t) => t.joined && !t.archived).map((t) => {
                                         const sum = c.chats.find((x) => x.channel === t.channel)
+                                        const muted = c.isMuted(t.channel)
                                         return item(
                                             t.channel,
                                             <>
                                                 <span class="chat-hash">#</span>
                                                 <span class="chat-label">{t.name}</span>
+                                                {muted && <span class="chat-role">muted</span>}
                                             </>,
-                                            sum?.unread ?? 0,
+                                            muted ? 0 : sum?.unread ?? 0,
                                             sum?.mentioned ?? false,
                                             true,
                                         )
@@ -738,7 +874,7 @@ export class Chat extends MithrilComponent {
     findView() {
         const c = chat()
         const s = this.s
-        const search = () => c.findCommunities(s.query, s.order as 'new' | 'popular')
+        const search = () => this.search()
         return (
             <>
                 {this.head('Find a community', 'Every listed community on this server')}
@@ -764,11 +900,15 @@ export class Chat extends MithrilComponent {
                             }}
                             options={[
                                 {label: 'Popular', value: 'popular'},
+                                {label: 'Near you', value: 'near'},
                                 {label: 'New', value: 'new'},
                             ]}
                         />
                         <Button type="submit" variant="primary">Search</Button>
                     </form>
+                    {s.order === 'near' && (
+                        <p class="chat-hint">{this.formNote ?? 'Communities pinned to a place, nearest to you first.'}</p>
+                    )}
                     {c.directory.length === 0 && (
                         <p class="chat-empty">
                             No communities found. Only communities that chose to be listed appear here.
@@ -781,9 +921,10 @@ export class Chat extends MithrilComponent {
                             onclick={() => this.show(l.mine === 'member' ? {id: l.id, kind: 'community'} : {id: l.id, kind: 'preview'})}
                             type="button"
                         >
-                            {Tile(l.name, 40)}
+                            {Tile(l.name, 40, l.picture)}
                             <span class="chat-card-text">
                                 <b>{l.name}</b>
+                                {l.distance_m !== null && <span class="chat-sub">{distanceWords(l.distance_m)}</span>}
                                 <span class="chat-sub">{l.about || 'No description'}</span>
                                 <span class="chat-sub">
                                     {l.members} {l.members === 1 ? 'person' : 'people'} · {listingState(l)}
@@ -791,8 +932,78 @@ export class Chat extends MithrilComponent {
                             </span>
                         </button>
                     ))}
+                    <h3 class="chat-pane-h">Have an invite?</h3>
+                    <form
+                        class="chat-inline"
+                        onsubmit={(e: Event) => {
+                            e.preventDefault()
+                            const code = inviteCode(this.inviteInput)
+                            if (code) {
+                                this.inviteInput = ''
+                                this.openInvite(code)
+                            }
+                        }}
+                    >
+                        <FieldText label="The link or the code" model={bind(this, 'inviteInput')} />
+                        <Button disabled={!inviteCode(this.inviteInput)} type="submit" variant="ghost">Open</Button>
+                    </form>
                 </div>
             </>
+        )
+    }
+
+    /** Somebody opened an invite: the community it names, and Join. */
+    inviteView(code: string) {
+        const c = chat()
+        const l = c.directory[0]
+        if (!l) {
+            return (
+                <>
+                    {this.head('Invitation', '')}
+                    <div class="chat-pane">
+                        <p class="chat-hint">
+                            {c.notice ? 'This invite does not work any more. Ask whoever sent it for a new one.' : 'Looking the invite up…'}
+                        </p>
+                    </div>
+                </>
+            )
+        }
+        return (
+            <>
+                {this.head('Invitation', `${l.members} people · ${RULE[l.join]}`)}
+                <div class="chat-pane">
+                    {this.hero(l.name, l.picture, l.about, l.place)}
+                    <div class="chat-join">
+                        {l.mine === 'member'
+                            ? <Button onclick={() => this.show({id: l.id, kind: 'community'})} variant="primary">Open</Button>
+                            : (
+                                <>
+                                    <p class="chat-hint">You were invited, so you join straight away.</p>
+                                    <Button
+                                        onclick={() => {
+                                            c.joinInvite(code)
+                                            this.show({id: l.id, kind: 'community'})
+                                        }}
+                                        variant="primary"
+                                    >
+                                        Join
+                                    </Button>
+                                </>
+                            )}
+                    </div>
+                </div>
+            </>
+        )
+    }
+
+    hero(name: string, picture: string | null, about: string, place: CommunityPlace | null) {
+        return (
+            <div class="chat-hero">
+                {Tile(name, 64, picture)}
+                <h2>{name}</h2>
+                {about && <p class="chat-hint">{about}</p>}
+                {place && <p class="chat-hint">📍 {placeWords(place)}</p>}
+            </div>
         )
     }
 
@@ -806,11 +1017,7 @@ export class Chat extends MithrilComponent {
             <>
                 {this.head(l.name, `${l.members} people · ${RULE[l.join]}`)}
                 <div class="chat-pane">
-                    <div class="chat-hero">
-                        {Tile(l.name, 64)}
-                        <h2>{l.name}</h2>
-                        {l.about && <p class="chat-hint">{l.about}</p>}
-                    </div>
+                    {this.hero(l.name, l.picture, l.about, l.place)}
                     {l.topics.length > 0 && (
                         <p class="chat-topics">{l.topics.map((t) => <span key={t}># {t}</span>)}</p>
                     )}
@@ -883,6 +1090,69 @@ export class Chat extends MithrilComponent {
                 />
                 <FieldCheckbox label="Show in Find a community (its name, description and size are public)" model={bind(d, 'listed')} />
                 <FieldCheckbox label="Members may start topics" model={bind(d, 'members_start_topics')} />
+                <h3 class="chat-pane-h">Picture</h3>
+                <div class="chat-inline">
+                    {Tile(d.name || '?', 48, d.picture)}
+                    <label class="chat-file">
+                        Choose a picture
+                        <input
+                            accept="image/*"
+                            onchange={(e: Event) => {
+                                const file = (e.target as HTMLInputElement).files?.[0]
+                                if (file) void this.choosePicture(file, d)
+                            }}
+                            type="file"
+                        />
+                    </label>
+                    {d.picture && (
+                        <Button
+                            onclick={(e: Event) => {
+                                e.preventDefault()
+                                d.picture = null
+                            }}
+                            size="sm"
+                            variant="ghost"
+                        >
+                            Remove
+                        </Button>
+                    )}
+                </div>
+                <h3 class="chat-pane-h">Place</h3>
+                {d.place
+                    ? (
+                        <div class="chat-inline">
+                            <FieldText label="📍 Name the place" model={bind(d.place, 'name')} placeholder="Grote Markt, Groningen" />
+                            <Button
+                                onclick={(e: Event) => {
+                                    e.preventDefault()
+                                    d.place = null
+                                }}
+                                size="sm"
+                                variant="ghost"
+                            >
+                                Remove
+                            </Button>
+                        </div>
+                    )
+                    : (
+                        <Button
+                            onclick={(e: Event) => {
+                                e.preventDefault()
+                                this.locate(([latitude, longitude]) => {
+                                    d.place = {latitude, longitude, name: ''}
+                                })
+                            }}
+                            size="sm"
+                            variant="ghost"
+                        >
+                            📍 Pin it where I am
+                        </Button>
+                    )}
+                <p class="chat-hint">
+                    {this.formNote ?? (d.place
+                        ? `Pinned at ${d.place.latitude.toFixed(4)}, ${d.place.longitude.toFixed(4)}. Near you lists it for people around here.`
+                        : 'A community about somewhere can be pinned there, so people nearby find it.')}
+                </p>
             </>
         )
     }
@@ -955,11 +1225,7 @@ export class Chat extends MithrilComponent {
                     ),
                 )}
                 <div class="chat-pane">
-                    <div class="chat-hero">
-                        {Tile(settings.name, 64)}
-                        <h2>{settings.name}</h2>
-                        {settings.about && <p class="chat-hint">{settings.about}</p>}
-                    </div>
+                    {this.hero(settings.name, settings.picture, settings.about, settings.place)}
                     {mod && community.requests.length > 0 && (
                         <>
                             <h3 class="chat-pane-h">Asking to join ({community.requests.length})</h3>
@@ -1016,13 +1282,13 @@ export class Chat extends MithrilComponent {
                     )}
                     <h3 class="chat-pane-h">Topics</h3>
                     {community.topics.map((t) => (
-                        <button
-                            class="chat-card"
-                            disabled={!t.joined}
-                            key={t.channel}
-                            onclick={() => t.joined && this.open(t.channel)}
-                            type="button"
-                        >
+                        <div class="chat-topic-row" key={t.channel}>
+                            <button
+                                class="chat-card"
+                                disabled={!t.joined}
+                                onclick={() => t.joined && this.open(t.channel)}
+                                type="button"
+                            >
                             <span class="chat-hash is-big">#</span>
                             <span class="chat-card-text">
                                 <b>{t.name}</b>
@@ -1030,7 +1296,17 @@ export class Chat extends MithrilComponent {
                                     {t.archived ? 'Archived: its history stays, nothing new' : t.joined ? 'Open' : 'Being added…'}
                                 </span>
                             </span>
-                        </button>
+                            </button>
+                            {t.joined && (
+                                <Button
+                                    onclick={() => c.setMuted(t.channel, !c.isMuted(t.channel))}
+                                    size="sm"
+                                    variant="ghost"
+                                >
+                                    {c.isMuted(t.channel) ? 'Unmute' : 'Mute'}
+                                </Button>
+                            )}
+                        </div>
                     ))}
                     {(mod || settings.members_start_topics) && (
                         <form
@@ -1045,7 +1321,7 @@ export class Chat extends MithrilComponent {
                             <Button disabled={!s.field2.trim()} type="submit" variant="ghost">Start topic</Button>
                         </form>
                     )}
-                    <p class="chat-hint">Everyone here is in every topic. Somebody added later reads from the moment they joined.</p>
+                    <p class="chat-hint">Everyone here is in every topic. Somebody added later is given the last 300 messages of each by whoever adds them.</p>
                     <h3 class="chat-pane-h">People ({community.members.length})</h3>
                     {community.members.map((p) => (
                         <button
@@ -1071,6 +1347,29 @@ export class Chat extends MithrilComponent {
                             <FieldText label="Add people" model={bind(s, 'field')} placeholder="Usernames, separated by commas" />
                             <Button disabled={!s.field.trim()} type="submit" variant="ghost">Add</Button>
                         </form>
+                    )}
+                    {mod && (
+                        <div class="chat-invite">
+                            {c.invite && c.invite.id === id
+                                ? (
+                                    <>
+                                        <code class="chat-invite-link">{inviteLink(c.invite.code)}</code>
+                                        <Button
+                                            onclick={() => void navigator.clipboard?.writeText(inviteLink(c.invite!.code))}
+                                            size="sm"
+                                            variant="ghost"
+                                        >
+                                            Copy
+                                        </Button>
+                                        <Button onclick={() => c.createInvite(id)} size="sm" variant="ghost">New link</Button>
+                                        <p class="chat-hint">
+                                            Whoever has the link joins straight away, for 14 days. People removed with a
+                                            block still can't.
+                                        </p>
+                                    </>
+                                )
+                                : <Button onclick={() => c.createInvite(id)} size="sm" variant="ghost">Make an invite link</Button>}
+                        </div>
                     )}
                     <div class="chat-leave">
                         {community.role === 'owner'
@@ -1689,4 +1988,34 @@ function askForNotifications() {
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
         void Notification.requestPermission()
     }
+}
+
+/** "350 m away", "4.2 km away". */
+function distanceWords(m: number): string {
+    if (m < 1000) return `${Math.round(m / 10) * 10} m away`
+    return m < 10_000 ? `${(m / 1000).toFixed(1)} km away` : `${Math.round(m / 1000)} km away`
+}
+
+/** A place's name, or its coordinates when it was given none. */
+function placeWords(p: CommunityPlace): string {
+    return p.name.trim() || `${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}`
+}
+
+/** The code in an invite link (`…/go?community=CODE`), or a bare code. */
+function inviteCode(input: string): string | null {
+    const text = input.trim()
+    let code = text
+    if (/^[a-z]+:\/\//i.test(text)) {
+        try {
+            code = new URL(text).searchParams.get('community') ?? ''
+        } catch {
+            return null
+        }
+    }
+    return /^[A-Za-z0-9]{1,64}$/.test(code) ? code : null
+}
+
+/** The link that opens an invite, in the app on a phone that has it and here otherwise. */
+function inviteLink(code: string): string {
+    return `https://cartopolis.org/go?community=${code}`
 }

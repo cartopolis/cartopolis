@@ -161,6 +161,10 @@ pub struct UserData {
     /// before the field existed, and on every run that never signed in.
     #[serde(default)]
     pub screen: Option<SavedScreen>,
+    /// Community topics muted on this device, by channel key
+    /// (`communities::sync_device`).
+    #[serde(default)]
+    pub muted_topics: Vec<String>,
 }
 
 /// See [`UserData::screen`].

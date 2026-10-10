@@ -221,8 +221,8 @@ pub enum ClientRequest {
         request_id: u32,
         usernames: Vec<String>,
     },
-    /// One of the community messages (protocol 39), kept whole: there are
-    /// seventeen, and `net::communities::dispatch` matches them exhaustively
+    /// One of the community messages (protocols 39 and 40), kept whole: there
+    /// are twenty, and `net::communities::dispatch` matches them exhaustively
     /// against this same list.
     Community(NetMessage),
 }
@@ -536,7 +536,10 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::TopicRemoved { .. }
             | NetMessage::ModerateDelete { .. }
             | NetMessage::CommunityReport { .. }
-            | NetMessage::CommunityReportResolve { .. } => Self::Community(msg),
+            | NetMessage::CommunityReportResolve { .. }
+            | NetMessage::CommunityInviteCreate { .. }
+            | NetMessage::CommunityInviteLookup { .. }
+            | NetMessage::CommunityJoinInvite { .. } => Self::Community(msg),
 
             // Everything below is server-to-client. Listed rather than folded into
             // a `_` arm, so a new message has to be put on one side or the other
@@ -580,6 +583,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::Communities { .. }
             | NetMessage::CommunityCreated { .. }
             | NetMessage::CommunityListings { .. }
+            | NetMessage::CommunityInvite { .. }
             | NetMessage::TopicAddPeople { .. }
             | NetMessage::TopicRemovePeople { .. }
             | NetMessage::TopicLeft { .. }
