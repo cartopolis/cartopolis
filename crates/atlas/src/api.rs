@@ -103,8 +103,6 @@ pub fn router(state: ApiState) -> Router {
 struct BackdropQuery {
     /// `south,west,north,east` in degrees; Groningen's centre when absent.
     bbox: Option<String>,
-    /// `streets` (the default) or `pulses`.
-    layer: Option<String>,
 }
 
 /// A city's streets as the web UI's backdrop (`pipeline::backdrop`). Operator
@@ -115,15 +113,10 @@ async fn get_backdrop(
     headers: HeaderMap,
     Query(q): Query<BackdropQuery>,
 ) -> Response {
-    use crate::pipeline::backdrop::{self, Layer};
+    use crate::pipeline::backdrop;
     if let Err(r) = admin(&state, &headers).await {
         return r;
     }
-    let layer = match q.layer.as_deref().map(Layer::parse) {
-        None => Layer::Streets,
-        Some(Some(l)) => l,
-        Some(None) => return fail(StatusCode::BAD_REQUEST, "The layer is streets or pulses."),
-    };
     let bbox = match q.bbox.as_deref() {
         None => backdrop::GRONINGEN,
         Some(text) => {
@@ -137,7 +130,7 @@ async fn get_backdrop(
             }
         }
     };
-    match blocking(move || backdrop::fetch(bbox, layer)).await {
+    match blocking(move || backdrop::fetch(bbox)).await {
         Ok(svg) => ([("content-type", "image/svg+xml")], svg).into_response(),
         Err(e) => fail(StatusCode::BAD_GATEWAY, &format!("Overpass: {e}")),
     }

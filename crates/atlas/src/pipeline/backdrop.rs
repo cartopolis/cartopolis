@@ -5,23 +5,21 @@
 //! colour; what a blur needs is structure, and for a map product the obvious
 //! structure is a map. So the page behind every pane is a city's centre —
 //! Groningen's, with its canal ring, by default — drawn from OpenStreetMap
-//! geometry through our own Overpass (`tall::overpass_url`).
+//! geometry through our own Overpass (`tall::overpass_url`): streets, paths,
+//! rail and water, the line weight by the road's class.
 //!
-//! **Two layers, both masks.** Everything is drawn in plain black because the
-//! page uses each file as a `mask` and paints the colour itself from a theme
-//! token, which is what lets one drawing serve the light and the dark theme.
-//!
-//! - [`Layer::Streets`]: streets, paths, rail and water, the line weight by the
-//!   road's class.
-//! - [`Layer::Pulses`]: the main roads only, dashed into short streaks that
-//!   travel along them — traffic, as faint light. Animated by CSS *inside* the
-//!   SVG, which browsers run for an SVG used as an image (scripts they do not).
-//!   The page hides the layer for anyone who asks for reduced motion.
+//! **A mask, so it is black.** The page uses the file as a `mask` and paints
+//! the colour itself from a theme token, which is what lets one drawing serve
+//! the light and the dark theme.
 //!
 //! The web UI serves a committed copy rather than calling this on every page
 //! load: a page must never wait on a live Overpass query. This route is how that
-//! copy is made and remade — `GET /api/pipeline/backdrop.svg?bbox=s,w,n,e
-//! &layer=streets` — and how one for another city would be.
+//! copy is made and remade — `GET /api/pipeline/backdrop.svg?bbox=s,w,n,e` —
+//! and how one for another city would be.
+//!
+//! A moving layer — traffic as faint streaks along the main roads — was built
+//! on this and dropped the same day (2026-10-10) at the user's request: the
+//! backdrop stays still.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -31,7 +29,7 @@ use serde_json::Value;
 use super::{http, tall};
 
 /// Groningen's centre: the canal ring and a kilometre or so around it. What the
-/// committed backdrop (`crates/atlas/web/src/img/groningen*.svg`) was made from.
+/// committed backdrop (`crates/atlas/web/src/img/groningen.svg`) was made from.
 pub const GRONINGEN: [f64; 4] = [53.2045, 6.5420, 53.2340, 6.5920];
 
 /// The drawing's width in SVG units; the height follows the bbox's aspect.
@@ -47,23 +45,6 @@ const SIMPLIFY: f64 = 0.8;
 pub const MAX_KM2: f64 = 25.0;
 
 const TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Which drawing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Layer {
-    Streets,
-    Pulses,
-}
-
-impl Layer {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "streets" => Some(Self::Streets),
-            "pulses" => Some(Self::Pulses),
-            _ => None,
-        }
-    }
-}
 
 /// A `[south, west, north, east]` box in WGS84, or why it is not one.
 pub fn validate(bbox: &[f64]) -> Result<[f64; 4], String> {
@@ -104,16 +85,10 @@ pub fn query([s, w, n, e]: [f64; 4]) -> String {
     )
 }
 
-/// Ask our Overpass for a box and draw it.
-pub fn fetch(bbox: [f64; 4], layer: Layer) -> Result<String, String> {
-    draw(&fetch_doc(bbox)?, bbox, layer)
-}
-
-/// Our Overpass's answer for a box. Retried, because the two layers are the
-/// same query and Overpass refuses one it is still answering for somebody else
-/// (`duplicate_query`, an HTML page) — asking for both layers back to back is
-/// exactly that.
-pub fn fetch_doc(bbox: [f64; 4]) -> Result<Value, String> {
+/// Ask our Overpass for a box and draw it. Retried, because Overpass refuses a
+/// query it is still answering for somebody else (`duplicate_query`, an HTML
+/// page) — which is what asking for the same box twice in a row does.
+pub fn fetch(bbox: [f64; 4]) -> Result<String, String> {
     const ATTEMPTS: u32 = 4;
     let url = format!(
         "{}?{}",
@@ -123,7 +98,7 @@ pub fn fetch_doc(bbox: [f64; 4]) -> Result<Value, String> {
     let mut last = String::new();
     for attempt in 0..ATTEMPTS {
         match http::fetch(&url, TIMEOUT).and_then(|body| tall::validate(&body)) {
-            Ok(doc) => return Ok(doc),
+            Ok(doc) => return draw(&doc, bbox),
             Err(e) => last = e,
         }
         if attempt + 1 < ATTEMPTS {
@@ -134,27 +109,23 @@ pub fn fetch_doc(bbox: [f64; 4]) -> Result<Value, String> {
 }
 
 /// Stroke width of a way in SVG units, by what it is; `None` for a way the
-/// layer leaves out. Water areas are filled, not stroked, and are handled apart.
-fn stroke(tags: &Value, layer: Layer) -> Option<f64> {
+/// drawing leaves out. Water areas are filled, not stroked, and handled apart.
+fn stroke(tags: &Value) -> Option<f64> {
     let tag = |k: &str| tags.get(k).and_then(Value::as_str);
     if let Some(class) = tag("highway") {
-        return match (layer, class) {
-            (_, "motorway" | "trunk") => Some(9.0),
-            (_, "primary") => Some(8.0),
-            (_, "secondary") => Some(7.0),
-            (_, "tertiary") => Some(6.0),
-            (Layer::Pulses, _) => None,
-            (_, "unclassified" | "residential") => Some(4.5),
-            (_, "living_street" | "pedestrian") => Some(4.0),
-            (_, "cycleway") => Some(2.6),
-            (_, "service") => Some(2.2),
-            (_, "footway") => Some(1.6),
-            (_, "path") => Some(1.4),
+        return match class {
+            "motorway" | "trunk" => Some(9.0),
+            "primary" => Some(8.0),
+            "secondary" => Some(7.0),
+            "tertiary" => Some(6.0),
+            "unclassified" | "residential" => Some(4.5),
+            "living_street" | "pedestrian" => Some(4.0),
+            "cycleway" => Some(2.6),
+            "service" => Some(2.2),
+            "footway" => Some(1.6),
+            "path" => Some(1.4),
             _ => None,
         };
-    }
-    if layer == Layer::Pulses {
-        return None;
     }
     if tag("waterway").is_some() {
         return Some(16.0);
@@ -190,8 +161,8 @@ fn simplify(pts: &[[f64; 2]], eps: f64) -> Vec<[f64; 2]> {
     left
 }
 
-/// The whole SVG for one layer of an Overpass answer.
-pub fn draw(doc: &Value, bbox: [f64; 4], layer: Layer) -> Result<String, String> {
+/// The whole SVG for an Overpass answer.
+pub fn draw(doc: &Value, bbox: [f64; 4]) -> Result<String, String> {
     let [s, w, n, e] = bbox;
     let k = ((s + n) / 2.0).to_radians().cos();
     let height = (WIDTH * (n - s) / ((e - w) * k)).round();
@@ -219,12 +190,9 @@ pub fn draw(doc: &Value, bbox: [f64; 4], layer: Layer) -> Result<String, String>
         let tags = el.get("tags").cloned().unwrap_or(Value::Null);
         let filled = tags.get("natural").and_then(Value::as_str) == Some("water");
         let target = if filled {
-            if layer == Layer::Pulses {
-                continue;
-            }
             &mut water
         } else {
-            match stroke(&tags, layer) {
+            match stroke(&tags) {
                 Some(width) => strokes.entry((width * 100.0) as u32).or_default(),
                 None => continue,
             }
@@ -248,54 +216,25 @@ pub fn draw(doc: &Value, bbox: [f64; 4], layer: Layer) -> Result<String, String>
 
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {WIDTH} {height}\">\n\
-         <!-- {what} of {s},{w} to {n},{e}, from OpenStreetMap (© OpenStreetMap \
-         contributors, ODbL) through atlas's backdrop route \
-         (crates/atlas/src/pipeline/backdrop.rs). One colour: the page uses it as \
-         a mask and paints it from a theme token. -->\n",
-        what = match layer {
-            Layer::Streets => "Streets, paths, rail and water",
-            Layer::Pulses => "Traffic on the main roads",
-        },
+         <!-- Streets, paths, rail and water of {s},{w} to {n},{e}, from \
+         OpenStreetMap (© OpenStreetMap contributors, ODbL) through atlas's \
+         backdrop route (crates/atlas/src/pipeline/backdrop.rs). One colour: the \
+         page uses it as a mask and paints it from a theme token. -->\n"
     );
-    if layer == Layer::Pulses {
-        svg.push_str(PULSE_STYLE);
-    }
     if !water.is_empty() {
         let _ = writeln!(svg, "<path fill=\"#000\" d=\"{water}\"/>");
     }
-    for (i, (width, d)) in strokes.iter().enumerate() {
+    for (width, d) in &strokes {
         let width = f64::from(*width) / 100.0;
-        match layer {
-            Layer::Streets => {
-                let _ = writeln!(
-                    svg,
-                    "<path fill=\"none\" stroke=\"#000\" stroke-width=\"{width}\" \
-                     stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"{d}\"/>"
-                );
-            }
-            // Each road class takes a different speed and direction, so the
-            // streaks on neighbouring roads never move in step.
-            Layer::Pulses => {
-                let _ = writeln!(svg, "<path class=\"p{}\" d=\"{d}\"/>", i % 3);
-            }
-        }
+        let _ = writeln!(
+            svg,
+            "<path fill=\"none\" stroke=\"#000\" stroke-width=\"{width}\" \
+             stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"{d}\"/>"
+        );
     }
     svg.push_str("</svg>\n");
     Ok(svg)
 }
-
-/// The traffic. A streak is an 18-unit dash with a 300-unit gap; the offset
-/// runs through a whole number of periods (318 × 10) so each loop joins the next
-/// without a jump. A dash pattern starts at its own path's first vertex, so the
-/// streaks on different roads are out of phase without any per-path state.
-const PULSE_STYLE: &str = "<style>\
-path{fill:none;stroke:#000;stroke-width:6;stroke-linecap:round;\
-stroke-dasharray:18 300;animation:drive 92s linear infinite}\
-.p1{animation-duration:122s;animation-direction:reverse}\
-.p2{animation-duration:76s}\
-@keyframes drive{to{stroke-dashoffset:-3180}}\
-@media (prefers-reduced-motion:reduce){path{animation:none}}\
-</style>\n";
 
 #[cfg(test)]
 mod tests {
@@ -321,48 +260,23 @@ mod tests {
 
     #[test]
     fn streets_draw_every_class_by_weight_and_fill_the_water() {
-        let svg = draw(&doc(), GRONINGEN, Layer::Streets).unwrap();
+        let svg = draw(&doc(), GRONINGEN).unwrap();
         assert!(svg.contains("stroke-width=\"8\""), "primary");
         assert!(svg.contains("stroke-width=\"1.6\""), "footway");
         assert!(svg.contains("<path fill=\"#000\" d=\"M"), "water filled");
         assert!(svg.contains('Z'));
-        assert!(!svg.contains("<style>"), "the streets do not move");
-    }
-
-    #[test]
-    fn pulses_keep_the_main_roads_only_and_animate() {
-        let svg = draw(&doc(), GRONINGEN, Layer::Pulses).unwrap();
-        assert_eq!(
-            svg.matches("<path class=").count(),
-            1,
-            "the primary road alone"
-        );
-        assert!(svg.contains("@keyframes drive"));
-        assert!(svg.contains("prefers-reduced-motion"));
-        assert!(
-            !svg.contains("fill=\"#000\""),
-            "no water in the traffic layer"
-        );
-    }
-
-    /// The loop must join itself: the offset a cycle travels is a whole number
-    /// of dash periods, or every streak jumps back once per cycle.
-    #[test]
-    fn the_pulse_loop_is_seamless() {
-        let period: f64 = 18.0 + 300.0;
-        assert!(PULSE_STYLE.contains("stroke-dasharray:18 300"));
-        assert!(PULSE_STYLE.contains(&format!("stroke-dashoffset:-{}", period * 10.0)));
+        assert_eq!(svg.matches("<path").count(), 3, "the bench is left out");
     }
 
     #[test]
     fn a_box_with_no_streets_is_refused() {
         let empty = json!({"elements": []});
-        assert!(draw(&empty, GRONINGEN, Layer::Streets).is_err());
+        assert!(draw(&empty, GRONINGEN).is_err());
     }
 
     #[test]
     fn the_drawing_keeps_the_box_aspect() {
-        let svg = draw(&doc(), GRONINGEN, Layer::Streets).unwrap();
+        let svg = draw(&doc(), GRONINGEN).unwrap();
         // 3.3 km wide by 3.3 km tall at Groningen's latitude: near square.
         assert!(svg.contains("viewBox=\"0 0 2000 19"), "{}", &svg[..120]);
     }
@@ -392,25 +306,12 @@ mod tests {
     /// cargo test -p cartopolis_atlas writes_the_web_backdrop -- --ignored
     /// ```
     #[test]
-    #[ignore = "fetches from Overpass and rewrites the web UI's committed files"]
+    #[ignore = "fetches from Overpass and rewrites the web UI's committed file"]
     fn writes_the_web_backdrop() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/src/img");
-        // One query for both layers: they are drawn from the same answer.
-        let doc = fetch_doc(GRONINGEN).unwrap();
-        for (layer, name) in [
-            (Layer::Streets, "groningen.svg"),
-            (Layer::Pulses, "groningen-pulses.svg"),
-        ] {
-            let svg = draw(&doc, GRONINGEN, layer).unwrap();
-            std::fs::write(dir.join(name), &svg).unwrap();
-            println!("wrote {name} ({} bytes)", svg.len());
-        }
-    }
-
-    #[test]
-    fn layers_parse_by_name() {
-        assert_eq!(Layer::parse("streets"), Some(Layer::Streets));
-        assert_eq!(Layer::parse("pulses"), Some(Layer::Pulses));
-        assert_eq!(Layer::parse("roads"), None);
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/src/img/groningen.svg");
+        let svg = fetch(GRONINGEN).unwrap();
+        std::fs::write(&path, &svg).unwrap();
+        println!("wrote {} ({} bytes)", path.display(), svg.len());
     }
 }
