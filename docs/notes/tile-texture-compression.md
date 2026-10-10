@@ -64,3 +64,26 @@ first (`ETC_TH_THRESHOLD`, the planar ±1 refinement, the ETC1 search).
 **Whether the Adreno 840 offers BC is not known** — if it does, a phone gets BC3 and
 the ETC2 encoder is unused there. The capability log line
 (`device capabilities measured … tile_blocks=…`) says which on the device.
+
+## The Deck freezes, and it is not this
+
+Captures at 512² froze the Deck's capture slot on 2026-10-10 (4 of 8 runs at 512²,
+0 of 7 at 256², on unmodified `main` too). It is **GTT exhaustion, not a GPU hang**:
+the Deck has 1 GB of VRAM and an 8 GB GTT, a frozen run sat at 0 % GPU busy with GTT
+at 8.67 GB and a pool thread in the kernel's `ttm_global_swapout`, and a run killed
+in that state cannot exit (the zombie keeps its buffers until the swap-out ends — a
+reboot was the only way out). Read GTT from
+`/sys/class/drm/card*/device/mem_info_gtt_used`; don't `kill -9` a capture that is
+already in `ttm_global_swapout`.
+
+What fills it, measured the same day with GTT before and at peak around the three
+viewpoints over Groningen:
+
+- the always-on `viberbot.service` client — 3.3 GB fresh after boot, 4.1 GB a quarter
+  of an hour later, 8.3 GB after six hours: it grows;
+- a desktop-`balanced` capture adds ~3.6–4.4 GB at the 150 m viewpoint, twice what
+  `upload_meter` counts as resident asset bytes (~1.8 GB). BC3 lowers it by
+  0.2–0.4 GB; it does not fix it.
+
+The handset configuration adds **3.30 GB with 256² RGBA8 and 3.31 GB with 512² BC3**,
+so the lift to 512² costs a phone nothing in graphics memory.
