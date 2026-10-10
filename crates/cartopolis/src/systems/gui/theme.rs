@@ -2512,9 +2512,16 @@ pub fn inline_error(ui: &mut egui::Ui, message: &str) -> bool {
                         .wrap(),
                 );
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                dismissed = action_button(ui, "Dismiss").clicked();
-            });
+            // One row's height, not `with_layout`: in a vertical parent that
+            // takes every pixel left below it, and on the chat list the chip
+            // swallowed the screen with Dismiss floating in the middle.
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    dismissed = action_button(ui, "Dismiss").clicked();
+                },
+            );
         });
     dismissed
 }
