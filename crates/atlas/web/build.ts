@@ -54,7 +54,7 @@ async function build() {
         // `dist/fonts/` below. External so Bun leaves the URL alone: given a
         // path it can resolve, it inlines the font as base64, and 190 KB of that
         // in the stylesheet would block the first paint of every page.
-        external: ['/fonts/*'],
+        external: ['/fonts/*', '/img/*'],
         outdir: dist,
         sourcemap: serve ? 'inline' : 'none',
         target: 'browser',
@@ -76,6 +76,8 @@ async function build() {
     for (const face of ['PlusJakartaSans-Regular.ttf', 'PlusJakartaSans-SemiBold.ttf']) {
         await Bun.write(path.join(dist, 'fonts', face), Bun.file(path.join(root, '../../../assets/fonts', face)))
     }
+    // The street map behind the glass (`depth.css`): a mask, fetched once.
+    await Bun.write(path.join(dist, 'img/groningen.svg'), Bun.file(path.join(root, 'src/img/groningen.svg')))
 
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)

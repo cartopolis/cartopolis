@@ -51,9 +51,7 @@
     --c-glow: light-dark(rgb(63 169 162 / 35%), rgb(92 198 192 / 32%));
     --c-accent-top: #a8dcd8;
     --c-accent-bottom: #3fa9a2;
-    --c-aura-1: light-dark(rgb(92 198 192 / 26%), rgb(92 198 192 / 18%));
-    --c-aura-2: light-dark(rgb(79 178 255 / 16%), rgb(79 178 255 / 11%));
-    --c-grid: light-dark(rgb(15 20 22 / 4%), rgb(244 248 248 / 3%));
+    --c-map: light-dark(rgb(15 20 22 / 7%), rgb(170 194 198 / 9%));
     --m-font: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --m-radius-sm: 4px;
     --m-radius: 8px;

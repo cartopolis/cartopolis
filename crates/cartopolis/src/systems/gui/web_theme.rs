@@ -196,14 +196,11 @@ fn tokens() -> Vec<(&'static str, Value)> {
         ),
         ("--c-accent-top", both(ACCENT_RING)),
         ("--c-accent-bottom", both(ACCENT_PRESSED)),
-        // The page behind the glass: two faint pools of colour and a
-        // graticule, so a translucent pane has something to be in front of.
-        ("--c-aura-1", Pair(alpha(ACCENT, 26.0), alpha(ACCENT, 18.0))),
-        (
-            "--c-aura-2",
-            Pair(alpha(REAL_LOCATION, 16.0), alpha(REAL_LOCATION, 11.0)),
-        ),
-        ("--c-grid", Pair(alpha(INK, 4.0), alpha(CREAM, 3.0))),
+        // The page behind the glass: Groningen's streets in one faint ink, so
+        // a translucent pane has something with structure to blur. Glows and
+        // a grid were tried first (2026-10-10) and were too even to read as
+        // anything behind the glass.
+        ("--c-map", Pair(alpha(INK, 7.0), alpha(TEXT_DIM, 9.0))),
         // Shape and type
         (
             "--m-font",

@@ -15,19 +15,32 @@
  */
 
 /* ── The page behind the glass ───────────────────────────────────────────────
-   Two faint pools of colour and a graticule — a map's grid, fading out from the
-   top — so a translucent pane has something to be in front of. A glass panel
-   over a flat colour is just a slightly different flat colour. */
+   A glass panel over a flat colour is just a slightly different flat colour,
+   and soft glows are too even to change that. What a blur needs is structure,
+   so the page is a street map: Groningen's centre, the canal ring in the
+   middle, drawn in one faint ink (`img/groningen.svg`, real OpenStreetMap
+   geometry). The file is a mask and the colour is a token, so it follows the
+   theme. It sits on a fixed layer behind everything, which is why the page
+   colour moves from `body` to `html`. */
+
+html,
+html[data-theme] {
+    background: var(--m-bg);
+}
 
 body {
-    background:
-        radial-gradient(70rem 42rem at 88% -12%, var(--c-aura-1), transparent 70%),
-        radial-gradient(56rem 40rem at -12% 112%, var(--c-aura-2), transparent 70%),
-        radial-gradient(ellipse 120% 90% at 50% 0%, transparent 30%, var(--m-bg) 80%),
-        linear-gradient(var(--c-grid) 1px, transparent 1px) 0 0 / 56px 56px,
-        linear-gradient(90deg, var(--c-grid) 1px, transparent 1px) 0 0 / 56px 56px,
-        var(--m-bg);
-    background-attachment: fixed;
+    background: transparent;
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: var(--c-map);
+    -webkit-mask: url('/img/groningen.svg') center / cover no-repeat;
+    mask: url('/img/groningen.svg') center / cover no-repeat;
 }
 
 .m-shell,
