@@ -125,6 +125,31 @@ pub struct PrivateChats {
     watch: Option<crate::platform::location::LocationWatch>,
     /// Per chat being shared with: when and where the last update was sent.
     last_sent: std::collections::HashMap<String, (u64, f64, f64)>,
+    /// Histories being packed and uploaded for somebody just added, or
+    /// fetched and opened after one arrived; finished ones wait here.
+    history: std::sync::Arc<std::sync::Mutex<Vec<HistoryDone>>>,
+}
+
+/// A history job that finished off the main thread.
+enum HistoryDone {
+    /// Packed and stored: announce it in `group`.
+    Uploaded {
+        group: Vec<u8>,
+        stored: cartopolis_chat::PictureRef,
+        count: u32,
+    },
+    /// Fetched and opened: put it in front of the chat.
+    Opened {
+        group: Vec<u8>,
+        from: String,
+        items: Vec<cartopolis_chat::HistoryItem>,
+    },
+}
+
+fn finish_history(inbox: &std::sync::Arc<std::sync::Mutex<Vec<HistoryDone>>>, done: HistoryDone) {
+    if let Ok(mut v) = inbox.lock() {
+        v.push(done);
+    }
 }
 
 impl PrivateChats {
@@ -373,6 +398,48 @@ pub fn drive_private_chats(
     for msg in inbox.0.drain(..) {
         engine.handle(msg, &mut out, &mut events);
     }
+    let done: Vec<HistoryDone> = private
+        .history
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default();
+    for job in done {
+        match job {
+            HistoryDone::Uploaded {
+                group,
+                stored,
+                count,
+            } => {
+                if let Err(e) = engine.send_history(&group, &stored, count, now_ms(), &mut out) {
+                    tracing::warn!(error = %e, "could not send a history");
+                }
+                private.dirty = true;
+            }
+            HistoryDone::Opened { group, from, items } => {
+                let lines = items
+                    .into_iter()
+                    .map(|i| crate::systems::chat::ChatLine {
+                        sender: shown(&engine, &i.from),
+                        sender_id: 0,
+                        body: i.body,
+                        distance: None,
+                        arrived: f64::NEG_INFINITY,
+                        point: i.point.and_then(|p| {
+                            cartopolis_core::point::Point::from_activity_json(&p).ok()
+                        }),
+                        picture: i.picture,
+                        at_ms: i.sent_at_ms,
+                        seq: 0,
+                        log_seq: Some(i.seq),
+                        removed: false,
+                        request: None,
+                        shared_by: None,
+                    })
+                    .collect();
+                chat.insert_history(&channel_key(&group), &shown(&engine, &from), lines);
+            }
+        }
+    }
     for key in std::mem::take(&mut chat.private_forget) {
         if let Some(group) = group_of(&key) {
             engine.forget(&group);
@@ -428,10 +495,11 @@ pub fn drive_private_chats(
             continue;
         };
         match engine.send_text(&group, &text, now_ms(), &mut out) {
-            Ok(_) => {
+            Ok(request) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive(&channel, my_id, me, text, None);
+                chat.set_last_request(&channel, request);
             }
             Err(e) => {
                 events.push(Event::Notice(format!(
@@ -532,10 +600,11 @@ pub fn drive_private_chats(
                 {
                     let (_, text) = chat.private_hello.remove(i);
                     match engine.send_text(&group, &text, now_ms(), &mut out) {
-                        Ok(_) => {
+                        Ok(request) => {
                             let me = shown(&engine, engine.address());
                             let my_id = chat.my_id.unwrap_or(0);
                             chat.receive(&key, my_id, me, text, None);
+                            chat.set_last_request(&key, request);
                         }
                         Err(e) => {
                             chat.notice = Some(crate::systems::chat::ChatNotice {
@@ -645,10 +714,85 @@ pub fn drive_private_chats(
             // Reactions, edits and deletes: the app shows a reply as an
             // ordinary line and keeps no message ids of its own to hang the
             // rest on.
-            Event::Reaction { .. }
-            | Event::Edited { .. }
-            | Event::Deleted { .. }
-            | Event::Sent { .. } => {}
+            Event::Reaction { .. } | Event::Edited { .. } | Event::Deleted { .. } => {}
+            Event::Sent {
+                group,
+                request,
+                seq,
+            } => chat.confirm_sent(&channel_key(&group), request, seq),
+            Event::HistoryWanted { group } => {
+                let key = channel_key(&group);
+                let items: Vec<cartopolis_chat::HistoryItem> = chat
+                    .history(&key)
+                    .into_iter()
+                    .map(|l| cartopolis_chat::HistoryItem {
+                        seq: l.log_seq.unwrap_or(0),
+                        from: engine.qualify(&l.sender),
+                        body: l.body.clone(),
+                        sent_at_ms: l.at_ms,
+                        parent: None,
+                        point: l.point.as_ref().and_then(|p| p.to_activity_json(None).ok()),
+                        picture: l.picture.clone(),
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    let inbox = private.history.clone();
+                    bevy::tasks::IoTaskPool::get()
+                        .spawn(async move {
+                            let packed = cartopolis_chat::pack_history(&items);
+                            let Ok((sealed, count)) = packed else {
+                                return;
+                            };
+                            let (key, nonce) = (sealed.key, sealed.nonce);
+                            match crate::systems::model_assets::api_upload_picture(sealed.bytes)
+                                .await
+                            {
+                                Ok(hash) => finish_history(
+                                    &inbox,
+                                    HistoryDone::Uploaded {
+                                        group,
+                                        stored: cartopolis_chat::PictureRef {
+                                            hash,
+                                            key,
+                                            nonce,
+                                            width: 0,
+                                            height: 0,
+                                        },
+                                        count,
+                                    },
+                                ),
+                                Err(e) => tracing::warn!(error = %e, "could not store a history"),
+                            }
+                        })
+                        .detach();
+                }
+            }
+            Event::History {
+                group,
+                from,
+                picture,
+                ..
+            } => {
+                let inbox = private.history.clone();
+                bevy::tasks::IoTaskPool::get()
+                    .spawn(async move {
+                        let opened = match crate::systems::model_assets::fetch_picture(
+                            &picture.hash,
+                        )
+                        .await
+                        {
+                            Ok(bytes) => cartopolis_chat::open_history(&bytes, &picture),
+                            Err(e) => Err(e),
+                        };
+                        match opened {
+                            Ok(items) => {
+                                finish_history(&inbox, HistoryDone::Opened { group, from, items })
+                            }
+                            Err(e) => tracing::warn!(error = %e, "could not open a shared history"),
+                        }
+                    })
+                    .detach();
+            }
         }
     }
     for msg in out {

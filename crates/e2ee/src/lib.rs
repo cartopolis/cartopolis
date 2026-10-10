@@ -230,6 +230,18 @@ pub enum Payload {
         target: u64,
         sent_at_ms: u64,
     },
+    /// What was said before somebody joined, for them: a sealed attachment
+    /// (`seal_attachment`) holding up to a few hundred earlier messages, sent
+    /// by the device that added them. Its contents are that device's claim,
+    /// not the log's: receivers show it as history shared by `from`.
+    History {
+        hash: String,
+        key: [u8; 32],
+        nonce: [u8; 12],
+        /// How many messages it holds.
+        count: u32,
+        sent_at_ms: u64,
+    },
 }
 
 /// An attachment encrypted for upload, and what opens it.

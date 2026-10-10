@@ -95,6 +95,8 @@ class Browser {
         const profile = mkdtempSync(path.join(tmpdir(), `chat-${this.name}-`))
         procs.push(Bun.spawn([chromium, '--headless=new', '--no-sandbox', '--disable-gpu',
             `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--window-size=1400,860',
+            // A camera and microphone that need no hardware and no permission prompt.
+            '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
             'about:blank'], {stderr: 'ignore', stdout: 'ignore'}))
         let target: {webSocketDebuggerUrl: string} | undefined
         await waitFor(`${this.name}'s browser`, async () => {
@@ -250,6 +252,31 @@ try {
     await bob.until('👍 1')
     step('a line each way through the page, with a mention and a reaction')
 
+    // A video call in the topic: ann calls, bob's page rings, he answers, and
+    // each sees the other's picture through the forwarder, sealed both ways.
+    if (!(await ann.click('🎥 Video'))) throw new Error('no Video button')
+    await bob.until('is calling', 30000)
+    if (!(await bob.click('With video'))) throw new Error('no With video button')
+    const connected = (b: Browser) =>
+        waitFor(`${b.name}'s call connected`, () =>
+            b.eval('/\\d+:\\d\\d/.test(document.querySelector(".chat-call-bar")?.innerText ?? "")'), 45000)
+    await connected(ann)
+    await connected(bob)
+    // Somebody else's video playing, with frames decoded (not the self view).
+    const seesVideo = (b: Browser) =>
+        waitFor(`${b.name} sees the other's video`, () =>
+            b.eval(`[...document.querySelectorAll('.chat-call-tile:not(.is-self) video')]
+                .some((v) => v.videoWidth > 0 && v.currentTime > 0)`), 45000)
+    await seesVideo(ann)
+    await seesVideo(bob)
+    if (shots) {
+        mkdirSync(shots, {recursive: true})
+        await ann.shot(path.join(shots, 'call.png'))
+    }
+    await ann.click('Hang up')
+    await waitFor('bob\'s call ended', () => bob.eval('!document.querySelector(".chat-call")'), 20000)
+    step('a video call in the topic: rang, answered, each saw the other, hung up')
+
     // Bob reloads: the history comes back out of his browser's own storage.
     await bob.send('Page.reload')
     // The topic returns to the list once the worker has signed in again.
@@ -258,6 +285,19 @@ try {
     await bob.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
     await bob.until('Scaffolding is down on the north side')
     step('after a reload bob reads the history back out of IndexedDB')
+
+    // Bob signs in on a second browser after all that was said — a new phone.
+    // A device already in the topic adds it, and shares what was said before.
+    const bob2 = new Browser('bob2')
+    browsers.push(bob2)
+    await bob2.launch(url)
+    await bob2.signIn('bob')
+    await waitFor('the topic on bob\'s second device', () =>
+        bob2.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 60000)
+    await bob2.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await bob2.until('shared by', 30000)
+    await bob2.until('Scaffolding is down on the north side')
+    step('a second device of bob\'s was added to the topic and handed the earlier messages')
 
     if (shots) {
         mkdirSync(shots, {recursive: true})

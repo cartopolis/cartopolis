@@ -241,6 +241,12 @@ pub struct ChatLine {
     pub log_seq: Option<u64>,
     /// A moderator deleted it: drawn as a marker, its text gone.
     pub removed: bool,
+    /// For this device's own private line, the request it went out under,
+    /// until the server answers with its place in the log ([`Self::log_seq`]).
+    pub request: Option<u32>,
+    /// It came in a history shared by somebody who added this device or
+    /// person, not from the log: their copy, shown as such.
+    pub shared_by: Option<String>,
 }
 
 #[cfg(mcp)]
@@ -511,6 +517,8 @@ impl ChatState {
             seq,
             log_seq: None,
             removed: false,
+            request: None,
+            shared_by: None,
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
@@ -547,6 +555,75 @@ impl ChatState {
         if let Some(line) = self.channels[idx].lines.last_mut() {
             line.log_seq = Some(seq);
         }
+    }
+
+    /// Remember the request the line just sent on `channel` went out under.
+    pub fn set_last_request(&mut self, channel: &str, request: u32) {
+        let idx = self.channel_index(channel);
+        if let Some(line) = self.channels[idx].lines.last_mut() {
+            line.request = Some(request);
+        }
+    }
+
+    /// The server placed this device's line `request` at `seq`.
+    pub fn confirm_sent(&mut self, channel: &str, request: u32, seq: u64) {
+        let Some(c) = self.channels.iter_mut().find(|c| c.key == channel) else {
+            return;
+        };
+        if let Some(line) = c
+            .lines
+            .iter_mut()
+            .rev()
+            .find(|l| l.request == Some(request))
+        {
+            line.log_seq = Some(seq);
+            line.request = None;
+        }
+    }
+
+    /// What this device holds of a private chat, oldest first, for somebody it
+    /// just added: every line with a place in the log.
+    #[must_use]
+    pub fn history(&self, channel: &str) -> Vec<&ChatLine> {
+        let Some(c) = self.channels.iter().find(|c| c.key == channel) else {
+            return Vec::new();
+        };
+        let mut out: Vec<&ChatLine> = c
+            .lines
+            .iter()
+            .filter(|l| l.log_seq.is_some() && !l.removed)
+            .collect();
+        out.sort_by_key(|l| l.log_seq);
+        out
+    }
+
+    /// Put a shared history in front of what this device has: only the lines
+    /// from before the first one it read itself, since everything after that
+    /// it has from the log, which is better than anybody's copy. Never
+    /// surfaced as new (`arrived` far in the past), only scrolled back to.
+    pub fn insert_history(&mut self, channel: &str, shared_by: &str, mut lines: Vec<ChatLine>) {
+        let idx = self.channel_index(channel);
+        let first = self.channels[idx]
+            .lines
+            .iter()
+            .filter_map(|l| l.log_seq)
+            .min()
+            .unwrap_or(u64::MAX);
+        lines.retain(|l| l.log_seq.is_some_and(|s| s < first));
+        lines.sort_by_key(|l| l.log_seq);
+        for l in &mut lines {
+            l.arrived = f64::NEG_INFINITY;
+            l.shared_by = Some(shared_by.to_string());
+            l.seq = self.next_seq;
+            self.next_seq += 1;
+        }
+        let existing = std::mem::take(&mut self.channels[idx].lines);
+        lines.extend(existing);
+        if lines.len() > MAX_LINES {
+            let excess = lines.len() - MAX_LINES;
+            lines.drain(0..excess);
+        }
+        self.channels[idx].lines = lines;
     }
 
     /// A moderator deleted the line at `seq` in `channel`: blank it.

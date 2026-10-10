@@ -41,6 +41,8 @@ export interface Message {
     picture: Picture | null
     /** Who took it down, when a moderator deleted it rather than its author. */
     removedBy?: string
+    /** Came in a history somebody shared on this device joining: their copy. */
+    sharedBy?: string
 }
 
 /** One chat's history, oldest first, plus how far its reader has read. */
@@ -274,4 +276,61 @@ export function mentions(body: string, me: string): boolean {
 
 function escape(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** One message of a history somebody shared on joining (`pack_history`). */
+export interface SharedItem {
+    body: string
+    from: string
+    parent: number | null
+    picture: Picture | null
+    point: string | null
+    sent_at_ms: number
+    seq: number
+}
+
+/**
+ * Put a history somebody shared in front of what this device has: only what
+ * was said before the first message it read itself, since from there on it
+ * has the log, which beats anybody's copy. Marked with who shared it.
+ */
+export function mergeShared(chat: Chat, items: SharedItem[], by: string): boolean {
+    const first = chat.messages.reduce((n, m) => (m.seq !== null && m.seq < n ? m.seq : n), Infinity)
+    let added = false
+    for (const i of items) {
+        if (!(i.seq < first)) continue
+        insert(chat, {
+            body: i.body,
+            deleted: false,
+            edited: false,
+            from: i.from,
+            local: null,
+            parent: i.parent,
+            picture: i.picture,
+            point: i.point,
+            reactions: {},
+            sentAtMs: i.sent_at_ms,
+            seq: i.seq,
+            sharedBy: by,
+        })
+        added = true
+    }
+    // Already read: it was said before this device was there to be told.
+    if (added) chat.readSeq = Math.max(chat.readSeq, ...items.map((i) => i.seq).filter((s) => s < first))
+    return added
+}
+
+/** What this device holds of a chat, to share with somebody it just added. */
+export function shareable(chat: Chat): SharedItem[] {
+    return chat.messages
+        .filter((m) => m.seq !== null && !m.deleted)
+        .map((m) => ({
+            body: m.body,
+            from: m.from,
+            parent: m.parent,
+            picture: m.picture,
+            point: m.point,
+            sent_at_ms: m.sentAtMs,
+            seq: m.seq!,
+        }))
 }

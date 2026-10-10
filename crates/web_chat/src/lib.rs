@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 
-use cartopolis_chat::{channel_key, group_of, Engine, Event};
+use cartopolis_chat::{channel_key, group_of, Engine, Event, HistoryItem, PictureRef};
 use cartopolis_core::point::Point;
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, CommunityDto, CommunityListing,
@@ -29,6 +29,13 @@ use wasm_bindgen::prelude::*;
 /// range (`cartopolis_chat::REQUEST_BASE`), so a refusal of it is never handed
 /// to the engine.
 const PRESENCE_REQUEST: u32 = 1;
+
+/// Call joins go out under this range, as the app's do (`systems::calls`), so a
+/// refusal of one is told apart from a private chat's.
+const CALL_REQUEST_BASE: u32 = 0xCA11_0000;
+
+/// Bytes of a call's SFrame base key (`cartopolis_calls::keys::BASE_KEY_LEN`).
+const CALL_KEY_LEN: usize = 16;
 
 /// What a call refuses with. A plain string here, so the native tests can
 /// hold one: building a `JsError` calls into JavaScript, which does not exist
@@ -48,6 +55,138 @@ fn js_err(e: impl std::fmt::Display) -> Error {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex<const N: usize>(s: &str) -> Result<[u8; N], Error> {
+    let bytes: Option<Vec<u8>> = (0..s.len())
+        .step_by(2)
+        .map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect();
+    bytes
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| Error(format!("{s:?} is not {N} bytes of hex")))
+}
+
+fn picture_json(p: &PictureRef) -> Value {
+    json!({
+        "hash": p.hash,
+        "key": hex(&p.key),
+        "nonce": hex(&p.nonce),
+        "width": p.width,
+        "height": p.height,
+    })
+}
+
+fn picture_of(v: &Value) -> Result<PictureRef, Error> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
+    let num = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+    Ok(PictureRef {
+        hash: text("hash").to_string(),
+        key: unhex(text("key"))?,
+        nonce: unhex(text("nonce"))?,
+        width: num("width"),
+        height: num("height"),
+    })
+}
+
+/// A history packed for upload ([`pack_history`]): the sealed bytes, and the
+/// key, nonce and count [`ChatCore::send_history`] announces with its hash.
+#[wasm_bindgen]
+pub struct PackedHistory {
+    bytes: Vec<u8>,
+    key: String,
+    nonce: String,
+    count: u32,
+}
+
+#[wasm_bindgen]
+impl PackedHistory {
+    #[wasm_bindgen(getter)]
+    pub fn bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn nonce(&self) -> String {
+        self.nonce.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+/// Seal a chat's history for somebody just added (`history_wanted`). `items`
+/// is a JSON array of `{seq, from, body, sent_at_ms, parent, point, picture}`,
+/// oldest first; the newest `cartopolis_chat::MAX_HISTORY` are kept.
+#[wasm_bindgen]
+pub fn pack_history(items: &str) -> Result<PackedHistory, Error> {
+    let list: Vec<Value> = serde_json::from_str(items).map_err(js_err)?;
+    let mut out = Vec::new();
+    for v in &list {
+        out.push(HistoryItem {
+            seq: v.get("seq").and_then(Value::as_u64).unwrap_or(0),
+            from: v
+                .get("from")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            body: v
+                .get("body")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            sent_at_ms: v.get("sent_at_ms").and_then(Value::as_u64).unwrap_or(0),
+            parent: v.get("parent").and_then(Value::as_u64),
+            point: v.get("point").and_then(Value::as_str).map(str::to_string),
+            picture: match v.get("picture") {
+                Some(p) if p.is_object() => Some(picture_of(p)?),
+                _ => None,
+            },
+        });
+    }
+    let (sealed, count) = cartopolis_chat::pack_history(&out).map_err(js_err)?;
+    Ok(PackedHistory {
+        key: hex(&sealed.key),
+        nonce: hex(&sealed.nonce),
+        bytes: sealed.bytes,
+        count,
+    })
+}
+
+/// Open a history fetched from the picture store, as the same JSON array
+/// [`pack_history`] takes.
+#[wasm_bindgen]
+pub fn open_history(sealed: &[u8], hash: &str, key: &str, nonce: &str) -> Result<String, Error> {
+    let picture = PictureRef {
+        hash: hash.to_string(),
+        key: unhex(key)?,
+        nonce: unhex(nonce)?,
+        width: 0,
+        height: 0,
+    };
+    let items = cartopolis_chat::open_history(sealed, &picture).map_err(js_err)?;
+    let list: Vec<Value> = items
+        .into_iter()
+        .map(|i| {
+            json!({
+                "seq": i.seq,
+                "from": i.from,
+                "body": i.body,
+                "sent_at_ms": i.sent_at_ms,
+                "parent": i.parent,
+                "point": i.point,
+                "picture": i.picture.as_ref().map(picture_json),
+            })
+        })
+        .collect();
+    Ok(Value::Array(list).to_string())
 }
 
 /// One device's private chats over one connection.
@@ -178,6 +317,52 @@ impl ChatCore {
                     "message": message,
                 }));
             }
+            // Calls (protocol 26): signalling only, relayed to the page that owns
+            // the call's media (`webcall.js`); the engine has no part in it.
+            NetMessage::CallRoster { group, members } => self.events.push(json!({
+                "kind": "call_roster",
+                "channel": channel_key(&group),
+                "members": members.iter().map(|m| json!({
+                    "participant": m.participant,
+                    "username": m.username,
+                    "device": m.device.to_string(),
+                })).collect::<Vec<_>>(),
+            })),
+            NetMessage::CallJoined {
+                group,
+                participant,
+                answer,
+                ..
+            } => self.events.push(json!({
+                "kind": "call_joined",
+                "channel": channel_key(&group),
+                "participant": participant,
+                "answer": answer,
+            })),
+            NetMessage::CallOffer { group, sdp, tracks } => self.events.push(json!({
+                "kind": "call_offer",
+                "channel": channel_key(&group),
+                "sdp": sdp,
+                "tracks": tracks.iter().map(|t| json!({
+                    "mid": t.mid,
+                    "participant": t.participant,
+                    "video": t.video,
+                })).collect::<Vec<_>>(),
+            })),
+            NetMessage::CallDeclined { group, username } => self.events.push(json!({
+                "kind": "call_declined",
+                "channel": channel_key(&group),
+                "username": username,
+            })),
+            NetMessage::ServerError {
+                request_id,
+                code,
+                message,
+            } if request_id & 0xFFFF_0000 == CALL_REQUEST_BASE => self.events.push(json!({
+                "kind": "call_refused",
+                "code": code,
+                "message": message,
+            })),
             msg if cartopolis_chat::is_private_message(&msg) => {
                 if let Some(engine) = self.engine.as_mut() {
                     let mut out = Vec::new();
@@ -284,6 +469,86 @@ impl ChatCore {
     pub fn send_text(&mut self, channel: &str, body: &str, now_ms: f64) -> Result<u32, Error> {
         self.send(channel, |e, g, out| {
             e.send_text(g, body, now_ms as u64, out)
+        })
+    }
+
+    // ── Calls (protocol 26, `docs/notes/calls.md`) ──────────────────────────
+    //
+    // The media runs in the page (`webcall.js`): a worker has no
+    // `RTCPeerConnection`. This only carries the signalling over the chat's
+    // connection, and hands out the chat's call key for the current epoch.
+
+    /// Join (or start) the call in `channel` with the page's sending offer.
+    pub fn call_join(&mut self, channel: &str, offer: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        self.push(&NetMessage::CallJoin {
+            request_id: CALL_REQUEST_BASE | 1,
+            group,
+            offer: offer.to_string(),
+        })
+    }
+
+    /// Answer the forwarder's offer for the page's receiving connection.
+    pub fn call_answer(&mut self, channel: &str, sdp: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        self.push(&NetMessage::CallAnswer {
+            group,
+            sdp: sdp.to_string(),
+        })
+    }
+
+    /// Leave the call in `channel`.
+    pub fn call_leave(&mut self, channel: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        self.push(&NetMessage::CallLeave { group })
+    }
+
+    /// Decline a call ringing in `channel`.
+    pub fn call_decline(&mut self, channel: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        self.push(&NetMessage::CallDecline { group })
+    }
+
+    /// The call key of `channel`'s current epoch, as JSON
+    /// `{epoch, key (hex), index}`, or `null` when this device is not in it.
+    /// The page re-reads it after every step: a commit moves the key at once.
+    pub fn call_keys(&self, channel: &str) -> String {
+        let keys = group_of(channel).and_then(|g| {
+            self.engine
+                .as_ref()
+                .and_then(|e| e.call_epoch(&g, CALL_KEY_LEN).ok())
+        });
+        match keys {
+            Some(k) => json!({
+                "epoch": k.epoch,
+                "key": hex(&k.base_key),
+                "index": k.own_index,
+            })
+            .to_string(),
+            None => "null".into(),
+        }
+    }
+
+    /// Announce a history packed with [`pack_history`] and stored under
+    /// `hash`, for somebody this device just added to `channel`.
+    pub fn send_history(
+        &mut self,
+        channel: &str,
+        hash: &str,
+        key: &str,
+        nonce: &str,
+        count: u32,
+        now_ms: f64,
+    ) -> Result<u32, Error> {
+        let stored = PictureRef {
+            hash: hash.to_string(),
+            key: unhex(key)?,
+            nonce: unhex(nonce)?,
+            width: 0,
+            height: 0,
+        };
+        self.send(channel, |e, g, out| {
+            e.send_history(g, &stored, count, now_ms as u64, out)
         })
     }
 
@@ -770,6 +1035,22 @@ fn event_json(event: Event) -> Value {
             "channel": channel_key(&group),
             "request": request,
             "seq": seq,
+        }),
+        Event::HistoryWanted { group } => json!({
+            "kind": "history_wanted",
+            "channel": channel_key(&group),
+        }),
+        Event::History {
+            group,
+            from,
+            picture,
+            count,
+        } => json!({
+            "kind": "shared_history",
+            "channel": channel_key(&group),
+            "from": from,
+            "picture": picture_json(&picture),
+            "count": count,
         }),
         Event::Communities(list) => json!({
             "kind": "communities",

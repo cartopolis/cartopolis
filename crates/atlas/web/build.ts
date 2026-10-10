@@ -81,6 +81,21 @@ async function build() {
     // backdrop route (`pipeline::backdrop`) and committed.
     await Bun.write(path.join(dist, 'img/groningen.svg'), Bun.file(path.join(root, 'src/img/groningen.svg')))
 
+    // The call encryption worker the chat page's calls run (`src/lib/call.ts`): the
+    // viewer's own file and its SFrame, so the two seal frames identically.
+    const callWorker = await Bun.build({
+        entrypoints: [path.join(root, '../../cartopolis/web/call-worker.js')],
+        format: 'esm',
+        minify: !serve,
+        naming: 'call-worker.js',
+        outdir: dist,
+        target: 'browser',
+    })
+    if (!callWorker.success) {
+        for (const log of callWorker.logs) console.error(log)
+        throw new Error('call worker build failed')
+    }
+
     const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
     console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
 

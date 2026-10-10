@@ -58,9 +58,14 @@ function describe(e, what) {
 const WORKER_URL = new URL("../../../web/call-worker.js", import.meta.url);
 
 export class WebCall {
-  constructor(onEvent) {
+  // `options` is for a page that draws the call itself (the web chat page):
+  // `workerUrl` where its build put `call-worker.js`, and `onStream(participant,
+  // kind, stream)` to hand it each person's audio and video (`stream` null when
+  // they leave) instead of the hidden elements the viewer reads pixels from.
+  constructor(onEvent, options = {}) {
     this.onEvent = onEvent;
-    this.worker = new Worker(WORKER_URL, { type: "module" });
+    this.onStream = options.onStream || null;
+    this.worker = new Worker(options.workerUrl || WORKER_URL, { type: "module" });
     this.worker.onmessage = (e) => {
       if (e.data.kind === "dropped") console.debug("call: frames dropped", e.data);
     };
@@ -168,6 +173,12 @@ export class WebCall {
     const who = this.people.get(info.participant) || {};
     this.people.set(info.participant, who);
     const stream = new MediaStream([e.track]);
+    if (this.onStream) {
+      who[e.track.kind] = true;
+      this.onStream(info.participant, e.track.kind, stream);
+      e.track.onended = () => this.onStream(info.participant, e.track.kind, null);
+      return;
+    }
     if (e.track.kind === "audio") {
       who.audio?.remove();
       who.audio = Object.assign(document.createElement("audio"), { autoplay: true, srcObject: stream });
@@ -230,6 +241,24 @@ export class WebCall {
       await this.videoSender.replaceTrack(null);
       this.camera.stop();
       this.camera = null;
+    }
+  }
+
+  /** This device's own camera, for a self-view, or null. */
+  selfView() {
+    return this.camera ? new MediaStream([this.camera]) : null;
+  }
+
+  /** Drop the media of anybody no longer in the call (a page that draws it
+   *  itself calls this on every roster; `pictures` does it for the viewer). */
+  forgetGone() {
+    const live = new Set([...this.tracks.values()].map((t) => t.participant));
+    for (const participant of [...this.people.keys()]) {
+      if (!live.has(participant)) {
+        this.people.delete(participant);
+        this.onStream?.(participant, "audio", null);
+        this.onStream?.(participant, "video", null);
+      }
     }
   }
 

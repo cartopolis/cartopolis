@@ -18,6 +18,9 @@ on:
       # leave its chat worker refused by the server it talks to.
       - "crates/chat/**"
       - "crates/web_chat/**"
+      - "crates/cartopolis/web/webcall.js"
+      - "crates/cartopolis/web/call-worker.js"
+      - "crates/cartopolis/web/sframe.js"
       - "crates/e2ee/**"
       - "crates/core/**"
       - "Cargo.lock"

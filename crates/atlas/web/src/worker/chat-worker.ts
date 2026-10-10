@@ -15,12 +15,14 @@
  * back three things: the state (chats, communities, who is signed in), a chat's
  * history when they open it, and every event as it happens.
  */
-import init, {ChatCore} from './pkg/cartopolis_web_chat.js'
+import init, {ChatCore, open_history, pack_history} from './pkg/cartopolis_web_chat.js'
 import {ChatConnection, type ChatCoreModule} from './connection.ts'
 import {
     apply,
     changeLocally,
+    mergeShared,
     redactLocally,
+    shareable,
     type Chat,
     emptyChat,
     markRead,
@@ -58,6 +60,8 @@ const SAVE_AFTER_MS = 400
 
 let conn: ChatConnection | null = null
 let token: string | null = null
+/** The session this connection signed in with, for the picture store. */
+let session: string | null = null
 /** Lets go of the Web Lock this connection holds. */
 let release: (() => void) | null = null
 let status: 'connected' | 'connecting' | 'signed_out' | 'waiting' = 'signed_out'
@@ -157,6 +161,7 @@ async function handle(event: ChatEvent): Promise<void> {
     switch (event.kind) {
         case 'signed_in':
             me = event.address
+            session = event.session_token
             status = 'connected'
             histories.clear()
             for (const [channel, c] of await store.histories(event.address).catch(() => new Map<string, Chat>())) {
@@ -186,6 +191,12 @@ async function handle(event: ChatEvent): Promise<void> {
         case 'directory':
             directory = event.listings
             break
+        case 'history_wanted':
+            void shareHistory(event.channel)
+            break
+        case 'shared_history':
+            void readShared(event.channel, event.from, event.picture)
+            break
         case 'redacted':
             if (redactLocally(chat(event.channel), event.seq, event.by)) {
                 changed(event.channel)
@@ -203,6 +214,50 @@ async function handle(event: ChatEvent): Promise<void> {
     }
     post({event, type: 'event'})
     state()
+}
+
+/**
+ * Somebody was just added to a chat by this device: pack what it holds and
+ * send it, sealed, so they read what was said before them.
+ */
+async function shareHistory(channel: string): Promise<void> {
+    const items = shareable(chat(channel))
+    if (!items.length || !conn || !session) return
+    try {
+        const packed = pack_history(JSON.stringify(items))
+        const r = await fetch('/api/pictures', {
+            body: packed.bytes as Uint8Array<ArrayBuffer>,
+            headers: {Authorization: `Bearer ${session}`},
+            method: 'POST',
+        })
+        if (!r.ok) throw new Error(`the picture store answered ${r.status}`)
+        const {hash} = (await r.json()) as {hash: string}
+        await conn.sendHistory(channel, hash, packed.key, packed.nonce, packed.count)
+    } catch (e) {
+        post({event: {kind: 'error', message: `could not share the history: ${(e as Error).message}`}, type: 'event'})
+    }
+}
+
+/** A history somebody shared: fetch it, open it, put it in front. */
+async function readShared(
+    channel: string,
+    from: string,
+    picture: {hash: string; key: string; nonce: string},
+): Promise<void> {
+    if (!session) return
+    try {
+        const r = await fetch(`/api/pictures/${picture.hash}`, {headers: {Authorization: `Bearer ${session}`}})
+        if (!r.ok) throw new Error(`the picture store answered ${r.status}`)
+        const bytes = new Uint8Array(await r.arrayBuffer())
+        const items = JSON.parse(open_history(bytes, picture.hash, picture.key, picture.nonce))
+        if (mergeShared(chat(channel), items, from)) {
+            changed(channel)
+            history(channel)
+            state()
+        }
+    } catch (e) {
+        post({event: {kind: 'error', message: `could not open a shared history: ${(e as Error).message}`}, type: 'event'})
+    }
 }
 
 function onEvent(event: ChatEvent): void {
@@ -289,6 +344,10 @@ async function run(command: Command, from: Port): Promise<void> {
         history(command.channel, from)
         return
     }
+    if (command.type === 'call_keys') {
+        post({id: command.id, keys: conn?.callKeys(command.channel) ?? null, type: 'call_keys'}, from)
+        return
+    }
     if (!conn) throw new Error('not signed in to chat')
     const c = conn
     switch (command.type) {
@@ -365,6 +424,14 @@ async function run(command: Command, from: Port): Promise<void> {
                     command.line,
                 ),
             )
+        case 'call_join':
+            return c.community((core) => core.call_join(command.channel, command.offer))
+        case 'call_answer':
+            return c.community((core) => core.call_answer(command.channel, command.sdp))
+        case 'call_leave':
+            return c.community((core) => core.call_leave(command.channel))
+        case 'call_decline':
+            return c.community((core) => core.call_decline(command.channel))
         case 'resolve_report':
             return c.community((core) => core.resolve_report(command.id, command.report))
         case 'add_to_chat':

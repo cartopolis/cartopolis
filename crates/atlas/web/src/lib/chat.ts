@@ -27,6 +27,8 @@ interface Port {
     postMessage(message: Command): void
 }
 
+import {Calls} from './call'
+
 export type Status = 'connected' | 'connecting' | 'signed_out' | 'waiting'
 
 export class ChatClient {
@@ -44,6 +46,11 @@ export class ChatClient {
     /** The chat this page is showing, if any: its new lines count as read. */
     current: string | null = null
 
+    /** The call this page runs, and the calls ringing in its chats. */
+    readonly calls: Calls
+    private keyAsks = new Map<number, (keys: {epoch: number; index: number; key: string} | null) => void>()
+    private nextAsk = 1
+
     private port: Port
     private changed: () => void
     private listeners = new Set<(event: ChatEvent) => void>()
@@ -51,6 +58,7 @@ export class ChatClient {
     /** `changed` is called whenever anything the page shows has changed. */
     constructor(changed: () => void) {
         this.changed = changed
+        this.calls = new Calls(this, changed)
         const url = '/chat-worker.js'
         if (typeof SharedWorker !== 'undefined') {
             const worker = new SharedWorker(url, {name: 'cartopolis-chat', type: 'module'})
@@ -179,6 +187,22 @@ export class ChatClient {
         this.send({id, report, type: 'resolve_report'})
     }
 
+    /** The chat's call key for its current epoch, from the worker that holds the keys. */
+    callKeys(channel: string): Promise<{epoch: number; index: number; key: string} | null> {
+        const id = this.nextAsk++
+        return new Promise((resolve) => {
+            this.keyAsks.set(id, resolve)
+            this.send({channel, id, type: 'call_keys'})
+        })
+    }
+
+    /** Call signalling, carried by the worker's connection. */
+    callSignal(
+        command: Extract<Command, {type: 'call_answer' | 'call_decline' | 'call_join' | 'call_leave'}>,
+    ): void {
+        this.send(command)
+    }
+
     /** The community a chat is a topic of, and the topic. */
     topicOf(channel: string): {community: CommunityView; topic: CommunityView['topics'][number]} | null {
         for (const community of this.communities) {
@@ -194,6 +218,10 @@ export class ChatClient {
 
     private receive(update: Update): void {
         switch (update.type) {
+            case 'call_keys':
+                this.keyAsks.get(update.id)?.(update.keys)
+                this.keyAsks.delete(update.id)
+                return
             case 'state':
                 this.address = update.address
                 this.chats = update.chats
@@ -213,6 +241,7 @@ export class ChatClient {
     }
 
     private onWorkerEvent(event: ChatEvent): void {
+        if (event.kind.startsWith('call_')) this.calls.onEvent(event as {kind: string})
         if (event.kind === 'notice' || event.kind === 'error') {
             this.notice = event.kind === 'notice' ? event.text : event.message
         }

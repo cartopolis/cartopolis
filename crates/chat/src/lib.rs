@@ -76,7 +76,7 @@ pub fn is_private_message(msg: &NetMessage) -> bool {
 
 /// Where a picture lives and what opens it: the half of `Payload::Picture` a
 /// line keeps.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PictureRef {
     pub hash: String,
     pub key: [u8; 32],
@@ -173,6 +173,19 @@ pub enum Event {
     Named { group: Vec<u8>, name: String },
     /// Something the person should be told, in words.
     Notice(String),
+    /// This device just added somebody to `group`: its host should pack up
+    /// what it holds of the chat and send it with [`Engine::send_history`],
+    /// so they read what was said before them.
+    HistoryWanted { group: Vec<u8> },
+    /// History for somebody who joined late, sealed in an attachment
+    /// (`picture` says where and with what key; [`open_history`] reads it).
+    /// It is `from`'s copy, not the log: show it as shared by them.
+    History {
+        group: Vec<u8>,
+        from: String,
+        picture: PictureRef,
+        count: u32,
+    },
     /// Every community this account is in or waiting for, whole
     /// (`NetMessage::Communities`): the answer to each community request and
     /// whenever one changes.
@@ -240,9 +253,60 @@ fn read_payload(bytes: &[u8]) -> ReadLine {
             | Payload::GroupName { .. }
             | Payload::React { .. }
             | Payload::Edit { .. }
-            | Payload::Delete { .. },
+            | Payload::Delete { .. }
+            | Payload::History { .. },
         )
         | Err(_) => (UNREADABLE.into(), None, None),
+    }
+}
+
+/// One earlier message in a history handed to somebody who joined late
+/// ([`Event::HistoryWanted`]). Postcard inside a sealed attachment, behind a
+/// version byte ([`HISTORY_FORMAT`]): a new field is a new version.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryItem {
+    /// Its place in the chat's log, as the sender saw it.
+    pub seq: u64,
+    /// Full address of who said it.
+    pub from: String,
+    pub body: String,
+    pub sent_at_ms: u64,
+    pub parent: Option<u64>,
+    /// A point, as the ActivityStreams JSON it travelled as.
+    pub point: Option<String>,
+    pub picture: Option<PictureRef>,
+}
+
+/// Most messages one history carries: the newest ones. Enough to pick up a
+/// conversation; past it the attachment grows faster than anyone scrolls.
+pub const MAX_HISTORY: usize = 300;
+
+/// The first byte of a packed history.
+pub const HISTORY_FORMAT: u8 = 1;
+
+/// Seal up to [`MAX_HISTORY`] of the newest `items` for upload. Answers the
+/// attachment and how many it holds.
+pub fn pack_history(
+    items: &[HistoryItem],
+) -> Result<(cartopolis_e2ee::SealedAttachment, u32), String> {
+    let from = items.len().saturating_sub(MAX_HISTORY);
+    let kept = &items[from..];
+    let mut bytes = vec![HISTORY_FORMAT];
+    bytes.extend(postcard::to_allocvec(kept).map_err(|e| e.to_string())?);
+    let sealed = cartopolis_e2ee::seal_attachment(&bytes).map_err(|e| e.to_string())?;
+    Ok((sealed, kept.len() as u32))
+}
+
+/// Open a history fetched from the picture store.
+pub fn open_history(sealed: &[u8], picture: &PictureRef) -> Result<Vec<HistoryItem>, String> {
+    let plain = cartopolis_e2ee::open_attachment(sealed, &picture.key, &picture.nonce)
+        .map_err(|e| e.to_string())?;
+    match plain.split_first() {
+        Some((&HISTORY_FORMAT, rest)) => postcard::from_bytes(rest).map_err(|e| e.to_string()),
+        Some((v, _)) => Err(format!(
+            "a history in format {v}, which this version cannot read"
+        )),
+        None => Err("an empty history".into()),
     }
 }
 
@@ -1253,6 +1317,7 @@ impl Engine {
         group: &[u8],
         seq: Option<u64>,
         out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
     ) -> bool {
         let Some(i) = self.device_adds.iter().position(|(r, _)| *r == request_id) else {
             return false;
@@ -1278,6 +1343,12 @@ impl Engine {
                     tracing::warn!(error = %e, "could not repeat a chat's name for a new device");
                 }
             }
+        }
+        // And what was said before them: this device's host packs it up.
+        if seq.is_some() {
+            events.push(Event::HistoryWanted {
+                group: group.to_vec(),
+            });
         }
         true
     }
@@ -1434,6 +1505,9 @@ impl Engine {
                 tracing::warn!(error = %e, "could not repeat a chat's name for a newcomer");
             }
         }
+        events.push(Event::HistoryWanted {
+            group: a.group.clone(),
+        });
         true
     }
 
@@ -1502,6 +1576,29 @@ impl Engine {
                 width: picture.width,
                 height: picture.height,
                 caption: caption.to_string(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Send a packed history ([`pack_history`]) the host has uploaded, for
+    /// somebody this device just added ([`Event::HistoryWanted`]).
+    pub fn send_history(
+        &mut self,
+        group: &[u8],
+        stored: &PictureRef,
+        count: u32,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        self.send_payload(
+            group,
+            &Payload::History {
+                hash: stored.hash.clone(),
+                key: stored.key,
+                nonce: stored.nonce,
+                count,
                 sent_at_ms: now_ms,
             },
             out,
@@ -1693,7 +1790,7 @@ impl Engine {
                 seq,
                 refused,
             } => {
-                if self.on_device_add_committed(request_id, &group, seq, out) {
+                if self.on_device_add_committed(request_id, &group, seq, out, events) {
                     return;
                 }
                 if self.on_removal_committed(request_id, seq, out) {
@@ -2235,6 +2332,24 @@ impl Engine {
                     from: from.address,
                     target,
                 }),
+                Ok(Payload::History {
+                    hash,
+                    key,
+                    nonce,
+                    count,
+                    ..
+                }) => events.push(Event::History {
+                    group,
+                    from: from.address,
+                    picture: PictureRef {
+                        hash,
+                        key,
+                        nonce,
+                        width: 0,
+                        height: 0,
+                    },
+                    count,
+                }),
                 decoded => {
                     let parent = match &decoded {
                         Ok(Payload::Reply { parent, .. }) => Some(*parent),
@@ -2271,6 +2386,36 @@ mod tests {
         assert_eq!(group_of(&key), Some(g));
         assert_eq!(group_of("room:lobby"), None);
         assert_eq!(group_of("dm:abc"), None);
+    }
+
+    #[test]
+    fn a_history_packs_the_newest_messages_and_opens_with_its_key_only() {
+        let items: Vec<HistoryItem> = (0..MAX_HISTORY as u64 + 20)
+            .map(|seq| HistoryItem {
+                seq,
+                from: "ann@x".into(),
+                body: format!("line {seq}"),
+                sent_at_ms: seq * 1000,
+                parent: None,
+                point: None,
+                picture: None,
+            })
+            .collect();
+        let (sealed, count) = pack_history(&items).unwrap();
+        assert_eq!(count as usize, MAX_HISTORY);
+        let stored = PictureRef {
+            hash: "h".into(),
+            key: sealed.key,
+            nonce: sealed.nonce,
+            width: 0,
+            height: 0,
+        };
+        let opened = open_history(&sealed.bytes, &stored).unwrap();
+        assert_eq!(opened.len(), MAX_HISTORY);
+        assert_eq!(opened[0].seq, 20, "the newest are kept");
+        let mut wrong = stored.clone();
+        wrong.key[0] ^= 1;
+        assert!(open_history(&sealed.bytes, &wrong).is_err());
     }
 
     #[test]
@@ -2784,6 +2929,15 @@ mod loopback {
                 .any(|e| matches!(e, Event::Opened { group: g, .. } if *g == group)),
             "cas is in the topic: {:?}",
             cas.events
+        );
+        // The device that added her is asked to share what was said before.
+        assert!(
+            alice
+                .events
+                .iter()
+                .chain(&bob.events)
+                .any(|e| matches!(e, Event::HistoryWanted { group: g } if *g == group)),
+            "a history is wanted for the newcomer"
         );
 
         // Alice takes Cas out again. Cas's device forgets the topic, and what

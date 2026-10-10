@@ -106,6 +106,19 @@ export type ChatEvent =
     | {kind: 'directory'; listings: CommunityListing[]}
     | {by: string; channel: string; kind: 'redacted'; seq: number}
     | {by: string; channel: string; community: string; kind: 'left'}
+    | {channel: string; kind: 'history_wanted'}
+    | {channel: string; kind: 'call_roster'; members: {device: string; participant: number; username: string}[]}
+    | {answer: string; channel: string; kind: 'call_joined'; participant: number}
+    | {channel: string; kind: 'call_offer'; sdp: string; tracks: {mid: string; participant: number; video: boolean}[]}
+    | {channel: string; kind: 'call_declined'; username: string}
+    | {code: number; kind: 'call_refused'; message: string}
+    | {
+        channel: string
+        count: number
+        from: string
+        kind: 'shared_history'
+        picture: {hash: string; height: number; key: string; nonce: string; width: number}
+    }
     /** Not the engine's: the connection reporting on itself. */
     | {kind: 'disconnected'}
     | {kind: 'error'; message: string}
@@ -154,6 +167,12 @@ export type Command =
     | {channel: string; line: string; note: string; reason: string; target: number; type: 'report_to_moderators'; who: string}
     | {id: string; report: number; type: 'resolve_report'}
     | {channel: string; type: 'add_to_chat'; who: string}
+    | {channel: string; offer: string; type: 'call_join'}
+    | {channel: string; sdp: string; type: 'call_answer'}
+    | {channel: string; type: 'call_leave'}
+    | {channel: string; type: 'call_decline'}
+    /** The chat's call key for its current epoch, answered as `call_keys`. */
+    | {channel: string; id: number; type: 'call_keys'}
     /** The page is showing this chat: send its history, and count it read. */
     | {channel: string; type: 'open'}
 
@@ -171,3 +190,4 @@ export type Update =
         directory: CommunityListing[]
     }
     | {channel: string; messages: Message[]; type: 'history'}
+    | {id: number; keys: {epoch: number; index: number; key: string} | null; type: 'call_keys'}

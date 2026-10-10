@@ -73,6 +73,20 @@ function Avatar(who: string, size = 32) {
     )
 }
 
+/**
+ * A call's audio or video element, its stream set on the element itself
+ * (`srcObject` is a property, not an attribute) whenever it changes.
+ */
+function Media(stream: MediaStream, kind: 'audio' | 'video', muted: boolean) {
+    const attach = (v: m.VnodeDOM) => {
+        const el = v.dom as HTMLMediaElement
+        if (el.srcObject !== stream) el.srcObject = stream
+    }
+    return kind === 'video'
+        ? <video autoplay muted={muted} oncreate={attach} onupdate={attach} playsinline />
+        : <audio autoplay oncreate={attach} onupdate={attach} />
+}
+
 /** A community's tile: a rounded square with its initial. */
 function Tile(name: string, size = 32) {
     return (
@@ -295,6 +309,7 @@ export class Chat extends MithrilComponent {
             <div class={pane.kind === 'welcome' ? 'chat' : 'chat is-open'}>
                 {this.sidebar()}
                 <main class="chat-main">
+                    {this.ringingBanner()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
                     {pane.kind === 'community' && this.communityView(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
@@ -517,6 +532,11 @@ export class Chat extends MithrilComponent {
                         {c.notice}
                     </div>
                 )}
+                {c.calls.notice && (
+                    <div class="chat-notice" onclick={() => (c.calls.notice = null)}>
+                        {c.calls.notice}
+                    </div>
+                )}
                 <nav class="chat-side-links">
                     <a href="/viewer/">Map</a>
                     <a href="/apk/">App</a>
@@ -551,6 +571,110 @@ export class Chat extends MithrilComponent {
                 </div>
                 {tools}
             </header>
+        )
+    }
+
+    /** A private chat's call buttons: call (voice or video), join one going on, or hang up. */
+    callButtons(channel: string) {
+        const calls = chat().calls
+        if (calls.active?.channel === channel) {
+            return <Button onclick={() => calls.hangUp()} size="sm" variant="danger">Hang up</Button>
+        }
+        const others = calls.others(channel)
+        return (
+            <>
+                <Button onclick={() => void calls.join(channel)} size="sm" variant={others.length ? 'primary' : 'ghost'}>
+                    {others.length ? `Join call (${others.length})` : '📞 Call'}
+                </Button>
+                <Button onclick={() => void calls.join(channel, true)} size="sm" variant="ghost">🎥 Video</Button>
+            </>
+        )
+    }
+
+    /** The call this page is in: everybody's video, this device's own, and the controls. */
+    callPanel() {
+        const calls = chat().calls
+        const a = calls.active
+        if (!a) return null
+        const others = calls.others(a.channel)
+        const secs = a.since === null ? 0 : Math.floor((Date.now() - a.since) / 1000)
+        const status = !a.connected
+            ? 'Connecting…'
+            : a.since === null
+                ? 'Ringing…'
+                : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+        const self = calls.selfView()
+        return (
+            <section class="chat-call">
+                <div class="chat-call-tiles">
+                    {[...a.tiles.values()].map((t) => {
+                        const who = others.find((o) => o.participant === t.participant)?.username ?? '…'
+                        return (
+                            <figure class="chat-call-tile">
+                                {t.video ? Media(t.video, 'video', true) : Avatar(who, 64)}
+                                {t.audio && Media(t.audio, 'audio', false)}
+                                <figcaption>{who}</figcaption>
+                            </figure>
+                        )
+                    })}
+                    {a.tiles.size === 0 && (
+                        <p class="chat-hint">{others.length ? 'Waiting for their picture and sound…' : 'Waiting for somebody to answer…'}</p>
+                    )}
+                    {self && (
+                        <figure class="chat-call-tile is-self">
+                            {Media(self, 'video', true)}
+                            <figcaption>You</figcaption>
+                        </figure>
+                    )}
+                </div>
+                <div class="chat-call-bar">
+                    <span class="chat-sub">🔐 {status}</span>
+                    <Button onclick={() => calls.setMuted(!a.muted)} size="sm" variant="ghost">
+                        {a.muted ? 'Unmute' : 'Mute'}
+                    </Button>
+                    <Button onclick={() => void calls.setCamera(!a.camera)} size="sm" variant="ghost">
+                        {a.camera ? 'Camera off' : 'Camera on'}
+                    </Button>
+                    <Button onclick={() => calls.hangUp()} size="sm" variant="danger">Hang up</Button>
+                </div>
+            </section>
+        )
+    }
+
+    /** A call ringing in one of this person's chats, wherever they are on the page. */
+    ringingBanner() {
+        const c = chat()
+        const channel = c.calls.ringing()
+        if (!channel) return null
+        const caller = c.calls.others(channel)[0]?.username ?? 'Somebody'
+        const topic = c.topicOf(channel)
+        const sum = c.chats.find((x) => x.channel === channel)
+        const where = topic ? `# ${topic.topic.name}` : sum?.group ? sum.label : null
+        return (
+            <div class="chat-ringing">
+                <span>📞 <b>{caller}</b> is calling{where ? ` in ${where}` : ''}</span>
+                <Button
+                    onclick={() => {
+                        this.open(channel)
+                        void c.calls.join(channel)
+                    }}
+                    size="sm"
+                    variant="primary"
+                >
+                    Answer
+                </Button>
+                <Button
+                    onclick={() => {
+                        this.open(channel)
+                        void c.calls.join(channel, true)
+                    }}
+                    size="sm"
+                    variant="ghost"
+                >
+                    With video
+                </Button>
+                <Button onclick={() => c.calls.decline(channel)} size="sm" variant="ghost">Decline</Button>
+            </div>
         )
     }
 
@@ -592,10 +716,14 @@ export class Chat extends MithrilComponent {
                 {this.head(
                     title,
                     sub,
-                    !topic && sum?.group && (
-                        <Button onclick={() => this.dialog('members')} size="sm" variant="ghost">People</Button>
-                    ),
+                    <>
+                        {this.callButtons(channel)}
+                        {!topic && sum?.group && (
+                            <Button onclick={() => this.dialog('members')} size="sm" variant="ghost">People</Button>
+                        )}
+                    </>,
                 )}
+                {c.calls.active?.channel === channel && this.callPanel()}
                 <div class="chat-messages" onupdate={stickToBottom} oncreate={stickToBottom}>
                     {top.length === 0 && <p class="chat-empty">Nothing said here yet.</p>}
                     {this.messageList(channel, top, replies, me)}
@@ -1021,7 +1149,18 @@ export class Chat extends MithrilComponent {
         const out: m.Children[] = []
         let lastDay = ''
         let prev: Message | null = null
+        let toldShared = false
         for (const msg of list) {
+            // History from before this device joined is somebody's copy, not
+            // the log, and says so once, above the first of it.
+            if (msg.sharedBy && !toldShared) {
+                toldShared = true
+                out.push(
+                    <div class="chat-day" key="shared">
+                        Earlier messages, shared by {shown(msg.sharedBy, me)} when you joined
+                    </div>,
+                )
+            }
             const d = day(msg.sentAtMs)
             if (d !== lastDay) {
                 out.push(<div class="chat-day" key={`day-${d}`}>{d}</div>)

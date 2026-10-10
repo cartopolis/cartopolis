@@ -35,6 +35,12 @@ export interface ChatCoreApi {
     send_reaction(channel: string, target: number, emoji: string, remove: boolean, nowMs: number): number
     send_reply(channel: string, parent: number, body: string, nowMs: number): number
     send_text(channel: string, body: string, nowMs: number): number
+    send_history(channel: string, hash: string, key: string, nonce: string, count: number, nowMs: number): number
+    call_answer(channel: string, sdp: string): void
+    call_decline(channel: string): void
+    call_join(channel: string, offer: string): void
+    call_keys(channel: string): string
+    call_leave(channel: string): void
     start_direct(username: string): void
     start_group(name: string, members: string[]): void
     take_events(): string
@@ -173,6 +179,17 @@ export class ChatConnection {
 
     remove(channel: string, target: number): Promise<number> {
         return this.step((core) => core.send_delete(channel, target, Date.now()))
+    }
+
+    /** Announce a history packed with `pack_history` and stored under `hash`. */
+    sendHistory(channel: string, hash: string, key: string, nonce: string, count: number): Promise<number> {
+        return this.step((core) => core.send_history(channel, hash, key, nonce, count, Date.now()))
+    }
+
+    /** The chat's call key for its current epoch, or null when not in it. */
+    callKeys(channel: string): {epoch: number; index: number; key: string} | null {
+        if (!this.core?.is_open()) return null
+        return JSON.parse(this.core.call_keys(channel))
     }
 
     /** One community call: the engine queues its frames, which are then sent. */

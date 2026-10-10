@@ -1604,7 +1604,19 @@ fn chat_screen(
             }
             let mut number = 0usize;
             let mut last_day = String::new();
+            let mut told_shared = false;
             for line in &lines {
+                // History from before this device joined is somebody's copy,
+                // not the log, and says so once, above the first of it.
+                if let (Some(by), false) = (&line.shared_by, told_shared) {
+                    told_shared = true;
+                    ui.vertical_centered(|ui| {
+                        theme::note(
+                            ui,
+                            &format!("Earlier messages, shared by {by} when you joined"),
+                        );
+                    });
+                }
                 // `.day`: a small chip wherever the date changes ("Today").
                 if line.at_ms > 0 {
                     let day = day_label(line.at_ms, now);
