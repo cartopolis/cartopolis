@@ -1,0 +1,93 @@
+# Ten bridges across Groningen, each seen obliquely across its deck from a
+# camera computed off the OSM outline (`man_made=bridge`): the outline's long
+# axis is the road, the camera stands perpendicular to it, turned 25° along it,
+# back 0.8× the deck's length (60–150 m) and up 0.8× that — about 39° down,
+# which clears the trees on a quay. Every capture writes the PDOK aerial beside
+# it, which is what a bridge is judged against.
+#
+#     cargo shots docs/bridge-shots.toml --only bridges
+#     cargo shots docs/bridge-shots.toml --only bridge-herebrug
+
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1280x720"
+out_dir = "gpu"
+hide_ui = true
+mode = "free"
+time = 13.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+settle = 3.0
+wait = 180.0
+aerial_reference = true
+
+[[shot]]
+group = "bridges"
+name = "bridge-berlagebrug"
+description = "Berlagebrug: 81 x 19 m outline (way 632256179)."
+at = [53.219939, 6.591510, 52]
+look_at = [53.219961, 6.590541]
+
+[[shot]]
+group = "bridges"
+name = "bridge-oosterbrug"
+description = "Oosterbrug: 24 x 22 m outline (way 692391178)."
+at = [53.214327, 6.573362, 48]
+look_at = [53.213813, 6.573632]
+
+[[shot]]
+group = "bridges"
+name = "bridge-plantsoenbrug"
+description = "Plantsoenbrug: 16 x 16 m outline (way 692392417)."
+at = [53.219249, 6.556795, 48]
+look_at = [53.219170, 6.555905]
+
+[[shot]]
+group = "bridges"
+name = "bridge-hoge-euvelgunnerbrug"
+description = "Hoge Euvelgunnerbrug: 48 x 32 m outline (way 736469447)."
+at = [53.214586, 6.599960, 48]
+look_at = [53.214070, 6.599699]
+
+[[shot]]
+group = "bridges"
+name = "bridge-emmaviaduct"
+description = "Emmaviaduct: 266 x 19 m outline (way 747298081)."
+at = [53.207143, 6.564393, 120]
+look_at = [53.207305, 6.562159]
+
+[[shot]]
+group = "bridges"
+name = "bridge-museumbrug"
+description = "Museumbrug: 15 x 14 m outline (way 767951120)."
+at = [53.214887, 6.560247, 48]
+look_at = [53.214850, 6.559349]
+
+[[shot]]
+group = "bridges"
+name = "bridge-herewegviaduct"
+description = "Herewegviaduct: 46 x 20 m outline (way 772998838)."
+at = [53.210779, 6.572219, 48]
+look_at = [53.210755, 6.571320]
+
+[[shot]]
+group = "bridges"
+name = "bridge-herebrug"
+description = "Herebrug: 32 x 34 m outline (way 773754906)."
+at = [53.213071, 6.569931, 48]
+look_at = [53.212553, 6.570180]
+
+[[shot]]
+group = "bridges"
+name = "bridge-ebbingebrug"
+description = "Ebbingebrug: 20 x 19 m outline (way 810496572)."
+at = [53.222431, 6.565886, 48]
+look_at = [53.221999, 6.565349]
+
+[[shot]]
+group = "bridges"
+name = "bridge-trompbrug"
+description = "Trompbrug: 35 x 7 m outline (way 833050210)."
+at = [53.215140, 6.576626, 48]
+look_at = [53.214982, 6.575766]
+

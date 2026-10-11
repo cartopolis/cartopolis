@@ -241,6 +241,9 @@ type Tessellated = (
     // The deck heights atlas measured in this cell, if it did
     // (`terrain_tiles::load_atlas_decks`).
     Option<Vec<crate::systems::terrain_tiles::AtlasDeck>>,
+    // The streets' solved heights (`road_levels`), for the decks laid flat:
+    // they stand on the road they carry, which atlas solved across tile borders.
+    Option<Arc<cartopolis_geo::road_levels::LevelMap>>,
 );
 
 /// The ground a cell job builds on: the field in place now, or — while atlas's
@@ -861,6 +864,9 @@ struct PendingDecks {
     /// Every deck's height, by the same index as `decks`, when atlas measured
     /// them all (`terrain_tiles::match_atlas_decks`).
     known: Option<Vec<DeckMeasure>>,
+    /// The cell's solved street heights, where atlas solved them: what a deck
+    /// laid flat stands on.
+    road_levels: Option<Arc<cartopolis_geo::road_levels::LevelMap>>,
 }
 
 /// One deck's footprint in RD: its outline, and the box around it the ground
@@ -2133,6 +2139,7 @@ fn spawn_geometry_task(
                             placed,
                             built_rev,
                             atlas_decks,
+                            levels,
                         ),
                     ));
                 }
@@ -2873,6 +2880,7 @@ fn upload_finished_cells(
             placed,
             built_rev,
             atlas_decks,
+            road_levels,
         ),
     ) in ready
     {
@@ -3182,6 +3190,7 @@ fn upload_finished_cells(
                     clusters,
                     boxes,
                     known,
+                    road_levels,
                 },
             );
         }
@@ -3375,12 +3384,40 @@ pub fn resolve_bridge_decks(
             0.0
         };
         // **Each deck at its own measured top**, as an offset from that shared
-        // level; the clearance where the survey has no top for it.
+        // level; the clearance where the survey has no top for it. **A deck laid
+        // flat at the street it carries** — the solved road where atlas has one,
+        // the ground off its ends otherwise — and never at the shared level
+        // itself: that is the median over every deck in the cell, viaducts and
+        // their embankments included, and it stood Groningen's canal bridges up
+        // to 5.5 m above or below their quays (2026-10-11: 40 of the 51 flat
+        // decks round the Herebrug more than half a metre out).
         let levels: Vec<f32> = heights
             .iter()
             .zip(&tops)
-            .map(|(&h, top)| match top {
+            .enumerate()
+            .map(|(i, (&h, top))| match top {
                 Some(t) if terrain.is_ready() => (t - terrain.datum_m) - deck_level,
+                _ if h <= 0.0 && terrain.is_ready() => {
+                    pending
+                        .road_levels
+                        .as_deref()
+                        .and_then(|l| flat_deck_road_level(&pending.decks[i], l))
+                        .map_or_else(
+                            || {
+                                flat_deck_level(
+                                    &pending.decks[i],
+                                    pending
+                                        .approaches
+                                        .iter()
+                                        .filter(|a| a.deck as usize == i)
+                                        .map(|a| a.points.as_slice()),
+                                    |p| terrain.land_at(cell_world.x + p[0], cell_world.y + p[1]),
+                                )
+                            },
+                            |nap| nap - terrain.datum_m,
+                        )
+                        - deck_level
+                }
                 _ => h,
             })
             .collect();
@@ -4988,6 +5025,69 @@ const UNDER_WATER_M: f32 = 0.3;
 /// How far out along an approach [`DeckPlates::approach_steps`] reads the ground.
 const APPROACH_PROBE_M: f32 = 3.0;
 
+/// How far from the street it carries a deck's outline may lie and still take
+/// that street's height — a canal bridge's parapets and footways either side of
+/// the carriageway.
+const FLAT_DECK_ROAD_REACH_M: f32 = 6.0;
+
+/// The height a deck laid flat stands at where atlas solved the street it
+/// carries (`road_levels`), metres NAP: the median of that street's height
+/// nearest each outline vertex. **The first choice, because it is one answer for
+/// both halves of a bridge the tile border cut**: atlas solves the network over a
+/// window wider than a tile, and a span with no survey under it is bridged along
+/// the street from both quays — where [`flat_deck_level`], asking only the
+/// approaches this tile can see, stands each half at its own end.
+fn flat_deck_road_level(
+    deck: &BridgeDeck,
+    levels: &cartopolis_geo::road_levels::LevelMap,
+) -> Option<f32> {
+    let mut hs: Vec<f32> = deck
+        .rings
+        .iter()
+        .flatten()
+        .filter_map(|&p| levels.y_at(p, |level| level == 1, FLAT_DECK_ROAD_REACH_M))
+        .collect();
+    if hs.is_empty() {
+        return None;
+    }
+    hs.sort_by(f32::total_cmp);
+    Some(hs[hs.len() / 2])
+}
+
+/// The height a deck laid flat stands at: the median ground [`APPROACH_PROBE_M`]
+/// past where each of its approaches leaves the outline — the street the bridge
+/// is level with. A deck with no approach that leaves it (a footbridge, a deck
+/// the tile border cut) takes the median ground over its outline instead.
+/// `ground` is world `y` at a tile-local point.
+fn flat_deck_level<'a>(
+    deck: &BridgeDeck,
+    approaches: impl Iterator<Item = &'a [[f32; 2]]>,
+    ground: impl Fn([f32; 2]) -> f32,
+) -> f32 {
+    let mut hs: Vec<f32> = approaches
+        .filter_map(|run| {
+            let len: f32 = run
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            let mut clear = 0.0f32;
+            while clear < len && deck.contains(point_along(run, clear)) {
+                clear += 0.5;
+            }
+            let out = point_along(run, clear + APPROACH_PROBE_M);
+            (clear < len && !deck.contains(out)).then(|| ground(out))
+        })
+        .collect();
+    if hs.is_empty() {
+        hs = deck.rings.iter().flatten().map(|&p| ground(p)).collect();
+    }
+    if hs.is_empty() {
+        return 0.0;
+    }
+    hs.sort_by(f32::total_cmp);
+    hs[hs.len() / 2]
+}
+
 /// The point `at` metres along a polyline, clamped to its ends.
 pub(crate) fn point_along(pts: &[[f32; 2]], at: f32) -> [f32; 2] {
     let mut walked = 0.0f32;
@@ -5186,6 +5286,54 @@ mod tests {
             min: [0.0, 0.0],
             max: [span, span],
         }
+    }
+
+    /// A flat deck stands at the street off its ends — not at the ground under
+    /// it (a canal carved metres down) and not at anything else in the cell.
+    #[test]
+    fn a_flat_deck_stands_at_the_street_it_carries() {
+        let deck = square_deck(20.0);
+        // The canal under the deck is 3 m down; the quays either side are at
+        // 1.2 m on the south and 1.4 m on the north.
+        let ground = |p: [f32; 2]| {
+            if p[1] < 0.0 {
+                1.2
+            } else if p[1] > 20.0 {
+                1.4
+            } else {
+                -3.0
+            }
+        };
+        let south: Vec<[f32; 2]> = vec![[10.0, 5.0], [10.0, -40.0]];
+        let north: Vec<[f32; 2]> = vec![[10.0, 15.0], [10.0, 60.0]];
+        let both = [south.as_slice(), north.as_slice()];
+        let level = flat_deck_level(&deck, both.iter().copied(), ground);
+        assert!((1.2..=1.4).contains(&level), "{level}");
+        let one = flat_deck_level(&deck, std::iter::once(south.as_slice()), ground);
+        assert!((one - 1.2).abs() < 1e-6, "{one}");
+        // A run that never leaves the deck says nothing; with no other, the
+        // outline's own ground answers.
+        let inside: Vec<[f32; 2]> = vec![[2.0, 2.0], [18.0, 18.0]];
+        let none = flat_deck_level(&deck, std::iter::once(inside.as_slice()), |_| 0.7);
+        assert!((none - 0.7).abs() < 1e-6, "{none}");
+    }
+
+    /// Where atlas solved the street a flat deck carries, the deck takes that
+    /// street's height — the bridge-level run, not the ground-level street
+    /// running along the quay beside it.
+    #[test]
+    fn a_flat_deck_stands_on_its_solved_street() {
+        let deck = square_deck(20.0);
+        let mut levels = cartopolis_geo::road_levels::LevelMap::default();
+        // The bridge's street, rising 1.0 → 1.4 m NAP from quay to quay…
+        levels.add(1, 4.0, vec![[10.0, -10.0], [10.0, 30.0]], vec![1.0, 1.4]);
+        // …and the quay road along the south edge, much lower.
+        levels.add(0, 4.0, vec![[-20.0, -1.0], [40.0, -1.0]], vec![-2.0, -2.0]);
+        let y = flat_deck_road_level(&deck, &levels).unwrap();
+        assert!((1.0..=1.4).contains(&y), "{y}");
+        // Nothing solved within reach: no answer, and the caller falls back.
+        let far = cartopolis_geo::road_levels::LevelMap::default();
+        assert!(flat_deck_road_level(&deck, &far).is_none());
     }
 
     /// `square_deck`, moved `dx`, `dz` metres into the tile.

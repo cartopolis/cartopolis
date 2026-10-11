@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
 triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-09-27
+updated: 2026-10-11
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -303,6 +303,29 @@ The 3D basisvoorziening's own bridge objects were checked for this and not taken
 LoD1.2 drapes of the same BGT polygons, dated (one new deck came out 2.83 m against
 a DSM of 9.03), and on small viaducts over the ring the drape pulls outline corners
 down to the trench floor.
+
+## A deck laid flat stands on its own street (2026-10-11)
+
+"One level per tile" (above) was fixed for the *lifted* decks only. A deck under
+`MIN_LIFT_M` — every canal bridge — still took the cell's shared `deck_level`
+plus zero, and that level is the median ground over **every** deck in the cell,
+viaducts and embankments included. Logged per deck round the Herebrug (9 cells,
+51 flat decks): 40 stood more than 0.5 m off the street they carry, 28 more than
+1 m, the worst 5.45 m. In the pictures that was the Trompbrug, the Oosterbrug and
+the Plantsoenbrug half or wholly under the canal, the low Euvelgunnerbrug below
+its quay, and the Herebrug as two slabs at different heights.
+
+`map_geometry::flat_deck_road_level` stands a flat deck (and the carriageway cut
+out of it) on **the solved height of the street it carries** (`road_levels`,
+level 1, nearest each outline vertex within 6 m). That is the first choice
+because a tile border cuts bridges as readily as anything else, and the solver
+works over a window wider than a tile: the Herebrug is cut 7 m from its north
+end, and its two halves now meet within 4 cm. Where atlas has solved no street
+(7 of the 51), `flat_deck_level` takes the ground 3 m past where each approach
+leaves the outline, which agrees with the solved road to 0.13 m on average. The
+deck metrics in `--dump-state` say nothing about any of this — `DeckPlates` keeps
+lifted decks only — so the check is `docs/bridge-shots.toml`, ten bridges with
+the aerial photograph beside each.
 
 ## Storage, if the raster is ever baked instead of proxied
 
