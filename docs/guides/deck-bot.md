@@ -76,7 +76,7 @@ time, so a new binary over old assets can fail to draw or crash on a shader it
 no longer matches.
 
 It is built in **`/home/deck/bot-build`**, a checkout of its own, not in the
-`deck-1` build slot. A slot is a shared checkout that another agent may switch
+build slot (`deck-1` then, `deck-2` since 2026-10-11). A slot is a shared checkout that another agent may switch
 to its own branch at any moment. That happened while this was being set up:
 the "clean build" and the passing tests turned out to be another branch's.
 

@@ -187,10 +187,16 @@ GPU draw the same scene in milliseconds, but there are few of them, so use one
 when the question needs it rather than by default:
 
 ```bash
-cd "$(slot take gpu)"      # waits for a slot with a hardware GPU
-slot run -- bash -lc 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
-ssh deck 'cat /tmp/x.png' > /tmp/x.png   # a remote slot's output stays on its machine
+slot take gpu              # waits for a slot with a hardware GPU (deck-2)
+ssh deck-2 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
+scp deck-2:/tmp/x.png /tmp/x.png   # a slot's output stays on its machine
 ```
+
+Every slot is a **midas node** (jeroen/midas): a contained checkout on the VPS
+(`vps-2`) or the Steam Deck (`deck-2`) that follows your worktree — each `ssh`,
+`scp` or `rsync` to it first sends your new commits and uncommitted edits — and
+whose commands start in that checkout. `cargo` refuses to build in the agent
+container itself.
 
 
 Answer "what does it actually look like from there?" without flying the camera by
