@@ -32,10 +32,22 @@ body {
     background: transparent;
 }
 
+/* Sized to the *large* viewport, not to `inset: 0`, so the map stays put.
+   `cover` rescales the drawing whenever its box changes, and `inset: 0` is a
+   box that changes all the time: a phone's address bar sliding in and out
+   (the dynamic viewport), and a desktop scrollbar appearing or going between
+   one page and the next (the box loses its width). Both moved the streets
+   under the glass. `100vw` includes the scrollbar and `100lvh` is the height
+   with the browser's bars retracted, so neither of those changes it — only a
+   real resize of the window does. */
 body::before {
     content: '';
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100lvh;
     z-index: -1;
     pointer-events: none;
     background: var(--c-map);
@@ -344,8 +356,11 @@ body::before {
 }
 
 /* ── The chat ────────────────────────────────────────────────────────────────
-   Three panes of glass over the page: the rail, the list, the thread. The
-   conversation itself sits on the page, where the light is. */
+   Panes of glass over the page: the rail, the list, the conversation, the
+   call and the thread. The conversation used to sit bare on the page, and its
+   lines then read straight over the streets — flat, and harder to read than
+   anything on glass. It is a lighter pane than the list beside it, so the map
+   still shows through where the talking is. */
 
 .chat,
 .chat-signin {
@@ -354,11 +369,31 @@ body::before {
 
 .chat-rail,
 .chat-side,
-.chat-thread {
+.chat-thread,
+.chat-main,
+.chat-call {
     background: var(--c-glass-soft);
     backdrop-filter: blur(22px) saturate(1.5);
     -webkit-backdrop-filter: blur(22px) saturate(1.5);
     border-color: var(--c-rim);
+}
+
+.chat-main {
+    background: color-mix(in srgb, var(--c-glass-soft) 70%, transparent);
+    box-shadow: inset 0 1px 0 var(--c-highlight);
+}
+
+.chat-call {
+    border-left: 1px solid var(--c-rim);
+    box-shadow: inset 1px 0 0 var(--c-highlight);
+}
+
+.chat.is-call-focus .chat-call {
+    border-left: none;
+}
+
+.chat.is-call-focus .chat-main {
+    border-left: 1px solid var(--c-rim);
 }
 
 .chat-rail {

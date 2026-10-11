@@ -815,80 +815,488 @@
 
 /* ── Calls (`src/lib/call.ts`) ──────────────────────────────────────────── */
 
-.chat-ringing {
-    align-items: center;
-    background: var(--m-surface-raised);
-    border-bottom: 1px solid var(--m-border);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 18px;
+/*
+ * The app's call screen (`systems::call_screen`), in CSS: round keys with a
+ * label under each, green to answer, red to hang up, frosted glass for a
+ * switch that is on and the solid cream plate for one that is off. The colours
+ * are `theme::CALL_ACCEPT_GREEN` and `theme::CALL_END_RED`.
+ */
+.chat {
+    --call-green: #2ea05a;
+    --call-red: #d64541;
+    --call-cream: #f2efea;
 }
 
-.chat-ringing span {
+.chat-icon {
+    display: block;
+    height: 1.25em;
+    width: 1.25em;
+}
+
+.chat button.chat-key {
+    align-items: center;
+    display: inline-flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.chat-key-disc {
+    align-items: center;
+    border-radius: 50%;
+    box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 22%),
+        inset 0 -1px 0 rgb(0 0 0 / 25%),
+        0 6px 18px -6px rgb(0 0 0 / 55%);
+    display: inline-flex;
+    height: 64px;
+    justify-content: center;
+    transition:
+        transform var(--m-duration) var(--m-ease),
+        filter var(--m-duration) var(--m-ease);
+    width: 64px;
+}
+
+.chat-key-disc .chat-icon {
+    height: 28px;
+    width: 28px;
+}
+
+.chat-key:hover .chat-key-disc {
+    filter: brightness(1.12);
+    transform: translateY(-1px);
+}
+
+.chat-key:active .chat-key-disc {
+    filter: brightness(0.88);
+    transform: translateY(1px);
+}
+
+.chat-key:focus-visible .chat-key-disc {
+    outline: 3px solid var(--m-focus);
+    outline-offset: 2px;
+}
+
+.chat-key-label {
+    color: var(--m-text);
+    font-size: 0.78rem;
+}
+
+.chat-key.is-accept .chat-key-disc {
+    background: var(--call-green);
+    color: #fff;
+}
+
+.chat-key.is-hangup .chat-key-disc {
+    background: var(--call-red);
+    color: #fff;
+}
+
+.chat-key.is-glass .chat-key-disc {
+    backdrop-filter: blur(12px);
+    background: color-mix(in srgb, var(--m-text-strong) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--m-text-strong) 18%, transparent);
+    color: var(--m-text-strong);
+}
+
+.chat-key.is-off .chat-key-disc {
+    background: var(--call-cream);
+    color: #0f1416;
+}
+
+.chat-key.is-sm .chat-key-disc {
+    height: 36px;
+    width: 36px;
+}
+
+.chat-key.is-sm .chat-key-disc .chat-icon {
+    height: 18px;
+    width: 18px;
+}
+
+.chat-key.is-lg .chat-key-disc {
+    height: 72px;
+    width: 72px;
+}
+
+.chat-key.is-lg .chat-key-disc .chat-icon {
+    height: 32px;
+    width: 32px;
+}
+
+/* "Join call · 2" and "In call · 1:23" in a chat's header. */
+.chat button.chat-call-pill {
+    align-items: center;
+    background: var(--call-green);
+    border-radius: 999px;
+    box-shadow: 0 6px 18px -8px var(--call-green);
+    color: #fff;
+    display: inline-flex;
+    font-size: 0.85rem;
+    font-weight: 600;
+    gap: 6px;
+    padding: 6px 14px 6px 10px;
+}
+
+.chat button.chat-call-pill.is-live {
+    background: color-mix(in srgb, var(--call-green) 22%, transparent);
+    border: 1px solid var(--call-green);
+    box-shadow: none;
+    color: var(--m-text-strong);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── A call coming in: the app's incoming screen, as a dialog ─────────────── */
+
+.chat-ring {
+    align-items: center;
+    animation: chat-ring-in 0.2s var(--m-ease) both;
+    backdrop-filter: blur(8px);
+    background: var(--m-backdrop);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    position: fixed;
+    z-index: 50;
+}
+
+@keyframes chat-ring-in {
+    from { opacity: 0; }
+}
+
+.chat-ring-card {
+    align-items: center;
+    backdrop-filter: blur(28px) saturate(1.5);
+    background: var(--c-glass);
+    border: 1px solid var(--c-rim);
+    border-radius: 28px;
+    box-shadow:
+        inset 0 1px 0 var(--c-highlight),
+        0 32px 80px -20px var(--m-shadow-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: calc(100vw - 32px);
+    padding: 56px 48px 36px;
+    position: relative;
+    text-align: center;
+    width: 420px;
+}
+
+.chat-ring-card h2 {
+    color: var(--m-text-strong);
+    font-size: 1.7rem;
+    font-weight: 500;
+    margin: 18px 0 0;
+}
+
+.chat-ring-card p {
+    margin: 0;
+}
+
+.chat button.chat-ring-fold {
+    border-radius: 50%;
+    color: var(--m-text-strong);
+    left: 14px;
+    padding: 8px;
+    position: absolute;
+    top: 14px;
+}
+
+.chat button.chat-ring-fold:hover {
+    background: var(--m-hover);
+}
+
+/* A slow pulse around the initial: the dialog is ringing, not frozen. */
+.chat-ring-face {
+    border-radius: 50%;
+    position: relative;
+}
+
+.chat-ring-face::before,
+.chat-ring-face::after {
+    animation: chat-ring-pulse 1.7s ease-out infinite;
+    border: 2px solid color-mix(in srgb, var(--m-text-strong) 45%, transparent);
+    border-radius: 50%;
+    content: '';
+    inset: 0;
+    position: absolute;
+}
+
+.chat-ring-face::after {
+    animation-delay: 0.85s;
+}
+
+@keyframes chat-ring-pulse {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(1.55); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chat-ring-face::before,
+    .chat-ring-face::after {
+        animation: none;
+        opacity: 0;
+    }
+}
+
+.chat-ring-keys {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 36px;
+    width: 100%;
+}
+
+/* Over a call already going on, or folded away: a banner with the same keys. */
+.chat-ring-banner {
+    align-items: center;
+    animation: chat-ring-in 0.2s var(--m-ease) both;
+    backdrop-filter: blur(22px) saturate(1.5);
+    background: var(--c-glass);
+    border: 1px solid var(--c-rim);
+    border-radius: 18px;
+    box-shadow:
+        inset 0 1px 0 var(--c-highlight),
+        0 18px 48px -14px var(--m-shadow-color);
+    display: flex;
+    gap: 10px;
+    max-width: calc(100vw - 24px);
+    padding: 10px 12px;
+    position: fixed;
+    right: 16px;
+    top: 16px;
+    width: 360px;
+    z-index: 50;
+}
+
+.chat button.chat-ring-banner-who {
+    align-items: center;
+    display: flex;
     flex: 1;
+    gap: 10px;
+    min-width: 0;
+    text-align: left;
+}
+
+.chat-ring-banner-who > span {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.chat-ring-banner-who b {
+    color: var(--m-text-strong);
+}
+
+/* ── The call you are in: a panel beside the chat, or the middle of the page ── */
+
+.chat-main {
+    order: 1;
 }
 
 .chat-call {
-    background: var(--m-surface-sunken);
-    border-bottom: 1px solid var(--m-border);
     display: flex;
+    flex: none;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 18px;
+    gap: 12px;
+    min-width: 0;
+    order: 2;
+    padding: 12px;
+    width: 400px;
 }
 
-.chat-call-tiles {
+.chat-thread {
+    order: 3;
+}
+
+/* `.chat button.x` above rather than `.chat .x`: the chat resets its plain
+   buttons with `.chat button:not(.m-button)`, which outranks two classes. */
+
+/* Swapped: the call is the wide view, and the chat is the panel. */
+.chat.is-call-focus .chat-call {
+    flex: 1;
+    order: 1;
+    width: auto;
+}
+
+.chat.is-call-focus .chat-main {
+    flex: none;
+    order: 2;
+    width: 380px;
+}
+
+.chat-call-head {
+    align-items: center;
     display: flex;
-    flex-wrap: wrap;
     gap: 8px;
+}
+
+.chat button.chat-call-title {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    text-align: left;
+}
+
+.chat-call-title b {
+    color: var(--m-text-strong);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-call-title .chat-sub {
+    font-variant-numeric: tabular-nums;
+}
+
+.chat button.chat-call-swap {
+    align-items: center;
+    border: 1px solid var(--m-border);
+    border-radius: 999px;
+    color: var(--m-text);
+    display: inline-flex;
+    font-size: 0.8rem;
+    gap: 6px;
+    padding: 5px 12px 5px 9px;
+}
+
+.chat button.chat-call-swap:hover {
+    background: var(--m-hover);
+    border-color: var(--m-border-strong);
+}
+
+/*
+ * Everybody's pictures, as an even grid: `--cols` comes from `gridColumns()`,
+ * and the rows share the height between them, so a picture is as large as the
+ * space allows whatever the count.
+ */
+.chat-call-grid {
+    display: grid;
+    flex: 1;
+    gap: 8px;
+    grid-auto-rows: minmax(0, 1fr);
+    grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+    min-height: 0;
+    position: relative;
 }
 
 .chat-call-tile {
     align-items: center;
-    background: #000;
-    border-radius: 10px;
+    background: #0b0f10;
+    border-radius: 14px;
     display: flex;
-    flex-direction: column;
-    height: 180px;
     justify-content: center;
     margin: 0;
+    min-height: 120px;
     overflow: hidden;
     position: relative;
-    width: 240px;
 }
 
 .chat-call-tile video {
     height: 100%;
+    inset: 0;
     object-fit: cover;
+    position: absolute;
     width: 100%;
 }
 
-.chat-call-tile.is-self {
-    height: 120px;
-    width: 160px;
+/* Your own picture is a mirror, as every call app shows it. */
+.chat-call-tile.is-self video {
+    transform: scaleX(-1);
 }
 
 .chat-call-tile figcaption {
     background: rgb(0 0 0 / 55%);
     border-radius: 6px;
-    bottom: 6px;
+    bottom: 8px;
     color: #fff;
     font-size: 0.75rem;
-    left: 6px;
-    padding: 1px 6px;
+    left: 8px;
+    padding: 1px 7px;
     position: absolute;
 }
 
-.chat-call-bar {
+.chat-call-waiting {
     align-items: center;
+    color: var(--m-text-dim);
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    flex-direction: column;
+    gap: 14px;
+    grid-column: 1 / -1;
+    justify-content: center;
 }
 
-.chat-call-bar .chat-sub {
-    flex: 1;
+/* One other person fills the grid; you are a small window in its corner. */
+.chat-call-pip {
+    bottom: 12px;
+    position: absolute;
+    right: 12px;
+    width: 32%;
+    z-index: 1;
+}
+
+.chat-call-pip .chat-call-tile {
+    aspect-ratio: 3 / 4;
+    box-shadow: 0 8px 24px -8px rgb(0 0 0 / 70%);
+    min-height: 0;
+    outline: 1px solid rgb(255 255 255 / 18%);
+}
+
+.chat-call-controls {
+    display: flex;
+    gap: 28px;
+    justify-content: center;
+    padding: 4px 0 6px;
+}
+
+/* A folded call on a phone: a green bar at the top of the chat. */
+.chat button.chat-call-bar {
+    align-items: center;
+    background: var(--call-green);
+    color: #fff;
+    display: none;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    gap: 8px;
+    padding: 8px 14px;
+    width: 100%;
+}
+
+.chat-call-bar-hint {
+    margin-left: auto;
+    opacity: 0.85;
+}
+
+@media (max-width: 760px) {
+    /* A phone has room for one: the call fills the screen, or it is the bar. */
+    .chat.is-in-call .chat-call {
+        background: var(--m-bg);
+        display: none;
+        inset: 0;
+        position: fixed;
+        width: auto;
+        z-index: 40;
+    }
+
+    .chat.is-call-focus .chat-call {
+        display: flex;
+    }
+
+    .chat.is-in-call:not(.is-call-focus) .chat-call-bar {
+        display: flex;
+    }
+
+    .chat-ring-card {
+        border-radius: 0;
+        height: 100%;
+        justify-content: center;
+        max-width: none;
+        width: 100%;
+    }
+
+    .chat-ring-keys {
+        margin-top: auto;
+    }
 }
 
 /* A topic in the community pane, with its Mute beside it. */

@@ -316,6 +316,23 @@ the viewer's elements, and `deploy-web.yml` watches the three files it shares
 with the viewer. `chat-browser.ts` checks it end to end: two headless
 Chromium with fake devices ring, answer, and each sees the other's video.
 
+**It is drawn as the app's call screen (2026-10-11).** A call coming in is a
+dialog over the page — the caller large on a pulsing initial, Decline red,
+Video glass and Answer green, round keys with a label under each — and a banner
+with the same keys over a call already going on or once folded with the arrow.
+The call itself is a panel to the right of the chat, and one button (Swap)
+puts it in the middle with the chat as the panel; a phone has room for one, so
+there it is the whole screen or a green bar. The keys are `theme::call_button`'s
+four tones in CSS, and the app's chat header now uses those keys too instead
+of a text button. The people are an **even grid, not a masonry**: every picture
+is a camera frame of one shape, so the only decision is the column count
+(`gridColumns`: the squarest grid in the middle, one column then two in the
+panel), and one other person fills the panel with your own picture in its
+corner. `standInClient` lets a preview mount the real page against a stand-in
+client with `canvas.captureStream()` cameras — how layouts with several people
+were looked at with nobody to call; nothing about a real multi-party call has
+run in the browser.
+
 ## Ringing a closed app (2026-09-30, protocol 29)
 
 A phone with a **UnifiedPush distributor** installed (ntfy is the common one)

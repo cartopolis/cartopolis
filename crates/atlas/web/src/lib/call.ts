@@ -185,7 +185,11 @@ export class Calls {
             channel,
             connected: false,
             epoch: null,
-            keyTimer: setInterval(() => void this.refreshKeys(), 1000),
+            keyTimer: setInterval(() => {
+                void this.refreshKeys()
+                // The timer on screen counts seconds; nothing else redraws it.
+                this.changed()
+            }, 1000),
             muted: false,
             participant: null,
             since: null,

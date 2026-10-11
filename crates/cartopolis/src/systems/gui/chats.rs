@@ -695,6 +695,11 @@ struct Actions {
     snapshot: Option<String>,
 }
 
+/// The call key in a chat's header: between the call screen's banner size
+/// ([`theme::CALL_BUTTON_SMALL`]) and its thumb size, so it is the largest thing
+/// in the header without crowding the name.
+const HEADER_CALL_KEY: f32 = 42.0;
+
 /// What a private chat's header offers about the chat's call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CallButton {
@@ -1473,16 +1478,31 @@ fn chat_header(
             }
         });
         // A private chat can be called. Encrypted like its lines, so the
-        // button lives only where the padlock does.
-        let label = match call {
+        // button lives only where the padlock does. It is the call screen's own
+        // round key (`theme::call_button`) — green to call or join, red to hang
+        // up — so the header and the call it opens speak one language; the web
+        // chat's header draws the same keys.
+        let key_of = match call {
             CallButton::Hidden => None,
-            CallButton::Call => Some("Call"),
-            CallButton::Join => Some("Join call"),
-            CallButton::HangUp => Some("Hang up"),
+            CallButton::Call => Some((icons::CALL, "Call", theme::CallTone::Accept)),
+            CallButton::Join => Some((icons::CALL, "Join the call", theme::CallTone::Accept)),
+            CallButton::HangUp => Some((icons::CALL_END, "Hang up", theme::CallTone::HangUp)),
         };
-        if let (Some(label), Some(group)) = (label, crate::systems::private_chat::group_of(key)) {
+        if let (Some((icon, tip, tone)), Some(group)) =
+            (key_of, crate::systems::private_chat::group_of(key))
+        {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::action_button(ui, label).clicked() {
+                // A call going on without you says so beside its key: the key
+                // alone would read as "start one".
+                let clicked = theme::call_button(ui, icon, tip, tone, HEADER_CALL_KEY).clicked();
+                if call == CallButton::Join {
+                    ui.label(
+                        egui::RichText::new("Join")
+                            .size(theme::SIZE_SUB)
+                            .color(theme::CALL_ACCEPT_GREEN),
+                    );
+                }
+                if clicked {
                     act.call = Some(if call == CallButton::HangUp {
                         crate::systems::calls::CallRequest::Leave
                     } else {

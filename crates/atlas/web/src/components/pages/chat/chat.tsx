@@ -35,6 +35,15 @@ function chat(): ChatClient {
     return client
 }
 
+/**
+ * Stand a client in for the real one, before the page is first drawn: how a
+ * preview draws a call with several people in it on a machine with nobody to
+ * call.
+ */
+export function standInClient(stand: ChatClient): void {
+    client = stand
+}
+
 /** The reactions offered on a message, in this order. */
 const QUICK = ['👍', '❤️', '😂', '🎉', '👀', '✅']
 
@@ -86,6 +95,77 @@ function Media(stream: MediaStream, kind: 'audio' | 'video', muted: boolean) {
     return kind === 'video'
         ? <video autoplay muted={muted} oncreate={attach} onupdate={attach} playsinline />
         : <audio autoplay oncreate={attach} onupdate={attach} />
+}
+
+/**
+ * The call screen's glyphs: Material Symbols, the set the app draws its call
+ * screen in (`systems::icons`), as inline paths so the page needs no icon font.
+ */
+const ICONS: Record<string, string> = {
+    arrow_back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
+    call: 'M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 0 0-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z',
+    call_end: 'M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 0 0-2.67-1.85.996.996 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z',
+    chat: 'M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z',
+    mic: 'M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z',
+    mic_off: 'M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z',
+    swap: 'M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z',
+    videocam: 'M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z',
+    videocam_off: 'M21 6.5l-4 4V7c0-.55-.45-1-1-1H9.82L21 17.18V6.5zM3.27 2L2 3.27 4.73 6H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.21 0 .39-.08.54-.18L19.73 21 21 19.73 3.27 2z',
+}
+
+function Icon(name: string) {
+    return (
+        <svg aria-hidden="true" class="chat-icon" viewBox="0 0 24 24">
+            <path d={ICONS[name]} fill="currentColor" />
+        </svg>
+    )
+}
+
+/**
+ * A round call key with its label under it — `theme::call_button` in the app,
+ * with the same four tones: green to answer, red to hang up, frosted glass for
+ * a switch that is on, and the solid cream plate for one that is off (the
+ * state worth noticing).
+ */
+function CallKey(
+    icon: string,
+    label: string,
+    tone: 'accept' | 'hangup' | 'glass' | 'off',
+    onclick: () => void,
+    size: 'sm' | 'md' | 'lg' = 'md',
+) {
+    return (
+        <button aria-label={label} class={`chat-key is-${tone} is-${size}`} onclick={onclick} title={label}>
+            <span class="chat-key-disc">{Icon(icon)}</span>
+            {size !== 'sm' && <span class="chat-key-label">{label}</span>}
+        </button>
+    )
+}
+
+/** How long the call has run, as `m:ss`. */
+function callTime(calls: ChatClient['calls']): string {
+    const a = calls.active
+    if (!a || a.since === null) return '0:00'
+    const secs = Math.floor((Date.now() - a.since) / 1000)
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+}
+
+/** What the call is doing, under its name. */
+function callStatus(calls: ChatClient['calls']): string {
+    const a = calls.active
+    if (!a) return ''
+    if (!a.connected) return 'Connecting…'
+    return a.since === null ? 'Ringing…' : callTime(calls)
+}
+
+/**
+ * Columns for `n` pictures: the count that keeps each as large as it can be.
+ * In the middle (`wide`) that is the squarest grid; in the side panel, which is
+ * narrow and tall, one column until a third person and two after.
+ */
+export function gridColumns(n: number, wide: boolean): number {
+    if (!wide) return n <= 2 ? 1 : 2
+    return Math.max(1, Math.ceil(Math.sqrt(n)))
 }
 
 /** Community pictures as object URLs, by hash: fetched once, with the session. */
@@ -210,6 +290,10 @@ interface PageState {
     username: string
     password: string
     busy: boolean
+    /** The call is the wide view in the middle and the chat sits beside it. */
+    callFocus: boolean
+    /** A ringing call folded down to a banner, by channel. */
+    ringFolded: string | null
 }
 
 function emptyDraft(): Draft {
@@ -248,6 +332,7 @@ export class Chat extends MithrilComponent {
         admin: false,
         adminChecked: false,
         busy: false,
+        callFocus: false,
         community: emptyDraft(),
         dialog: null,
         draft: {},
@@ -259,6 +344,7 @@ export class Chat extends MithrilComponent {
         password: '',
         person: {address: '', channel: null},
         query: '',
+        ringFolded: null,
         report: {channel: '', line: '', note: '', reason: 'spam', seq: 0, who: ''},
         thread: null,
         username: '',
@@ -283,6 +369,9 @@ export class Chat extends MithrilComponent {
         // Signed in on this page since the last draw: start the chat too.
         if ($s.signup.token && chat().status === 'signed_out') chat().signIn({token: $s.signup.token})
         if ($s.signup.token && !this.s.adminChecked) void this.checkAdmin()
+        // A call folded to a banner stays folded only while it rings: the next
+        // call in that chat comes in as the dialog again.
+        if (this.s.ringFolded !== null && chat().calls.ringing() !== this.s.ringFolded) this.s.ringFolded = null
         this.askInvite()
     }
 
@@ -438,11 +527,19 @@ export class Chat extends MithrilComponent {
         if (!$s.signup.token) return this.signInView()
         const s = this.s
         const pane = s.pane
+        const inCall = chat().calls.active !== null
         return (
-            <div class={pane.kind === 'welcome' ? 'chat' : 'chat is-open'}>
+            <div
+                class={[
+                    'chat',
+                    pane.kind === 'welcome' ? '' : 'is-open',
+                    inCall ? 'is-in-call' : '',
+                    inCall && s.callFocus ? 'is-call-focus' : '',
+                ].join(' ')}
+            >
                 {this.sidebar()}
                 <main class="chat-main">
-                    {this.ringingBanner()}
+                    {inCall && this.callBar()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
                     {pane.kind === 'community' && this.communityView(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
@@ -452,7 +549,9 @@ export class Chat extends MithrilComponent {
                     {pane.kind === 'invite' && this.inviteView(pane.code)}
                     {pane.kind === 'welcome' && this.welcome()}
                 </main>
+                {this.callStage()}
                 {pane.kind === 'chat' && s.thread !== null && this.threadView(pane.channel, s.thread)}
+                {this.ringingView()}
                 {s.dialog && this.dialogView()}
             </div>
         )
@@ -710,106 +809,199 @@ export class Chat extends MithrilComponent {
         )
     }
 
-    /** A private chat's call buttons: call (voice or video), join one going on, or hang up. */
+    /**
+     * A private chat's call keys in its header, drawn as the call screen's own
+     * round buttons (`systems::call_screen` in the app): green to call, a glass
+     * key for video, a green pill to join a call already going on. Inside the
+     * call this chat is in, the controls live on the call itself, so the header
+     * only says so.
+     */
     callButtons(channel: string) {
         const calls = chat().calls
         if (calls.active?.channel === channel) {
-            return <Button onclick={() => calls.hangUp()} size="sm" variant="danger">Hang up</Button>
+            return (
+                <button class="chat-call-pill is-live" onclick={() => this.focusCall(!this.s.callFocus)} title="Show the call">
+                    {Icon('call')} In call · {callTime(calls)}
+                </button>
+            )
         }
         const others = calls.others(channel)
+        if (others.length) {
+            return (
+                <button class="chat-call-pill" onclick={() => this.answer(channel, false)} title="Join the call">
+                    {Icon('call')} Join call · {others.length}
+                </button>
+            )
+        }
         return (
             <>
-                <Button onclick={() => void calls.join(channel)} size="sm" variant={others.length ? 'primary' : 'ghost'}>
-                    {others.length ? `Join call (${others.length})` : '📞 Call'}
-                </Button>
-                <Button onclick={() => void calls.join(channel, true)} size="sm" variant="ghost">🎥 Video</Button>
+                {CallKey('videocam', 'Video call', 'glass', () => this.answer(channel, true), 'sm')}
+                {CallKey('call', 'Call', 'accept', () => this.answer(channel, false), 'sm')}
             </>
         )
     }
 
-    /** The call this page is in: everybody's video, this device's own, and the controls. */
-    callPanel() {
-        const calls = chat().calls
+    /** Place, answer or join the call in `channel`, and bring it into view. */
+    answer(channel: string, camera: boolean) {
+        this.s.ringFolded = null
+        if (this.s.pane.kind !== 'chat' || this.s.pane.channel !== channel) this.open(channel)
+        // A phone has room for one of the two: the call takes the screen.
+        this.s.callFocus = matchMedia('(max-width: 760px)').matches
+        void chat().calls.join(channel, camera)
+    }
+
+    focusCall(on: boolean) {
+        this.s.callFocus = on
+    }
+
+    /**
+     * The call this page is in, as a panel beside the chat — or as the wide view
+     * in the middle with the chat beside it (`callFocus`), swapped by one button.
+     *
+     * Its people are a balanced grid, not a masonry: every picture is a camera
+     * frame of the same shape, so the layout's job is to pick a column count
+     * that keeps them as large as the space allows (`gridColumns`), as Meet and
+     * Jitsi do. One other person fills the panel and this device's own picture
+     * is a small window in its corner, as on the app's call screen.
+     */
+    callStage() {
+        const c = chat()
+        const calls = c.calls
         const a = calls.active
         if (!a) return null
+        const s = this.s
         const others = calls.others(a.channel)
-        const secs = a.since === null ? 0 : Math.floor((Date.now() - a.since) / 1000)
-        const status = !a.connected
-            ? 'Connecting…'
-            : a.since === null
-                ? 'Ringing…'
-                : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
         const self = calls.selfView()
+        const me = c.address ?? 'You'
+        const name = this.chatTitle(a.channel)
+        const people = others.map((o) => {
+            const t = [...a.tiles.values()].find((x) => x.participant === o.participant)
+            return {audio: t?.audio ?? null, key: `p${o.participant}`, name: o.username, video: t?.video ?? null}
+        })
+        // Pictures and sound from somebody the roster has not named yet.
+        for (const t of a.tiles.values()) {
+            if (!others.some((o) => o.participant === t.participant)) {
+                people.push({audio: t.audio, key: `p${t.participant}`, name: '…', video: t.video})
+            }
+        }
+        const pip = people.length <= 1
+        const tiles = pip ? people : [...people, {audio: null, key: 'self', name: 'You', video: self}]
+        const cols = gridColumns(Math.max(tiles.length, 1), s.callFocus)
+        const tile = (p: {audio: MediaStream | null; key: string; name: string; video: MediaStream | null}, isSelf: boolean) => (
+            <figure class={isSelf ? 'chat-call-tile is-self' : 'chat-call-tile'} key={p.key}>
+                {p.video
+                    ? Media(p.video, 'video', true)
+                    : <span class="chat-call-face">{Avatar(isSelf ? me : p.name, 72)}</span>}
+                {p.audio && Media(p.audio, 'audio', false)}
+                <figcaption>{p.name}</figcaption>
+            </figure>
+        )
         return (
-            <section class="chat-call">
-                <div class="chat-call-tiles">
-                    {[...a.tiles.values()].map((t) => {
-                        const who = others.find((o) => o.participant === t.participant)?.username ?? '…'
-                        return (
-                            <figure class="chat-call-tile">
-                                {t.video ? Media(t.video, 'video', true) : Avatar(who, 64)}
-                                {t.audio && Media(t.audio, 'audio', false)}
-                                <figcaption>{who}</figcaption>
-                            </figure>
-                        )
-                    })}
-                    {a.tiles.size === 0 && (
-                        <p class="chat-hint">{others.length ? 'Waiting for their picture and sound…' : 'Waiting for somebody to answer…'}</p>
+            <aside class="chat-call">
+                <header class="chat-call-head">
+                    <button class="chat-call-title" onclick={() => this.open(a.channel)} title="Open this chat">
+                        <b>{name}</b>
+                        <span class="chat-sub">🔐 {callStatus(calls)}</span>
+                    </button>
+                    <button
+                        class="chat-call-swap"
+                        onclick={() => this.focusCall(!s.callFocus)}
+                        title={s.callFocus ? 'Put the chat back in the middle' : 'Put the call in the middle'}
+                    >
+                        {Icon(s.callFocus ? 'chat' : 'swap')}
+                        <span>{s.callFocus ? 'Chat' : 'Swap'}</span>
+                    </button>
+                </header>
+                <div class={pip ? 'chat-call-grid is-pair' : 'chat-call-grid'} style={`--cols:${cols}`}>
+                    {people.length === 0 && (
+                        <div class="chat-call-waiting">
+                            {Avatar(name, 96)}
+                            <span>{a.since === null ? 'Ringing…' : 'Waiting for their picture and sound…'}</span>
+                        </div>
                     )}
-                    {self && (
-                        <figure class="chat-call-tile is-self">
-                            {Media(self, 'video', true)}
-                            <figcaption>You</figcaption>
-                        </figure>
-                    )}
+                    {tiles.map((p) => tile(p, p.key === 'self'))}
+                    {pip && self && <div class="chat-call-pip">{tile({audio: null, key: 'self', name: 'You', video: self}, true)}</div>}
                 </div>
-                <div class="chat-call-bar">
-                    <span class="chat-sub">🔐 {status}</span>
-                    <Button onclick={() => calls.setMuted(!a.muted)} size="sm" variant="ghost">
-                        {a.muted ? 'Unmute' : 'Mute'}
-                    </Button>
-                    <Button onclick={() => void calls.setCamera(!a.camera)} size="sm" variant="ghost">
-                        {a.camera ? 'Camera off' : 'Camera on'}
-                    </Button>
-                    <Button onclick={() => calls.hangUp()} size="sm" variant="danger">Hang up</Button>
-                </div>
-            </section>
+                <footer class="chat-call-controls">
+                    {CallKey(a.camera ? 'videocam' : 'videocam_off', a.camera ? 'Camera' : 'Camera off', a.camera ? 'glass' : 'off', () => void calls.setCamera(!a.camera))}
+                    {CallKey(a.muted ? 'mic_off' : 'mic', a.muted ? 'Unmute' : 'Mute', a.muted ? 'off' : 'glass', () => calls.setMuted(!a.muted))}
+                    {CallKey('call_end', 'End', 'hangup', () => calls.hangUp())}
+                </footer>
+            </aside>
         )
     }
 
-    /** A call ringing in one of this person's chats, wherever they are on the page. */
-    ringingBanner() {
+    /** On a phone the call takes the screen; folded, it is this green bar at the top. */
+    callBar() {
+        const calls = chat().calls
+        return (
+            <button class="chat-call-bar" onclick={() => this.focusCall(true)}>
+                {Icon('call')}
+                <span>{this.chatTitle(calls.active!.channel)} · {callTime(calls)}</span>
+                <span class="chat-call-bar-hint">Tap to return to the call</span>
+            </button>
+        )
+    }
+
+    /** A chat's name, as its header shows it. */
+    chatTitle(channel: string): string {
         const c = chat()
+        const topic = c.topicOf(channel)
+        if (topic) return `# ${topic.topic.name}`
+        const sum = c.chats.find((x) => x.channel === channel)
+        return sum ? (sum.group ? sum.label : shown(sum.label, c.address)) : 'Call'
+    }
+
+    /**
+     * A call ringing in one of this person's chats, wherever they are on the
+     * page: the app's incoming-call screen as a dialog — who, large, on a
+     * pulsing initial; Decline in red, Answer in green, Video between — and,
+     * over a call already going on or once folded away, a banner with the same
+     * keys at a smaller size.
+     */
+    ringingView() {
+        const c = chat()
+        const s = this.s
         const channel = c.calls.ringing()
         if (!channel) return null
         const caller = c.calls.others(channel)[0]?.username ?? 'Somebody'
-        const topic = c.topicOf(channel)
-        const sum = c.chats.find((x) => x.channel === channel)
-        const where = topic ? `# ${topic.topic.name}` : sum?.group ? sum.label : null
+        const where = this.chatTitle(channel)
+        const what = where.toLowerCase() === caller.toLowerCase() ? 'Incoming call' : `Incoming call · ${where}`
+        const decline = () => {
+            s.ringFolded = null
+            c.calls.decline(channel)
+        }
+        if (c.calls.active || s.ringFolded === channel) {
+            return (
+                <div class="chat-ring-banner" role="alertdialog" aria-label={`${caller} is calling`}>
+                    <button class="chat-ring-banner-who" onclick={() => (s.ringFolded = null)} title="Show the call">
+                        {Avatar(caller, 36)}
+                        <span>
+                            <b>{caller}</b>
+                            <span class="chat-sub">{what}</span>
+                        </span>
+                    </button>
+                    {CallKey('call_end', 'Decline', 'hangup', decline, 'sm')}
+                    {CallKey('call', 'Answer', 'accept', () => this.answer(channel, false), 'sm')}
+                </div>
+            )
+        }
         return (
-            <div class="chat-ringing">
-                <span>📞 <b>{caller}</b> is calling{where ? ` in ${where}` : ''}</span>
-                <Button
-                    onclick={() => {
-                        this.open(channel)
-                        void c.calls.join(channel)
-                    }}
-                    size="sm"
-                    variant="primary"
-                >
-                    Answer
-                </Button>
-                <Button
-                    onclick={() => {
-                        this.open(channel)
-                        void c.calls.join(channel, true)
-                    }}
-                    size="sm"
-                    variant="ghost"
-                >
-                    With video
-                </Button>
-                <Button onclick={() => c.calls.decline(channel)} size="sm" variant="ghost">Decline</Button>
+            <div class="chat-ring" role="alertdialog" aria-label={`${caller} is calling`}>
+                <section class="chat-ring-card">
+                    <button class="chat-ring-fold" onclick={() => (s.ringFolded = channel)} title="Not now — keep it ringing as a banner">
+                        {Icon('arrow_back')}
+                    </button>
+                    <div class="chat-ring-face">{Avatar(caller, 120)}</div>
+                    <h2>{caller}</h2>
+                    <p>{what}</p>
+                    <p class="chat-sub">🔐 End-to-end encrypted</p>
+                    <div class="chat-ring-keys">
+                        {CallKey('call_end', 'Decline', 'hangup', decline, 'lg')}
+                        {CallKey('videocam', 'Video', 'glass', () => this.answer(channel, true), 'lg')}
+                        {CallKey('call', 'Answer', 'accept', () => this.answer(channel, false), 'lg')}
+                    </div>
+                </section>
             </div>
         )
     }
@@ -859,7 +1051,6 @@ export class Chat extends MithrilComponent {
                         )}
                     </>,
                 )}
-                {c.calls.active?.channel === channel && this.callPanel()}
                 <div class="chat-messages" onupdate={stickToBottom} oncreate={stickToBottom}>
                     {top.length === 0 && <p class="chat-empty">Nothing said here yet.</p>}
                     {this.messageList(channel, top, replies, me)}
