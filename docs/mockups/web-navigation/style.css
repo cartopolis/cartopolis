@@ -1,0 +1,126 @@
+/* Builds on the workspace sheet (browser frame, rail, sidebar, messages,
+   world markers) and repaints it in the web UI's palette as it is today:
+   crates/atlas/web/src/css/theme.css, dark half (the client's own values),
+   teal for live controls and brand orange for the logo, badges and live dot. */
+@import url(../workspace/style.css);
+
+:root {
+  --ink:#0f1416; --panel:#141a1c; --surface:#171e20; --raised:#1f2829; --hover:#26302f;
+  --line:#63797c; --gline:#2a3536;
+  --accent:#5cc6c0; --accent-muted:#263f42; --accent-text:#a8dcd8;
+  --brand:#fd6012; --real:#4fb2ff;
+  --cream:#f4f8f8; --text:#e2e9ea; --dim:#aac2c6; --warn:#d8c07a; --danger:#f2a296;
+  --glass:rgba(20,26,28,.86);
+}
+.app { flex-direction:column; }
+.appbody { flex:1; display:flex; min-height:0; position:relative; }
+
+/* the top bar: where you are, and the one switch */
+.top { height:52px; flex:none; display:flex; align-items:center; gap:14px; padding:0 14px 0 16px; background:var(--ink); border-bottom:1px solid var(--gline); position:relative; z-index:6; }
+.top .wm { font-size:18px; width:170px; display:flex; align-items:center; gap:9px; }
+.top .wm img { width:26px; height:26px; }
+.crumbs { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:13.5px; white-space:nowrap; }
+.crumbs b { color:var(--cream); font-weight:600; }
+.crumbs .sep { color:var(--line); }
+.crumbs .c { display:flex; align-items:center; gap:6px; }
+.top .mid { margin-right:6px; }
+.top .sp { flex:1; }
+.seg { background:var(--panel); }
+.seg div { padding:6px 15px; }
+.seg .on { background:var(--accent); color:var(--ink); }
+.seg .adm { color:var(--warn); }
+.seg .adm.on { background:var(--warn); color:var(--ink); }
+.seg .cnt { background:var(--brand); color:#fff; border-radius:9px; font-size:10.5px; padding:0 6px; font-weight:600; }
+.seg .on .cnt { background:var(--ink); color:var(--accent); }
+.kbd { display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--gline); border-radius:var(--r); padding:6px 10px; color:var(--line); font-size:13px; width:230px; }
+.kbd span { margin-left:auto; font-size:11px; border:1px solid var(--gline); border-radius:4px; padding:0 5px; }
+
+/* rail: level 1 inside Community */
+.rail { padding-top:12px; }
+.ws.home { background:var(--raised); color:var(--dim); }
+.ws.on.home { color:var(--accent); }
+.ws img { width:100%; height:100%; border-radius:12px; object-fit:cover; }
+.rail .tip { font-size:9.5px; color:var(--dim); margin-top:-6px; letter-spacing:.3px; }
+
+/* community header in the sidebar */
+.chd { padding:14px 16px 12px; border-bottom:1px solid var(--gline); }
+.chd h3 { color:var(--cream); font-size:17px; display:flex; align-items:center; justify-content:space-between; }
+.chd .meta { color:var(--dim); font-size:12px; display:flex; align-items:center; gap:10px; margin-top:4px; }
+.chd .meta span { display:flex; align-items:center; gap:4px; }
+.chd .acts { display:flex; gap:6px; margin-top:10px; }
+.chd .acts .btn { padding:5px 10px; font-size:12.5px; }
+.sec h4 .new { margin:0; }
+.it .role { font-size:10.5px; color:var(--warn); border:1px solid rgba(216,192,122,.4); border-radius:4px; padding:0 5px; }
+.badge.y { background:var(--warn); color:var(--ink); }
+.it.on { background:var(--accent-muted); }
+
+/* admin */
+.side.adm .it.on { background:rgba(216,192,122,.14); color:var(--cream); }
+.side.adm .it.on .hash { color:var(--warn); }
+.ahd { padding:14px 16px 12px; border-bottom:1px solid var(--gline); }
+.ahd h3 { color:var(--warn); font-size:13px; text-transform:uppercase; letter-spacing:.7px; }
+.ahd p { color:var(--dim); font-size:12px; margin-top:3px; }
+.tbl { margin:0 18px; border:1px solid var(--gline); border-radius:var(--r-lg); overflow:hidden; }
+.tr { display:grid; grid-template-columns:1.4fr 1.6fr 1fr 110px; gap:10px; padding:10px 14px; align-items:center; border-top:1px solid var(--gline); font-size:13.5px; color:var(--text); }
+.tr:first-child { border-top:0; background:var(--surface); color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+.tr.on { background:var(--accent-muted); }
+.tag { display:inline-block; font-size:11px; padding:0 7px; border-radius:10px; background:var(--raised); color:var(--dim); margin-right:4px; }
+.tag.a { background:rgba(92,198,192,.18); color:var(--accent-text); }
+.tag.w { background:rgba(216,192,122,.16); color:var(--warn); }
+.tag.d { background:rgba(242,162,150,.14); color:var(--danger); }
+.tabs { display:flex; gap:4px; padding:0 18px; border-bottom:1px solid var(--gline); margin-bottom:14px; }
+.tabs div { padding:10px 12px; color:var(--dim); font-size:13.5px; }
+.tabs .on { color:var(--cream); box-shadow:inset 0 -2px 0 var(--warn); }
+.field { margin:0 16px 12px; }
+.field label { display:block; color:var(--dim); font-size:12px; margin-bottom:4px; }
+.field .v { background:var(--ink); border:1px solid var(--gline); border-radius:var(--r); padding:8px 10px; color:var(--cream); font-size:13.5px; }
+.danger { color:var(--danger); border-color:rgba(242,162,150,.35) !important; }
+
+/* admin action dropped into the world or the chat */
+.admbar { display:flex; align-items:center; gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed rgba(216,192,122,.35); color:var(--warn); font-size:12px; }
+.admbar .btn { background:rgba(216,192,122,.14); color:var(--warn); padding:5px 10px; font-size:12.5px; }
+
+/* building card in World */
+.card { position:absolute; z-index:5; width:300px; padding:14px 16px; }
+.card h4 { color:var(--cream); font-size:15px; }
+.card .kv { display:grid; grid-template-columns:96px 1fr; gap:3px 8px; font-size:12.5px; margin-top:8px; }
+.card .kv span:nth-child(odd) { color:var(--dim); }
+
+/* phones */
+.phones { display:flex; gap:28px; align-items:flex-start; }
+.phone { width:300px; height:620px; border-radius:36px; background:var(--panel); box-shadow:0 0 0 7px #05080a, 0 0 0 8px #2a3236, 0 24px 60px rgba(0,0,0,.5); overflow:hidden; position:relative; display:flex; flex-direction:column; flex:none; }
+.phone .sb { height:30px; flex:none; display:flex; justify-content:space-between; align-items:center; padding:0 22px; color:var(--text); font-size:12px; }
+.phone .ttl { display:flex; align-items:center; gap:10px; padding:4px 14px 8px; }
+.phone .ttl b { color:var(--cream); font-size:18px; flex:1; }
+.phone .back { display:flex; align-items:center; color:var(--accent); font-size:14px; gap:2px; }
+.phone .pseg { margin:2px auto 10px; }
+.phone .pseg div { padding:5px 12px; font-size:12.5px; }
+.prow { display:flex; align-items:center; gap:11px; padding:9px 14px; }
+.prow .av { border-radius:11px; }
+.prow .b { flex:1; min-width:0; }
+.prow .b b { display:block; color:var(--cream); font-size:14.5px; }
+.prow .b span { display:block; color:var(--dim); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.prow .chev { color:var(--line); }
+.phone .plab { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.6px; padding:10px 14px 2px; }
+.phone .msg { padding:5px 14px; }
+.phone .msg p { font-size:13px; }
+.phone .composer { margin:auto 12px 18px; }
+.cap { width:300px; color:var(--dim); font-size:13px; margin-top:16px; }
+.cap b { color:var(--cream); display:block; font-size:14px; margin-bottom:3px; }
+
+/* the depth diagram */
+.levels { display:grid; grid-template-columns:repeat(4, 1fr); gap:0; margin-bottom:44px; }
+.lvl { background:var(--surface); border:1px solid var(--gline); padding:14px 16px; position:relative; }
+.lvl:first-child { border-radius:var(--r-lg) 0 0 var(--r-lg); }
+.lvl:last-child { border-radius:0 var(--r-lg) var(--r-lg) 0; }
+.lvl + .lvl { border-left:0; }
+.lvl .k { color:var(--accent); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
+.lvl h3 { color:var(--cream); font-size:16px; margin:2px 0 6px; }
+.lvl p { color:var(--dim); font-size:13px; }
+.lvl p b { color:var(--text); }
+.lvl .ex { margin-top:8px; font-size:12.5px; color:var(--text); display:flex; flex-direction:column; gap:3px; }
+.lvl .ex span { display:flex; gap:6px; align-items:center; }
+.lvl .ex i { font-style:normal; color:var(--line); width:72px; flex:none; font-size:11.5px; }
+.new { background:var(--warn); }
+.notes h2 span { color:var(--accent); }
+h1 em { color:var(--accent); }
