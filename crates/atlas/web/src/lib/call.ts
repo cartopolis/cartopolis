@@ -63,6 +63,8 @@ export class Calls {
     private client: ChatClient
     private changed: () => void
     private tones = new CallTones()
+    /** The browser notification for the call ringing now, while this tab is not looked at. */
+    private ringNote: {channel: string; note: Notification} | null = null
 
     constructor(client: ChatClient, changed: () => void) {
         this.client = client
@@ -74,7 +76,34 @@ export class Calls {
     private notify(): void {
         const a = this.active
         this.tones.update(this.ringing() !== null, a !== null, a ? this.others(a.channel).length : 0)
+        this.ringNotice()
         this.changed()
+    }
+
+    /**
+     * A call ringing while this tab is in the background, or another window is in
+     * front, is a browser notification as well as the dialog: the ringtone alone
+     * cannot say who. Only once the person has allowed notifications (the page
+     * asks on the first click, as for messages), only in a tab that is open, and
+     * gone the moment the call stops ringing. It says who is calling, which only
+     * this page and the person ever see.
+     */
+    private ringNotice(): void {
+        const channel = this.ringing()
+        if (this.ringNote && this.ringNote.channel !== channel) {
+            this.ringNote.note.close()
+            this.ringNote = null
+        }
+        if (!channel || this.ringNote || (!document.hidden && document.hasFocus())) return
+        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+        const who = this.others(channel)[0]?.username ?? 'Somebody'
+        const note = new Notification('Incoming call', {body: `${who} is calling`, requireInteraction: true, tag: `call:${channel}`})
+        note.onclick = () => {
+            window.focus()
+            this.client.open(channel)
+            note.close()
+        }
+        this.ringNote = {channel, note}
     }
 
     static supported(): boolean {
