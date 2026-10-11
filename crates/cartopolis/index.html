@@ -127,9 +127,24 @@
           // Storage can be unavailable (privacy modes); the Rust side then
           // never reloads, so there is nothing to report either.
         }
+        // Not every `error` event is the boot failing. Chrome reports a
+        // ResizeObserver that took two passes to settle as one (winit observes
+        // the canvas, and the stage resizes it), and a browser extension's own
+        // script errors arrive here too. Marking those `failed` used to stop the
+        // hand-over below for good, so the loader sat over an app that was
+        // running fine underneath it. They are logged, and nothing more.
+        function benign(message, file) {
+          return /ResizeObserver loop/.test(message || "") ||
+            /^(chrome|moz|safari(-web)?)-extension:/.test(file || "");
+        }
         window.addEventListener("error", function (e) {
+          var text = e.message + (e.filename ? " (" + e.filename + ")" : "");
+          if (benign(e.message, e.filename)) {
+            push("warn", "ignored: " + text);
+            return;
+          }
           window.__boot.failed = true;
-          push("error", e.message + (e.filename ? " (" + e.filename + ")" : ""));
+          push("error", text);
         });
         window.addEventListener("unhandledrejection", function (e) {
           window.__boot.failed = true;
@@ -340,11 +355,18 @@
         // "Downloading engine… 41.2 MB" back over it. Once the boot has failed,
         // only the failure path may write here.
         var set = function (state, text, force) {
+          // Any sign of life, failed or not, is what the watchdog below times
+          // its "stalled" verdict from.
+          window.__boot.progressAt = Date.now();
+          window.__boot.phase = state;
           if (window.__boot.failed && !force) return;
           var s = el("status");
           if (s) s.textContent = text;
           var root = el("loader");
-          if (root) root.dataset.state = state;
+          if (root) {
+            root.dataset.state = state;
+            delete root.dataset.stalled;
+          }
         };
         var mb = function (n) { return (n / 1e6).toFixed(1); };
         var progress = function (current) {
@@ -404,6 +426,23 @@
             throw error;
           });
         };
+        // The other way in. wasm-bindgen falls back to downloading the bytes
+        // and calling `instantiate` when the server sends the module with the
+        // wrong MIME type (or the streaming call failed); none of the wrapper
+        // above runs then, and the status line used to sit on "Downloading
+        // engine…" through the whole compile. A `Module` argument is a worker
+        // instantiating what was already compiled, and is not the page's load.
+        var origInstantiate = WebAssembly.instantiate;
+        var fellBack = false;
+        WebAssembly.instantiate = function (source, imports) {
+          var result = origInstantiate.apply(WebAssembly, arguments);
+          if (!fellBack && !(source instanceof WebAssembly.Module)) {
+            fellBack = true;
+            compiling();
+            result.then(function () { set("running", "Ready"); }, function () {});
+          }
+          return result;
+        };
       })();
     </script>
     <link data-trunk rel="rust" data-bin="cartopolis" data-cargo-no-default-features
@@ -415,6 +454,8 @@
          worker by `web/webcall.js` (which wasm-bindgen bundles itself, as a
          snippet). docs/notes/calls.md. -->
     <link data-trunk rel="copy-dir" href="web" data-target-path="web" />
+    <!-- The loader's backdrop: the web UI's street plan, the same file. -->
+    <link data-trunk rel="copy-file" href="../atlas/web/src/img/groningen.svg" />
     <!-- Android App Links. The phone fetches /.well-known/assetlinks.json at
          install time and will only open `https://cartopolis.org/go?place=…` in the
          app if it names that package *and* the certificate the APK is signed with
@@ -537,6 +578,40 @@
         box-sizing: border-box;
       }
       #loader.done { opacity: 0; pointer-events: none; }
+      /* The street plan behind cartopolis.org's glass, and behind
+         `systems::splash`'s logo: Groningen's centre in one faint ink
+         (`theme::TEXT_DIM` at 9 %, the web theme's `--c-map`). The file is the
+         web UI's own, copied in by Trunk below. Sized to the large viewport
+         rather than the loader's box, so a phone's address bar sliding away
+         does not rescale it under the logo. */
+      #loader::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        height: 100lvh;
+        z-index: -1;
+        pointer-events: none;
+        background: rgb(170 194 198 / 9%);
+        -webkit-mask: url("groningen.svg") center / cover no-repeat;
+        mask: url("groningen.svg") center / cover no-repeat;
+      }
+      #loader { isolation: isolate; }
+      #retry {
+        display: none;
+        font: inherit;
+        color: #f3f7f9;
+        background: #1f2829;
+        border: 1px solid #2a3536;
+        border-radius: 999px;
+        padding: 0.45rem 1.4rem;
+        cursor: pointer;
+      }
+      #retry:hover { background: #263842; }
+      #loader[data-stalled] #retry,
+      #loader[data-state="failed"] #retry { display: inline-block; }
       /* Brand block: logo, wordmark, motto — the Bevy splash's layout, in CSS.
          `#brand` owns its own gap so the checklist appearing under `?log` cannot
          push the wordmark off centre. */
@@ -794,6 +869,9 @@
       </div>
       <div id="track"><div id="bar"></div></div>
       <div id="status">Downloading engine…</div>
+      <!-- Shown when the load has stalled or failed (the watchdog below). A
+           stuck loader with nothing to press is a dead end on a phone. -->
+      <button id="retry" type="button" onclick="location.reload()">Reload</button>
       <ul id="checks"></ul>
       <pre id="bootlog"></pre>
       <!-- Shown only on Android. The wasm client is a ~70 MB download that a
@@ -976,6 +1054,8 @@
               li.querySelector(".note").textContent = r.note;
               if (r.ok === "no" && check.fatal) {
                 window.__boot.failed = true;
+                // Fatal: the hand-over stops waiting for a canvas that cannot come.
+                window.__boot.fatal = true;
                 var s = document.getElementById("status");
                 if (s) s.textContent = "Can't run here — " + check.label + ": " + r.note;
                 document.getElementById("loader").dataset.state = "failed";
@@ -1022,21 +1102,63 @@
         // `data-log` before the first paint (the CSS needed it then), so read
         // that back rather than parsing the query string a second time.
         var keep = loader.dataset.log !== undefined;
+        // **A drawing engine beats an error line.** This used to stop waiting the
+        // moment anything set `failed`, and an `error` event during boot is not
+        // proof of a dead engine (see the recorder's `benign`), so a loader could
+        // sit forever over a running app. Now only a *fatal* check (no GPU
+        // adapter) ends the wait; any other failure keeps the diagnosis on screen
+        // until either a frame is drawn — and then the app is what is shown — or
+        // nothing ever is, and the diagnosis stays with a Reload under it.
+        var handed = false;
+        function handOver() {
+          if (handed || keep) return;
+          handed = true;
+          loader.classList.add("done");
+          setTimeout(function () { loader.remove(); }, 500);
+        }
         (function wait() {
-          if (window.__boot.failed) return;
-          var c = document.querySelector("canvas");
+          if (window.__boot.fatal || handed) return;
+          var c = document.querySelector("#stage canvas") || document.querySelector("canvas");
           if (c && c.width > 1 && c.height > 1) {
             requestAnimationFrame(function () {
               requestAnimationFrame(function () {
-                if (window.__boot.failed || keep) return;
-                loader.classList.add("done");
-                setTimeout(function () { loader.remove(); }, 500);
+                if (window.__boot.fatal) return;
+                handOver();
               });
             });
             return;
           }
           requestAnimationFrame(wait);
         })();
+
+        // The watchdog. A loader that never says anything new is
+        // indistinguishable from a hung one, so after a while without progress
+        // it says so and offers a Reload — not a failure: a slow network or a
+        // slow compile still finishes on its own, and the next progress tick
+        // clears the note. Timed off `__boot.progressAt`, which every status
+        // change writes. Wall clock, on purpose: `requestAnimationFrame` stops in
+        // a background tab, and coming back to a tab should show the truth at
+        // once.
+        var STALL_MS = { loading: 20000, compiling: 45000, running: 25000 };
+        var started = Date.now();
+        setInterval(function () {
+          if (handed || !loader.isConnected) return;
+          var b = window.__boot;
+          var phase = b.phase || "loading";
+          var since = Date.now() - (b.progressAt || started);
+          if (since < (STALL_MS[phase] || 20000)) return;
+          if (loader.dataset.stalled === phase) return;
+          loader.dataset.stalled = phase;
+          if (b.failed) return; // The failure line is already the better message.
+          var s = document.getElementById("status");
+          if (s) {
+            s.textContent = {
+              loading: "The download has stalled. Check the connection, or reload.",
+              compiling: "Starting the engine is taking longer than usual…",
+              running: "The engine started but has not drawn anything yet…",
+            }[phase] || "This is taking longer than usual…";
+          }
+        }, 1000);
       })();
     </script>
   </body>

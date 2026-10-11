@@ -114,6 +114,143 @@ const MAX_FADE_STRETCH: f32 = 2.0;
 /// are the most expensive ones of the run.
 const FADE_IN_S: f32 = 0.45;
 
+/// The street plan the web pages stand on (`crates/atlas/web/src/img/groningen.svg`,
+/// made by atlas's backdrop pipeline from OpenStreetMap): Groningen's centre,
+/// the canal ring in the middle. Read from the web's own file at compile time,
+/// so the splash, `index.html`'s loader and cartopolis.org draw one drawing.
+const STREETS_SVG: &str = include_str!("../../../../atlas/web/src/img/groningen.svg");
+
+/// How strongly the streets show: `--c-map` in the web theme, which is
+/// [`theme::TEXT_DIM`] at 9 % over the page (`web_theme.rs`).
+const STREETS_INK: f32 = 0.09;
+
+/// One stroke width's worth of the plan, in the drawing's own units.
+struct StreetLayer {
+    width: f32,
+    lines: Vec<Vec<egui::Pos2>>,
+}
+
+/// The plan's polylines, parsed once: its `viewBox` size and each `<path>` as
+/// a stroke width and the polylines its `M`/`L` commands draw. The filled water
+/// path is drawn as its outline — egui fills only convex shapes, and a bank
+/// reads the same as a filled canal at this strength.
+fn streets() -> &'static (egui::Vec2, Vec<StreetLayer>) {
+    static PLAN: std::sync::OnceLock<(egui::Vec2, Vec<StreetLayer>)> = std::sync::OnceLock::new();
+    PLAN.get_or_init(|| parse_streets(STREETS_SVG))
+}
+
+fn parse_streets(svg: &str) -> (egui::Vec2, Vec<StreetLayer>) {
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let at = tag.find(&format!(" {name}=\""))? + name.len() + 3;
+        Some(tag[at..].split('"').next()?.to_owned())
+    };
+    let size = svg
+        .split("<svg")
+        .nth(1)
+        .and_then(|t| attr(t, "viewBox"))
+        .and_then(|v| {
+            let n: Vec<f32> = v
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect();
+            (n.len() == 4).then(|| egui::vec2(n[2], n[3]))
+        })
+        .unwrap_or(egui::vec2(2000.0, 2000.0));
+    let mut layers = Vec::new();
+    for tag in svg.split("<path").skip(1) {
+        let tag = tag.split("/>").next().unwrap_or(tag);
+        let Some(d) = attr(tag, "d") else { continue };
+        let width = attr(tag, "stroke-width")
+            .and_then(|w| w.parse().ok())
+            .unwrap_or(1.5);
+        layers.push(StreetLayer {
+            width,
+            lines: parse_path(&d),
+        });
+    }
+    (size, layers)
+}
+
+/// The polylines of an SVG path made of absolute `M`, `L` and `Z` — all the
+/// backdrop pipeline writes.
+fn parse_path(d: &str) -> Vec<Vec<egui::Pos2>> {
+    let mut lines: Vec<Vec<egui::Pos2>> = Vec::new();
+    let mut current: Vec<egui::Pos2> = Vec::new();
+    let mut numbers: Vec<f32> = Vec::new();
+    let mut flush = |current: &mut Vec<egui::Pos2>| {
+        let line = std::mem::take(current);
+        // A point drawn as a zero-length segment is nothing at this scale.
+        if line.len() >= 2 && line.iter().any(|p| *p != line[0]) {
+            lines.push(line);
+        }
+    };
+    let mut token = String::new();
+    let take_number = |token: &mut String, numbers: &mut Vec<f32>| {
+        if let Ok(n) = token.parse() {
+            numbers.push(n);
+        }
+        token.clear();
+    };
+    let apply = |numbers: &mut Vec<f32>, current: &mut Vec<egui::Pos2>| {
+        for xy in numbers.chunks_exact(2) {
+            current.push(egui::pos2(xy[0], xy[1]));
+        }
+        numbers.clear();
+    };
+    for ch in d.chars() {
+        match ch {
+            'M' | 'L' | 'Z' | 'z' => {
+                take_number(&mut token, &mut numbers);
+                apply(&mut numbers, &mut current);
+                match ch {
+                    'M' => flush(&mut current),
+                    'Z' | 'z' => {
+                        if let Some(&first) = current.first() {
+                            current.push(first);
+                        }
+                        flush(&mut current);
+                    }
+                    _ => {}
+                }
+            }
+            '-' => {
+                take_number(&mut token, &mut numbers);
+                token.push(ch);
+            }
+            c if c.is_ascii_digit() || c == '.' => token.push(c),
+            _ => take_number(&mut token, &mut numbers),
+        }
+    }
+    take_number(&mut token, &mut numbers);
+    apply(&mut numbers, &mut current);
+    flush(&mut current);
+    lines
+}
+
+/// Paint the street plan over `rect`, cropped to cover it as the web's
+/// `mask: … center / cover` does.
+///
+/// The ink is the page colour with the streets already mixed in, opaque, rather
+/// than a translucent stroke: overlapping translucent strokes darken where
+/// they cross, and a CSS mask does not, so every junction would be a dot.
+fn paint_streets(painter: &egui::Painter, rect: egui::Rect, alpha: f32) {
+    let (size, layers) = streets();
+    let scale = (rect.width() / size.x).max(rect.height() / size.y);
+    let origin = rect.center() - *size * scale * 0.5;
+    let ink = theme::SURFACE.lerp_to_gamma(theme::TEXT_DIM, STREETS_INK);
+    let ink =
+        egui::Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), (alpha * 255.0) as u8);
+    let mut shapes = Vec::new();
+    for layer in layers {
+        let stroke = egui::Stroke::new((layer.width * scale).max(0.6), ink);
+        for line in &layer.lines {
+            let points = line.iter().map(|p| origin + p.to_vec2() * scale).collect();
+            shapes.push(egui::Shape::line(points, stroke));
+        }
+    }
+    painter.extend(shapes);
+}
+
 /// Smoothstep. Both fades run through it so the entrance and the exit are the
 /// same motion in opposite directions; a linear ramp starts and stops abruptly at
 /// exactly the two moments anyone is looking at it.
@@ -470,6 +607,8 @@ pub fn boot_splash(
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
     painter.rect_filled(rect, 0.0, fade(theme::SURFACE, backdrop, 1.0));
+    // The street plan behind the web's glass, at the web's strength.
+    paint_streets(&painter, rect, backdrop);
 
     let c = rect.center();
     // 84 pt of radius — the 168 pt square the logo image used to occupy.
@@ -543,6 +682,44 @@ mod tests {
         s.status = status;
         s.mode = mode;
         s
+    }
+
+    /// The web's street plan parses into the drawing it is: its own box, every
+    /// stroke width the pipeline writes, and thousands of streets — so a change
+    /// to the backdrop's format shows up here rather than as a bare splash.
+    #[test]
+    fn the_street_plan_parses() {
+        let (size, layers) = streets();
+        assert_eq!(*size, egui::vec2(2000.0, 1971.0));
+        assert!(layers.len() >= 5, "{} layers", layers.len());
+        let lines: usize = layers.iter().map(|l| l.lines.len()).sum();
+        assert!(lines > 3000, "{lines} lines");
+        assert!(layers.iter().all(|l| l.width > 0.0));
+        assert!(layers
+            .iter()
+            .flat_map(|l| &l.lines)
+            .all(|line| line.len() >= 2));
+    }
+
+    #[test]
+    fn a_path_is_split_at_each_move_and_closed_at_z() {
+        let lines = parse_path("M0 0L10 0L10 -5M3 3L3 3ZM1 1L2 2L3 1Z");
+        assert_eq!(
+            lines,
+            vec![
+                vec![
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(10.0, 0.0),
+                    egui::pos2(10.0, -5.0)
+                ],
+                vec![
+                    egui::pos2(1.0, 1.0),
+                    egui::pos2(2.0, 2.0),
+                    egui::pos2(3.0, 1.0),
+                    egui::pos2(1.0, 1.0)
+                ],
+            ]
+        );
     }
 
     /// An ordinary offline launch keeps the splash it always had: no caption,
