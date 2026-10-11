@@ -139,81 +139,40 @@ $targets && steps="$steps wasm android"
 [ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')
 
 # ── A build slot of its own ──────────────────────────────────────────────────
-# **The gate builds in a slot's own directory, never in the shared one.** The
-# container exports one CARGO_TARGET_DIR for every session, and the `slot` client
-# that used to point a build at its slot's own directory lived in ~/.local/bin —
-# the container's writable layer, which the 2026-09-17 recreate emptied. Since
-# then every session built in one directory at once, and the gate with them: on
-# 2026-09-26 one run timed out at load 17 and the next died in the link with
-# "unable to copy …/incremental/…dwo", another session's build overwriting the
-# files under it. A red gate that says nothing about the branch is worse than a
-# slow one, so this waits for a VPS slot, builds in `<slot>/target` — warm, since
-# `cartopolis-slot-warm` keeps idle slots built — and hands it back on exit.
+# **The gate runs on a build slot, never in the agent container.** Builds there
+# starve the box (every session at once on 8 cores) and the container's own
+# cargo refuses them. Every slot is a midas node (jeroen/midas): a contained
+# checkout that follows this worktree over ssh — each ssh to it first sends the
+# commits and uncommitted edits it lacks. So the gate takes a VPS slot as
+# `gate-<worktree>` (the flush accepts that lease for this worktree), runs this
+# same script there with the merge-base sha as its base, and brings back the
+# exit status and the receipt (checked against this head, and marked with the
+# node). The node image carries what the steps need: lavapipe, nightly's wasm32
+# target, the Android target and the NDK. Measured 2026-10-11 on vps-2 from a
+# cold build directory: all six steps in 49 min.
 #
-# Only when the shared directory is what is in force: a caller that has pointed
-# CARGO_TARGET_DIR somewhere else (a slot it already holds, a workstation's own
-# `target/`) has decided, and a machine with no registry is not this container.
-# CARTO_GATE_NO_SLOT=1 opts out.
-slots_dir="${CARTO_SLOTS_DIR:-/home/agent/cargo-target/slots}"
-registry="$slots_dir/carto-slots"
-gate_owner="gate-$(basename "$root")"
-gate_slot=""
-release_gate_slot() {
-    [ -n "$gate_slot" ] && "$registry" release --owner "$gate_owner" >/dev/null 2>&1
-    # A claim file naming the gate outlives the lease and makes `carto-slots
-    # claim` refuse the slot to everybody for six hours. On 2026-09-27 one left
-    # behind after a finished gate kept the next gate waiting on a free slot.
-    [ -n "${slot_path:-}" ] && [ "$(head -1 "$slot_path/.slot-claim" 2>/dev/null)" = "$gate_owner" ] \
-        && : > "$slot_path/.slot-claim"
-    gate_slot=""
-}
-if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && [ -x "$registry" ] \
-    && [ "${CARGO_TARGET_DIR:-}" = "$(dirname "$slots_dir")" ]; then
-    waited=0
-    while :; do
-        claim=$("$registry" mine --owner "$gate_owner" 2>/dev/null) \
-            || claim=$("$registry" claim --owner "$gate_owner" --host vps --ttl 10800 2>/dev/null) \
-            || claim=""
-        [ -n "$claim" ] && break
-        if [ "$waited" -ge 3600 ]; then
-            echo "no VPS slot came free in an hour; not building in the shared directory" >&2
-            exit 3
-        fi
-        [ "$waited" -eq 0 ] && echo "waiting for a VPS build slot ($("$registry" list 2>/dev/null | grep -c claimed) claimed)"
-        sleep 30
-        waited=$((waited + 30))
-    done
-    gate_slot=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
-    is_node=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("node", False))')
-    trap release_gate_slot EXIT
-    # A midas node (jeroen/midas) is a contained checkout on another machine
-    # that follows this worktree by itself: every ssh to it first sends the
-    # commits and uncommitted edits it lacks (the `Match … exec "midas flush"`
-    # block in ~/.ssh/config, which accepts the gate's own `gate-<worktree>`
-    # lease). So the gate is this same script, run over there, with the base
-    # passed as the merge-base sha the node already has through HEAD. It carries
-    # the toolchains these steps use (lavapipe, nightly + wasm32, the Android
-    # target and NDK). What comes back is the exit status and the receipt.
-    if [ "$is_node" = True ]; then
-        dest=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ssh"])')
-        echo "slot     $gate_slot — a midas node; running the gate there"
-        ssh -o BatchMode=yes "$dest" \
-            "CARTO_GATE_NO_SLOT=1 .claude/skills/finish-branch/verify-branch --base $mb --scope $scope${only:+ --only $only}"
-        status=$?
-        remote=$(ssh -o BatchMode=yes "$dest" 'cat "$(git rev-parse --git-dir)/cartopolis-verified" 2>/dev/null')
-        receipt="$(git rev-parse --git-dir)/cartopolis-verified"
-        if [ "$status" -eq 0 ] && printf '%s\n' "$remote" | grep -qx "sha=$head"; then
-            printf '%s\n' "$remote" | sed "s|^base=.*|base=$(git rev-parse "$mb")|" > "$receipt"
-            printf '%s\n' "node=$gate_slot" >> "$receipt"
-        else
-            rm -f "$receipt"
-            [ "$status" -eq 0 ] && { echo "the node passed, but its receipt is not for ${head:0:8}" >&2; status=1; }
-        fi
-        exit "$status"
+# On the node itself (CARTO_GATE_NO_SLOT=1, set by the run that sent it there),
+# or on a machine with no midas (a workstation), the steps run in place.
+if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas >/dev/null; then
+    gate_owner="gate-$(basename "$root")"
+    gate_slot=$(midas take vps --owner "$gate_owner" --wait 3600 \
+        --purpose "landing gate for $(git rev-parse --abbrev-ref HEAD)") || {
+        echo "no VPS slot came free in an hour; not gating" >&2; exit 3; }
+    trap 'midas release --owner "$gate_owner" >/dev/null 2>&1' EXIT
+    echo "slot     $gate_slot — running the gate there"
+    ssh -o BatchMode=yes "$gate_slot" \
+        "CARTO_GATE_NO_SLOT=1 .claude/skills/finish-branch/verify-branch --base $mb --scope $scope${only:+ --only $only}"
+    status=$?
+    remote=$(ssh -o BatchMode=yes "$gate_slot" 'cat "$(git rev-parse --git-dir)/cartopolis-verified" 2>/dev/null')
+    receipt="$(git rev-parse --git-dir)/cartopolis-verified"
+    if [ "$status" -eq 0 ] && printf '%s\n' "$remote" | grep -qx "sha=$head"; then
+        printf '%s\n' "$remote" | sed "s|^base=.*|base=$(git rev-parse "$mb")|" > "$receipt"
+        printf '%s\n' "node=$gate_slot" >> "$receipt"
+    else
+        rm -f "$receipt"
+        [ "$status" -eq 0 ] && { echo "the node passed, but its receipt is not for ${head:0:8}" >&2; status=1; }
     fi
-    slot_path=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')
-    export CARGO_TARGET_DIR="$slot_path/target"
-    echo "slot     $gate_slot — building in $CARGO_TARGET_DIR"
+    exit "$status"
 fi
 
 failed=""
