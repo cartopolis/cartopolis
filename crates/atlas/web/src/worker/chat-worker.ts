@@ -440,6 +440,8 @@ async function run(command: Command, from: Port): Promise<void> {
             return c.community((core) => core.call_leave(command.channel))
         case 'call_decline':
             return c.community((core) => core.call_decline(command.channel))
+        case 'push_endpoint':
+            return c.community((core) => core.set_push_endpoint(command.endpoint))
         case 'resolve_report':
             return c.community((core) => core.resolve_report(command.id, command.report))
         case 'add_to_chat':

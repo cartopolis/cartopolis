@@ -68,6 +68,10 @@ async function build() {
     }
 
     await Bun.write(path.join(dist, 'index.html'), Bun.file(path.join(root, 'src/index.html')))
+    // The service worker that rings a closed browser for a call
+    // (`src/lib/web-push.ts`). Copied as it is, to the root, because a service
+    // worker only covers the directory it is served from.
+    await Bun.write(path.join(dist, 'sw.js'), Bun.file(path.join(root, 'src/sw.js')))
     // The app's mark, for the favicon and the welcome card: the same files the
     // viewer uses, one per theme.
     await Bun.write(path.join(dist, 'icon.svg'), Bun.file(path.join(root, '../../../assets/icon/cartopolis.svg')))

@@ -2174,10 +2174,15 @@ function stickToBottom(vnode: m.VnodeDOM) {
     if (el._pinned) el.scrollTop = el.scrollHeight
 }
 
-/** Ask once, on a click, for permission to show notifications. */
+/**
+ * Ask once, on a click, for permission to show notifications. Allowed, the
+ * browser is also subscribed to be rung for calls while the page is closed.
+ */
 function askForNotifications() {
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-        void Notification.requestPermission()
+        void Notification.requestPermission().then((answer) => {
+            if (answer === 'granted') void chat().push.enable()
+        })
     }
 }
 

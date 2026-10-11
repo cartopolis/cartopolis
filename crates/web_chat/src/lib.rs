@@ -509,6 +509,14 @@ impl ChatCore {
         self.push(&NetMessage::CallDecline { group })
     }
 
+    /// Register this browser's push subscription (protocol 29's message, with
+    /// a browser's `webpush:` address — `simulator::push`), so a call rings it
+    /// while the page is closed; an empty string takes it back.
+    pub fn set_push_endpoint(&mut self, endpoint: &str) -> Result<(), Error> {
+        let endpoint = (!endpoint.is_empty()).then(|| endpoint.to_owned());
+        self.push(&NetMessage::SetPushEndpoint { endpoint })
+    }
+
     /// The call key of `channel`'s current epoch, as JSON
     /// `{epoch, key (hex), index}`, or `null` when this device is not in it.
     /// The page re-reads it after every step: a commit moves the key at once.

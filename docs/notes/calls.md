@@ -366,6 +366,38 @@ roster rings as it does for any connected device. Decisions:
   untested; the server half is tested with a database and the Java is
   compiled against android-34.
 
+## Ringing a closed browser (2026-10-11)
+
+The web chat rings a browser whose chat page is closed through the browser's
+own push service (Web Push): `src/lib/web-push.ts` subscribes once
+notifications are allowed and registers the address with the same
+`SetPushEndpoint` as the app, marked `webpush:` (`simulator::push::WEB_PREFIX`);
+`src/sw.js` shows "Incoming call" and opens the chat on a tap, and the chat
+then rings with the caller's name as usual. Decisions:
+
+- **Still empty.** No payload, so nothing to encrypt (RFC 8291) and nothing
+  for the push service to read. What it learns — Google for Chrome and Edge,
+  Mozilla for Firefox, Apple for Safari — is that this browser got a push from
+  this server at that moment. Unlike a phone's distributor, a browser's push
+  service is not the person's choice and cannot be self-hosted.
+- **Signed (VAPID, RFC 8292)** because every browser's push service requires
+  it: a P-256 key made on first start and kept as `vapid.key` beside the
+  database (`simulator::vapid`), its public half at `GET /api/push/key`. A new
+  key would silently unsubscribe every browser, so it is kept, and a page
+  holding a subscription made with another key replaces it.
+- **The marker rides in the endpoint string**, so neither the message nor the
+  table changed and no protocol revision was needed: a server older than this
+  refuses a `webpush:` address as "not https", which is the right answer from a
+  server that cannot sign. A browser's address cannot be told from a phone's by
+  its host — both can be Google's.
+- **Registered on every connect** (the server keeps the newest owner of an
+  address, so a shared browser rings whoever is signed in), and taken back and
+  unsubscribed on sign-out — on the same connection, since the server only
+  takes back an address the asking connection registered.
+- **`/api/push/key` must be routed to the simulator by Caddy** (the `@webapi`
+  list in `/data/stack/Caddyfile`), or the web UI answers it and the page
+  quietly never subscribes.
+
 ## A call that waits (2026-09-30)
 
 Both ends used to create the *down* (receiving) connection at the join and

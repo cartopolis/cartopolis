@@ -8,6 +8,12 @@
 //! other member, and the app's receiver shows "Incoming call"; opening it
 //! connects, and the roster rings as it always has.
 //!
+//! A **browser** registers the same way, its push service's address marked
+//! with [`WEB_PREFIX`] (the web chat's `src/lib/web-push.ts`). Its push service
+//! — Google's, Mozilla's, Apple's — takes only a push signed with the key the
+//! page subscribed with (`crate::vapid`), so that one is signed and carries no
+//! body at all.
+//!
 //! **The push carries nothing.** Not who is calling, not which chat — the
 //! distributor's server relays it and has no business knowing. A wake-up is
 //! all the phone needs, because the app learns the rest over its own
@@ -26,9 +32,12 @@ use std::io;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::db::{self, SharedConn};
+use crate::vapid::Vapid;
 
 /// Longest endpoint accepted. A UnifiedPush endpoint is a URL with a random
 /// token in it; anything longer than this is not one.
@@ -53,12 +62,22 @@ pub struct Ring {
     pub members: Vec<String>,
 }
 
+/// What a browser's subscription is registered as: its push service's URL
+/// with this in front. A browser's push service takes only a signed push
+/// (`vapid`) and a phone's distributor takes a plain one, and the address alone
+/// cannot say which it is — Chrome's and an Android distributor's can both be
+/// Google's. Carried in the string the wire already has, so the message and the
+/// table are unchanged; a server older than this refuses it as "not https",
+/// which is the right answer from a server that could not sign the push.
+pub const WEB_PREFIX: &str = "webpush:";
+
 /// Why an endpoint is refused, in words for the log.
 pub fn check_endpoint(endpoint: &str) -> Result<(), &'static str> {
     if endpoint.len() > MAX_ENDPOINT_LEN {
         return Err("too long");
     }
-    let Some(rest) = endpoint.strip_prefix("https://") else {
+    let url = endpoint.strip_prefix(WEB_PREFIX).unwrap_or(endpoint);
+    let Some(rest) = url.strip_prefix("https://") else {
         return Err("not https");
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
@@ -143,15 +162,36 @@ enum Sent {
     Failed,
 }
 
-fn post(agent: &ureq::Agent, endpoint: &str) -> Sent {
-    // RFC 8030's headers, which UnifiedPush distributors honour: a call that
-    // cannot be delivered within a minute is not worth delivering at all.
-    let result = agent
-        .post(endpoint)
-        .set("TTL", "60")
-        .set("Urgency", "high")
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(b"1");
+fn post(agent: &ureq::Agent, endpoint: &str, vapid: Option<&Vapid>) -> Sent {
+    // RFC 8030's headers, which UnifiedPush distributors and browsers' push
+    // services both honour: a call that cannot be delivered within a minute is
+    // not worth delivering at all.
+    let result = match endpoint.strip_prefix(WEB_PREFIX) {
+        // A browser: signed, and with no body at all. A payload would have to
+        // be encrypted to the browser (RFC 8291), and there is nothing to say
+        // that the page does not learn over its own connection.
+        Some(url) => {
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            let Some(auth) = vapid.and_then(|v| v.authorization(url, now_s)) else {
+                return Sent::Failed;
+            };
+            agent
+                .post(url)
+                .set("TTL", "60")
+                .set("Urgency", "high")
+                .set("Authorization", &auth)
+                .send_bytes(&[])
+        }
+        None => agent
+            .post(endpoint)
+            .set("TTL", "60")
+            .set("Urgency", "high")
+            .set("Content-Type", "application/octet-stream")
+            .send_bytes(b"1"),
+    };
     match result {
         Ok(_) => Sent::Taken,
         Err(ureq::Error::Status(404 | 410, _)) => Sent::Gone,
@@ -180,13 +220,13 @@ fn endpoints_for(c: &rusqlite::Connection, ring: &Ring) -> Vec<String> {
 }
 
 /// Start the task that sends the pushes; rings go in through the channel.
-pub fn spawn(conn: SharedConn) -> mpsc::UnboundedSender<Ring> {
+pub fn spawn(conn: SharedConn, vapid: Option<Arc<Vapid>>) -> mpsc::UnboundedSender<Ring> {
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(conn, rx));
+    tokio::spawn(run(conn, vapid, rx));
     tx
 }
 
-async fn run(conn: SharedConn, mut rx: mpsc::UnboundedReceiver<Ring>) {
+async fn run(conn: SharedConn, vapid: Option<Arc<Vapid>>, mut rx: mpsc::UnboundedReceiver<Ring>) {
     let mut last: HashMap<String, Instant> = HashMap::new();
     while let Some(ring) = rx.recv().await {
         let found = db::call(&conn, move |c| endpoints_for(c, &ring)).await;
@@ -203,11 +243,12 @@ async fn run(conn: SharedConn, mut rx: mpsc::UnboundedReceiver<Ring>) {
         if due.is_empty() {
             continue;
         }
+        let vapid = vapid.clone();
         let results = tokio::task::spawn_blocking(move || {
             let agent = agent();
             due.into_iter()
                 .map(|e| {
-                    let sent = post(&agent, &e);
+                    let sent = post(&agent, &e, vapid.as_deref());
                     (e, sent)
                 })
                 .collect::<Vec<_>>()
@@ -231,6 +272,10 @@ mod tests {
     #[test]
     fn only_a_public_https_address_is_an_endpoint() {
         assert!(check_endpoint("https://ntfy.sh/upAbC123?up=1").is_ok());
+        // A browser's subscription, and the same checks under its prefix.
+        assert!(check_endpoint("webpush:https://fcm.googleapis.com/fcm/send/a:b").is_ok());
+        assert!(check_endpoint("webpush:http://fcm.googleapis.com/x").is_err());
+        assert!(check_endpoint("webpush:https://user:pw@push.example/x").is_err());
         assert!(check_endpoint("http://ntfy.sh/up").is_err());
         assert!(check_endpoint("https://user:pw@ntfy.sh/up").is_err());
         assert!(check_endpoint("https:///up").is_err());
@@ -281,6 +326,23 @@ mod tests {
         assert!(db::push_endpoints(&c, "bob").unwrap().is_empty());
         db::remove_push_endpoint(&c, "bob", "https://push.example/cy").unwrap();
         assert_eq!(db::push_endpoints(&c, "cy").unwrap().len(), 2);
+    }
+
+    /// A real browser push service takes the signed, empty push. By hand, as
+    /// it needs the internet and a live subscription: subscribe somewhere (a
+    /// browser, or Mozilla's open WebSocket protocol), then
+    /// `PUSH_TEST_ENDPOINT=<its URL> PUSH_TEST_KEY=<the VAPID secret, hex>
+    /// cargo test -p cartopolis_simulator --lib -- --ignored a_real_push`.
+    #[test]
+    #[ignore = "needs the internet and a live push subscription"]
+    fn a_real_push_service_takes_a_signed_push() {
+        let endpoint = std::env::var("PUSH_TEST_ENDPOINT").expect("PUSH_TEST_ENDPOINT");
+        let secret =
+            crate::vapid::hex_decode(&std::env::var("PUSH_TEST_KEY").expect("PUSH_TEST_KEY"))
+                .expect("hex");
+        let vapid = Vapid::from_secret(&secret, "https://cartopolis.org").unwrap();
+        let sent = post(&agent(), &format!("{WEB_PREFIX}{endpoint}"), Some(&vapid));
+        assert_eq!(sent, Sent::Taken);
     }
 
     #[test]

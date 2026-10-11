@@ -97,6 +97,12 @@ cartopolis_calls = { path = "../calls", features = ["sfu"] }
 # The video store's upload check (`videos::inspect`): reads a WebM's tracks
 # and frame timestamps, never decodes a picture. Pure Rust, no dependencies.
 matroska-demuxer = "0.8"
+# Signing pushes to browsers (`vapid`, RFC 8292: ES256 over P-256). Both are
+# already in the tree — `openmls_rust_crypto` builds p256 with ecdsa, and
+# getrandom 0.2 is under half the crypto here — so these are names, not new
+# dependencies.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3.0"

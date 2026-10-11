@@ -61,6 +61,9 @@ pub struct HttpState {
     pub chat: Arc<crate::chat::ChatHub>,
     pub scripts: ScriptHandle,
     pub calls: Option<crate::calls::CallsHandle>,
+    /// The key browsers subscribe to call pushes with (`crate::vapid`); `None`
+    /// on a server without calls.
+    pub vapid: Option<Arc<crate::vapid::Vapid>>,
     /// Prim create/edit/delete/script, shared with the wire so the two surfaces
     /// cannot disagree about who may do what (`crate::prims`).
     pub prims: crate::prims::PrimService,
@@ -103,6 +106,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/buildings/mine", get(my_buildings))
         .route("/api/buildings/{pand}", delete(release_building))
         .route("/api/buildings/{pand}/access", get(building_access))
+        .route("/api/push/key", get(push_key))
         .route("/api/login", post(player_login))
         .route("/api/logout", post(logout))
         .route("/api/admin/login", post(login))
@@ -231,6 +235,20 @@ async fn ws_handler(
                 tracing::warn!(%addr, "client ended: {e:#}");
             }
         })
+}
+
+/// The public half of this server's web push key, which a browser subscribes
+/// with (`crate::vapid`). Unauthenticated: it is a public key, and the page
+/// asks for it before it knows it will be allowed to use it.
+async fn push_key(State(state): State<HttpState>) -> Response {
+    match &state.vapid {
+        Some(vapid) => Json(json!({ "key": vapid.public_key() })).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "this server rings no calls" })),
+        )
+            .into_response(),
+    }
 }
 
 async fn health(State(state): State<HttpState>) -> Json<serde_json::Value> {

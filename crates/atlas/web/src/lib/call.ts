@@ -17,6 +17,7 @@ import {WebCall, webCallSupported} from '../../../../cartopolis/web/webcall.js'
 
 import type {ChatClient} from './chat'
 import {CallTones} from './call-tones'
+import {CALL_TAG, closeCallNotifications} from './web-push'
 
 /** Somebody in a chat's call. `username` is the bare name, as the server keeps it. */
 export interface CallMember {
@@ -65,6 +66,7 @@ export class Calls {
     private tones = new CallTones()
     /** The browser notification for the call ringing now, while this tab is not looked at. */
     private ringNote: {channel: string; note: Notification} | null = null
+    private rangBefore = false
 
     constructor(client: ChatClient, changed: () => void) {
         this.client = client
@@ -90,6 +92,9 @@ export class Calls {
      */
     private ringNotice(): void {
         const channel = this.ringing()
+        // Stopped ringing: the "Incoming call" a push put up (`sw.js`) goes too.
+        if (this.rangBefore && !channel) closeCallNotifications()
+        this.rangBefore = channel !== null
         if (this.ringNote && this.ringNote.channel !== channel) {
             this.ringNote.note.close()
             this.ringNote = null
@@ -97,7 +102,7 @@ export class Calls {
         if (!channel || this.ringNote || (!document.hidden && document.hasFocus())) return
         if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
         const who = this.others(channel)[0]?.username ?? 'Somebody'
-        const note = new Notification('Incoming call', {body: `${who} is calling`, requireInteraction: true, tag: `call:${channel}`})
+        const note = new Notification('Incoming call', {body: `${who} is calling`, requireInteraction: true, tag: CALL_TAG})
         note.onclick = () => {
             window.focus()
             this.client.open(channel)

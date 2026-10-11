@@ -8,6 +8,7 @@
  * opened — and every open tab sees the same, because they all talk to the same
  * worker.
  */
+import {WebPush} from './web-push'
 import type {Message} from '../worker/history.ts'
 import type {
     ChatEvent,
@@ -103,8 +104,14 @@ export class ChatClient {
     }
 
     signOut(): void {
+        // Before the sign-out, on the same connection: the server takes back
+        // only an address the connection asking registered.
+        void this.push.disable()
         this.send({type: 'sign_out'})
     }
+
+    /** Rings this browser for a call while the page is closed (`web-push.ts`). */
+    readonly push = new WebPush((endpoint) => this.send({endpoint, type: 'push_endpoint'}))
 
     /** Show a chat: its history arrives, and it counts as read. */
     open(channel: string | null): void {
@@ -259,6 +266,10 @@ export class ChatClient {
                 this.keyAsks.delete(update.id)
                 return
             case 'state':
+                // Each connection registers this browser's push address anew:
+                // it is what the server keys "take it back" on, and it moves
+                // the address to whoever is signed in here now.
+                if (update.status === 'connected' && this.status !== 'connected') void this.push.enable()
                 this.address = update.address
                 this.chats = update.chats
                 this.status = update.status

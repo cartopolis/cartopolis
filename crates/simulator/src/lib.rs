@@ -32,6 +32,7 @@ pub mod roles;
 pub mod scripting;
 pub mod state;
 pub mod textures;
+pub mod vapid;
 pub mod videos;
 
 pub use auth::{ensure_account, ensure_admin_account, Sessions};
@@ -119,6 +120,13 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     // below: a bad address should fail `serve`, not a background task later.
     let mut calls_addr = None;
     let mut calls_task = None;
+    // The key browsers subscribe to pushes with (`vapid`), kept beside the
+    // database. Only when calls are on: a push rings a call, and a server
+    // without calls has nothing to ring a browser for.
+    let vapid = match config.calls_listen {
+        Some(_) => Some(Arc::new(load_vapid(&config)?)),
+        None => None,
+    };
     let calls = match config.calls_listen {
         Some(ref listen) => {
             let public = config
@@ -128,7 +136,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
                 .transpose()
                 .context("calls_public_addr must be IP:port")?;
             // Wakes the phones of a chat's members when a call starts in it.
-            let ring = push::spawn(conn.clone());
+            let ring = push::spawn(conn.clone(), vapid.clone());
             let (handle, bound, task) = calls::spawn(listen, public, chat.clone(), Some(ring))
                 .await
                 .with_context(|| format!("bind calls_listen {listen}"))?;
@@ -205,6 +213,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             chat: chat.clone(),
             scripts: script_handle.clone(),
             calls: calls.clone(),
+            vapid: vapid.clone(),
             prims: prim_service.clone(),
             mailer,
             registration_throttle: Arc::new(http::RegistrationLimits::default()),
@@ -263,6 +272,19 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         calls_addr,
         tasks,
     })
+}
+
+/// This server's web push key: `vapid.key` beside the database, made the first
+/// time. An in-memory database has nowhere to keep one, so it gets a key for
+/// the life of the process.
+fn load_vapid(config: &SimConfig) -> anyhow::Result<vapid::Vapid> {
+    let contact = &config.public_base_url;
+    if config.database_path == ":memory:" {
+        return vapid::Vapid::ephemeral(contact);
+    }
+    let path = std::path::Path::new(&config.database_path).with_file_name("vapid.key");
+    vapid::Vapid::load_or_create(&path, contact)
+        .with_context(|| format!("web push key at {}", path.display()))
 }
 
 /// Accept connections until the listener task is aborted (server shutdown). Unlike

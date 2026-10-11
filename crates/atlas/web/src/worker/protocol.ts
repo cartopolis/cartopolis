@@ -195,6 +195,8 @@ export type Command =
     | {channel: string; sdp: string; type: 'call_answer'}
     | {channel: string; type: 'call_leave'}
     | {channel: string; type: 'call_decline'}
+    /** This browser's push subscription (`webpush:` + its URL), or '' to take it back. */
+    | {endpoint: string; type: 'push_endpoint'}
     /** The chat's call key for its current epoch, answered as `call_keys`. */
     | {channel: string; id: number; type: 'call_keys'}
     /** The page is showing this chat: send its history, and count it read. */

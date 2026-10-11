@@ -38,6 +38,7 @@ export interface ChatCoreApi {
     send_history(channel: string, hash: string, key: string, nonce: string, count: number, nowMs: number): number
     call_answer(channel: string, sdp: string): void
     call_decline(channel: string): void
+    set_push_endpoint(endpoint: string): void
     call_join(channel: string, offer: string): void
     call_keys(channel: string): string
     call_leave(channel: string): void
