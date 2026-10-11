@@ -1,0 +1,595 @@
+/* ── The page's frame: the top bar, the switch, the rail, World and Admin ──── */
+
+/*
+ * `docs/mockups/web-navigation/`. The chat's own rules (chat.css) still style
+ * everything inside Community; these place it under a top bar and beside the
+ * other two modes. Tokens only, as everywhere: Admin's colour is the library's
+ * warning pair, so it reads apart from the rest in both themes without a
+ * colour of its own.
+ */
+.home {
+    background: var(--m-bg);
+    color: var(--m-text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+.home-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+/* chat.css sizes `.chat` to the window; under the top bar it fills what is left. */
+.home-body > .chat {
+    flex: 1;
+    height: auto;
+    min-width: 0;
+}
+
+.home-body > .chat-signin {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* Calls ringing and dialogs, kept in the chat's styles in every mode. */
+.chat.chat-overlays {
+    display: contents;
+}
+
+.chat-overlays > .chat-call-bar {
+    display: flex !important;
+    left: 0;
+    position: fixed;
+    right: 0;
+    top: 52px;
+    z-index: 30;
+}
+
+.home-splash {
+    color: var(--m-text-dim);
+    margin: auto;
+    padding: var(--m-space-5);
+    text-align: center;
+}
+
+/* ── Top bar ── */
+
+.home-top {
+    align-items: center;
+    background: var(--m-surface);
+    border-bottom: 1px solid var(--m-border);
+    display: flex;
+    flex: none;
+    gap: 14px;
+    height: 52px;
+    padding: 0 12px 0 14px;
+    position: relative;
+    z-index: 20;
+}
+
+.home-wordmark {
+    align-items: center;
+    display: flex;
+    flex: none;
+    gap: 8px;
+    text-decoration: none;
+}
+
+.home-wordmark img {
+    height: 26px;
+    width: 26px;
+}
+
+.home-seg {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: 10px;
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 3px;
+}
+
+.home-seg-item {
+    align-items: center;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    color: var(--m-text-dim);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 0.88rem;
+    gap: 6px;
+    padding: 5px 13px;
+    white-space: nowrap;
+}
+
+.home-seg-item:hover:not(.is-on) {
+    background: var(--m-hover);
+    color: var(--m-text-strong);
+}
+
+.home-seg-item.is-on {
+    background: var(--m-accent);
+    color: var(--m-on-accent);
+    font-weight: 600;
+}
+
+.home-seg-item.is-admin {
+    color: var(--m-warning);
+}
+
+.home-seg-item.is-admin.is-on {
+    background: var(--m-warning-soft);
+    box-shadow: inset 0 0 0 1px var(--m-warning);
+    color: var(--m-warning);
+}
+
+.home-seg-count {
+    background: var(--c-brand);
+    border-radius: 9px;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0 6px;
+}
+
+.home-seg-item.is-on .home-seg-count {
+    background: var(--m-on-accent);
+    color: var(--m-accent);
+}
+
+.home-live {
+    background: var(--c-brand);
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-brand) 25%, transparent);
+    height: 7px;
+    width: 7px;
+}
+
+.home-seg-item.is-on .home-live {
+    background: var(--m-on-accent);
+    box-shadow: none;
+}
+
+.home-crumbs {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.85rem;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.home-crumb {
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    overflow: hidden;
+    padding: 0;
+    text-overflow: ellipsis;
+}
+
+button.home-crumb {
+    cursor: pointer;
+}
+
+button.home-crumb:hover {
+    color: var(--m-text-strong);
+    text-decoration: underline;
+}
+
+.home-crumb.is-last {
+    color: var(--m-text-strong);
+    font-weight: 600;
+}
+
+.home-crumb-sep {
+    color: var(--m-text-faint);
+}
+
+.home-spacer {
+    flex: 1;
+}
+
+.home-account {
+    flex: none;
+    position: relative;
+}
+
+.home-account summary {
+    cursor: pointer;
+    display: flex;
+    list-style: none;
+}
+
+.home-account summary::-webkit-details-marker {
+    display: none;
+}
+
+.home-account-menu {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-lg);
+    box-shadow: 0 12px 30px var(--m-shadow-color);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 10px);
+    width: 280px;
+    z-index: 50;
+}
+
+.home-account-who {
+    margin: 0;
+}
+
+.home-account-who b {
+    color: var(--m-text-strong);
+    display: block;
+}
+
+.home-account-who span {
+    color: var(--m-text-dim);
+    font-size: 0.8rem;
+}
+
+/* ── Rail ── */
+
+.home-rail {
+    align-items: center;
+    background: var(--m-surface-sunken);
+    border-right: 1px solid var(--m-border);
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    padding: 12px 0;
+    width: 68px;
+}
+
+.home-rail-title {
+    display: none;
+}
+
+.home-rail .home-tile {
+    align-items: center;
+    background: none;
+    border: 0;
+    color: var(--m-text-dim);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    font: inherit;
+    padding: 0;
+    position: relative;
+}
+
+.home-tile-face {
+    align-items: center;
+    background: var(--m-surface-raised);
+    border-radius: 12px;
+    display: grid;
+    flex: none;
+    height: 42px;
+    justify-content: center;
+    overflow: hidden;
+    transition: box-shadow 120ms;
+    width: 42px;
+}
+
+.home-tile-face .chat-avatar {
+    border-radius: 12px;
+}
+
+.home-tile-face.is-tool {
+    color: var(--m-text-dim);
+    font-size: 1.25rem;
+}
+
+.home-tile-face .chat-icon,
+.home-glyph {
+    height: 22px;
+    width: 22px;
+}
+
+.home-tile:hover .home-tile-face {
+    box-shadow: 0 0 0 2px var(--m-border-strong);
+}
+
+.home-tile.is-current .home-tile-face {
+    box-shadow: 0 0 0 2px var(--m-bg), 0 0 0 4px var(--m-accent);
+    color: var(--m-accent-text);
+}
+
+.home-tile-name {
+    display: none;
+}
+
+.home-tile-badge {
+    position: absolute;
+    right: 6px;
+    top: -5px;
+}
+
+/* Admin's rail carries its areas' names: there are three, and they are words. */
+.home-rail.is-admin .home-tile-name {
+    display: block;
+    font-size: 0.68rem;
+    margin-top: 4px;
+}
+
+.home-rail.is-admin .home-tile.is-current {
+    color: var(--m-warning);
+}
+
+.home-rail.is-admin .home-tile.is-current .home-tile-face {
+    background: var(--m-warning-soft);
+    box-shadow: 0 0 0 2px var(--m-bg), 0 0 0 4px var(--m-warning);
+    color: var(--m-warning);
+}
+
+.home-tile-new {
+    position: relative;
+}
+
+.home-tile-new summary {
+    list-style: none;
+}
+
+.home-tile-new summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Fixed, not absolute: the rail scrolls, and a scroller clips what it holds.
+   With no `top` it stays where the + is, beside the rail. */
+.home-rail .home-tile-new .chat-new-menu {
+    left: 76px;
+    margin-top: -42px;
+    position: fixed;
+    right: auto;
+    top: auto;
+    width: 260px;
+}
+
+/* ── Sidebar: inside the rail's choice ── */
+
+.chat-side-back {
+    display: none !important;
+}
+
+.home-space-head {
+    align-items: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+}
+
+.chat .home-space-name {
+    align-items: center;
+    border-radius: 8px;
+    display: flex;
+    gap: 8px;
+    margin: -4px -6px 0;
+    padding: 4px 6px;
+    text-align: left;
+    width: calc(100% + 12px);
+}
+
+.chat .home-space-name:hover,
+.chat .home-space-name.is-current {
+    background: var(--m-surface-raised);
+}
+
+.home-space-name h2 {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.home-space-meta {
+    margin: 0;
+}
+
+.home-space-head .m-button {
+    align-self: flex-start;
+}
+
+.home-moderation h3 {
+    color: var(--m-warning) !important;
+}
+
+/* ── World ── */
+
+.home-world {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    position: relative;
+}
+
+/*
+ * Out of the layout while another mode shows. `display: none` and not a
+ * covered or off-screen frame: a hidden frame is not rendered, so the app
+ * draws nothing and costs nothing until World is chosen again, and it stays
+ * loaded — nothing about it is torn down.
+ */
+.home-world.is-hidden {
+    display: none;
+}
+
+.home-world-frame {
+    background: #000;
+    border: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.home-world-chat.chat {
+    border-left: 1px solid var(--m-border);
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    width: 360px;
+}
+
+.home-world-chat .chat-side.home-world-list {
+    border-right: 0;
+    flex: 1;
+    width: 100%;
+}
+
+.home-world-chat .chat-back {
+    display: none !important;
+}
+
+.home-world-rail.chat {
+    flex: none;
+    height: auto;
+}
+
+/* ── Admin ── */
+
+.home-admin {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+}
+
+.home-admin > .m-shell {
+    flex: 1;
+    min-width: 0;
+}
+
+@media (min-width: 761px) {
+    /* The rail picks the area; the nav lists only its pages. */
+    .admin-group:not(.is-current) {
+        display: none;
+    }
+}
+
+/* ── A phone: the same levels, one screen at a time ── */
+@media (max-width: 760px) {
+    .home-top {
+        gap: 8px;
+        padding: 0 8px;
+    }
+
+    .home-crumbs,
+    .home-wordmark .wordmark {
+        display: none;
+    }
+
+    .home-seg-item {
+        font-size: 0.82rem;
+        padding: 5px 10px;
+    }
+
+    /* Community's first screen is the rail, drawn as a list with names. */
+    .chat .home-rail {
+        align-items: stretch;
+        background: var(--m-surface);
+        border: 0;
+        gap: 2px;
+        padding: 8px 10px;
+        width: 100%;
+    }
+
+    .chat .home-rail-title {
+        color: var(--m-text-strong);
+        display: block;
+        font-size: 1.15rem;
+        padding: 6px 6px 8px;
+    }
+
+    .chat .home-rail .home-tile {
+        border-radius: 10px;
+        flex-direction: row;
+        gap: 12px;
+        padding: 8px 6px;
+        text-align: left;
+    }
+
+    .chat .home-rail .home-tile:hover {
+        background: var(--m-surface-raised);
+    }
+
+    .chat .home-tile-name {
+        color: var(--m-text-strong);
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        font-size: 0.95rem;
+        min-width: 0;
+    }
+
+    .chat .home-tile-badge {
+        position: static;
+    }
+
+    .chat .home-tile.is-current .home-tile-face,
+    .chat .home-tile:hover .home-tile-face {
+        box-shadow: none;
+    }
+
+    .chat .home-rail .home-tile-new .chat-new-menu {
+        left: 10px;
+        margin-top: 0;
+        right: 10px;
+        width: auto;
+    }
+
+    .chat:not(.is-spaces) .home-rail,
+    .chat.is-open .home-rail,
+    .chat.is-spaces .chat-side {
+        display: none;
+    }
+
+    .chat-side-back {
+        color: var(--m-accent-text) !important;
+        display: block !important;
+        font-size: 0.9rem;
+        padding: 10px 16px 0 !important;
+        text-align: left;
+    }
+
+    /* World: the map over the screen, the topic in a sheet at the bottom. */
+    .home-world {
+        flex-direction: column;
+    }
+
+    .home-world-chat.chat {
+        border-left: 0;
+        border-top: 1px solid var(--m-border);
+        height: 42%;
+        width: auto;
+    }
+
+    .home-world-rail {
+        display: none !important;
+    }
+
+    /* Admin: the drawer lists every area's pages under their names. */
+    .home-rail.is-admin {
+        display: none;
+    }
+}

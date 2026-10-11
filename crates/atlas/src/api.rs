@@ -29,8 +29,6 @@ pub struct ApiState {
     pub runner: Runner,
     /// The tree the pipelines write and Caddy serves.
     pub out_root: PathBuf,
-    /// The autopilot's control file.
-    pub autopilot: PathBuf,
     /// Building designs (`crate::designs`).
     pub designs: Arc<crate::designs::Designs>,
     /// Building overrides (`crate::overrides`).
@@ -71,7 +69,6 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/coverage", get(get_coverage))
-        .route("/autopilot", get(get_autopilot).patch(patch_autopilot))
         .route("/jobs", get(list_jobs).post(start_job))
         .route("/jobs/{id}/log", get(job_log))
         .route("/jobs/{id}/cancel", post(cancel_job))
@@ -168,48 +165,6 @@ async fn get_coverage(State(state): State<ApiState>, headers: HeaderMap) -> Resp
     }
     let out = state.out_root.clone();
     Json(json!({"coverage": blocking(move || coverage(&out)).await})).into_response()
-}
-
-const NO_AUTOPILOT: &str = "The autopilot does not run beside this server";
-
-/// On a host without the lane the file is absent and both verbs say so, so the
-/// web UI explains itself instead of drawing dead sliders.
-async fn get_autopilot(State(state): State<ApiState>, headers: HeaderMap) -> Response {
-    if let Err(r) = admin(&state, &headers).await {
-        return r;
-    }
-    let path = state.autopilot.clone();
-    match blocking(move || crate::autopilot::read(&path)).await {
-        Ok(config) => Json(json!({"config": config})).into_response(),
-        Err(_) => fail(StatusCode::SERVICE_UNAVAILABLE, NO_AUTOPILOT),
-    }
-}
-
-async fn patch_autopilot(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let who = match admin(&state, &headers).await {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let patch = match serde_json::from_slice::<Value>(&body) {
-        Ok(Value::Object(m)) => m,
-        _ => return fail(StatusCode::BAD_REQUEST, "That request body is not JSON"),
-    };
-    let path = state.autopilot.clone();
-    match blocking(move || crate::autopilot::write(&path, &patch)).await {
-        Ok(config) => {
-            tracing::info!(
-                "autopilot config set by {}: {}",
-                who.username,
-                serde_json::to_string(&config).unwrap_or_default()
-            );
-            Json(json!({"config": config})).into_response()
-        }
-        Err(_) => fail(StatusCode::SERVICE_UNAVAILABLE, NO_AUTOPILOT),
-    }
 }
 
 async fn list_jobs(State(state): State<ApiState>, headers: HeaderMap) -> Response {
@@ -686,7 +641,6 @@ mod tests {
             auth: Arc::new(Auth::new(Box::new(Tokens))),
             runner: Runner::new(&site, registry),
             out_root: site.clone(),
-            autopilot: dir.path().join("autopilot.json"),
             designs: Arc::new(crate::designs::Designs::new(
                 &dir.path().join("data"),
                 &site,
@@ -812,7 +766,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pipeline_surface_answers_as_before() {
-        let (base, dir) = serve().await;
+        let (base, _dir) = serve().await; // kept: the served tree lives in it
 
         assert_eq!(call("GET", format!("{base}/health"), "", None).await.0, 200);
         let (s, v) = call("GET", format!("{base}/config"), "nobody", None).await;
@@ -835,22 +789,6 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(bgt["counts"][0], json!({"label": "trees", "n": 3}));
-
-        assert_eq!(
-            call("GET", format!("{base}/autopilot"), "admin", None)
-                .await
-                .0,
-            503
-        );
-        std::fs::write(dir.path().join("autopilot.json"), "{}").unwrap();
-        let (s, v) = call(
-            "PATCH",
-            format!("{base}/autopilot"),
-            "admin",
-            Some(json!({"qaPerDay": 3})),
-        )
-        .await;
-        assert_eq!((s, v["config"]["qaPerDay"].as_i64()), (200, Some(3)));
 
         let (s, v) = call(
             "POST",

@@ -185,6 +185,25 @@ class Browser {
         await waitFor(`${this.name}'s chat connected`, () => this.eval('!document.querySelector(".chat-status")'))
     }
 
+    /**
+     * Choose the community on the rail, then open its topic: the two levels
+     * a person goes through (`docs/mockups/web-navigation/`). The rail's tiles
+     * are matched by title, since a wide screen shows only their pictures.
+     */
+    async openTopic(community: string, topic: string, ms = 30000): Promise<void> {
+        const tile = `[...document.querySelectorAll('.home-tile')].find((b) => b.title === ${JSON.stringify(community)})`
+        const item = `[...document.querySelectorAll('.chat-side .chat-item')].find((b) => b.innerText.includes(${JSON.stringify(topic)}))`
+        await waitFor(`${community} on ${this.name}'s rail`, () => this.eval(`!!${tile}`), ms)
+        await this.eval(`${tile}.click()`)
+        await waitFor(`#${topic} in ${this.name}'s sidebar`, () => this.eval(`!!${item}`), ms)
+        await this.eval(`${item}.click()`)
+    }
+
+    /** Choose a community on the rail: its page, on a wide screen. */
+    async openCommunity(community: string): Promise<void> {
+        await this.eval(`[...document.querySelectorAll('.home-tile')].find((b) => b.title === ${JSON.stringify(community)}).click()`)
+    }
+
     async shot(file: string): Promise<void> {
         const r = await this.send('Page.captureScreenshot', {format: 'png'})
         await Bun.write(file, Buffer.from(r.result.data, 'base64'))
@@ -226,20 +245,18 @@ try {
     await ann.type('input[placeholder="general, meet-ups"]', 'ebbinge quarter')
     await ann.type('input[placeholder="Usernames, separated by commas"]', 'bob')
     await ann.submit('.chat-form')
-    await waitFor('the community in the list', () =>
-        ann.eval('[...document.querySelectorAll(".chat-community")].some((b) => b.innerText.includes("Atelier Noord"))'), 30000)
+    await waitFor('the community on the rail', () =>
+        ann.eval('[...document.querySelectorAll(".home-tile")].some((b) => b.title === "Atelier Noord")'), 30000)
     step('ann started a community with #ebbinge-quarter and bob in it')
 
     // Bob: the community appears, and ann's browser adds him to its topic.
-    await waitFor('bob let into the topic', () =>
-        bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 30000)
+    await bob.openTopic('Atelier Noord', 'ebbinge-quarter')
     step("bob is in the community, and ann's browser added him to its topic")
 
     // They talk.
-    await ann.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await ann.openTopic('Atelier Noord', 'ebbinge-quarter')
     await ann.type('.chat-composer textarea', 'Scaffolding is down on the north side @bob')
     await ann.submit('.chat-composer')
-    await bob.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
     await bob.until('Scaffolding is down on the north side')
     await bob.type('.chat-composer textarea', 'The brick reads darker than the sample.')
     await bob.submit('.chat-composer')
@@ -254,12 +271,12 @@ try {
 
     // A video call in the topic: ann calls, bob's page rings, he answers, and
     // each sees the other's picture through the forwarder, sealed both ways.
-    if (!(await ann.click('🎥 Video'))) throw new Error('no Video button')
-    await bob.until('is calling', 30000)
-    if (!(await bob.click('With video'))) throw new Error('no With video button')
+    if (!(await ann.click('Video call'))) throw new Error('no Video call key')
+    await bob.until('Incoming call', 30000)
+    if (!(await bob.click('Video'))) throw new Error('no Video key on the ringing call')
     const connected = (b: Browser) =>
         waitFor(`${b.name}'s call connected`, () =>
-            b.eval('/\\d+:\\d\\d/.test(document.querySelector(".chat-call-bar")?.innerText ?? "")'), 45000)
+            b.eval('/\\d+:\\d\\d/.test(document.querySelector(".chat-call-bar")?.textContent ?? "")'), 45000)
     await connected(ann)
     await connected(bob)
     // Somebody else's video playing, with frames decoded (not the self view).
@@ -273,7 +290,7 @@ try {
         mkdirSync(shots, {recursive: true})
         await ann.shot(path.join(shots, 'call.png'))
     }
-    await ann.click('Hang up')
+    await ann.click('End')
     await waitFor('bob\'s call ended', () => bob.eval('!document.querySelector(".chat-call")'), 20000)
     await Bun.sleep(1000)
     if (await ann.has('Missed call')) throw new Error('the caller was told of a missed call after hanging up')
@@ -282,9 +299,7 @@ try {
     // Bob reloads: the history comes back out of his browser's own storage.
     await bob.send('Page.reload')
     // The topic returns to the list once the worker has signed in again.
-    await waitFor('bob reconnected', () =>
-        bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 30000)
-    await bob.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await bob.openTopic('Atelier Noord', 'ebbinge-quarter')
     await bob.until('Scaffolding is down on the north side')
     step('after a reload bob reads the history back out of IndexedDB')
 
@@ -294,16 +309,14 @@ try {
     browsers.push(bob2)
     await bob2.launch(url)
     await bob2.signIn('bob')
-    await waitFor('the topic on bob\'s second device', () =>
-        bob2.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 60000)
-    await bob2.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await bob2.openTopic('Atelier Noord', 'ebbinge-quarter', 60000)
     await bob2.until('shared by', 30000)
     await bob2.until('Scaffolding is down on the north side')
     step('a second device of bob\'s was added to the topic and handed the earlier messages')
 
     // Ann makes an invite link; Carol, who is in nothing, opens it and joins
     // straight away although the community asks first.
-    await ann.eval('document.querySelector(".chat-community .chat-item").click()')
+    await ann.openCommunity('Atelier Noord')
     if (!(await ann.click('Make an invite link'))) throw new Error('no Make an invite link')
     await waitFor('the invite link', () => ann.eval('!!document.querySelector(".chat-invite-link")'), 20000)
     const link = await ann.eval<string>('document.querySelector(".chat-invite-link").innerText')
@@ -315,20 +328,21 @@ try {
     await carol.eval(`location.search = '?community=${code}'`)
     await carol.until('You were invited', 30000)
     if (!(await carol.click('Join'))) throw new Error('no Join on the invitation')
-    await waitFor('carol let into the topic', () =>
-        carol.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("ebbinge-quarter"))'), 60000)
+    await carol.openTopic('Atelier Noord', 'ebbinge-quarter', 60000)
     step('carol joined with an invite link and was added to the topic')
 
     // Bob mutes the topic: it says so, and counts nothing.
-    await bob.eval('document.querySelector(".chat-community .chat-item").click()')
+    await bob.openCommunity('Atelier Noord')
     if (!(await bob.click('Mute'))) throw new Error('no Mute')
     await waitFor('the topic marked muted', () =>
         bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("muted"))'))
-    await ann.eval('[...document.querySelectorAll(".chat-item")].find((b) => b.innerText.includes("ebbinge-quarter")).click()')
+    await ann.openTopic('Atelier Noord', 'ebbinge-quarter')
     await ann.type('.chat-composer textarea', 'Muted, this one')
     await ann.submit('.chat-composer')
     await Bun.sleep(1500)
-    if (await bob.eval('!!document.querySelector(".chat-community .chat-count")')) throw new Error('a muted topic counted')
+    if (await bob.eval('!![...document.querySelectorAll(".home-tile")].find((b) => b.title === "Atelier Noord")?.querySelector(".chat-count")')) {
+        throw new Error('a muted topic counted')
+    }
     step('bob muted the topic: marked, and a new line counts nothing')
 
     if (shots) {
@@ -336,7 +350,7 @@ try {
         await ann.shot(path.join(shots, 'ann.png'))
         await bob.shot(path.join(shots, 'bob.png'))
         // The community's own page, and the directory.
-        await ann.eval('document.querySelector(".chat-community .chat-item").click()')
+        await ann.openCommunity('Atelier Noord')
         await ann.until('Everyone here is in every topic')
         await ann.shot(path.join(shots, 'community.png'))
         await ann.click('Find a community')

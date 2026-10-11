@@ -1,8 +1,11 @@
 # The atlas web UI
 
 **[cartopolis.org](https://cartopolis.org)** itself: a small Mithril app, static
-files behind Caddy at the site root. It is the front page (`/`), the operator's
-pages (`/admin`) and the players' pages (`/register`, `/verify`, `/house`);
+files behind Caddy at the site root. Its main page is one window with a switch
+in a top bar — **Community** (`/`, the chat), **World** (`/world`, the app's own
+web build from `/viewer/` in a frame) and, for an account that may run
+something, **Admin** (`/admin`) — plus the players' pages (`/register`,
+`/verify`, `/buildings`); `docs/mockups/web-navigation/` is the design.
 Caddy sends everything else — the viewer at `/viewer/`, the APK, the simulator's
 `/api` and `/ws`, atlas's tiles and `/api/pipeline` — where it belongs. Every
 path goes through `src/lib/base.ts`. It talks to the simulator's `/api/admin`
@@ -13,15 +16,22 @@ It was called the *console*, lived at `/console/` beside a front page atlas
 served from a string, had its own hostname (web.cartopolis.org) before that, and
 a repository of its own until 2026-09. Caddy redirects `/console/` to `/admin`.
 
-Sign in with a Cartopolis account carrying the `admin` flag — the same account
-signs into the world itself, and atlas checks the bearer against the simulator
-rather than keeping a list of its own.
+There is one sign-in, the chat's. When `/api/admin/me` says the account may run
+something (the `admin` flag, or a role granting a permission), that same session
+is copied into `$s.profile` and Admin joins the switch (`accounts.adoptSession`).
+Atlas checks the bearer against the simulator rather than keeping a list of its
+own, and the server checks the permission on every admin call, so what the page
+shows decides nothing.
 
 ## What it does
 
-**For the operator** (`/admin`): list accounts, create them,
-enable/disable, promote/demote to admin, reset a password, delete — and a
-*Houses* tab listing who holds which address. Two rules are enforced by the
+**For the operator** (`/admin`), in three areas on Admin's rail: **People**
+(accounts — list, create, enable/disable, promote/demote, reset a password,
+delete — roles, building claims, and the server's report queue), **Content**
+(building overrides, the model library) and **Data** (the pipelines that build
+the map). Reports about a *person*, filed from the app, are People › Reports;
+a report on a line in a community's topic goes to that community's moderators
+in the chat instead. Two rules are enforced by the
 *server* and simply reported here, which is why its error text is passed through
 verbatim rather than replaced: the last enabled admin cannot be removed, and you
 cannot delete the account you are signed in with.
@@ -45,17 +55,15 @@ app is no longer admin-only, and the shape is worth knowing before changing it.
   (`useEffect` with an empty dependency list — a re-render that spent it a second
   time would turn a successful sign-up into "that link is not valid").
 - Confirming hands back an ordinary **session token**, kept in `$s.signup` and
-  reached through a *second* `Api` instance (`signupApi`). It is deliberately not
-  `$s.profile`: that one is the operator's and `App.init` validates it against
-  `/api/admin/me`, so writing a player's token into it would sign the new person
-  out of their own sign-up with a 401 as the explanation.
+  reached through `signupApi`. `$s.profile` (read by `api`) holds the same token
+  only once `/api/admin/me` has said the account may run something; a player's
+  is never written there, because `api` treats a 401 as the session ending.
 - A confirmed account can then **claim one house**, by typing an address. That is
   Groningen-only for now, because that is where the map has buildings, and it is
-  first come first served — which makes the operator's Houses tab the only dispute
+  first come first served — which makes the operator's Building claims page the only dispute
   mechanism there is.
-- A newly registered account **cannot sign in here**. This page is admin-only and
-  says so: the confirmation screen points at
-  [cartopolis.org](https://cartopolis.org) for the world itself.
+- A newly registered account signs in on the front page like anybody else and
+  lands in Community; it simply has no Admin segment.
 
 The registration rules (open or closed, minimum password length, how long a link
 lasts) are fetched once from `GET /api/register` into `$s.registration`. A form

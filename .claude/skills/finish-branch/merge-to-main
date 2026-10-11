@@ -165,8 +165,7 @@ fi
 
 # ── Land it ──────────────────────────────────────────────────────────────────
 # The branch goes up first and keeps existing: it is the key the agent-context
-# digest is stored under (refs/agent-context/<branch>) and what the autopilot's
-# sweep looks for when it retires a landed ticket's branch.
+# digest is stored under (refs/agent-context/<branch>).
 # Plain first, `--force-with-lease` only as the fallback. A lease needs a
 # remote-tracking ref to compare against and a branch that has never been pushed
 # has none, so leading with it fails on exactly the common case; and the only

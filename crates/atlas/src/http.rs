@@ -197,7 +197,6 @@ mod tests {
                 auth: Arc::new(crate::auth::Auth::new(Box::new(Nobody))),
                 runner: crate::jobs::Runner::new(dir.path(), crate::jobs::Registry::new()),
                 out_root: dir.path().to_path_buf(),
-                autopilot: dir.path().join("autopilot.json"),
                 designs: std::sync::Arc::new(crate::designs::Designs::new(dir.path(), dir.path())),
                 overrides: std::sync::Arc::new(crate::overrides::Overrides::new(
                     dir.path(),

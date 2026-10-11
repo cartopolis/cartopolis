@@ -22,7 +22,6 @@
  */
 import type {
     Account,
-    AutopilotConfig,
     BuildingAddress,
     BuildingOverride,
     LibraryEntry,
@@ -617,24 +616,6 @@ const overrides: BuildingOverride[] = [
     },
 ]
 
-const autopilot: AutopilotConfig = {
-    enabled: true,
-    focus: 'Building interiors: make the floor-plan editor good enough that an owner draws their own house',
-    focusPlan: [
-        {id: 'stairs-anywhere', issue: 412, note: 'lib/design.ts addStair; judged by a flight placed mid-room surviving a save', title: 'Let a flight stand anywhere, not only against a wall'},
-        {id: 'room-names', issue: 418, note: 'lib/rooms.ts relabel; a moved wall keeps its rooms named', title: 'Rooms keep their names when a wall moves'},
-        {id: 'copy-storey', issue: 0, note: '', title: 'Copy a whole storey up, walls and windows'},
-        {id: 'undo-touch', issue: 0, note: 'Phone layout: undo and redo reachable with one thumb', title: 'Undo on a phone'},
-    ],
-    maxOpen: 4,
-    planRevision: 3,
-    qaMaxOpen: 2,
-    qaPerDay: 1,
-    retroEveryDays: 7,
-    ship: false,
-    ticketsPerDay: 3,
-}
-
 // ── Routing ─────────────────────────────────────────────────────────────────
 
 /** Whether the bearer belongs to a mock session; a 401 otherwise. */
@@ -646,6 +627,24 @@ function needSession(req: Request): string | Response {
  * Answer one `/api/*` request, or `null` when the mock does not know the route
  * (`build.ts` turns that into a 404).
  */
+/** The server's report queue: reports about a person, filed from the app. */
+const userReports = [
+    {
+        created_at: '2026-10-10 21:14:02', id: 3, message: 'Buy my watches at cheap-watches dot biz', note: '',
+        reason: 'spam', reporter_username: 'annekedijkstra', resolution: null, resolved: false, resolved_at: null,
+        subject_username: 'robverkoper',
+    },
+    {
+        created_at: '2026-10-09 08:40:51', id: 2, message: null, note: 'Keeps following me around the Grote Markt and shouting.',
+        reason: 'harassment', reporter_username: 'femkedeboer', resolution: null, resolved: false, resolved_at: null,
+        subject_username: 'thijsmulder',
+    },
+    {
+        created_at: '2026-09-30 17:02:11', id: 1, message: 'lol', note: '', reason: 'other', reporter_username: null,
+        resolution: 'Nothing wrong with it', resolved: true, resolved_at: '2026-10-01 09:00:00', subject_username: 'sjoerdbakker',
+    },
+]
+
 export async function mockApi(req: Request, url: URL): Promise<Response | null> {
     const p = url.pathname
     const method = req.method
@@ -898,6 +897,20 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             return json({roles: roleList()})
         }
     }
+    if (p === '/api/admin/reports' && method === 'GET') {
+        return json(userReports.filter((r) => url.searchParams.get('all') === 'true' || !r.resolved))
+    }
+    if (parts[1] === 'admin' && parts[2] === 'reports' && parts.length === 4 && method === 'PATCH') {
+        const r = userReports.find((x) => x.id === Number(parts[3]))
+        if (!r) {
+            return refuse(404, 'no such report')
+        }
+        const b = await body<{resolution: string}>(req)
+        r.resolved = true
+        r.resolved_at = sqlNow()
+        r.resolution = b.resolution ?? ''
+        return new Response(null, {status: 204})
+    }
     if (p === '/api/admin/claims' && method === 'GET') {
         return json({buildings: owned})
     }
@@ -961,7 +974,7 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         return new Response(null, {status: 204})
     }
 
-    // ── Atlas: the pipeline, overrides, autopilot, building designs ────────
+    // ── Atlas: the pipeline, overrides, building designs ──────────────────
     if (p === '/api/pipeline/config' && method === 'GET') {
         return json(pipelineConfig)
     }
@@ -1075,17 +1088,6 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             }
             return new Response(null, {status: 204})
         }
-    }
-    if (p === '/api/pipeline/autopilot' && method === 'GET') {
-        return json({config: autopilot})
-    }
-    if (p === '/api/pipeline/autopilot' && method === 'PATCH') {
-        const b = await body<AutopilotConfig>(req)
-        Object.assign(autopilot, b)
-        // The server clamps; so does this, on the two a slider can overshoot.
-        autopilot.ticketsPerDay = Math.max(0, Math.min(20, autopilot.ticketsPerDay))
-        autopilot.maxOpen = Math.max(0, Math.min(20, autopilot.maxOpen))
-        return json({config: autopilot})
     }
     if (parts[1] === 'pipeline' && parts[2] === 'buildings' && parts.length >= 4) {
         const pand = parts[3]

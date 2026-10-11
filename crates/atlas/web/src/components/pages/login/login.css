@@ -2,7 +2,7 @@
 
 /*
  * One centred card for every form a person without a session meets: the
- * operator's sign-in, sign-up and the verification landing all use it, so the
+ * front page's sign-in, sign-up and the verification landing all use it, so the
  * three read as one flow. Full width on a phone, ~26rem from there up.
  */
 .auth {

@@ -97,78 +97,11 @@ to cite the code rather than assume.
 *Use it for:* work that should happen while you are not at a keyboard.
 *Not for:* anything visual, or anything you cannot state precisely.
 
-### ④ Autopilot — nobody steering at all
-
-`viberfox-autopilot` on the VPS: a third container that files the next ticket
-and lands the finished ones, so work continues while the maintainer is away.
-Two jobs, one config file, and **no language model** — `tools/autopilot.ts`
-decides only which item in the queue has no ticket yet, and which finished branch
-every Actions job passed on. The thinking is still ③'s sessions, which refine the
-ticket and implement it.
-
-The two jobs run on different clocks: a full `tick` (file + ship) hourly, and
-a `ship`-only pass every five minutes in between. Filing is quota-paced anyway,
-but shipping is a handful of API calls, and on one clock a branch whose CI went
-green minutes after a tick sat mergeable for the rest of the hour.
-
-It is a separate container from the watcher for one reason, and it is the same
-reason the watcher has no `config:` volume: ③ spawns sessions whose prompt is
-issue text anyone can write, and the merge token can push to `main`. The
-autopilot holds that token, runs no session, and has no clone to be edited in.
-The one piece of free text it does read — the focus below — it only ever quotes
-into a ticket, which is a place anyone with a Forgejo account already reaches.
-
-**The knob is `/data/agent/state/autopilot.json`**, re-read on every pass, so a
-change to `ship` takes effect within five minutes, the rest within the hour,
-and none of it needs a restart:
-
-```json
-{ "enabled": false, "ticketsPerDay": 1, "ship": false, "focus": "", "focusPlan": [] }
-```
-
-- `enabled` — file new tickets at all.
-- `ticketsPerDay` — how many, and it never runs two at once regardless.
-- `ship` — merge finished tickets and deploy, or leave them on `agent:done`
-  for a person, which is where this lane stopped before.
-- `focus` / `focusPlan` — the second queue, below.
-
-Nobody edits that file by hand any more: the atlas web UI's **Autopilot tab**
-(`https://cartopolis.org/admin`) is the control surface, and the file is how it reaches
-this process. It is a hand-synced seam — a field added to `Config` here has to be
-added to `crates/atlas/src/autopilot.rs` too, or the web UI strips it on the
-next save.
-
-#### The queue: the frontier, or a focus
-
-By default the work comes from the frontier table in
-[`direction.md`](direction.md), one row at a time, for ever. That answers "what
-next?" and cannot answer "spend the next fortnight on X", so the web UI also
-carries a **focus** — a sentence in the maintainer's own words — and while it
-says something it *replaces* the frontier.
-
-What gets built under it is an ordered **plan**, which the web UI reorders,
-rewrites, extends and deletes. The autopilot does not write that plan (it still
-runs no model): when the focus is set and the plan is empty it files one
-**planning ticket**, and ③'s session answers with a fenced `autopilot-plan` block
-of JSON that this stores. From then on the list is the operator's, filed top
-down at `ticketsPerDay`, with each item's ticket number recorded beside it.
-
-Nothing about it lifts a fence — a focus asking for a wire-protocol change files
-tickets that are built and then parked for a person, like any other. The design,
-the rejected alternatives and the two-writer rule on the config file are in
-[`notes/autopilot-focus.md`](notes/autopilot-focus.md).
-
-Shipping is `agent:done` **plus** a `ship` label, and it re-checks every Actions
-job on the branch head before merging rather than trusting the label: the
-watcher also awards `agent:done` when CI never answered, and landing a branch on
-no verdict is recoverable where publishing on no verdict is not. After the merge
-it runs [`tools/deploy-main`](../tools/deploy-main), which gates on `main` being
-green and deploys the simulator before the web client — they share one wire
-protocol and `decode_app_frame` refuses a mismatch outright.
-
-What it may not touch is in [`direction.md`](direction.md), and the sharpest one
-is the wire protocol: a bump locks out every installed Android app and every
-downloaded desktop binary, and no deploy from this machine reaches either.
+A fourth lane, **the autopilot** (`viberfox-autopilot`, `tools/autopilot.ts`),
+filed tickets and landed finished ones with nobody steering. It was stopped on
+2026-09-11 for filing tickets the maintainer judged invented, and its code was
+removed on 2026-10-11; `notes/retired/autopilot.md` has what it was and why it
+went. A ticket the watcher finishes now waits for a person to land it.
 
 ### The lane axis — how much it may assume
 
@@ -564,36 +497,11 @@ Four properties are deliberate:
   ticket, which `forgejo.env`'s `write:issue` token has always been able to do —
   the repository-write token in `forgejo-merge.env` is no longer on this path.
 
-**There are no pull requests left anywhere.** The autopilot
-(`tools/autopilot.ts`) used to open one, and it was never a review either — it
-existed to *start a build*, since `ci.yml` has no push trigger on branches and
-until the request existed there was nothing for CI to have said. It now
-fast-forwards `main` itself: Forgejo's API has no endpoint that moves a branch
-(`git/refs` is read-only), but a push needs neither a working tree nor the
-objects, so a shallow bare clone in `/tmp` is enough. Verified against this
-server on 2026-08-30.
-
-What the two lanes do not share is *how* the branch is judged. The autopilot
-holds no checkout and no build environment — `deploy-main` deliberately works
-from the API alone — so it cannot run `verify-branch`. It still requires the
-branch to be green before landing, by the direct route: `POST
-/actions/workflows/ci.yml/dispatches` with `{"ref": "<branch>"}`. One call, no
-request to open, and the answer read on a later hourly tick rather than waited
-for.
-
-That verdict is **stronger** than the pull request's was, in two ways worth
-naming. A hand-started run declines to narrow itself, so it runs both scene
-smokes and both cross-target lanes, where the pull-request lane only ever ran
-the suite and rustfmt. And because the landing is a fast-forward there is no
-merge commit, so the commit that was tested is precisely the commit that ends up
-on `main` — under the old path what landed was a merge commit nobody had built,
-which is why `ci.yml` carries a step comparing its tree against its second
-parent's.
-
-A red branch is **parked**, not retried: `ship` comes off, `agent:failed` goes
-on, and the failing job is named on the ticket. The old lane logged it and
-looked again in an hour for ever, which turns a red branch into a ticket that
-silently stops moving — with the reason in the one place nobody reads.
+**There are no pull requests left anywhere.** The autopilot used to open one,
+and it was never a review either — it existed to *start a build*, since `ci.yml`
+has no push trigger on branches. The gate above replaced it for the driven lane,
+and the autopilot itself was removed on 2026-10-11
+(`notes/retired/autopilot.md`), so every landing now goes through `merge-to-main`.
 
 ### The verdict is still CI's, and it now arrives afterwards
 
@@ -929,18 +837,6 @@ directory". No second mechanism.
 | Token, bot password | `watcher.env`, `0600` |
 | Modes, labels, column ids | `docker-compose.yml` → `environment:` |
 | CI gate | `AGENT_CI_GATE` (default on), `AGENT_CI_TIMEOUT_MIN` (45) |
-
-**④ Autopilot — the `viberfox-autopilot` container** (`/data/agent/`)
-
-| What | Where |
-|---|---|
-| The two scripts | `autopilot/autopilot.ts`, `autopilot/deploy-main` — copies of `tools/` in this repo |
-| Tokens (`write:issue` **and** `write:repository`) | `autopilot.env`, `0600` — deliberately not `watcher.env` |
-| The knob | `state/autopilot.json`, re-read every tick |
-| Tick interval | the `command:` loop in `docker-compose.yml` (hourly) |
-
-Updating either script is a copy from this repository into `/data/agent/autopilot/`;
-the mount is read-only and the container picks the new file up on its next tick.
 
 The `Stop` hook exists in two places on purpose — ① and ② are separate
 environments — but it is the same script. `md5sum` both after editing either;

@@ -140,6 +140,90 @@ pub fn invite_from_link(input: &str) -> Option<String> {
 // reads it liberally — `a_link_round_trips_through_both_schemes` parses the exact
 // literal the loader writes.
 
+/// The message the web UI posts to fly this app somewhere while it runs.
+///
+/// cartopolis.org draws the web build of this app inside its own page as World
+/// (`crates/atlas/web`, `Chat::worldFrame`), keeps it loaded across switches, and
+/// moves its camera when another community is chosen on the rail. The frame
+/// starts at a place through `?place=` like any link; this is the same string,
+/// for every choice after the first, as `{type: "cartopolis.place", place}`.
+#[cfg(target_arch = "wasm32")]
+pub const FRAMED_PLACE_MESSAGE: &str = "cartopolis.place";
+
+/// Fly to a place the framing page posted (see [`FRAMED_PLACE_MESSAGE`]).
+///
+/// Only a message from this page's own origin is read, so another site that
+/// frames the viewer cannot steer it; and the place goes through
+/// [`place_from_link`] like a typed or linked one, so a malformed value is
+/// refused with a warning rather than teleporting anywhere. The latest message
+/// wins: two choices in one frame are one flight, to the second.
+#[cfg(target_arch = "wasm32")]
+pub fn follow_framed_places(
+    mut listening: bevy::prelude::Local<bool>,
+    mut nav: bevy::prelude::ResMut<super::geo_nav::GeoNavState>,
+) {
+    if !*listening {
+        *listening = true;
+        framed::listen();
+    }
+    let Some(raw) = framed::take() else {
+        return;
+    };
+    match place_from_link(&raw) {
+        Some(fix) => {
+            tracing::info!(place = %raw, "flying to the place the page posted");
+            nav.pending_teleport = Some(super::geo_nav::Teleport::fix(fix));
+        }
+        None => tracing::warn!(place = %raw, "ignoring an unparseable posted place"),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod framed {
+    use std::sync::Mutex;
+    use wasm_bindgen::prelude::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    /// The newest place posted and not yet flown to.
+    static LATEST: Mutex<Option<String>> = Mutex::new(None);
+
+    pub fn take() -> Option<String> {
+        LATEST.lock().ok()?.take()
+    }
+
+    /// Listen for `message` on the window for the life of the page. Leaked on
+    /// purpose: there is one, it is never removed, and a `Closure` dropped while
+    /// registered would be a dangling callback.
+    pub fn listen() {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let origin = window.location().origin().unwrap_or_default();
+        let listener =
+            Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+                if e.origin() != origin {
+                    return;
+                }
+                let data = e.data();
+                let field = |name: &str| {
+                    js_sys::Reflect::get(&data, &JsValue::from_str(name))
+                        .ok()
+                        .and_then(|v| v.as_string())
+                };
+                if field("type").as_deref() != Some(super::FRAMED_PLACE_MESSAGE) {
+                    return;
+                }
+                if let (Some(place), Ok(mut slot)) = (field("place"), LATEST.lock()) {
+                    *slot = Some(place);
+                }
+            });
+        let target: &web_sys::EventTarget = window.as_ref();
+        let _ =
+            target.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
+        listener.forget();
+    }
+}
+
 /// Turn `https://cartopolis.org/go?place=…` — or the `cartopolis:` spelling, or a
 /// bare `53.2194, 6.5665, 120m` — into the view it names.
 ///

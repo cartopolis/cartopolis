@@ -26,5 +26,18 @@ dark half). Builds on `../workspace/style.css`.
 
 ![v1](v1.png)
 
-Open questions are on the sheet: who receives which reports, what World is for
-somebody signed out, and whether admin keeps its own sign-in.
+## Decided (2026-10-11)
+
+The sheet's three open questions, settled when v1 was agreed:
+
+- **Reports split by what they are about.** A report on a line in a
+  community's topic goes to that community's moderators, as it does today. A
+  report about a *person* (the app's Report, `/api/admin/reports`) goes to the
+  server's admins, in Admin › People › Reports, which is new: until now that
+  queue had no page at all.
+- **World works signed out.** It is the map: the switch reads Community |
+  World, Community is the sign-in card, World is the viewer with no rail and no
+  chat beside it. Nobody has to sign in to look at the map.
+- **One sign-in.** Admin uses the session the chat signed in with; the separate
+  admin sign-in form goes. The simulator already issues both from one session
+  store, and still checks the account's permissions on every admin call.

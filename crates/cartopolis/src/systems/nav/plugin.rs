@@ -91,8 +91,19 @@ impl Plugin for NavPlugin {
                     .before(systems::free_camera::camera_controls),
             )
                 .in_set(ClientPhase::Anchor),
-        )
-        .add_systems(
+        );
+
+        // The web UI's World moving this app's camera (`place_link`). Before the
+        // teleport, so a posted place is flown to in the frame it was read.
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(
+            Update,
+            systems::place_link::follow_framed_places
+                .before(systems::geo_nav::apply_teleport)
+                .in_set(ClientPhase::Anchor),
+        );
+
+        app.add_systems(
             Update,
             (
                 systems::transit_live::update_world_clock,

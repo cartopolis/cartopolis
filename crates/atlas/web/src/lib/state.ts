@@ -36,7 +36,6 @@ export const persistentState: AdminState = {
     me: {admin: false, permissions: []},
     permissionCatalogue: [],
     roles: [],
-    autopilot: null,
     claims: [],
     overrides: null,
     /*
@@ -99,7 +98,6 @@ export const volatileState: Partial<AdminState> = {
     me: {admin: false, permissions: []},
     permissionCatalogue: [] as PermissionInfo[],
     roles: [] as Role[],
-    autopilot: null,
     claims: [] as OwnedBuilding[],
     overrides: null,
     library: [] as LibraryEntry[],

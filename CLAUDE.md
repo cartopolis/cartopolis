@@ -306,9 +306,13 @@ Startup switches for bisecting a render problem, each removing one layer:
 ## Architecture
 
 **cartopolis.org is the atlas web UI**, `crates/atlas/web` — a Mithril
-app (Bun, not Rust; `@garage44/mithril`, our fork at `jeroen/mithril`) served as static files at the site root: the
-front page (`/`), the operator's pages (`/admin`: accounts, houses, models, the
-Data tab that drives the pipelines, the autopilot) and the players' pages
+app (Bun, not Rust; `@garage44/mithril`, our fork at `jeroen/mithril`) served as static files at the site root.
+Its main page is one window with a **Community | World | Admin** switch in a top bar
+(`docs/mockups/web-navigation/`): Community at `/` is the chat, World at `/world`
+frames the app's own web build from `/viewer/` (and flies it to a community's place by
+`postMessage`, `place_link::follow_framed_places`), and Admin at `/admin` — shown only
+to an account that may run something, on the chat's own sign-in — groups the
+operator's pages into People, Content and Data. Beside it are the players' pages
 (`/register`, `/verify`, `/buildings`, and the floor-plan editor at
 `/building/{pand}`). Caddy routes the viewer (`/viewer/`), the
 APK, the simulator's `/api` and `/ws` and atlas's `/terrain`, `/height` and
@@ -320,8 +324,7 @@ at `web.cartopolis.org` (retired), until 2026-09. It talks to this simulator's `
 `crates/atlas/web/src/types.ts` — a hand-written TypeScript description of
 what `auth::AccountRow` serialises here. Being in one repository does not make
 it compile-checked, so a test does it instead: `web_mirror` in the simulator's
-integration suite (and `autopilot::web_mirror` in atlas, for the autopilot's
-config) reads the TypeScript through `cartopolis_core::ts_mirror` and fails when
+integration suite reads the TypeScript through `cartopolis_core::ts_mirror` and fails when
 the fields differ. Change an account field and change it there too. `docs/notes/hosted-simulator.md` has the
 deployment. **Its controls, layout and light/dark theme are the fork's component library**
 (`@garage44/mithril/components` and `/validation`): use those rather than hand-built inputs or a fresh

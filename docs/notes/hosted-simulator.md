@@ -13,7 +13,7 @@ and each has a different audience:
 | Address | Who | What |
 |---|---|---|
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
-| `https://cartopolis.org/` | everyone | **the atlas web UI** (`crates/atlas/web`, static files published by `deploy-web.yml`) since 2026-09-24 — the front page, the operator's pages at `/admin` (accounts, houses, models, the Data and Autopilot tabs) and the players' `/register`, `/verify` and `/house`. Caddy's fallback, with `index.html` for any path that is not a file |
+| `https://cartopolis.org/` | everyone | **the atlas web UI** (`crates/atlas/web`, static files published by `deploy-web.yml`) since 2026-09-24 — Community at `/`, World at `/world` and, for operators, Admin at `/admin` (People, Content, Data), plus the players' `/register`, `/verify` and `/buildings`. Caddy's fallback, with `index.html` for any path that is not a file |
 | `https://cartopolis.org/terrain/`, `/height`, `/api/pipeline/` | the client, the web UI | **`cartopolis_atlas`** (`atlas.md`), on `172.17.0.1:4749` |
 | `https://cartopolis.org/viewer/` | players in a browser | the wasm client, published by `deploy-wasm.yml` into `site/viewer/` |
 | `https://cartopolis.org/console/` | nobody | redirects to `/admin`. The operator's pages lived here, beside a front page atlas served itself, until 2026-09-24; before that they were `web.cartopolis.org` and a separate repository, a hostname retired with no redirect |

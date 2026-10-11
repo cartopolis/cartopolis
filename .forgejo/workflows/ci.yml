@@ -302,7 +302,7 @@ jobs:
       #
       # `tools/` is on the list for the same reason `crates/simulator/` is: it is
       # Python, TypeScript and bash — the extractors, the authoring client, the
-      # autopilot, the deploy script — and not one byte of it is compiled into
+      # deploy script — and not one byte of it is compiled into
       # the client. It is deliberately *not* in the `paths-ignore` above: a
       # change there should still get a suite, it just cannot change a frame.
       - name: What is worth running for this commit

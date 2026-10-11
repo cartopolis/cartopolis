@@ -1,9 +1,9 @@
 import type {Account, OwnedBuilding} from '@/types'
 
-import {$s, api, notifier, store} from '@/app'
+import {$s, api, notifier, signupApi, store} from '@/app'
 import {ApiError} from '@/lib/api'
 import {closeContext} from '@/lib/layout'
-import {loadMe, may} from '@/lib/roles'
+import {applyMe} from '@/lib/roles'
 
 /**
  * Every mutation the GUI can make, in one place.
@@ -28,36 +28,39 @@ function report(e: unknown, fallback: string) {
     notifier.error(fallback)
 }
 
-export async function signIn(username: string, password: string): Promise<boolean> {
+/**
+ * Use the chat's session for the admin pages too, when the account may run
+ * anything: one sign-in for the whole page (`docs/mockups/web-navigation/`,
+ * "Decided"). The simulator issues the player and the admin token from the same
+ * session store and checks the account's permissions on every admin call, so
+ * this only decides what the page *shows*; it grants nothing.
+ */
+export async function adoptSession(): Promise<void> {
+    const token = $s.signup.token
+    if (!token) {
+        dropOperator()
+        return
+    }
     try {
-        const result = await api.post<{principal: string; token: string; username: string}>(
-            '/api/admin/login',
-            {password, username},
+        const me = await signupApi.get<{admin: boolean; permissions?: string[]; principal: string; username: string}>(
+            '/api/admin/me',
         )
-        $s.profile = {principal: result.principal, token: result.token, username: result.username}
-        await loadMe()
+        // Signed out (or into another account) while the answer was on its way.
+        if ($s.signup.token !== token) return
+        $s.profile = {principal: me.principal, token, username: me.username}
+        applyMe({admin: me.admin, permissions: me.permissions ?? []})
         $s.signedIn = true
         store.save()
-        if (may('accounts_manage')) {
-            await loadAccounts()
-        }
-        return true
-    } catch (e) {
-        report(e, 'Could not sign in')
-        return false
+    } catch {
+        // A 403 is the ordinary answer for a player: there is nothing to manage.
+        if ($s.signup.token === token) dropOperator()
     }
 }
 
-export async function signOut() {
-    // Revoke server-side first, while the token is still in the store — a token
-    // dropped from localStorage alone stays valid until it expires.
-    try {
-        await api.post('/api/admin/logout')
-    } catch {
-        // Signing out locally must succeed even when the server cannot be
-        // reached; the token expires on its own.
-    }
+/** Forget the operator half of the session: what this page shows as Admin. */
+export function dropOperator() {
     $s.profile = {principal: '', token: '', username: ''}
+    $s.me = {admin: false, permissions: []}
     $s.accounts = []
     $s.signedIn = false
     // Whatever record the panel held belongs to the session that just ended.

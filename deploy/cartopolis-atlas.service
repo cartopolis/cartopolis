@@ -7,9 +7,9 @@
 #
 # **Its own process and its own user**, never the simulator's: pipeline work and
 # terrain cutting are seconds of CPU, and the simulator's runtime is shared with
-# the 20 Hz tick. It writes three places: its data directory, the map data tree
-# Caddy serves as 3dbag.cartopolis.org, and the autopilot's control file. The
-# last two belong to `ubuntu` (the TypeScript pipeline wrote them as that user), so
+# the 20 Hz tick. It writes two places: its data directory and the map data tree
+# Caddy serves as 3dbag.cartopolis.org. The
+# second belongs to `ubuntu` (the TypeScript pipeline wrote it as that user), so
 # the service runs with group `ubuntu` and umask 0002: what it creates stays
 # writable by the other writers, and the directories it writes into need g+w.
 #
@@ -22,7 +22,6 @@
 #   upstream_concurrency = 3
 #   site_dir = "/data/3dbag/site"
 #   admin_api = "http://172.17.0.1:4748"
-#   autopilot_config = "/data/agent/state/autopilot.json"
 [Unit]
 Description=Cartopolis atlas
 Documentation=https://code.garage44.eu/jeroen/cartopolis

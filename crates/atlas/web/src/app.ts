@@ -2,8 +2,8 @@
 import type {AdminState, Notification, RegistrationRules} from '@/types'
 
 import {Api} from '@/lib/api'
+import {adoptSession} from '@/lib/accounts'
 import {Notifier} from '@/lib/notifier'
-import {applyMe} from '@/lib/roles'
 import {persistentState, volatileState} from '@/lib/state'
 import {Store} from '@/lib/store'
 
@@ -23,7 +23,8 @@ const $s = store.state
 /**
  * The API reads the token out of the live store and reports a 401 back into it,
  * so an expired session signs the app out from wherever it was noticed rather
- * than at each call site.
+ * than at each call site. It is the chat's session (`accounts.adoptSession`), so
+ * a 401 here ends both halves of the page, not only Admin.
  */
 const api = new Api(
     () => $s.profile.token,
@@ -31,19 +32,17 @@ const api = new Api(
         $s.profile = {principal: '', token: '', username: ''}
         $s.signedIn = false
         $s.accounts = []
+        $s.signup = {token: '', username: ''}
         store.save()
     },
 )
 
 /**
- * The same client, reading the *new account's* token instead of the operator's.
- *
- * Two API objects rather than one with a token argument, because the difference
- * is not per-call: it is which of two unrelated sessions a request belongs to,
- * and every sign-up call belongs to one and every admin call to the other. A 401
- * here signs nobody out of anything — the sign-up screens report it themselves,
- * and clearing the admin profile because a sign-up token expired would log the
- * operator out of their own tab.
+ * The same client, reading the person's own session (`$s.signup`): the chat's,
+ * the buildings pages', and since 2026-10-11 the admin pages' too, which copy it
+ * into `$s.profile` when the account may run something. Two objects remain
+ * because `api` reads `$s.profile`, which is empty for a player, and because a
+ * 401 on a sign-up screen (an expired link) must not drop a session elsewhere.
  */
 const signupApi = new Api(
     () => $s.signup.token,
@@ -60,25 +59,20 @@ export class App {
     async init(mount: (root: Element) => void) {
         notifier.init($s.notifications as Notification[])
 
-        // A token from localStorage is a *claim* to be signed in, not a fact: it
-        // may have expired, been revoked, or belong to an account whose admin
-        // flag is gone. `/api/admin/me` is the server answering the question, and
-        // `signedIn` stays null until it does — which is what the splash is for.
-        if ($s.profile.token) {
-            try {
-                const me = await api.get<{
-                    admin: boolean
-                    permissions?: string[]
-                    principal: string
-                    username: string
-                }>('/api/admin/me')
-                $s.profile = {principal: me.principal, token: $s.profile.token, username: me.username}
-                applyMe({admin: me.admin, permissions: me.permissions ?? []})
-                $s.signedIn = true
-            } catch {
-                // The 401 path in `Api` has already cleared the profile.
-                $s.signedIn = false
-            }
+        // One session for the whole page (`accounts.adoptSession`). A token
+        // remembered from the old separate admin sign-in is the same kind of
+        // session, so it is carried over rather than asking for a password again;
+        // one that disagrees with the chat's is dropped, the chat's winning.
+        if (!$s.signup.token && $s.profile.token) {
+            $s.signup = {token: $s.profile.token, username: $s.profile.username}
+        }
+        // A remembered token is a *claim* to be allowed into Admin, not a fact:
+        // it may have expired, or the account lost its permissions.
+        // `/api/admin/me` answers, and `signedIn` stays null until it does —
+        // which is what the "Checking your session" splash is for.
+        if ($s.signup.token) {
+            $s.signedIn = null
+            await adoptSession()
         } else {
             $s.signedIn = false
         }

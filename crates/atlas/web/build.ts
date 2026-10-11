@@ -261,6 +261,18 @@ if (serve) {
                 } as RequestInit)
             }
 
+            // The app's web build, which World frames. Caddy serves it from its
+            // own deploy; this server has none, and answering with the web UI
+            // (the catch-all below) would draw the page inside its own World.
+            if (url.pathname.startsWith('/viewer/')) {
+                return new Response(
+                    '<!doctype html><body style="margin:0;display:grid;place-items:center;height:100vh;' +
+                        'background:#0f1416;color:#aac2c6;font:15px system-ui">' +
+                        `<p>The app runs here on cartopolis.org${url.search ? ` (${url.search})` : ''}.</p></body>`,
+                    {headers: {'Content-Type': 'text/html'}},
+                )
+            }
+
             // Mounted as in production (`src/lib/base.ts`): at the site root.
             const file = url.pathname === '/' ? '/index.html' : url.pathname
             const candidate = Bun.file(path.join(dist, file))

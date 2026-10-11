@@ -9,7 +9,6 @@ pub mod ahn6;
 pub mod api;
 pub mod areas;
 pub mod auth;
-pub mod autopilot;
 pub mod config;
 pub mod coverage;
 pub mod designs;
@@ -45,7 +44,6 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             .with_data_dir(&config.data_dir)
             .with_upstream(config.upstream_concurrency),
         out_root: config.site_dir.clone(),
-        autopilot: config.autopilot_config.clone(),
         designs: Arc::new(designs::Designs::new(&config.data_dir, &config.site_dir)),
         overrides: Arc::new(overrides::Overrides::new(
             &config.data_dir,

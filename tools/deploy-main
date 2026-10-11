@@ -52,11 +52,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Both tokens may arrive either way. Interactively they come from the files a
-# workstation and the `cartopolis-agent` container keep them in; under the
-# autopilot they come from the environment, because that service has no
-# `~/.config` of its own — see the `config:` volume in docker-compose.yml for
-# why that separation is deliberate.
+# Both tokens may arrive either way: from the files a workstation and the
+# `cartopolis-agent` container keep them in, or from the environment.
 for f in "$HOME/.config/cartopolis/forgejo.env" "$HOME/.config/cartopolis/forgejo-merge.env"; do
     [ -f "$f" ] && { set -a; . "$f"; set +a; }
 done

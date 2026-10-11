@@ -31,8 +31,6 @@ pub struct AtlasConfig {
     pub site_dir: PathBuf,
     /// The simulator's HTTP surface, asked whether a web UI bearer is an admin.
     pub admin_api: String,
-    /// The autopilot's control file, which the web UI steers.
-    pub autopilot_config: PathBuf,
     /// Where the satellite catalogue is mirrored from (`satellites`). Empty turns
     /// the refresh off; a copy already on disk is still served.
     pub satellites_source: String,
@@ -46,7 +44,6 @@ impl Default for AtlasConfig {
             upstream_concurrency: 3,
             site_dir: PathBuf::from("data/atlas/site"),
             admin_api: "http://127.0.0.1:4748".to_string(),
-            autopilot_config: PathBuf::from("/data/agent/state/autopilot.json"),
             satellites_source: crate::satellites::DEFAULT_SOURCE.to_string(),
         }
     }

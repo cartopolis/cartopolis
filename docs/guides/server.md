@@ -586,7 +586,7 @@ systemd, the same shape as `cartopolis-sim.service`: `deploy-atlas.yml`
 (manual) publishes it into `/data/cartopolis/atlas` and touches
 `restart.stamp`, and `cartopolis-atlas-reload.path` on the host does the restart.
 It runs as its own user, `cartoatlas`, in group `ubuntu` with umask 0002, because
-the site tree and the autopilot's control file belong to `ubuntu`. Its
+the site tree belongs to `ubuntu`. Its
 configuration is `/data/cartopolis/atlas/atlas.toml`; unknown keys are refused:
 
 ```toml
@@ -595,7 +595,6 @@ data_dir = "/data/cartopolis/atlas/data"
 upstream_concurrency = 3
 site_dir = "/data/3dbag/site"                           # the tree the pipelines write
 admin_api = "http://172.17.0.1:4748"                    # the simulator, asked who is an admin
-autopilot_config = "/data/agent/state/autopilot.json"   # the file the Autopilot tab steers
 ```
 
 It listens on the docker0 gateway (`172.17.0.1:4749`), and Caddy sends the

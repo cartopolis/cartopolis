@@ -65,7 +65,7 @@ pub enum Permission {
     RolesManage,
     /// Read and resolve reports, and release building claims.
     ReportsTriage,
-    /// Run atlas's data pipelines and its autopilot.
+    /// Run atlas's data pipelines.
     PipelineRun,
 }
 

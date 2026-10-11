@@ -74,8 +74,7 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    (`crates/atlas/src/pipeline/`), each diffed against the TypeScript output for
    the same square (`where-the-map-data-is-built.md` has the results), and
    the TypeScript server's surface route for route: the one-job runner (`jobs.rs`), the
-   admin check against the simulator (`auth.rs`), coverage (`coverage.rs`), the
-   autopilot control file (`autopilot.rs`), all under `/api/pipeline/*`
+   admin check against the simulator (`auth.rs`), and coverage (`coverage.rs`), all under `/api/pipeline/*`
    (`api.rs`). The admin GUI moved into atlas unchanged except for the log
    cursor (below) and its address, and is now **the atlas web UI**
    (`crates/atlas/web`): static files behind Caddy at the site root of
@@ -123,9 +122,8 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   speed: every source is somebody else's public service. The BGT additionally
   measures its wall heights while PDOK builds its extract.
 - **It writes as `cartoatlas` in group `ubuntu`, umask 0002**
-  (`deploy/cartopolis-atlas.service`). The site tree and the autopilot's control
-  file belong to `ubuntu`, and the autopilot writes that file too, so anything
-  atlas creates must stay writable by the group.
+  (`deploy/cartopolis-atlas.service`). The site tree belongs to `ubuntu`, so
+  anything atlas creates there must stay writable by the group.
 
 - **Not every dataset is a Dutch register.** `tall` (2026-09-26) pre-cuts the
   client's z11 Overpass query for tall structures into static files, because

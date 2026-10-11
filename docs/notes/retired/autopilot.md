@@ -1,8 +1,28 @@
 ---
-topic: autopilot-focus
-triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", atlas, autopilot.rs, "Autopilot tab"]
-updated: 2026-09-09
+topic: retired/autopilot
+triggers: [autopilot, autopilot.ts, viberfox-autopilot, "autopilot.json", "focusPlan", "Autopilot tab", "qaPerDay", "ticketsPerDay"]
+updated: 2026-10-11
 ---
+
+# Retired: the autopilot
+
+`viberfox-autopilot` was a container on the VPS that ran `tools/autopilot.ts`
+on a loop with **no language model**: it filed the next ticket from the frontier
+table in `docs/direction.md` (or from a *focus* the maintainer set), walked a QA
+list daily (`docs/qa/targets.md`), and landed and deployed tickets the issue
+watcher had finished. The atlas web UI steered it through an Autopilot tab,
+which wrote `/data/agent/state/autopilot.json` through atlas's
+`/api/pipeline/autopilot`.
+
+It was **stopped on 2026-09-11** on the maintainer's instruction — it was filing
+tickets they judged to be invented, and its ship loop had been retrying a merge
+for a branch that did not exist every five minutes — and its container was
+later removed. The code (`tools/autopilot.ts`, `crates/atlas/src/autopilot.rs`,
+the web UI's tab, atlas's `autopilot_config` key) was **removed on 2026-10-11**
+as a leftover. Do not re-propose an unattended filer: the tickets worth
+building came from a person deciding them, and a queue that writes itself is a
+queue of guesses. What it learned about steering such a lane is below, as it
+stood when the lane still ran.
 
 # Steering the unattended lane at something, and who is allowed to write the queue
 

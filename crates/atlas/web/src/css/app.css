@@ -7,15 +7,16 @@
 @import '../components/elements/account/account.css';
 @import '../components/elements/buildings/buildings.css';
 @import '../components/pages/accounts/accounts.css';
-@import '../components/pages/autopilot/autopilot.css';
 @import '../components/pages/building/building.css';
 @import '../components/pages/buildings/buildings.css';
 @import '../components/pages/chat/chat.css';
+@import '../components/pages/chat/home.css';
 @import '../components/pages/claims/claims.css';
 @import '../components/pages/library/library.css';
 @import '../components/pages/login/login.css';
 @import '../components/pages/overrides/overrides.css';
 @import '../components/pages/pipeline/pipeline.css';
+@import '../components/pages/reports/reports.css';
 @import '../components/pages/roles/roles.css';
 /* Glass and depth, last: it restyles the library's surfaces and the pages' rows. */
 @import './depth.css';

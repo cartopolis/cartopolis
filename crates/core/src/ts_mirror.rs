@@ -2,9 +2,9 @@
 //!
 //! # Why this exists
 //!
-//! The atlas web UI (`crates/atlas/web`) and the autopilot (`tools/autopilot.ts`)
-//! describe several Rust types by hand — `auth::AccountRow`, the placeholder
-//! table, the placeholder vocabulary, the upload limits, the autopilot's config.
+//! The atlas web UI (`crates/atlas/web`) describes several Rust types by hand —
+//! `auth::AccountRow`, the placeholder table, the placeholder vocabulary, the
+//! upload limits.
 //! Being in one repository does not make those copies checked: a renamed field
 //! compiles on both sides and arrives as a column that reads `undefined`. Tests
 //! in the crates that own each type `include_str!` the TypeScript and compare it

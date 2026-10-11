@@ -88,8 +88,8 @@ export async function resend(email: string): Promise<boolean> {
  * claim-a-building screen was reachable only in the minute after signing up.
  * It fills the same `$s.signup` session `verify` does — `signupApi` reads the
  * token from there, so everything on the buildings screen works identically
- * whichever way the session was made, and the operator's own session in
- * `$s.profile` is untouched.
+ * whichever way the session was made. For an account that may run something
+ * it is the admin session too (`accounts.adoptSession`).
  */
 export async function playerSignIn(username: string, password: string): Promise<boolean> {
     try {

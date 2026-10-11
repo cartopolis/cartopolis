@@ -28,16 +28,40 @@ export function may(slug: string): boolean {
 export const TABS: {tab: AdminTab; label: string; needs: string[]}[] = [
     {label: 'Accounts', needs: ['accounts_manage'], tab: 'accounts'},
     {label: 'Roles', needs: ['roles_manage'], tab: 'roles'},
-    {label: 'Buildings', needs: ['reports_triage'], tab: 'claims'},
+    {label: 'Building claims', needs: ['reports_triage'], tab: 'claims'},
+    {label: 'Reports', needs: ['reports_triage'], tab: 'reports'},
     {label: 'Overrides', needs: ['building_override'], tab: 'overrides'},
     {label: 'Models', needs: ['library_manage'], tab: 'library'},
     {label: 'Data', needs: ['pipeline_run'], tab: 'pipeline'},
-    {label: 'Autopilot', needs: ['pipeline_run'], tab: 'autopilot'},
 ]
 
 /** The tabs this operator may open. */
 export function visibleTabs() {
     return TABS.filter((t) => t.needs.some(may))
+}
+
+export type AdminAreaId = 'people' | 'content' | 'data'
+
+/**
+ * The tabs grouped into the three areas the Admin rail shows
+ * (`docs/mockups/web-navigation/`): who is on the server, what is in the world,
+ * and the data that builds the map.
+ */
+export const AREAS: {id: AdminAreaId; label: string; hint: string; tabs: AdminTab[]}[] = [
+    {hint: 'Accounts, what they may do, and who holds which building', id: 'people', label: 'People', tabs: ['accounts', 'roles', 'claims', 'reports']},
+    {hint: 'Buildings drawn from a model, and the shared model library', id: 'content', label: 'Content', tabs: ['overrides', 'library']},
+    {hint: 'The pipelines that build the map', id: 'data', label: 'Data', tabs: ['pipeline']},
+]
+
+/** The areas with at least one tab this operator may open, each with only those tabs. */
+export function visibleAreas() {
+    const tabs = visibleTabs()
+    return AREAS.map((a) => ({...a, tabs: tabs.filter((t) => a.tabs.includes(t.tab))})).filter((a) => a.tabs.length)
+}
+
+/** The area a tab belongs to. */
+export function areaOf(tab: AdminTab): AdminAreaId {
+    return AREAS.find((a) => a.tabs.includes(tab))?.id ?? 'people'
 }
 
 /** Remember what the server says this operator may do, and move off a tab it no

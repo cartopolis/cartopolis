@@ -1,10 +1,9 @@
 # QA targets
 
-The standing functionality list the autopilot's QA lane rotates through
-(`tools/autopilot.ts`, `qaPerDay` in its config). One row per user-facing
+The standing functionality list a QA session walks. One row per user-facing
 functionality; the second column is what a QA session starts from, not a spec.
-Rows are cycled at most once per day each, after recently shipped tickets have
-been walked first.
+(The autopilot's QA lane rotated through it daily; that lane was removed on
+2026-10-11, `docs/notes/retired/autopilot.md`.)
 
 Add a row when a feature ships that a player can reach; drop one only when the
 functionality itself is gone. Keep rows at the size of "one session can walk

@@ -1,5 +1,5 @@
 import m, {MithrilComponent} from '@garage44/mithril'
-import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSelect, FieldText} from '@garage44/mithril/components'
+import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSelect, FieldText, ThemeSwitch} from '@garage44/mithril/components'
 import {required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s, signupApi} from '@/app'
@@ -15,6 +15,9 @@ import {
 import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
+import {adoptSession, dropOperator} from '@/lib/accounts'
+import {layout} from '@/lib/layout'
+import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
 
 /**
  * Chat: cartopolis.org's front door (`docs/mockups/communities/`).
@@ -26,6 +29,20 @@ import {playerSignIn, playerSignOut} from '@/lib/signup'
  * and no history, only what the chat worker (`src/worker/chat-worker.ts`)
  * tells it.
  */
+
+/** The switch's three positions, and the path each one lives at. */
+type Mode = 'community' | 'world' | 'admin'
+
+const PATHS: Record<Mode, string> = {admin: ADMIN, community: '/', world: '/world'}
+const LABELS: Record<Mode, string> = {admin: 'Admin', community: 'Community', world: 'World'}
+
+/** Which position the address is at: `/world`, `/admin`, or Community for the rest. */
+function mode(): Mode {
+    const path = (m.route.get() ?? '/').split('?')[0]
+    if (path === '/world' || path.startsWith('/world/')) return 'world'
+    if (path === ADMIN || path.startsWith(`${ADMIN}/`)) return 'admin'
+    return 'community'
+}
 
 /** One client per page, made the first time the chat is shown. */
 let client: ChatClient | null = null
@@ -271,6 +288,12 @@ interface Draft {
 
 interface PageState {
     pane: Pane
+    /**
+     * Which tile on the rail is chosen: `'home'` (people and groups) or a
+     * community's id. `null` is the phone's first screen, the list of them;
+     * a wide screen draws it as Home.
+     */
+    space: string | null
     /** The message whose thread is open, by seq. */
     thread: number | null
     draft: Record<string, string>
@@ -345,6 +368,7 @@ export class Chat extends MithrilComponent {
         person: {address: '', channel: null},
         query: '',
         ringFolded: null,
+        space: null,
         report: {channel: '', line: '', note: '', reason: 'spam', seq: 0, who: ''},
         thread: null,
         username: '',
@@ -375,15 +399,15 @@ export class Chat extends MithrilComponent {
         this.askInvite()
     }
 
-    /** Whether this account may manage accounts: the person menu then has a server section. */
+    /**
+     * Whether this account may run anything here: Admin then joins the switch,
+     * and with `accounts_manage` the person menu has a server section. One
+     * session for both (`accounts.adoptSession`).
+     */
     async checkAdmin() {
         this.s.adminChecked = true
-        try {
-            const me = await signupApi.get<{admin: boolean; permissions: string[]}>('/api/admin/me')
-            this.s.admin = me.admin || me.permissions.includes('accounts_manage')
-        } catch {
-            this.s.admin = false
-        }
+        await adoptSession()
+        this.s.admin = $s.me.admin || $s.me.permissions.includes('accounts_manage')
         m.redraw()
     }
 
@@ -405,11 +429,15 @@ export class Chat extends MithrilComponent {
         chat().signOut()
         this.s.adminChecked = false
         this.s.admin = false
+        this.s.space = null
+        dropOperator()
         await playerSignOut()
+        if (mode() === 'admin') m.route.set('/')
     }
 
-    /** Open a chat; `null` shows the welcome. */
+    /** Open a chat; `null` shows the welcome. Its community becomes the rail's choice. */
     open(channel: string | null) {
+        if (channel) this.s.space = chat().topicOf(channel)?.community.id ?? 'home'
         this.s.pane = channel ? {kind: 'chat', channel} : {kind: 'welcome'}
         this.s.thread = null
         this.s.editing = null
@@ -419,6 +447,7 @@ export class Chat extends MithrilComponent {
 
     show(pane: Pane) {
         closeMenus()
+        if (pane.kind === 'community' || pane.kind === 'edit') this.s.space = pane.id
         this.s.pane = pane
         this.s.thread = null
         chat().open(null)
@@ -523,8 +552,43 @@ export class Chat extends MithrilComponent {
         m.redraw()
     }
 
+    /**
+     * The page (`docs/mockups/web-navigation/`): a top bar holding the switch —
+     * Community | World, and Admin for an account that may run something — then
+     * the mode below it. Community is the rail, the sidebar, the chat and its
+     * thread; World is the app's own web build in a frame, with the topic beside
+     * it; Admin is the operator's pages.
+     *
+     * The three are children at fixed positions rather than one swapped for
+     * another, so the World frame never moves in the DOM: moving an iframe
+     * reloads it, and this one is a hundred megabytes of WebAssembly.
+     */
     view() {
-        if (!$s.signup.token) return this.signInView()
+        const signedIn = !!$s.signup.token
+        const now = mode()
+        if (now === 'world') this.worldOpened = true
+        return (
+            <div class={`home is-${now}`}>
+                {this.topBar(now, signedIn)}
+                <div class="home-body">
+                    {now === 'community' && (signedIn ? this.communityView() : this.signInView())}
+                    {now === 'admin' && (signedIn ? <AdminArea /> : this.signInView())}
+                    {now === 'world' && signedIn ? this.worldRail() : null}
+                    {this.worldOpened ? this.worldFrame(now === 'world', signedIn) : null}
+                </div>
+                {signedIn && (
+                    <div class="chat chat-overlays">
+                        {now !== 'community' && chat().calls.active !== null && this.callBar()}
+                        {this.ringingView()}
+                        {this.s.dialog && this.dialogView()}
+                    </div>
+                )}
+            </div>
+        )
+    }
+
+    /** Community: the rail, the open community's sidebar, the chat, its thread. */
+    communityView() {
         const s = this.s
         const pane = s.pane
         const inCall = chat().calls.active !== null
@@ -533,15 +597,17 @@ export class Chat extends MithrilComponent {
                 class={[
                     'chat',
                     pane.kind === 'welcome' ? '' : 'is-open',
+                    s.space === null ? 'is-spaces' : '',
                     inCall ? 'is-in-call' : '',
                     inCall && s.callFocus ? 'is-call-focus' : '',
                 ].join(' ')}
             >
+                {this.rail()}
                 {this.sidebar()}
                 <main class="chat-main">
                     {inCall && this.callBar()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
-                    {pane.kind === 'community' && this.communityView(pane.id)}
+                    {pane.kind === 'community' && this.communityPane(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
                     {pane.kind === 'find' && this.findView()}
                     {pane.kind === 'preview' && this.previewView(pane.id)}
@@ -551,9 +617,183 @@ export class Chat extends MithrilComponent {
                 </main>
                 {this.callStage()}
                 {pane.kind === 'chat' && s.thread !== null && this.threadView(pane.channel, s.thread)}
-                {this.ringingView()}
-                {s.dialog && this.dialogView()}
             </div>
+        )
+    }
+
+    /** Whether World has been opened on this page: from then on its frame stays loaded. */
+    worldOpened = false
+    /** The place the World frame was last sent to, so a redraw does not send it again. */
+    worldPlace: string | null = null
+
+    /** The place a rail choice stands for in World: its community's pin, if it has one. */
+    spacePlace(): string | null {
+        const s = this.s
+        const community = s.space && s.space !== 'home' ? chat().communities.find((x) => x.id === s.space) : null
+        const place = community?.settings.place
+        return place ? `${place.latitude.toFixed(5)},${place.longitude.toFixed(5)},1200m` : null
+    }
+
+    /**
+     * World: the app itself (`/viewer/`), in a frame that is made the first
+     * time World is chosen and kept from then on, hidden while Community or
+     * Admin is showing, so switching back is instant. Choosing a community with
+     * a place flies the camera there: the frame starts at it (`?place=`), and a
+     * later choice is posted to the running app (`place_link::follow_framed_places`).
+     *
+     * Signed in, the topic open in Community stays beside it; signed out, it is
+     * the map alone.
+     */
+    worldFrame(shown: boolean, signedIn: boolean) {
+        const place = signedIn ? this.spacePlace() : null
+        const pane = this.s.pane
+        return (
+            <div class={shown ? 'home-world' : 'home-world is-hidden'}>
+                <iframe
+                    allow="fullscreen; geolocation; microphone; camera; clipboard-write"
+                    class="home-world-frame"
+                    oncreate={(v: m.VnodeDOM) => {
+                        this.worldPlace = place
+                        ;(v.dom as HTMLIFrameElement).src = place ? `/viewer/?place=${place}` : '/viewer/'
+                    }}
+                    onupdate={(v: m.VnodeDOM) => {
+                        if (!shown || !place || place === this.worldPlace) return
+                        this.worldPlace = place
+                        ;(v.dom as HTMLIFrameElement).contentWindow?.postMessage(
+                            {place, type: 'cartopolis.place'},
+                            location.origin,
+                        )
+                    }}
+                    title="The world"
+                />
+                {shown && signedIn && (
+                    <aside class="chat home-world-chat">
+                        {pane.kind === 'chat'
+                            ? this.channelView(pane.channel)
+                            : <div class="chat-side home-world-list">{this.sideBody()}</div>}
+                    </aside>
+                )}
+            </div>
+        )
+    }
+
+    /** World's rail: the same tiles as Community's, choosing where the camera goes. */
+    worldRail() {
+        return <div class="chat home-world-rail">{this.rail()}</div>
+    }
+
+    /** The top bar: the wordmark, the switch, where you are, and your account. */
+    topBar(now: Mode, signedIn: boolean) {
+        const c = signedIn ? chat() : null
+        const unread = c
+            ? c.chats.filter((x) => !c.isMuted(x.channel)).reduce((n, x) => n + x.unread, 0)
+            : 0
+        const seg = (to: Mode, label: m.Children, extra = '') => (
+            <button
+                aria-pressed={now === to ? 'true' : 'false'}
+                class={`home-seg-item${now === to ? ' is-on' : ''}${extra}`}
+                onclick={() => {
+                    if (now !== to) m.route.set(PATHS[to])
+                }}
+                type="button"
+            >
+                {label}
+            </button>
+        )
+        return (
+            <header class="home-top">
+                <a
+                    class="home-wordmark"
+                    href="/"
+                    onclick={(e: Event) => {
+                        e.preventDefault()
+                        m.route.set('/')
+                    }}
+                >
+                    <img alt="" class="mark-dark" src="/icon.svg" />
+                    <img alt="" class="mark-light" src="/icon-light.svg" />
+                    <span class="wordmark">carto<b>polis</b></span>
+                </a>
+                <nav aria-label="Switch between Community, World and Admin" class="home-seg">
+                    {seg('community', <>Community{unread > 0 && <span class="home-seg-count">{unread}</span>}</>)}
+                    {seg('world', <><span class="home-live" />World</>)}
+                    {signedIn && $s.signedIn && seg('admin', 'Admin', ' is-admin')}
+                </nav>
+                <nav aria-label="Where you are" class="home-crumbs">{this.crumbs(now, signedIn)}</nav>
+                <span class="home-spacer" />
+                {this.accountMenu(signedIn)}
+            </header>
+        )
+    }
+
+    /** Community › Oosterpoort › # street-party › Thread, each a step back up. */
+    crumbs(now: Mode, signedIn: boolean): m.Children {
+        const parts: {label: string; go?: () => void}[] = [{label: LABELS[now], go: () => m.route.set(PATHS[now])}]
+        if (now === 'admin') {
+            for (const label of adminCrumbs()) parts.push({label})
+        } else if (signedIn) {
+            const c = chat()
+            const s = this.s
+            // A wide screen draws "nothing chosen yet" as Home; a phone's list has no crumb.
+            const space = s.space ?? (matchMedia('(max-width: 760px)').matches ? null : 'home')
+            const community = space && space !== 'home' ? c.communities.find((x) => x.id === space) : null
+            if (community) {
+                parts.push({go: () => this.show({id: community.id, kind: 'community'}), label: community.settings.name})
+            } else if (space === 'home') {
+                parts.push({go: () => this.open(null), label: 'Home'})
+            }
+            const pane = s.pane
+            if (pane.kind === 'chat') {
+                parts.push({go: () => (s.thread = null), label: this.chatTitle(pane.channel)})
+                if (s.thread !== null && now === 'community') parts.push({label: 'Thread'})
+            } else if (pane.kind === 'find') {
+                parts.push({label: 'Find a community'})
+            } else if (pane.kind === 'create') {
+                parts.push({label: 'New community'})
+            } else if (pane.kind === 'edit') {
+                parts.push({label: 'Settings'})
+            } else if (pane.kind === 'invite' || pane.kind === 'preview') {
+                parts.push({label: 'Invitation'})
+            }
+        }
+        return parts.map((p, i) => {
+            const last = i === parts.length - 1
+            return (
+                <>
+                    {i > 0 && <span class="home-crumb-sep">›</span>}
+                    {last || !p.go
+                        ? <span class={last ? 'home-crumb is-last' : 'home-crumb'}>{p.label}</span>
+                        : <button class="home-crumb" onclick={p.go} type="button">{p.label}</button>}
+                </>
+            )
+        })
+    }
+
+    /** Your account: who you are, the theme, the other ways in, and Sign out. */
+    accountMenu(signedIn: boolean) {
+        if (!signedIn) {
+            return <ThemeSwitch model={layout.theme} />
+        }
+        const me = $s.signup.username
+        return (
+            <details class="home-account">
+                <summary title={me}>{Avatar(me, 30)}</summary>
+                <div class="home-account-menu">
+                    <p class="home-account-who">
+                        <b>{me}</b>
+                        <span>{chat().address ?? 'Signed in'}</span>
+                    </p>
+                    <ThemeSwitch model={layout.theme} />
+                    <nav class="chat-options">
+                        {Link('/buildings', <><b>Your buildings</b><span>Claim a building, draw its floors</span></>)}
+                        <a href="/apk/">
+                            <b>Android app</b>
+                            <span>Chat, the world and calls on your phone</span>
+                        </a>
+                    </nav>
+                    <Button onclick={() => void this.signOut()} size="sm" variant="ghost">Sign out</Button>
+                </div>
+            </details>
         )
     }
 
@@ -599,10 +839,7 @@ export class Chat extends MithrilComponent {
                             </Button>
                         </div>
                         <nav class="chat-options">
-                            <a href="/viewer/">
-                                <b>Open the map</b>
-                                <span>The world in your browser, no account needed</span>
-                            </a>
+                            {Link('/world', <><b>Open the map</b><span>The world in your browser, no account needed</span></>)}
                             <a href="/apk/">
                                 <b>Android app</b>
                                 <span>Chat, the world and calls on your phone</span>
@@ -616,8 +853,117 @@ export class Chat extends MithrilComponent {
         )
     }
 
-    /** The list: communities with their topics, then people and groups. */
+    /**
+     * The rail: Home (people and groups), one tile per community, then Find and
+     * New. A wide screen draws it as a column of tiles beside the sidebar; a
+     * phone draws it as the first screen, a list with names, and the sidebar is
+     * the screen after it.
+     */
+    rail() {
+        const c = chat()
+        const s = this.s
+        const here = s.space ?? (matchMedia('(max-width: 760px)').matches ? null : 'home')
+        const homeUnread = c.chats
+            .filter((x) => !c.topicOf(x.channel))
+            .reduce((n, x) => n + x.unread, 0)
+        const pick = (space: string) => {
+            s.space = space
+            // A wide screen shows a community's page on choosing it; Home shows
+            // the welcome until a chat is opened from its list.
+            if (space === 'home') this.open(null)
+            else this.show({id: space, kind: 'community'})
+            // On a phone, choosing goes a level down, to the sidebar.
+            s.pane = matchMedia('(max-width: 760px)').matches ? {kind: 'welcome'} : s.pane
+        }
+        return (
+            <nav aria-label="Communities" class="home-rail">
+                <h2 class="home-rail-title">Community</h2>
+                <button
+                    class={here === 'home' ? 'home-tile is-current' : 'home-tile'}
+                    onclick={() => pick('home')}
+                    title="People and groups"
+                    type="button"
+                >
+                    <span class="home-tile-face is-home">{Icon('chat')}</span>
+                    <span class="home-tile-name">Home<span class="chat-sub">People and groups</span></span>
+                    {homeUnread > 0 && <span class="chat-count home-tile-badge">{homeUnread}</span>}
+                </button>
+                {c.communities.map((community) => {
+                    const unread = community.topics.filter((t) => !c.isMuted(t.channel)).reduce(
+                        (n, t) => n + (c.chats.find((x) => x.channel === t.channel)?.unread ?? 0), 0)
+                    const asks = moderates(community) ? community.requests.length + community.reports.length : 0
+                    return (
+                        <button
+                            class={here === community.id ? 'home-tile is-current' : 'home-tile'}
+                            key={community.id}
+                            onclick={() => pick(community.id)}
+                            title={community.settings.name}
+                            type="button"
+                        >
+                            <span class="home-tile-face">{Tile(community.settings.name, 42, community.settings.picture)}</span>
+                            <span class="home-tile-name">
+                                {community.settings.name}
+                                <span class="chat-sub">
+                                    {community.role === null ? 'Waiting to be let in' : `${community.members.length} people`}
+                                </span>
+                            </span>
+                            {asks > 0 && <span class="chat-count is-mention home-tile-badge">{asks}</span>}
+                            {asks === 0 && unread > 0 && <span class="chat-count home-tile-badge">{unread}</span>}
+                        </button>
+                    )
+                })}
+                <button class="home-tile is-tool" onclick={() => this.find()} title="Find a community" type="button">
+                    <span class="home-tile-face is-tool">⌕</span>
+                    <span class="home-tile-name">Find a community</span>
+                </button>
+                <details class="chat-new home-tile-new">
+                    <summary class="home-tile is-tool" title="New">
+                        <span class="home-tile-face is-tool">+</span>
+                        <span class="home-tile-name">New</span>
+                    </summary>
+                    <div class="chat-new-menu">
+                        <button onclick={() => this.dialog('direct')} type="button">
+                            <b>Message a person</b><span>Just the two of you</span>
+                        </button>
+                        <button onclick={() => this.dialog('group')} type="button">
+                            <b>Start a group</b><span>A few people you pick. Private.</span>
+                        </button>
+                        <button onclick={() => this.find()} type="button">
+                            <b>Find a community</b><span>Clubs, teams and neighbourhoods here</span>
+                        </button>
+                        <button
+                            onclick={() => {
+                                s.community = emptyDraft()
+                                this.show({kind: 'create'})
+                            }}
+                            type="button"
+                        >
+                            <b>Start a community</b><span>People who share several topics</span>
+                        </button>
+                    </div>
+                </details>
+            </nav>
+        )
+    }
+
+    /** The sidebar: what is inside the rail's choice. */
     sidebar() {
+        return (
+            <aside class="chat-side">
+                <button class="chat-side-back" onclick={() => (this.s.space = null)} type="button">‹ Community</button>
+                {this.sideBody()}
+                {this.sideFooter()}
+            </aside>
+        )
+    }
+
+    /**
+     * Inside a community: its name and place, its topics, and for its owner and
+     * moderators the requests and reports waiting. Inside Home: one-to-one chats
+     * and groups. Drawn in the sidebar, and in World beside the map when no
+     * topic is open there.
+     */
+    sideBody() {
         const c = chat()
         const s = this.s
         const me = c.address
@@ -629,7 +975,6 @@ export class Chat extends MithrilComponent {
                     ? 'Connecting…'
                     : 'Signed out of chat'
         const current = s.pane.kind === 'chat' ? s.pane.channel : null
-        const shownCommunity = s.pane.kind === 'community' || s.pane.kind === 'edit' ? s.pane.id : null
         const item = (channel: string, label: m.Children, unread: number, mentioned: boolean, indent = false) => (
             <button
                 class={[
@@ -646,84 +991,80 @@ export class Chat extends MithrilComponent {
                 {unread > 0 && <span class={mentioned ? 'chat-count is-mention' : 'chat-count'}>{unread}</span>}
             </button>
         )
+        const community = s.space && s.space !== 'home' ? c.communities.find((x) => x.id === s.space) : null
+        if (community) {
+            const place = community.settings.place
+            const mod = moderates(community)
+            const shownPane = s.pane.kind === 'community' && s.pane.id === community.id
+            return (
+                <>
+                    <header class="chat-side-head home-space-head">
+                        <button
+                            class={shownPane ? 'home-space-name is-current' : 'home-space-name'}
+                            onclick={() => this.show({id: community.id, kind: 'community'})}
+                            title="About this community"
+                            type="button"
+                        >
+                            {Tile(community.settings.name, 28, community.settings.picture)}
+                            <h2>{community.settings.name}</h2>
+                            <span class="chat-sub">›</span>
+                        </button>
+                        <p class="chat-sub home-space-meta">
+                            {place ? `📍 ${placeWords(place)} · ` : ''}{community.members.length} people
+                        </p>
+                        {place && (
+                            <Button onclick={() => m.route.set('/world')} size="sm" variant="ghost">
+                                See it in World
+                            </Button>
+                        )}
+                    </header>
+                    {status && <div class="chat-status">{status}</div>}
+                    <section class="chat-section">
+                        <h3>Topics</h3>
+                        {community.topics.filter((t) => t.joined && !t.archived).map((t) => {
+                            const sum = c.chats.find((x) => x.channel === t.channel)
+                            const muted = c.isMuted(t.channel)
+                            return item(
+                                t.channel,
+                                <>
+                                    <span class="chat-hash">#</span>
+                                    <span class="chat-label">{t.name}</span>
+                                    {muted && <span class="chat-role">muted</span>}
+                                </>,
+                                muted ? 0 : sum?.unread ?? 0,
+                                sum?.mentioned ?? false,
+                            )
+                        })}
+                        {community.role === null && <p class="chat-empty">Waiting for a moderator to let you in.</p>}
+                    </section>
+                    {mod && (
+                        <section class="chat-section home-moderation">
+                            <h3>Moderation <span class="chat-role">{ROLE[community.role!]}</span></h3>
+                            <button class="chat-item" onclick={() => this.show({id: community.id, kind: 'community'})} type="button">
+                                <span class="chat-label">Asking to join</span>
+                                {community.requests.length > 0 && <span class="chat-count is-mention">{community.requests.length}</span>}
+                            </button>
+                            <button class="chat-item" onclick={() => this.show({id: community.id, kind: 'community'})} type="button">
+                                <span class="chat-label">Reports</span>
+                                {community.reports.length > 0 && <span class="chat-count is-mention">{community.reports.length}</span>}
+                            </button>
+                        </section>
+                    )}
+                </>
+            )
+        }
         const outside = c.chats
             .filter((x) => !c.topicOf(x.channel))
             .sort((a, b) => b.lastAtMs - a.lastAtMs)
         return (
-            <aside class="chat-side">
-                <header class="chat-side-head">
-                    <h2>Chats</h2>
-                    <span class="chat-head-tools">
-                        <button class="chat-plus" onclick={() => this.find()} title="Find a community" type="button">⌕</button>
-                        <details class="chat-new">
-                            <summary class="chat-plus" title="New">+</summary>
-                            <div class="chat-new-menu">
-                                <button onclick={() => this.dialog('direct')} type="button">
-                                    <b>Message a person</b><span>Just the two of you</span>
-                                </button>
-                                <button onclick={() => this.dialog('group')} type="button">
-                                    <b>Start a group</b><span>A few people you pick. Private.</span>
-                                </button>
-                                <button onclick={() => this.find()} type="button">
-                                    <b>Find a community</b><span>Clubs, teams and neighbourhoods here</span>
-                                </button>
-                                <button
-                                    onclick={() => {
-                                        s.community = emptyDraft()
-                                        this.show({kind: 'create'})
-                                    }}
-                                    type="button"
-                                >
-                                    <b>Start a community</b><span>People who share several topics</span>
-                                </button>
-                            </div>
-                        </details>
-                    </span>
+            <>
+                <header class="chat-side-head home-space-head">
+                    <h2>Home</h2>
+                    <p class="chat-sub home-space-meta">People and groups</p>
                 </header>
                 {status && <div class="chat-status">{status}</div>}
-                {c.communities.length > 0 && (
-                    <section class="chat-section">
-                        <h3>Communities</h3>
-                        {c.communities.map((community) => {
-                            const unread = community.topics.filter((t) => !c.isMuted(t.channel)).reduce(
-                                (n, t) => n + (c.chats.find((x) => x.channel === t.channel)?.unread ?? 0), 0)
-                            const asks = community.requests.length + community.reports.length
-                            return (
-                                <div class="chat-community" key={community.id}>
-                                    <button
-                                        class={shownCommunity === community.id ? 'chat-item is-current' : 'chat-item'}
-                                        onclick={() => this.show({id: community.id, kind: 'community'})}
-                                        type="button"
-                                    >
-                                        {Tile(community.settings.name, 22, community.settings.picture)}
-                                        <span class="chat-label">{community.settings.name}</span>
-                                        {community.role === null && <span class="chat-role">waiting</span>}
-                                        {asks > 0 && <span class="chat-count is-mention">{asks}</span>}
-                                        {asks === 0 && unread > 0 && <span class="chat-count">{unread}</span>}
-                                    </button>
-                                    {community.topics.filter((t) => t.joined && !t.archived).map((t) => {
-                                        const sum = c.chats.find((x) => x.channel === t.channel)
-                                        const muted = c.isMuted(t.channel)
-                                        return item(
-                                            t.channel,
-                                            <>
-                                                <span class="chat-hash">#</span>
-                                                <span class="chat-label">{t.name}</span>
-                                                {muted && <span class="chat-role">muted</span>}
-                                            </>,
-                                            muted ? 0 : sum?.unread ?? 0,
-                                            sum?.mentioned ?? false,
-                                            true,
-                                        )
-                                    })}
-                                </div>
-                            )
-                        })}
-                    </section>
-                )}
                 <section class="chat-section">
-                    <h3>People and groups</h3>
-                    {outside.length === 0 && <p class="chat-empty">No chats yet. Start one with the +.</p>}
+                    {outside.length === 0 && <p class="chat-empty">No chats yet. Start one with the + on the left.</p>}
                     {outside.map((x) => item(
                         x.channel,
                         <>
@@ -734,8 +1075,7 @@ export class Chat extends MithrilComponent {
                         x.mentioned,
                     ))}
                 </section>
-                {this.sideFooter()}
-            </aside>
+            </>
         )
     }
 
@@ -758,8 +1098,10 @@ export class Chat extends MithrilComponent {
         this.dialog('report')
     }
 
+    /** What the chat has to say: a refusal, a call that could not start. */
     sideFooter() {
         const c = chat()
+        if (!c.notice && !c.calls.notice) return null
         return (
             <footer class="chat-side-foot">
                 {c.notice && (
@@ -772,12 +1114,6 @@ export class Chat extends MithrilComponent {
                         {c.calls.notice}
                     </div>
                 )}
-                <nav class="chat-side-links">
-                    <a href="/viewer/">Map</a>
-                    <a href="/apk/">App</a>
-                    {Link('/buildings', 'Buildings')}
-                </nav>
-                <Button onclick={() => void this.signOut()} size="sm" variant="ghost">Sign out</Button>
             </footer>
         )
     }
@@ -785,10 +1121,10 @@ export class Chat extends MithrilComponent {
     welcome() {
         return (
             <div class="chat-welcome">
-                <h1>Chats</h1>
+                <h1>Community</h1>
                 <p class="chat-hint">
                     {chat().communities.length
-                        ? 'Pick a topic or a chat on the left, or start one with the +.'
+                        ? 'Pick a community on the left, then a topic, or start something with the +.'
                         : 'Find a community with ⌕, start one, or message somebody directly with the +. Everything said here is end-to-end encrypted: the server stores it sealed and cannot read it.'}
                 </p>
             </div>
@@ -935,7 +1271,14 @@ export class Chat extends MithrilComponent {
     callBar() {
         const calls = chat().calls
         return (
-            <button class="chat-call-bar" onclick={() => this.focusCall(true)}>
+            <button
+                class="chat-call-bar"
+                onclick={() => {
+                    // From World or Admin, the call is back in Community.
+                    if (mode() !== 'community') m.route.set('/')
+                    this.focusCall(true)
+                }}
+            >
                 {Icon('call')}
                 <span>{this.chatTitle(calls.active!.channel)} · {callTime(calls)}</span>
                 <span class="chat-call-bar-hint">Tap to return to the call</span>
@@ -1374,7 +1717,7 @@ export class Chat extends MithrilComponent {
         )
     }
 
-    communityView(id: string) {
+    communityPane(id: string) {
         const c = chat()
         const s = this.s
         const me = c.address

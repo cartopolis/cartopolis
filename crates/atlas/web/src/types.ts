@@ -184,43 +184,6 @@ export interface PipelineLogLine {
 }
 
 /**
- * The autonomous development lane's throttle. A hand-synced seam, like the
- * account row: this must match `Config` in cartopolis' `tools/autopilot.ts`.
- * Guarded by the Rust test `autopilot::web_mirror` in atlas, which serialises
- * `AutopilotConfig` and compares its keys with this and with that `Config`.
- */
-export interface AutopilotConfig {
-    enabled: boolean
-    ticketsPerDay: number
-    maxOpen: number
-    ship: boolean
-    qaPerDay: number
-    qaMaxOpen: number
-    retroEveryDays: number
-    /** An area to work in, in the maintainer's words. Empty means the frontier drives. */
-    focus: string
-    /** The ordered queue under that focus. The lane files it top down. */
-    focusPlan: AutopilotPlanItem[]
-    /** Bumped to ask for a fresh plan; it keys the lane's planning ticket. */
-    planRevision: number
-}
-
-/**
- * One piece of work under the focus, as the web UI orders and the lane files it.
- * Guarded with the config above, against atlas's `PlanItem`.
- */
-export interface AutopilotPlanItem {
-    /** Stable key. The lane's ticket marker is `autopilot:focus-<id>`. */
-    id: string
-    /** One line: the piece of work. It becomes the ticket's title. */
-    title: string
-    /** Where in the code it lands and how it would be judged. May be empty. */
-    note: string
-    /** The ticket it became, or 0 while it has not been filed. Written by the lane. */
-    issue: number
-}
-
-/**
  * One entry in the shared model library, as `simulator::library::CuratorEntry`
  * serialises it.
  *
@@ -330,7 +293,35 @@ export interface Me {
     permissions: string[]
 }
 
-export type AdminTab = 'accounts' | 'roles' | 'claims' | 'overrides' | 'library' | 'pipeline' | 'autopilot'
+export type AdminTab =
+    | 'accounts'
+    | 'roles'
+    | 'claims'
+    | 'reports'
+    | 'overrides'
+    | 'library'
+    | 'pipeline'
+
+/**
+ * A report about a person, from the app's Report (`ReportUser` on the wire), as
+ * `/api/admin/reports` lists it: `db::ReportRow` in the simulator. A report on a
+ * line in a community's topic is not one of these; it goes to that community's
+ * moderators through the chat.
+ */
+export interface UserReport {
+    created_at: string
+    id: number
+    /** The line they were reported for, when the report quoted one. */
+    message: string | null
+    note: string
+    reason: string
+    /** Empty when the reporter's account has since been deleted. */
+    reporter_username: string | null
+    resolution: string | null
+    resolved: boolean
+    resolved_at: string | null
+    subject_username: string
+}
 
 export interface AdminState extends Record<string, unknown> {
     accounts: Account[]
@@ -344,8 +335,6 @@ export interface AdminState extends Record<string, unknown> {
     permissionCatalogue: PermissionInfo[]
     /** Every role on the server. */
     roles: Role[]
-    /** The development lane's throttle; `null` until the server has answered. */
-    autopilot: AutopilotConfig | null
     /** The operator's view of who owns which building. */
     claims: OwnedBuilding[]
     /** Buildings whose survey shell is replaced; `null` until atlas answers. */
