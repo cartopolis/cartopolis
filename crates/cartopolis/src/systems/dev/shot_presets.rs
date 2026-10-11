@@ -270,7 +270,19 @@ impl Manifest {
     /// a group by name, or `all` for genuinely everything.
     pub fn select(&self, only: &[String]) -> Result<Vec<&Preset>, String> {
         if only.is_empty() {
-            return Ok(self.shots.iter().filter(|s| s.group.is_none()).collect());
+            let bare: Vec<&Preset> = self.shots.iter().filter(|s| s.group.is_none()).collect();
+            // A manifest that is *all* groups (`docs/grade-shots.toml`,
+            // `docs/bridge-shots.toml`) has no documentation set, and an empty
+            // run does not end: the harness waits for a first shot that never
+            // comes, and the client sits there streaming the default view.
+            if bare.is_empty() && !self.shots.is_empty() {
+                return Err(format!(
+                    "every shot in this manifest is in a group; pass --only <group> \
+                     (groups: {}) or --only {ALL}",
+                    self.groups().join(", ")
+                ));
+            }
+            return Ok(bare);
         }
         if only.iter().any(|w| w == ALL) {
             return Ok(self.shots.iter().collect());
@@ -526,6 +538,24 @@ at = [1.0, 2.0, 3.0]
             2,
             "`all` is both"
         );
+    }
+
+    /// A manifest with no ungrouped shot refuses a bare run rather than starting
+    /// a harness with nothing to capture, which never exits.
+    #[test]
+    fn a_bare_run_of_an_all_grouped_manifest_is_refused() {
+        let m: Manifest = toml::from_str(
+            r#"
+[[shot]]
+name = "mouth"
+group = "tunnels"
+at = [1.0, 2.0, 3.0]
+"#,
+        )
+        .unwrap();
+        let err = m.select(&[]).unwrap_err();
+        assert!(err.contains("--only <group> (groups: tunnels)"), "{err}");
+        assert_eq!(m.select(&["tunnels".to_string()]).unwrap().len(), 1);
     }
 
     /// A group is a directory under `out_dir`, so a subject shot cannot land
