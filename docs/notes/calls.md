@@ -333,6 +333,12 @@ client with `canvas.captureStream()` cameras — how layouts with several people
 were looked at with nobody to call; nothing about a real multi-party call has
 run in the browser.
 
+The page makes the app's call sounds too (`src/lib/call-tones.ts`): the
+ringtone, the 425 Hz ringback, the call-waiting beep and the join, leave and
+end cues, synthesised from the same notes and levels as `call_tones.rs`. A
+browser keeps audio suspended until the page has had a click or a key press, so
+a call arriving in a tab nobody has touched since it loaded rings silently.
+
 ## Ringing a closed app (2026-09-30, protocol 29)
 
 A phone with a **UnifiedPush distributor** installed (ntfy is the common one)

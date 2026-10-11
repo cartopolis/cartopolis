@@ -16,6 +16,7 @@
 import {WebCall, webCallSupported} from '../../../../cartopolis/web/webcall.js'
 
 import type {ChatClient} from './chat'
+import {CallTones} from './call-tones'
 
 /** Somebody in a chat's call. `username` is the bare name, as the server keeps it. */
 export interface CallMember {
@@ -61,11 +62,19 @@ export class Calls {
 
     private client: ChatClient
     private changed: () => void
+    private tones = new CallTones()
 
     constructor(client: ChatClient, changed: () => void) {
         this.client = client
         this.changed = changed
         addEventListener('pagehide', () => this.hangUp())
+    }
+
+    /** Every change in a call: its tones follow it, then the page redraws. */
+    private notify(): void {
+        const a = this.active
+        this.tones.update(this.ringing() !== null, a !== null, a ? this.others(a.channel).length : 0)
+        this.changed()
     }
 
     static supported(): boolean {
@@ -148,20 +157,20 @@ export class Calls {
             default:
                 return
         }
-        this.changed()
+        this.notify()
     }
 
     /** Place or join the call in `channel`. */
     async join(channel: string, camera = false): Promise<void> {
         if (!Calls.supported()) {
             this.notice = 'This browser cannot make an encrypted call. Try a recent Chrome, Edge, Firefox or Safari.'
-            this.changed()
+            this.notify()
             return
         }
         const keys = await this.client.callKeys(channel)
         if (!keys) {
             this.notice = 'This chat is not ready for a call yet.'
-            this.changed()
+            this.notify()
             return
         }
         if (this.active) this.hangUp()
@@ -175,7 +184,7 @@ export class Calls {
                     t[kind] = stream
                     if (t.audio || t.video) tiles.set(participant, t)
                     else tiles.delete(participant)
-                    this.changed()
+                    this.notify()
                 },
                 workerUrl: '/call-worker.js',
             },
@@ -188,7 +197,7 @@ export class Calls {
             keyTimer: setInterval(() => {
                 void this.refreshKeys()
                 // The timer on screen counts seconds; nothing else redraws it.
-                this.changed()
+                this.notify()
             }, 1000),
             muted: false,
             participant: null,
@@ -201,7 +210,7 @@ export class Calls {
         this.applyKeys(keys)
         if (camera) void web.setCamera(true)
         void web.start()
-        this.changed()
+        this.notify()
     }
 
     private onWeb(channel: string, kind: string, value: string): void {
@@ -228,7 +237,7 @@ export class Calls {
                 a.camera = false
                 break
         }
-        this.changed()
+        this.notify()
     }
 
     /** A commit moves the chat to a new epoch, and the call's key with it. */
@@ -256,14 +265,14 @@ export class Calls {
         if (!this.active) return
         this.active.muted = muted
         this.active.web.setMuted(muted)
-        this.changed()
+        this.notify()
     }
 
     async setCamera(on: boolean): Promise<void> {
         if (!this.active) return
         this.active.camera = on
         await this.active.web.setCamera(on)
-        this.changed()
+        this.notify()
     }
 
     selfView(): MediaStream | null {
@@ -274,7 +283,7 @@ export class Calls {
     decline(channel: string): void {
         this.dismissed.add(channel)
         this.client.callSignal({channel, type: 'call_decline'})
-        this.changed()
+        this.notify()
     }
 
     hangUp(why?: string): void {
@@ -288,6 +297,6 @@ export class Calls {
         a.web.close()
         this.client.callSignal({channel: a.channel, type: 'call_leave'})
         if (why) this.notice = why
-        this.changed()
+        this.notify()
     }
 }
