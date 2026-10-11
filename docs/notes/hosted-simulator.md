@@ -1,7 +1,7 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
-updated: 2026-09-23
+triggers: [deploy-sim.yml, vapid.key, "/api/push/key", "@webapi", backups, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
+updated: 2026-10-11
 ---
 
 # The hosted simulator, and the two surfaces in front of it
@@ -100,6 +100,71 @@ service. The privilege stays on the host.
 
 The binary is written to `simulator.new` and `mv`d into place. An interrupted copy
 would otherwise leave a truncated file that `Restart=always` loops on forever.
+
+## Deploying the simulator (updated 2026-10-11)
+
+Every other deploy runs on a push to `main`; **`deploy-sim.yml` runs only when
+dispatched**, because publishing restarts a live service and drops every
+connection for a few seconds. So the server drifts behind `main` until somebody
+dispatches it, and a client a protocol revision ahead of it fails to sign in
+with "Connection reset without closing handshake" (the server's journal says
+`unsupported protocol version`).
+
+```bash
+source ~/.config/viberfox/forgejo.env      # FORGEJO_REPO_TOKEN may dispatch
+curl -X POST -H "Authorization: token $FORGEJO_REPO_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"ref":"main"}' "$FORGEJO_API/repos/$FORGEJO_REPO/actions/workflows/deploy-sim.yml/dispatches"
+```
+
+The run is "build & publish the simulator" in the actions list. Before
+dispatching, check what the deploy brings that a binary copy does not:
+
+- **A migration.** It runs on start and claims its number for good; copy
+  `world.db` aside first (`world.db.bak-<date>-pre-V<n>`, beside it), and never
+  deploy a branch that is not on `main`
+  ([migration-numbers-are-claimed-by-a-deploy.md](migration-numbers-are-claimed-by-a-deploy.md)).
+- **A new HTTP route a client calls.** Caddy does **not** send `/api/*` to the
+  simulator wholesale (the admin surface lives under it too): each player-facing
+  path is listed in the `@webapi` or `@models` matcher in `/data/stack/Caddyfile`,
+  bare path and `/*` form both where the route has children. An unlisted path is
+  answered by the web UI's fallback — `index.html` with a 200 — so a client sees
+  a page where it expected JSON and usually fails quietly. Add the path in the
+  same change that deploys the route:
+
+  ```bash
+  ssh host
+  sudo cp -p /data/stack/Caddyfile /data/stack/Caddyfile.bak-<date>-<why>
+  sudoedit /data/stack/Caddyfile     # in place: never sed -i (see below)
+  sudo docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  sudo docker exec caddy caddy reload  --config /etc/caddy/Caddyfile --adapter caddyfile
+  ```
+
+  The Caddyfile is bind-mounted by inode, so `sed -i` (which writes a new file)
+  silently never reaches the container. `sudoedit`, or `cat new > Caddyfile`,
+  keeps the inode.
+
+**What the server keeps beside its binary**, in `/data/cartopolis/sim/data/`
+(the only path the unit may write), and which of it to back up:
+
+| File | What | If it is lost |
+|---|---|---|
+| `world.db` (+ `-wal`, `-shm`) | accounts, sessions, prims, chats' sealed history, push addresses | everything; back it up |
+| `vapid.key` | the key browsers subscribe to call pushes with (`simulator::vapid`, since 2026-10-11), made on the first start with calls on, mode 600 | every subscribed browser stops ringing for calls, silently, until its chat page is opened again and re-subscribes; back it up with the database |
+| `assets/` | uploaded models, one `.glb` per content hash | the models; back it up |
+| `textures` | a link to `/srv/library/game-textures` | nothing; it is the library's |
+
+**Checking a deploy went live**:
+
+```bash
+curl -s https://cartopolis.org/api/push/key        # {"key": …} from the simulator
+ssh host 'systemctl is-active cartopolis-sim; sudo journalctl -u cartopolis-sim -n 60 --no-pager'
+```
+
+`/api/health` is **not** routed publicly (it answers the web UI's HTML), so do
+not probe with it; from the host, `curl http://172.17.0.1:4748/api/health`
+reaches the simulator directly. Any listed route answering HTML rather than
+JSON means Caddy is sending it to the web UI — the matcher above, not the
+simulator.
 
 ## Measured / observed, 2026-08-13
 
