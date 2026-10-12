@@ -129,6 +129,9 @@ struct Cell {
     /// are solved on (`road_levels`).
     runs: Vec<StreetRun>,
     decks: Vec<Deck>,
+    /// The decks laid flat whose measured surface passed
+    /// [`terrain_grade::flat_profile_fits`]: height 0, a profile, no top.
+    flat: Vec<Deck>,
 }
 
 pub struct Grader<'a> {
@@ -151,6 +154,8 @@ pub struct Grader<'a> {
     /// Decks measured, and how many were lifted.
     pub decks_measured: usize,
     pub decks_lifted: usize,
+    /// Decks laid flat whose road was pinned to their measured surface.
+    pub decks_flat_profiled: usize,
     /// Every tunnel mouth the graded tiles build, as published — see
     /// [`write_mouths`].
     pub mouths: Vec<serde_json::Value>,
@@ -175,6 +180,7 @@ impl<'a> Grader<'a> {
             road_heights: HashMap::new(),
             decks_measured: 0,
             decks_lifted: 0,
+            decks_flat_profiled: 0,
             mouths: Vec::new(),
             unbuilt: Vec::new(),
             flaws: Vec::new(),
@@ -291,6 +297,7 @@ impl<'a> Grader<'a> {
             tile_m,
             runs: Vec::new(),
             decks: Vec::new(),
+            flat: Vec::new(),
         };
         if let Some(bytes) = self.vector.mvt(x, y)? {
             let tile = TileData::parse(&bytes)?;
@@ -299,8 +306,35 @@ impl<'a> Grader<'a> {
             cell.runs = road_levels::street_runs(&tile, tile_m);
             self.deck_heights.entry((x, y)).or_default();
             for (i, deck) in decks.into_iter().enumerate() {
-                let measured = self.measure_deck(x, y, tile_m, &deck)?;
+                let mut measured = self.measure_deck(x, y, tile_m, &deck)?;
                 let height = measured.height;
+                let approaches: Vec<Vec<[f32; 2]>> = roads
+                    .approaches
+                    .iter()
+                    .filter(|a| a.deck as usize == i)
+                    .map(|a| a.points.clone())
+                    .collect();
+                // **A flat deck keeps its measured surface only where that
+                // surface is the deck's**: under trees the survey is the canopy,
+                // and only the bare ground off its ends can tell the two apart.
+                if height <= 0.0 {
+                    let to_ll = |p: [f32; 2]| {
+                        tile_frac_to_lat_lng(
+                            x as f64 + f64::from(p[0] / tile_m),
+                            y as f64 + f64::from(p[1] / tile_m),
+                            14,
+                        )
+                    };
+                    let fits = measured.profile.as_ref().is_some_and(|p| {
+                        terrain_grade::flat_profile_fits(p, &deck, &approaches, |q| {
+                            let (lat, lng) = to_ll(q);
+                            self.dtm_at(lat, lng)
+                        })
+                    });
+                    if !fits {
+                        measured.profile = None;
+                    }
+                }
                 self.decks_measured += 1;
                 // Recorded whether lifted or not: a flat deck is an answer too, and
                 // the client asks PDOK for any deck it cannot find here. The top
@@ -324,15 +358,19 @@ impl<'a> Grader<'a> {
                     },
                 );
                 if height <= 0.0 {
+                    if measured.profile.is_some() {
+                        self.decks_flat_profiled += 1;
+                        cell.flat.push(Deck {
+                            deck,
+                            height,
+                            top: None,
+                            profile: measured.profile,
+                            approaches,
+                        });
+                    }
                     continue;
                 }
                 self.decks_lifted += 1;
-                let approaches = roads
-                    .approaches
-                    .iter()
-                    .filter(|a| a.deck as usize == i)
-                    .map(|a| a.points.clone())
-                    .collect();
                 cell.decks.push(Deck {
                     deck,
                     height,
@@ -441,11 +479,9 @@ impl<'a> Grader<'a> {
             return Ok(flat);
         };
         let height = terrain_grade::deck_clearance(top, ground);
-        if height <= 0.0 {
-            return Ok(flat);
-        }
         // The profile from the same raster, read at the deck's own tile-local
-        // points as the client reads it (`DeckProfile::fit_over`).
+        // points as the client reads it (`DeckProfile::fit_over`) — for a flat
+        // deck too, which `cell` keeps only if it passes `flat_profile_fits`.
         let at = |p: [f64; 2]| -> Option<f32> {
             let c = ((p[0] - lo[0]) / px).floor();
             let r = ((max[1] - p[1]) / px).floor();
@@ -459,6 +495,9 @@ impl<'a> Grader<'a> {
             let (lat, lng) = to_ll(local);
             at(cartopolis_geo::ahn::wgs84_to_rd(lat, lng))
         });
+        if height <= 0.0 {
+            return Ok(DeckMeasure { profile, ..flat });
+        }
         Ok(DeckMeasure {
             height,
             top: Some(top),
@@ -516,7 +555,7 @@ impl<'a> Grader<'a> {
                 let cell = &self.cells[&(tx + dx, ty + dy)];
                 let s = tile_m / cell.tile_m;
                 let off = [dx as f32 * tile_m, dy as f32 * tile_m];
-                for d in &cell.decks {
+                for d in cell.decks.iter().chain(&cell.flat) {
                     let sc = |p: [f32; 2]| [p[0] * s, p[1] * s];
                     let deck = BridgeDeck {
                         positions: Vec::new(),
@@ -546,19 +585,32 @@ impl<'a> Grader<'a> {
                 }
             }
         }
-        let plates: Vec<DeckPlate<'_>> = scaled
-            .iter()
-            .map(
-                |(deck, world, height, top, profile, approaches)| DeckPlate {
-                    deck,
-                    world: *world,
-                    height: *height,
-                    top: *top,
-                    profile: profile.as_ref(),
-                    approaches,
-                },
-            )
-            .collect();
+        #[allow(clippy::type_complexity)]
+        fn plate<'a>(
+            (deck, world, height, top, profile, approaches): &'a (
+                BridgeDeck,
+                [f32; 2],
+                f32,
+                Option<f32>,
+                Option<DeckProfile>,
+                Vec<Vec<[f32; 2]>>,
+            ),
+        ) -> DeckPlate<'a> {
+            DeckPlate {
+                deck,
+                world: *world,
+                height: *height,
+                top: *top,
+                profile: profile.as_ref(),
+                approaches,
+            }
+        }
+        let plates: Vec<DeckPlate<'_>> = scaled.iter().filter(|d| d.2 > 0.0).map(plate).collect();
+        // The decks laid flat that carry a measured surface: their spans are
+        // pinned to it as a lifted deck's are, and that is all — nothing passes
+        // under a canal bridge but water, so a road beside one is not `spanned`.
+        let flat_plates: Vec<DeckPlate<'_>> =
+            scaled.iter().filter(|d| d.2 <= 0.0).map(plate).collect();
 
         // The water, from the water dataset's cells under the window.
         let mut rings: Vec<(f32, Vec<[f32; 2]>)> = Vec::new();
@@ -775,17 +827,20 @@ impl<'a> Grader<'a> {
                     // either side of it; asked point by point, the joint lost its
                     // pin. Any point on a lifted deck puts the whole run on it,
                     // at the deck's surveyed top under each point.
+                    let on = |plate: &&DeckPlate<'_>| {
+                        plate.top_at([0.0, 0.0]).is_some()
+                            && points.iter().any(|&p| {
+                                plate
+                                    .deck
+                                    .contains([p[0] - plate.world[0], p[1] - plate.world[1]])
+                            })
+                    };
                     let carried = (run.level > 0)
                         .then(|| {
-                            plates.iter().find(|plate| {
-                                plate.top_at([0.0, 0.0]).is_some()
-                                    && points.iter().any(|&p| {
-                                        plate.deck.contains([
-                                            p[0] - plate.world[0],
-                                            p[1] - plate.world[1],
-                                        ])
-                                    })
-                            })
+                            plates
+                                .iter()
+                                .find(on)
+                                .or_else(|| flat_plates.iter().find(on))
                         })
                         .flatten();
                     // **Under a lid the road only has a ceiling**: the land around
@@ -1232,10 +1287,11 @@ pub fn grade_area(
         }
     }
     ctx.log(format!(
-        "{} tegels geëgaliseerd; {} bruggen gemeten, {} verhoogd",
+        "{} tegels geëgaliseerd; {} bruggen gemeten, {} verhoogd, {} vlak op hun gemeten dek",
         graded.len(),
         grader.decks_measured,
-        grader.decks_lifted
+        grader.decks_lifted,
+        grader.decks_flat_profiled
     ));
     write_decks(ctx, &grader.deck_heights)?;
     write_road_heights(ctx, &grader.road_heights)?;

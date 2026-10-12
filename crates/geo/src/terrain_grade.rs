@@ -596,6 +596,109 @@ pub fn deck_clearance(top: f32, ground: f32) -> f32 {
     }
 }
 
+/// How far a flat deck's measured surface may stand from the bare ground just off
+/// one of its ends and still be the deck's own: a canal bridge's ramp onto its
+/// quay is a few tenths, a footbridge's a metre; a canopy over the deck is
+/// metres.
+pub const FLAT_END_TOLERANCE_M: f32 = 1.0;
+
+/// How far past where an approach leaves the deck the ground is read, as the
+/// client's `deck_step` instrument reads it.
+const FLAT_END_PROBE_M: f32 = 3.0;
+
+/// **Whether a flat deck's measured surface is the deck** rather than what stands
+/// over it, so its road can be pinned to it as a lifted deck's is.
+///
+/// A deck under [`MIN_LIFT_M`] used to be laid at the street, which is right for
+/// a canal bridge flush with its quays and a metre wrong for a footbridge that
+/// climbs onto a museum (the Werkmanbrug: 3.3 → 4.4 m NAP over a 2.5 m street,
+/// measured 2026-10-12). The survey has the climb; what it can also have is the
+/// trees — Groningen's boardwalks measured 11–23 m. So the surface is kept only
+/// if it rises less than a lift from end to end, and every end whose ground the
+/// survey has (`ground`, metres NAP at a tile-local point) is within
+/// [`FLAT_END_TOLERANCE_M`] of it — with at least one such end, since a surface
+/// that meets no ground is not evidence of anything.
+#[must_use]
+pub fn flat_profile_fits(
+    profile: &crate::deck_profile::DeckProfile,
+    deck: &BridgeDeck,
+    approaches: &[Vec<[f32; 2]>],
+    mut ground: impl FnMut([f32; 2]) -> Option<f32>,
+) -> bool {
+    let (lo, hi) = profile.range();
+    if hi - lo >= MIN_LIFT_M {
+        return false;
+    }
+    let along = |run: &[[f32; 2]], mut d: f32| -> [f32; 2] {
+        for w in run.windows(2) {
+            let len = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+            if d <= len && len > 0.0 {
+                let t = d / len;
+                return [
+                    w[0][0] + (w[1][0] - w[0][0]) * t,
+                    w[0][1] + (w[1][1] - w[0][1]) * t,
+                ];
+            }
+            d -= len;
+        }
+        run.last().copied().unwrap_or([0.0, 0.0])
+    };
+    let mut checked = 0;
+    for run in approaches {
+        let len: f32 = run
+            .windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum();
+        let mut clear = 0.0f32;
+        while clear < len && deck.contains(along(run, clear)) {
+            clear += 0.5;
+        }
+        let out = along(run, clear + FLAT_END_PROBE_M);
+        if clear >= len || deck.contains(out) {
+            continue;
+        }
+        let Some(g) = ground(out) else { continue };
+        let edge = along(run, clear);
+        if (profile.at([f64::from(edge[0]), f64::from(edge[1])]) - g).abs() > FLAT_END_TOLERANCE_M {
+            return false;
+        }
+        checked += 1;
+    }
+    // **And round its own outline**, for a deck with no approach the tiles
+    // draw: a footbridge's path is the surveyed paving over a covered cell, not a
+    // street, so it has none — the Werkmanbrug's profile was dropped for exactly
+    // that. Each outline corner is probed the same distance outward from the
+    // deck's middle; over water the survey has nothing and the corner says
+    // nothing, at a quay it is the ground the deck lands on.
+    if let Some(ring) = deck.rings.first() {
+        let n = ring.len().max(1) as f32;
+        let c = [
+            ring.iter().map(|p| p[0]).sum::<f32>() / n,
+            ring.iter().map(|p| p[1]).sum::<f32>() / n,
+        ];
+        for &v in ring {
+            let (dx, dz) = (v[0] - c[0], v[1] - c[1]);
+            let d = dx.hypot(dz);
+            if d < 1e-3 {
+                continue;
+            }
+            let out = [
+                v[0] + dx / d * FLAT_END_PROBE_M,
+                v[1] + dz / d * FLAT_END_PROBE_M,
+            ];
+            if deck.contains(out) {
+                continue;
+            }
+            let Some(g) = ground(out) else { continue };
+            if (profile.at([f64::from(v[0]), f64::from(v[1])]) - g).abs() > FLAT_END_TOLERANCE_M {
+                return false;
+            }
+            checked += 1;
+        }
+    }
+    checked > 0
+}
+
 /// The water level (NAP) at every sample of a lattice, `NaN` off the water, from
 /// rings in the lattice's frame. Where rings overlap the **lowest** wins, as in the
 /// client's `WaterLevelField::level_at`.
@@ -802,6 +905,63 @@ pub fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A footbridge 8 m wide and 36 m long, south to north, its surface climbing
+    /// from `south` to `north` metres; its approaches run 30 m off either end.
+    fn footbridge(
+        south: f32,
+        north: f32,
+    ) -> (
+        BridgeDeck,
+        crate::deck_profile::DeckProfile,
+        Vec<Vec<[f32; 2]>>,
+    ) {
+        let ring = vec![[0.0, 0.0], [8.0, 0.0], [8.0, 36.0], [0.0, 36.0], [0.0, 0.0]];
+        let deck = BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![ring],
+            min: [0.0, 0.0],
+            max: [8.0, 36.0],
+        };
+        let profile = crate::deck_profile::DeckProfile::fit_over(&deck, |p| {
+            Some(south + (north - south) * p[1] / 36.0)
+        })
+        .unwrap();
+        let approaches = vec![
+            vec![[4.0, 2.0], [4.0, -30.0]],
+            vec![[4.0, 34.0], [4.0, 66.0]],
+        ];
+        (deck, profile, approaches)
+    }
+
+    /// The Werkmanbrug's case: a footbridge climbing a metre from its street, whose
+    /// far end lands on a building the bare-ground survey has no ground under.
+    #[test]
+    fn a_footbridge_keeps_its_climb() {
+        let (deck, profile, runs) = footbridge(3.3, 4.4);
+        let ground = |p: [f32; 2]| (p[1] < 0.0).then_some(3.1);
+        assert!(flat_profile_fits(&profile, &deck, &runs, ground));
+        // With no street drawn onto it (a footpath over a covered cell is paving,
+        // not a ribbon), its own outline's south corners are enough.
+        assert!(flat_profile_fits(&profile, &deck, &[], ground));
+        // And a corner landing on ground metres below the deck says it is not one.
+        assert!(!flat_profile_fits(&profile, &deck, &[], |_| Some(0.5)));
+    }
+
+    /// Trees over a boardwalk: the survey is the canopy, metres above the path at
+    /// either end, and the deck is left at its street.
+    #[test]
+    fn a_canopy_is_not_a_deck() {
+        let (deck, profile, runs) = footbridge(12.0, 13.0);
+        assert!(!flat_profile_fits(&profile, &deck, &runs, |_| Some(1.2)));
+        // A canopy over one half only climbs a lift and more.
+        let (deck, profile, runs) = footbridge(1.3, 9.0);
+        assert!(!flat_profile_fits(&profile, &deck, &runs, |_| Some(1.2)));
+        // And a surface that meets no ground the survey has proves nothing.
+        let (deck, profile, runs) = footbridge(1.3, 1.5);
+        assert!(!flat_profile_fits(&profile, &deck, &runs, |_| None));
+    }
 
     fn lattice(n: usize) -> Lattice {
         Lattice {
