@@ -80,11 +80,13 @@ pub const ANY: Rank = Rank::MAX;
 const RESERVED_FOR_NEAR: usize = 4;
 
 /// Outstanding jobs allowed at once, absent a pool to size it against.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FALLBACK_CAPACITY: usize = 16;
 
 /// Multiple of the io pool's width. Generous on purpose — see the module note:
 /// most jobs never reach the network, and the cap exists to stop the pool's own
 /// queue becoming the scheduler, not to ration cache reads.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const CAPACITY_PER_IO_THREAD: usize = 4;
 
 /// How far a cell is from the one the camera is over, in cells — the [`Rank`]
@@ -113,12 +115,37 @@ static GATE: Mutex<Gate> = Mutex::new(Gate { held: 0 });
 /// Derived from the io pool rather than declared, because that pool's width is
 /// itself derived (a percentage of `available_parallelism`, with floors) and a
 /// constant here would mean two numbers that can disagree about the same machine.
+///
+/// **Except in the browser** ([`WEB_CAPACITY`]), where there is no such pool to
+/// derive from.
 #[must_use]
 pub fn capacity() -> usize {
-    bevy::tasks::IoTaskPool::try_get().map_or(FALLBACK_CAPACITY, |pool| {
-        (pool.thread_num() * CAPACITY_PER_IO_THREAD).max(FALLBACK_CAPACITY)
-    })
+    #[cfg(target_arch = "wasm32")]
+    {
+        WEB_CAPACITY
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        bevy::tasks::IoTaskPool::try_get().map_or(FALLBACK_CAPACITY, |pool| {
+            (pool.thread_num() * CAPACITY_PER_IO_THREAD).max(FALLBACK_CAPACITY)
+        })
+    }
 }
+
+/// Outstanding jobs allowed at once in the web build.
+///
+/// The browser's `IoTaskPool` is the main thread — one "thread", whose fetches
+/// are async and block nothing — so the native formula answered
+/// [`FALLBACK_CAPACITY`] there: 16, a quarter of the 64 a desktop gets from its
+/// sixteen-thread floor, for the build with the most work to share them. A slot
+/// is also held for the whole job, worker meshing included, not only for its
+/// download. Measured on the Deck's GPU in Chrome (2026-10-12): all 16 were taken
+/// from 8 s to 27 s after start, the ground surfaces holding 8–9 of them while
+/// their meshes built, and the basemap — 177 tiles queued at rank 1 — ran 0–6 at
+/// a time and finished at 48 s. 32 lets the basemap and the surfaces each run
+/// their own cap at once with room beside them.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const WEB_CAPACITY: usize = 32;
 
 /// Take a slot for a job of this rank, or report that it may not start yet.
 ///
@@ -232,5 +259,17 @@ mod tests {
     fn the_capacity_floor_leaves_room_outside_the_reserve() {
         assert!(super::FALLBACK_CAPACITY > RESERVED_FOR_NEAR);
         assert!(admits(0, super::FALLBACK_CAPACITY, ANY));
+    }
+
+    /// The web build's cap must hold the basemap and the ground surfaces at their
+    /// own caps at once, outside the reserve — the case that left the basemap
+    /// running 0–6 tiles at a time behind the surfaces' meshing at 16.
+    #[test]
+    fn the_web_cap_runs_the_basemap_beside_the_surfaces() {
+        use crate::systems::map_geometry::SURFACE_MAX_IN_FLIGHT;
+        use crate::systems::map_stream::TILE_MAX_IN_FLIGHT;
+        assert!(
+            super::WEB_CAPACITY - RESERVED_FOR_NEAR >= TILE_MAX_IN_FLIGHT + SURFACE_MAX_IN_FLIGHT
+        );
     }
 }

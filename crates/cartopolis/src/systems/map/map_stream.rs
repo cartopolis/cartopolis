@@ -111,7 +111,7 @@ const FETCH_RETRY_SECS: f64 = 3.0;
 /// frame — see `apply_stream_textures`, where the count is now paired with a byte
 /// ceiling, because a bound in items says nothing about the quantity a driver
 /// actually chokes on.
-const TILE_MAX_IN_FLIGHT: usize = 8;
+pub(crate) const TILE_MAX_IN_FLIGHT: usize = 8;
 /// Max ground tiles to despawn per frame — the mass-*despawn* twin of
 /// `MAX_UPLOADS_PER_FRAME`. A zoom-out steps the LOD zoom down and retires the
 /// whole previous finest-zoom ring at once; freeing all those per-tile textures in
@@ -2157,8 +2157,19 @@ pub fn apply_stream_textures(
         let warm_served = std::mem::take(&mut stream.warm_served);
         let warm_held = stream.warm.len();
         let warm_mb = stream.warm.bytes() / (1024 * 1024);
+        let (queued, best_rank) = stream.tiles.queued();
         tracing::info!(
             in_flight = stream.tiles.in_flight(),
+            // What can hold a queued tile back while nothing is in flight: the
+            // shared fetch gate (`best_rank` above `fetch_gate::NEAR` cannot take
+            // its reserve), the two start-up raster holds, and the worker pool.
+            queued,
+            best_rank = best_rank.map(i64::from).unwrap_or(-1),
+            gate_held = crate::platform::fetch_gate::outstanding(),
+            gate_cap = crate::platform::fetch_gate::capacity(),
+            raster_hold = !(crate::systems::crops::raster_ready()
+                && crate::systems::surveyed::raster_ready()),
+            workers = crate::platform::workers::outstanding(),
             awaiting_upload = tiles.iter().count(),
             loaded = stream.loaded.len(),
             requeued = stream.requeues,

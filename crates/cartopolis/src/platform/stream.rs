@@ -329,6 +329,11 @@ where
         self.in_flight.len()
     }
 
+    /// Jobs waiting to be dispatched, and the best rank among them.
+    pub fn queued(&self) -> (usize, Option<fetch_gate::Rank>) {
+        (self.dispatch.queued(), self.dispatch.peek_rank())
+    }
+
     /// Anything still moving: work outstanding or entities still to free. The
     /// `--shot` harness settles on this.
     pub fn busy(&self) -> bool {

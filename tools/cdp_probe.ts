@@ -72,7 +72,7 @@ if (opt["no-webgpu"]) {
 } else if (opt.gpu) {
   // Ask for the real device. Whether this works depends on the machine, which is
   // exactly why the report prints the adapter rather than assuming.
-  flags.push("--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=vulkan");
+  flags.push("--enable-unsafe-webgpu", "--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan", "--use-angle=vulkan");
 } else {
   // Software, and honest about it.
   flags.push("--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=swiftshader");
@@ -177,6 +177,7 @@ ws.onmessage = (ev) => {
     case "Log.entryAdded": {
       const e = msg.params.entry;
       if (e.level === "error") errors.push(`[${e.source}] ${e.text}`);
+      if (opt.raw && e.level !== "verbose") console.log(`  ▲ [${e.level} ${e.source}] ${e.text}`);
       break;
     }
     case "Network.requestWillBeSent":

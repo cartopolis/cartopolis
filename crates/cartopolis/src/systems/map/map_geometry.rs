@@ -168,7 +168,7 @@ type Cell = (i64, i64);
 /// slot while it waits, so at eight the ninth cell could not even start
 /// downloading until the hold ended — one cell of every start built a hold later
 /// than the rest. A parked job holds downloaded text, not meshes.
-const SURFACE_MAX_IN_FLIGHT: usize = 9;
+pub(crate) const SURFACE_MAX_IN_FLIGHT: usize = 9;
 
 /// How much bigger a ground surface gets when it is refined against the measured
 /// terrain, as a divisor on the byte cap handed to the tessellators.
