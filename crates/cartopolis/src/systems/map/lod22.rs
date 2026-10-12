@@ -2717,9 +2717,13 @@ fn shell_datum_height(p: &[(f64, f64, f32)], t: &[(usize, usize, usize, u8)]) ->
 /// while the map looks entirely normal. Measured on 2026-08-28 with the host
 /// serving correct ids: `lod22_dated` was 0 of 75,109 buildings, purely from the
 /// cache. Bump this whenever the element format changes in a way an old entry
-/// cannot express.
+/// cannot express — or when the published heights change under the same format:
+/// `v3` (2026-10-12) is atlas measuring a building that stands in water from the
+/// water's surface rather than from its foundation, and a cached cell would have
+/// kept the Groninger Museum 8.8 m in the air. The binary key carries the same
+/// generation ([`bin_cache_key`]).
 fn cell_cache_key(cx: i64, cy: i64) -> String {
-    format!("buildings/lod22/v2/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
+    format!("buildings/lod22/v3/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
 }
 
 /// Cache key for the same cell in the binary encoding
@@ -2730,9 +2734,10 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 /// handed to the binary decoder (or the reverse) would be a failed cell and an
 /// eviction every time, so each format has its own namespace and a body is only
 /// ever read back by the parser that wrote it. The `bin1` names the format's
-/// version, which the decoder also checks in the header.
+/// version, which the decoder also checks in the header; the `v3` is the data
+/// generation [`cell_cache_key`] carries.
 fn bin_cache_key(cx: i64, cy: i64) -> String {
-    format!("buildings/lod22/bin1/{}/{}/{}.bin", LOD22_ZOOM, cx, cy)
+    format!("buildings/lod22/bin1-v3/{}/{}/{}.bin", LOD22_ZOOM, cx, cy)
 }
 
 /// One cell's body as fetched, in whichever format the host served.

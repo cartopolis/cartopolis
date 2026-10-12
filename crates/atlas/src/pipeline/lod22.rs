@@ -10,7 +10,8 @@
 //!      triangulate each Wall/Roof surface — planar, possibly with holes — by
 //!      earcutting it on its own plane.
 //!   3. Reproject RD → WGS84; height is `z −` the building's own minimum z, so it
-//!      sits on the client's ground at y = 0 like the LoD1.2 tier does.
+//!      sits on the client's ground at y = 0 like the LoD1.2 tier does — or `z −`
+//!      the water level, for a building standing in water ([`Water`]).
 //!   4. Bin by the first vertex's z14 cell and write `lod22/14/{x}/{y}.json`.
 //!
 //! Wire format per cell: `{"elements":[{"id":"0014100010903891","part":0,
@@ -234,14 +235,110 @@ fn js(v: f64) -> String {
     }
 }
 
+/// How far below the water under it a building's shell must reach before its
+/// heights are measured from the water's surface instead.
+const IN_WATER_M: f64 = 0.5;
+
+/// **A building standing in water is measured from the water.** Every height
+/// here is above the building's own base, which is its shell's lowest point,
+/// and the client stands that base on the ground it draws under the footprint.
+/// For a building on a street the two are the same place. For one standing in a
+/// canal they are not: 3DBAG takes the Groninger Museum's walls down to its
+/// foundation at −8.0 m NAP while the client draws the canal's surface at 0.8,
+/// so the whole museum stood 8.8 m too high and the walkway that crosses its
+/// middle at 4.5 m ran into a wall (2026-10-12). Where most of a building's foot
+/// is inside a registered water body (`water/14/x/y.json`, the lowest where they
+/// overlap, as the client takes it), its heights are re-measured from that
+/// level; the part below it is left in, under the water.
+struct Water<'a> {
+    ctx: &'a Ctx,
+    cells: HashMap<Cell, Vec<(f64, Vec<(f64, f64)>)>>,
+}
+
+impl<'a> Water<'a> {
+    fn new(ctx: &'a Ctx) -> Self {
+        Self {
+            ctx,
+            cells: HashMap::new(),
+        }
+    }
+
+    fn rings(&mut self, cell: Cell) -> &[(f64, Vec<(f64, f64)>)] {
+        let ctx = self.ctx;
+        self.cells.entry(cell).or_insert_with(|| {
+            let Some(text) = ctx
+                .read_site(&format!("water/{CACHE_ZOOM}/{}/{}.json", cell.0, cell.1))
+                .and_then(|b| String::from_utf8(b).ok())
+            else {
+                return Vec::new();
+            };
+            cartopolis_geo::formats::water::parse(&text)
+                .map(|c| {
+                    c.rings
+                        .iter()
+                        .filter_map(|(level, flat)| {
+                            Some((*level, cartopolis_geo::formats::water::ring_points(flat)?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// The water level (NAP) under most of a building's foot — the vertices at
+    /// its lowest — if it has one.
+    fn level_under(&mut self, p: &[[f64; 3]]) -> Option<f64> {
+        let lowest = p.iter().map(|v| v[2]).fold(f64::INFINITY, f64::min);
+        let foot: Vec<(f64, f64)> = p
+            .iter()
+            .filter(|v| v[2] <= lowest + 0.05)
+            .map(|v| (v[0], v[1]))
+            .collect();
+        let first = *foot.first()?;
+        level_under_foot(self.rings(lat_lng_to_cell(first.0, first.1)), &foot)
+    }
+}
+
+/// The lowest water level over more than half of `foot`'s points, or `None`.
+fn level_under_foot(rings: &[(f64, Vec<(f64, f64)>)], foot: &[(f64, f64)]) -> Option<f64> {
+    let mut level: Option<f64> = None;
+    let mut wet = 0usize;
+    for &(lat, lng) in foot {
+        let here = rings
+            .iter()
+            .filter(|(_, r)| inside(r, lat, lng))
+            .map(|(l, _)| *l)
+            .reduce(f64::min);
+        if let Some(l) = here {
+            wet += 1;
+            level = Some(level.map_or(l, |a| a.min(l)));
+        }
+    }
+    (wet * 2 > foot.len()).then_some(level).flatten()
+}
+
+/// Even-odd point in ring, in lat/lng.
+fn inside(ring: &[(f64, f64)], lat: f64, lng: f64) -> bool {
+    let mut ins = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (ai, oi) = ring[i];
+        let (aj, oj) = ring[j];
+        if (ai > lat) != (aj > lat) && lng < (oj - oi) * (lat - ai) / (aj - ai) + oi {
+            ins = !ins;
+        }
+        j = i;
+    }
+    ins
+}
+
+/// One solid's vertices (lat°, lng°, metres above its own base), triangles, and
+/// that base in metres NAP — the shell's lowest point.
+type Processed = (Vec<[f64; 3]>, Vec<[u32; 4]>, f64);
+
 /// One LoD2.2 Solid → deduplicated `[lat, lng, h]` vertices and `[i,j,k,roof]`
 /// triangles, or `None` when it has no usable wall or roof geometry.
-fn process_object(
-    g: &Value,
-    verts: &[Value],
-    scale: V3,
-    translate: V3,
-) -> Option<(Vec<[f64; 3]>, Vec<[u32; 4]>)> {
+fn process_object(g: &Value, verts: &[Value], scale: V3, translate: V3) -> Option<Processed> {
     let shell = g["boundaries"].get(0)?.as_array()?;
     let sem_values = g["semantics"]["values"]
         .get(0)
@@ -342,7 +439,7 @@ fn process_object(
     if tris.is_empty() {
         None
     } else {
-        Some((p, tris))
+        Some((p, tris, ground_z))
     }
 }
 
@@ -360,6 +457,8 @@ struct Solid {
     part: u32,
     p: Vec<[f64; 3]>,
     t: Vec<[u32; 4]>,
+    /// The base `p`'s heights are above, metres NAP.
+    base: f64,
 }
 
 /// Every LoD2.2 solid in one CityJSON tile, in the tile's own object order —
@@ -380,11 +479,17 @@ fn solids(cj: &Value) -> Result<Vec<Solid>, String> {
         }) else {
             continue;
         };
-        let Some((p, t)) = process_object(g22, verts, scale, translate) else {
+        let Some((p, t, base)) = process_object(g22, verts, scale, translate) else {
             continue;
         };
         let (pand, part) = object_id(oid);
-        out.push(Solid { pand, part, p, t });
+        out.push(Solid {
+            pand,
+            part,
+            p,
+            t,
+            base,
+        });
     }
     Ok(out)
 }
@@ -455,6 +560,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let mut cells: HashMap<Cell, lod22_cell::Cell> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let (mut total, mut tiles_done) = (0usize, 0usize);
+    let mut water = Water::new(ctx);
+    let mut in_water = 0usize;
 
     // Downloaded and triangulated a few tiles at a time, deduplicated and binned
     // in tile order — the order decides which tile's copy of a building on a
@@ -477,9 +584,25 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 // One unreadable tile is a hole in the coverage, not a failed run.
                 Err(e) => ctx.log(format!("tile {url}: {e}")),
                 Ok(found) => {
-                    for Solid { pand, part, p, t } in found {
+                    for Solid {
+                        pand,
+                        part,
+                        mut p,
+                        t,
+                        base,
+                    } in found
+                    {
                         if !seen.insert(format!("{pand}-{part}")) {
                             continue;
+                        }
+                        if let Some(level) = water.level_under(&p) {
+                            if level - base >= IN_WATER_M {
+                                let shift = level - base;
+                                for v in &mut p {
+                                    v[2] = round(v[2] - shift, 2);
+                                }
+                                in_water += 1;
+                            }
                         }
                         let cell = lat_lng_to_cell(p[0][0], p[0][1]);
                         cells
@@ -519,7 +642,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             .with("building_count", total),
     )?;
     ctx.log(format!(
-        "done: {total} LoD2.2 buildings across {} cells",
+        "done: {total} LoD2.2 buildings across {} cells; {in_water} standing in water, \
+         measured from its surface",
         cells.len()
     ));
     Ok(DatasetResult {
@@ -532,6 +656,22 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A building whose foot is mostly in the canal takes the canal's level; one
+    /// on the quay beside it, with a corner over the water, takes none.
+    #[test]
+    fn a_building_in_water_is_measured_from_the_water() {
+        let canal = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)];
+        let lock = vec![(0.0, 0.0), (0.0, 0.5), (0.5, 0.5), (0.5, 0.0)];
+        let rings = vec![(0.8, canal), (0.3, lock)];
+        let museum = [(0.6, 0.6), (0.6, 0.9), (0.9, 0.9), (0.9, 0.6)];
+        assert_eq!(level_under_foot(&rings, &museum), Some(0.8));
+        // Where two bodies overlap the lowest wins, as the client takes it.
+        let in_lock = [(0.1, 0.1), (0.1, 0.2), (0.2, 0.2), (0.2, 0.1)];
+        assert_eq!(level_under_foot(&rings, &in_lock), Some(0.3));
+        let on_quay = [(0.9, 0.9), (0.9, 1.5), (1.5, 1.5), (1.5, 0.9)];
+        assert_eq!(level_under_foot(&rings, &on_quay), None);
+    }
 
     #[test]
     fn pand_ids_keep_their_leading_zeros_and_split_the_part() {
