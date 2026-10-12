@@ -45,6 +45,8 @@ const { values: opt } = parseArgs({
 });
 
 const RUN_MS = Number(opt.seconds) * 1000;
+/** When the run started, for timing an exception against the console log. */
+const started = Date.now();
 const PORT = Number(opt.port);
 const profile = `/tmp/vf-cdp-${PORT}`;
 
@@ -165,7 +167,11 @@ ws.onmessage = (ev) => {
     }
     case "Runtime.exceptionThrown": {
       const d = msg.params.exceptionDetails;
-      errors.push(d?.exception?.description ?? d?.text ?? "unknown exception");
+      // When it happened and what was logged just before: a bare stack of
+      // `wasm-function[N]` frames names nothing, the moment it fired often does.
+      const at = ((Date.now() - started) / 1000).toFixed(1);
+      const before = console_.slice(-3).map((l) => "      after: " + l.slice(0, 200)).join("\n");
+      errors.push(`t=${at}s ${d?.exception?.description ?? d?.text ?? "unknown exception"}\n${before}`);
       break;
     }
     case "Log.entryAdded": {
@@ -320,6 +326,13 @@ for (const w of wasm) {
 }
 if (wasm.length > 1) console.log(`  ⚠ ${wasm.length} separate requests for the module`);
 
+// The console's "Failed to load resource: … 404" names no URL; this does.
+const failed = [...requests.values()].filter((r) => (r.status ?? 0) >= 400);
+if (failed.length) {
+  console.log("\n══ failed requests ═══════════════════════════════════════");
+  for (const r of failed) console.log(`  ${r.status}  ${r.url}`);
+}
+
 console.log("\n══ frame stats ═══════════════════════════════════════════");
 if (!fps.length) {
   console.log("  none — add ?fps_log to the URL (see env_flag in main.rs)");
@@ -350,7 +363,9 @@ for (const l of [...new Set(notable)].slice(0, 40)) console.log("  " + l.slice(0
 
 if (errors.length) {
   console.log("\n══ errors ════════════════════════════════════════════════");
-  for (const e of [...new Set(errors)].slice(0, 15)) console.log("  " + e.slice(0, 300));
+  // Whole, not cut to a line: the frames below the first are the only
+  // pointer there is into a stripped module.
+  for (const e of [...new Set(errors)].slice(0, 15)) console.log("  " + e.slice(0, 6000));
 }
 
 console.log(`\n(${console_.length} console lines captured)`);

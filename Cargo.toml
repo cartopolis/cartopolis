@@ -16,6 +16,7 @@ members = [
     "crates/cartopolis_android",
     "crates/mcp_server",
     "crates/big_space",
+    "crates/web_task",
 ]
 default-members = ["crates/cartopolis"]
 
@@ -430,3 +431,11 @@ lto = "thin"
 # this profile. If the final link ever does OOM, lower `CARGO_BUILD_JOBS` for it
 # rather than reverting this.
 codegen-units = 1
+
+# `web-task` is the executor every `bevy_tasks` task runs on in the browser.
+# 1.1.3 (the latest) leaves a freed callback registered when a waiting task is
+# cancelled, which both throws in the console and can leave a later task asleep
+# for good; `crates/web_task` is that release with the fix. Remove both lines
+# when upstream publishes one. `docs/notes/web-task-stale-waiters.md`.
+[patch.crates-io]
+web-task = { path = "crates/web_task" }

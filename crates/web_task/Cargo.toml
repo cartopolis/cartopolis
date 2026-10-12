@@ -1,0 +1,25 @@
+# Vendored fork of web-task 1.1.3 (upstream: https://github.com/NthTensor/web-task,
+# MIT OR Apache-2.0), the executor `bevy_tasks` runs every task on in the browser.
+# Patched in through `[patch.crates-io]` in the workspace manifest; the only
+# change is in `src/runtime/multithread.rs` (marked `cartopolis:`), which fixes a
+# cancelled task leaving the browser holding a freed callback — see
+# `docs/notes/web-task-stale-waiters.md`. Drop this fork when upstream ships the
+# fix. Kept diff-comparable with upstream, so it opts out of the workspace lints.
+[package]
+name = "web-task"
+version = "1.1.3"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+readme = "./README.md"
+description = "The simplest way to run async tasks on the web (vendored fork)"
+repository = "https://github.com/NthTensor/web-task"
+
+[dependencies]
+async-task = { version = "4.7.1", default-features = false }
+cfg-if = "1.0.4"
+js-sys = { version = "0.3.77", default-features = false }
+wasm-bindgen = { version = "0.2.100", default-features = false }
+
+[features]
+default = ["std"]
+std = ["wasm-bindgen/std", "js-sys/std", "async-task/std"]

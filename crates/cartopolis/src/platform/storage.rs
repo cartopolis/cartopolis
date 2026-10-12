@@ -387,20 +387,55 @@ mod imp {
         static CACHE_FULL: RefCell<bool> = const { RefCell::new(false) };
     }
 
+    /// The handlers a pending `IDBRequest` holds, unregistered when this drops.
+    ///
+    /// Dropping a `Closure` does **not** unregister it: the request keeps the JS
+    /// function, which now points at freed Rust, and the event it was waiting for
+    /// throws `closure invoked recursively or after being dropped` when it fires.
+    /// A cancelled read does exactly that — a tile retired while its cache
+    /// lookup is in flight drops the future mid-`await`. So the handlers are
+    /// cleared from `Drop`, which runs on completion and on cancellation alike,
+    /// and a late event finds no handler at all
+    /// (`docs/notes/web-task-stale-waiters.md` has the general rule).
+    struct Handlers<'a> {
+        request: &'a IdbRequest,
+        upgrade: bool,
+        _closures: Vec<Closure<dyn FnMut(web_sys::Event)>>,
+    }
+
+    impl Drop for Handlers<'_> {
+        fn drop(&mut self) {
+            self.request.set_onsuccess(None);
+            self.request.set_onerror(None);
+            if self.upgrade {
+                if let Some(open) = self.request.dyn_ref::<IdbOpenDbRequest>() {
+                    open.set_onupgradeneeded(None);
+                }
+            }
+        }
+    }
+
     /// Resolve when an `IDBRequest` settles. `Some` on success.
     ///
     /// A request is not a promise, so there is no `JsFuture` to await: the two
-    /// event handlers are wired to a oneshot instead, and — this is the part that
-    /// is easy to get wrong — the `Closure`s are held in scope *across* the await,
-    /// because dropping one before its event fires unregisters it and the future
-    /// never completes.
+    /// event handlers are wired to a oneshot instead, held by a [`Handlers`] that
+    /// lives across the await and clears them however the future ends.
     async fn settle(request: &IdbRequest) -> Option<JsValue> {
+        settle_with(request, None).await
+    }
+
+    /// [`settle`], with an `onupgradeneeded` handler held the same way: only
+    /// opening the database has one.
+    async fn settle_with(
+        request: &IdbRequest,
+        upgrade: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    ) -> Option<JsValue> {
         let (tx, rx) = futures_channel::oneshot::channel::<bool>();
         let tx = std::rc::Rc::new(RefCell::new(Some(tx)));
         let send =
             |value: bool,
              tx: std::rc::Rc<RefCell<Option<futures_channel::oneshot::Sender<bool>>>>| {
-                Closure::<dyn FnMut()>::new(move || {
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
                     if let Some(tx) = tx.borrow_mut().take() {
                         let _ = tx.send(value);
                     }
@@ -410,12 +445,22 @@ mod imp {
         let on_error = send(false, tx.clone());
         request.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
         request.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        let mut closures = vec![on_success, on_error];
+        let is_upgrade = upgrade.is_some();
+        if let Some(upgrade) = upgrade {
+            if let Some(open) = request.dyn_ref::<IdbOpenDbRequest>() {
+                open.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
+            }
+            closures.push(upgrade);
+        }
+        let handlers = Handlers {
+            request,
+            upgrade: is_upgrade,
+            _closures: closures,
+        };
 
         let ok = rx.await.unwrap_or(false);
-        request.set_onsuccess(None);
-        request.set_onerror(None);
-        drop(on_success);
-        drop(on_error);
+        drop(handlers);
         ok.then(|| request.result().ok()).flatten()
     }
 
@@ -451,10 +496,7 @@ mod imp {
                 }
             }
         });
-        open.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
-        let result = settle(open.as_ref()).await;
-        open.set_onupgradeneeded(None);
-        drop(upgrade);
+        let result = settle_with(open.as_ref(), Some(upgrade)).await;
 
         let database: IdbDatabase = result?.dyn_into().ok()?;
         DB.with(|slot| *slot.borrow_mut() = Some(database.clone()));

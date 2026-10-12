@@ -69,7 +69,7 @@ export class WebCall {
     this.worker.onmessage = (e) => {
       if (e.data.kind === "dropped") console.debug("call: frames dropped", e.data);
     };
-    this.worker.onerror = (e) => onEvent("failed", `the call's encryption did not start: ${e.message}`);
+    this.worker.onerror = (e) => this.onEvent("failed", `the call's encryption did not start: ${e.message}`);
     this.config = transform === "streams" ? { encodedInsertableStreams: true } : {};
     this.up = new RTCPeerConnection(this.config);
     this.down = null;
@@ -85,8 +85,8 @@ export class WebCall {
     if (["127.0.0.1", "localhost"].includes(location.hostname)) globalThis.cartopolisCall = this;
     this.up.onconnectionstatechange = () => {
       const s = this.up.connectionState;
-      if (s === "connected") onEvent("connected", "");
-      else if (s === "failed") onEvent("failed", "the connection to the call failed");
+      if (s === "connected") this.onEvent("connected", "");
+      else if (s === "failed") this.onEvent("failed", "the connection to the call failed");
     };
   }
 
@@ -176,7 +176,7 @@ export class WebCall {
     if (this.onStream) {
       who[e.track.kind] = true;
       this.onStream(info.participant, e.track.kind, stream);
-      e.track.onended = () => this.onStream(info.participant, e.track.kind, null);
+      e.track.onended = () => this.onStream?.(info.participant, e.track.kind, null);
       return;
     }
     if (e.track.kind === "audio") {
@@ -294,6 +294,13 @@ export class WebCall {
 
   close() {
     this.closed = true;
+    // Nothing reports after a hang-up. `start()` and the answer handling are
+    // still awaiting (a microphone prompt can be answered long after), and the
+    // viewer frees its Rust callback the moment it closes: calling it then is
+    // `closure invoked recursively or after being dropped`. Every report goes
+    // through `this.onEvent`/`this.onStream`, so replacing them here is enough.
+    this.onEvent = () => {};
+    this.onStream = null;
     this.mic?.stop();
     this.camera?.stop();
     this.up.close();
