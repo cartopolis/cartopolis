@@ -1,9 +1,10 @@
-# Ten bridges across Groningen, each seen obliquely across its deck from a
-# camera computed off the OSM outline (`man_made=bridge`): the outline's long
-# axis is the road, the camera stands perpendicular to it, turned 25° along it,
-# back 0.8× the deck's length (60–150 m) and up 0.8× that — about 39° down,
-# which clears the trees on a quay. Every capture writes the PDOK aerial beside
-# it, which is what a bridge is judged against.
+# Eleven bridges across Groningen, each seen obliquely across its deck. The
+# cameras are computed off the OSM outline (`man_made=bridge`): its long axis
+# is the road, the camera stands perpendicular to it, turned 25° along it, back
+# 0.8× the deck's length (60–150 m) and up 0.8× that — about 39° down, which
+# clears the trees on a quay. Two are placed by hand where that camera stood
+# behind a building. Every capture writes the PDOK aerial beside it, which is
+# what a bridge is judged against.
 #
 #     cargo shots docs/bridge-shots.toml --only bridges
 #     cargo shots docs/bridge-shots.toml --only bridge-herebrug
@@ -59,9 +60,9 @@ look_at = [53.207305, 6.562159]
 [[shot]]
 group = "bridges"
 name = "bridge-museumbrug"
-description = "Museumbrug: 15 x 14 m outline (way 767951120)."
-at = [53.214887, 6.560247, 48]
-look_at = [53.214850, 6.559349]
+description = "Museumbrug, the 1938 bascule bridge carrying the Praediniussingel over the Zuiderhaven (way 767951120). Seen from the south over the water: the computed camera stood behind the buildings east of it."
+at = [53.214000, 6.559300, 35]
+look_at = [53.214857, 6.559339]
 
 [[shot]]
 group = "bridges"
@@ -91,3 +92,10 @@ description = "Trompbrug: 35 x 7 m outline (way 833050210)."
 at = [53.215140, 6.576626, 48]
 look_at = [53.214982, 6.575766]
 
+
+[[shot]]
+group = "bridges"
+name = "bridge-werkmanbrug"
+description = "H.N. Werkmanbrug, the footbridge from the station to the Groninger Museum (way 773758337) — the bridge people in Groningen call the Museumbrug since the museum moved there in 1994. From the station side, so the museum stands behind it rather than in front."
+at = [53.211150, 6.565000, 40]
+look_at = [53.211906, 6.565811]

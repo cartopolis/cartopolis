@@ -324,8 +324,33 @@ end, and its two halves now meet within 4 cm. Where atlas has solved no street
 (7 of the 51), `flat_deck_level` takes the ground 3 m past where each approach
 leaves the outline, which agrees with the solved road to 0.13 m on average. The
 deck metrics in `--dump-state` say nothing about any of this — `DeckPlates` keeps
-lifted decks only — so the check is `docs/bridge-shots.toml`, ten bridges with
-the aerial photograph beside each.
+lifted decks only — so the check is `docs/bridge-shots.toml`, eleven bridges
+with the aerial photograph beside each.
+
+**A flat deck can still climb, and then the street is the wrong answer.** The
+H.N. Werkmanbrug — the footbridge from the station to the Groninger Museum,
+which Groningen calls the Museumbrug — rises from 3.3 to 4.4 m NAP over a
+2.5 m street and carries on at 4.5 m straight across the museum's middle
+(AHN's DSM along the walkway, 2026-10-12). Its clearance over the median ground
+around it is under `MIN_LIFT_M`, so it is flat, and the solved road bridged the
+museum's hole in the DTM at about 3.4 m: a metre short at the far end. Atlas
+now keeps a flat deck's measured profile when
+`terrain_grade::flat_profile_fits` says the surface is the deck's — it rises
+less than a lift end to end, and every end whose bare ground the survey has is
+within 1 m of it, with at least one such end — and pins the span's road to it
+as it pins a lifted deck's, without counting it as a span anything passes under.
+The check exists for trees: a boardwalk under a canopy measured 11–23 m. The
+profile is published in `decks/14/x/y.json` like a lifted deck's, and every
+client already stands a deck on a published profile whatever its height.
+
+**A building standing in water was measured from its foundation.** 3DBAG takes
+the museum's walls down to −8.0 m NAP; atlas stored heights above a shell's
+lowest point and the client stands that point on the surface it draws — the
+canal at 0.8 m — so the museum stood 8.8 m too high and the walkway ran into its
+wall. Atlas's `lod22` now measures a building whose foot is mostly inside a
+registered water body, and whose shell reaches at least half a metre below it,
+from the water's level (`Water` in `pipeline/lod22.rs`), and the client's cell
+cache keys moved to `v3` so a cached cell does not keep the old one.
 
 ## Storage, if the raster is ever baked instead of proxied
 
