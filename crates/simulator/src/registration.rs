@@ -143,6 +143,17 @@ pub fn begin(
     if existing_username.is_some() {
         return Ok(Begin::UsernameTaken);
     }
+    // A community's fediverse address is found the same way a person's is
+    // (`@name@server`), so one may not take the other's name.
+    let handle_taken: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = lower(?1))
+             OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = lower(?1))",
+        [username],
+        |r| r.get(0),
+    )?;
+    if handle_taken {
+        return Ok(Begin::UsernameTaken);
+    }
 
     let existing_email: Option<String> = tx
         .query_row(

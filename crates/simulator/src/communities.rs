@@ -701,6 +701,10 @@ pub fn delete(conn: &Connection, by: &str, id: Uuid, may_triage: bool) -> Result
         "DELETE FROM communities WHERE id = ?1",
         params![id.to_string()],
     )?;
+    // Its public posts go too, and its fediverse address is retired rather
+    // than freed (`fediverse::posts`).
+    crate::fediverse::posts::forget_community(&tx, id, crate::fediverse::now_ms())
+        .map_err(|e| Refusal::Storage(e.to_string()))?;
     tx.commit()?;
     Ok(Deleted { members, groups })
 }

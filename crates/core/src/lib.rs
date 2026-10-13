@@ -12,6 +12,7 @@ pub mod permissions;
 pub mod picture_limits;
 pub mod placeholders;
 pub mod point;
+pub mod posts;
 pub mod protocol;
 pub mod script_api;
 pub mod shot_env;

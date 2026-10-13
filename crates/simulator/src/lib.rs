@@ -19,6 +19,7 @@ pub mod contacts;
 pub mod content;
 pub mod db;
 pub mod e2ee;
+pub mod fediverse;
 pub mod http;
 pub mod library;
 pub mod mail;
@@ -186,6 +187,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     // `http_listen` fails `serve` rather than killing a background task minutes
     // later and leaving a server that looks healthy and answers nothing.
     let mut http_addr = None;
+    let fedi = fediverse::Federation::from_config(&config);
     if let Some(ref addr) = config.http_listen {
         // Built before the listener binds, so a mistyped relay or sender address
         // fails the boot rather than the first registration.
@@ -217,7 +219,25 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             prims: prim_service.clone(),
             mailer,
             registration_throttle: Arc::new(http::RegistrationLimits::default()),
+            fedi: fedi.clone(),
         };
+        // Public posts reach other servers through a queue, and the servers
+        // nobody here talks to come from a shared list; both only once this
+        // server is on the fediverse at all.
+        if fedi.enabled {
+            tracing::info!(server = %fedi.server, "fediverse: on");
+            let (db, fed) = (conn.clone(), fedi.clone());
+            tasks.spawn(async move {
+                fediverse::delivery::run(db, fed).await;
+                "fediverse delivery"
+            });
+            let lists = config.fediverse_blocklists.clone();
+            tokio::spawn(fediverse::refresh_blocklists(
+                conn.clone(),
+                fedi.clone(),
+                lists,
+            ));
+        }
         let http_listener = TcpListener::bind(addr)
             .await
             .with_context(|| format!("bind http_listen {addr}"))?;

@@ -103,6 +103,18 @@ matroska-demuxer = "0.8"
 # dependencies.
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 getrandom = "0.2"
+# Signing and checking ActivityPub requests (`fediverse::signing`): RSA with
+# SHA-256 is the one key type every fediverse server verifies. Pure Rust, so no
+# OpenSSL, which this workspace avoids everywhere (see `rustls` above); the
+# timing advisory against `rsa` is discussed in `signing`'s module note. The
+# pkcs8, spki and sha2 0.10 it builds on are already in the tree.
+rsa = { version = "0.9", features = ["getrandom"] }
+sha2 = { version = "0.10", features = ["oid"] }
+# The `Date` header a signature covers. Already in the tree (hyper's).
+httpdate = "1"
+# Parsing the URLs other servers name, for the request guard
+# (`fediverse::fetch`). Already in the tree (ureq's).
+url = "2"
 
 [dev-dependencies]
 tempfile = "3.0"

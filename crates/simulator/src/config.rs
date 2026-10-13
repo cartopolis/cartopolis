@@ -118,6 +118,24 @@ pub struct SimConfig {
     /// header; see [`crate::mail::MailConfig::public_base_url`].
     #[serde(default = "default_public_base_url")]
     pub public_base_url: String,
+    /// Whether communities' public posts go out to the fediverse
+    /// (`docs/notes/fediverse.md`). On by default, and only in effect when
+    /// `public_base_url` is a public `https` origin: a development sim on
+    /// `localhost` keeps its posts to itself whatever this says, since nobody
+    /// elsewhere could fetch them.
+    #[serde(default = "default_fediverse")]
+    pub fediverse: bool,
+    /// Tests only: federate over plain `http` and with private addresses,
+    /// which is how two simulators on one machine reach each other. It turns
+    /// off the guard that keeps strangers' URLs off this machine's private
+    /// network, so it must never be set in a deployment.
+    #[serde(default)]
+    pub fediverse_allow_private: bool,
+    /// Shared block lists of servers nobody here hears from or sends to
+    /// (`fediverse::blocklist`), re-read daily: Mastodon's CSV or one server per
+    /// line. The operator's own blocks are kept apart and survive every import.
+    #[serde(default = "default_fediverse_blocklists")]
+    pub fediverse_blocklists: Vec<String>,
     /// Whether an account may claim a building (`buildings`). The name is from
     /// when it was one house per account, kept so a deployment's setting holds.
     #[serde(default = "default_house_claims_open")]
@@ -163,6 +181,14 @@ fn default_mail_from_name() -> String {
 
 fn default_public_base_url() -> String {
     crate::mail::MailConfig::default().public_base_url
+}
+
+fn default_fediverse() -> bool {
+    true
+}
+
+fn default_fediverse_blocklists() -> Vec<String> {
+    vec![crate::fediverse::blocklist::DEFAULT_LIST.to_string()]
 }
 
 fn default_listen() -> String {
@@ -226,6 +252,9 @@ impl Default for SimConfig {
             mail_from: default_mail_from(),
             mail_from_name: default_mail_from_name(),
             public_base_url: default_public_base_url(),
+            fediverse: default_fediverse(),
+            fediverse_allow_private: false,
+            fediverse_blocklists: default_fediverse_blocklists(),
             house_claims_open: default_house_claims_open(),
             claim_municipality: default_claim_municipality(),
             max_buildings_per_account: default_max_buildings_per_account(),

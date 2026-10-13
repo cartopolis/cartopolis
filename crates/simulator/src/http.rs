@@ -71,6 +71,8 @@ pub struct HttpState {
     /// Shared by the register and re-send paths, because they cost the same
     /// things and a limit only one of them applies is not a limit.
     pub registration_throttle: Arc<RegistrationLimits>,
+    /// Public posts and the fediverse (`crate::fediverse`).
+    pub fedi: crate::fediverse::Federation,
 }
 
 /// The two things a registration is counted against.
@@ -136,6 +138,9 @@ pub fn router(state: HttpState) -> Router {
         .merge(crate::roles::routes())
         .merge(crate::videos::routes())
         .merge(crate::pictures::routes())
+        // Communities' public posts, and what other fediverse servers ask
+        // for (`crate::fediverse`).
+        .merge(crate::fediverse::routes::routes())
         .with_state(state)
 }
 
