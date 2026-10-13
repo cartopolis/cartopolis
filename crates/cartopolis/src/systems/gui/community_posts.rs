@@ -453,39 +453,45 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
                 .size(theme::SIZE_SUB),
         );
     }
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        if info.may_post
-            && theme::action_button(ui, format!("{} Write a post", icons::RENAME)).clicked()
+    ui.add_space(6.0);
+    if info.may_post {
+        let width = ui.available_width();
+        if theme::primary_button_sized(ui, &format!("{}  Write a post", icons::RENAME), width)
+            .clicked()
         {
             cs.posts.compose(id);
         }
+        ui.add_space(4.0);
+    }
+    row(ui, |ui| {
         let pins = cs.posts.on_map == Some(id);
-        if theme::action_button(
+        if tool(
             ui,
-            format!(
-                "{} {}",
-                icons::PIN,
-                if pins { "Hide pins" } else { "On the map" }
-            ),
+            icons::PIN,
+            if pins {
+                "Pinned on the map"
+            } else {
+                "Show on the map"
+            },
+            "Pin this community's posts where they were written",
         )
-        .on_hover_text("Pin this community's posts where they were written")
         .clicked()
         {
             cs.posts.on_map = if pins { None } else { Some(id) };
         }
-        if theme::action_button(ui, icons::REFRESH)
-            .on_hover_text("Read again")
-            .clicked()
-        {
-            cs.posts.refresh(id);
-        }
-        if role.moderates()
-            && theme::action_button(ui, format!("{} Settings", icons::SETTINGS)).clicked()
-        {
-            cs.posts.settings_open = !cs.posts.settings_open;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if role.moderates()
+                && theme::round_button(ui, icons::SETTINGS, "Settings", cs.posts.settings_open)
+                    .clicked()
+            {
+                cs.posts.settings_open = !cs.posts.settings_open;
+            }
+            if theme::round_button(ui, icons::REFRESH, "Read again", false).clicked() {
+                cs.posts.refresh(id);
+            }
+        });
     });
+    ui.add_space(4.0);
     if cs.posts.settings_open && role.moderates() {
         settings_form(ui, cs, c, &info);
     }
@@ -553,11 +559,7 @@ fn post_card(
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let can_act = p.mine || moderates;
-                if can_act
-                    && ui
-                        .add(egui::Button::new(icons::MORE).frame(false))
-                        .on_hover_text("Actions")
-                        .clicked()
+                if can_act && theme::kebab_button(ui).clicked()
                 {
                     cs.posts.menu_for = if cs.posts.menu_for == Some(p.id) {
                         None
@@ -591,7 +593,7 @@ fn post_card(
             match &p.place {
                 Some(place) => {
                     let label = place.name.clone().unwrap_or_else(|| "On the map".into());
-                    if theme::action_button(ui, format!("{} {label}", icons::PIN))
+                    if theme::chip(ui, &format!("{}  {label}", icons::PIN), false)
                         .on_hover_text("Open where it was written")
                         .clicked()
                     {
@@ -609,9 +611,10 @@ fn post_card(
             }
             if p.parent.is_none() && tappable {
                 let n = p.replies;
-                if theme::action_button(
+                if theme::chip(
                     ui,
-                    format!("{} {n} {}", icons::CHAT, if n == 1 { "reply" } else { "replies" }),
+                    &format!("{}  {n} {}", icons::CHAT, if n == 1 { "reply" } else { "replies" }),
+                    false,
                 )
                 .clicked()
                 {
@@ -741,8 +744,12 @@ fn thread_view(
             .hint_text("Reply in public"),
     );
     let ready = !cs.posts.reply.trim().is_empty() && !cs.posts.sending;
+    let width = ui.available_width();
     if ui
-        .add_enabled(ready, egui::Button::new(format!("{} Reply", icons::SEND)))
+        .add_enabled_ui(ready, |ui| {
+            theme::primary_button_sized(ui, &format!("{}  Reply", icons::SEND), width)
+        })
+        .inner
         .clicked()
     {
         cs.posts.sending = true;
@@ -768,23 +775,22 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
     let followers = cs.posts.info.get(&c.id).map_or(0, |i| i.followers);
     let federating = cs.posts.info.get(&c.id).is_some_and(|i| i.federating);
     ui.horizontal(|ui| {
-        if ui
-            .add(egui::Button::new(icons::CLEAR).frame(false))
-            .on_hover_text("Discard")
-            .clicked()
-        {
-            cs.posts.draft = None;
-            cs.picture_for_post = false;
-        }
         ui.label(
             egui::RichText::new("New post")
                 .size(theme::SIZE_TITLE)
                 .color(theme::CREAM),
         );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::close_button(ui).on_hover_text("Discard").clicked() {
+                cs.posts.draft = None;
+                cs.picture_for_post = false;
+            }
+        });
     });
     let Some(draft) = cs.posts.draft.as_mut() else {
         return;
     };
+    ui.add_space(4.0);
     crate::systems::text_touch::field(
         ui,
         egui::TextEdit::multiline(&mut draft.text)
@@ -794,22 +800,66 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             .char_limit(MAX_POST_TEXT)
             .hint_text("What's happening here?"),
     );
-    ui.label(
-        egui::RichText::new(format!("{} / {MAX_POST_TEXT}", draft.text.chars().count()))
-            .size(theme::SIZE_TINY)
-            .color(theme::TEXT_DIM),
-    );
+    let used = draft.text.chars().count();
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        ui.label(
+            egui::RichText::new(format!("{used} / {MAX_POST_TEXT}"))
+                .size(theme::SIZE_TINY)
+                .color(if used + 20 >= MAX_POST_TEXT {
+                    theme::WARN
+                } else {
+                    theme::TEXT_DIM
+                }),
+        );
+    });
     let picture = draft.picture.clone();
     let snapshot = draft.snapshot.clone();
     let place = draft.place.clone();
+
+    // Where: one line, and the one thing to do about it.
+    ui.horizontal(|ui| {
+        let here = theme::round_button(
+            ui,
+            icons::HERE,
+            "Use the view now: close the panel, look somewhere else, come back and press this",
+            false,
+        );
+        if here.clicked() {
+            cs.posts.want_view = true;
+        }
+        ui.vertical(|ui| match &place {
+            Some(p) => {
+                let name = p
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.5}, {:.5}", p.latitude, p.longitude));
+                ui.add(egui::Label::new(egui::RichText::new(name).color(theme::CREAM)).truncate());
+                ui.label(
+                    egui::RichText::new("Pinned where you are looking")
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                );
+            }
+            None => theme::busy(ui, "Taking the view…"),
+        });
+    });
+
+    // What goes with it: each attachment as it will look, with its own remove.
     // The snapshot first, as it goes out first.
     if let Some(t) = snapshot
         .as_deref()
         .and_then(|h| cs.picture(ui.ctx(), Some(h)))
     {
-        let w = ui.available_width().min(360.0);
+        let w = ui.available_width().min(300.0);
         let size = t.size_vec2();
-        ui.add(egui::Image::new(&t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))));
+        let shown = ui.add(
+            egui::Image::new(&t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))),
+        );
+        if remove_badge(ui, shown.rect, "Remove the polaroid") {
+            if let Some(d) = cs.posts.draft.as_mut() {
+                d.snapshot = None;
+            }
+        }
     }
     if let Some(t) = picture
         .as_deref()
@@ -818,97 +868,74 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         let w = ui.available_width();
         let size = t.size_vec2();
         let h = (w * size.y / size.x.max(1.0)).min(180.0);
-        ui.add(
+        let shown = ui.add(
             egui::Image::new(&t)
                 .fit_to_exact_size(egui::vec2(w, h))
                 .corner_radius(10.0),
         );
-    }
-    raised_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        match &place {
-            Some(p) => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}  {}",
-                        icons::PIN,
-                        p.name
-                            .clone()
-                            .unwrap_or_else(|| format!("{:.5}, {:.5}", p.latitude, p.longitude))
-                    ))
-                    .color(theme::CREAM),
-                );
-                theme::note(ui, "The spot you were looking at, and your view of it.");
-            }
-            None => theme::busy(ui, "Taking the view…"),
-        }
-        if theme::action_button(ui, format!("{} Use the view now", icons::HERE))
-            .on_hover_text("Close the panel, look somewhere else, then come back and press this")
-            .clicked()
-        {
-            cs.posts.want_view = true;
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        let label = if picture.is_some() {
-            "Another picture"
-        } else {
-            "Add a picture"
-        };
-        if theme::action_button(ui, format!("{} {label}", icons::CAMERA)).clicked() {
-            cs.picture_for_post = true;
-            cs.pick_picture = true;
-        }
-        if picture.is_some() && theme::action_button(ui, "Remove the picture").clicked() {
+        if remove_badge(ui, shown.rect, "Remove the picture") {
             if let Some(d) = cs.posts.draft.as_mut() {
                 d.picture = None;
             }
         }
-    });
-    ui.horizontal_wrapped(|ui| {
+    }
+    ui.add_space(4.0);
+    row(ui, |ui| {
+        let label = if picture.is_some() {
+            "Other photo"
+        } else {
+            "Photo"
+        };
+        if tool(ui, icons::CAMERA, label, "Add a photo from this device").clicked() {
+            cs.picture_for_post = true;
+            cs.pick_picture = true;
+        }
+        ui.add_space(12.0);
         if cs.posts.snapshot_busy {
-            theme::busy(ui, "Developing the polaroid…");
+            theme::busy(ui, "Developing…");
         } else {
             let label = if snapshot.is_some() {
-                "A new polaroid"
+                "New polaroid"
             } else {
-                "Polaroid of this view"
+                "Polaroid"
             };
-            if theme::action_button(ui, format!("{} {label}", icons::SHARE))
-                .on_hover_text(
-                    "A snapshot of the map as you see it now, framed as a polaroid from this place. \
-                     It goes with the post, beside any photo.",
-                )
-                .clicked()
+            if tool(
+                ui,
+                icons::LANDSCAPE,
+                label,
+                "A snapshot of the map as you see it now, framed as a polaroid from this place. \
+                 It goes with the post, beside any photo.",
+            )
+            .clicked()
             {
                 cs.posts.want_snapshot = true;
-            }
-            if snapshot.is_some() && theme::action_button(ui, "Remove the polaroid").clicked() {
-                if let Some(d) = cs.posts.draft.as_mut() {
-                    d.snapshot = None;
-                }
             }
         }
     });
     if let Some(note) = &cs.picture_note {
         theme::note(ui, note);
     }
-    egui::Frame::NONE
-        .fill(theme::PUBLIC.gamma_multiply(0.15))
-        .stroke(egui::Stroke::new(1.0, theme::PUBLIC.gamma_multiply(0.5)))
-        .corner_radius(10.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            let reach = if federating {
-                format!(
-                    "Public. On the community's page and map, and sent to its {followers} follower{} on other servers. Posted under your own address. Deleting it later asks other servers to delete their copy; they may not.",
-                    if followers == 1 { "" } else { "s" }
-                )
-            } else {
-                "Public. On the community's page and map, for anybody on this server.".to_string()
-            };
-            ui.add(egui::Label::new(egui::RichText::new(reach).size(theme::SIZE_SUB).color(theme::TEXT)).wrap());
-        });
+    ui.add_space(6.0);
+    let reach = if federating {
+        format!(
+            "{}  Public: on the community's page and map, and sent to {followers} follower{} on other servers, under your own address.",
+            icons::SHARE,
+            if followers == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "{}  Public: on the community's page and map, for anybody on this server.",
+            icons::SHARE
+        )
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(reach)
+                .size(theme::SIZE_SUB)
+                .color(theme::PUBLIC),
+        )
+        .wrap(),
+    );
     let ready = cs
         .posts
         .draft
@@ -917,13 +944,16 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         && !cs.posts.sending
         && cs.picture_for_post_idle()
         && !cs.posts.snapshot_busy;
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+    let label = if cs.posts.sending {
+        "Posting…".to_string()
+    } else {
+        format!("{}  Post", icons::SEND)
+    };
+    let width = ui.available_width();
     if ui
-        .add_enabled(
-            ready,
-            egui::Button::new(format!("{} Post", icons::SEND))
-                .min_size(egui::vec2(120.0, theme::row_height())),
-        )
+        .add_enabled_ui(ready, |ui| theme::primary_button_sized(ui, &label, width))
+        .inner
         .clicked()
     {
         if let Some(d) = cs.posts.draft.clone() {
@@ -949,6 +979,63 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             }
         }
     }
+    if cs
+        .posts
+        .draft
+        .as_ref()
+        .is_some_and(|d| d.text.trim().is_empty())
+    {
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("Write something to post")
+                    .size(theme::SIZE_TINY)
+                    .color(theme::TEXT_DIM),
+            );
+        });
+    }
+}
+
+/// A row as tall as a round button, everything centred on it. `ui.horizontal`
+/// centres on the row's *starting* height, which is shorter than the disc, so
+/// a word beside one sat level with its top.
+fn row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), theme::ROUND_BUTTON_SIZE),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add,
+    )
+    .inner
+}
+
+/// A round icon with its word beside it, both one target: the composer's
+/// attachments, which are too few to need a toolbar and too unlike each other
+/// to read from the glyph alone.
+fn tool(ui: &mut egui::Ui, icon: &str, label: &str, tooltip: &str) -> egui::Response {
+    row(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let disc = theme::round_button(ui, icon, tooltip, false);
+        let word = ui
+            .add(
+                egui::Label::new(egui::RichText::new(label).color(theme::TEXT))
+                    .sense(egui::Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        disc.union(word)
+    })
+}
+
+/// A small round ✕ over the top-right corner of an attachment's preview.
+/// Answers whether it was pressed.
+fn remove_badge(ui: &mut egui::Ui, over: egui::Rect, tooltip: &str) -> bool {
+    let side = theme::ROUND_BUTTON_SIZE;
+    let rect = egui::Rect::from_min_size(
+        over.right_top() + egui::vec2(-side - 6.0, 6.0),
+        egui::Vec2::splat(side),
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        theme::round_button(ui, icons::CLEAR, tooltip, false).clicked()
+    })
+    .inner
 }
 
 fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info: &PublicInfo) {
