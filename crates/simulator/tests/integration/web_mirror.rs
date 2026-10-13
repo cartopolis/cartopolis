@@ -70,3 +70,78 @@ fn placeholder_model() {
         "atlas/web/src/types.ts's PlaceholderModel has drifted from library::PlaceholderModel"
     );
 }
+
+#[test]
+fn post_dto() {
+    use cartopolis_core::point::PointView;
+    use cartopolis_core::posts::{PostAuthor, PostDto, PostPlace};
+    // Every optional field is `Some`, so serde writes every key.
+    let place = PostPlace {
+        latitude: 53.2,
+        longitude: 6.5,
+        name: Some(String::new()),
+        view: Some(PointView {
+            altitude: 1.0,
+            pitch: 0.0,
+            yaw: 0.0,
+        }),
+    };
+    let author = PostAuthor {
+        name: String::new(),
+        address: String::new(),
+        local: true,
+    };
+    let post = PostDto {
+        id: uuid::Uuid::nil(),
+        community: uuid::Uuid::nil(),
+        parent: Some(uuid::Uuid::nil()),
+        author: author.clone(),
+        via: Some(String::new()),
+        text: String::new(),
+        picture: Some(String::new()),
+        place: Some(place.clone()),
+        url: Some(String::new()),
+        created_ms: 0,
+        edited_ms: Some(0),
+        replies: 0,
+        mine: false,
+    };
+    let drift = "atlas/web/src/types.ts has drifted from cartopolis_core::posts";
+    assert_eq!(web_fields("PostDto"), keys(&post), "{drift}");
+    assert_eq!(web_fields("PostPlace"), keys(&place), "{drift}");
+    assert_eq!(web_fields("PostAuthor"), keys(&author), "{drift}");
+    assert_eq!(
+        web_fields("PostView"),
+        keys(&place.view.unwrap()),
+        "{drift}"
+    );
+}
+
+#[test]
+fn public_info() {
+    use cartopolis_core::posts::{FollowDto, PublicInfo, PublicSettings, SourceKind, WhoPosts};
+    let follow = FollowDto {
+        address: String::new(),
+        name: String::new(),
+        kind: SourceKind::Account,
+        accepted: false,
+    };
+    let settings = PublicSettings {
+        enabled: true,
+        handle: Some(String::new()),
+        who_posts: WhoPosts::Members,
+    };
+    let info = PublicInfo {
+        settings: settings.clone(),
+        address: Some(String::new()),
+        followers: 0,
+        follows: vec![follow.clone()],
+        may_post: false,
+        may_moderate: false,
+        federating: false,
+    };
+    let drift = "atlas/web/src/types.ts has drifted from cartopolis_core::posts";
+    assert_eq!(web_fields("PublicInfo"), keys(&info), "{drift}");
+    assert_eq!(web_fields("PublicSettings"), keys(&settings), "{drift}");
+    assert_eq!(web_fields("FollowDto"), keys(&follow), "{drift}");
+}

@@ -18,6 +18,8 @@ kinds of chat are now:
 - **A community**: a named set of people with a few **topics**. Each topic is an
   ordinary encrypted group chat, and **every member is in every topic** — no
   per-topic asking, no private topic (something private is a group).
+  Its moderators can also switch on **public posts**, the half anybody may
+  read, published to the fediverse: `fediverse.md`. The two never mix.
 
 ## What the server knows, and why it is the one deciding
 

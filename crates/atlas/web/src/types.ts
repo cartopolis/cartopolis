@@ -409,3 +409,90 @@ export interface OverrideSummary {
     elements: number
     triangles: number
 }
+
+/**
+ * A community's public posts (`cartopolis_core::posts`,
+ * `docs/notes/fediverse.md`): the half of a community anybody may read, which
+ * the simulator also publishes to the fediverse. Served by
+ * `/api/communities/{id}/posts` and `/api/posts/{id}`.
+ *
+ * Guarded by the Rust tests `web_mirror::post_dto` and `web_mirror::public_info`
+ * in `crates/simulator/tests/integration/`, which compare their serialised keys
+ * with these fields.
+ */
+export interface PostView {
+    altitude: number
+    pitch: number
+    yaw: number
+}
+
+export interface PostPlace {
+    latitude: number
+    longitude: number
+    name?: string
+    view?: PostView
+}
+
+export interface PostAuthor {
+    /** What to show: a display name from elsewhere, or the username here. */
+    name: string
+    /** `name@server`, here or elsewhere. */
+    address: string
+    /** Whether they have an account on this server. */
+    local: boolean
+}
+
+export interface PostDto {
+    id: string
+    community: string
+    /** The post a reply is under. */
+    parent?: string
+    author: PostAuthor
+    /** The fediverse source the community follows that brought it. */
+    via?: string
+    text: string
+    /** A hash in the picture store. */
+    picture?: string
+    /** Where it was written; most posts from elsewhere have none. */
+    place?: PostPlace
+    /** The post's own web page, for one from another server. */
+    url?: string
+    created_ms: number
+    edited_ms?: number
+    /** Replies under a post; 0 on a reply. */
+    replies: number
+    /** Whether the caller wrote it. */
+    mine: boolean
+}
+
+export interface PostThread {
+    post: PostDto
+    replies: PostDto[]
+}
+
+export type WhoPosts = 'members' | 'moderators'
+
+export interface PublicSettings {
+    enabled: boolean
+    /** The fediverse address before `@server`; chosen once, never changed. */
+    handle?: string
+    who_posts: WhoPosts
+}
+
+export interface FollowDto {
+    address: string
+    name: string
+    kind: 'account' | 'community'
+    accepted: boolean
+}
+
+export interface PublicInfo {
+    settings: PublicSettings
+    /** `handle@server`, once there is a handle. */
+    address?: string
+    followers: number
+    follows: FollowDto[]
+    may_post: boolean
+    may_moderate: boolean
+    federating: boolean
+}

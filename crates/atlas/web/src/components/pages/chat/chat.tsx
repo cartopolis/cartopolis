@@ -18,6 +18,7 @@ import {playerSignIn, playerSignOut} from '@/lib/signup'
 import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
 import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
+import {Posts, Tabs, tabOf} from './posts'
 
 /**
  * Chat: cartopolis.org's front door (`docs/mockups/communities/`).
@@ -1814,7 +1815,9 @@ export class Chat extends MithrilComponent {
                             ))}
                         </>
                     )}
-                    <h3 class="chat-pane-h">Topics</h3>
+                    {Tabs(id, community.topics.length)}
+                    {tabOf(id) === 'posts' ? Posts(community, pictureUrl) : <>
+                    <p class="chat-hint">Members only, end-to-end encrypted. Never on the fediverse.</p>
                     {community.topics.map((t) => (
                         <div class="chat-topic-row" key={t.channel}>
                             <button
@@ -1856,6 +1859,7 @@ export class Chat extends MithrilComponent {
                         </form>
                     )}
                     <p class="chat-hint">Everyone here is in every topic. Somebody added later is given the last 300 messages of each by whoever adds them.</p>
+                    </>}
                     <h3 class="chat-pane-h">People ({community.members.length})</h3>
                     {community.members.map((p) => (
                         <button

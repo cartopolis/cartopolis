@@ -1335,3 +1335,101 @@
     overflow-wrap: anywhere;
     user-select: all;
 }
+
+/*
+ * A community's public posts (`posts.tsx`). "Public" is the library's info
+ * tone, so the public half reads apart from the encrypted topics in both
+ * themes without a colour of its own.
+ */
+.post-tabs {
+    margin: 12px 0 8px;
+}
+
+.post-reach,
+.chat .is-public {
+    color: var(--m-info);
+}
+
+.post-reach.is-box {
+    background: var(--m-info-soft);
+    border-radius: var(--m-radius);
+    padding: 8px 10px;
+}
+
+.chat-hint.is-error {
+    color: var(--m-danger);
+}
+
+.post-card {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-lg);
+    margin: 8px 0;
+    padding: 10px 12px;
+}
+
+.post-card header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: baseline;
+}
+
+.post-card header b {
+    color: var(--m-text-strong);
+}
+
+.post-text {
+    margin: 6px 0;
+    white-space: pre-wrap;
+}
+
+.post-picture {
+    border-radius: var(--m-radius);
+    display: block;
+    margin: 6px 0;
+    max-height: 320px;
+    max-width: 100%;
+    object-fit: cover;
+}
+
+.post-card footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: var(--m-font-size-sm);
+}
+
+.post-card footer a {
+    color: var(--m-accent);
+}
+
+.post-card footer button {
+    color: var(--m-text-dim) !important;
+}
+
+.post-back {
+    color: var(--m-accent) !important;
+    margin: 6px 0;
+}
+
+.post-form,
+.post-settings,
+.post-place {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+.post-settings {
+    background: var(--m-surface-sunken);
+    border-radius: var(--m-radius-lg);
+    padding: 10px 12px;
+}
+
+.post-follow {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+}

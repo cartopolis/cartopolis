@@ -61,8 +61,12 @@ ActivityPub for it. Design: `docs/mockups/communities/v4-public-posts.html`.
 ## Deploying it
 
 Caddy must send `/.well-known/webfinger`, `/.well-known/nodeinfo`, `/nodeinfo/*`
-and `/ap/*` to the simulator, as it does `/api/*`. Without that, other servers
-get the web UI's `index.html` and nothing federates. Federation switches on by
+and `/ap/*` to the simulator. Without them, other servers get the web UI's
+`index.html` and nothing federates. The live Caddyfile also lists player `/api`
+paths one by one rather than `/api/*` (its comment says why), so
+`/api/communities/*/public`, `…/posts`, `…/follows*`, `…/blocks` and
+`/api/posts` + `/api/posts/*` need adding to its `@models` matcher, or the app
+and the web page get a 404 from the file server. Federation switches on by
 itself when `public_base_url` is a public `https` origin, which on the live
 server is `https://cartopolis.org`. The address of everything is fixed by that
 origin, so it must not change once anybody follows anything.
