@@ -112,6 +112,18 @@ const FETCH_RETRY_SECS: f64 = 3.0;
 /// ceiling, because a bound in items says nothing about the quantity a driver
 /// actually chokes on.
 pub(crate) const TILE_MAX_IN_FLIGHT: usize = 8;
+
+/// Where a tile's time goes, summed in microseconds since the last `tile fill`
+/// line: its payload (fetch and overlays), its wait for a worker, the draw, and
+/// the mip chain plus compression. `STAGE_N` counts the tiles drawn.
+static STAGE_US: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static STAGE_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn add_stage(stage: usize, since: bevy::platform::time::Instant) {
+    let us = u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX);
+    STAGE_US[stage].fetch_add(us, Ordering::Relaxed);
+}
 /// Max ground tiles to despawn per frame — the mass-*despawn* twin of
 /// `MAX_UPLOADS_PER_FRAME`. A zoom-out steps the LOD zoom down and retires the
 /// whole previous finest-zoom ring at once; freeing all those per-tile textures in
@@ -712,6 +724,7 @@ fn spawn_map_tile(
             // (`docs/notes/globe-tile-cost.md`). Scan conversion is ~area, so it is
             // also most of the time-to-first-map.
             let tile_px = crate::quality::tile_px();
+            let fetched = bevy::platform::time::Instant::now();
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
                 Ok(_) if !tile_still_wanted(key, gen, &live_gen, &wanted) => {
                     // Retired or re-anchored while the fetch was in flight. Nothing
@@ -737,12 +750,16 @@ fn spawn_map_tile(
                     };
                     let wanted = wanted.clone();
                     let live_gen = live_gen.clone();
+                    add_stage(0, fetched);
+                    let submitted = bevy::platform::time::Instant::now();
                     crate::platform::workers::submit_ranked("map_tiles", crate::platform::workers::BASEMAP, Box::new(move || {
+                        add_stage(1, submitted);
                         // Checked again on the worker: the job may have waited behind
                         // others for a while since the check above.
                         if !tile_still_wanted(key, gen, &live_gen, &wanted) {
                             return;
                         }
+                        let drawing = bevy::platform::time::Instant::now();
                         let reused = stored.and_then(|png| {
                             crate::systems::tile_loader::decode_rendered(&png, tile_px)
                         });
@@ -756,6 +773,8 @@ fn spawn_map_tile(
                                 drawn
                             }
                         };
+                        add_stage(2, drawing);
+                        let packing = bevy::platform::time::Instant::now();
                         let decoded = match drawn {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
@@ -765,6 +784,8 @@ fn spawn_map_tile(
                                         height,
                                         rgba.into_raw(),
                                     );
+                                add_stage(3, packing);
+                                STAGE_N.fetch_add(1, Ordering::Relaxed);
                                 Some(DecodedTile {
                                     data: texels.data,
                                     width,
@@ -2170,6 +2191,11 @@ pub fn apply_stream_textures(
             raster_hold = !(crate::systems::crops::raster_ready()
                 && crate::systems::surveyed::raster_ready()),
             workers = crate::platform::workers::outstanding(),
+            stages_ms = %{
+                let n = STAGE_N.swap(0, Ordering::Relaxed).max(1);
+                let [a, b, c, d] = std::array::from_fn::<u64, 4, _>(|i| STAGE_US[i].swap(0, Ordering::Relaxed) / n / 1000);
+                format!("n={n} payload={a} wait={b} draw={c} pack={d}")
+            },
             awaiting_upload = tiles.iter().count(),
             loaded = stream.loaded.len(),
             requeued = stream.requeues,

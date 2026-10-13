@@ -107,12 +107,23 @@ pub struct CellSource<T: 'static> {
     pub parse: fn(&str) -> Option<T>,
 }
 
-impl<T: Default + 'static> CellSource<T> {
+impl<T: Default + Send + 'static> CellSource<T> {
     /// The whole sequence for a source that is one `GET`.
     pub async fn load(&self, cx: i64, cy: i64) -> T {
-        self.load_text(cx, cy)
+        match self.load_text(cx, cy).await {
+            Some(text) => self.parse_off_frame(text).await,
+            None => T::default(),
+        }
+    }
+
+    /// Step 8, through [`workers::compute`](super::workers::compute): these
+    /// files run to megabytes of JSON (a dense cell's paving is 3.8 MB), and on
+    /// the web this future is on the thread that draws the frame.
+    async fn parse_off_frame(&self, text: String) -> T {
+        let parse = self.parse;
+        super::workers::compute(self.label, move || parse(&text))
             .await
-            .and_then(|text| (self.parse)(&text))
+            .flatten()
             .unwrap_or_default()
     }
 
@@ -128,10 +139,10 @@ impl<T: Default + 'static> CellSource<T> {
     where
         F: std::future::Future<Output = Option<String>>,
     {
-        self.load_text_with(cx, cy, fresh)
-            .await
-            .and_then(|text| (self.parse)(&text))
-            .unwrap_or_default()
+        match self.load_text_with(cx, cy, fresh).await {
+            Some(text) => self.parse_off_frame(text).await,
+            None => T::default(),
+        }
     }
 }
 

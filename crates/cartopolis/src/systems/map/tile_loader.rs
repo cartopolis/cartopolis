@@ -52,9 +52,18 @@ fn source_ground_m(key: TileKey) -> f32 {
 /// and cost nothing in the steady state, because an entry dies with its last
 /// reader. What this is emphatically *not* is a second byte cache with a
 /// different eviction rule.
-static PARSED_TILES: Mutex<
-    Option<HashMap<TileKey, crate::platform::sync::Weak<vector_tiles::TileData>>>,
-> = Mutex::new(None);
+///
+/// **One lock per source, not one for the table.** The table's lock is held
+/// only to find a source's slot; the parse runs under that slot's own lock. A
+/// single lock held across the parse made every parse in the client wait for
+/// every other — seven workers decoding seven different tiles took turns — and
+/// on the web it was worse than slow, because the browser's main thread cannot
+/// park and *spins* on a contended lock: any main-thread caller froze the page
+/// for as long as some worker's unrelated parse took.
+static PARSED_TILES: Mutex<Option<HashMap<TileKey, Arc<ParseSlot>>>> = Mutex::new(None);
+
+/// One source's parse, behind its own lock (see [`PARSED_TILES`]).
+type ParseSlot = Mutex<crate::platform::sync::Weak<vector_tiles::TileData>>;
 
 /// Dead entries tolerated before the map is swept.
 ///
@@ -72,26 +81,38 @@ const PARSED_SWEEP_AT: usize = 512;
 ///
 /// A poisoned lock is not fatal here and must not be — the cache is an
 /// optimisation, and refusing to draw the map because another thread panicked
-/// mid-insert would turn a slow tile into a broken one. Both arms fall back to
-/// parsing directly.
+/// mid-insert would turn a slow tile into a broken one. Both locks recover the
+/// poisoned value and carry on.
 pub fn parse_shared(source: TileKey, bytes: &[u8]) -> Result<Arc<vector_tiles::TileData>, String> {
-    let mut guard = match PARSED_TILES.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+    let slot = {
+        let mut guard = PARSED_TILES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= PARSED_SWEEP_AT {
+            // A slot is dead once its parse is: nobody holds the tile, and nobody
+            // is between taking the slot and locking it (that caller holds an
+            // `Arc` to it, which keeps the count above one).
+            map.retain(|_, slot| {
+                // `try_lock`: a slot that is busy is alive, and waiting for it
+                // here would hold the table's lock across a parse again.
+                Arc::strong_count(slot) > 1
+                    || slot.try_lock().map_or(true, |weak| weak.strong_count() > 0)
+            });
+        }
+        map.entry(source).or_default().clone()
     };
-    let map = guard.get_or_insert_with(HashMap::new);
-    if let Some(hit) = map.get(&source).and_then(std::sync::Weak::upgrade) {
+    // Parsed with *this source's* lock held, which is the deliberate choice: two
+    // callers racing the same body do the work once instead of twice, and a
+    // caller wanting a different body is not held up by it.
+    let mut weak = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(hit) = weak.upgrade() {
         return Ok(hit);
     }
-    // Parsed with the lock held, which is the deliberate choice: it means two
-    // workers racing the same body do the work once instead of twice. The
-    // alternative — parse outside, insert after — is a single-flight table, and
-    // this is not a network round trip. Contention is bounded by the pool width.
     let parsed = Arc::new(vector_tiles::TileData::parse(bytes)?);
-    if map.len() >= PARSED_SWEEP_AT {
-        map.retain(|_, weak| weak.strong_count() > 0);
-    }
-    map.insert(source, Arc::downgrade(&parsed));
+    *weak = Arc::downgrade(&parsed);
     Ok(parsed)
 }
 
@@ -614,18 +635,23 @@ async fn landcover_underlay(source: TileKey, template: &str) -> Vec<vector_tiles
     if bytes.is_empty() || vector_tiles::looks_like_raster(&bytes) {
         return Vec::new();
     }
-    match vector_tiles::TileData::parse(&bytes) {
-        Ok(tile) => vector_tiles::landcover_fills(
-            &tile,
-            shift,
-            (source.x - (ax << shift)) as u32,
-            (source.y - (ay << shift)) as u32,
-        ),
-        Err(e) => {
-            tracing::warn!(tile = %ancestor.to_path(), error = %e, "land cover tile did not parse");
-            Vec::new()
+    // On a worker (`workers::compute`): every basemap tile waits for this, and on
+    // the web this future is on the thread that draws the frame.
+    let (sub_x, sub_y) = (
+        (source.x - (ax << shift)) as u32,
+        (source.y - (ay << shift)) as u32,
+    );
+    crate::platform::workers::compute("landcover", move || {
+        match vector_tiles::TileData::parse(&bytes) {
+            Ok(tile) => vector_tiles::landcover_fills(&tile, shift, sub_x, sub_y),
+            Err(e) => {
+                tracing::warn!(tile = %ancestor.to_path(), error = %e, "land cover tile did not parse");
+                Vec::new()
+            }
         }
-    }
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -918,6 +944,40 @@ mod tests {
     /// This is the property that lets it be unbounded: a dense z14 tile peaks at
     /// ~12.5 MiB, and the globe can want hundreds at once, so anything strong here
     /// would be a memory policy rather than a cache.
+    /// A parse in progress holds up only callers of the *same* source.
+    ///
+    /// The table used to be one lock held across every parse, so seven workers
+    /// decoding seven different tiles took turns, and the browser's main thread —
+    /// which spins on a contended lock rather than parking — froze for as long as
+    /// any worker's parse took. Here one source's slot is held, standing in for a
+    /// slow parse, and a different source must still parse straight through.
+    #[test]
+    fn a_parse_in_progress_does_not_hold_up_another_source() {
+        let bytes = fixture();
+        let busy = TileKey::new(4321, 8765, 14);
+        let slot = {
+            let mut guard = PARSED_TILES.lock().expect("table");
+            guard
+                .get_or_insert_with(HashMap::new)
+                .entry(busy)
+                .or_default()
+                .clone()
+        };
+        let held = slot.lock().expect("slot");
+        let other =
+            std::thread::spawn(move || parse_shared(TileKey::new(4322, 8765, 14), &bytes).is_ok());
+        let started = std::time::Instant::now();
+        while !other.is_finished() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "a different source waited on a slot it does not need"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(held);
+        assert!(other.join().expect("join"));
+    }
+
     #[test]
     fn a_parse_nobody_holds_is_dropped() {
         let bytes = fixture();

@@ -453,6 +453,41 @@ pub fn submit_heavy_ranked(label: &'static str, urgency: Urgency, job: Job) {
     enter(label, true, urgency, job);
 }
 
+/// Run `work` where it will not hold up a frame, and await its answer.
+///
+/// For CPU work inside a future on the `IoTaskPool` — a parse after a fetch, the
+/// usual shape. **On the web that pool is the page's main thread**, the one that
+/// also draws every frame and runs every future between them, so a 2 MB JSON
+/// parse there is a frame lost and every other in-flight job's next step held
+/// back with it (measured over Groningen, 2026-10-13: a basemap tile spent 5.6 s
+/// getting its payload and 0.4 s being drawn). There the work goes to the pool at
+/// [`NORMAL`] urgency. **Natively the io pool is sixteen real threads**, so the
+/// work runs in place, as it always did.
+///
+/// `None` only if the worker dropped the job without answering — a panic in
+/// `work` — which callers treat as the miss they would have had for bad input.
+pub async fn compute<T: Send + 'static>(
+    label: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        submit(
+            label,
+            Box::new(move || {
+                let _ = tx.send(work());
+            }),
+        );
+        rx.await.ok()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = label;
+        Some(work())
+    }
+}
+
 fn enter(label: &'static str, heavy: bool, urgency: Urgency, job: Job) {
     // Acquire/Release against `set_paused`: a job admitted here must be visible
     // to the drain, and a job parked here must be visible to whoever unparks.

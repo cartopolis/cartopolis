@@ -1632,20 +1632,25 @@ fn dispatch_jobs(
                 // …and the street tile, shared with the surfaces streamer's parse
                 // of the same z14 body, so a building standing in a tunnel's mouth
                 // can be recognised on the worker that would draw it.
-                let streets = match street_template {
-                    Some(t) => {
-                        let key = cartopolis_core::world::TileKey::new(cx, cy, LOD22_ZOOM);
-                        crate::systems::tile_loader::load_tile_image(&key, &t)
-                            .await
-                            .ok()
-                            .and_then(|b| crate::systems::tile_loader::parse_shared(key, &b).ok())
-                    }
+                //
+                // Fetched here and **parsed on the worker**: this future runs on
+                // the browser's main thread, where a z14 parse is a frame's worth
+                // of work and `parse_shared` used to hold a lock every worker's
+                // parse waits on.
+                let street_key = cartopolis_core::world::TileKey::new(cx, cy, LOD22_ZOOM);
+                let street_body = match street_template {
+                    Some(t) => crate::systems::tile_loader::load_tile_image(&street_key, &t)
+                        .await
+                        .ok(),
                     None => None,
                 };
                 crate::platform::workers::submit_heavy_ranked(
                     "lod22",
                     urgency,
                     Box::new(move || {
+                        let streets = street_body.and_then(|b| {
+                            crate::systems::tile_loader::parse_shared(street_key, &b).ok()
+                        });
                         let built = build_lod22_from_body(
                             &body,
                             cx,

@@ -768,8 +768,15 @@ pub(crate) async fn load_bag_cell(cx: i64, cy: i64) -> Arc<BagCell> {
     if !bag_covers(cx, cy) {
         return Arc::default();
     }
+    // Parsed on a worker (`workers::compute`): on the web this future is on the
+    // main thread, and a dense cell's buildings file is 1.9 MB of JSON.
     match fetch_bag_text(cx, cy, BagPart::Buildings).await {
-        Ok(text) => parse_part(cx, cy, BagPart::Buildings, &text).unwrap_or_default(),
+        Ok(text) => crate::platform::workers::compute("bag_cell", move || {
+            parse_part(cx, cy, BagPart::Buildings, &text)
+        })
+        .await
+        .flatten()
+        .unwrap_or_default(),
         Err(_) => Arc::default(),
     }
 }
@@ -838,7 +845,12 @@ pub(crate) async fn load_berths(cx: i64, cy: i64) -> Vec<((f64, f64), bool)> {
     let Ok(text) = fetch_bag_text(cx, cy, BagPart::Places).await else {
         return Vec::new();
     };
-    let berths: Vec<(f64, f64)> = parse_part(cx, cy, BagPart::Places, &text)
+    let places = crate::platform::workers::compute("bag_places", move || {
+        parse_part(cx, cy, BagPart::Places, &text)
+    })
+    .await
+    .flatten();
+    let berths: Vec<(f64, f64)> = places
         .map(|c| {
             c.berths
                 .iter()
