@@ -396,6 +396,16 @@ fn compose(s: &DiagnosticsSources) -> String {
         s.camera_state.pitch.to_degrees(),
         s.camera_state.azimuth.to_degrees(),
     ));
+    // An external receiver (`systems::gnss_receiver`): its settings, state and
+    // event history. The saved copy of the settings is the applied one —
+    // `apply_receiver_prefs` writes it on every change.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        out.push('\n');
+        out.push_str(&crate::systems::gnss_receiver::report(
+            &s.store.data.gnss_receiver,
+        ));
+    }
     out
 }
 

@@ -204,6 +204,10 @@ bevy = { workspace = true, features = ["wayland"] }
 # Native-only deps whose crates don't build for wasm (or are meaningless there).
 # Their call sites are cfg-gated to the matching target (ADR-030/033).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# An external GNSS receiver — an RTK rover on a cable — as the first location
+# provider (`platform::gnss_receiver`). The desktop also takes its serial port,
+# below; Android reaches the adapter through the USB host API instead.
+cartopolis_gnss = { path = "../gnss" }
 # Microphone capture for `platform::audio` (see the `audio` feature above).
 # Version-matched to the cpal rodio already resolves, so Cargo unifies to one
 # copy rather than compiling two ALSA backends.
@@ -263,6 +267,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # call through `ClipboardManager`, which is its own seam and not wired yet
 # (`utils::clipboard` has a no-op arm for it).
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+# The receiver's serial port (`cartopolis_gnss::serial`): a tty here, and no
+# such thing on a phone — see the entry under `not(wasm32)`.
+cartopolis_gnss = { path = "../gnss", features = ["serial"] }
 # The Model Context Protocol server this client hosts (`systems::mcp`,
 # `--mcp-listen`), so an IDE can drive it: move the camera, photograph what it
 # sees, read the scene's metrics.

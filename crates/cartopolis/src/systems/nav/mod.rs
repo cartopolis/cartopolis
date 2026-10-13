@@ -7,6 +7,8 @@ pub use plugin::NavPlugin;
 
 pub mod driver;
 pub mod geo_nav;
+// An external GNSS receiver's settings, applied to `platform::gnss_receiver`.
+pub mod gnss_receiver;
 // The camera mode on the locate button: today, the sensor capture the camera
 // localiser is to be developed against.
 pub mod high_precision;

@@ -12,9 +12,14 @@
 //! something is plugged into it, and the honest answer to "where am I" on a box
 //! with no GNSS is *unknown* — not a guess, and not a silent fallback that looks
 //! like a fix. [`LocationWatch::available`] is `false` there, and driver mode
-//! reads the avatar's own position instead (see `systems::driver`). A real
-//! backend — a USB GNSS dongle over serial, GeoClue2, gpsd — drops in behind this
-//! same API without any caller changing.
+//! reads the avatar's own position instead (see `systems::driver`).
+//!
+//! **Something plugged in is asked first, on every platform.** An external
+//! receiver switched on in Settings (`platform::gnss_receiver` — an RTK rover on
+//! a USB cable) makes `available` true on a desktop, and its fix wins over the
+//! platform's own for as long as it is fresh; when it goes quiet the platform
+//! provider answers again. Neither half is told about the other, so no caller
+//! changed when it arrived.
 //!
 //! **Android is the third arm, and it is the one that had to be designed around a
 //! constraint rather than around an API.** The phone has GNSS, but the natural way
@@ -97,10 +102,11 @@ pub struct LocationWatch {
 
 impl LocationWatch {
     /// Whether this build has a provider that can produce a fix at all. `false`
-    /// on desktop — see the module note.
+    /// on desktop unless a receiver is switched on — see the module note.
     #[must_use]
-    pub const fn available() -> bool {
+    pub fn available() -> bool {
         cfg!(any(target_arch = "wasm32", target_os = "android"))
+            || crate::platform::gnss_receiver::running()
     }
 
     /// Begin watching. Cheap and non-blocking; the first fix arrives later (a cold
@@ -121,22 +127,47 @@ impl LocationWatch {
 
     /// The most recent fix, or `None` while nothing has arrived (or the provider
     /// reported an error — see [`Self::error`]).
+    ///
+    /// In order: a fresh fix from an external receiver, the platform's own,
+    /// and then the receiver's last one however old. The last step is what the
+    /// platform providers already do for themselves — their slot keeps its
+    /// final value — and it is what lets a consumer call a quiet receiver
+    /// *stale* rather than *searching* (`platform::gnss_receiver::last_fix`).
     #[must_use]
     pub fn latest(&self) -> Option<GpsFix> {
-        self.provider
-            .slot
-            .lock()
-            .ok()?
-            .as_ref()?
-            .as_ref()
-            .ok()
-            .copied()
+        crate::platform::gnss_receiver::fresh_fix()
+            .or_else(|| {
+                self.provider
+                    .slot
+                    .lock()
+                    .ok()?
+                    .as_ref()?
+                    .as_ref()
+                    .ok()
+                    .copied()
+            })
+            .or_else(crate::platform::gnss_receiver::last_fix)
     }
 
     /// The most recent provider error, if the last report was one. Permission
     /// denials land here.
+    ///
+    /// Never while a receiver is supplying the fix — the phone's own provider
+    /// being refused is beside the point then. On a desktop, whose only
+    /// provider is the receiver, its trouble (no permission on the port, no
+    /// device) is the error; on a phone the phone's provider is still there
+    /// behind it, so the receiver's trouble is left to its own readout.
     #[must_use]
     pub fn error(&self) -> Option<String> {
+        if crate::platform::gnss_receiver::fresh_fix().is_some() {
+            return None;
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        if let Some(cartopolis_gnss::Link::Failed(why)) =
+            crate::platform::gnss_receiver::status().map(|s| s.link)
+        {
+            return Some(why);
+        }
         self.provider
             .slot
             .lock()

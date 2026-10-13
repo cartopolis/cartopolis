@@ -157,6 +157,18 @@ pub struct SettingsState {
     /// is the one string in this struct that must not outlive the interaction
     /// that produced it.
     pub delete_password: String,
+    /// The GNSS receiver's settings as being edited, applied with a button —
+    /// a receiver restarted on every keystroke of a caster's host name would
+    /// spend the typing reconnecting. `None` until the section is first drawn.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub receiver_draft: Option<crate::systems::gnss_receiver::ReceiverPrefs>,
+    /// The serial ports last listed, and when (`egui` seconds): listing reads
+    /// `/sys`, which is not something to do sixty times a second. Desktop only
+    /// — a phone's adapter is not chosen from a list.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    pub receiver_ports: Vec<(String, String)>,
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    pub receiver_ports_at: Option<f64>,
 }
 
 impl SettingsState {
@@ -272,6 +284,9 @@ pub fn render_settings_panel(
     // `editor_access_section`. One parameter rather than three, because this
     // system was already at thirteen of Bevy's sixteen.
     #[cfg(mcp)] mut mcp: crate::systems::mcp::EditorAccess,
+    // The external GNSS receiver (`systems::gnss_receiver`). Edited through a
+    // draft in `SettingsState` and written back only on Apply or the switch.
+    mut receiver: ResMut<crate::systems::gnss_receiver::ReceiverPrefs>,
 ) {
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
@@ -310,6 +325,7 @@ pub fn render_settings_panel(
     let mut world = dev.clone();
     let mut weather_live = weather.live;
     let observed = weather.latest;
+    let mut receiver_edit = receiver.clone();
 
     crate::systems::egui_manager::right_panel(
         &mut egui,
@@ -330,7 +346,14 @@ pub fn render_settings_panel(
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.tab {
                     SettingsTab::General => {
-                        reset_cache = general_tab(ui, &mut edited, &cache, &mut editor);
+                        reset_cache = general_tab(
+                            ui,
+                            &mut edited,
+                            &cache,
+                            &mut editor,
+                            &mut state,
+                            &mut receiver_edit,
+                        );
                     }
                     SettingsTab::World => {
                         world_tab(ui, &mut world, &mut weather_live, observed);
@@ -355,6 +378,9 @@ pub fn render_settings_panel(
     }
     if weather_live != weather.live {
         weather.live = weather_live;
+    }
+    if receiver_edit != *receiver {
+        *receiver = receiver_edit;
     }
     // Closing the panel must release the microphone: leaving it open behind a
     // hidden panel is the recording-indicator problem the module note describes.
@@ -678,6 +704,8 @@ fn general_tab(
     prefs: &mut AppPrefs,
     cache: &CacheReset,
     editor: &mut EditorRow,
+    state: &mut SettingsState,
+    receiver: &mut crate::systems::gnss_receiver::ReceiverPrefs,
 ) -> bool {
     section(ui, "Units");
     let units = Units::ALL.map(|u| (u, u.label()));
@@ -737,11 +765,245 @@ fn general_tab(
         );
     }
 
+    receiver_section(ui, state, receiver);
+
     ui.add_space(8.0);
     ui.separator();
     let reset = storage_section(ui, cache);
     editor_access_section(ui, prefs, editor);
     reset
+}
+
+/// Nothing can be plugged into a browser tab — see `platform::gnss_receiver`.
+#[cfg(target_arch = "wasm32")]
+fn receiver_section(
+    _ui: &mut egui::Ui,
+    _state: &mut SettingsState,
+    _prefs: &mut crate::systems::gnss_receiver::ReceiverPrefs,
+) {
+}
+
+/// An external GNSS receiver — an RTK rover on a cable — and the NTRIP caster
+/// that feeds it corrections (`systems::gnss_receiver`,
+/// `docs/notes/rtk-receiver.md`).
+///
+/// **The switch applies at once; everything under it waits for Apply.** The
+/// switch is the one control whose effect a person expects immediately, and
+/// the rest are text that is wrong until it is finished.
+///
+/// The readout under the switch is the receiver's own account of itself, and
+/// it is the point of the section as much as the settings are: "connected" is
+/// not "fixed", and the difference between RTK float and RTK fixed — or between
+/// a caster streaming RTCM and one answering with a sourcetable — is invisible
+/// anywhere else.
+#[cfg(not(target_arch = "wasm32"))]
+fn receiver_section(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    prefs: &mut crate::systems::gnss_receiver::ReceiverPrefs,
+) {
+    use crate::systems::gnss_receiver::{BAUD_RATES, RATES_HZ};
+
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "GNSS receiver");
+    let draft = state.receiver_draft.get_or_insert_with(|| prefs.clone());
+    let mut enabled = prefs.enabled;
+    if theme::checkbox(ui, &mut enabled, "Use an external receiver for my position").changed() {
+        prefs.enabled = enabled;
+        draft.enabled = enabled;
+    }
+    if !prefs.enabled {
+        theme::note(
+            ui,
+            "A GNSS receiver on a cable — an RTK rover such as the UM980 — gives this \
+             device its position: metres on its own, centimetres with corrections from \
+             an NTRIP caster.",
+        );
+        return;
+    }
+    if let Some(status) = crate::platform::gnss_receiver::status() {
+        for (warn, line) in crate::systems::gnss_receiver::status_lines(&status) {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(line)
+                        .size(theme::SIZE_SUB)
+                        .color(if warn { theme::WARN } else { theme::TEXT }),
+                )
+                .wrap(),
+            );
+        }
+    }
+    // The receiver's own account — settings, state and event history — for
+    // pasting into a bug report. The clipboard works on the phone too
+    // (`platform::android::copy_text`), and this is what a phone's rolling
+    // log cannot be relied on to still hold.
+    if ui
+        .button(format!("{}  Copy receiver report", icons::COPY))
+        .clicked()
+    {
+        crate::utils::clipboard::set_text(&crate::systems::gnss_receiver::report(prefs));
+    }
+    ui.add_space(6.0);
+
+    let label = |ui: &mut egui::Ui, text: &str| {
+        ui.label(
+            egui::RichText::new(text)
+                .size(theme::SIZE_CHIP)
+                .color(theme::TEXT_DIM),
+        );
+    };
+    // The port is chosen on the desktop only: on a phone the first supported
+    // USB adapter is the receiver, and there is nothing to list.
+    #[cfg(not(target_os = "android"))]
+    {
+        let now = ui.input(|i| i.time);
+        if state.receiver_ports_at.is_none_or(|t| now - t > 3.0) {
+            state.receiver_ports = crate::platform::gnss_receiver::ports();
+            state.receiver_ports_at = Some(now);
+        }
+        let draft = state.receiver_draft.as_mut().expect("drafted above");
+        label(ui, "Port");
+        let shown = if draft.port.is_empty() {
+            "Automatic".to_string()
+        } else {
+            state
+                .receiver_ports
+                .iter()
+                .find(|(p, _)| *p == draft.port)
+                .map_or_else(|| draft.port.clone(), |(_, l)| l.clone())
+        };
+        egui::ComboBox::from_id_salt("gnss_port")
+            .selected_text(shown)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.port, String::new(), "Automatic");
+                for (path, l) in &state.receiver_ports {
+                    ui.selectable_value(&mut draft.port, path.clone(), l);
+                }
+            });
+    }
+    let draft = state.receiver_draft.as_mut().expect("drafted above");
+    ui.horizontal(|ui| {
+        label(ui, "Baud");
+        egui::ComboBox::from_id_salt("gnss_baud")
+            .selected_text(draft.baud.to_string())
+            .show_ui(ui, |ui| {
+                for b in BAUD_RATES {
+                    ui.selectable_value(&mut draft.baud, b, b.to_string());
+                }
+            });
+        label(ui, "Rate");
+        egui::ComboBox::from_id_salt("gnss_rate")
+            .selected_text(format!("{} Hz", draft.rate_hz))
+            .show_ui(ui, |ui| {
+                for r in RATES_HZ {
+                    ui.selectable_value(&mut draft.rate_hz, r, format!("{r} Hz"));
+                }
+            });
+    });
+    let carried = cartopolis_gnss::receiver::rate_for_baud(draft.rate_hz, draft.baud);
+    if carried < draft.rate_hz {
+        theme::note(
+            ui,
+            &format!(
+                "{} baud carries {carried} Hz; the receiver will be asked for that.",
+                draft.baud
+            ),
+        );
+    }
+    theme::checkbox(
+        ui,
+        &mut draft.configure,
+        "Set the receiver's output (Unicore receivers)",
+    );
+    theme::note(
+        ui,
+        "Asks for position, speed and accuracy at the rate above on this port. Not \
+         saved in the receiver: unplugged, it goes back to its own settings.",
+    );
+
+    ui.add_space(6.0);
+    theme::checkbox(
+        ui,
+        &mut draft.ntrip.enabled,
+        "RTK corrections from an NTRIP caster",
+    );
+    if draft.ntrip.enabled {
+        let n = &mut draft.ntrip;
+        let field = |ui: &mut egui::Ui, id: &str, text: &mut String, hint: &str, secret: bool| {
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .id(egui::Id::new(id))
+                    .hint_text(hint)
+                    .password(secret)
+                    .desired_width(f32::INFINITY),
+            );
+        };
+        label(ui, "Caster");
+        // The Netherlands' national reference stations, free and without an
+        // account: the one choice most people here would otherwise have to
+        // research, and whose port (443, TLS only) nobody would guess.
+        if ui
+            .button("Kadaster — free, Netherlands")
+            .on_hover_text(crate::systems::gnss_receiver::KADASTER_HOST)
+            .clicked()
+        {
+            n.use_kadaster();
+        }
+        ui.horizontal(|ui| {
+            let mut port = n.port.to_string();
+            ui.add(
+                egui::TextEdit::singleline(&mut port)
+                    .id(egui::Id::new("ntrip_port"))
+                    .desired_width(56.0),
+            );
+            if let Ok(p) = port.trim().parse::<u16>() {
+                n.port = p;
+            }
+            field(ui, "ntrip_host", &mut n.host, "caster host name", false);
+        });
+        let mut tls = n.tls || n.port == 443;
+        if theme::checkbox(ui, &mut tls, "Encrypted connection (TLS)").changed() {
+            n.tls = tls;
+        }
+        label(ui, "Mountpoint");
+        field(
+            ui,
+            "ntrip_mount",
+            &mut n.mountpoint,
+            "empty: the nearest station",
+            false,
+        );
+        label(ui, "Username");
+        field(
+            ui,
+            "ntrip_user",
+            &mut n.username,
+            "if the caster asks for one",
+            false,
+        );
+        label(ui, "Password");
+        field(ui, "ntrip_password", &mut n.password, "", true);
+        theme::checkbox(ui, &mut n.send_position, "Send my position to the caster");
+        theme::note(
+            ui,
+            "Network (VRS) mountpoints need it to make corrections for where you are. \
+             The caster's operator sees the position.",
+        );
+    }
+
+    if *draft != *prefs {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("Apply").clicked() {
+                *prefs = draft.clone();
+            }
+            if ui.button("Revert").clicked() {
+                *draft = prefs.clone();
+            }
+        });
+    }
 }
 
 /// What the Editor access section shows, and the one thing it can ask for.
@@ -2358,5 +2620,61 @@ scope: Netherlands only
             );
             assert!(!record.license.is_empty(), "{required} has no licence");
         }
+    }
+
+    /// The receiver readout names the problem a person can act on, rather than
+    /// "connected": the port's own error, a wrong baud rate, and a caster that
+    /// failed — and says RTK fixed with centimetres when all is well.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_receiver_readout_says_what_is_wrong_and_what_is_right() {
+        use cartopolis_gnss::{CasterState, FixQuality, Link, Solution, Status};
+        use std::time::Instant;
+
+        let failed = Status {
+            link: Link::Failed("no permission to open /dev/ttyUSB0".into()),
+            ..Status::default()
+        };
+        let lines = crate::systems::gnss_receiver::status_lines(&failed);
+        assert_eq!(
+            lines,
+            vec![(true, "No permission to open /dev/ttyUSB0".to_string())]
+        );
+
+        let mut garbled = Status {
+            link: Link::Open("FT230X (/dev/ttyUSB0), 9600 baud".into()),
+            bytes_in: 10_000,
+            ..Status::default()
+        };
+        assert!(crate::systems::gnss_receiver::status_lines(&garbled)
+            .iter()
+            .any(|(warn, l)| *warn && l.contains("baud rate")));
+
+        garbled.sentences = 50;
+        garbled.solution_at = Some(Instant::now());
+        garbled.solution = Some(Solution {
+            lat: 53.2194,
+            lng: 6.5665,
+            quality: FixQuality::RtkFixed,
+            altitude_m: Some(8.1),
+            geoid_separation_m: Some(40.5),
+            satellites: Some(31),
+            hdop: Some(0.6),
+            correction_age_s: Some(1.0),
+            utc_s: None,
+            sigma_m: Some((0.01, 0.01, None)),
+            speed_ms: None,
+            course_deg: None,
+        });
+        garbled.corrections.state = CasterState::Streaming;
+        garbled.corrections.mountpoint = Some("GRON".into());
+        garbled.corrections.messages = vec![(1005, 3), (1077, 30)];
+        let lines = crate::systems::gnss_receiver::status_lines(&garbled);
+        assert!(lines.iter().all(|(warn, _)| !warn), "{lines:?}");
+        assert_eq!(lines[1].1, "RTK fixed · ±1 cm · 31 satellites · HDOP 0.6");
+        assert!(
+            lines.iter().any(|(_, l)| l == "RTCM 1005 1077"),
+            "{lines:?}"
+        );
     }
 }

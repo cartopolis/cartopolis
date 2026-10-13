@@ -423,10 +423,18 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
             // perfect fix and no magnetometer said "Following — this device has
             // no compass" and never once mentioned the GPS.
             let mut s = match tracking.gps {
-                GpsQuality::Good(m) => format!(
-                    "Tracking this device — position to {}",
-                    crate::systems::driver::format_accuracy(m)
-                ),
+                // Which receiver, when it is the external one: "RTK fixed" is
+                // the thing a surveyor holding one wants confirmed.
+                GpsQuality::Good(m) => match crate::platform::gnss_receiver::fix_label() {
+                    Some(fix) => format!(
+                        "Tracking this device — {fix}, position to {}",
+                        crate::systems::driver::format_accuracy(m)
+                    ),
+                    None => format!(
+                        "Tracking this device — position to {}",
+                        crate::systems::driver::format_accuracy(m)
+                    ),
+                },
                 GpsQuality::Poor(m) => format!(
                     "Tracking this device — position only to {}",
                     crate::systems::driver::format_accuracy(m)

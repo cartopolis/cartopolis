@@ -65,7 +65,10 @@ const AUTOSAVE_INTERVAL: f32 = 5.0;
 ///
 /// Bump it only for a change serde defaults cannot express — a field that changed
 /// meaning, or a value that has to be recomputed — and put the fix in [`migrate`].
-const USER_DATA_VERSION: u32 = 1;
+///
+/// 2: the GNSS receiver's caster defaults to Kadaster, and a saved caster that
+/// was never filled in takes that default (see [`migrate`]).
+const USER_DATA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct UserData {
@@ -165,6 +168,11 @@ pub struct UserData {
     /// (`communities::sync_device`).
     #[serde(default)]
     pub muted_topics: Vec<String>,
+    /// The external GNSS receiver and its NTRIP caster
+    /// (`systems::gnss_receiver`). Every leaf is defaulted, so a file from
+    /// before it restores the receiver as switched off.
+    #[serde(default)]
+    pub gnss_receiver: crate::systems::gnss_receiver::ReceiverPrefs,
 }
 
 /// See [`UserData::screen`].
@@ -658,16 +666,24 @@ fn fresh_data() -> UserData {
 
 /// Bring a document written by an older build up to [`USER_DATA_VERSION`].
 ///
-/// **There is nothing to migrate today, and that is the point**: every schema change
-/// so far has been expressible as a serde default, which needs no version at all.
-/// This is the hook for the first one that is not — a field whose *meaning* changed,
+/// Almost every schema change is a serde default, which needs no version at all.
+/// This is the hook for the ones that are not — a field whose *meaning* changed,
 /// or a value that has to be recomputed from another. Such a change branches on
 /// `data.version` here, before the stamp below, and only then bumps the constant.
+///
+/// **2 — the GNSS caster default.** A serde default reaches only a file that
+/// has no `gnss_receiver` block, and every file written while the empty caster
+/// was the default has one: autosave writes the whole document. So a caster
+/// still exactly as that default left it (off, nothing named) becomes the
+/// current one, Kadaster; anything somebody typed is theirs and is kept.
 ///
 /// Note what the shape guarantees: a migration written here only ever sees a
 /// document that came off disk (a fresh store is built by [`fresh_data`] already at
 /// the current version), so it never has to be safe to run against defaults.
 fn migrate(data: &mut UserData) {
+    if data.version < 2 && data.gnss_receiver.ntrip.untouched() {
+        data.gnss_receiver.ntrip = crate::systems::gnss_receiver::NtripPrefs::default();
+    }
     data.version = USER_DATA_VERSION;
 }
 
@@ -1607,6 +1623,40 @@ mod tests {
         migrate(&mut migrated);
         assert_eq!(migrated.version, USER_DATA_VERSION);
         assert_eq!(fresh_data().version, USER_DATA_VERSION);
+    }
+
+    /// Version 2: a caster block written while the empty caster was the
+    /// default becomes Kadaster; one somebody filled in is left exactly as it
+    /// was; and a current file is never touched again, so switching the
+    /// corrections off survives a restart.
+    #[test]
+    fn an_untouched_caster_becomes_kadaster_and_nothing_else_does() {
+        use crate::systems::gnss_receiver::{NtripPrefs, KADASTER_HOST};
+        let written_by_v1 = r#"{"version":1,"gnss_receiver":{"enabled":true,"rate_hz":10,
+            "ntrip":{"enabled":false,"host":"","port":2101,"mountpoint":"","username":"",
+            "password":"","send_position":true}}}"#;
+        let mut d: UserData = serde_json::from_str(written_by_v1).unwrap();
+        migrate(&mut d);
+        assert_eq!(d.gnss_receiver.ntrip, NtripPrefs::default());
+        assert_eq!(d.gnss_receiver.ntrip.host, KADASTER_HOST);
+        assert!(
+            d.gnss_receiver.enabled && d.gnss_receiver.rate_hz == 10,
+            "the rest is kept"
+        );
+
+        let own =
+            r#"{"version":1,"gnss_receiver":{"ntrip":{"enabled":false,"host":"mine.example"}}}"#;
+        let mut d: UserData = serde_json::from_str(own).unwrap();
+        migrate(&mut d);
+        assert_eq!(d.gnss_receiver.ntrip.host, "mine.example");
+
+        let mut off: UserData = serde_json::from_str(written_by_v1).unwrap();
+        off.version = USER_DATA_VERSION;
+        migrate(&mut off);
+        assert!(
+            !off.gnss_receiver.ntrip.enabled,
+            "a current file is not migrated"
+        );
     }
 
     #[test]

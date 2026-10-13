@@ -28,6 +28,7 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::driver::DriverState>()
             .init_resource::<systems::walk_guide::WalkGuide>()
             .init_resource::<systems::locate::LocateTracking>()
+            .init_resource::<systems::gnss_receiver::ReceiverPrefs>()
             .init_resource::<systems::high_precision::HighPrecision>()
             .init_resource::<systems::high_precision::HighPrecisionLog>()
             .init_resource::<systems::route_ahead::RouteAhead>()
@@ -46,6 +47,9 @@ impl Plugin for NavPlugin {
             Startup,
             systems::traffic::setup_traffic.after(systems::free_camera::setup_camera),
         );
+        // The receiver comes up with the app when it was left on: it takes tens
+        // of seconds to converge, which is better spent before anybody asks.
+        app.add_systems(Startup, systems::gnss_receiver::load_receiver_prefs);
 
         app.add_systems(
             Update,
@@ -60,6 +64,9 @@ impl Plugin for NavPlugin {
                 systems::meetup::answer_meetup_requests,
                 systems::geo_nav::drive_geocode,
                 systems::navigation::drive_route_geocoding,
+                // Before `Move`, so a receiver switched on this frame is the
+                // provider the locate and drive ticks read.
+                systems::gnss_receiver::apply_receiver_prefs,
                 // A route to a person moves with their shared location. After
                 // the request that may have just started following them.
                 systems::navigation::follow_shared_location.after(systems::geo_nav::drive_geocode),

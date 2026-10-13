@@ -2451,6 +2451,7 @@ dependencies = [
  "cartopolis_core",
  "cartopolis_e2ee",
  "cartopolis_geo",
+ "cartopolis_gnss",
  "cartopolis_materials",
  "cartopolis_mcp",
  "cartopolis_simulator",
