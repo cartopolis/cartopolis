@@ -35,6 +35,7 @@
 //! this baud: at the wrong rate a command arrives as noise, and noise is not
 //! something to send a device on purpose.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as Rx, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -132,6 +133,31 @@ pub struct Status {
     /// The receiver's last answer to a command.
     pub last_reply: Option<String>,
     pub corrections: Corrections,
+    /// When the receiver was started, for [`Self::events`]' times.
+    pub started: Option<Instant>,
+    /// What happened, oldest first, at most [`MAX_EVENTS`]: opened, heard,
+    /// configured, the fix changing, the station chosen, failures. Kept here
+    /// rather than left to the log because a phone's log is a ring that a busy
+    /// client rolls over in minutes, and this is what a diagnostics report
+    /// carries off the device.
+    pub events: VecDeque<(Instant, String)>,
+}
+
+/// How many [`Status::events`] are kept.
+pub const MAX_EVENTS: usize = 80;
+
+impl Status {
+    /// The event history as text, one line each, timed from the start.
+    #[must_use]
+    pub fn event_log(&self) -> String {
+        let start = self.started.or_else(|| self.events.front().map(|e| e.0));
+        let mut out = String::new();
+        for (at, what) in &self.events {
+            let t = start.map_or(0.0, |s| at.saturating_duration_since(s).as_secs_f64());
+            out.push_str(&format!("t+{t:7.1}s  {what}\n"));
+        }
+        out
+    }
 }
 
 impl Status {
@@ -169,7 +195,34 @@ impl Receiver {
     #[must_use]
     pub fn start(opener: Opener, config: Config) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Mutex::new(Status {
+            started: Some(Instant::now()),
+            ..Status::default()
+        }));
+        event(
+            &status,
+            format!(
+                "started: configure {}, {} Hz, caster {}",
+                if config.configure { "on" } else { "off" },
+                config.rate_hz,
+                config
+                    .caster
+                    .as_ref()
+                    .map_or("none".to_string(), |c| format!(
+                        "{}:{}{} mountpoint {} login {} send position {}",
+                        c.host,
+                        c.port,
+                        if c.uses_tls() { " tls" } else { "" },
+                        if c.mountpoint.is_empty() {
+                            "(nearest)"
+                        } else {
+                            c.mountpoint.as_str()
+                        },
+                        if c.username.is_empty() { "no" } else { "yes" },
+                        if c.send_position { "yes" } else { "no" },
+                    )),
+            ),
+        );
         // The caster's position, written by the port thread: the newest
         // solution, and its GGA rebuilt for upload.
         let position: Arc<Mutex<Option<(Solution, String)>>> = Arc::new(Mutex::new(None));
@@ -253,6 +306,18 @@ fn update(status: &Mutex<Status>, f: impl FnOnce(&mut Status)) {
     }
 }
 
+/// Record an event in [`Status::events`], and in the log.
+fn event(status: &Mutex<Status>, what: impl Into<String>) {
+    let what = what.into();
+    tracing::info!(target: "gnss", "{what}");
+    update(status, |s| {
+        s.events.push_back((Instant::now(), what));
+        while s.events.len() > MAX_EVENTS {
+            s.events.pop_front();
+        }
+    });
+}
+
 /// The commands that make a Unicore receiver (UM980, UM982, UM960) write what
 /// a [`Solution`] needs on the port they arrive on. The port name is left out
 /// on purpose: Unicore applies a log command without one to the port it came
@@ -315,20 +380,34 @@ pub fn allowed_command(command: &str) -> bool {
 }
 
 /// Send a command, if it passes [`allowed_command`].
-fn send_command(port: &mut dyn Port, command: &str) -> Result<(), String> {
+fn send_command(port: &mut dyn Port, command: &str, status: &Mutex<Status>) -> Result<(), String> {
     if !allowed_command(command) {
         tracing::error!(command = %command.escape_debug(), "refused to send a receiver command");
+        event(
+            status,
+            format!(
+                "REFUSED to send command {:?}",
+                command.escape_debug().to_string()
+            ),
+        );
         return Ok(());
     }
     port.write(command.as_bytes())
 }
 
 /// Send a correction frame, if it passes [`rtcm::checked_frame`].
-fn send_frame(port: &mut dyn Port, frame: &[u8]) -> Result<(), String> {
+fn send_frame(port: &mut dyn Port, frame: &[u8], status: &Mutex<Status>) -> Result<(), String> {
     if rtcm::checked_frame(frame).is_none() {
         tracing::error!(
             len = frame.len(),
             "refused to send a correction that is not one valid frame"
+        );
+        event(
+            status,
+            format!(
+                "REFUSED to send a {}-byte correction that is not one valid frame",
+                frame.len()
+            ),
         );
         return Ok(());
     }
@@ -358,6 +437,7 @@ fn port_thread(
             Err(e) => {
                 if logged_failure.as_ref() != Some(&e) {
                     tracing::warn!(error = %e, "GNSS receiver not available");
+                    event(status, format!("not available: {e}"));
                     logged_failure = Some(e.clone());
                 }
                 update(status, |s| s.link = Link::Failed(e));
@@ -368,7 +448,7 @@ fn port_thread(
             }
         };
         logged_failure = None;
-        tracing::info!(port = %name, "GNSS receiver open");
+        event(status, format!("opened {name}"));
         update(status, |s| s.link = Link::Open(name));
         let result = read_port(port.as_mut(), config, corrections, position, status, cancel);
         drop(port);
@@ -376,6 +456,7 @@ fn port_thread(
             Ok(()) => return,
             Err(e) => {
                 tracing::warn!(error = %e, "GNSS receiver lost");
+                event(status, format!("lost: {e}"));
                 update(status, |s| s.link = Link::Failed(e));
                 if nap(cancel, Duration::from_secs(1)) {
                     return;
@@ -403,39 +484,62 @@ fn read_port(
     // Whether the receiver has said anything checksummed at this baud yet.
     // Until it has, nothing is written to it (module note).
     let mut heard = false;
+    // For the event history: the fix as last reported, and the rate.
+    let mut last_quality: Option<FixQuality> = None;
+    let mut last_hz: Option<u32> = None;
+    let opened = Instant::now();
+    let mut said_silent = false;
     while !cancel.load(Ordering::Relaxed) {
         if heard {
             while let Ok(frame) = corrections.try_recv() {
-                send_frame(port, &frame)?;
+                send_frame(port, &frame, status)?;
             }
         } else {
             while corrections.try_recv().is_ok() {}
         }
         let n = port.read(&mut buf)?;
+        if !heard && !said_silent && opened.elapsed() > Duration::from_secs(5) {
+            said_silent = true;
+            let got = status.lock().map_or(0, |s| s.bytes_in);
+            event(
+                status,
+                if got == 0 {
+                    "nothing from the receiver in 5 s".to_string()
+                } else {
+                    format!("{got} bytes in 5 s but no valid NMEA — wrong baud rate?")
+                },
+            );
+        }
         if n == 0 {
             continue;
         }
         let mut sentences = 0u64;
-        let mut reply = None;
+        let mut replies: Vec<String> = Vec::new();
         let mut solution = None;
         framer.push(&buf[..n], |body| {
             sentences += 1;
             let sentence = nmea::parse(body);
             if let Sentence::Reply(r) = &sentence {
-                reply = Some(r.clone());
+                replies.push(r.clone());
             }
             if let Some(s) = assembler.push(sentence, body) {
                 solution = Some(s);
             }
         });
-        if let Some(r) = &reply {
-            tracing::info!(reply = %r, "GNSS receiver answered");
+        for r in &replies {
+            event(status, format!("receiver replied: {r}"));
         }
+        let reply = replies.pop();
         if !heard && sentences > 0 {
             heard = true;
+            event(status, "heard the receiver: checksummed NMEA at this baud");
             if config.configure {
+                event(
+                    status,
+                    format!("asking for GGA, RMC and GST at {} Hz", config.rate_hz),
+                );
                 for command in configure_commands(config.rate_hz) {
-                    send_command(port, &command)?;
+                    send_command(port, &command, status)?;
                     // Unicore parses one command at a time; give it the gap a
                     // person typing them would.
                     std::thread::sleep(Duration::from_millis(50));
@@ -447,7 +551,33 @@ fn read_port(
                 *p = Some((s.clone(), gga_for_caster(s)));
             }
         }
+        // The fix changing kind is the story of a session: no fix → GNSS →
+        // DGNSS → RTK float → RTK fixed, and back when the sky goes.
+        let quality = assembler.tracking.quality;
+        if sentences > 0
+            && last_quality != Some(quality)
+            && (solution.is_some() || !quality.has_position())
+        {
+            last_quality = Some(quality);
+            let sats = assembler.tracking.satellites.unwrap_or(0);
+            event(
+                status,
+                match &solution {
+                    Some(s) => format!(
+                        "fix: {} ±{:.2} m, {} satellites, HDOP {}, correction age {}",
+                        s.quality.label(),
+                        s.accuracy_m(),
+                        sats,
+                        s.hdop.map_or("-".into(), |h| format!("{h:.1}")),
+                        s.correction_age_s
+                            .map_or("-".into(), |a| format!("{a:.1} s")),
+                    ),
+                    None => format!("no fix ({sats} satellites)"),
+                },
+            );
+        }
         let now = Instant::now();
+        let mut rate_changed = None;
         update(status, |st| {
             st.bytes_in += n as u64;
             st.last_byte_at = Some(now);
@@ -463,12 +593,20 @@ fn read_port(
                     let d = (b - a).rem_euclid(86_400.0);
                     if d > 0.0 && d < 5.0 {
                         st.epoch_s = Some(d);
+                        let hz = (1.0 / d).round() as u32;
+                        if last_hz != Some(hz) {
+                            last_hz = Some(hz);
+                            rate_changed = Some(hz);
+                        }
                     }
                 }
                 st.solution = Some(s);
                 st.solution_at = Some(now);
             }
         });
+        if let Some(hz) = rate_changed {
+            event(status, format!("receiver delivering {hz} Hz"));
+        }
     }
     Ok(())
 }
@@ -532,6 +670,13 @@ fn caster_thread(
             Err(e) => e,
         };
         tracing::warn!(error = %e, caster = %caster.host, "NTRIP caster");
+        event(
+            status,
+            format!(
+                "corrections failed: {e} (retrying in {} s)",
+                backoff.as_secs()
+            ),
+        );
         update(status, |s| s.corrections.state = CasterState::Failed(e));
         // A session that streamed for a while was a working configuration that
         // dropped; start the backoff over.
@@ -578,7 +723,19 @@ fn caster_session(
             }
         };
         update(status, |s| s.corrections.state = CasterState::Connecting);
+        event(
+            status,
+            format!(
+                "choosing the nearest station from {} {lat:.4}, {lng:.4}",
+                if from_hint {
+                    "the map at"
+                } else {
+                    "the receiver's fix at"
+                }
+            ),
+        );
         let mounts = ntrip::sourcetable(caster)?;
+        event(status, format!("sourcetable: {} streams", mounts.len()));
         let (m, km) = ntrip::nearest(&mounts, lat, lng, logged_in).ok_or_else(|| {
             if logged_in {
                 format!(
@@ -598,7 +755,10 @@ fn caster_session(
                 m.name
             ));
         }
-        tracing::info!(mountpoint = %m.name, km, from_hint, "nearest NTRIP station");
+        event(
+            status,
+            format!("chose station {} ({km:.1} km, {})", m.name, m.identifier),
+        );
         // A network stream cannot work without the rover's position, so asking
         // for one is consent enough to send it there.
         send_position |= m.wants_position;
@@ -624,7 +784,7 @@ fn caster_session(
 
     update(status, |s| s.corrections.state = CasterState::Connecting);
     let mut session = Session::connect(caster, &mount)?;
-    tracing::info!(mountpoint = %mount, "NTRIP stream open");
+    event(status, format!("connected to {mount}"));
     let mut last_gga: Option<Instant> = None;
     let mut last_data = Instant::now();
     let mut framer = rtcm::Framer::default();
@@ -637,7 +797,13 @@ fn caster_session(
             let better = ntrip::nearest(mounts, fix.lat, fix.lng, logged_in)
                 .filter(|(m, km)| m.name != *chosen && *km <= MAX_STATION_KM);
             if let Some((m, km)) = better {
-                tracing::info!(from = %chosen, to = %m.name, km, "a nearer NTRIP station for the receiver's fix");
+                event(
+                    status,
+                    format!(
+                        "the receiver's fix is nearer {} ({km:.1} km) than {chosen}: switching",
+                        m.name
+                    ),
+                );
                 return Ok(End::Rechoose);
             }
             table = None;
@@ -683,7 +849,7 @@ fn caster_session(
         let first = !streaming && !seen.is_empty();
         streaming |= !seen.is_empty();
         if first {
-            tracing::info!(mountpoint = %mount, "RTCM corrections arriving");
+            event(status, format!("RTCM corrections arriving from {mount}"));
         }
         update(status, |s| {
             let c = &mut s.corrections;
@@ -853,10 +1019,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let status = receiver.status();
-        let s = status.solution.expect("a fix was read");
+        let s = status.solution.as_ref().expect("a fix was read");
         assert_eq!(s.quality, FixQuality::RtkFixed);
         assert_eq!(status.last_reply.as_deref(), Some("GPGGA 0.2,response: OK"));
         assert!(*opens.lock().unwrap() >= 2, "the lost port was reopened");
+        // The story a diagnostics report carries off the device.
+        let log = status.event_log();
+        for line in [
+            "started: configure on, 5 Hz",
+            "opened script",
+            "heard the receiver",
+            "asking for GGA, RMC and GST at 5 Hz",
+            "receiver replied: GPGGA 0.2,response: OK",
+            "fix: RTK fixed",
+            "lost: unplugged",
+        ] {
+            assert!(log.contains(line), "{line:?} missing from:\n{log}");
+        }
         let w = String::from_utf8(written.lock().unwrap().clone()).unwrap();
         assert!(
             w.starts_with("GPGGA 0.2\r\nGPRMC 0.2\r\nGPGST 0.2\r\n"),
