@@ -46,9 +46,14 @@ export function parsePlace(input: string): PostPlace | null {
     return place
 }
 
-/** The link that opens the map at a post's view, as the app's place links do. */
-export function placeLink(p: PostPlace): string {
+/** A post's view as a link's `place=` value: `53.21940,6.56650,120m,-12.5,45.0`. */
+export function placeParam(p: PostPlace): string {
     const alt = Math.round(p.view?.altitude ?? 250)
     const look = p.view ? `,${p.view.pitch.toFixed(1)},${p.view.yaw.toFixed(1)}` : ''
-    return `/go?place=${p.latitude.toFixed(5)},${p.longitude.toFixed(5)},${alt}m${look}`
+    return `${p.latitude.toFixed(5)},${p.longitude.toFixed(5)},${alt}m${look}`
+}
+
+/** The link that opens the map at a post's view, as the app's place links do. */
+export function placeLink(p: PostPlace): string {
+    return `/go?place=${placeParam(p)}`
 }

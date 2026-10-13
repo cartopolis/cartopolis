@@ -1337,112 +1337,398 @@
 }
 
 /*
- * A community's public posts (`posts.tsx`). "Public" is the library's info
- * tone, so the public half reads apart from the encrypted topics in both
+ * A community's public posts (`posts.tsx`), as a feed: a box to write in, then
+ * one card per post, its replies opening under it. "Public" is the library's
+ * info tone, so the public half reads apart from the encrypted topics in both
  * themes without a colour of its own.
  */
 .post-tabs {
-    margin: 12px 0 8px;
+    margin: 14px 0 10px;
 }
 
-.post-reach,
+.post-bar {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    margin: 4px 0 12px;
+}
+
+.post-public {
+    color: var(--m-info);
+    font-size: var(--m-font-size-sm);
+}
+
+.post-dim {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
 .chat .is-public {
     color: var(--m-info);
 }
 
-.post-reach.is-box {
-    background: var(--m-info-soft);
+.post-bar-tools {
+    display: flex;
+    gap: 4px;
+}
+
+.chat .post-icon, .chat button.post-icon {
+    align-items: center;
+    border-radius: var(--m-radius-full) !important;
+    color: var(--m-text-dim);
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 1rem;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+}
+
+.chat button.post-icon:hover,
+.chat button.post-icon.is-on {
+    background: var(--m-hover) !important;
+    color: var(--m-text-strong);
+}
+
+.post-error {
+    align-items: center;
+    background: var(--m-danger-soft);
     border-radius: var(--m-radius);
-    padding: 8px 10px;
-}
-
-.chat-hint.is-error {
     color: var(--m-danger);
+    display: flex;
+    justify-content: space-between;
+    margin: 0 0 10px;
+    padding: 8px 12px;
 }
 
+.post-empty {
+    border: 1px dashed var(--m-border);
+    border-radius: var(--m-radius-lg);
+    color: var(--m-text-dim);
+    margin: 10px 0;
+    padding: 18px;
+    text-align: center;
+}
+
+.post-empty b {
+    color: var(--m-text-strong);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.post-empty p {
+    margin: 0;
+}
+
+/* The writing box: one line until it is used. */
+.chat button.post-compose, .chat div.post-compose {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-lg);
+    display: flex;
+    gap: 12px;
+    margin: 0 0 14px;
+    padding: 12px 14px !important;
+    text-align: left;
+    width: 100%;
+}
+
+.chat button.post-compose.is-folded {
+    align-items: center;
+    cursor: text;
+}
+
+.chat button.post-compose.is-folded:hover {
+    border-color: var(--m-border-strong);
+}
+
+.post-compose-hint {
+    color: var(--m-text-faint);
+}
+
+.post-compose-text {
+    background: transparent;
+    border: none;
+    color: var(--m-text);
+    font: inherit;
+    font-size: 1rem;
+    min-height: 72px;
+    outline: none;
+    padding: 4px 0;
+    resize: vertical;
+    width: 100%;
+}
+
+.post-compose-tools {
+    align-items: center;
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+    padding-top: 10px;
+}
+
+.post-count {
+    color: var(--m-text-faint);
+    font-size: var(--m-font-size-sm);
+    margin-left: auto;
+}
+
+.post-compose-picture {
+    position: relative;
+}
+
+.chat .post-compose-picture button {
+    background: rgb(0 0 0 / 60%);
+    border-radius: var(--m-radius-full);
+    color: #fff;
+    height: 26px;
+    position: absolute;
+    right: 8px;
+    top: 14px;
+    width: 26px;
+}
+
+.post-placing {
+    background: var(--m-surface-sunken);
+    border-radius: var(--m-radius);
+    margin-top: 8px;
+    padding: 10px;
+}
+
+.post-placing-choices {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.chat .post-placing-choices button {
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-full);
+    font-size: var(--m-font-size-sm);
+    padding: 4px 10px;
+}
+
+.post-reach {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 8px 0 0;
+}
+
+/* A post. */
 .post-card {
     background: var(--m-surface-raised);
     border: 1px solid var(--m-border);
     border-radius: var(--m-radius-lg);
-    margin: 8px 0;
-    padding: 10px 12px;
-}
-
-.post-card header {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: baseline;
+    gap: 12px;
+    margin: 0 0 10px;
+    padding: 14px;
 }
 
-.post-card header b {
+.post-card.is-reply {
+    background: transparent;
+    border: none;
+    border-left: 2px solid var(--m-border);
+    border-radius: 0;
+    margin: 10px 0 0;
+    padding: 2px 0 2px 12px;
+}
+
+.post-face {
+    flex: none;
+}
+
+.post-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.post-head {
+    align-items: baseline;
+    display: flex;
+    gap: 8px;
+}
+
+.post-who {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    min-width: 0;
+}
+
+.post-who b {
     color: var(--m-text-strong);
 }
 
+.post-via {
+    color: var(--m-info);
+    font-size: var(--m-font-size-sm);
+    margin-top: 2px;
+}
+
 .post-text {
-    margin: 6px 0;
+    color: var(--m-text);
+    font-size: 1rem;
+    line-height: 1.45;
+    margin: 6px 0 0;
+    overflow-wrap: anywhere;
     white-space: pre-wrap;
 }
 
 .post-picture {
+    border: 1px solid var(--m-border);
     border-radius: var(--m-radius);
     display: block;
-    margin: 6px 0;
-    max-height: 320px;
+    margin: 10px 0 0;
+    max-height: 360px;
     max-width: 100%;
     object-fit: cover;
 }
 
-.post-card footer {
+.post-foot {
+    align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 14px;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.chat button.post-place-chip,
+.chat button.post-replies {
+    align-items: center;
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-full);
+    color: var(--m-text);
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+    padding: 4px 10px !important;
+}
+
+.chat button.post-place-chip {
+    background: var(--m-accent-soft);
+    border-color: transparent;
+    color: var(--m-text-strong);
+}
+
+.chat button.post-place-chip.is-missing {
+    background: var(--m-warning-soft);
+}
+
+.chat button.post-place-chip:hover,
+.chat button.post-replies:hover,
+.chat button.post-replies.is-on {
+    border-color: var(--m-border-strong);
+    color: var(--m-text-strong);
+}
+
+.post-noplace {
+    color: var(--m-text-faint);
     font-size: var(--m-font-size-sm);
 }
 
-.post-card footer a {
-    color: var(--m-accent);
+.post-thread {
+    margin-top: 6px;
 }
 
-.post-card footer button {
-    color: var(--m-text-dim) !important;
+.post-loading {
+    margin-top: 10px;
 }
 
-.post-back {
-    color: var(--m-accent) !important;
-    margin: 6px 0;
+.post-reply {
+    align-items: flex-end;
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
 }
 
-.post-form,
-.post-settings,
-.post-place {
+.post-reply textarea {
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text);
+    flex: 1;
+    font: inherit;
+    min-height: 36px;
+    padding: 7px 10px;
+    resize: vertical;
+}
+
+/* The ⋯ menu: what is done rarely. */
+.post-menu {
+    position: relative;
+}
+
+.post-menu summary {
+    border-radius: var(--m-radius-full);
+    color: var(--m-text-dim);
+    cursor: pointer;
+    line-height: 1;
+    list-style: none;
+    padding: 2px 8px;
+}
+
+.post-menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.post-menu summary:hover,
+.post-menu[open] summary {
+    background: var(--m-hover);
+}
+
+.post-menu-list {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    box-shadow: var(--m-shadow);
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin: 8px 0;
+    min-width: 220px;
+    padding: 4px;
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 5;
 }
 
+.chat .post-menu-list button,
+.post-menu-list a {
+    border-radius: var(--m-radius-sm);
+    color: var(--m-text);
+    padding: 8px 10px !important;
+    text-align: left;
+    text-decoration: none;
+}
+
+.chat .post-menu-list button:hover,
+.post-menu-list a:hover {
+    background: var(--m-hover) !important;
+}
+
+.post-menu-list small {
+    color: var(--m-text-dim);
+    display: block;
+    font-size: 0.75rem;
+}
+
+/* Settings, for a moderator. */
 .post-settings {
     background: var(--m-surface-sunken);
     border-radius: var(--m-radius-lg);
-    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 12px 14px;
 }
 
 .post-follow {
     align-items: center;
     display: flex;
     gap: 8px;
-}
-
-/*
- * A row of buttons in the posts half. Its own class, not `.chat-actions`: that
- * one is a message's hover toolbar, hidden until the message is hovered, and
- * reusing it hid "Write a post" on the first live page (2026-10-13).
- */
-.post-actions {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 8px 0;
 }

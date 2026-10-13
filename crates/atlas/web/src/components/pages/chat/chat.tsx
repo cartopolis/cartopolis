@@ -627,8 +627,15 @@ export class Chat extends MithrilComponent {
     /** The place the World frame was last sent to, so a redraw does not send it again. */
     worldPlace: string | null = null
 
-    /** The place a rail choice stands for in World: its community's pin, if it has one. */
+    /** A public post's place that asked to be opened in World, as a link's `place=` value. */
+    postPlace: string | null = null
+
+    /**
+     * The place a rail choice stands for in World: its community's pin, if it
+     * has one — or the public post whose place was just opened.
+     */
     spacePlace(): string | null {
+        if (this.postPlace) return this.postPlace
         const s = this.s
         const community = s.space && s.space !== 'home' ? chat().communities.find((x) => x.id === s.space) : null
         const place = community?.settings.place
@@ -869,6 +876,8 @@ export class Chat extends MithrilComponent {
             .reduce((n, x) => n + x.unread, 0)
         const pick = (space: string) => {
             s.space = space
+            // A rail choice is where World goes now, not the last post opened.
+            this.postPlace = null
             // A wide screen shows a community's page on choosing it; Home shows
             // the welcome until a chat is opened from its list.
             if (space === 'home') this.open(null)
@@ -1816,7 +1825,15 @@ export class Chat extends MithrilComponent {
                         </>
                     )}
                     {Tabs(id, community.topics.length)}
-                    {tabOf(id) === 'posts' ? Posts(community, pictureUrl) : <>
+                    {tabOf(id) === 'posts' ? Posts(community, me ?? '', {
+                        avatar: (who, size) => Avatar(who, size),
+                        // A post's place: World, flown to the view it was written from.
+                        onMap: (place) => {
+                            this.postPlace = place
+                            m.route.set(PATHS.world)
+                        },
+                        pictureUrl,
+                    }) : <>
                     <p class="chat-hint">Members only, end-to-end encrypted. Never on the fediverse.</p>
                     {community.topics.map((t) => (
                         <div class="chat-topic-row" key={t.channel}>

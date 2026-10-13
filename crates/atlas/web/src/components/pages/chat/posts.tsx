@@ -1,10 +1,10 @@
 import m from '@garage44/mithril'
-import {Button, FieldSegmented, FieldText, FieldTextarea} from '@garage44/mithril/components'
+import {Button, FieldSegmented, FieldText} from '@garage44/mithril/components'
 
 import {signupApi} from '@/app'
 import {ApiError} from '@/lib/api'
 import type {CommunityView} from '@/lib/chat'
-import {parsePlace, placeLink, suggestHandle} from '@/lib/posts'
+import {parsePlace, placeParam, suggestHandle} from '@/lib/posts'
 import type {PostDto, PostPlace, PostThread, PublicInfo, WhoPosts} from '@/types'
 
 /**
@@ -17,9 +17,15 @@ import type {PostDto, PostPlace, PostThread, PublicInfo, WhoPosts} from '@/types
  * is nothing to seal: the server stores posts readable on purpose, to send
  * them to other servers.
  *
+ * Laid out as a feed, as Mastodon's is: a box to write in at the top, then
+ * each post as a card with its author, its words, its picture and its place,
+ * and its replies opening underneath it rather than on a page of their own.
+ * What is done rarely (hide, block, delete) sits behind a ⋯ menu.
+ *
  * A post always has a place. The app takes it from the camera; here it is the
  * community's own place, where this browser is, or a Cartopolis place link
- * pasted in (Copy link in the app, or any `/go?place=` link).
+ * pasted in (Copy link in the app, or any `/go?place=` link). A post's place
+ * opens in World, flown to the view it was written from.
  */
 
 export type Tab = 'posts' | 'topics'
@@ -31,6 +37,16 @@ interface Draft {
     where: string
     place: PostPlace | null
     picture: string | null
+    /** Whether the place field is showing. */
+    placing: boolean
+}
+
+/** What the page lends this view: pictures, faces, and the World frame. */
+export interface PostsCtx {
+    pictureUrl: (hash: string | null | undefined) => string | null
+    avatar: (address: string, size: number) => m.Children
+    /** Open World at a place, given as a link's `place=` value. */
+    onMap: (place: string) => void
 }
 
 /** Everything the posts half holds, across communities. */
@@ -72,7 +88,13 @@ async function load(id: string): Promise<void> {
     m.redraw()
 }
 
-async function openThread(post: string): Promise<void> {
+/** Open (or close) a post's replies under it. */
+async function toggleThread(post: string): Promise<void> {
+    if (st.threadOpen === post) {
+        st.threadOpen = null
+        st.thread = null
+        return
+    }
     st.threadOpen = post
     st.thread = null
     st.reply = ''
@@ -129,6 +151,7 @@ export function Tabs(id: string, topics: number) {
         st.settingsOpen = false
         st.handle = ''
         st.error = ''
+        st.draft = null
         void load(id)
     }
     return (
@@ -152,78 +175,90 @@ export function Tabs(id: string, topics: number) {
     )
 }
 
-type PictureUrl = (hash: string | null | undefined) => string | null
-
 /** The public half of a community page. */
-export function Posts(community: CommunityView, pictureUrl: PictureUrl) {
+export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
     const id = community.id
     const mod = community.role === 'owner' || community.role === 'moderator'
     const info = st.info.get(id)
     const error = st.error && (
-        <p class="chat-hint is-error">
-            {st.error} <button onclick={() => (st.error = '')} type="button">×</button>
+        <p class="post-error">
+            {st.error}
+            <button aria-label="Dismiss" onclick={() => (st.error = '')} type="button">×</button>
         </p>
     )
-    if (st.draft?.community === id) return [error, Composer(community, st.draft, pictureUrl)]
-    if (st.threadOpen) return [error, Thread(community, pictureUrl)]
     if (!info) return [error, <p class="chat-hint">Reading the posts…</p>]
     if (!info.settings.enabled) {
         return [
             error,
-            <p class="chat-hint">
-                This community has no public posts. With them on, anybody can read what members post here, on the map and on
-                the fediverse (Mastodon, Lemmy and others), and reply.
-                {mod ? '' : ' Its owner or a moderator can switch them on.'}
-            </p>,
+            <div class="post-empty">
+                <b>No public posts yet</b>
+                <p>
+                    With them on, anybody can read what members post here: on the map, and on the fediverse (Mastodon, Lemmy
+                    and others), where people can follow the community and reply.
+                    {mod ? '' : ' Its owner or a moderator can switch them on.'}
+                </p>
+            </div>,
             mod && Settings(community, info),
         ]
     }
     const feed = st.feed.get(id) ?? []
     return [
-        error,
-        <p class="post-reach">
-            Anyone can read these, on any server · {info.followers} follower{info.followers === 1 ? '' : 's'}
-            {info.address && <span class="chat-sub"> · @{info.address}</span>}
-        </p>,
-        <div class="post-actions">
-            {info.may_post && (
-                <Button
-                    onclick={() => {
-                        const p = community.settings.place
-                        st.draft = {
-                            community: id,
-                            picture: null,
-                            place: p ? {latitude: p.latitude, longitude: p.longitude, name: p.name} : null,
-                            text: '',
-                            where: '',
-                        }
-                    }}
-                    size="sm"
-                >
-                    Write a post
-                </Button>
-            )}
-            <Button onclick={() => void load(id)} size="sm" variant="ghost">Refresh</Button>
-            {mod && (
-                <Button onclick={() => (st.settingsOpen = !st.settingsOpen)} size="sm" variant="ghost">
-                    Settings
-                </Button>
-            )}
+        <div class="post-bar">
+            <span class="post-public" title="Public: anybody can read these, here and on other servers">
+                🌐 Public · {info.followers} follower{info.followers === 1 ? '' : 's'} on the fediverse
+                {info.address && <span class="post-dim"> · @{info.address}</span>}
+            </span>
+            <span class="post-bar-tools">
+                <button aria-label="Read again" class="post-icon" onclick={() => void load(id)} title="Read again" type="button">↻</button>
+                {mod && (
+                    <button
+                        aria-label="Settings"
+                        class={st.settingsOpen ? 'post-icon is-on' : 'post-icon'}
+                        onclick={() => (st.settingsOpen = !st.settingsOpen)}
+                        title="Settings"
+                        type="button"
+                    >
+                        ⚙
+                    </button>
+                )}
+            </span>
         </div>,
+        error,
         mod && st.settingsOpen && Settings(community, info),
+        info.may_post && Composer(community, info, me, ctx),
         feed.length === 0 && (
-            <p class="chat-hint">
-                {info.may_post ? 'No posts yet. Write the first.' : 'No posts yet. Posts from members and from the fediverse appear here.'}
-            </p>
+            <div class="post-empty">
+                <b>Nothing posted yet</b>
+                <p>
+                    {info.may_post
+                        ? 'Write the first: it is pinned on the map where it is about.'
+                        : 'Posts from members and from the fediverse appear here.'}
+                </p>
+            </div>
         ),
-        feed.map((p) => Card(community, p, pictureUrl, true)),
+        feed.map((p) => Card(community, p, ctx, true)),
     ]
 }
 
-function Card(community: CommunityView, p: PostDto, pictureUrl: PictureUrl, tappable: boolean) {
+/** A post's place, as a chip that opens it in World. */
+function PlaceChip(place: PostPlace | undefined, ctx: PostsCtx) {
+    if (!place) return <span class="post-noplace">Not on the map</span>
+    return (
+        <button
+            class="post-place-chip"
+            onclick={() => ctx.onMap(placeParam(place))}
+            title="Open in World, seen from where it was written"
+            type="button"
+        >
+            📍 {place.name ?? 'Show on the map'}
+        </button>
+    )
+}
+
+function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean) {
     const mod = community.role === 'owner' || community.role === 'moderator'
-    const url = pictureUrl(p.picture)
-    const where = p.author.local ? 'member' : p.author.address
+    const url = ctx.pictureUrl(p.picture)
+    const open = top && st.threadOpen === p.id
     const act = async (run: () => Promise<unknown>) => {
         try {
             await run()
@@ -233,110 +268,142 @@ function Card(community: CommunityView, p: PostDto, pictureUrl: PictureUrl, tapp
             failed(e)
         }
     }
+    const menu = [
+        p.mine && (
+            <button onclick={() => void act(() => signupApi.delete(`/api/posts/${p.id}`))} type="button">
+                Delete
+                <small>Here and, as far as they listen, on other servers</small>
+            </button>
+        ),
+        mod && !p.mine && (
+            <button onclick={() => void act(() => signupApi.post(`/api/posts/${p.id}/hide`))} type="button">
+                Hide from this community
+            </button>
+        ),
+        mod && !p.author.local && (
+            <button
+                onclick={() =>
+                    void act(() => signupApi.post(`/api/communities/${community.id}/blocks`, {address: p.author.address}))}
+                type="button"
+            >
+                Block {p.author.address}
+                <small>They can't post here again, and what they wrote is hidden</small>
+            </button>
+        ),
+        !p.author.local && p.url && (
+            <a href={p.url} rel="noopener" target="_blank">Open where it was posted</a>
+        ),
+    ].filter(Boolean)
     return (
-        <article class="post-card" key={p.id}>
-            <header>
-                <b>{p.author.name}</b>
-                <span class={p.author.local ? 'chat-sub' : 'chat-sub is-public'}>
-                    {where}
-                    {p.via && ` · via ${p.via}`} · {ago(p.created_ms)}
-                </span>
-            </header>
-            <p class="post-text">{p.text}</p>
-            {url && <img alt="" class="post-picture" src={url} />}
-            <footer>
-                {p.place ? (
-                    <a href={placeLink(p.place)} rel="noopener" target="_blank">📍 {p.place.name ?? 'On the map'}</a>
-                ) : (
-                    <span class="chat-sub">No place: listed, not pinned</span>
+        <article class={top ? 'post-card' : 'post-card is-reply'} key={p.id}>
+            <div class="post-face">{ctx.avatar(p.author.address, top ? 36 : 28)}</div>
+            <div class="post-main">
+                <header class="post-head">
+                    <span class="post-who">
+                        <b>{p.author.name}</b>
+                        <span class={p.author.local ? 'post-dim' : 'post-dim is-public'}>
+                            {p.author.local ? 'member' : `@${p.author.address}`}
+                        </span>
+                    </span>
+                    <span class="post-dim" title={new Date(p.created_ms).toLocaleString()}>{ago(p.created_ms)}</span>
+                    {menu.length > 0 && (
+                        <details class="post-menu">
+                            <summary aria-label="More" title="More">⋯</summary>
+                            <div class="post-menu-list">{menu}</div>
+                        </details>
+                    )}
+                </header>
+                {p.via && <div class="post-via">via {p.via}</div>}
+                <p class="post-text">{p.text}</p>
+                {url && <img alt="" class="post-picture" loading="lazy" src={url} />}
+                {top && (
+                    <footer class="post-foot">
+                        {PlaceChip(p.place, ctx)}
+                        <button
+                            class={open ? 'post-replies is-on' : 'post-replies'}
+                            onclick={() => void toggleThread(p.id)}
+                            type="button"
+                        >
+                            💬 {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
+                        </button>
+                    </footer>
                 )}
-                {tappable && p.parent == null && (
-                    <button onclick={() => void openThread(p.id)} type="button">
-                        {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
-                    </button>
-                )}
-                {p.mine && (
-                    <button onclick={() => void act(() => signupApi.delete(`/api/posts/${p.id}`))} type="button">
-                        Delete
-                    </button>
-                )}
-                {mod && !p.mine && (
-                    <button onclick={() => void act(() => signupApi.post(`/api/posts/${p.id}/hide`))} type="button">
-                        Hide
-                    </button>
-                )}
-                {mod && !p.author.local && (
-                    <button
-                        onclick={() =>
-                            void act(() => signupApi.post(`/api/communities/${community.id}/blocks`, {address: p.author.address}))}
-                        title="They can't post here again, and what they wrote here is hidden"
-                        type="button"
-                    >
-                        Block {p.author.address}
-                    </button>
-                )}
-            </footer>
+                {open && Replies(community, ctx)}
+            </div>
         </article>
     )
 }
 
-function Thread(community: CommunityView, pictureUrl: PictureUrl) {
+/** A post's replies, under it, with a box to answer in. */
+function Replies(community: CommunityView, ctx: PostsCtx) {
     const t = st.thread
-    const back = (
-        <button class="post-back" onclick={() => (st.threadOpen = null)} type="button">‹ Posts</button>
-    )
-    if (!t) return [back, <p class="chat-hint">Reading the thread…</p>]
-    return [
-        back,
-        Card(community, t.post, pictureUrl, false),
-        <h3 class="chat-pane-h">{t.replies.length} {t.replies.length === 1 ? 'reply' : 'replies'}</h3>,
-        t.replies.map((r) => Card(community, r, pictureUrl, false)),
-        <form
-            class="post-form"
-            onsubmit={async (e: Event) => {
-                e.preventDefault()
-                const text = st.reply.trim()
-                if (!text || st.busy) return
-                st.busy = true
-                try {
-                    const reply = await signupApi.post<PostDto>(`/api/posts/${t.post.id}/replies`, {text})
-                    t.replies.push(reply)
-                    t.post.replies += 1
-                    st.reply = ''
-                    st.busy = false
-                } catch (err) {
-                    failed(err)
-                }
-                m.redraw()
-            }}
-        >
-            <FieldTextarea
-                maxlength={500}
-                model={{
-                    get value() {
-                        return st.reply
-                    },
-                    set value(v: string) {
-                        st.reply = v
-                    },
+    if (!t) return <p class="post-dim post-loading">Reading the replies…</p>
+    return (
+        <div class="post-thread">
+            {t.replies.map((r) => Card(community, r, ctx, false))}
+            <form
+                class="post-reply"
+                onsubmit={async (e: Event) => {
+                    e.preventDefault()
+                    const text = st.reply.trim()
+                    if (!text || st.busy) return
+                    st.busy = true
+                    try {
+                        const reply = await signupApi.post<PostDto>(`/api/posts/${t.post.id}/replies`, {text})
+                        t.replies.push(reply)
+                        t.post.replies += 1
+                        const inFeed = st.feed.get(community.id)?.find((x) => x.id === t.post.id)
+                        if (inFeed) inFeed.replies = t.post.replies
+                        st.reply = ''
+                        st.busy = false
+                    } catch (err) {
+                        failed(err)
+                    }
+                    m.redraw()
                 }}
-                placeholder="Reply in public"
-                rows={2}
-            />
-            <Button disabled={!st.reply.trim() || st.busy} size="sm" type="submit">Reply</Button>
-        </form>,
-        <p class="chat-hint">Replies are public, like the post, and reach its author wherever they are.</p>,
-    ]
+            >
+                <textarea
+                    maxlength={500}
+                    oninput={(e: Event) => (st.reply = (e.target as HTMLTextAreaElement).value)}
+                    placeholder="Reply in public"
+                    rows={1}
+                    value={st.reply}
+                />
+                <Button disabled={!st.reply.trim() || st.busy} size="sm" type="submit">Reply</Button>
+            </form>
+        </div>
+    )
 }
 
-function Composer(community: CommunityView, d: Draft, pictureUrl: PictureUrl) {
-    const info = st.info.get(community.id)
-    const url = pictureUrl(d.picture)
-    const reach = info?.federating
-        ? `Public. On the community's page and map, and sent to its ${info.followers} follower${info.followers === 1 ? '' : 's'} on other servers. Posted under your own address. Deleting it later asks other servers to delete their copy; they may not.`
-        : "Public. On the community's page and map, for anybody on this server."
+/** The box at the top of the feed: one line until it is used, then the whole post. */
+function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: PostsCtx) {
+    const d = st.draft?.community === community.id ? st.draft : null
+    const start = () => {
+        const p = community.settings.place
+        st.draft = {
+            community: community.id,
+            picture: null,
+            place: p ? {latitude: p.latitude, longitude: p.longitude, name: p.name} : null,
+            placing: !p,
+            text: '',
+            where: '',
+        }
+    }
+    if (!d) {
+        return (
+            <button class="post-compose is-folded" onclick={start} type="button">
+                <span class="post-face">{ctx.avatar(me, 36)}</span>
+                <span class="post-compose-hint">Write a public post…</span>
+            </button>
+        )
+    }
+    const url = ctx.pictureUrl(d.picture)
+    const reach = info.federating
+        ? `Public. On this page and the map, and sent to ${info.followers} follower${info.followers === 1 ? '' : 's'} elsewhere, under your own address.`
+        : 'Public. On this page and the map, for anybody on this server.'
+    const ready = !!d.place && !!d.text.trim() && !st.busy
     const send = async () => {
-        if (!d.place || !d.text.trim() || st.busy) return
+        if (!ready || !d.place) return
         st.busy = true
         try {
             const post = await signupApi.post<PostDto>(`/api/communities/${community.id}/posts`, {
@@ -344,8 +411,7 @@ function Composer(community: CommunityView, d: Draft, pictureUrl: PictureUrl) {
                 place: d.place,
                 text: d.text.trim(),
             })
-            const feed = st.feed.get(community.id) ?? []
-            st.feed.set(community.id, [post, ...feed])
+            st.feed.set(community.id, [post, ...(st.feed.get(community.id) ?? [])])
             st.draft = null
             st.busy = false
         } catch (e) {
@@ -354,83 +420,98 @@ function Composer(community: CommunityView, d: Draft, pictureUrl: PictureUrl) {
         m.redraw()
     }
     return (
-        <div class="post-form">
-            <h3 class="chat-pane-h">New post</h3>
-            <FieldTextarea
-                maxlength={500}
-                model={{
-                    get value() {
-                        return d.text
-                    },
-                    set value(v: string) {
-                        d.text = v
-                    },
-                }}
-                placeholder="What's happening here?"
-                rows={4}
-            />
-            {url && <img alt="" class="post-picture" src={url} />}
-            <label class="m-button is-ghost is-sm">
-                {d.picture ? 'Another picture' : 'Add a picture'}
-                <input
-                    accept="image/*"
-                    hidden
-                    onchange={(e: Event) => {
-                        const file = (e.target as HTMLInputElement).files?.[0]
-                        if (file) void uploadPicture(file, d)
-                    }}
-                    type="file"
+        <div class="post-compose">
+            <span class="post-face">{ctx.avatar(me, 36)}</span>
+            <div class="post-main">
+                <textarea
+                    autofocus
+                    class="post-compose-text"
+                    maxlength={500}
+                    oninput={(e: Event) => (d.text = (e.target as HTMLTextAreaElement).value)}
+                    placeholder="What's happening here?"
+                    rows={3}
+                    value={d.text}
                 />
-            </label>
-            <div class="post-place">
-                <b>📍 {d.place ? (d.place.name ?? `${d.place.latitude.toFixed(5)}, ${d.place.longitude.toFixed(5)}`) : 'Where is it?'}</b>
-                <FieldText
-                    model={{
-                        get value() {
-                            return d.where
-                        },
-                        set value(v: string) {
-                            d.where = v
-                            const p = parsePlace(v)
-                            if (p) d.place = p
-                        },
-                    }}
-                    placeholder="Paste a Cartopolis place link, or lat, lng"
-                />
-                <div class="post-actions">
-                    {community.settings.place && (
-                        <Button
-                            onclick={() => {
-                                const p = community.settings.place!
-                                d.place = {latitude: p.latitude, longitude: p.longitude, name: p.name}
-                            }}
-                            size="sm"
-                            variant="ghost"
-                        >
-                            The community's place
-                        </Button>
-                    )}
-                    <Button
-                        onclick={() =>
-                            navigator.geolocation?.getCurrentPosition(
-                                (pos) => {
-                                    d.place = {latitude: pos.coords.latitude, longitude: pos.coords.longitude}
-                                    m.redraw()
+                {url && (
+                    <div class="post-compose-picture">
+                        <img alt="" class="post-picture" src={url} />
+                        <button aria-label="Remove the picture" onclick={() => (d.picture = null)} type="button">×</button>
+                    </div>
+                )}
+                {d.placing && (
+                    <div class="post-placing">
+                        <FieldText
+                            model={{
+                                get value() {
+                                    return d.where
                                 },
-                                () => failed(new Error('this browser would not say where it is')),
+                                set value(v: string) {
+                                    d.where = v
+                                    const p = parsePlace(v)
+                                    if (p) {
+                                        d.place = p
+                                        d.placing = false
+                                    }
+                                },
+                            }}
+                            placeholder="Paste a place link from the app (Copy link), or lat, lng"
+                        />
+                        <div class="post-placing-choices">
+                            {community.settings.place && (
+                                <button
+                                    onclick={() => {
+                                        const p = community.settings.place!
+                                        d.place = {latitude: p.latitude, longitude: p.longitude, name: p.name}
+                                        d.placing = false
+                                    }}
+                                    type="button"
+                                >
+                                    The community's place
+                                </button>
                             )}
-                        size="sm"
-                        variant="ghost"
+                            <button
+                                onclick={() =>
+                                    navigator.geolocation?.getCurrentPosition(
+                                        (pos) => {
+                                            d.place = {latitude: pos.coords.latitude, longitude: pos.coords.longitude}
+                                            d.placing = false
+                                            m.redraw()
+                                        },
+                                        () => failed(new Error('this browser would not say where it is')),
+                                    )}
+                                type="button"
+                            >
+                                Where I am
+                            </button>
+                        </div>
+                    </div>
+                )}
+                <div class="post-compose-tools">
+                    <button
+                        class={d.place ? 'post-place-chip' : 'post-place-chip is-missing'}
+                        onclick={() => (d.placing = !d.placing)}
+                        title="Where it is about"
+                        type="button"
                     >
-                        Where I am
-                    </Button>
+                        📍 {d.place ? (d.place.name ?? `${d.place.latitude.toFixed(4)}, ${d.place.longitude.toFixed(4)}`) : 'Add a place'}
+                    </button>
+                    <label class="post-icon" title="Add a picture">
+                        🖼
+                        <input
+                            accept="image/*"
+                            hidden
+                            onchange={(e: Event) => {
+                                const file = (e.target as HTMLInputElement).files?.[0]
+                                if (file) void uploadPicture(file, d)
+                            }}
+                            type="file"
+                        />
+                    </label>
+                    <span class="post-count">{500 - d.text.length}</span>
+                    <Button onclick={() => (st.draft = null)} size="sm" variant="ghost">Cancel</Button>
+                    <Button disabled={!ready} onclick={() => void send()} size="sm">Post</Button>
                 </div>
-                <p class="chat-hint">In the app, "Post this view" pins it where the camera is looking.</p>
-            </div>
-            <p class="post-reach is-box">{reach}</p>
-            <div class="post-actions">
-                <Button disabled={!d.place || !d.text.trim() || st.busy} onclick={() => void send()}>Post</Button>
-                <Button onclick={() => (st.draft = null)} variant="ghost">Discard</Button>
+                <p class="post-reach">{reach}</p>
             </div>
         </div>
     )
