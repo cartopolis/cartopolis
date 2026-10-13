@@ -1433,3 +1433,16 @@
     display: flex;
     gap: 8px;
 }
+
+/*
+ * A row of buttons in the posts half. Its own class, not `.chat-actions`: that
+ * one is a message's hover toolbar, hidden until the message is hovered, and
+ * reusing it hid "Write a post" on the first live page (2026-10-13).
+ */
+.post-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+}

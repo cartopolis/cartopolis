@@ -173,6 +173,7 @@ export function Posts(community: CommunityView, pictureUrl: PictureUrl) {
             <p class="chat-hint">
                 This community has no public posts. With them on, anybody can read what members post here, on the map and on
                 the fediverse (Mastodon, Lemmy and others), and reply.
+                {mod ? '' : ' Its owner or a moderator can switch them on.'}
             </p>,
             mod && Settings(community, info),
         ]
@@ -184,7 +185,7 @@ export function Posts(community: CommunityView, pictureUrl: PictureUrl) {
             Anyone can read these, on any server · {info.followers} follower{info.followers === 1 ? '' : 's'}
             {info.address && <span class="chat-sub"> · @{info.address}</span>}
         </p>,
-        <div class="chat-actions">
+        <div class="post-actions">
             {info.may_post && (
                 <Button
                     onclick={() => {
@@ -396,7 +397,7 @@ function Composer(community: CommunityView, d: Draft, pictureUrl: PictureUrl) {
                     }}
                     placeholder="Paste a Cartopolis place link, or lat, lng"
                 />
-                <div class="chat-actions">
+                <div class="post-actions">
                     {community.settings.place && (
                         <Button
                             onclick={() => {
@@ -427,7 +428,7 @@ function Composer(community: CommunityView, d: Draft, pictureUrl: PictureUrl) {
                 <p class="chat-hint">In the app, "Post this view" pins it where the camera is looking.</p>
             </div>
             <p class="post-reach is-box">{reach}</p>
-            <div class="chat-actions">
+            <div class="post-actions">
                 <Button disabled={!d.place || !d.text.trim() || st.busy} onclick={() => void send()}>Post</Button>
                 <Button onclick={() => (st.draft = null)} variant="ghost">Discard</Button>
             </div>
