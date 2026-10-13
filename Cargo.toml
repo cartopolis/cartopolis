@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/geo",
     "crates/vio",
+    "crates/gnss",
     "crates/materials",
     "crates/e2ee",
     "crates/chat",

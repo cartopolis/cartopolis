@@ -1,0 +1,40 @@
+# An external GNSS receiver — an RTK rover such as the Unicore UM980 — read over
+# a byte stream, with RTCM corrections from an NTRIP caster written back into it
+# (docs/notes/rtk-receiver.md).
+#
+# Bevy-free for the reason cartopolis_geo and cartopolis_vio are: the parsing,
+# the caster protocol and the receiver loop are tested here against recorded
+# sentences, and none of that should wait on the client's link. The client owns
+# only the two ends that are platform-specific — which port, and the settings.
+[package]
+name = "cartopolis_gnss"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_gnss"
+path = "src/lib.rs"
+doctest = false
+
+[features]
+# The desktop serial port (`serial`). Off by default because Android cannot use
+# it — a USB serial adapter there is reached through the framework's USB host
+# API, not a tty, and the client supplies that port itself.
+serial = ["dep:serialport"]
+
+[dependencies]
+tracing.workspace = true
+# `default-features = false` drops libudev: that is a C library and a `-dev`
+# package on every Linux build host, for port enumeration that serialport also
+# does by reading `/sys/class/tty` — which is what it falls back to here.
+serialport = { version = "4.10", default-features = false, optional = true }
+# NTRIP over TLS — Kadaster's caster is reachable on 443 only (`ntrip`).
+# rustls with ring and compiled-in Mozilla roots, as the client's own connection
+# uses (its Cargo.toml says why: no OpenSSL, no system trust store on Android).
+# Both already in the lock at these versions.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0"
+
+[lints]
+workspace = true
