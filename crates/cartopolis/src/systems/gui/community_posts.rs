@@ -111,7 +111,12 @@ fn json<T: serde::de::DeserializeOwned>(body: Result<String, String>) -> Result<
 }
 
 impl Posts {
-    fn spawn(&mut self, f: impl std::future::Future<Output = Done> + Send + 'static) {
+    /// `ConditionalSend`, not `Send`: on the web the I/O pool is the page's one
+    /// thread and the fetch futures are not `Send`.
+    fn spawn(
+        &mut self,
+        f: impl std::future::Future<Output = Done> + bevy::tasks::ConditionalSend + 'static,
+    ) {
         self.tasks.push(IoTaskPool::get().spawn(f));
     }
 
