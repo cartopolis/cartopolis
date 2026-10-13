@@ -316,6 +316,11 @@ pub struct LayerPrefs {
     /// On by default: seeing where your friends are is the point of having them.
     #[serde(default = "yes")]
     pub friends: bool,
+    /// The public posts of every community this account is in, pinned where
+    /// they were written (`systems::community_posts`). On by default, as the
+    /// design draws them.
+    #[serde(default = "yes")]
+    pub community_posts: bool,
     /// The Overpass street-detail layer (`systems::street_detail`).
     #[serde(default = "detail_default")]
     pub street_detail: bool,

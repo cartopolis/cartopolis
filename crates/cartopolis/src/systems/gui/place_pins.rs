@@ -156,7 +156,7 @@ pub fn render_place_pins(
     remotes: Query<(&RemoteAvatar, &Transform), Without<FreeCamera>>,
     local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
     // A community's public posts, when its page asked for them on the map.
-    communities: Res<crate::systems::communities::Communities>,
+    mut communities: ResMut<crate::systems::communities::Communities>,
 ) {
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
@@ -316,7 +316,8 @@ pub fn render_place_pins(
         f32::from(lavender.g()) / 255.0,
         f32::from(lavender.b()) / 255.0,
     ];
-    for (i, (_, point, label)) in post_points.iter().enumerate() {
+    let mut tapped_post = None;
+    for (i, (community, post, point, label)) in post_points.iter().enumerate() {
         let Some(delta) = place_delta(
             &globe,
             anchor,
@@ -344,8 +345,15 @@ pub fn render_place_pins(
             lavender,
             label,
         ) {
+            // Fly to where it was written, from where it was seen, and have
+            // the post itself waiting on its community's page in Chats.
             jump = Some((Teleport::point(point), label.clone()));
+            tapped_post = Some((*community, *post));
         }
+    }
+    if let Some((community, post)) = tapped_post {
+        communities.posts.focus(community, post);
+        communities.screen = Some(crate::systems::communities::Screen::Community(community));
     }
     // People's real locations, shared with a private chat, in the blue that
     // means nothing else (`theme::REAL_LOCATION`).

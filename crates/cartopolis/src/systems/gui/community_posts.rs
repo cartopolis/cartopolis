@@ -87,7 +87,19 @@ pub struct Posts {
     settings_open: bool,
     /// The post whose actions are open.
     menu_for: Option<Uuid>,
+    /// Layers ▸ Community posts: every community's posts on the map, not only
+    /// the one whose page asked. Copied from `DataLayers` each frame.
+    pub layer: bool,
+    /// When every community's posts were last read for the map.
+    swept: Option<bevy::platform::time::Instant>,
+    /// How many communities that read covered, so joining one reads again.
+    swept_count: usize,
 }
+
+/// How often the map's posts are read again while the layer is on: a post
+/// written elsewhere shows up within this, and a quiet community costs one
+/// small request a minute.
+const SWEEP_SECS: u64 = 60;
 
 /// A failed request in words. The client's HTTP layer keeps only the status,
 /// so the status is what is explained.
@@ -163,22 +175,55 @@ impl Posts {
         !self.tasks.is_empty()
     }
 
-    /// The posts with a place in the community pinned on the map, for
-    /// `place_pins`.
+    /// The posts with a place to pin, for `place_pins`: every community's while
+    /// the layer is on, else the one community whose page asked. Each is
+    /// (community, post, where, label).
     #[must_use]
-    pub fn map_posts(&self) -> Vec<(Uuid, Point, String)> {
-        let Some(c) = self.on_map else {
-            return Vec::new();
-        };
-        self.feeds
-            .get(&c)
-            .into_iter()
-            .flatten()
-            .filter_map(|p| {
-                let place = p.place.as_ref()?;
-                Some((p.id, point_of(place, &p.text), first_line(&p.text, 28)))
-            })
-            .collect()
+    pub fn map_posts(&self) -> Vec<(Uuid, Uuid, Point, String)> {
+        let mut out = Vec::new();
+        for (c, feed) in &self.feeds {
+            if !self.layer && self.on_map != Some(*c) {
+                continue;
+            }
+            for p in feed {
+                if let Some(place) = &p.place {
+                    out.push((*c, p.id, point_of(place, &p.text), first_line(&p.text, 28)));
+                }
+            }
+        }
+        // A stable order, so a pin keeps its id (and egui its area) from one
+        // frame to the next whatever the map's iteration order.
+        out.sort_by_key(|(c, p, _, _)| (*c, *p));
+        out
+    }
+
+    /// A pin was tapped: have its post open on the community's page, for when
+    /// the panel is next opened.
+    pub fn focus(&mut self, community: Uuid, post: Uuid) {
+        self.tab = Tab::Posts;
+        self.loaded = Some(community);
+        self.open_thread(post);
+    }
+
+    /// Read every community's posts again when the layer is on and it is time.
+    fn sweep(&mut self, communities: &[Uuid]) {
+        let due = self
+            .swept
+            .is_none_or(|t| t.elapsed().as_secs() >= SWEEP_SECS)
+            || self.swept_count != communities.len();
+        if !self.layer || !due {
+            return;
+        }
+        self.swept = Some(bevy::platform::time::Instant::now());
+        self.swept_count = communities.len();
+        for &id in communities {
+            self.spawn(async move {
+                Done::Feed(
+                    id,
+                    json(api_get(&format!("/api/communities/{id}/posts")).await),
+                )
+            });
+        }
     }
 
     /// Fold in whatever has arrived.
@@ -975,9 +1020,24 @@ pub fn answer_post_view(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: crate::grid::AnchoredCamera,
     map_anchor: Res<crate::resources::MapAnchor>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    online: Option<Res<crate::resources::OnlineSession>>,
 ) {
     if cs.posts.busy() {
         cs.posts.poll();
+    }
+    // Layers ▸ Community posts: keep every community's posts current for the
+    // map. Nothing to read without a server, and a scripted capture's demo
+    // feeds are not to be replaced.
+    cs.posts.layer = layers.community_posts_enabled;
+    if online.is_some() {
+        let mine: Vec<Uuid> = cs
+            .list
+            .iter()
+            .filter(|c| c.role.is_some())
+            .map(|c| c.id)
+            .collect();
+        cs.posts.sweep(&mine);
     }
     if !cs.posts.want_view {
         return;
@@ -1190,11 +1250,23 @@ mod tests {
             replies: 0,
             mine: false,
         };
-        posts.feeds.insert(c, vec![post(Some(place)), post(None)]);
+        posts
+            .feeds
+            .insert(c, vec![post(Some(place.clone())), post(None)]);
+        let other = Uuid::new_v4();
+        let mut elsewhere = post(Some(place));
+        elsewhere.community = other;
+        posts.feeds.insert(other, vec![elsewhere]);
         assert!(posts.map_posts().is_empty());
+        // One community's page asked: only its placed post.
         posts.on_map = Some(c);
         let pins = posts.map_posts();
         assert_eq!(pins.len(), 1);
-        assert_eq!(pins[0].1.name.as_deref(), Some("Plant swap"));
+        assert_eq!(pins[0].0, c);
+        assert_eq!(pins[0].2.name.as_deref(), Some("Plant swap"));
+        // Layers ▸ Community posts: every community's placed posts.
+        posts.on_map = None;
+        posts.layer = true;
+        assert_eq!(posts.map_posts().len(), 2);
     }
 }

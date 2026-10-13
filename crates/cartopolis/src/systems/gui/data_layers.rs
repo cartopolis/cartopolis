@@ -490,6 +490,9 @@ pub struct DataLayers {
     /// chat open (`contacts::drive_contacts` asks, `place_pins` draws). Only
     /// contacts who show they are online are ever answered for.
     pub friends_enabled: bool,
+    /// Communities' public posts on the map (`community_posts`), every
+    /// community this account is in.
+    pub community_posts_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
     pub roads_textured: bool,
@@ -671,6 +674,7 @@ impl DataLayers {
             traffic: self.traffic_enabled,
             people: self.people_enabled,
             friends: self.friends_enabled,
+            community_posts: self.community_posts_enabled,
             street_detail,
             aerial: self.aerial_enabled,
             satellites: self.satellites_enabled,
@@ -759,6 +763,7 @@ impl DataLayers {
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
         self.friends_enabled = p.friends;
+        self.community_posts_enabled = p.community_posts;
         self.street_detail_enabled = p.street_detail;
         self.aerial_enabled = p.aerial;
         self.satellites_enabled = p.satellites;
@@ -824,6 +829,7 @@ impl Default for DataLayers {
             traffic_enabled: detail,
             people_enabled: detail,
             friends_enabled: true,
+            community_posts_enabled: true,
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
@@ -2254,7 +2260,7 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
         .layers
         .iter()
         .map(|l| l.enabled)
-        .chain([dl.friends_enabled])
+        .chain([dl.friends_enabled, dl.community_posts_enabled])
         .collect();
     let under: Vec<bool> = std::iter::once(dl.sewers)
         .chain(dl.underground.iter().copied())
@@ -2405,7 +2411,11 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 "shops" => icons::SHOP,
                 _ => icons::PIN,
             };
-            let (overlays, friends) = (&mut dl.layers, &mut dl.friends_enabled);
+            let (overlays, friends, posts) = (
+                &mut dl.layers,
+                &mut dl.friends_enabled,
+                &mut dl.community_posts_enabled,
+            );
             let mut tiles: Vec<(Tile<'_>, &mut bool)> = LAYER_DEFS
                 .iter()
                 .zip(overlays.iter_mut())
@@ -2417,6 +2427,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 })
                 .collect();
             tiles.push((tile(icons::GROUP, "Friends", false, false, None), friends));
+            tiles.push((
+                tile(icons::SHARE, "Community posts", false, false, None),
+                posts,
+            ));
             let resp = tile_grid(ui, &mut tiles, open_index(&names));
             drop(tiles);
             toggle_open(dl, resp.more.and_then(|i| names.get(i).copied()));
@@ -2727,6 +2741,7 @@ pub fn render_data_layers_panel(
         dl.traffic_enabled = fresh.traffic_enabled;
         dl.people_enabled = fresh.people_enabled;
         dl.friends_enabled = fresh.friends_enabled;
+        dl.community_posts_enabled = fresh.community_posts_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;
         dl.aerial_enabled = fresh.aerial_enabled;
         dl.satellites_enabled = fresh.satellites_enabled;
