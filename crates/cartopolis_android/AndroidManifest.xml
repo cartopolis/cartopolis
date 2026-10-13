@@ -186,6 +186,12 @@
          carries on either way. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- An external GNSS receiver on the USB-C port (UsbSerial.java,
+         docs/notes/rtk-receiver.md). Advisory: a phone without USB host mode
+         still installs, and the receiver setting says it found nothing. No
+         permission entry — USB access is asked per device, at runtime. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
     <!-- Advisory, as with the GNSS and camera entries: a device with no
          microphone still installs and simply cannot transmit. -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />

@@ -3203,3 +3203,128 @@ pub fn gnss_hardware() -> Option<String> {
     })
     .ok()
 }
+
+// ---------------------------------------------------------------------------
+// A USB serial adapter (`UsbSerial.java`, `platform::gnss_receiver`)
+// ---------------------------------------------------------------------------
+
+const USB_SERIAL_BINARY: &str = "eu.garage44.cartopolis.UsbSerial";
+
+/// Run one static call on `UsbSerial`, as [`with_gnss_raw`] does for its class.
+///
+/// Attached **permanently**, unlike every other call here: the receiver's port
+/// thread calls this about ten times a second for as long as the app runs, and
+/// a scoped attach creates and discards a `java.lang.Thread` each time. The
+/// attachment ends with the thread.
+fn with_usb_serial<T>(
+    what: &str,
+    call: impl for<'l> FnOnce(&mut JNIEnv<'l>, &JClass<'l>, &JObject) -> Result<T, Fail>,
+) -> Result<T, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach_current_thread_permanently: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, USB_SERIAL_BINARY)?;
+        call(env, &class, &activity)
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("UsbSerial.{what}: {msg}")
+    })
+}
+
+/// The open USB serial adapter. One at a time — the Java side is a singleton —
+/// and closed on drop.
+pub struct UsbSerial {
+    _open: (),
+}
+
+impl UsbSerial {
+    /// Open the first supported adapter at `baud`. `Err` carries a sentence for
+    /// the user while there is none, or while the permission is being asked —
+    /// the caller tries again a moment later, which is how the answer to the
+    /// dialog is noticed.
+    pub fn open(baud: u32) -> Result<(Self, String), String> {
+        let why = with_usb_serial("open", |env, class, activity| {
+            let why = env
+                .call_static_method(
+                    class,
+                    "open",
+                    "(Landroid/content/Context;I)Ljava/lang/String;",
+                    &[
+                        JValue::Object(activity),
+                        JValue::Int(i32::try_from(baud).unwrap_or(115_200)),
+                    ],
+                )?
+                .l()?;
+            if why.is_null() {
+                return Ok(None);
+            }
+            Ok(Some(env.get_string(&JString::from(why))?.into()))
+        })?;
+        if let Some(why) = why {
+            return Err(why);
+        }
+        let name = with_usb_serial("describe", |env, class, _| {
+            let name = env
+                .call_static_method(class, "describe", "()Ljava/lang/String;", &[])?
+                .l()?;
+            Ok(env.get_string(&JString::from(name))?.into())
+        })
+        .unwrap_or_else(|_| "USB receiver".to_string());
+        Ok((Self { _open: () }, name))
+    }
+
+    /// Read into `out`, waiting up to 100 ms. `Ok(0)` when nothing came.
+    pub fn read(&mut self, out: &mut [u8]) -> Result<usize, String> {
+        let max = i32::try_from(out.len()).unwrap_or(i32::MAX);
+        let data = with_usb_serial("read", |env, class, _| {
+            let array = env
+                .call_static_method(
+                    class,
+                    "read",
+                    "(II)[B",
+                    &[JValue::Int(max), JValue::Int(100)],
+                )?
+                .l()?;
+            if array.is_null() {
+                return Ok(None);
+            }
+            Ok(Some(env.convert_byte_array(
+                jni::objects::JByteArray::from(array),
+            )?))
+        })?
+        .ok_or_else(|| "the USB receiver was disconnected".to_string())?;
+        let n = data.len().min(out.len());
+        out[..n].copy_from_slice(&data[..n]);
+        Ok(n)
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
+        let ok = with_usb_serial("write", |env, class, _| {
+            let array = env.byte_array_from_slice(data)?;
+            Ok(env
+                .call_static_method(class, "write", "([B)Z", &[JValue::Object(&array)])?
+                .z()?)
+        })?;
+        if ok {
+            Ok(())
+        } else {
+            Err("the USB receiver was disconnected".to_string())
+        }
+    }
+}
+
+impl Drop for UsbSerial {
+    fn drop(&mut self) {
+        let result = with_usb_serial("close", |env, class, _| {
+            env.call_static_method(class, "close", "()V", &[])?;
+            Ok(())
+        });
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not close the USB receiver");
+        }
+    }
+}
