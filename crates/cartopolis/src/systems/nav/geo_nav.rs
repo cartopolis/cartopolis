@@ -1491,6 +1491,8 @@ pub enum ViewAction {
     CopyLink,
     /// Send this view into a private chat, as a point.
     SendToChat,
+    /// Write a community's public post about this view (`community_posts`).
+    PostToCommunity,
 }
 
 /// The foot of the panel: Set Home here, Copy link.
@@ -1551,6 +1553,21 @@ fn view_actions_ui(
                     .clicked()
             {
                 fired = Some(ViewAction::SendToChat);
+            }
+            if can_send
+                && theme::menu_entry_enabled(
+                    ui,
+                    enabled,
+                    icons::SHARE,
+                    "Post this view to a community",
+                )
+                .on_hover_text(
+                    "Write a public post in one of your communities, pinned at this place \
+                         with this view. Anybody can read it, on the map and on the fediverse.",
+                )
+                .clicked()
+            {
+                fired = Some(ViewAction::PostToCommunity);
             }
         });
         // The panel's own bottom edge is the screen's on a phone, and a row
@@ -1869,6 +1886,8 @@ pub fn render_search_panel(
     // "Send this view to a chat" hands a point to the chat panel to place.
     mut chat: ResMut<crate::systems::chat::ChatState>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    // "Post this view to a community" hands a place to the communities screen.
+    mut communities: ResMut<crate::systems::communities::Communities>,
 ) {
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
@@ -1978,6 +1997,17 @@ pub fn render_search_panel(
                 meetup: None,
             });
             *right_panel = RightPanel::Chat;
+        }
+        (Some(ViewAction::PostToCommunity), Some(_)) => {
+            // The same view, as a public post's place; the Chats panel asks which
+            // community it goes to.
+            if let (Some((cell, tf)), Some(anchor)) = (cam, map_anchor.geo) {
+                communities.posts.from_view = Some(crate::systems::community_posts::view_place(
+                    &nav, &globe, anchor, cell, tf,
+                ));
+                communities.screen = Some(crate::systems::communities::Screen::PostTo);
+                *right_panel = RightPanel::Chat;
+            }
         }
         _ => {}
     }

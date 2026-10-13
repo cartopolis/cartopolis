@@ -59,7 +59,8 @@ pub fn routes() -> Router<HttpState> {
         .route("/ap/media/{hash}", get(media))
         .route(
             "/api/communities/{id}/public",
-            get(public_info).put(set_public),
+            // POST as well as PUT: the app's HTTP layer has no PUT.
+            get(public_info).put(set_public).post(set_public),
         )
         .route("/api/communities/{id}/posts", get(feed).post(create_post))
         .route("/api/communities/{id}/follows", post(follow_source))

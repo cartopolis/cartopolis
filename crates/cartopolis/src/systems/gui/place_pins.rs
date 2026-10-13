@@ -60,6 +60,9 @@ const HOVER_SCALE: f32 = 1.18;
 /// First pin id used for a chat's points: far above any bookmark id, which
 /// counts up from 1.
 const CHAT_PIN_IDS: u64 = 1 << 48;
+/// Where a community's public posts' pins number from: a range of their own,
+/// clear of the chat points (`1 << 48`) and the people (`1 << 49`).
+const POST_PIN_IDS: u64 = 1 << 50;
 /// First pin id used for people's shared locations.
 const PEOPLE_PIN_IDS: u64 = 1 << 49;
 
@@ -152,6 +155,8 @@ pub fn render_place_pins(
     contacts: Res<crate::systems::contacts::Contacts>,
     remotes: Query<(&RemoteAvatar, &Transform), Without<FreeCamera>>,
     local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
+    // A community's public posts, when its page asked for them on the map.
+    communities: Res<crate::systems::communities::Communities>,
 ) {
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
@@ -171,6 +176,7 @@ pub fn render_place_pins(
         return;
     }
     let chat_points = chat.world_points();
+    let post_points = communities.posts.map_posts();
     let now_ms = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -187,6 +193,7 @@ pub fn render_place_pins(
         .filter(|k| crate::systems::chat::ChatState::is_private(k));
     if store.data.bookmarks.is_empty()
         && chat_points.is_empty()
+        && post_points.is_empty()
         && people.is_empty()
         && chat_world.is_none()
         && contacts.whereabouts.is_empty()
@@ -298,6 +305,45 @@ pub fn render_place_pins(
         // `world_points` numbers each label "<n>  <name>", matching the card.
         let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
         if point_pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, number, name) {
+            jump = Some((Teleport::point(point), label.clone()));
+        }
+    }
+    // A community's public posts, where they were written, in the colour
+    // that means "public" everywhere else (`community_posts`).
+    let lavender = theme::PUBLIC;
+    let lavender = [
+        f32::from(lavender.r()) / 255.0,
+        f32::from(lavender.g()) / 255.0,
+        f32::from(lavender.b()) / 255.0,
+    ];
+    for (i, (_, point, label)) in post_points.iter().enumerate() {
+        let Some(delta) = place_delta(
+            &globe,
+            anchor,
+            cam_world,
+            in_space,
+            point.latitude,
+            point.longitude,
+            &terrain,
+        ) else {
+            continue;
+        };
+        let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
+            continue;
+        };
+        let tip = to_ui(screen);
+        if !map_rect.contains(tip) {
+            continue;
+        }
+        drawn += 1;
+        if pin(
+            &ctx,
+            map_rect,
+            POST_PIN_IDS + i as u64,
+            tip,
+            lavender,
+            label,
+        ) {
             jump = Some((Teleport::point(point), label.clone()));
         }
     }

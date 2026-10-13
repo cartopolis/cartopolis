@@ -77,6 +77,8 @@ pub enum Screen {
     Create,
     /// An invite link was opened: the community it names, and Join.
     Invite(String),
+    /// "Post this view" from the map: which community to post it in.
+    PostTo,
 }
 
 /// A form being filled in: starting or editing a community.
@@ -203,6 +205,11 @@ pub struct Communities {
     pictures: HashMap<String, Picture>,
     /// Seeded for a scripted capture (`seed_demo`), to be cleared after.
     demo: bool,
+    /// The public half of each community (`community_posts`).
+    pub posts: crate::systems::community_posts::Posts,
+    /// The picture being picked is for a post, not the community's face: kept
+    /// full size, and handed to the post being written.
+    pub picture_for_post: bool,
 }
 
 impl Communities {
@@ -275,10 +282,20 @@ impl Communities {
     /// in the directory, shown to anybody who finds it.
     pub fn upload_picture(&mut self, bytes: Vec<u8>) {
         self.picture_note = Some("Uploading the picture…".into());
+        // A post's picture is shown at the width of the feed, so it keeps its
+        // full size; a community's face is a thumbnail.
+        let full = self.picture_for_post;
         self.upload = Some(IoTaskPool::get().spawn(async move {
             let prepared = crate::utils::photo::prepare(&bytes)?;
-            crate::systems::model_assets::api_upload_picture(prepared.thumb).await
+            let jpeg = if full { prepared.full } else { prepared.thumb };
+            crate::systems::model_assets::api_upload_picture(jpeg).await
         }));
+    }
+
+    /// Whether no picture is on its way up.
+    #[must_use]
+    pub fn picture_for_post_idle(&self) -> bool {
+        self.upload.is_none()
     }
 
     /// Fold in a finished upload and any picture that finished loading.
@@ -287,6 +304,13 @@ impl Communities {
             if let Some(result) = crate::platform::http::poll_task(task) {
                 self.upload = None;
                 match result {
+                    Ok(hash) if self.picture_for_post => {
+                        self.picture_for_post = false;
+                        self.picture_note = None;
+                        if let Some(d) = self.posts.draft.as_mut() {
+                            d.picture = Some(hash);
+                        }
+                    }
                     Ok(hash) => {
                         self.draft.picture = Some(hash);
                         self.picture_note = None;
@@ -463,6 +487,8 @@ pub struct Out {
     pub open: Option<String>,
     /// Message this person.
     pub message: Option<String>,
+    /// Open this place on the map: a public post's view.
+    pub go_to: Option<cartopolis_core::point::Point>,
 }
 
 fn role_word(r: CommunityRole) -> &'static str {
@@ -760,6 +786,7 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
             Screen::Edit(id) => edit_screen(ui, communities, id),
             Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
             Screen::Invite(code) => invite_screen(ui, communities, &code),
+            Screen::PostTo => crate::systems::community_posts::pick_community(ui, communities),
         });
     out
 }
@@ -1106,6 +1133,7 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
             && theme::action_button(ui, format!("{} Choose", icons::CAMERA)).clicked()
         {
             cs.picture_note = None;
+            cs.picture_for_post = false;
             cs.pick_picture = true;
         }
         if cs.draft.picture.is_some() && !busy && theme::action_button(ui, "Remove").clicked() {
@@ -1436,7 +1464,44 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             ui.add_space(4.0);
         }
     }
-    theme::section(ui, "Topics");
+    // The two halves: public posts and the encrypted topics
+    // (`community_posts`).
+    ui.add_space(8.0);
+    let tab = crate::systems::community_posts::tabs(ui, cs, id, c.topics.len());
+    ui.add_space(6.0);
+    if tab == crate::systems::community_posts::Tab::Posts {
+        crate::systems::community_posts::posts_tab(ui, cs, &c, out);
+    } else {
+        topics_list(ui, cs, &c, out);
+    }
+    ui.add_space(10.0);
+    if role == CommunityRole::Owner {
+        theme::note(
+            ui,
+            "You own this community. Hand it over on People before leaving.",
+        );
+    } else if theme::confirm_button(
+        ui,
+        egui::Id::new(("communities_leave", id)),
+        "Leave the community",
+        "Leave: tap again",
+    ) {
+        cs.ops.push(CommunityOp::Leave(id));
+        cs.screen = None;
+    }
+    let _ = me;
+}
+
+/// The encrypted half of a community page.
+fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &mut Out) {
+    ui.label(
+        egui::RichText::new(format!(
+            "{}  Members only, end-to-end encrypted. Never on the fediverse.",
+            icons::LOCK
+        ))
+        .size(theme::SIZE_SUB)
+        .color(theme::TEXT_DIM),
+    );
     for t in &c.topics {
         let key = channel_key(&t.group);
         let sub = if t.archived {
@@ -1473,22 +1538,6 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         ui,
         "Everyone here is in every topic. Somebody added later is given the last 300 messages of each by whoever adds them.",
     );
-    ui.add_space(10.0);
-    if role == CommunityRole::Owner {
-        theme::note(
-            ui,
-            "You own this community. Hand it over on People before leaving.",
-        );
-    } else if theme::confirm_button(
-        ui,
-        egui::Id::new(("communities_leave", id)),
-        "Leave the community",
-        "Leave: tap again",
-    ) {
-        cs.ops.push(CommunityOp::Leave(id));
-        cs.screen = None;
-    }
-    let _ = me;
 }
 
 fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
@@ -1912,8 +1961,11 @@ pub fn seed_demo(
         },
     ];
     cs.demo = true;
+    // The public half (`community_posts`): the feed on the community page, a
+    // post being written, or the posts pinned on the map with the panel shut.
+    crate::systems::community_posts::seed_demo(&mut cs.posts, garage, screen);
     cs.screen = match screen {
-        "community" => Some(Screen::Community(garage)),
+        "community" | "communitytopics" | "communitypost" => Some(Screen::Community(garage)),
         "find" => Some(Screen::Find),
         _ => None,
     };

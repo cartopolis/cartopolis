@@ -810,6 +810,11 @@ pub fn render_chats_panel(
                     communities.screen = None;
                     act.message = Some(who);
                 }
+                // A public post's place: open it as a point in a chat opens,
+                // with the community's posts pinned (`community_posts`).
+                if let Some(point) = out.go_to {
+                    act.go_to = Some(point);
+                }
                 return;
             }
             match (view.sub.clone(), view.open.clone()) {
@@ -900,9 +905,13 @@ pub fn render_chats_panel(
                 communities.capture = None;
                 communities.upload_picture(bytes);
             }
-            Outcome::Cancelled => communities.capture = None,
+            Outcome::Cancelled => {
+                communities.capture = None;
+                communities.picture_for_post = false;
+            }
             Outcome::Failed(why) => {
                 communities.capture = None;
+                communities.picture_for_post = false;
                 communities.picture_note = Some(why);
             }
         }

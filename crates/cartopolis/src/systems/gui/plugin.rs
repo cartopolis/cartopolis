@@ -71,6 +71,9 @@ impl Plugin for GuiPlugin {
                 systems::chats::restore_screen,
                 systems::chats::remember_screen,
                 systems::communities::sync_device,
+                // Public posts' answers, and the camera's view for the one
+                // being written.
+                systems::community_posts::answer_post_view,
             )
                 .chain()
                 .in_set(ClientPhase::Input)

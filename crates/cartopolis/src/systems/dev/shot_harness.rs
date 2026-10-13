@@ -2163,6 +2163,11 @@ const UI_ELEMENTS: &[&str] = &[
     "chats",
     "communities",
     "community",
+    // A community's public posts (`community_posts`): its topics instead, a
+    // post being written, and its posts pinned on the map.
+    "communitytopics",
+    "communitypost",
+    "communitymap",
     "findcommunity",
     "newchat",
     "chatthread",
@@ -2346,6 +2351,12 @@ pub fn open_scripted_ui(
         Some("chat")
     } else if want("community") {
         Some("community")
+    } else if want("communitytopics") {
+        Some("communitytopics")
+    } else if want("communitypost") {
+        Some("communitypost")
+    } else if want("communitymap") {
+        Some("communitymap")
     } else if want("findcommunity") {
         Some("find")
     } else if want("newchat") {
@@ -2357,7 +2368,10 @@ pub fn open_scripted_ui(
     };
     match messenger {
         Some(screen) => {
-            let base = if matches!(screen, "community" | "find" | "new") {
+            let base = if matches!(
+                screen,
+                "community" | "communitytopics" | "communitypost" | "communitymap" | "find" | "new"
+            ) {
                 "list"
             } else {
                 screen
@@ -2373,6 +2387,10 @@ pub fn open_scripted_ui(
                 &mut cards.chat.chats,
                 screen,
             );
+            // The posts pinned on the map read with the panel shut.
+            if screen == "communitymap" {
+                *right_panel = crate::resources::RightPanel::None;
+            }
             // The World view's people (`chat_people`): a scripted run has no
             // server to say where anybody is.
             if screen == "world" {

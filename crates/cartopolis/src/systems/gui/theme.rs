@@ -190,6 +190,13 @@ pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
 /// the other being where somebody actually is. Used for nothing else.
 pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
 
+/// **Public, and on the fediverse**: a community's posts and anything that
+/// came from another server (`systems::community_posts`). Lavender, the colour
+/// the design gave it (`docs/mockups/communities/v4-public-posts.html`), so the
+/// public half of a community never reads like its encrypted topics. Used for
+/// nothing else.
+pub const PUBLIC: Color32 = Color32::from_rgb(0xB3, 0x9D, 0xFF);
+
 /// Off-white. Headings and the one or two things that must read brightest.
 pub const CREAM: Color32 = Color32::from_rgb(0xF4, 0xF8, 0xF8);
 /// Body text.
