@@ -520,12 +520,18 @@ impl GpsQuality {
 /// significant digits about a number whose own error bar is most of it. A
 /// kilometre-scale accuracy is what a network-derived fix reports indoors, so it
 /// is a state a phone reaches often rather than a curiosity.
+///
+/// Below a metre it is centimetres, which only an RTK receiver reaches
+/// (`platform::gnss_receiver`): whole metres would round a fixed solution's
+/// ±2 cm to "±0 m", which reads as a fault.
 #[must_use]
 pub fn format_accuracy(metres: f32) -> String {
     if metres >= 1000.0 {
         format!("±{:.0} km", metres / 1000.0)
-    } else {
+    } else if metres >= 0.995 {
         format!("±{metres:.0} m")
+    } else {
+        format!("±{:.0} cm", (metres * 100.0).max(1.0))
     }
 }
 
@@ -3953,6 +3959,9 @@ mod tests {
         assert!(GpsQuality::NoProvider.caption().is_none());
 
         // The accuracy is the positive evidence — "it is working, this well".
+        assert_eq!(format_accuracy(0.014), "±1 cm");
+        assert_eq!(format_accuracy(0.3), "±30 cm");
+        assert_eq!(format_accuracy(0.999), "±1 m");
         assert_eq!(GpsQuality::Good(4.0).caption().as_deref(), Some("±4 m"));
         assert_eq!(GpsQuality::Poor(80.0).caption().as_deref(), Some("±80 m"));
         assert_eq!(GpsQuality::Good(4.0).accuracy_m(), Some(4.0));
