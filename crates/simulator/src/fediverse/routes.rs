@@ -178,7 +178,16 @@ async fn webfinger(State(state): State<HttpState>, Query(q): Query<WebfingerQuer
         return not_found();
     }
     let name = name.to_ascii_lowercase();
+    // This server itself, as Mastodon names its own: `acct:<server>@<server>`.
+    // Mastodon resolves the signer of a request this way before it believes the
+    // signature, so without it every signed fetch from here was answered 401 by
+    // a server in authorized-fetch mode (mastodon.social, 2026-10-13), and no
+    // follow from there could be answered.
+    let instance = name == fed.server || name == host_with_port(&fed);
     let found = with_db(&state, |c| {
+        if instance {
+            return Ok(Some(super::instance_url(&fed.base)));
+        }
         if let Some(community) =
             posts::community_by_handle(c, &name).map_err(|e| anyhow::anyhow!(e))?
         {

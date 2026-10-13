@@ -419,6 +419,19 @@ pub fn addressees(v: &Value) -> Vec<String> {
     out
 }
 
+/// Whether an object is addressed to everybody: Mastodon's Public (`to`) and
+/// Unlisted (`cc`) both name the public collection, while followers-only and
+/// a private mention do not. Only such an object may be kept here, where a
+/// community's posts are shown to anybody.
+#[must_use]
+pub fn is_public(v: &Value) -> bool {
+    ["to", "cc"].iter().any(|field| {
+        ids(v.get(*field))
+            .iter()
+            .any(|a| a == PUBLIC || a == "as:Public" || a == "Public")
+    })
+}
+
 /// An account or community on another server, as much of it as is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor {
@@ -438,10 +451,29 @@ pub struct Actor {
 /// talk to it: an inbox and a key.
 #[must_use]
 pub fn read_actor(v: &Value) -> Option<Actor> {
+    read_actor_key(v, None)
+}
+
+/// Read an actor document, keeping the key named `key_id` when it is given.
+///
+/// An actor may publish more than one key — `publicKey` as a list — and sign
+/// with any of them: mastodon.social signs as `…#rsa-<fingerprint>` (seen
+/// 2026-10-13). Taking the first key, and then finding its id did not match
+/// the signature's, refused every follow from there.
+#[must_use]
+pub fn read_actor_key(v: &Value, key_id: Option<&str>) -> Option<Actor> {
     let id = v.get("id")?.as_str()?.to_string();
     let host = super::fetch::host_of(&id)?;
-    let key = v.get("publicKey")?;
-    let key = if key.is_array() { key.get(0)? } else { key };
+    let keys: Vec<&Value> = match v.get("publicKey")? {
+        Value::Array(a) => a.iter().collect(),
+        k => vec![k],
+    };
+    let key = match key_id {
+        Some(want) => keys
+            .into_iter()
+            .find(|k| k.get("id").and_then(Value::as_str) == Some(want))?,
+        None => keys.into_iter().next()?,
+    };
     let username = v
         .get("preferredUsername")
         .and_then(Value::as_str)
@@ -830,6 +862,35 @@ mod tests {
             "Bike parking at the Oosterpoort\n\nThe council plans 300 places."
         );
         assert_eq!(image_url(&v).as_deref(), Some("https://l.test/pic.jpg"));
+    }
+
+    #[test]
+    fn only_public_and_unlisted_posts_are_public() {
+        let public = json!({ "to": [PUBLIC], "cc": [] });
+        let unlisted = json!({ "to": ["https://m.test/users/a/followers"], "cc": "as:Public" });
+        let followers =
+            json!({ "to": ["https://m.test/users/a/followers"], "cc": ["https://c.test/ap/c/x"] });
+        let mention = json!({ "to": ["https://c.test/ap/c/x"] });
+        assert!(is_public(&public));
+        assert!(is_public(&unlisted));
+        assert!(!is_public(&followers));
+        assert!(!is_public(&mention));
+    }
+
+    #[test]
+    fn the_key_a_request_was_signed_with_is_the_one_kept() {
+        let v = json!({
+            "id": "https://m.test/ap/users/1",
+            "inbox": "https://m.test/ap/users/1/inbox",
+            "publicKey": [
+                { "id": "https://m.test/ap/users/1#main-key", "publicKeyPem": "OLD" },
+                { "id": "https://m.test/ap/users/1#rsa-dc25", "publicKeyPem": "NEW" },
+            ],
+        });
+        let a = read_actor_key(&v, Some("https://m.test/ap/users/1#rsa-dc25")).unwrap();
+        assert_eq!(a.public_pem, "NEW");
+        assert_eq!(read_actor(&v).unwrap().public_pem, "OLD");
+        assert!(read_actor_key(&v, Some("https://m.test/ap/users/1#other")).is_none());
     }
 
     #[test]

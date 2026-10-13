@@ -31,7 +31,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::fetch::{host_of, Client, FetchError};
-use super::objects::{self, addressees, id_of, kind, read_actor, Actor};
+use super::objects::{self, addressees, id_of, kind, Actor};
 use super::posts::{self, Remote};
 use super::{delivery, local_actor, signing, Federation, Local};
 
@@ -143,14 +143,28 @@ pub fn resolve_actor(ctx: &Ctx<'_>, url: &str, force: bool) -> anyhow::Result<Ac
         }
     }
     let doc = ctx.fetch(url)?;
-    let actor = read_actor(&doc).with_context(|| format!("{url} is not an actor"))?;
+    accept_actor(ctx, url, &doc, None)
+}
+
+/// Check an actor document fetched from `url` and keep it, with the key named
+/// `key_id` when one is asked for.
+fn accept_actor(
+    ctx: &Ctx<'_>,
+    url: &str,
+    doc: &Value,
+    key_id: Option<&str>,
+) -> anyhow::Result<Actor> {
+    let actor = objects::read_actor_key(doc, key_id).with_context(|| match key_id {
+        Some(k) => format!("{url} publishes no key {k}"),
+        None => format!("{url} is not an actor"),
+    })?;
     if actor.id != url.split('#').next().unwrap_or(url) {
         anyhow::bail!("{url} answered as {}", actor.id);
     }
     if host_of(&actor.key_id) != Some(actor.host.clone()) {
         anyhow::bail!("{url}'s key lives on another server");
     }
-    ctx.db(|c| Ok(store_actor(c, &actor, now)?))?;
+    ctx.db(|c| Ok(store_actor(c, &actor, super::now_ms())?))?;
     Ok(actor)
 }
 
@@ -165,19 +179,16 @@ pub fn actor_for_key(ctx: &Ctx<'_>, key_id: &str, force: bool) -> anyhow::Result
     // document that names its owner.
     let url = key_id.split('#').next().unwrap_or(key_id);
     let doc = ctx.fetch(url)?;
-    let owner = if doc.get("inbox").is_some() {
-        url.to_string()
-    } else {
-        doc.get("owner")
-            .and_then(Value::as_str)
-            .with_context(|| format!("{key_id} names no owner"))?
-            .to_string()
-    };
-    let actor = resolve_actor(ctx, &owner, true)?;
-    if actor.key_id != key_id {
-        anyhow::bail!("{key_id} is not {}'s key", actor.id);
+    if doc.get("inbox").is_some() {
+        return accept_actor(ctx, url, &doc, Some(key_id));
     }
-    Ok(actor)
+    let owner = doc
+        .get("owner")
+        .and_then(Value::as_str)
+        .with_context(|| format!("{key_id} names no owner"))?
+        .to_string();
+    let owner_doc = ctx.fetch(&owner)?;
+    accept_actor(ctx, &owner, &owner_doc, Some(key_id))
 }
 
 /// Handle one activity from `sender`.
@@ -441,6 +452,12 @@ fn accept_object(
     // Our own post coming back, boosted by a community elsewhere: it is here
     // already, as itself.
     if super::local_post(&ctx.fed.base, &ap_id).is_some() {
+        return Ok(());
+    }
+    // A followers-only post or a private mention is not ours to show to
+    // anybody, which is what a community's posts are.
+    if !objects::is_public(obj) {
+        tracing::debug!(%ap_id, "fediverse: not public, not kept");
         return Ok(());
     }
     let targets = targets(ctx, obj, act, author, via)?;

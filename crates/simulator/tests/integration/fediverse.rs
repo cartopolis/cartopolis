@@ -174,6 +174,20 @@ async fn a_post_crosses_to_a_following_server_and_a_reply_comes_back() {
     )
     .await;
     assert_eq!(status, 200, "{finger}");
+    // The server itself answers as Mastodon's does, which is what a server in
+    // authorized-fetch mode looks up before it believes our signed requests.
+    let (status, finger) = call(
+        "GET",
+        format!(
+            "{}/.well-known/webfinger?resource=acct:{host_a}@{host_a}",
+            a.base
+        ),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{finger}");
+    assert_eq!(finger["links"][0]["href"], format!("{}/ap/actor", a.base));
 
     // B's community follows A's, and A says yes.
     let (status, info) = call(
