@@ -1196,11 +1196,7 @@ mod tests {
     /// RD landed in another country — and was cached there.
     #[test]
     fn coordinates_are_asked_for_in_rd_and_refused_otherwise() {
-        let url = groningen_url(
-            &GRONINGEN.sources[0],
-            STUDY_CELL.0,
-            STUDY_CELL.1,
-        );
+        let url = groningen_url(&GRONINGEN.sources[0], STUDY_CELL.0, STUDY_CELL.1);
         assert!(url.contains("srsName=EPSG%3A28992"), "{url}");
         let mercator = r#"{"type":"FeatureCollection","features":[
             {"type":"Feature","geometry":{"type":"Point","coordinates":[732717.02,7024297.87]},
@@ -1297,11 +1293,7 @@ mod tests {
     /// A layer name carries a space and a colon and goes into a query string.
     #[test]
     fn a_layer_name_is_escaped_into_the_url() {
-        let url = groningen_url(
-            &GRONINGEN.sources[0],
-            STUDY_CELL.0,
-            STUDY_CELL.1,
-        );
+        let url = groningen_url(&GRONINGEN.sources[0], STUDY_CELL.0, STUDY_CELL.1);
         assert!(
             url.contains("geo-data%3ABomen%20gemeente%20Groningen"),
             "{url}"
