@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Communities v4: public posts and the fediverse</title><link rel="stylesheet" href="style.css">
+<style>
+:root { --fedi:#A98BFF; --fedibg:rgba(169,139,255,.14); --lock:#9fd3b4; }
+body { width:1920px; }
+.row { gap:36px; margin-bottom:40px; }
+.later { font-size:11px; padding:1px 7px; border-radius:7px; background:var(--fedibg); color:var(--fedi); }
+
+/* Posts | Topics switch on the community page */
+.ptabs { display:flex; margin:10px 18px 0; background:var(--raised); border:1px solid var(--gline); border-radius:12px; padding:3px; gap:2px; }
+.ptabs div { flex:1; display:flex; gap:6px; justify-content:center; align-items:center; padding:7px; border-radius:9px; font-size:13.5px; color:var(--dim); }
+.ptabs .on { background:var(--fedi); color:#140d2b; }
+.ptabs .lk { color:var(--lock); }
+.pub { display:flex; gap:6px; align-items:center; color:var(--fedi); font-size:12px; padding:8px 18px 2px; }
+
+/* a post in the feed */
+.post { padding:12px 18px; border-bottom:1px solid var(--gline); }
+.post .hd { display:flex; gap:10px; align-items:center; }
+.post .hd .av { width:34px; height:34px; font-size:13px; }
+.post .hd b { display:block; color:var(--cream); font-weight:inherit; font-size:14px; }
+.post .hd span { color:var(--dim); font-size:12px; }
+.post .hd span.f { color:var(--fedi); }
+.post p { color:var(--text); font-size:14px; margin:7px 0 0; }
+.post .img { height:118px; border-radius:12px; margin-top:8px; background-size:cover; position:relative; }
+.placechip { display:inline-flex; gap:5px; align-items:center; background:rgba(10,14,16,.78); color:var(--cream); border-radius:10px; padding:4px 9px; font-size:12px; position:absolute; left:8px; bottom:8px; }
+.placechip.flat { position:static; background:var(--raised); margin-top:8px; }
+.placechip.none { position:static; background:transparent; border:1px dashed var(--line); color:var(--dim); margin-top:8px; }
+.post .ft { display:flex; gap:18px; color:var(--dim); font-size:12.5px; margin-top:8px; align-items:center; }
+.post .ft .go { margin-left:auto; color:var(--brand); }
+.fab.w { background:var(--brand); color:#fff; width:auto; padding:0 18px; gap:8px; display:flex; border-radius:18px; height:52px; font-size:15px; }
+
+/* the composer sheet */
+.wsheet { position:absolute; left:0; right:0; bottom:0; top:70px; z-index:5; background:var(--surface); border-top-left-radius:24px; border-top-right-radius:24px; border-top:1px solid var(--gline); }
+.wsheet .bar { display:flex; justify-content:space-between; align-items:center; padding:4px 18px 10px; }
+.wsheet .bar b { color:var(--cream); font-weight:inherit; font-size:16px; }
+.wsheet .bar .btn { padding:8px 18px; }
+.to { display:flex; gap:10px; align-items:center; padding:8px 18px; border-top:1px solid var(--gline); border-bottom:1px solid var(--gline); }
+.to .av { width:30px; height:30px; font-size:12px; border-radius:9px; }
+.to .t { flex:1; color:var(--cream); font-size:14px; }
+.to .t small { display:block; color:var(--fedi); font-size:11.5px; }
+.txt { padding:14px 18px 6px; color:var(--cream); font-size:15.5px; line-height:1.45; }
+.txt .cur { display:inline-block; width:2px; height:18px; background:var(--brand); vertical-align:-3px; }
+.wimg { margin:6px 18px; height:120px; border-radius:12px; background-size:cover; position:relative; }
+.wimg .x { position:absolute; right:8px; top:8px; width:26px; height:26px; border-radius:50%; background:rgba(10,14,16,.7); display:grid; place-items:center; color:#fff; }
+.wplace { margin:8px 18px; border:1px solid var(--brand); border-radius:14px; overflow:hidden; background:var(--raised); }
+.wplace .map { height:92px; background-size:cover; position:relative; }
+.wplace .map .pinm { position:absolute; left:50%; top:50%; transform:translate(-50%,-90%); color:var(--brand); }
+.wplace .row2 { display:flex; align-items:center; gap:8px; padding:9px 12px; }
+.wplace .row2 .t { flex:1; color:var(--cream); font-size:14px; }
+.wplace .row2 .t small { display:block; color:var(--dim); font-size:11.5px; }
+.wplace .row2 .ch { color:var(--brand); font-size:13px; }
+.reach { margin:8px 18px; padding:10px 12px; border-radius:12px; background:var(--fedibg); border:1px solid rgba(169,139,255,.35); color:var(--text); font-size:12.5px; line-height:1.45; }
+.reach b { color:var(--fedi); font-weight:inherit; }
+.tools { display:flex; gap:12px; padding:10px 18px; color:var(--dim); }
+
+/* map */
+.ppin { position:absolute; z-index:4; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; }
+.ppin .head { display:flex; align-items:center; gap:7px; background:#fff; color:var(--ink); border-radius:12px; padding:4px 9px 4px 4px; font-size:12px; box-shadow:0 6px 16px rgba(0,0,0,.35); border:2px solid var(--fedi); max-width:200px; white-space:nowrap; }
+.ppin .th { width:28px; height:28px; border-radius:8px; background-size:cover; flex:none; }
+.ppin .head small { display:block; color:#666; font-size:10.5px; }
+.ppin .stem { width:2px; height:14px; background:var(--fedi); }
+.ppin.sel .head { border-color:var(--brand); }
+.ppin.sel .stem { background:var(--brand); }
+.area { position:absolute; z-index:2; border:2.5px dashed var(--fedi); background:rgba(169,139,255,.08); border-radius:40% 55% 45% 50%; }
+.cross { position:absolute; z-index:3; left:50%; top:46%; transform:translate(-50%,-50%); color:var(--brand); }
+.cross svg.i { width:40px; height:40px; stroke-width:2.2; }
+.pmenu { position:absolute; left:12px; right:12px; bottom:30px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid var(--gline); border-radius:20px; padding:12px 0 6px; }
+.pmenu h4 { color:var(--cream); font-size:16px; font-weight:inherit; padding:0 16px; }
+.pmenu .sub { color:var(--dim); font-size:12.5px; padding:0 16px 8px; }
+.pmenu .opt { padding:9px 16px; }
+.pmenu .opt .ic { width:38px; height:38px; border-radius:11px; }
+.pmenu .opt .av { width:38px; height:38px; border-radius:11px; font-size:14px; }
+.psel { position:absolute; left:0; right:0; bottom:0; z-index:5; background:var(--glass); backdrop-filter:blur(16px); border-top-left-radius:24px; border-top-right-radius:24px; border-top:1px solid var(--gline); padding-bottom:26px; }
+.psel .post { border-bottom:0; padding-top:0; }
+.rep { display:flex; gap:8px; padding:4px 18px 4px 62px; font-size:13px; color:var(--text); }
+.rep b { color:var(--brand); font-weight:inherit; }
+.rep b.f { color:var(--fedi); }
+
+/* fediverse apps, light */
+.phone.light { background:#f4f4f7; }
+.phone.light .status { color:#111; }
+.mhdr { height:100px; background:url(../chat-world/city.jpg) 40% 60%/760px auto; }
+.mprof { padding:0 16px; margin-top:-30px; }
+.mprof .gav { width:64px; height:64px; border-radius:16px; background:#8a4f5f; color:#fff; display:grid; place-items:center; border:4px solid #f4f4f7; font-size:26px; }
+.mprof h3 { color:#111; font-size:19px; margin-top:6px; }
+.mprof .h { color:#666; font-size:13px; }
+.mprof .gtag { display:inline-block; font-size:11px; background:#ecebfb; color:#5b4bd6; border-radius:6px; padding:1px 7px; margin-left:4px; vertical-align:2px; }
+.mprof p { color:#222; font-size:13.5px; margin:8px 0; }
+.mstats { display:flex; gap:16px; font-size:13px; color:#666; margin:6px 0 10px; }
+.mstats b { color:#111; font-weight:inherit; }
+.mbtn { background:#5b4bd6; color:#fff; border-radius:10px; text-align:center; padding:9px; font-size:14.5px; }
+.mpost { background:#fff; margin:10px 0 0; border-top:1px solid #e6e6ea; padding:11px 16px; }
+.mpost .boost { color:#888; font-size:12px; margin-bottom:5px; }
+.mpost .hd { display:flex; gap:9px; align-items:center; }
+.mpost .hd .av { width:34px; height:34px; font-size:13px; }
+.mpost .hd b { color:#111; font-weight:inherit; display:block; font-size:13.5px; }
+.mpost .hd span { color:#777; font-size:12px; }
+.mpost p { color:#222; font-size:13.5px; margin:6px 0 0; }
+.mpost p a, .mpost a { color:#5b4bd6; }
+.mpost .img { height:110px; border-radius:10px; margin-top:6px; background-size:cover; }
+.mpost .loc { color:#555; font-size:12.5px; margin-top:6px; }
+.mpost .acts { display:flex; gap:22px; color:#888; font-size:12.5px; margin-top:8px; }
+
+/* lemmy */
+.lbar { background:#fff; border-bottom:1px solid #e3e3e6; padding:10px 16px; display:flex; gap:10px; align-items:center; }
+.lbar .gav { width:36px; height:36px; border-radius:10px; background:#8a4f5f; color:#fff; display:grid; place-items:center; }
+.lbar b { color:#111; font-weight:inherit; display:block; font-size:14.5px; }
+.lbar span { color:#777; font-size:12px; }
+.lpost { background:#fff; padding:12px 16px; border-bottom:1px solid #e3e3e6; }
+.lpost .meta { color:#777; font-size:12px; }
+.lpost h3 { color:#111; font-size:17px; margin:4px 0 6px; font-weight:inherit; }
+.lpost p { color:#222; font-size:13.5px; }
+.lpost .img { height:120px; border-radius:8px; margin-top:8px; background-size:cover; }
+.lpost .acts { display:flex; gap:16px; color:#777; font-size:12.5px; margin-top:8px; }
+.lcom { background:#fff; padding:10px 16px 10px 22px; border-left:3px solid #d9d4f7; margin:8px 16px 0; border-radius:4px; }
+.lcom .meta { color:#777; font-size:12px; }
+.lcom p { color:#222; font-size:13.5px; margin-top:3px; }
+
+.bottom { display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px; margin-top:20px; }
+.bottom > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.bottom h3 { color:var(--cream); font-size:16px; margin-bottom:8px; }
+.bottom li { color:var(--dim); font-size:13.5px; margin:0 0 7px 18px; }
+.bottom li b { color:var(--text); font-weight:inherit; }
+.bottom code { color:var(--accent); font-size:12.5px; }
+</style></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+  <symbol id="fedi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="M6.5 7.3l3.4 2.9M17.5 7.3l-3.4 2.9M12 15v3"/></symbol>
+  <symbol id="area" viewBox="0 0 24 24"><path d="M5 7l6-3 8 3 1 9-7 5-8-4z"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="reply" viewBox="0 0 24 24"><path d="M10 7L4 12l6 5M4 12h10a6 6 0 016 6"/></symbol>
+  <symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
+  <symbol id="cross" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/></symbol>
+</svg>
+
+<h1>Communities v4: <b>public posts</b>, with a place, on the fediverse</h1>
+<p class="lede">A community gets a second, public half beside its encrypted topics: <b style="color:var(--cream);font-weight:inherit">Posts</b>. A member writes a post, it is pinned where it was written, and it goes out over ActivityPub, so people on Mastodon and Lemmy can follow the community, reply, and post to it themselves. The community can also follow fediverse accounts and Lemmy communities and show what they post. <b style="color:var(--cream);font-weight:inherit">Everything on this sheet is new.</b> Topics are unchanged: encrypted, members only, never on the fediverse.</p>
+
+<div class="row">
+
+<!-- A. POSTS ON THE COMMUNITY PAGE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5" style="border-radius:10px">B</div><div class="who"><b>Buurt Oosterpoort</b><span style="color:var(--fedi)">public · @oosterpoort@cartopolis.org</span></div><svg class="i" style="margin-left:auto;color:var(--dim)"><use href="#dots"/></svg></div>
+  <div class="ptabs"><div class="on"><svg class="i s"><use href="#fedi"/></svg>Posts · public</div><div><svg class="i s lk"><use href="#lock"/></svg>Topics · 4</div></div>
+  <div class="pub"><svg class="i s"><use href="#eye"/></svg>Anyone can read these, on any server · 312 followers</div>
+  <div class="post">
+    <div class="hd"><div class="av c1">S</div><div><b>Sanne</b><span>member · 25 min</span></div></div>
+    <p>Plant swap on the corner this Saturday, 10 to 1. Bring cuttings, take cuttings 🌱</p>
+    <div class="img" style="background-image:url(../chat-world/green.jpg);background-position:40% 50%"><div class="placechip"><svg class="i s"><use href="#pin"/></svg>Meeuwerderweg</div></div>
+    <div class="ft"><span>↩ 6 replies</span><span>3 from the fediverse</span><span class="go">Open on map</span></div>
+  </div>
+  <div class="post">
+    <div class="hd"><div class="av c3">A</div><div><b>Anna</b><span class="f">@anna@mastodon.nl · 1 h</span></div></div>
+    <p>Heron back on the Oosterhaven quay this morning <span style="color:var(--fedi)">@oosterpoort@cartopolis.org</span></p>
+    <div class="placechip flat"><svg class="i s"><use href="#pin"/></svg>Oosterhaven · from her Cartopolis link</div>
+    <div class="ft"><span>↩ 2</span><span class="go">Open on map</span></div>
+  </div>
+  <div class="post">
+    <div class="hd"><div class="av c4">G</div><div><b>Gemeente plans bike parking at the Oosterpoort</b><span class="f">!groningen@feddit.nl · followed by this community</span></div></div>
+    <div class="placechip none">No place: shown here, not on the map</div>
+  </div>
+  <div class="fab w" style="bottom:30px"><svg class="i"><use href="#edit"/></svg>Write a post</div>
+</div>
+<h2><span>A</span>A community's public half</h2>
+<ul>
+  <li>The community page opens on <b>Posts</b> (public, purple) beside <b>Topics</b> (encrypted, as today). The colour and the words say which is which, everywhere.</li>
+  <li>Three kinds of post in one list: a member's, a fediverse post that mentions the community, and one from a source the community follows.</li>
+  <li>A post with a place has <b>Open on map</b>. One without a place (most of Mastodon) is listed but not pinned.</li>
+</ul>
+</div>
+
+<!-- B. WRITING A POST -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/green.jpg); background-position:40% 50%; background-size:auto 1100px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="wsheet">
+    <div class="handle"></div>
+    <div class="bar"><svg class="i" style="color:var(--dim)"><use href="#x"/></svg><b>New post</b><div class="btn">Post</div></div>
+    <div class="to"><div class="av c5">B</div><div class="t">Buurt Oosterpoort<small>Posts · public</small></div><span style="color:var(--dim);font-size:13px">change</span></div>
+    <div class="txt">Plant swap on the corner this Saturday, 10 to 1. Bring cuttings, take cuttings 🌱<span class="cur"></span></div>
+    <div class="wimg" style="background-image:url(../chat-world/green.jpg);background-position:40% 50%"><div class="x"><svg class="i s"><use href="#x"/></svg></div></div>
+    <div class="wplace">
+      <div class="map" style="background-image:url(../chat-world/city.jpg);background-position:62% 58%;background-size:700px auto"><div class="pinm"><svg class="i" style="width:30px;height:30px"><use href="#pin"/></svg></div></div>
+      <div class="row2"><svg class="i s" style="color:var(--brand)"><use href="#pin"/></svg><div class="t">Meeuwerderweg<small>the spot you were looking at, and your view of it</small></div><span class="ch">Move</span></div>
+    </div>
+    <div class="reach"><b>Public.</b> On the community's page and map, and sent to its 312 followers, 48 of them on Mastodon or Lemmy. Posted as <b>@sanne@cartopolis.org</b>. Deleting it later asks other servers to delete their copy; they may not.</div>
+    <div class="tools"><svg class="i"><use href="#cam"/></svg><svg class="i"><use href="#pin"/></svg></div>
+  </div>
+</div>
+<h2><span>B</span>Writing a post: the place comes with it</h2>
+<ul>
+  <li>Every post written in Cartopolis has a place. It starts as the spot the camera was looking at, with the camera's view (the same <i>point</i> private chats already send), and <b>Move</b> drags the pin.</li>
+  <li>Text, an optional picture, the place. That's the whole form.</li>
+  <li>The box above Post says who will see it, in numbers, and who it is posted as, before it is sent.</li>
+</ul>
+</div>
+
+<!-- C. POST FROM THE MAP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:62% 58%; background-size:auto 1300px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="cross"><svg class="i"><use href="#pin"/></svg></div>
+  <div class="pmenu">
+    <h4>Meeuwerderweg</h4>
+    <div class="sub">This view · the map's view actions</div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#chat"/></svg></div><div><b>Send this view to a chat</b><span>Private, as today</span></div></div>
+    <div class="group-h" style="padding:8px 16px 2px">Post this view, publicly, to <span class="newtag">new</span></div>
+    <div class="opt"><div class="av c5">B</div><div style="flex:1"><b>Buurt Oosterpoort</b><span>you're a member · its place is 300 m away</span></div></div>
+    <div class="opt"><div class="av c2">F</div><div style="flex:1"><b>Fietsers Groningen</b><span>you're a member</span></div></div>
+  </div>
+</div>
+<h2><span>C</span>Or start from the map</h2>
+<ul>
+  <li>The map's view actions already have <b>Send this view to a chat</b>. Beside it comes <b>Post this view</b>, listing your communities that take posts, nearest first.</li>
+  <li>That opens the form in B with the place already set. Both ways in end in the same post.</li>
+</ul>
+</div>
+
+<!-- D. ON THE MAP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:55% 58%; background-size:auto 1300px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="float-top">
+    <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5" style="border-radius:10px">B</div><div class="who"><b>Buurt Oosterpoort</b><span style="color:var(--fedi)">Posts on the map · last 7 days</span></div></div>
+  </div>
+  <div class="area" style="left:30px;top:170px;width:330px;height:320px"></div>
+  <div class="ppin sel" style="left:210px;top:300px"><div class="head"><div class="th" style="background-image:url(../chat-world/green.jpg)"></div><div>Plant swap<small>Sanne · 25 min</small></div></div><div class="stem"></div></div>
+  <div class="ppin" style="left:105px;top:385px"><div class="head"><div class="th" style="background-image:url(../chat-world/dusk.jpg)"></div><div>Heron back<small>@anna · mastodon.nl</small></div></div><div class="stem"></div></div>
+  <div class="ppin" style="left:290px;top:440px"><div class="head"><div class="th" style="background-image:url(../chat-world/route.jpg)"></div><div>Street party<small>Karim · Fri</small></div></div><div class="stem"></div></div>
+  <div class="psel">
+    <div class="handle"></div>
+    <div class="post">
+      <div class="hd"><div class="av c1">S</div><div><b>Sanne</b><span>Meeuwerderweg · 25 min</span></div></div>
+      <p>Plant swap on the corner this Saturday, 10 to 1. Bring cuttings, take cuttings 🌱</p>
+    </div>
+    <div class="rep"><b>Tom</b>I'll bring monstera cuttings</div>
+    <div class="rep"><b class="f">@lies@mastodon.nl</b>Is it on if it rains?</div>
+    <div class="composer" style="position:static;background:transparent;border-top:1px solid var(--gline);margin-top:8px;padding-bottom:4px"><div class="field">Reply in public</div><div class="circ hot"><svg class="i"><use href="#reply"/></svg></div></div>
+  </div>
+</div>
+<h2><span>D</span>The posts, where they were written</h2>
+<ul>
+  <li>The community's posts as pins inside its area. Tapping one puts the camera where the writer's was, as a point in a chat does.</li>
+  <li>Replies are flat under the post and come from both sides; a reply from Mastodon is marked with its server.</li>
+  <li>On the main map, a <b>Community posts</b> layer shows the same pins for every community you're in.</li>
+</ul>
+</div>
+
+</div>
+<div class="row">
+
+<!-- E. FROM MASTODON -->
+<div class="shot">
+<div class="phone light">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="mhdr"></div>
+  <div class="mprof">
+    <div class="gav">B</div>
+    <h3>Buurt Oosterpoort <span class="gtag">Group</span></h3>
+    <div class="h">@oosterpoort@cartopolis.org</div>
+    <p>Neighbours in the Oosterpoort, Groningen. Mention this account to post here.</p>
+    <div class="mstats"><span><b>312</b> followers</span><span><b>48</b> posts</span></div>
+    <div class="mbtn">Follow</div>
+  </div>
+  <div class="mpost">
+    <div class="boost">⟳ Buurt Oosterpoort boosted</div>
+    <div class="hd"><div class="av c1">S</div><div><b>Sanne</b><span>@sanne@cartopolis.org · 25 min</span></div></div>
+    <p>Plant swap on the corner this Saturday, 10 to 1. Bring cuttings, take cuttings 🌱</p>
+    <div class="img" style="background-image:url(../chat-world/green.jpg);background-position:40% 50%"></div>
+    <div class="loc">📍 Meeuwerderweg, Groningen · <a>open on the map</a></div>
+    <div class="acts"><span>↩ 6</span><span>⟳ 4</span><span>☆ 19</span></div>
+  </div>
+</div>
+<h2><span>E</span>The same post, on Mastodon <span class="later">fediverse</span></h2>
+<ul>
+  <li>The community is a fediverse <b>group</b>, like a Lemmy community. Following it shows its posts as boosts.</li>
+  <li>The post comes from Sanne's own address, so a reply goes to her and to the community, and lands under the post in Cartopolis.</li>
+  <li>Mastodon shows no place of its own, so the post carries one as text and a link that opens the map at Sanne's view.</li>
+  <li>To post <i>to</i> the community from Mastodon, mention it.</li>
+</ul>
+</div>
+
+<!-- F. FROM LEMMY -->
+<div class="shot">
+<div class="phone light">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lbar"><div class="gav">B</div><div><b>Buurt Oosterpoort</b><span>!oosterpoort@cartopolis.org · 312 subscribers</span></div></div>
+  <div class="lpost">
+    <div class="meta">sanne@cartopolis.org · 25 min</div>
+    <h3>Plant swap on the corner this Saturday, 10 to 1</h3>
+    <p>Bring cuttings, take cuttings 🌱</p>
+    <div class="img" style="background-image:url(../chat-world/green.jpg);background-position:40% 50%"></div>
+    <p style="margin-top:6px;color:#555;font-size:12.5px">📍 Meeuwerderweg, Groningen · <a style="color:#5b4bd6">open on the map</a></p>
+    <div class="acts"><span>▲ 21</span><span>💬 6 comments</span></div>
+  </div>
+  <div class="lcom"><div class="meta">tom@cartopolis.org</div><p>I'll bring monstera cuttings</p></div>
+  <div class="lcom"><div class="meta">lies@mastodon.nl</div><p>Is it on if it rains?</p></div>
+  <div class="lcom"><div class="meta">dirk@feddit.nl</div><p>Good idea, will come by</p></div>
+</div>
+<h2><span>F</span>…and on Lemmy <span class="later">fediverse</span></h2>
+<ul>
+  <li>To Lemmy the community is one of its own: people subscribe, vote and comment there.</li>
+  <li>A Lemmy post has a title, a Cartopolis post doesn't: the <b>first line</b> becomes the title.</li>
+  <li>Comments from Lemmy arrive as replies in Cartopolis. Votes are only counted, not shown as people.</li>
+</ul>
+</div>
+
+<!-- G. SETTINGS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="who"><b>Edit Buurt Oosterpoort</b><span style="color:var(--dim)">moderators only</span></div></div>
+  <div class="group-h">Public posts <span class="newtag">new</span></div>
+  <div class="toggle"><div>Public posts<span class="sub">A public page beside the topics</span></div><div class="sw on"></div></div>
+  <div class="group-h">Who can post</div>
+  <div class="radio"><div class="dot on"></div><div><b>Every member</b></div></div>
+  <div class="radio"><div class="dot"></div><div><b>Moderators only</b><span>A notice board</span></div></div>
+  <div class="group-h">Posts from the fediverse that mention us</div>
+  <div class="radio"><div class="dot on"></div><div><b>Show them straight away</b><span>Moderators can hide any of them</span></div></div>
+  <div class="radio"><div class="dot"></div><div><b>A moderator approves each one</b></div></div>
+  <div class="group-h">This community follows</div>
+  <div class="erow"><svg class="i s" style="color:var(--fedi)"><use href="#fedi"/></svg><div class="t">!groningen@feddit.nl<span style="display:block;color:var(--dim);font-size:12px">Lemmy community</span></div><span class="x">✕</span></div>
+  <div class="erow"><svg class="i s" style="color:var(--fedi)"><use href="#fedi"/></svg><div class="t">@groningen@mastodon.nl<span style="display:block;color:var(--dim);font-size:12px">Mastodon account</span></div><span class="x">✕</span></div>
+  <div class="topic add" style="padding-left:18px"><span class="hash">+</span><span class="t">Follow a fediverse address</span></div>
+</div>
+<h2><span>G</span>What a moderator sets</h2>
+<ul>
+  <li>Public posts are switched on per community. Off, the community is exactly what it is today.</li>
+  <li>Who may post, and whether outside posts wait for a moderator.</li>
+  <li>Fediverse accounts and Lemmy communities to follow. Their posts appear in Posts, marked with where they came from.</li>
+</ul>
+</div>
+
+<!-- H. MODERATING AN OUTSIDE POST -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5" style="border-radius:10px">B</div><div class="who"><b>Buurt Oosterpoort</b><span style="color:var(--fedi)">Posts · public</span></div></div>
+  <div class="post picked" style="margin:10px 12px;border-radius:14px;border:0">
+    <div class="hd"><div class="av c6">X</div><div><b>cheapdeals</b><span class="f">@cheapdeals@spam.example · 2 min</span></div></div>
+    <p>Best phones best price click now <span style="color:var(--fedi)">@oosterpoort@cartopolis.org</span></p>
+  </div>
+  <div class="scrim"></div>
+  <div class="choose psheet">
+    <div class="handle"></div>
+    <div class="mi"><span class="ic2">↩</span>Reply</div>
+    <div class="mi"><span class="ic2">⚑</span>Report to the moderators</div>
+    <div class="msec">Moderator<span class="why" style="background:#23392f;color:#9fd3b4">you moderate Buurt Oosterpoort</span></div>
+    <div class="mi bad"><span class="ic2">🗑</span>Hide from this community</div>
+    <div class="mi bad"><span class="ic2">⊘</span><div>Block @cheapdeals@spam.example<span class="sub">From posting here again</span></div></div>
+    <div class="mi"><span class="ic2">⚑</span><div>Also report to spam.example<span class="sub">Sends the report to the server it came from</span></div></div>
+    <div class="msec">Server admin<span class="why" style="background:rgba(253,96,18,.18);color:#ffb48a">you run cartopolis.org</span></div>
+    <div class="mi bad"><span class="ic2">⊘</span>Block all of spam.example</div>
+  </div>
+</div>
+<h2><span>H</span>Moderating what comes from outside</h2>
+<ul>
+  <li>The same menu as v3, for a fediverse author: hide the post, block that address from the community, and pass the report to its own server.</li>
+  <li>Blocking a <b>whole server</b> is the server admin's, and applies to every community.</li>
+  <li>The word filter that guards public chat is applied to incoming posts too.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="bottom">
+  <div><h3>What changes, and what doesn't</h3><ul>
+    <li><b>Topics stay encrypted</b> and members-only, and never go over ActivityPub. Posts are the public half, and the server stores them readable, as it must to send them out.</li>
+    <li><b>A post is a point</b>: the place, the camera view, text and a picture, already stored in the fediverse's own format since the chat work. No conversion.</li>
+    <li><b>Nobody's real location is used.</b> A post's place is where you aimed the camera, not where your phone is.</li>
+    <li><b>Nothing live goes over ActivityPub</b>: avatars, voice, Here and location sharing stay on Cartopolis's own connection.</li>
+    <li>The "every area is a community" idea (chat-world v5) stays set aside: places get posts through communities that have a place.</li>
+  </ul></div>
+  <div><h3>How it would be built</h3><ul>
+    <li><b>The simulator becomes a small fediverse server</b>: a group address per community with posts switched on, a person address per account that posts, <code>/.well-known/webfinger</code> so <code>@oosterpoort@cartopolis.org</code> can be found, and an inbox and outbox. Caddy routes them, like <code>/api</code>.</li>
+    <li><b>Lemmy's own library</b>, <code>activitypub_federation</code>, does the signing, address lookup and fetching, and works with axum, which the simulator's web side uses. To be checked before relying on it.</li>
+    <li><b>Edits and deletes travel</b> both ways, which is why following is better than polling Mastodon's API: a deleted post disappears here too.</li>
+    <li><b>Pictures from outside go through a proxy</b>, so a remote server never sees a Cartopolis user's IP address.</li>
+    <li>Order: posts inside Cartopolis first (A–D, G, H), then sending them out (E, F), then following sources (G's last part).</li>
+  </ul></div>
+  <div><h3>Open questions</h3><ul>
+    <li><b>Posting as yourself.</b> Drawn: a post comes from <code>@sanne@cartopolis.org</code> and the community boosts it, which is how Lemmy works and gives replies someone to answer. It means every account that posts becomes findable on the fediverse. The other way is posting as the community, which hides the author outside Cartopolis.</li>
+    <li><b>Default for outside posts</b>: drawn as shown straight away, with moderators hiding afterwards.</li>
+    <li><b>Addresses are permanent.</b> <code>@oosterpoort</code> cannot be renamed once it has followers without breaking them, so a community's address is chosen when posts are switched on, separately from its display name.</li>
+  </ul></div>
+</div>
+</body></html>

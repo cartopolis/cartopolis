@@ -1,7 +1,7 @@
 ---
 topic: communities
-triggers: [workspace, workspaces, channels, channel, rooms, ChatScope::Room, community, communities, topic, chats.rs, "crates/atlas/web/src/components/pages/chat"]
-updated: 2026-10-10
+triggers: [ActivityPub, fediverse, Mastodon, Lemmy, "public posts", workspace, workspaces, channels, channel, rooms, ChatScope::Room, community, communities, topic, chats.rs, "crates/atlas/web/src/components/pages/chat"]
+updated: 2026-10-13
 ---
 
 # Communities instead of rooms, workspaces and channels: mockup
@@ -14,6 +14,19 @@ join. The two never met, and both answered "a named conversation people can
 join". This replaces all three with one rule: a **community** is a named set
 of people with a few **topics**, and being in the community means being in
 every topic. One-to-one chats, groups, Here and Everyone are unchanged.
+
+## v4: public posts, with a place, on the fediverse
+
+Proposed 2026-10-13, not yet agreed. A community gets a public half beside its
+encrypted topics: **Posts**. A member writes a post with a place (the camera's
+view, the same point private chats send), and it is published on the
+community's page and map and over ActivityPub, so Mastodon and Lemmy users can
+follow the community, reply and post to it. A community can also follow
+fediverse accounts and Lemmy communities. Topics stay encrypted and never
+federate. Open: whether a post goes out as its author (drawn) or as the
+community; whether outside posts are shown at once (drawn) or approved first.
+
+![v4](v4-public-posts.png)
 
 ## v3: one menu for a person, sections by role
 
