@@ -1288,21 +1288,34 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             }
         ),
     );
-    ui.horizontal_wrapped(|ui| {
-        if moderates && theme::action_button(ui, format!("{} Add people", icons::ADD)).clicked() {
+    ui.add_space(4.0);
+    let may_start = moderates || c.settings.members_start_topics;
+    let shown_actions = 1 + usize::from(may_start) + 2 * usize::from(moderates);
+    ui.horizontal(|ui| {
+        let w = theme::equal_width(ui, shown_actions);
+        if moderates
+            && theme::secondary_toggle(ui, icons::ADD, "People", w, cs.adding)
+                .on_hover_text("Add people")
+                .clicked()
+        {
             cs.adding = !cs.adding;
             cs.starting_topic = false;
         }
-        if (moderates || c.settings.members_start_topics)
-            && theme::action_button(ui, format!("{} New topic", icons::ADD)).clicked()
+        if may_start
+            && theme::secondary_toggle(ui, icons::ADD, "Topic", w, cs.starting_topic)
+                .on_hover_text("Start a topic")
+                .clicked()
         {
             cs.starting_topic = !cs.starting_topic;
             cs.adding = false;
         }
-        if theme::action_button(ui, format!("{} {}", icons::GROUP, c.members.len())).clicked() {
+        if theme::secondary_button(ui, icons::GROUP, &c.members.len().to_string(), w)
+            .on_hover_text("Who is in it")
+            .clicked()
+        {
             cs.screen = Some(Screen::People(id));
         }
-        if moderates && theme::action_button(ui, format!("{} Edit", icons::SETTINGS)).clicked() {
+        if moderates && theme::secondary_button(ui, icons::SETTINGS, "Edit", w).clicked() {
             cs.draft = Draft::of(&c);
             cs.screen = Some(Screen::Edit(id));
         }
@@ -1396,11 +1409,12 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 &line,
                 theme::TEXT_DIM,
                 |ui| {
-                    if theme::action_button(ui, format!("{} Let in", icons::CHECK)).clicked() {
+                    if theme::secondary_button(ui, icons::CHECK, "Let in", 0.0).clicked() {
                         cs.ops
                             .push(CommunityOp::Decide(id, r.address.clone(), true));
                     }
-                    if theme::action_button(ui, icons::CLEAR)
+                    let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
+                    if theme::secondary_button(ui, icons::CLEAR, "", side)
                         .on_hover_text("Turn down")
                         .clicked()
                     {
@@ -1441,13 +1455,21 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 if !r.note.is_empty() {
                     theme::note(ui, &r.note);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    if theme::action_button(ui, "Delete the message").clicked() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let w = theme::equal_width(ui, 3);
+                    if theme::secondary_button(ui, icons::DELETE, "Message", w)
+                        .on_hover_text("Delete the message")
+                        .clicked()
+                    {
                         cs.ops
                             .push(CommunityOp::ModerateDelete(r.group.clone(), r.seq));
                         cs.ops.push(CommunityOp::ResolveReport(id, r.id));
                     }
-                    if theme::action_button(ui, "Remove them").clicked() {
+                    if theme::secondary_button(ui, icons::LOGOUT, "Remove", w)
+                        .on_hover_text("Remove them from the community")
+                        .clicked()
+                    {
                         cs.ops.push(CommunityOp::Remove {
                             id,
                             who: r.reported.clone(),
@@ -1456,7 +1478,10 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                         });
                         cs.ops.push(CommunityOp::ResolveReport(id, r.id));
                     }
-                    if theme::action_button(ui, "Dismiss").clicked() {
+                    if theme::secondary_button(ui, icons::CHECK, "Dismiss", w)
+                        .on_hover_text("Nothing to do: close the report")
+                        .clicked()
+                    {
                         cs.ops.push(CommunityOp::ResolveReport(id, r.id));
                     }
                 });

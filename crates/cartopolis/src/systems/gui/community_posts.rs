@@ -463,9 +463,13 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
         }
         ui.add_space(4.0);
     }
-    row(ui, |ui| {
+    ui.horizontal(|ui| {
+        let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
+        let squares = if role.moderates() { 2.0 } else { 1.0 };
+        let gap = ui.spacing().item_spacing.x;
+        let wide = (ui.available_width() - squares * (side + gap)).floor();
         let pins = cs.posts.on_map == Some(id);
-        if tool(
+        if theme::secondary_toggle(
             ui,
             icons::PIN,
             if pins {
@@ -473,23 +477,27 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
             } else {
                 "Show on the map"
             },
-            "Pin this community's posts where they were written",
+            wide,
+            pins,
         )
+        .on_hover_text("Pin this community's posts where they were written")
         .clicked()
         {
             cs.posts.on_map = if pins { None } else { Some(id) };
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if role.moderates()
-                && theme::round_button(ui, icons::SETTINGS, "Settings", cs.posts.settings_open)
-                    .clicked()
-            {
-                cs.posts.settings_open = !cs.posts.settings_open;
-            }
-            if theme::round_button(ui, icons::REFRESH, "Read again", false).clicked() {
-                cs.posts.refresh(id);
-            }
-        });
+        if theme::secondary_button(ui, icons::REFRESH, "", side)
+            .on_hover_text("Read again")
+            .clicked()
+        {
+            cs.posts.refresh(id);
+        }
+        if role.moderates()
+            && theme::secondary_toggle(ui, icons::SETTINGS, "", side, cs.posts.settings_open)
+                .on_hover_text("Settings")
+                .clicked()
+        {
+            cs.posts.settings_open = !cs.posts.settings_open;
+        }
     });
     ui.add_space(4.0);
     if cs.posts.settings_open && role.moderates() {
@@ -817,31 +825,45 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
     let place = draft.place.clone();
 
     // Where: one line, and the one thing to do about it.
-    ui.horizontal(|ui| {
-        let here = theme::round_button(
+    raised_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        row(
             ui,
-            icons::HERE,
-            "Use the view now: close the panel, look somewhere else, come back and press this",
-            false,
+            40.0,
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if theme::secondary_button(ui, icons::HERE, "Use view", 0.0)
+                    .on_hover_text("Close the panel, look somewhere else, come back and press this")
+                    .clicked()
+                {
+                    cs.posts.want_view = true;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(icons::PIN)
+                            .size(20.0)
+                            .color(theme::ACCENT),
+                    );
+                    ui.vertical(|ui| match &place {
+                        Some(p) => {
+                            let name = p.name.clone().unwrap_or_else(|| {
+                                format!("{:.5}, {:.5}", p.latitude, p.longitude)
+                            });
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(name).color(theme::CREAM))
+                                    .truncate(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Pinned where you are looking")
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::TEXT_DIM),
+                            );
+                        }
+                        None => theme::busy(ui, "Taking the view…"),
+                    });
+                });
+            },
         );
-        if here.clicked() {
-            cs.posts.want_view = true;
-        }
-        ui.vertical(|ui| match &place {
-            Some(p) => {
-                let name = p
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("{:.5}, {:.5}", p.latitude, p.longitude));
-                ui.add(egui::Label::new(egui::RichText::new(name).color(theme::CREAM)).truncate());
-                ui.label(
-                    egui::RichText::new("Pinned where you are looking")
-                        .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
-                );
-            }
-            None => theme::busy(ui, "Taking the view…"),
-        });
     });
 
     // What goes with it: each attachment as it will look, with its own remove.
@@ -879,37 +901,42 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             }
         }
     }
-    ui.add_space(4.0);
-    row(ui, |ui| {
+    ui.add_space(6.0);
+    // Two halves of one row: the two things a post can carry, as a set.
+    ui.horizontal(|ui| {
+        let w = theme::equal_width(ui, 2);
         let label = if picture.is_some() {
             "Other photo"
         } else {
             "Photo"
         };
-        if tool(ui, icons::CAMERA, label, "Add a photo from this device").clicked() {
+        if theme::secondary_button(ui, icons::CAMERA, label, w)
+            .on_hover_text("Add a photo from this device")
+            .clicked()
+        {
             cs.picture_for_post = true;
             cs.pick_picture = true;
         }
-        ui.add_space(12.0);
-        if cs.posts.snapshot_busy {
-            theme::busy(ui, "Developing…");
+        let busy = cs.posts.snapshot_busy;
+        let label = if busy {
+            "Developing…"
+        } else if snapshot.is_some() {
+            "New polaroid"
         } else {
-            let label = if snapshot.is_some() {
-                "New polaroid"
-            } else {
-                "Polaroid"
-            };
-            if tool(
-                ui,
-                icons::LANDSCAPE,
-                label,
+            "Polaroid"
+        };
+        if ui
+            .add_enabled_ui(!busy, |ui| {
+                theme::secondary_button(ui, icons::LANDSCAPE, label, w)
+            })
+            .inner
+            .on_hover_text(
                 "A snapshot of the map as you see it now, framed as a polaroid from this place. \
                  It goes with the post, beside any photo.",
             )
             .clicked()
-            {
-                cs.posts.want_snapshot = true;
-            }
+        {
+            cs.posts.want_snapshot = true;
         }
     });
     if let Some(note) = &cs.picture_note {
@@ -995,33 +1022,17 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
     }
 }
 
-/// A row as tall as a round button, everything centred on it. `ui.horizontal`
-/// centres on the row's *starting* height, which is shorter than the disc, so
+/// A row of a stated height, its contents centred on it. `ui.horizontal`
+/// centres on the row's *starting* height, which is shorter than a button, so
 /// a word beside one sat level with its top.
-fn row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), theme::ROUND_BUTTON_SIZE),
-        egui::Layout::left_to_right(egui::Align::Center),
-        add,
-    )
-    .inner
-}
-
-/// A round icon with its word beside it, both one target: the composer's
-/// attachments, which are too few to need a toolbar and too unlike each other
-/// to read from the glyph alone.
-fn tool(ui: &mut egui::Ui, icon: &str, label: &str, tooltip: &str) -> egui::Response {
-    row(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let disc = theme::round_button(ui, icon, tooltip, false);
-        let word = ui
-            .add(
-                egui::Label::new(egui::RichText::new(label).color(theme::TEXT))
-                    .sense(egui::Sense::click()),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        disc.union(word)
-    })
+fn row<R>(
+    ui: &mut egui::Ui,
+    height: f32,
+    layout: egui::Layout,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), layout, add)
+        .inner
 }
 
 /// A small round ✕ over the top-right corner of an attachment's preview.

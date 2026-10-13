@@ -1053,7 +1053,7 @@ pub fn chip_frame() -> egui::Frame {
 
 /// Height of a primary button on a pointer. Under a finger it grows to
 /// [`row_height`], which is larger.
-const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
+pub const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 
 /// **The** call to action on a screen: filled with the accent, labelled in
 /// [`INK`] at [`SIZE_VALUE`], taller than an ordinary button, and at least
@@ -1151,6 +1151,113 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
         );
     }
     resp
+}
+
+/// The button beside a [`primary_button_sized`]: as tall, on a lit surface
+/// with a hairline, the icon in the accent and the word in [`CREAM`].
+///
+/// It replaces two things that each read wrong in a card: an
+/// [`action_button`], which is an outline pill the size of a line of text and
+/// so too small to aim at, and a [`round_button`], whose fill is the map's
+/// translucent overlay and is nearly black on a panel. An empty `label` makes
+/// it an icon-only square when `min_width` is the height.
+pub fn secondary_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    min_width: f32,
+) -> egui::Response {
+    secondary_toggle(ui, icon, label, min_width, false)
+}
+
+/// [`secondary_button`] for a switch: `on` wears the accent's tint and ring.
+pub fn secondary_toggle(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    min_width: f32,
+    on: bool,
+) -> egui::Response {
+    // Painted rather than an `egui::Button`: a button lays its atoms out with
+    // padding and gaps of its own, so an icon-only one came out wider than the
+    // square asked for, and a row of them pushed the panel wider every frame.
+    // Here the size asked for is the size drawn.
+    let height = PRIMARY_BUTTON_HEIGHT.max(row_height());
+    let pad = 12.0;
+    let gap = 6.0;
+    let icon_g = ui
+        .painter()
+        .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), ACCENT);
+    let word_g = (!label.is_empty()).then(|| {
+        ui.painter()
+            .layout_no_wrap(label.to_string(), FontId::proportional(SIZE_BODY), CREAM)
+    });
+    let content = icon_g.size().x + word_g.as_ref().map_or(0.0, |g| gap + g.size().x);
+    let width = if word_g.is_some() {
+        min_width.max(content + 2.0 * pad)
+    } else {
+        min_width.max(height)
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let enabled = ui.is_enabled();
+    let held = resp.is_pointer_button_down_on();
+    let (fill, line) = if !enabled {
+        (SURFACE_RAISED, LINE.gamma_multiply(0.5))
+    } else if held || on {
+        (ACCENT_MUTED, ACCENT)
+    } else if resp.hovered() {
+        (SECONDARY_HOVER, ACCENT)
+    } else {
+        (SURFACE_HOVER, LINE)
+    };
+    let p = ui.painter();
+    p.rect(
+        rect,
+        CornerRadius::same(RADIUS),
+        fill,
+        Stroke::new(1.0, line),
+        egui::StrokeKind::Inside,
+    );
+    // The same lit top edge as the primary, fainter: it is what makes a
+    // surface read as a raised key rather than a hole in the panel.
+    if enabled && !held {
+        let inset = f32::from(RADIUS);
+        p.line_segment(
+            [
+                egui::pos2(rect.left() + inset, rect.top() + 1.0),
+                egui::pos2(rect.right() - inset, rect.top() + 1.0),
+            ],
+            Stroke::new(1.0, Color32::from_white_alpha(40)),
+        );
+    }
+    let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
+    let mut x = rect.center().x - content / 2.0;
+    p.galley_with_override_text_color(
+        egui::pos2(x, rect.center().y - icon_g.size().y / 2.0),
+        icon_g.clone(),
+        dim(ACCENT),
+    );
+    x += icon_g.size().x + gap;
+    if let Some(g) = word_g {
+        let y = rect.center().y - g.size().y / 2.0;
+        p.galley_with_override_text_color(egui::pos2(x, y), g, dim(CREAM));
+    }
+    paint_focus_ring(ui, &resp, rect, false);
+    resp
+}
+
+/// [`secondary_button`]'s hover fill: a step above [`SURFACE_HOVER`].
+const SECONDARY_HOVER: Color32 = Color32::from_rgb(0x36, 0x44, 0x45);
+
+/// The width each of `n` buttons gets to share a row equally: a row of
+/// controls that are one choice each reads as a set, sized to their words it
+/// reads as a pile.
+pub fn equal_width(ui: &egui::Ui, n: usize) -> f32 {
+    let n = n.max(1) as f32;
+    ((ui.available_width() - ui.spacing().item_spacing.x * (n - 1.0)) / n).floor()
 }
 
 /// Diameter of a round icon button, in points. Matches the compass disc in the
