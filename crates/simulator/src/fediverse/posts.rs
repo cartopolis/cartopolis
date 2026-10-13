@@ -343,10 +343,9 @@ pub fn create_post(
     may_post(conn, community, author)?;
     let text = clean_text(&new.text)?;
     let place = clean_place(&new.place)?;
-    if new
-        .picture
-        .as_deref()
-        .is_some_and(|p| !crate::assets::is_hash(p))
+    if [&new.picture, &new.snapshot]
+        .iter()
+        .any(|p| p.as_deref().is_some_and(|p| !crate::assets::is_hash(p)))
     {
         return Err(Refusal::BadPicture);
     }
@@ -354,8 +353,9 @@ pub fn create_post(
     let view = place.view;
     conn.execute(
         "INSERT INTO posts (id, community, parent, ap_id, author_account, text, picture,
-                            lat, lng, place_name, view_alt, view_pitch, view_yaw, created_ms)
-         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                            lat, lng, place_name, view_alt, view_pitch, view_yaw, created_ms,
+                            snapshot)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id.to_string(),
             community.to_string(),
@@ -369,7 +369,8 @@ pub fn create_post(
             view.map(|v| v.altitude),
             view.map(|v| f64::from(v.pitch)),
             view.map(|v| f64::from(v.yaw)),
-            now_ms
+            now_ms,
+            new.snapshot
         ],
     )?;
     Ok(id)
@@ -437,6 +438,7 @@ pub struct PostRow {
     pub via_actor: Option<String>,
     pub text: String,
     pub picture: Option<String>,
+    pub snapshot: Option<String>,
     pub place: Option<PostPlace>,
     pub url: Option<String>,
     pub created_ms: i64,
@@ -446,7 +448,7 @@ pub struct PostRow {
 
 const POST_COLUMNS: &str = "id, community, parent, ap_id, author_account, author_actor, via_actor,
      text, picture, lat, lng, place_name, view_alt, view_pitch, view_yaw, url, created_ms,
-     edited_ms, hidden_by";
+     edited_ms, hidden_by, snapshot";
 
 fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
     let uuid = |s: String| Uuid::parse_str(&s).unwrap_or_default();
@@ -484,6 +486,7 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
         created_ms: r.get(16)?,
         edited_ms: r.get(17)?,
         hidden: r.get::<_, Option<String>>(18)?.is_some(),
+        snapshot: r.get(19)?,
     })
 }
 
@@ -593,6 +596,7 @@ pub fn dto(
         via,
         text: row.text.clone(),
         picture: row.picture.clone(),
+        snapshot: row.snapshot.clone(),
         place: row.place.clone(),
         url: row.url.clone(),
         created_ms: row.created_ms,
@@ -860,7 +864,8 @@ pub fn picture_is_public(conn: &Connection, hash: &str) -> Result<bool, Refusal>
     Ok(conn
         .query_row(
             "SELECT 1 FROM posts p JOIN community_public c ON c.community = p.community
-             WHERE p.picture = ?1 AND p.hidden_by IS NULL AND c.enabled = 1 LIMIT 1",
+             WHERE (p.picture = ?1 OR p.snapshot = ?1) AND p.hidden_by IS NULL
+                 AND c.enabled = 1 LIMIT 1",
             params![hash],
             |_| Ok(()),
         )
@@ -993,6 +998,7 @@ mod tests {
         NewPost {
             text: text.into(),
             picture: None,
+            snapshot: None,
             place: PostPlace {
                 latitude: 53.21,
                 longitude: 6.58,

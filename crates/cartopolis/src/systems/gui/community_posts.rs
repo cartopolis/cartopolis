@@ -47,9 +47,14 @@ pub struct Draft {
     pub place: Option<PostPlace>,
     /// A plain JPEG in the picture store.
     pub picture: Option<String>,
+    /// The snapshot of the world, also in the picture store
+    /// (`utils::world_polaroid`).
+    pub snapshot: Option<String>,
 }
 
 enum Done {
+    /// A polaroid was framed and stored: its hash.
+    Snapshot(Result<String, String>),
     Info(Uuid, Result<PublicInfo, String>),
     Feed(Uuid, Result<Vec<PostDto>, String>),
     Thread(Result<PostThread, String>),
@@ -94,6 +99,13 @@ pub struct Posts {
     swept: Option<bevy::platform::time::Instant>,
     /// How many communities that read covered, so joining one reads again.
     swept_count: usize,
+    /// The composer asked for a snapshot of the view: the next frame is
+    /// captured without the interface (`ui::drive_screenshots`).
+    pub want_snapshot: bool,
+    /// That capture, as RGBA and its size, until it is framed as a polaroid.
+    pub snapshot_in: Option<(Vec<u8>, [u32; 2])>,
+    /// A polaroid is being captured, framed or stored.
+    pub snapshot_busy: bool,
 }
 
 /// How often the map's posts are read again while the layer is on: a post
@@ -166,6 +178,7 @@ impl Posts {
             text: String::new(),
             place,
             picture: None,
+            snapshot: None,
         });
     }
 
@@ -203,6 +216,27 @@ impl Posts {
         self.tab = Tab::Posts;
         self.loaded = Some(community);
         self.open_thread(post);
+    }
+
+    /// A capture of the view arrived: frame it as a polaroid of the draft's
+    /// place and store it, off the frame.
+    fn make_snapshot(&mut self, rgba: Vec<u8>, size: [u32; 2], community_name: &str) {
+        let place = self
+            .draft
+            .as_ref()
+            .and_then(|d| d.place.as_ref())
+            .and_then(|p| p.name.clone())
+            .unwrap_or_else(|| community_name.to_string());
+        let date = jiff::Zoned::now().strftime("%-d %B %Y").to_string();
+        self.spawn(async move {
+            let made =
+                crate::utils::world_polaroid::compose(&rgba, size[0], size[1], &place, &date);
+            let stored = match made {
+                Ok(jpeg) => crate::systems::model_assets::api_upload_picture(jpeg).await,
+                Err(e) => Err(e),
+            };
+            Done::Snapshot(stored)
+        });
     }
 
     /// Read every community's posts again when the layer is on and it is time.
@@ -273,6 +307,16 @@ impl Posts {
                     }
                 }
                 Done::Changed(id, Ok(())) => self.refresh(id),
+                Done::Snapshot(Ok(hash)) => {
+                    self.snapshot_busy = false;
+                    if let Some(d) = self.draft.as_mut() {
+                        d.snapshot = Some(hash);
+                    }
+                }
+                Done::Snapshot(Err(e)) => {
+                    self.snapshot_busy = false;
+                    self.note = Some(format!("The polaroid did not work: {e}"));
+                }
                 Done::Info(_, Err(e))
                 | Done::Feed(_, Err(e))
                 | Done::Thread(Err(e))
@@ -481,6 +525,10 @@ fn post_card(
         .picture
         .as_deref()
         .and_then(|h| cs.picture(ui.ctx(), Some(h)));
+    let snapshot = p
+        .snapshot
+        .as_deref()
+        .and_then(|h| cs.picture(ui.ctx(), Some(h)));
     let mut tapped = false;
     let frame = raised_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -520,6 +568,15 @@ fn post_card(
             });
         });
         ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::TEXT)).wrap());
+        // The polaroid keeps its own proportions: its frame is
+        // part of the picture, and a crop would cut them off.
+        if let Some(t) = &snapshot {
+            let w = ui.available_width().min(420.0);
+            let size = t.size_vec2();
+            ui.add(
+                egui::Image::new(t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))),
+            );
+        }
         if let Some(t) = &picture {
             let w = ui.available_width();
             let size = t.size_vec2();
@@ -743,7 +800,17 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             .color(theme::TEXT_DIM),
     );
     let picture = draft.picture.clone();
+    let snapshot = draft.snapshot.clone();
     let place = draft.place.clone();
+    // The snapshot first, as it goes out first.
+    if let Some(t) = snapshot
+        .as_deref()
+        .and_then(|h| cs.picture(ui.ctx(), Some(h)))
+    {
+        let w = ui.available_width().min(360.0);
+        let size = t.size_vec2();
+        ui.add(egui::Image::new(&t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))));
+    }
     if let Some(t) = picture
         .as_deref()
         .and_then(|h| cs.picture(ui.ctx(), Some(h)))
@@ -798,6 +865,31 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             }
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        if cs.posts.snapshot_busy {
+            theme::busy(ui, "Developing the polaroid…");
+        } else {
+            let label = if snapshot.is_some() {
+                "A new polaroid"
+            } else {
+                "Polaroid of this view"
+            };
+            if theme::action_button(ui, format!("{} {label}", icons::SHARE))
+                .on_hover_text(
+                    "A snapshot of the map as you see it now, framed as a polaroid from this place. \
+                     It goes with the post, beside any photo.",
+                )
+                .clicked()
+            {
+                cs.posts.want_snapshot = true;
+            }
+            if snapshot.is_some() && theme::action_button(ui, "Remove the polaroid").clicked() {
+                if let Some(d) = cs.posts.draft.as_mut() {
+                    d.snapshot = None;
+                }
+            }
+        }
+    });
     if let Some(note) = &cs.picture_note {
         theme::note(ui, note);
     }
@@ -823,7 +915,8 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         .as_ref()
         .is_some_and(|d| !d.text.trim().is_empty() && d.place.is_some())
         && !cs.posts.sending
-        && cs.picture_for_post_idle();
+        && cs.picture_for_post_idle()
+        && !cs.posts.snapshot_busy;
     ui.add_space(4.0);
     if ui
         .add_enabled(
@@ -839,6 +932,7 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                 let body = serde_json::to_string(&NewPost {
                     text: d.text.trim().to_string(),
                     picture: d.picture,
+                    snapshot: d.snapshot,
                     place,
                 })
                 .unwrap_or_default();
@@ -1022,9 +1116,26 @@ pub fn answer_post_view(
     map_anchor: Res<crate::resources::MapAnchor>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    mut shot: ResMut<crate::resources::ScreenshotState>,
 ) {
     if cs.posts.busy() {
         cs.posts.poll();
+    }
+    // "Polaroid of this view": capture the next frame without the interface,
+    // the way a chat's "Send a snapshot" does, then draw it off the frame.
+    if std::mem::take(&mut cs.posts.want_snapshot) {
+        cs.posts.snapshot_busy = true;
+        shot.post_snapshot = true;
+    }
+    if let Some((rgba, size)) = cs.posts.snapshot_in.take() {
+        let name = cs
+            .posts
+            .draft
+            .as_ref()
+            .and_then(|d| cs.get(d.community))
+            .map(|c| c.settings.name.clone())
+            .unwrap_or_default();
+        cs.posts.make_snapshot(rgba, size, &name);
     }
     // Layers ▸ Community posts: keep every community's posts current for the
     // map. Nothing to read without a server, and a scripted capture's demo
@@ -1133,6 +1244,7 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
                 via: None,
                 text: text.into(),
                 picture: None,
+                snapshot: None,
                 place,
                 url: None,
                 created_ms: now - ago_min * 60_000,
@@ -1190,6 +1302,7 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
                 view: view(-30.0, 0.0),
             }),
             picture: None,
+            snapshot: None,
         });
     }
 }
@@ -1243,6 +1356,7 @@ mod tests {
             via: None,
             text: "Plant swap".into(),
             picture: None,
+            snapshot: None,
             place,
             url: None,
             created_ms: 0,

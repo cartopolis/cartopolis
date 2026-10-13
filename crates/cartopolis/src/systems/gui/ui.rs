@@ -527,6 +527,30 @@ pub fn drive_screenshots(
 ) {
     use bevy::render::view::screenshot::Screenshot;
 
+    if std::mem::take(&mut shot.post_snapshot) {
+        // A public post's polaroid (`community_posts`): the same chrome-free
+        // capture as a chat's snapshot, its pixels handed to the post being
+        // written, which frames it as a polaroid on a worker.
+        shot.hide_ui = true;
+        commands.spawn(Screenshot::primary_window()).observe(
+            |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+             mut cs: ResMut<crate::systems::communities::Communities>| {
+                let image = &captured.image;
+                let size = image.size();
+                match image.clone().try_into_dynamic() {
+                    Ok(dynamic) => {
+                        cs.posts.snapshot_in =
+                            Some((dynamic.to_rgba8().into_raw(), [size.x, size.y]));
+                    }
+                    Err(e) => {
+                        cs.posts.snapshot_busy = false;
+                        warn!("a polaroid snapshot could not be read: {e}");
+                    }
+                }
+            },
+        );
+        return;
+    }
     if let Some(channel) = shot.chat_snapshot.take() {
         // The pixels go to the chat as raw RGBA: encoding a full window here
         // would stall the frame, and `chat_pictures` re-encodes on a worker

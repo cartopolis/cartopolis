@@ -68,6 +68,11 @@ pub struct NewPost {
     /// a chat's pictures it is not sealed: a post is public.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// A snapshot of the world at the post's place, framed as a polaroid on the
+    /// device (the app's "Polaroid of this view"), also in the picture store.
+    /// Beside the photo, not instead of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
     pub place: PostPlace,
 }
 
@@ -107,6 +112,9 @@ pub struct PostDto {
     /// when the post arrives, so no reader's address is ever shown to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// Its snapshot of the world, for a post written in Cartopolis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
     /// Where it was written. Most posts from elsewhere have none: they are
     /// listed, not pinned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,6 +307,7 @@ mod tests {
         let post = NewPost {
             text: "Plant swap".into(),
             picture: None,
+            snapshot: None,
             place: PostPlace {
                 latitude: 53.2,
                 longitude: 6.57,

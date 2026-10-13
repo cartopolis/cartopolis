@@ -1732,3 +1732,64 @@
     display: flex;
     gap: 8px;
 }
+
+/*
+ * A post's polaroid: the white frame and its caption are in the picture itself
+ * (the app draws them, so it reads as a polaroid on Mastodon too). The page
+ * adds what a JPEG cannot: a slight tilt and a shadow, as a print lying on the
+ * table would have.
+ */
+.post-polaroid {
+    border-radius: 2px;
+    box-shadow: 0 10px 24px rgb(0 0 0 / 38%), 0 2px 4px rgb(0 0 0 / 30%);
+    display: block;
+    margin: 14px 6px 6px;
+    max-width: min(100%, 360px);
+    transform: rotate(-1.5deg);
+}
+
+/* Glyphs on a line of text: the Material paths (`lib/icons.tsx`), at text size. */
+.post-public,
+.post-dim,
+.post-placing-choices button,
+.post-error button {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+}
+
+.post-public .chat-icon,
+.post-placing-choices .chat-icon,
+.chat button.post-place-chip .chat-icon,
+.chat button.post-replies .chat-icon,
+.post-tool .chat-icon {
+    height: 1.15em;
+    width: 1.15em;
+}
+
+.chat button.post-place-chip .chat-icon {
+    color: var(--m-accent);
+}
+
+.post-menu summary .chat-icon,
+.chat button.post-icon .chat-icon {
+    height: 20px;
+    width: 20px;
+}
+
+.post-tool {
+    align-items: center;
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-full);
+    color: var(--m-text);
+    cursor: pointer;
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+    padding: 4px 10px;
+}
+
+.post-tool:hover {
+    border-color: var(--m-border-strong);
+    color: var(--m-text-strong);
+}

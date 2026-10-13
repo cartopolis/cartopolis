@@ -4,6 +4,7 @@ import {Button, FieldSegmented, FieldText} from '@garage44/mithril/components'
 import {signupApi} from '@/app'
 import {ApiError} from '@/lib/api'
 import type {CommunityView} from '@/lib/chat'
+import {Icon} from '@/lib/icons'
 import {parsePlace, placeParam, suggestHandle} from '@/lib/posts'
 import type {PostDto, PostPlace, PostThread, PublicInfo, WhoPosts} from '@/types'
 
@@ -183,7 +184,7 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
     const error = st.error && (
         <p class="post-error">
             {st.error}
-            <button aria-label="Dismiss" onclick={() => (st.error = '')} type="button">×</button>
+            <button aria-label="Dismiss" onclick={() => (st.error = '')} type="button">{Icon('close')}</button>
         </p>
     )
     if (!info) return [error, <p class="chat-hint">Reading the posts…</p>]
@@ -205,11 +206,11 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
     return [
         <div class="post-bar">
             <span class="post-public" title="Public: anybody can read these, here and on other servers">
-                🌐 Public · {info.followers} follower{info.followers === 1 ? '' : 's'} on the fediverse
+                {Icon('public')} Public · {info.followers} follower{info.followers === 1 ? '' : 's'} on the fediverse
                 {info.address && <span class="post-dim"> · @{info.address}</span>}
             </span>
             <span class="post-bar-tools">
-                <button aria-label="Read again" class="post-icon" onclick={() => void load(id)} title="Read again" type="button">↻</button>
+                <button aria-label="Read again" class="post-icon" onclick={() => void load(id)} title="Read again" type="button">{Icon('refresh')}</button>
                 {mod && (
                     <button
                         aria-label="Settings"
@@ -218,7 +219,7 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
                         title="Settings"
                         type="button"
                     >
-                        ⚙
+                        {Icon('settings')}
                     </button>
                 )}
             </span>
@@ -250,7 +251,7 @@ function PlaceChip(place: PostPlace | undefined, ctx: PostsCtx) {
             title="Open in World, seen from where it was written"
             type="button"
         >
-            📍 {place.name ?? 'Show on the map'}
+            {Icon('location_on')} {place.name ?? 'Show on the map'}
         </button>
     )
 }
@@ -258,6 +259,7 @@ function PlaceChip(place: PostPlace | undefined, ctx: PostsCtx) {
 function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean) {
     const mod = community.role === 'owner' || community.role === 'moderator'
     const url = ctx.pictureUrl(p.picture)
+    const snapshot = ctx.pictureUrl(p.snapshot)
     const open = top && st.threadOpen === p.id
     const act = async (run: () => Promise<unknown>) => {
         try {
@@ -308,13 +310,16 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
                     <span class="post-dim" title={new Date(p.created_ms).toLocaleString()}>{ago(p.created_ms)}</span>
                     {menu.length > 0 && (
                         <details class="post-menu">
-                            <summary aria-label="More" title="More">⋯</summary>
+                            <summary aria-label="More" title="More">{Icon('more_horiz')}</summary>
                             <div class="post-menu-list">{menu}</div>
                         </details>
                     )}
                 </header>
                 {p.via && <div class="post-via">via {p.via}</div>}
                 <p class="post-text">{p.text}</p>
+                {snapshot && (
+                    <img alt="A snapshot of the map where this was written" class="post-polaroid" loading="lazy" src={snapshot} />
+                )}
                 {url && <img alt="" class="post-picture" loading="lazy" src={url} />}
                 {top && (
                     <footer class="post-foot">
@@ -324,7 +329,7 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
                             onclick={() => void toggleThread(p.id)}
                             type="button"
                         >
-                            💬 {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
+                            {Icon('comment')} {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
                         </button>
                     </footer>
                 )}
@@ -435,7 +440,7 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                 {url && (
                     <div class="post-compose-picture">
                         <img alt="" class="post-picture" src={url} />
-                        <button aria-label="Remove the picture" onclick={() => (d.picture = null)} type="button">×</button>
+                        <button aria-label="Remove the picture" onclick={() => (d.picture = null)} type="button">{Icon('close')}</button>
                     </div>
                 )}
                 {d.placing && (
@@ -481,7 +486,7 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                                     )}
                                 type="button"
                             >
-                                Where I am
+                                {Icon('my_location')} Where I am
                             </button>
                         </div>
                     </div>
@@ -493,10 +498,10 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                         title="Where it is about"
                         type="button"
                     >
-                        📍 {d.place ? (d.place.name ?? `${d.place.latitude.toFixed(4)}, ${d.place.longitude.toFixed(4)}`) : 'Add a place'}
+                        {Icon('location_on')} {d.place ? (d.place.name ?? `${d.place.latitude.toFixed(4)}, ${d.place.longitude.toFixed(4)}`) : 'Add a place'}
                     </button>
-                    <label class="post-icon" title="Add a picture">
-                        🖼
+                    <label class="post-tool" title="Add a photo">
+                        {Icon('image')} Photo
                         <input
                             accept="image/*"
                             hidden
@@ -593,7 +598,7 @@ function Settings(community: CommunityView, info: PublicInfo) {
                                 title="Stop following"
                                 type="button"
                             >
-                                ×
+                                {Icon('close')}
                             </button>
                         </div>
                     ))}

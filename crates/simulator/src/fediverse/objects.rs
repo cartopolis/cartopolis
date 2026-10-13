@@ -259,15 +259,37 @@ pub fn note(
             v["cartopolis:view"] = json!(view);
         }
     }
+    // The snapshot first: it is what a post written here is about, and the
+    // first attachment is the one a timeline shows largest.
+    let mut attachments = Vec::new();
+    if let Some(hash) = &row.snapshot {
+        attachments.push(json!({
+            "type": "Image",
+            "mediaType": "image/jpeg",
+            "url": format!("{base}/ap/media/{hash}"),
+            "name": snapshot_alt(row.place.as_ref()),
+        }));
+    }
     if let Some(hash) = &row.picture {
-        v["attachment"] = json!([{
+        attachments.push(json!({
             "type": "Image",
             "mediaType": "image/jpeg",
             "url": format!("{base}/ap/media/{hash}"),
             "name": place_alt(row.place.as_ref()),
-        }]);
+        }));
+    }
+    if !attachments.is_empty() {
+        v["attachment"] = Value::Array(attachments);
     }
     v
+}
+
+/// What a snapshot shows, for somebody who cannot see it.
+fn snapshot_alt(place: Option<&PostPlace>) -> String {
+    match place.and_then(|p| p.name.as_deref()) {
+        Some(n) => format!("A snapshot from Cartopolis: the 3D map at {n}"),
+        None => "A snapshot from Cartopolis: the 3D map where this was written".into(),
+    }
 }
 
 fn place_alt(place: Option<&PostPlace>) -> String {
@@ -762,6 +784,7 @@ mod tests {
             via_actor: None,
             text: text.into(),
             picture: Some("ab".repeat(32)),
+            snapshot: Some("cd".repeat(32)),
             place: Some(PostPlace {
                 latitude: 53.21,
                 longitude: 6.58,
@@ -805,8 +828,10 @@ mod tests {
         );
         assert_eq!(
             image_url(&n).unwrap(),
-            format!("https://c.test/ap/media/{}", "ab".repeat(32))
+            format!("https://c.test/ap/media/{}", "cd".repeat(32)),
+            "the snapshot comes first"
         );
+        assert_eq!(n["attachment"].as_array().unwrap().len(), 2);
         // What we write is what we read: text, place and all.
         assert_eq!(object_text(&n), "Plant swap <Saturday>\nBring cuttings");
         assert_eq!(object_place(&n), row("x").place);

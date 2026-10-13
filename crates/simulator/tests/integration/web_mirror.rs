@@ -99,6 +99,7 @@ fn post_dto() {
         via: Some(String::new()),
         text: String::new(),
         picture: Some(String::new()),
+        snapshot: Some(String::new()),
         place: Some(place.clone()),
         url: Some(String::new()),
         created_ms: 0,

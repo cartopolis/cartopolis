@@ -944,6 +944,9 @@ pub struct ScreenshotState {
     /// "Send a snapshot"). Captured the same chrome-free way, and handed to the
     /// chat as a picture rather than saved.
     pub chat_snapshot: Option<String>,
+    /// A snapshot of the map for a public post's polaroid
+    /// (`community_posts`): captured the same way, framed as a polaroid after.
+    pub post_snapshot: bool,
     /// Group the dev panel's "Copy as preset" writes into the block it copies —
     /// the subject a remembered viewpoint is *for* (`tunnels`, `bridges`,
     /// `doors`). Empty means the published documentation set.

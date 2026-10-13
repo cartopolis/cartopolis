@@ -228,6 +228,7 @@ async fn a_post_crosses_to_a_following_server_and_a_reply_comes_back() {
     let new = NewPost {
         text: "Plant swap on the corner this Saturday".into(),
         picture: None,
+        snapshot: None,
         place: place.clone(),
     };
     let (status, posted) = call(

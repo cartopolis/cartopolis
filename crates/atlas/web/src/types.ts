@@ -453,6 +453,8 @@ export interface PostDto {
     text: string
     /** A hash in the picture store. */
     picture?: string
+    /** Its snapshot of the world, made in the app, beside the photo. */
+    snapshot?: string
     /** Where it was written; most posts from elsewhere have none. */
     place?: PostPlace
     /** The post's own web page, for one from another server. */

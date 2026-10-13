@@ -9,5 +9,7 @@ pub mod clipboard;
 // captures and shows photos too, it just has nowhere durable to put them.
 pub mod photo;
 pub mod photo_store;
+// A world snapshot framed as a polaroid, for a public post. Pure pixels, every target.
 pub mod sun;
 pub mod tile_utils;
+pub mod world_polaroid;
