@@ -228,6 +228,22 @@ pub const WARN: Color32 = Color32::from_rgb(0xD8, 0xC0, 0x7A);
 /// bright basemap.
 pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
 
+// Script editor syntax colours (`lua_highlight`), on the code box's [`INK`].
+// Their own constants rather than borrowed ones: [`WARN`] on every string
+// would read as a page of warnings.
+/// Keywords — the accent, so the structure of a script is what stands out.
+pub const CODE_KEYWORD: Color32 = ACCENT;
+/// String literals — a warm sand.
+pub const CODE_STRING: Color32 = Color32::from_rgb(0xE6, 0xB8, 0x86);
+/// Numbers and `true` / `false` / `nil`.
+pub const CODE_LITERAL: Color32 = Color32::from_rgb(0xC3, 0xA9, 0xFF);
+/// Comments — recede, but stay readable.
+pub const CODE_COMMENT: Color32 = Color32::from_rgb(0x86, 0x9C, 0xA0);
+/// The host's own functions and handlers.
+pub const CODE_API: Color32 = Color32::from_rgb(0x8F, 0xCB, 0xFF);
+/// Any other call.
+pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
+
 /// The fill of the boxes that float *over* the map (status HUD, stats, driver
 /// chrome) — the same 84 % glass a panel is made of, and blurred behind by
 /// `systems::glass` in the same way.
@@ -2472,6 +2488,14 @@ mod tests {
             ("primary label, pressed", INK, ACCENT_PRESSED, 4.5),
             ("warning on panel", WARN, SURFACE, 4.5),
             ("error on panel", ERROR, SURFACE, 4.5),
+            // The script editor's code box is `extreme_bg_color`, i.e. INK.
+            ("code text", TEXT, INK, 4.5),
+            ("code keyword", CODE_KEYWORD, INK, 4.5),
+            ("code string", CODE_STRING, INK, 4.5),
+            ("code literal", CODE_LITERAL, INK, 4.5),
+            ("code comment", CODE_COMMENT, INK, 4.5),
+            ("code api", CODE_API, INK, 4.5),
+            ("code call", CODE_CALL, INK, 4.5),
             // Not text: a fill, a rule or a focus ring, which WCAG puts at 3:1.
             ("focus ring on panel", ACCENT, SURFACE, 3.0),
         ] {

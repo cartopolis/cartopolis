@@ -26,6 +26,7 @@ pub mod hud;
 pub mod icons;
 pub mod layer_tiles;
 pub mod login_screen;
+pub mod lua_highlight;
 pub mod map_osd;
 pub mod model_library;
 pub mod onscreen_keyboard;

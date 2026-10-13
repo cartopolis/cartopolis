@@ -1012,6 +1012,44 @@ fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
     preferred.min(viewport_w - 16.0).max(200.0)
 }
 
+/// How much of a phone's screen height the object editor may cover. The rest is
+/// the object itself, which is the thing being edited.
+const SHEET_HEIGHT: f32 = 0.55;
+
+/// One labelled X/Y/Z row: the label on its own line, then three fields sharing
+/// the width equally.
+///
+/// It was one row of a four-column grid, label first, and the label alone is
+/// ~120 pt — so on a phone the Z field landed past the right-hand edge of the
+/// dialog and of the screen. Returns which of the three changed.
+fn xyz_fields(
+    ui: &mut egui::Ui,
+    label: &str,
+    values: [&mut f32; 3],
+    speed: f64,
+    suffix: &str,
+    min: Option<f32>,
+) -> [bool; 3] {
+    ui.label(label);
+    let gap = ui.spacing().item_spacing.x;
+    let w = ((ui.available_width() - 2.0 * gap) / 3.0).max(40.0);
+    let h = ui.spacing().interact_size.y;
+    let mut changed = [false; 3];
+    ui.horizontal(|ui| {
+        for ((value, axis), out) in values.into_iter().zip(["X ", "Y ", "Z "]).zip(&mut changed) {
+            let mut field = egui::DragValue::new(value)
+                .prefix(axis)
+                .suffix(suffix)
+                .speed(speed);
+            if let Some(min) = min {
+                field = field.range(min..=f32::MAX);
+            }
+            *out = ui.add_sized([w, h], field).changed();
+        }
+    });
+    changed
+}
+
 /// The frame the object editor and the texture picker wear: the sign-in card's
 /// recipe, which is what a themed window looks like in this app — a glass fill,
 /// a lit rim, the shared corner radius and real margins.
@@ -1045,11 +1083,20 @@ pub fn render_edit_dialog(
 
     // 320 pt of dialog does not fit a 274 pt phone viewport, and a `Window` is no
     // help there: it clamps its *position* to the screen, not its size. The Shape
-    // tab is a good 700 pt tall on its own, so the height needs the same treatment
-    // — `vscroll` below, bounded by this.
+    // tab is a good 700 pt tall on its own, so the height needs the same treatment.
+    //
+    // On a phone the dialog is a sheet along the bottom of the screen: full
+    // width, fixed in place, and no taller than `SHEET_HEIGHT` of the screen, so
+    // the object being edited stays in view above it. Left to itself the window
+    // opened wherever egui put it and hung off the right-hand edge.
     let viewport = egui.viewport_pts();
+    let compact = egui.compact();
     let width = dialog_width(viewport.x, 320.0);
-    let max_height = (viewport.y - 24.0).max(200.0);
+    let max_height = if compact {
+        (viewport.y * SHEET_HEIGHT).max(200.0)
+    } else {
+        (viewport.y - 24.0).max(200.0)
+    };
     let ctx = egui.ctx_mut();
     let mut dialog_open = true;
 
@@ -1059,40 +1106,54 @@ pub fn render_edit_dialog(
         "Edit object"
     };
 
-    Window::new(title)
+    let mut window = Window::new(title)
         .id(egui::Id::new("prim_edit_dialog"))
         .title_bar(false)
         .default_width(width)
+        .min_width(width)
         .max_width(width)
         .max_height(max_height)
-        .vscroll(true)
-        .frame(dialog_frame(&ctx.style_of(ctx.theme())))
-        .show(ctx, |ui| {
-            ui.set_max_width(width);
-            if theme::panel_header(ui, icons::TUNE, title) {
-                dialog_open = false;
-            }
-            // Tab bar
-            ui.horizontal(|ui| {
-                // Not "Edit / Object / Texture": the dialog is *called* "Edit
-                // object" now, so two of those three named the dialog rather than
-                // the tab. These name what is behind them.
-                ui.selectable_value(&mut edit_dialog.active_tab, 0, "Basics");
-                ui.selectable_value(&mut edit_dialog.active_tab, 1, "Shape");
-                ui.selectable_value(&mut edit_dialog.active_tab, 2, "Surface");
-            });
-            ui.separator();
+        .frame(dialog_frame(&ctx.style_of(ctx.theme())));
+    if compact {
+        window = window
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
+            .resizable(false);
+    }
+    window.show(ctx, |ui| {
+        ui.set_max_width(width);
+        if theme::panel_header(ui, icons::TUNE, title) {
+            dialog_open = false;
+        }
+        // Tab bar
+        ui.horizontal(|ui| {
+            // Not "Edit / Object / Texture": the dialog is *called* "Edit
+            // object" now, so two of those three named the dialog rather than
+            // the tab. These name what is behind them.
+            ui.selectable_value(&mut edit_dialog.active_tab, 0, "Basics");
+            ui.selectable_value(&mut edit_dialog.active_tab, 1, "Shape");
+            ui.selectable_value(&mut edit_dialog.active_tab, 2, "Surface");
+        });
+        ui.separator();
 
-            match edit_dialog.active_tab {
+        // Only the tab scrolls: the title (and its close cross) and the
+        // Save/Cancel row stay put, or a short screen leaves the way out below
+        // the fold.
+        let spacing = ui.spacing().item_spacing.y;
+        let footer = theme::row_height() + 3.0 * spacing + 8.0;
+        let body = (max_height - ui.min_rect().height() - footer).max(80.0);
+        egui::ScrollArea::vertical()
+            .max_height(body)
+            .auto_shrink([false, true])
+            .show(ui, |ui| match edit_dialog.active_tab {
                 0 => basics_tab(ui, &mut edit_dialog, &mut gizmo_state),
                 1 => shape_tab(ui, &mut edit_dialog),
                 _ => surface_tab(ui, &mut edit_dialog, &texture_lib),
-            }
+            });
 
-            ui.separator();
+        ui.separator();
 
-            dialog_buttons(ui, &mut edit_dialog, &mut game_state);
-        });
+        dialog_buttons(ui, &mut edit_dialog, &mut game_state);
+    });
 
     if !dialog_open {
         push_revert(&mut game_state, &edit_dialog);
@@ -1129,7 +1190,7 @@ fn basics_tab(
             ui.end_row();
 
             ui.label("Tool");
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.radio_value(&mut gizmo_state.mode, GizmoMode::Translate, "Move (T)");
                 ui.radio_value(&mut gizmo_state.mode, GizmoMode::Rotate, "Rotate (R)");
                 ui.radio_value(&mut gizmo_state.mode, GizmoMode::Scale, "Scale (S)");
@@ -1174,88 +1235,18 @@ fn shape_tab(ui: &mut egui::Ui, edit_dialog: &mut ResMut<EditDialogState>) {
     ui.separator();
 
     // Position / Size / Rotation
-    egui::Grid::new("transform_grid")
-        .num_columns(4)
-        .spacing([4.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("Position (meters)");
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.position[0])
-                    .prefix("X ")
-                    .speed(0.1),
-            );
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.position[1])
-                    .prefix("Y ")
-                    .speed(0.1),
-            );
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.position[2])
-                    .prefix("Z ")
-                    .speed(0.1),
-            );
-            ui.end_row();
-
-            ui.label("Size (meters)");
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.scale[0])
-                    .prefix("X ")
-                    .speed(0.1)
-                    .range(0.001..=f32::MAX),
-            );
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.scale[1])
-                    .prefix("Y ")
-                    .speed(0.1)
-                    .range(0.001..=f32::MAX),
-            );
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.scale[2])
-                    .prefix("Z ")
-                    .speed(0.1)
-                    .range(0.001..=f32::MAX),
-            );
-            ui.end_row();
-
-            ui.label("Rotation (degrees)");
-            let mut rot_x = edit_dialog.rotation[0].to_degrees();
-            if ui
-                .add(
-                    egui::DragValue::new(&mut rot_x)
-                        .prefix("X ")
-                        .speed(1.0)
-                        .suffix("°"),
-                )
-                .changed()
-            {
-                edit_dialog.rotation[0] = rot_x.to_radians();
-            }
-            let mut rot_y = edit_dialog.rotation[1].to_degrees();
-            if ui
-                .add(
-                    egui::DragValue::new(&mut rot_y)
-                        .prefix("Y ")
-                        .speed(1.0)
-                        .suffix("°"),
-                )
-                .changed()
-            {
-                edit_dialog.rotation[1] = rot_y.to_radians();
-            }
-            let mut rot_z = edit_dialog.rotation[2].to_degrees();
-            if ui
-                .add(
-                    egui::DragValue::new(&mut rot_z)
-                        .prefix("Z ")
-                        .speed(1.0)
-                        .suffix("°"),
-                )
-                .changed()
-            {
-                edit_dialog.rotation[2] = rot_z.to_radians();
-            }
-            ui.end_row();
-        });
+    let [px, py, pz] = &mut edit_dialog.position;
+    xyz_fields(ui, "Position (meters)", [px, py, pz], 0.1, "", None);
+    let [sx, sy, sz] = &mut edit_dialog.scale;
+    xyz_fields(ui, "Size (meters)", [sx, sy, sz], 0.1, "", Some(0.001));
+    let mut deg = edit_dialog.rotation.map(f32::to_degrees);
+    let [dx, dy, dz] = &mut deg;
+    let changed = xyz_fields(ui, "Rotation (degrees)", [dx, dy, dz], 1.0, "°", None);
+    for (axis, changed) in changed.into_iter().enumerate() {
+        if changed {
+            edit_dialog.rotation[axis] = deg[axis].to_radians();
+        }
+    }
 
     ui.separator();
 
@@ -1419,7 +1410,7 @@ fn surface_tab(
             // only where a clip can be chosen and played.
             if !edit_dialog.is_new && crate::systems::map::prim_video_available() {
                 ui.label("Video");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(if edit_dialog.playing_video {
                         "Playing"
                     } else {
@@ -1494,7 +1485,7 @@ fn surface_tab(
 
     // Repeats Per Face (tiling count per axis, with optional flip).
     ui.label("Repeats per face");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add(
             egui::DragValue::new(&mut edit_dialog.surface.repeat_u)
                 .prefix("U ")

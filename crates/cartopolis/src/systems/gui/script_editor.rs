@@ -405,12 +405,18 @@ pub fn render_script_panel(
                     .on_hover_text("Fill the editor with a script that shows every handler")
                     .clicked();
             }
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let font = egui::TextStyle::Monospace.resolve(ui.style());
+                let job = crate::systems::lua_highlight::layout_job(buf.as_str(), font, wrap_width);
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::multiline(&mut editor.source)
                             .code_editor()
+                            .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .desired_rows(18)
                             .hint_text(
