@@ -163,13 +163,79 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
-/// Plain text as HTML paragraphs, the form every server's `content` takes.
+/// Where a hashtag `#word` written at `i` ends, if one does: a `#` not glued
+/// to the word before it, then letters, digits and `_`, at least one of them a
+/// letter (`#1` is a number, not a tag) — Mastodon's own rule.
+fn hashtag_end(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'#') {
+        return None;
+    }
+    if i > 0 && (chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '&' | '#' | '/')) {
+        return None;
+    }
+    let mut end = i + 1;
+    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    (end > i + 1 && chars[i + 1..end].iter().any(|c| c.is_alphabetic())).then_some(end)
+}
+
+/// The hashtags in a text, without their `#`, each once, in order.
 #[must_use]
-pub fn text_to_html(text: &str) -> String {
-    text.split("\n\n")
-        .filter(|p| !p.trim().is_empty())
-        .map(|p| format!("<p>{}</p>", escape_html(p.trim()).replace('\n', "<br>")))
-        .collect()
+pub fn hashtags(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(end) = hashtag_end(&chars, i) {
+            let tag: String = chars[i + 1..end].iter().collect();
+            if !out.iter().any(|t| t.to_lowercase() == tag.to_lowercase()) {
+                out.push(tag);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Where a hashtag links: this server's page for it. A Mastodon reader is sent
+/// to their own server's timeline for the tag instead, which it finds by the
+/// post's `Hashtag` tag.
+fn tag_url(base: &str, tag: &str) -> String {
+    format!("{base}/tags/{}", tag.to_lowercase())
+}
+
+/// Plain text as HTML paragraphs, the form every server's `content` takes, with
+/// each hashtag a link as Mastodon writes one.
+#[must_use]
+pub fn text_to_html(text: &str, base: &str) -> String {
+    let mut out = String::new();
+    for p in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+        out.push_str("<p>");
+        let chars: Vec<char> = p.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if let Some(end) = hashtag_end(&chars, i) {
+                let tag: String = chars[i + 1..end].iter().collect();
+                out.push_str(&format!(
+                    "<a href=\"{}\" class=\"mention hashtag\" rel=\"tag\">#<span>{}</span></a>",
+                    escape_html(&tag_url(base, &tag)),
+                    escape_html(&tag)
+                ));
+                i = end;
+                continue;
+            }
+            match chars[i] {
+                '\n' => out.push_str("<br>"),
+                c => out.push_str(&escape_html(&c.to_string())),
+            }
+            i += 1;
+        }
+        out.push_str("</p>");
+    }
+    out
 }
 
 /// The thread a reply belongs to, as the reply's object names it.
@@ -212,7 +278,16 @@ pub fn note(
             tag.push(json!({ "type": "Mention", "href": parent_author }));
         }
     }
-    let mut content = text_to_html(&row.text);
+    // Hashtags: a link in the text and a `Hashtag` tag, both of which Mastodon
+    // needs before it makes one clickable and files the post under it.
+    for t in hashtags(&row.text) {
+        tag.push(json!({
+            "type": "Hashtag",
+            "href": tag_url(base, &t),
+            "name": format!("#{}", t.to_lowercase()),
+        }));
+    }
+    let mut content = text_to_html(&row.text, base);
     let link = row.place.as_ref().map(|p| place_link(base, p));
     if let (Some(place), Some(link)) = (&row.place, &link) {
         let label = place.name.as_deref().unwrap_or("Open on the map");
@@ -847,6 +922,34 @@ mod tests {
         assert_eq!(n["inReplyTo"], "https://m.test/statuses/1");
         assert!(n.get("name").is_none());
         assert!(addressees(&n).contains(&"https://m.test/users/anna".to_string()));
+    }
+
+    #[test]
+    fn hashtags_are_links_and_tags_as_mastodon_writes_them() {
+        assert_eq!(
+            hashtags("Nou hier bankjes :D #groningen #TwinCity #groningen"),
+            ["groningen", "TwinCity"]
+        );
+        // Glued to a word, a number, or an HTML entity: not hashtags.
+        assert!(hashtags("a#b #1 &#39; c#").is_empty());
+        let html = text_to_html("Bankjes <hier>\n#groningen!", "https://c.test");
+        assert_eq!(
+            html,
+            "<p>Bankjes &lt;hier&gt;<br><a href=\"https://c.test/tags/groningen\" class=\"mention hashtag\" rel=\"tag\">#<span>groningen</span></a>!</p>"
+        );
+        let n = note(
+            "https://c.test",
+            &row("Bankjes #Groningen"),
+            "oost",
+            "c.test",
+            None,
+        );
+        let tags = n["tag"].as_array().unwrap();
+        assert!(tags.iter().any(|t| t["type"] == "Hashtag"
+            && t["name"] == "#groningen"
+            && t["href"] == "https://c.test/tags/groningen"));
+        // What another server sends back reads as the words written.
+        assert!(object_text(&json!({"type": "Note", "content": html})).contains("#groningen!"));
     }
 
     #[test]
