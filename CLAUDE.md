@@ -6,10 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Scope builds to the crate you changed — avoid `cargo build` without `-p` unless you need an integration check.
 
-**Prefer the workspace-scoped commands inside a build slot.** A slot is warmed
+**Prefer the workspace-scoped commands on a build node.** A node is warmed
 with `cargo check --workspace --exclude cartopolis_android --all-targets` and
 `cargo test --workspace --exclude cartopolis_android --no-run`, so those are
-already built; `-p` skips only packages the slot has. It matters most for
+already built; `-p` skips only packages the node has. It matters most for
 `cargo check -p cartopolis`, which resolves 19 units' worth of different features
 from the warmed `--all-targets` check (a lib-only build genuinely has no
 dev-dependencies) and so builds its own artifact set. `cargo test -p cartopolis`
@@ -18,7 +18,7 @@ is free either way since the `approx` fix — see
 actually cost.
 
 ```bash
-cargo test --locked --workspace --exclude cartopolis_android   # what CI runs, what the slot is warm for
+cargo test --locked --workspace --exclude cartopolis_android   # what CI runs, what a node is warm for
 ```
 
 
@@ -175,24 +175,24 @@ about which platforms have it.
 
 ### Scripted screenshots (`--shot`)
 
-**Which slot to shoot in is a judgement about what the capture has to prove.**
-`slot list` shows what each slot renders on. The VPS slots have no GPU and
+**Which node to shoot on is a judgement about what the capture has to prove.**
+`midas status` shows what each node renders on. The VPS node has no GPU and
 render through Mesa lavapipe on the CPU: measured over Groningen at 1600×900 on
 2026-09-15, one frame costs **4.1 s** and a settled viewpoint about six minutes,
 most of it the harness rendering hundreds of frames while the map streams. That
 is trustworthy for geometry, placement, culling and visibility, and is no
 evidence at all for colour, exposure, bloom, lighting or frame time
-(`docs/notes/headless-shots-software-renderer.md`). The slots with a hardware
+(`docs/notes/headless-shots-software-renderer.md`). The nodes with a hardware
 GPU draw the same scene in milliseconds, but there are few of them, so use one
 when the question needs it rather than by default:
 
 ```bash
-slot take gpu              # waits for a slot with a hardware GPU (deck-2)
+midas take gpu             # a node with a hardware GPU (deck-2)
 ssh deck-2 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
-scp deck-2:/tmp/x.png /tmp/x.png   # a slot's output stays on its machine
+scp deck-2:/tmp/x.png /tmp/x.png   # a node's output stays on its machine
 ```
 
-Every slot is a **midas node** (jeroen/midas): a contained checkout on the VPS
+A **midas node** (jeroen/midas) is a contained checkout on the VPS
 (`vps-2`) or the Steam Deck (`deck-2`) that follows your worktree — each `ssh`,
 `scp` or `rsync` to it first sends your new commits and uncommitted edits — and
 whose commands start in that checkout. `cargo` refuses to build in the agent

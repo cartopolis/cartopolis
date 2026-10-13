@@ -138,12 +138,12 @@ $render  && steps="$steps smoke-orbit smoke-phone"
 $targets && steps="$steps wasm android"
 [ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')
 
-# ── A build slot of its own ──────────────────────────────────────────────────
-# **The gate runs on a build slot, never in the agent container.** Builds there
+# ── A build node of its own ──────────────────────────────────────────────────
+# **The gate runs on a build node, never in the agent container.** Builds there
 # starve the box (every session at once on 8 cores) and the container's own
-# cargo refuses them. Every slot is a midas node (jeroen/midas): a contained
+# cargo refuses them. A midas node (jeroen/midas) is a contained
 # checkout that follows this worktree over ssh — each ssh to it first sends the
-# commits and uncommitted edits it lacks. So the gate takes a VPS slot as
+# commits and uncommitted edits it lacks. So the gate takes a VPS node as
 # `gate-<worktree>` (the flush accepts that lease for this worktree), runs this
 # same script there with the merge-base sha as its base, and brings back the
 # exit status and the receipt (checked against this head, and marked with the
@@ -155,19 +155,19 @@ $targets && steps="$steps wasm android"
 # or on a machine with no midas (a workstation), the steps run in place.
 if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas >/dev/null; then
     gate_owner="gate-$(basename "$root")"
-    gate_slot=$(midas take vps --owner "$gate_owner" --wait 3600 \
+    gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 \
         --purpose "landing gate for $(git rev-parse --abbrev-ref HEAD)") || {
-        echo "no VPS slot came free in an hour; not gating" >&2; exit 3; }
+        echo "no VPS node came free in an hour; not gating" >&2; exit 3; }
     trap 'midas release --owner "$gate_owner" >/dev/null 2>&1' EXIT
-    echo "slot     $gate_slot — running the gate there"
-    ssh -o BatchMode=yes "$gate_slot" \
+    echo "node     $gate_node — running the gate there"
+    ssh -o BatchMode=yes "$gate_node" \
         "CARTO_GATE_NO_SLOT=1 .claude/skills/finish-branch/verify-branch --base $mb --scope $scope${only:+ --only $only}"
     status=$?
-    remote=$(ssh -o BatchMode=yes "$gate_slot" 'cat "$(git rev-parse --git-dir)/cartopolis-verified" 2>/dev/null')
+    remote=$(ssh -o BatchMode=yes "$gate_node" 'cat "$(git rev-parse --git-dir)/cartopolis-verified" 2>/dev/null')
     receipt="$(git rev-parse --git-dir)/cartopolis-verified"
     if [ "$status" -eq 0 ] && printf '%s\n' "$remote" | grep -qx "sha=$head"; then
         printf '%s\n' "$remote" | sed "s|^base=.*|base=$(git rev-parse "$mb")|" > "$receipt"
-        printf '%s\n' "node=$gate_slot" >> "$receipt"
+        printf '%s\n' "node=$gate_node" >> "$receipt"
     else
         rm -f "$receipt"
         [ "$status" -eq 0 ] && { echo "the node passed, but its receipt is not for ${head:0:8}" >&2; status=1; }
