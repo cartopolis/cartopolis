@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v2: an inventory, and the shared library</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.new { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:rgba(253,96,18,.18); color:#ffb48a; margin-left:4px; vertical-align:1px; }
+.today { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:#23392f; color:#9fd3b4; margin-left:4px; vertical-align:1px; }
+.row { display:flex; gap:40px; align-items:flex-start; margin-top:56px; }
+.shot { width:390px; }
+
+/* the white room */
+.room { position:absolute; inset:0; background:radial-gradient(ellipse at 50% 58%, #ffffff 0, #f6f7f8 40%, #e4e8ea 100%); overflow:hidden; }
+.room svg.scene { position:absolute; inset:0; }
+.dark { color:var(--ink) !important; }
+
+/* panels that float over the white */
+.gp { position:absolute; z-index:5; background:rgba(19,25,27,.92); backdrop-filter:blur(14px); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.22); }
+.gp h4 { font-size:12px; color:var(--dim); font-weight:inherit; text-transform:uppercase; letter-spacing:.8px; margin:12px 0 7px; }
+.gp .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.gp .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.gp .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.field { background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13.5px; color:var(--cream); }
+.part { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:10px; font-size:13.5px; color:var(--text); }
+.part .ic { width:26px; height:26px; border-radius:8px; background:var(--raised); display:grid; place-items:center; color:var(--dim); }
+.part small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.part.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); color:var(--cream); }
+.part.sel .ic { background:var(--brand); color:#fff; }
+.add { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+.add div { height:58px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:11px; color:var(--dim); }
+.tabs3 { display:flex; gap:4px; padding:10px 14px 0; }
+.tabs3 div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); }
+.tabs3 .on { background:var(--accent); color:var(--ink); }
+.grid2 { display:grid; grid-template-columns:96px 1fr; gap:8px 10px; align-items:center; font-size:13px; padding:12px 14px; }
+.grid2 > span { color:var(--dim); }
+.xyz { display:flex; gap:5px; }
+.xyz div { flex:1; background:var(--raised); border:1px solid var(--gline); border-radius:8px; padding:5px 7px; font-size:12.5px; color:var(--cream); display:flex; gap:5px; }
+.xyz i { font-style:normal; font-size:11px; }
+.xyz .rx { color:#ff7b7f; } .xyz .gy { color:#5fd394; } .xyz .bz { color:#6fb2ff; }
+.slider { height:4px; border-radius:2px; background:var(--muted); position:relative; }
+.slider::after { content:""; position:absolute; top:-6px; width:16px; height:16px; border-radius:50%; background:var(--cream); left:var(--v,30%); transform:translateX(-50%); }
+.slider b { position:absolute; left:0; top:0; bottom:0; width:var(--v,30%); background:var(--brand); border-radius:2px; }
+.btn { display:inline-flex; align-items:center; gap:7px; padding:10px 16px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:14px; color:var(--text); white-space:nowrap; }
+.btn.p { background:var(--brand); color:#fff; border-color:transparent; }
+.btn.q { background:transparent; }
+.segw { display:flex; background:rgba(19,25,27,.92); border:1px solid var(--gline); border-radius:12px; padding:3px; gap:2px; }
+.segw div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); display:flex; gap:6px; align-items:center; white-space:nowrap; }
+.segw .on { background:var(--accent); color:var(--ink); }
+.disc { width:40px; height:40px; border-radius:50%; background:rgba(19,25,27,.92); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); }
+.chipw { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border-radius:16px; background:rgba(19,25,27,.92); border:1px solid var(--gline); font-size:13px; color:var(--dim); white-space:nowrap; }
+.chipw b { color:var(--cream); font-weight:inherit; }
+.chipw .x { width:24px; height:24px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); }
+.callout { position:absolute; z-index:7; font-size:12px; color:#2b3a40; background:#fff; border:1px solid #cfd7db; border-radius:10px; padding:5px 9px; box-shadow:0 4px 12px rgba(0,0,0,.08); max-width:220px; line-height:1.3; }
+.callout b { color:var(--brand); font-weight:inherit; }
+.tg { width:30px; height:17px; border-radius:9px; background:var(--muted); position:relative; flex:none; }
+.tg::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--dim); }
+.tg.on { background:var(--brand); } .tg.on::after { left:15px; background:#fff; }
+.trow { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text); padding:5px 0; }
+.trow span { flex:1; }
+
+/* the ring, from layers-and-ring v1 */
+.ring { position:absolute; z-index:6; }
+.ring .b { position:absolute; width:56px; height:56px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); backdrop-filter:blur(10px); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:10px; color:var(--text); gap:1px; transform:translate(-50%,-50%); text-align:center; line-height:1.05; }
+.ring .b.p { background:var(--brand); color:#fff; border-color:transparent; }
+.ring .b.n { background:#fff; color:var(--ink); border:2px solid var(--brand); box-shadow:0 0 0 5px rgba(253,96,18,.25); }
+.ring .b.x { width:34px; height:34px; background:rgba(10,14,16,.85); color:var(--dim); }
+.ring .guide { position:absolute; width:164px; height:164px; border-radius:50%; border:1px dashed rgba(255,255,255,.18); transform:translate(-50%,-50%); }
+.pin { position:absolute; width:14px; height:14px; border-radius:50%; background:var(--brand); border:3px solid #fff; transform:translate(-50%,-50%); z-index:5; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+.ipill { position:absolute; z-index:6; transform:translateX(-50%); background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:14px; padding:7px 12px; font-size:12px; color:var(--dim); white-space:nowrap; text-align:center; }
+.ipill b { display:block; color:var(--cream); font-size:14px; font-weight:inherit; }
+.status.ondark span { color:var(--ink); }
+.washout { position:absolute; inset:0; z-index:3; background:radial-gradient(circle at 196px 430px, #fff 0, #fff 120px, rgba(255,255,255,.85) 190px, rgba(255,255,255,.35) 300px, rgba(255,255,255,0) 420px); }
+
+.sheetw { position:absolute; left:0; right:0; bottom:0; z-index:6; background:rgba(19,25,27,.95); border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 26px; }
+.sheetw .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.pchips { display:flex; gap:6px; overflow:hidden; margin-bottom:10px; }
+.pchips div { padding:6px 10px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:12.5px; color:var(--text); white-space:nowrap; display:flex; gap:5px; align-items:center; }
+.pchips .sel { background:rgba(253,96,18,.16); border-color:rgba(253,96,18,.7); color:var(--cream); }
+.pchips .plus { color:var(--dim); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h6a3 3 0 0 0 0-6h-4a3 3 0 0 1 0-6h6"/></symbol>
+  <symbol id="from" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+  <symbol id="star" viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="room" viewBox="0 0 24 24"><path d="M3 18l9 4 9-4M3 18V7l9-4 9 4v11"/><path d="M12 22V11M3 7l9 4 9-4" opacity=".5"/></symbol>
+  <symbol id="box" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+  <symbol id="sphere" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3"/></symbol>
+  <symbol id="cyl" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/></symbol>
+  <symbol id="cone" viewBox="0 0 24 24"><path d="M12 3L5 18.5M12 3l7 15.5"/><ellipse cx="12" cy="18.5" rx="7" ry="2.5"/></symbol>
+  <symbol id="model" viewBox="0 0 24 24"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M8 9l4 2 4-2M12 11v5"/></symbol>
+  <symbol id="undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+  <symbol id="drop" viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0 1 12 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></symbol>
+  <symbol id="tune" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="hand" viewBox="0 0 24 24"><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6M11 11V3.5a1.5 1.5 0 0 1 3 0V11M14 11V5a1.5 1.5 0 0 1 3 0v8c0 5-3 8-7 8s-6-3-7-6l-1.5-3a1.5 1.5 0 0 1 2.6-1.4L8 14"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8" r="1.4"/></symbol>
+  <symbol id="edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/></symbol>
+  <symbol id="lib" viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="take" viewBox="0 0 24 24"><path d="M12 3v11M7 9l5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></symbol>
+</svg>
+<style>
+.inv { position:absolute; z-index:5; background:rgba(19,25,27,.96); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.3); overflow:hidden; }
+.inv .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.inv .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.inv .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.inv .search { margin:10px 14px 8px; background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13px; color:var(--line); display:flex; gap:7px; align-items:center; }
+.fchips { display:flex; gap:5px; padding:0 14px 8px; flex-wrap:wrap; }
+.fchips div { font-size:12px; padding:3px 9px; border-radius:10px; background:var(--raised); border:1px solid var(--gline); color:var(--dim); }
+.fchips .on { background:var(--accent); color:var(--ink); border-color:transparent; }
+.tree { padding:2px 8px 10px; font-size:13.5px; }
+.fold { display:flex; align-items:center; gap:8px; padding:6px 6px; color:var(--cream); border-radius:8px; }
+.fold .car { width:12px; color:var(--dim); font-size:10px; }
+.fold small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.fold .fi { color:var(--amber); }
+.fold.lib .fi { color:var(--accent); }
+.item { display:flex; align-items:center; gap:9px; padding:6px 6px 6px 28px; border-radius:8px; color:var(--text); }
+.item .th { width:30px; height:30px; border-radius:8px; background:#e9edef; flex:none; display:grid; place-items:center; overflow:hidden; }
+.item .tx { flex:1; min-width:0; line-height:1.2; }
+.item .tx span { display:block; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); }
+.item.later, .fold.later { opacity:.45; }
+.ipt { font-size:10.5px; padding:1px 6px; border-radius:6px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); white-space:nowrap; }
+.ipt.inw { background:#23392f; color:#9fd3b4; border-color:transparent; }
+.ipt.dev { background:#2a3340; color:#a9c4e8; border-color:transparent; }
+.ipt.adm { background:rgba(253,96,18,.18); color:#ffb48a; border-color:transparent; }
+.divl { margin:8px 6px; border-top:1px solid var(--gline); padding-top:6px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.8px; }
+.menu { position:absolute; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:12px; padding:5px; width:250px; box-shadow:0 12px 30px rgba(0,0,0,.45); font-size:13.5px; }
+.menu div { display:flex; align-items:center; gap:9px; padding:7px 10px; border-radius:8px; color:var(--text); }
+.menu div.h { background:var(--hover); color:var(--cream); }
+.menu div .ipt { margin-left:auto; }
+.menu hr { border:0; border-top:1px solid var(--gline); margin:4px 2px; }
+.menu .dang { color:#ff9b8f; }
+.ghost3d { position:absolute; z-index:6; }
+.dropring { position:absolute; z-index:5; width:90px; height:36px; border-radius:50%; border:2.5px dashed var(--brand); transform:translate(-50%,-50%); background:rgba(253,96,18,.12); }
+.tip { position:absolute; z-index:7; background:var(--glass); border:1px solid var(--gline); border-radius:10px; padding:5px 10px; font-size:12px; color:var(--cream); white-space:nowrap; }
+.decided { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:44px; }
+.decided div { background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:13px 15px; font-size:13px; color:var(--dim); }
+.decided b { display:block; color:var(--cream); font-weight:inherit; font-size:14.5px; margin-bottom:4px; }
+.decided b::before { content:"✓ "; color:#7fd0a0; }
+.full { position:absolute; left:0; right:0; top:44px; bottom:0; z-index:5; background:var(--surface); }
+.full .ph { display:flex; align-items:center; gap:8px; padding:8px 16px 10px; }
+.full .ph b { color:var(--cream); font-weight:inherit; font-size:22px; flex:1; letter-spacing:-.3px; }
+.asheet { position:absolute; left:0; right:0; bottom:0; z-index:7; background:#1D2427; border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 28px; }
+.asheet .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.asheet .hd { display:flex; gap:12px; align-items:center; padding:0 4px 12px; border-bottom:1px solid var(--gline); margin-bottom:6px; }
+.asheet .hd .th { width:54px; height:54px; border-radius:12px; background:#e9edef; display:grid; place-items:center; }
+.asheet .hd b { display:block; color:var(--cream); font-weight:inherit; font-size:16px; }
+.asheet .hd span { color:var(--dim); font-size:12.5px; }
+.arow { display:flex; align-items:center; gap:12px; padding:11px 6px; font-size:14.5px; color:var(--text); border-radius:10px; }
+.arow .ipt { margin-left:auto; }
+.arow.p { color:var(--brand); }
+.dlg { position:absolute; left:14px; right:14px; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:20px; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,.5); }
+.dlg h3 { color:var(--cream); font-size:17px; font-weight:inherit; margin-bottom:4px; }
+.dlg p { color:var(--dim); font-size:12.5px; margin-bottom:10px; }
+.radio { display:flex; gap:10px; align-items:flex-start; padding:7px 4px; font-size:13.5px; color:var(--text); }
+.radio i { width:16px; height:16px; border-radius:50%; border:2px solid var(--line); flex:none; margin-top:2px; }
+.radio i.on { border-color:var(--brand); box-shadow:inset 0 0 0 3px #1D2427; background:var(--brand); }
+.radio span { display:block; font-size:11.5px; color:var(--dim); }
+.radio.off { opacity:.45; }
+.lbl { font-size:12px; color:var(--dim); margin:10px 0 5px; }
+.dim-bg { position:absolute; inset:0; z-index:7; background:rgba(5,8,10,.55); }
+.cardx { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:16px 18px; }
+.cardx h3 { color:var(--cream); font-weight:inherit; font-size:16px; margin-bottom:10px; }
+table.perm { border-collapse:collapse; width:100%; font-size:13px; margin:0; }
+table.perm td, table.perm th { padding:8px 8px; border-bottom:1px solid var(--gline); text-align:center; }
+table.perm td:first-child, table.perm th:first-child { text-align:left; }
+table.perm th { color:var(--dim); font-weight:inherit; font-size:12px; }
+.ck { display:inline-block; width:16px; height:16px; border-radius:4px; border:1.5px solid var(--line); vertical-align:-3px; }
+.ck.on { background:var(--brand); border-color:var(--brand); position:relative; }
+.ck.on::after { content:"✓"; color:#fff; font-size:11px; position:absolute; left:2px; top:-2px; }
+.ck.fixed { background:var(--muted); border-color:var(--muted); position:relative; }
+.ck.fixed::after { content:"✓"; color:var(--dim); font-size:11px; position:absolute; left:2px; top:-2px; }
+tr.newrow td { background:rgba(253,96,18,.07); }
+</style>
+
+<h1>v2: your <b>inventory</b>, and what goes into the shared library</h1>
+<p class="lede">The answers to v1's questions, and the piece they called for: an inventory, after Second Life's. Everything you make or take lives in it, in folders. You place things from it by dragging (desktop) or tapping (phone), and you take things back into it from the world. Moving an item into the <b style="color:var(--cream);font-weight:inherit">shared library</b> needs a new permission that, for now, only admins hold. Everything marked <span class="new">new</span> does not exist today.</p>
+
+<div class="decided">
+  <div><b>Several objects</b>A design is placed as a group of ordinary objects that remember they belong together. No linked-object wire change in v1.</div>
+  <div><b>Drafts on the device</b>Unfinished designs never touch the server. They show in the inventory as a Drafts folder, marked "on this device".</div>
+  <div><b>The avatar stands</b>In the room your avatar is a still figure for scale. You don't walk.</div>
+  <div><b>An inventory</b>Server-side and per account, so it follows you to every device. The Models panel's "Mine" list becomes one of its folders.</div>
+  <div><b>Sharing is a permission</b>A new <code>library_share</code>, not in the Player role. Admins hold it, as they hold every permission.</div>
+</div>
+
+<!-- ============ DESKTOP: inventory over the map ============ -->
+<div class="sec" style="margin-top:0">
+<h2>1 · The inventory on the desktop <span class="new">new</span></h2>
+<p class="cap">Opened from the dock like any right panel. The stall is being dragged out of Objects onto the square; the right-click menu is shown open on it at the same time, for the drawing.</p>
+</div>
+<div class="desk" style="display:block;height:860px">
+  <div class="world" style="background-image:url(../chat-world/city.jpg);background-position:40% 55%"></div>
+  <div class="dropring" style="left:700px;top:560px"></div>
+  <svg class="ghost3d" id="dragScene" width="300" height="300" style="left:560px;top:380px;opacity:.75"></svg>
+  <div class="tip" style="left:745px;top:590px">Release to place · <b style="font-weight:inherit;color:var(--brand)">Market stall</b>, 7 objects</div>
+
+  <div class="inv" style="right:16px;top:16px;bottom:16px;width:380px">
+    <div class="ph"><div class="med"><svg class="i s"><use href="#box"/></svg></div><b>Inventory</b><svg class="i s" style="color:var(--dim)"><use href="#x"/></svg></div>
+    <div class="search"><svg class="i s"><use href="#search"/></svg>Search your inventory</div>
+    <div class="fchips"><div class="on">All</div><div>Objects</div><div>Models</div><div>Drafts</div></div>
+    <div class="tree">
+      <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#folder"/></svg>Objects<small>3</small></div>
+      <div class="item sel"><div class="th"><svg width="30" height="30" id="th1"></svg></div><div class="tx">Market stall<span>7 objects · placed at Grote Markt 1</span></div><span class="ipt inw">in world</span></div>
+      <div class="item"><div class="th"><svg width="30" height="30" id="th2"></svg></div><div class="tx">Oak bench<span>2 objects</span></div></div>
+      <div class="item"><div class="th"><svg width="30" height="30" id="th3"></svg></div><div class="tx">Beacon (copy)<span>1 object · scripted</span></div></div>
+      <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#phone"/></svg>Drafts<small>2</small><span class="ipt dev">on this device</span></div>
+      <div class="item"><div class="th"><svg width="30" height="30" id="th4"></svg></div><div class="tx">Kiosk, second try<span>edited 10 minutes ago</span></div></div>
+      <div class="item"><div class="th"><svg width="30" height="30" id="th5"></svg></div><div class="tx">Bike rack<span>edited yesterday</span></div></div>
+      <div class="fold"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Models<small>5</small><span class="ipt">today's "Mine"</span></div>
+      <div class="fold later"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Scripts<small></small><span class="ipt">later</span></div>
+      <div class="fold"><span class="car">▸</span><svg class="i s fi" style="color:var(--dim)"><use href="#trash"/></svg>Trash<small>1</small></div>
+      <div class="divl">Shared library · everyone's</div>
+      <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Street furniture<small>14</small></div>
+      <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Market<small>6</small></div>
+      <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Plants<small>9</small></div>
+    </div>
+  </div>
+
+  <div class="menu" style="right:404px;top:178px">
+    <div class="h"><svg class="i s"><use href="#drop"/></svg>Place in front of me</div>
+    <div><svg class="i s"><use href="#room"/></svg>Open in the design room</div>
+    <div><svg class="i s"><use href="#pin"/></svg>Fly to where it stands</div>
+    <hr>
+    <div><svg class="i s"><use href="#edit"/></svg>Rename</div>
+    <div><svg class="i s"><use href="#copy"/></svg>Make a copy</div>
+    <div><svg class="i s"><use href="#lib"/></svg>Move to shared library…<span class="ipt adm">admin</span></div>
+    <hr>
+    <div class="dang"><svg class="i s"><use href="#trash"/></svg>Move to Trash</div>
+  </div>
+  <div class="callout" style="left:40px;top:40px;max-width:330px">Drag an item onto the map to place it where you drop it, the way you rez from inventory in Second Life. <b>Place in front of me</b> does the same without a drag.</div>
+  <div class="callout" style="left:40px;top:120px;max-width:330px">An item placed from Objects stays in the inventory, marked <b>in world</b>. Placing it again makes a second copy.</div>
+</div>
+
+<!-- ============ PHONES ============ -->
+<div class="row">
+
+<!-- a: ring with Take -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <svg style="position:absolute;inset:0;z-index:3" id="ringScene" width="390" height="844"></svg>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ring" style="left:196px;top:420px">
+    <div class="guide"></div>
+    <div class="b p" style="left:0;top:-90px"><svg class="i s"><use href="#edit"/></svg>Edit</div>
+    <div class="b n" style="left:78px;top:-45px"><svg class="i s"><use href="#take"/></svg>Take</div>
+    <div class="b n" style="left:78px;top:45px"><svg class="i s"><use href="#copy"/></svg>Take<br>copy</div>
+    <div class="b" style="left:0;top:90px"><svg class="i s"><use href="#room"/></svg>Design</div>
+    <div class="b" style="left:-78px;top:45px"><svg class="i s"><use href="#x"/></svg>Delete</div>
+    <div class="b" style="left:-78px;top:-45px"><svg class="i s"><use href="#cam"/></svg>Follow</div>
+    <div class="b x" style="left:0;top:0"><svg class="i s"><use href="#x"/></svg></div>
+  </div>
+  <div class="ipill" style="left:196px;top:552px"><b>Market stall</b>Yours · group of 7</div>
+</div>
+<h2><span>a</span>Taking it back</h2>
+<ul>
+  <li>Tapping any part of a placed design opens the ring for the <b>whole group</b>.</li>
+  <li><b>Take</b> <span class="new">new</span> removes it from the world and puts it in Objects. <b>Take copy</b> <span class="new">new</span> leaves it standing and puts a copy in Objects.</li>
+  <li>Take copy is offered only on things you may copy: your own, or anything if you are an admin.</li>
+</ul>
+</div>
+
+<!-- b: inventory on phone -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="full">
+    <div class="ph"><b>Inventory</b><svg class="i" style="color:var(--text)"><use href="#x"/></svg></div>
+    <div class="inv" style="position:static;border:0;box-shadow:none;background:transparent">
+      <div class="search" style="margin-top:0">  <svg class="i s"><use href="#search"/></svg>Search your inventory</div>
+      <div class="fchips"><div class="on">All</div><div>Objects</div><div>Models</div><div>Drafts</div></div>
+      <div class="tree" style="font-size:15px">
+        <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#folder"/></svg>Objects<small>3</small></div>
+        <div class="item"><div class="th"><svg width="30" height="30" id="pth1"></svg></div><div class="tx">Market stall<span>7 objects · Grote Markt 1</span></div><span class="ipt inw">in world</span></div>
+        <div class="item"><div class="th"><svg width="30" height="30" id="pth2"></svg></div><div class="tx">Oak bench<span>2 objects</span></div></div>
+        <div class="item"><div class="th"><svg width="30" height="30" id="pth3"></svg></div><div class="tx">Beacon (copy)<span>1 object · scripted</span></div></div>
+        <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#phone"/></svg>Drafts<small>2</small><span class="ipt dev">this phone</span></div>
+        <div class="item"><div class="th"><svg width="30" height="30" id="pth4"></svg></div><div class="tx">Kiosk, second try<span>10 minutes ago</span></div></div>
+        <div class="item"><div class="th"><svg width="30" height="30" id="pth5"></svg></div><div class="tx">Bike rack<span>yesterday</span></div></div>
+        <div class="fold"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Models<small>5</small></div>
+        <div class="fold"><span class="car">▸</span><svg class="i s fi" style="color:var(--dim)"><use href="#trash"/></svg>Trash<small>1</small></div>
+        <div class="divl">Shared library</div>
+        <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Street furniture<small>14</small></div>
+        <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Market<small>6</small></div>
+        <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Plants<small>9</small></div>
+      </div>
+    </div>
+  </div>
+</div>
+<h2><span>b</span>The inventory on a phone</h2>
+<ul>
+  <li>A full-width panel, like every right panel on a phone. The same tree, with larger rows.</li>
+  <li>Folders you make yourself (long-press ▸ New folder) work as in Places, and use its drag-and-drop tree.</li>
+  <li>The shared library sits under your own folders and is read-only: you take copies from it, you don't move things into it.</li>
+</ul>
+</div>
+
+<!-- c: item actions -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dim-bg" style="z-index:6"></div>
+  <div class="asheet">
+    <div class="handle"></div>
+    <div class="hd"><div class="th"><svg width="54" height="54" id="ath"></svg></div><div><b>Market stall</b><span>7 objects · 2.7 × 1.5 m · yours</span></div></div>
+    <div class="arow p"><svg class="i"><use href="#drop"/></svg>Place in front of me</div>
+    <div class="arow"><svg class="i"><use href="#room"/></svg>Open in the design room</div>
+    <div class="arow"><svg class="i"><use href="#pin"/></svg>Fly to where it stands</div>
+    <div class="arow"><svg class="i"><use href="#edit"/></svg>Rename</div>
+    <div class="arow"><svg class="i"><use href="#copy"/></svg>Make a copy</div>
+    <div class="arow"><svg class="i"><use href="#lib"/></svg>Move to shared library…<span class="ipt adm">admin</span></div>
+    <div class="arow" style="color:#ff9b8f"><svg class="i"><use href="#trash"/></svg>Move to Trash</div>
+  </div>
+</div>
+<h2><span>c</span>Tapping an item</h2>
+<ul>
+  <li>A phone cannot drag out of a full-width panel onto a map it covers, so placing is <b>Place in front of me</b>. The panel closes and the object lands 3 m ahead of the camera, already selected with the Move gizmo on it.</li>
+  <li>For someone without <code>library_share</code>, the "Move to shared library" row is not shown at all.</li>
+</ul>
+</div>
+
+<!-- d: share dialog -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dim-bg"></div>
+  <div class="dlg" style="top:150px">
+    <h3>Move to the shared library</h3>
+    <p>Everyone on this server will be able to place a copy. Your own copy stays in your inventory.</p>
+    <div class="lbl">Name in the library</div>
+    <div class="field">Market stall</div>
+    <div class="lbl">Category</div>
+    <div class="field">Market ▾</div>
+    <div class="lbl">Licence</div>
+    <div class="radio"><i class="on"></i><div>I made it<span>Shapes I built myself</span></div></div>
+    <div class="radio"><i></i><div>CC0<span>Free for anything, no credit</span></div></div>
+    <div class="radio"><i></i><div>CC BY<span>Free, with a credit line</span></div></div>
+    <div class="radio off"><i></i><div>Something else<span>Can be used, never shared</span></div></div>
+    <div style="margin:10px 0 12px;padding:9px 10px;border-radius:10px;background:var(--raised);font-size:12px;color:var(--dim);display:flex;gap:8px"><svg class="i s" style="color:#9fd3b4"><use href="#check"/></svg><span>Uses no model. Each model a design uses must be shareable too, or this is refused.</span></div>
+    <div style="display:flex;gap:8px"><div class="btn" style="flex:1;justify-content:center">Cancel</div><div class="btn p" style="flex:1.6;justify-content:center"><svg class="i s"><use href="#lib"/></svg>Share</div></div>
+  </div>
+</div>
+<h2><span>d</span>Moving it to the shared library</h2>
+<ul>
+  <li>The same licence question uploads ask today, now also asked for designs.</li>
+  <li>A design that uses an uploaded model inherits that model's licence. One "something else" model inside it, and the design cannot be shared.</li>
+  <li>The server checks <code>library_share</code>, the licence and every model inside. The dialog just doesn't offer what would be refused.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============ room + permission + data ============ -->
+<div class="row">
+
+<div style="width:390px">
+<div class="desk" style="display:block;width:390px;height:520px;margin-top:0">
+  <div class="room"><svg class="scene" id="roomScene" width="390" height="520"></svg></div>
+  <div class="gp" style="left:12px;top:12px;width:230px;padding:0 0 12px">
+    <div class="tabs3" style="padding:10px 10px 6px"><div>Parts</div><div class="on">Inventory</div></div>
+    <div class="tree" style="font-size:12.5px;padding:0 6px">
+      <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#folder"/></svg>Models<small>5</small></div>
+      <div class="item" style="padding-left:18px"><div class="th" style="width:24px;height:24px"></div><div class="tx">Crate<span>CC0 · 1.2k triangles</span></div></div>
+      <div class="item sel" style="padding-left:18px"><div class="th" style="width:24px;height:24px"></div><div class="tx">Lantern<span>own · 860 triangles</span></div></div>
+      <div class="fold"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Objects<small>3</small></div>
+      <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#lib"/></svg>Shared library</div>
+    </div>
+  </div>
+  <div class="tip" style="left:170px;top:300px">Lantern → hang from the awning</div>
+</div>
+<h2 style="font-size:17px;color:var(--cream);margin:16px 0 6px"><span style="color:var(--brand);margin-right:6px">e</span>The inventory inside the room</h2>
+<ul style="color:var(--dim);font-size:13.5px;padding-left:18px">
+  <li>The room's left panel gets a second tab. Drag a model, or a whole object, in from it, and it becomes parts of the design.</li>
+  <li>Bringing in an Object adds a copy of its parts. The original in your inventory doesn't change.</li>
+</ul>
+</div>
+
+<div style="width:620px">
+<div class="cardx">
+  <h3>Roles, in the web UI's Admin ▸ People ▸ Roles</h3>
+  <table class="perm">
+    <tr><th>Permission</th><th>Player</th><th>Builder</th><th>Curator</th><th>Admin</th></tr>
+    <tr><td>prim_create <span style="color:var(--dim)">· place objects</span></td><td><span class="ck on"></span></td><td><span class="ck on"></span></td><td><span class="ck on"></span></td><td><span class="ck fixed"></span></td></tr>
+    <tr><td>library_manage <span style="color:var(--dim)">· curate the library</span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck on"></span></td><td><span class="ck fixed"></span></td></tr>
+    <tr class="newrow"><td>library_share <span class="new">new</span><br><span style="color:var(--dim)">move inventory items into the shared library</span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck fixed"></span></td></tr>
+  </table>
+  <p style="color:var(--dim);font-size:12.5px;margin-top:10px">Not granted to any role at first: only the admin flag carries it, since that holds every permission. Builder and Curator are example roles an operator might make, not built in. Later, granting it to a role is one tick here.</p>
+  <p style="color:#ffb48a;font-size:12.5px;margin-top:8px">This takes something away: today any signed-in account may share an uploaded model whose licence allows it (the "Share it with everyone" box in the upload dialog). With this, only admins can, and the box disappears for everyone else.</p>
+</div>
+</div>
+
+<div style="width:650px">
+<div class="cardx">
+  <h3>Where each folder lives</h3>
+  <table class="map" style="margin-top:0">
+    <tr><th>Folder</th><th>Stored</th><th>Is</th></tr>
+    <tr><td>Objects <span class="new">new</span></td><td>Server, per account</td><td>A content document, the same <code>{version, prims}</code> shape <code>/api/content/export</code> already writes, as a new kind of inventory item beside models</td></tr>
+    <tr><td>Drafts <span class="new">new</span></td><td>This device (<code>platform::storage</code>, Data)</td><td>The same document, unsent. "Save to inventory" uploads it and it moves to Objects</td></tr>
+    <tr><td>Models <span class="today">today</span></td><td>Server</td><td>Today's <code>inventory_items</code>, the Models panel's "Mine"</td></tr>
+    <tr><td>Trash <span class="new">new</span></td><td>Server</td><td>Deleted items, emptied after 30 days or by hand</td></tr>
+    <tr><td>Shared library <span class="today">today</span>, extended</td><td>Server</td><td>Today's <code>library_entries</code> (models), now also holding objects</td></tr>
+  </table>
+  <p style="color:var(--dim);font-size:12.5px;margin-top:10px">Places stays its own panel: a saved place is a view, not something you put in the world. In Second Life landmarks live in the inventory; here they would just duplicate the Places tree.</p>
+</div>
+</div>
+
+</div>
+
+<div class="sec">
+<h2>Still open</h2>
+<table>
+  <tr><th>Question</th><th>Recommended</th><th>Why</th></tr>
+  <tr><td>Giving an item to another person</td><td>Later, from a chat</td><td>Second Life's drag onto a profile. Here, the natural place is "send" in a private chat. It raises the same licence question as sharing, so it waits for this to settle.</td></tr>
+  <tr><td>Next-owner rights (copy / modify / transfer)</td><td>Not in v1</td><td>These only matter once things change hands. Until then, ownership already decides who may edit (<code>prim_edit_own</code>).</td></tr>
+  <tr><td>Scripts and textures as items</td><td>Later, as folders</td><td>Scripts live on objects today, and textures in an operator-managed directory. Both fit the tree once there is a reason to keep one on its own.</td></tr>
+  <tr><td>Take on something that is not yours</td><td>Admins only</td><td>The same rule as editing it: an unowned object belongs to the server.</td></tr>
+</table>
+</div>
+<script>
+// A small isometric renderer for the mockup: metres in, SVG out.
+const C = Math.cos(Math.PI/6), S = Math.sin(Math.PI/6);
+function mk(svg, tag, attrs) { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; }
+function scene(svg, o) {
+  const P = (x, y, z) => [o.cx + (x - z) * C * o.s, o.cy + (x + z) * S * o.s - y * o.s];
+  const pts = a => a.map(p => P(...p).join(",")).join(" ");
+  const shade = (hex, f) => { const n = parseInt(hex.slice(1), 16); let r = n >> 16, g = (n >> 8) & 255, b = n & 255; r = Math.min(255, r * f) | 0; g = Math.min(255, g * f) | 0; b = Math.min(255, b * f) | 0; return `rgb(${r},${g},${b})`; };
+  const box = (x0, x1, y0, y1, z0, z1, col, stroke) => {
+    const st = stroke ? { stroke, "stroke-width": 2.2, "stroke-linejoin": "round" } : { stroke: shade(col, .7), "stroke-width": .6 };
+    mk(svg, "polygon", { points: pts([[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]]), fill: shade(col, 1.08), ...st });
+    mk(svg, "polygon", { points: pts([[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]]), fill: shade(col, .82), ...st });
+    mk(svg, "polygon", { points: pts([[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]]), fill: shade(col, .64), ...st });
+  };
+  const defs = mk(svg, "defs", {});
+  defs.innerHTML = `<radialGradient id="fade${o.id}" cx="${o.cx}" cy="${o.cy}" r="${o.fade}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset=".55" stop-color="#fff" stop-opacity=".7"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+    <mask id="m${o.id}"><rect width="4000" height="4000" fill="url(#fade${o.id})"/></mask>
+    <filter id="blur${o.id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${o.s * .09}"/></filter>`;
+  if (o.grid) {
+    const g = mk(svg, "g", { mask: `url(#m${o.id})`, stroke: "#c3ccd1", "stroke-width": 1 });
+    for (let i = -12; i <= 12; i++) {
+      const w = i % 5 === 0 ? 1.4 : .7;
+      let a = P(i, 0, -12), b = P(i, 0, 12); mk(g, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": w });
+      a = P(-12, 0, i); b = P(12, 0, i); mk(g, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": w });
+    }
+  }
+  if (o.spot) {
+    const g = mk(svg, "g", { mask: `url(#m${o.id})`, stroke: "#5b9bd5", "stroke-width": 2, fill: "none", "stroke-dasharray": "10 7" });
+    mk(g, "polyline", { points: pts([[-12,0,1.75],[12,0,1.75]]) });
+    mk(g, "polyline", { points: pts([[-12,0,-3.1],[-2.5,0,-3.1],[-2.5,0,-3.6],[3,0,-3.6],[3,0,-3.1],[12,0,-3.1]]) });
+    const t1 = P(4.2, 0, 1.75), t2 = P(-1, 0, -3.6);
+    mk(svg, "text", { x: t1[0] + 8, y: t1[1] + 22, fill: "#5b9bd5", "font-size": o.s * .16, "font-family": "Jakarta" }).textContent = "kerb";
+    mk(svg, "text", { x: t2[0] + 8, y: t2[1] - 8, fill: "#5b9bd5", "font-size": o.s * .16, "font-family": "Jakarta" }).textContent = "facade, Grote Markt 1";
+  }
+  // contact shadow
+  mk(svg, "polygon", { points: pts([[-1.45,0,-0.75],[1.45,0,-0.75],[1.6,0,0.95],[-1.3,0,0.95]]), fill: "rgba(40,55,62,.22)", filter: `url(#blur${o.id})` });
+  if (o.spot) {
+    const c = P(0, 0, 0);
+    mk(svg, "ellipse", { cx: c[0], cy: c[1], rx: o.s * .55 * C * 1.414, ry: o.s * .55 * S * 1.414, fill: "none", stroke: "#FD6012", "stroke-width": 2.5 });
+  }
+  if (o.avatar) {
+    const f = P(-2.6, 0, 0.5), h = 1.8 * o.s, cx = f[0], by = f[1];
+    mk(svg, "ellipse", { cx, cy: by, rx: o.s * .32, ry: o.s * .12, fill: "rgba(40,55,62,.22)", filter: `url(#blur${o.id})` });
+    const g = mk(svg, "g", { fill: "#55646b" });
+    mk(g, "rect", { x: cx - h * .085, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .015, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx - h * .12, y: by - h * .84, width: h * .24, height: h * .4, rx: h * .07 });
+    mk(g, "rect", { x: cx - h * .17, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .115, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "circle", { cx, cy: by - h * .92, r: h * .075 });
+    if (o.dims) {
+      const x = cx - h * .32;
+      mk(svg, "line", { x1: x, y1: by, x2: x, y2: by - h, stroke: "#8a979d", "stroke-width": 1.2 });
+      mk(svg, "line", { x1: x - 6, y1: by, x2: x + 6, y2: by, stroke: "#8a979d", "stroke-width": 1.2 });
+      mk(svg, "line", { x1: x - 6, y1: by - h, x2: x + 6, y2: by - h, stroke: "#8a979d", "stroke-width": 1.2 });
+      mk(svg, "text", { x: x - 10, y: by - h / 2, fill: "#5d6b72", "font-size": o.s * .15, "text-anchor": "end", "font-family": "Jakarta" }).textContent = "1.8 m";
+    }
+  }
+  if (o.kind === "bench") { box(-.85,-.78,0,.42,-.18,.18,"#3a3f42"); box(.78,.85,0,.42,-.18,.18,"#3a3f42"); box(-.95,.95,.42,.48,-.22,.22,"#8a6a48"); box(-.95,.95,.55,.85,-.24,-.18,"#8a6a48"); return; }
+  if (o.kind === "beacon") { box(-.15,.15,0,1.5,-.15,.15,"#6b7a80"); box(-.25,.25,1.5,1.9,-.25,.25,"#FD9212"); return; }
+  if (o.kind === "kiosk") { box(-.8,.8,0,2.0,-.8,.8,"#3e6f8e"); box(-1,1,2.0,2.2,-1,1,"#2b3a40"); return; }
+  if (o.kind === "rack") { for (const x of [-.9,-.3,.3,.9]) { box(x-.04,x+.04,0,.8,-.35,-.3,"#8d989e"); box(x-.04,x+.04,.8,.86,-.35,.35,"#8d989e"); box(x-.04,x+.04,0,.8,.3,.35,"#8d989e"); } return; }
+  const wood = "#a8754a", post = "#6b5644";
+  // back posts
+  box(-1.25, -1.17, 0, 2.2, -0.62, -0.54, post);
+  box(1.17, 1.25, 0, 2.2, -0.62, -0.54, post);
+  box(-1.2, 1.2, 0, 1.0, -0.4, 0.4, wood);
+  box(-1.3, 1.3, 1.0, 1.06, -0.5, 0.5, "#d8b48a");
+  // front posts
+  box(-1.25, -1.17, 0, 2.2, 0.54, 0.62, post);
+  box(1.17, 1.25, 0, 2.2, 0.54, 0.62, post);
+  // awning, striped, selected
+  const n = 9, w = 2.7 / n;
+  for (let i = 0; i < n; i++) {
+    const x0 = -1.35 + i * w;
+    box(x0, x0 + w, 2.2, 2.32, -0.72, 0.73, i % 2 ? "#efe6d6" : "#c8463a");
+  }
+  if (o.selected) {
+    const sel = mk(svg, "polygon", { points: pts([[-1.35,2.32,-0.72],[1.35,2.32,-0.72],[1.35,2.32,0.73],[1.35,2.2,0.73],[-1.35,2.2,0.73],[-1.35,2.32,0.73]]), fill: "none", stroke: "#FD6012", "stroke-width": 2.5, "stroke-linejoin": "round" });
+  }
+  if (o.dims) {
+    const a = P(-1.3, 0, 1.25), b = P(1.3, 0, 1.25);
+    mk(svg, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: "#8a979d", "stroke-width": 1.2 });
+    const m = P(0, 0, 1.25);
+    mk(svg, "text", { x: m[0] - 4, y: m[1] + 22, fill: "#5d6b72", "font-size": o.s * .15, "font-family": "Jakarta", "text-anchor": "middle" }).textContent = "2.7 m";
+  }
+  if (o.gizmo) {
+    const c = P(0, 2.32, 0), L = 1.0;
+    const ax = [[[L,0,0], "#e5484d"], [[0,L,0], "#30a46c"], [[0,0,L], "#3e8ed0"]];
+    for (const [[dx,dy,dz], col] of ax) {
+      const e = P(dx, 2.32 + dy, dz);
+      mk(svg, "line", { x1: c[0], y1: c[1], x2: e[0], y2: e[1], stroke: col, "stroke-width": 4, "stroke-linecap": "round" });
+      mk(svg, "circle", { cx: e[0], cy: e[1], r: 8, fill: col });
+    }
+    mk(svg, "circle", { cx: c[0], cy: c[1], r: 6, fill: "#fff", stroke: "#2b3a40", "stroke-width": 2 });
+  }
+}
+const T = (id, o) => { const e = document.getElementById(id); if (e) scene(e, { id, fade: 60, ...o }); };
+for (const p of ["", "p"]) {
+  T(p + "th1", { s: 6.5, cx: 15, cy: 22 });
+  T(p + "th2", { s: 10, cx: 15, cy: 20, kind: "bench" });
+  T(p + "th3", { s: 8, cx: 15, cy: 25, kind: "beacon" });
+  T(p + "th4", { s: 6, cx: 15, cy: 22, kind: "kiosk" });
+  T(p + "th5", { s: 9, cx: 15, cy: 20, kind: "rack" });
+}
+T("ath", { s: 12, cx: 27, cy: 40 });
+T("dragScene", { s: 60, cx: 140, cy: 180 });
+T("ringScene", { s: 24, cx: 196, cy: 440 });
+T("roomScene", { s: 52, cx: 300, cy: 360, fade: 360, grid: true, selected: true });
+</script>
+</body>
+</html>
