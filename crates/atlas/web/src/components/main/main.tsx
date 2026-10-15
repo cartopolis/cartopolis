@@ -7,6 +7,7 @@ import {Chat} from '@/components/pages/chat/chat'
 import {Buildings} from '@/components/pages/buildings/buildings'
 import {Register} from '@/components/pages/register/register'
 import {Verify} from '@/components/pages/verify/verify'
+import {Tokens} from '@/components/pages/tokens/tokens'
 import {layout} from '@/lib/layout'
 import {ADMIN} from '@/lib/base'
 
@@ -71,7 +72,7 @@ const page = (Page: ComponentType<any>, frame: 'page' | 'wide' = 'page'): RouteR
  *
  * `/` is Community, `/world` World and `/admin` Admin: the three positions of the
  * page's switch. `/register` and `/verify` are for people who have no account,
- * `/buildings` and `/building/…` are for players who do. They share this build because they share an API, and
+ * `/buildings`, `/building/…` and `/tokens` are for players who do. They share this build because they share an API, and
  * because the verification link has to point *somewhere* the simulator's `/api`
  * is same-origin with. Caddy serves `index.html` for every path it does not route
  * elsewhere, so each is a route rather than a 404 — and an unknown one lands on
@@ -94,6 +95,7 @@ export function mountRoutes(root: Element) {
         // house; links to it are in sent mail.
         '/house': page(Buildings),
         '/building/:pand': page(Building, 'wide'),
+        '/tokens': page(Tokens),
         '/chat': chatPage,
         '/world': chatPage,
         [ADMIN]: chatPage,

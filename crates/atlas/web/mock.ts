@@ -21,6 +21,7 @@
  * without typing into a form.
  */
 import type {
+    AccessToken,
     Account,
     BuildingAddress,
     BuildingOverride,
@@ -93,6 +94,11 @@ const accounts: Account[] = [
 ]
 
 /** token → username. Every session here is an operator (see the module note). */
+/** The access tokens `/tokens` lists, one seeded so the page is not empty. */
+const accessTokens: (AccessToken & {username: string})[] = [
+    {created_at: 1_791_000_000, elevated: false, expires_at: null, id: '3f2a9c41b7e05d18', label: 'deck-2 bot', last_used: 1_791_990_000, username: 'viberfox'},
+]
+
 const sessions = new Map<string, string>([
     [MOCK_ADMIN_TOKEN, 'viberfox'],
     [MOCK_PLAYER_TOKEN, MOCK_PLAYER],
@@ -745,6 +751,41 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             return refuse(404, 'You do not own that building')
         }
         owned.splice(i, 1)
+        return new Response(null, {status: 204})
+    }
+
+    // ── Access tokens (`/tokens`) ────────────────────────────────────────────
+    // Any password confirms, as any password signs in: the mock checks shapes,
+    // not secrets. The secret is shown once and kept nowhere, as on the server.
+    if (p === '/api/tokens' && method === 'GET') {
+        return json({tokens: accessTokens.filter((t) => t.username === who).map(({username: _, ...t}) => t)})
+    }
+    if (p === '/api/tokens' && method === 'POST') {
+        const body = (await req.json()) as {elevated?: boolean; expires_at?: number | null; label?: string; password?: string}
+        if (!body.password) {
+            return refuse(403, 'that password is not right')
+        }
+        const label = (body.label ?? '').trim()
+        if (!label || label.length > 60) {
+            return refuse(400, 'give the token a name of 1 to 60 characters')
+        }
+        const info = {
+            created_at: Math.floor(Date.now() / 1000),
+            elevated: Boolean(body.elevated),
+            expires_at: body.expires_at ?? null,
+            id: uuid().replaceAll('-', '').slice(0, 16),
+            label,
+            last_used: null,
+        }
+        accessTokens.unshift({...info, username: who})
+        return json({info, token: sha256(`${info.id}:${Date.now()}`)})
+    }
+    if (parts[1] === 'tokens' && parts.length === 3 && method === 'DELETE') {
+        const i = accessTokens.findIndex((t) => t.id === parts[2] && t.username === who)
+        if (i < 0) {
+            return refuse(404, 'no such token')
+        }
+        accessTokens.splice(i, 1)
         return new Response(null, {status: 204})
     }
 

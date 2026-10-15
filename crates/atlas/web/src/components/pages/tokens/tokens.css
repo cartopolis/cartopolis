@@ -1,0 +1,48 @@
+/* `/tokens`: a person's access tokens — the list, the form, the secret shown once. */
+.tokens-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-4);
+    margin: 0 auto;
+    max-width: 40rem;
+
+    form .m-card__body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--m-space-3);
+    }
+}
+
+.tokens-page__hint,
+.tokens-page__meta {
+    color: var(--m-text-dim);
+    margin: 0;
+}
+
+.tokens-page__meta {
+    font-size: 0.85em;
+}
+
+.tokens-page__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.tokens-page__row {
+    align-items: center;
+    display: flex;
+    gap: var(--m-space-3);
+    justify-content: space-between;
+}
+
+/* The secret: one selectable line that wraps rather than scrolls on a phone. */
+.tokens-page__secret {
+    display: block;
+    margin: var(--m-space-3) 0;
+    overflow-wrap: anywhere;
+    user-select: all;
+}
