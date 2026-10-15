@@ -30,6 +30,17 @@ only.
 
 ![v4](v4.png)
 
+### The chat
+
+The field check has its own button in the chat bar, only in a chat with the
+agent. The agent answers by calling the harness: it saves the check as a
+preset, renders the same view on a build node, confirms its render matches the
+phone's, then says what differs from the photo. Later it can put the camera
+back on that view and show real, before and after. Each harness call shows as
+one grey line in the chat.
+
+![v4, the chat](v4-chat.png)
+
 ## Superseded: v3, what the position knows
 
 Judged too complicated on 2026-10-15: the height check, compass log, touch
