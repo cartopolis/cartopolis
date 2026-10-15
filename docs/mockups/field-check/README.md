@@ -6,10 +6,23 @@ updated: 2026-10-15
 
 # Field check: the real view and Cartopolis's view, side by side
 
-A design mockup, not code. **v3 is the current proposal**: v2 plus what the
-position itself can check.
+A design mockup, not code. **v4 is the current proposal.**
 
-## v3: what the position knows
+## v4: simple
+
+The purpose is one thing: verify the virtual view against the real image.
+Point the phone, press once, and get one picture, real next to Cartopolis,
+with the position, accuracy, direction, camera, time and app version under it
+(enough to render the same view again). It goes to the agent, who says where
+the two differ. The capture screen is the camera, a corner render, a shutter
+and front/rear, with one chip for the position quality.
+
+![v4](v4.png)
+
+## Superseded: v3, what the position knows
+
+Judged too complicated on 2026-10-15: the height check, compass log, touch
+check and full quality sheet are kept here as ideas, not as the design.
 
 The receiver reports far more than a position, and each part is a check on the
 world. Its **height** (converted to NAP, minus the antenna height) checks AHN and
@@ -37,7 +50,7 @@ Open: a touch on something the registers do not have is a measurement, not a
 check. Whether those may become world content is undecided; the rule so far is
 real registers only.
 
-## v2: a harness for correcting the world
+## Superseded: v2, a harness for correcting the world
 
 A tool for the agent first, and a feature maybe later. Standing somewhere with
 the RTK receiver, one shutter makes **one picture**: the photo on the left,
