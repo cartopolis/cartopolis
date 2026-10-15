@@ -21,8 +21,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// What opens the pose line in a caption. A line, not a suffix, so a note may
-/// say anything and still be found.
+/// What opens the pose in a caption: the rest of its line is the JSON. Found
+/// anywhere in a line, because a caption with no note is the pose alone and the
+/// chat line made of it starts with "Picture: ".
 pub const CAPTION_MARKER: &str = "cartopolis:field-check ";
 
 /// The shot group every field check is saved under (`--only field-check`).
@@ -247,7 +248,7 @@ impl FieldPose {
     pub fn from_caption(caption: &str) -> Option<(String, FieldPose)> {
         let pose = caption
             .lines()
-            .find_map(|l| l.trim().strip_prefix(CAPTION_MARKER))
+            .find_map(pose_json)
             .and_then(|json| serde_json::from_str::<FieldPose>(json).ok())
             .filter(FieldPose::is_valid)?;
         Some((display_caption(caption), pose))
@@ -404,24 +405,34 @@ pub fn window_fov_y_deg(width: u32, height: u32, fov_y_deg: f32) -> f32 {
     2.0 * half.atan().to_degrees()
 }
 
-/// A caption as a person should read it: everything but the pose line.
+/// The pose's JSON in a line, wherever the marker stands in it. Not only at
+/// the start: a caption with no note *is* the pose line, and the chat line it
+/// becomes is `Picture: cartopolis:field-check {…}` — one line, marker inside.
+fn pose_json(line: &str) -> Option<&str> {
+    line.find(CAPTION_MARKER)
+        .map(|i| &line[i + CAPTION_MARKER.len()..])
+}
+
+/// A caption as a person should read it: everything but the pose.
 #[must_use]
 pub fn display_caption(caption: &str) -> String {
     caption
         .lines()
-        .filter(|l| !l.trim().starts_with(CAPTION_MARKER))
+        .map(|l| match l.find(CAPTION_MARKER) {
+            Some(i) => l[..i].trim_end(),
+            None => l,
+        })
+        .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
         .to_string()
 }
 
-/// Whether a caption is a field check's.
+/// Whether a caption, or a chat line made of one, is a field check's.
 #[must_use]
 pub fn is_field_check(caption: &str) -> bool {
-    caption
-        .lines()
-        .any(|l| l.trim().starts_with(CAPTION_MARKER))
+    caption.lines().any(|l| pose_json(l).is_some())
 }
 
 fn wrap_deg(d: f32) -> f32 {
@@ -558,6 +569,16 @@ mod tests {
         assert!(caption.starts_with(CAPTION_MARKER));
         assert_eq!(display_caption(&caption), "");
         assert_eq!(FieldPose::from_caption(&caption).unwrap().0, "");
+    }
+
+    #[test]
+    fn the_pose_is_found_in_the_chat_line_a_caption_with_no_note_becomes() {
+        // `cartopolis_chat::picture_caption` puts the caption after a prefix.
+        let line = format!("Picture: {}", grote_markt().caption(""));
+        assert!(is_field_check(&line));
+        let (note, pose) = FieldPose::from_caption(&line).expect("found mid-line");
+        assert_eq!(pose, grote_markt());
+        assert_eq!(note, "Picture:");
     }
 
     #[test]

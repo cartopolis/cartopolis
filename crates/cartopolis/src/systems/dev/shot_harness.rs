@@ -3174,10 +3174,6 @@ pub fn aim_scripted_camera(
     }
 }
 
-/// The camera's own field of view when a shot names none: Bevy's default
-/// `PerspectiveProjection`, which `free_camera::setup_camera` keeps.
-const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_4;
-
 /// Hold the current shot's roll, lens and ground height, every frame.
 ///
 /// Every frame for the reasons [`aim_scripted_camera`] is: the teleport's pose
@@ -3186,13 +3182,17 @@ const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_4;
 /// ground an `on_ground` camera stands on moves after the teleport. A shot that
 /// names none of these still has its lens put back to the default, or a field
 /// check's narrow lens would carry over into the next view of a sweep.
+///
+/// The lens goes through `CameraState::free_fov`, not the projection:
+/// `camera_controls` puts the projection's lens back every frame in every mode
+/// but Follow, which the first version of this wrote under and lost.
 pub fn pose_scripted_camera(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
     anchor: Res<MapAnchor>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     mut cam_state: ResMut<CameraState>,
-    mut camera: Query<(&GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
+    mut camera: Query<(&GridCell, &mut Transform), With<FreeCamera>>,
 ) {
     if !progress.placed {
         return;
@@ -3207,20 +3207,13 @@ pub fn pose_scripted_camera(
     if (cam_state.free_camera_roll - roll).abs() > 1e-6 {
         cam_state.free_camera_roll = roll;
     }
-    let Ok((cell, mut tf, mut projection)) = camera.single_mut() else {
+    let fov = shot.fov_y_deg.map(f32::to_radians);
+    if cam_state.free_fov != fov {
+        cam_state.free_fov = fov;
+    }
+    let Ok((cell, mut tf)) = camera.single_mut() else {
         return;
     };
-    // Follow mode sets its own lens every frame (`free_camera::set_fov`).
-    if harness.mode_for(progress.index) != "avatar" {
-        let want = shot.fov_y_deg.map_or(DEFAULT_FOV, f32::to_radians);
-        if let Projection::Perspective(p) = projection.as_ref() {
-            if (p.fov - want).abs() > 1e-5 {
-                if let Projection::Perspective(p) = projection.as_mut() {
-                    p.fov = want;
-                }
-            }
-        }
-    }
     if shot.on_ground {
         let Some(geo) = anchor.geo else {
             return;

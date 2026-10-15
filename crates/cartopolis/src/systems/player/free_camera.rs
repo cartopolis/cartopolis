@@ -1501,7 +1501,11 @@ pub fn camera_controls(
         rig.smoothing.pivot = None;
         rig.smoothing.pullback = 1.0;
         rig.smoothing.idle_s = 0.0;
-        set_fov(&mut projection, FOLLOW_FOV_BASE);
+        // …unless a scripted capture or a field check names a lens.
+        set_fov(
+            &mut projection,
+            camera_state.free_fov.unwrap_or(FOLLOW_FOV_BASE),
+        );
     }
 
     // A finger holds the emulated left button down for the whole gesture

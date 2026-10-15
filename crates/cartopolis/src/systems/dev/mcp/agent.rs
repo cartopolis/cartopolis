@@ -1872,10 +1872,11 @@ fn read_chat(
                 .distance
                 .map(|d| format!(" ({d:.0} m away)"))
                 .unwrap_or_default();
-            let field_check = line
-                .picture
-                .as_ref()
-                .and_then(|_| cartopolis_core::field_check::FieldPose::from_caption(&line.body));
+            let field_check = line.picture.as_ref().and_then(|_| {
+                cartopolis_core::field_check::FieldPose::from_caption(
+                    crate::systems::private_chat::caption_of(&line.body).unwrap_or(&line.body),
+                )
+            });
             let seen = if let Some((_, pose)) = &field_check {
                 // A field check: the photograph and Cartopolis side by side, and
                 // the pose to put the camera back on (`systems::field_check`).
@@ -1946,7 +1947,12 @@ fn read_chat(
                 "field_check": line
                     .picture
                     .as_ref()
-                    .and_then(|_| cartopolis_core::field_check::FieldPose::from_caption(&line.body))
+                    .and_then(|_| {
+                        cartopolis_core::field_check::FieldPose::from_caption(
+                            crate::systems::private_chat::caption_of(&line.body)
+                                .unwrap_or(&line.body),
+                        )
+                    })
                     .map(|(note, pose)| json!({
                         "name": pose.name(),
                         "note": note,

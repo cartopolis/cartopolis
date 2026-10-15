@@ -387,7 +387,7 @@ mod native {
         anchor: Res<MapAnchor>,
         terrain: Res<crate::systems::terrain::TerrainField>,
         globe: Res<crate::systems::globe::GlobeState>,
-        mut camera: Query<(&GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
+        mut camera: Query<(&GridCell, &mut Transform, &Projection), With<FreeCamera>>,
         windows: Query<&Window>,
         headless: Option<Res<crate::resources::HeadlessSurface>>,
         mut shot: ResMut<ScreenshotState>,
@@ -452,12 +452,8 @@ mod native {
             if let Some(back) = session.restore.take() {
                 nav.pending_teleport = Some(back);
             }
-            if let Ok((_, _, mut projection)) = camera.single_mut() {
-                if let Projection::Perspective(p) = projection.as_mut() {
-                    p.fov = std::f32::consts::FRAC_PI_4;
-                }
-            }
             cs.free_camera_roll = 0.0;
+            cs.free_fov = None;
             check.session = None;
             check.world_in = None;
             return;
@@ -479,7 +475,7 @@ mod native {
         let Some((win_w, win_h)) = window_px(&windows, headless.as_deref()) else {
             return;
         };
-        let Ok((cell, mut tf, mut projection)) = camera.single_mut() else {
+        let Ok((cell, mut tf, projection)) = camera.single_mut() else {
             return;
         };
         let geo = anchor.geo;
@@ -525,7 +521,7 @@ mod native {
             geo.map(|geo| {
                 let (lat, lng) = crate::systems::geo_nav::camera_geo(geo, &globe, cell, &tf);
                 let (yaw, pitch, roll) = tf.rotation.to_euler(EulerRot::YXZ);
-                let cam_fov = match projection.as_ref() {
+                let cam_fov = match projection {
                     Projection::Perspective(p) => p.fov.to_degrees(),
                     _ => 45.0,
                 };
@@ -584,11 +580,11 @@ mod native {
             cs.free_camera_rotation = Vec2::new(pitch, yaw);
             cs.free_camera_roll = pose.roll_deg.to_radians();
             cs.free_initialized = true;
+            // Through `free_fov`: `camera_controls` resets the projection's lens
+            // every frame, so a direct write would be undone before it is drawn.
             let want = fc::window_fov_y_deg(win_w, win_h, pose.fov_y_deg).to_radians();
-            if let Projection::Perspective(p) = projection.as_mut() {
-                if (p.fov - want).abs() > 1e-4 {
-                    p.fov = want;
-                }
+            if cs.free_fov.is_none_or(|f| (f - want).abs() > 1e-4) {
+                cs.free_fov = Some(want);
             }
             // On the fix, at eye height above the ground underfoot (not the
             // anchor's). Skipped on the frame a jump is pending: the teleport

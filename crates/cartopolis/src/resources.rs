@@ -1560,6 +1560,12 @@ pub struct CameraState {
     /// with the phone held a little crooked. Any jump with a pose puts it back
     /// to level (`CameraPose::apply`).
     pub free_camera_roll: f32,
+    /// A vertical field of view, radians, for every mode but Follow (which eases
+    /// its own with speed). `None` is the default lens. Like the roll, only a
+    /// scripted capture or a field check sets it — `camera_controls` puts the
+    /// lens back every frame, so writing the projection directly does nothing —
+    /// and any jump with a pose clears it.
+    pub free_fov: Option<f32>,
     /// Follow (Avatar) mode is *derived* from the avatar, so it has no saved pose:
     /// cleared on entry so the first frame snaps the rig straight onto the avatar
     /// (reposition reliably even when returning from a distant Orbit `GridCell`),
@@ -1724,6 +1730,7 @@ impl Default for CameraState {
             pan_offset: None,
             free_camera_rotation: Vec2::new(0.0, 0.0),
             free_camera_roll: 0.0,
+            free_fov: None,
             avatar_initialized: false,
             free_initialized: false,
             free_saved: None,
