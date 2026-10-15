@@ -119,6 +119,27 @@ impl DeviceAttitude {
     pub fn camera_rotation(&self) -> Quat {
         (world_from_enu() * self.screen_to_world).as_quat()
     }
+
+    /// Where a camera on this phone looks: `(heading, pitch, roll)` in degrees —
+    /// compass heading clockwise from north, elevation above the horizon, and
+    /// the third angle of the free camera's `EulerRot::YXZ` (the convention it
+    /// is rendered back in). `front` is the selfie camera, which looks out of
+    /// the screen: the back camera's view turned half a turn about the screen's
+    /// up axis. The inverse of [`Self::pointing`] for the back camera.
+    #[must_use]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn view_angles(&self, front: bool) -> (f64, f64, f64) {
+        let mut camera = world_from_enu() * self.screen_to_world;
+        if front {
+            camera *= DQuat::from_rotation_y(std::f64::consts::PI);
+        }
+        let (yaw, pitch, roll) = camera.to_euler(bevy::math::EulerRot::YXZ);
+        (
+            (-yaw.to_degrees()).rem_euclid(360.0),
+            pitch.to_degrees(),
+            roll.to_degrees(),
+        )
+    }
 }
 
 /// The rotation taking the sensors' East/North/Up frame into the app's world
@@ -698,14 +719,20 @@ mod android {
                     // expands — so nothing is derived here beyond the display's
                     // own turn.
                     let device = DQuat::from_xyzw(x, y, z, w);
+                    // `values[4]` is the rotation vector's own estimate of its
+                    // heading error, in radians, or −1 when it has none (API 18+;
+                    // `ASensorEvent`'s separate accuracy field is a class 0..3, not
+                    // an angle, and is not used). Anything outside (0, π) is the
+                    // "none" answer or a driver that never wrote it.
+                    let heading_error = f64::from(d[4]);
                     report(
                         slot,
                         Ok(DeviceAttitude {
                             screen_to_world: screen_frame(device, screen_angle),
-                            // `ASensorEvent` carries the sensor's accuracy class
-                            // (0..3), not an angle. Reporting a class as degrees
-                            // would be a made-up number, so nothing is reported.
-                            accuracy_deg: None,
+                            accuracy_deg: (heading_error.is_finite()
+                                && heading_error > 0.0
+                                && heading_error < std::f64::consts::PI)
+                                .then(|| heading_error.to_degrees()),
                         }),
                     );
                 }
@@ -721,6 +748,27 @@ mod android {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_angles_read_back_what_pointing_built() {
+        for (bearing, elevation, roll) in
+            [(9.0, 14.0, 0.4), (270.0, -5.0, -3.0), (135.0, 30.0, 10.0)]
+        {
+            let a = DeviceAttitude::pointing(bearing, elevation, roll);
+            let (h, p, r) = a.view_angles(false);
+            assert!((h - bearing).abs() < 1e-6, "{h} vs {bearing}");
+            assert!((p - elevation).abs() < 1e-6, "{p} vs {elevation}");
+            assert!((r - roll).abs() < 1e-6, "{r} vs {roll}");
+            // The selfie camera looks the other way, and down where the back
+            // one looks up.
+            let (hf, pf, _) = a.view_angles(true);
+            assert!(
+                ((hf - bearing).rem_euclid(360.0) - 180.0).abs() < 1e-6,
+                "{hf}"
+            );
+            assert!((pf + elevation).abs() < 1e-6, "{pf}");
+        }
+    }
 
     /// A flat device with its top pointing north, as a rotation vector.
     fn flat_facing(bearing_deg: f64) -> DQuat {

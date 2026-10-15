@@ -22,6 +22,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// (`platform::precise_sensors::Sensors::camera_lost`).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub const CAMERA_TAKEN: &str = "The camera was taken by another app";
+
+/// The widest picture a still camera asks for ([`Camera::open_still`]). A field
+/// check's picture is two halves of at most 800 px each (a chat picture is
+/// re-encoded to 1600 px), so anything wider is converted and turned fifteen
+/// times a second for nothing.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub const STILL_MAX_WIDTH: i32 = 1920;
 use crate::platform::sync::{Arc, Mutex};
 
 use cartopolis_calls::video::{self, I420};
@@ -42,6 +49,11 @@ struct Shared {
     /// The newest picture, for the person's own view of themselves
     /// ([`Camera::take_preview`]); replaced, never queued.
     preview: Mutex<Option<I420>>,
+    /// A still camera ([`Camera::open_still`]): pictures are kept at the size
+    /// the sensor delivered, only turned upright, instead of shrunk to a call's.
+    full_size: AtomicBool,
+    /// What the open camera says about its lens, once it is open.
+    lens: Mutex<Option<cartopolis_core::lens::Lens>>,
 }
 
 impl Shared {
@@ -59,8 +71,16 @@ impl Shared {
         true
     }
 
-    /// A camera picture at the call's send size, turned by `turn` degrees.
+    /// A camera picture at the call's send size, turned by `turn` degrees —
+    /// or, for a still camera, at the sensor's own size, turned.
     fn fit(&self, picture: &I420, turn: u32) -> I420 {
+        if self.full_size.load(Ordering::Relaxed) {
+            return if turn % 360 == 0 {
+                picture.clone()
+            } else {
+                picture.rotated(turn, false)
+            };
+        }
         let v = self.send_size.load(Ordering::Relaxed);
         let size = if v == 0 {
             (video::WIDTH, video::HEIGHT)
@@ -122,6 +142,41 @@ impl Camera {
             }
         }
         Self { shared }
+    }
+
+    /// Open a camera for taking a photograph: the front or the back one, at the
+    /// largest 4:3 colour size it offers up to [`STILL_MAX_WIDTH`], with every
+    /// picture kept at that size (turned upright) rather than shrunk to a
+    /// call's. The newest is [`Self::take_preview`]; the lens is [`Self::lens`].
+    ///
+    /// On the desktop there is one webcam and `front` is ignored.
+    #[must_use]
+    pub fn open_still(front: bool) -> Self {
+        let shared = Arc::new(Shared::default());
+        shared.full_size.store(true, Ordering::Relaxed);
+        let s = Arc::clone(&shared);
+        let started = std::thread::Builder::new()
+            .name("cartopolis-still-camera".into())
+            .spawn(move || {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let _ = front;
+                    webcam::run(&s);
+                }
+                #[cfg(target_os = "android")]
+                phone::run_still(&s, front);
+            });
+        if let Err(e) = started {
+            *shared.error.lock().unwrap() = Some(format!("Camera: {e}"));
+        }
+        Self { shared }
+    }
+
+    /// What the camera reports about its lens, once it is open. Only the phone
+    /// says anything; a webcam reports nothing.
+    #[must_use]
+    pub fn lens(&self) -> Option<cartopolis_core::lens::Lens> {
+        self.shared.lens.lock().ok()?.clone()
     }
 
     /// The stand-in camera: the test pattern at the call's frame rate.
@@ -354,7 +409,7 @@ mod phone {
         // SAFETY: `open` and `pump` follow Camera2's documented call order and
         // `Held` owns every handle until it is dropped here.
         let result = unsafe {
-            open(true).and_then(|(held, lens)| pump(shared, &held, lens.orientation_deg))
+            open(true, false).and_then(|(held, lens)| pump(shared, &held, lens.orientation_deg))
         };
         if let Err(e) = result {
             fail(e);
@@ -398,7 +453,7 @@ mod phone {
         // SAFETY: as `run`: Camera2's documented call order, every handle owned
         // by `Held` until it drops at the end of this block.
         unsafe {
-            let (held, lens) = open(false)?;
+            let (held, lens) = open(false, false)?;
             on_lens(lens);
             while !stop.load(Ordering::Relaxed) {
                 if LOST.load(Ordering::Relaxed) {
@@ -452,7 +507,10 @@ mod phone {
     /// Pick a camera (the front one for a call, the back one for a capture),
     /// open it, and start it streaming into an image reader. Returns the
     /// handles and what the camera says about itself.
-    unsafe fn open(front: bool) -> Result<(Held, cartopolis_core::lens::Lens), String> {
+    unsafe fn open(
+        front: bool,
+        still: bool,
+    ) -> Result<(Held, cartopolis_core::lens::Lens), String> {
         let mut held = Held {
             manager: sys::ACameraManager_create(),
             device: null_mut(),
@@ -466,11 +524,12 @@ mod phone {
         if held.manager.is_null() {
             return Err("Camera: no camera service".into());
         }
-        let (id, lens) = choose(held.manager, front)?;
+        let (id, lens, sizes) = choose(held.manager, front)?;
+        let ask = if still { still_size(&sizes) } else { ASK };
         tracing::info!(camera = %id.to_string_lossy(), ?lens, "opening the camera");
 
         let format = sys::AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888.0 as i32;
-        if sys::AImageReader_new(ASK.0, ASK.1, format, 3, &mut held.reader)
+        if sys::AImageReader_new(ask.0, ask.1, format, 3, &mut held.reader)
             != sys::media_status_t::AMEDIA_OK
         {
             return Err("Camera: could not make an image reader".into());
@@ -556,7 +615,14 @@ mod phone {
     unsafe fn choose(
         manager: *mut sys::ACameraManager,
         want_front: bool,
-    ) -> Result<(std::ffi::CString, cartopolis_core::lens::Lens), String> {
+    ) -> Result<
+        (
+            std::ffi::CString,
+            cartopolis_core::lens::Lens,
+            Vec<(i32, i32)>,
+        ),
+        String,
+    > {
         let mut list = null_mut();
         ok(
             sys::ACameraManager_getCameraIdList(manager, &mut list),
@@ -566,7 +632,13 @@ mod phone {
             .map(|i| CStr::from_ptr(*(*list).cameraIds.add(i)).to_owned())
             .collect();
         sys::ACameraManager_deleteCameraIdList(list);
-        let mut best: Option<(std::ffi::CString, cartopolis_core::lens::Lens, bool)> = None;
+        #[allow(clippy::type_complexity)]
+        let mut best: Option<(
+            std::ffi::CString,
+            cartopolis_core::lens::Lens,
+            bool,
+            Vec<(i32, i32)>,
+        )> = None;
         for id in ids {
             let mut meta = null_mut();
             if sys::ACameraManager_getCameraCharacteristics(manager, id.as_ptr(), &mut meta)
@@ -584,16 +656,79 @@ mod phone {
                 && u32::from(*entry.data.u8_)
                     == sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_FRONT.0;
             let lens = read_lens(meta);
+            let sizes = yuv_sizes(meta);
             sys::ACameraMetadata_free(meta);
             let wanted = front == want_front;
             // The first camera facing the wanted way: on a phone with several
             // back cameras the first listed is the main one.
             if best.as_ref().is_none_or(|b| wanted && b.2 != want_front) {
-                best = Some((id, lens, front));
+                best = Some((id, lens, front, sizes));
             }
         }
-        best.map(|(id, lens, _)| (id, lens))
+        best.map(|(id, lens, _, sizes)| (id, lens, sizes))
             .ok_or_else(|| "No camera on this device".into())
+    }
+
+    /// The `YUV_420_888` output sizes a camera offers. An image reader of any
+    /// other size makes the session fail to start, and a call's 640×480 is the
+    /// only one every camera is counted on to have.
+    unsafe fn yuv_sizes(meta: *const sys::ACameraMetadata) -> Vec<(i32, i32)> {
+        let mut e = std::mem::zeroed::<sys::ACameraMetadata_const_entry>();
+        if sys::ACameraMetadata_getConstEntry(
+            meta,
+            sys::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
+            &mut e,
+        ) != sys::camera_status_t::ACAMERA_OK
+        {
+            return Vec::new();
+        }
+        let yuv = sys::AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888.0 as i32;
+        // Quadruples of (format, width, height, is-input).
+        std::slice::from_raw_parts(e.data.i32_, e.count as usize)
+            .chunks_exact(4)
+            .filter(|q| q[0] == yuv && q[3] == 0)
+            .map(|q| (q[1], q[2]))
+            .collect()
+    }
+
+    /// The size a still camera asks for: see [`super::still_size_from`].
+    fn still_size(sizes: &[(i32, i32)]) -> (i32, i32) {
+        super::still_size_from(sizes).unwrap_or(ASK)
+    }
+
+    /// A still camera: the front or back camera, pictures kept at the sensor's
+    /// size and turned upright, the lens recorded on [`Shared::lens`].
+    pub fn run_still(shared: &Arc<Shared>, front: bool) {
+        let fail = |msg: String| *shared.error.lock().unwrap() = Some(msg);
+        match crate::platform::android::ensure_permission(
+            crate::platform::android::PERM_CAMERA,
+            &shared.stop,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return fail(
+                    "Camera access was refused. It can be allowed in the system \
+                     settings for this app."
+                        .into(),
+                )
+            }
+            Err(e) => return fail(format!("Camera: {e}")),
+        }
+        LOST.store(false, Ordering::Relaxed);
+        // SAFETY: as `run`: Camera2's documented call order, every handle owned
+        // by `Held` until it is dropped here.
+        let result = unsafe {
+            open(front, true).and_then(|(held, lens)| {
+                let turn = lens.orientation_deg;
+                if let Ok(mut l) = shared.lens.lock() {
+                    *l = Some(lens);
+                }
+                pump(shared, &held, turn)
+            })
+        };
+        if let Err(e) = result {
+            fail(e);
+        }
     }
 
     /// What a camera's characteristics say about its lens, for the localiser.
@@ -631,6 +766,10 @@ mod phone {
                 }),
             orientation_deg: entry(Tag::ACAMERA_SENSOR_ORIENTATION)
                 .map_or(0, |e| (*e.data.i32_).rem_euclid(360) as u32),
+            focal_length_mm: floats(Tag::ACAMERA_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, 1)
+                .map(|v| v[0]),
+            physical_size_mm: floats(Tag::ACAMERA_SENSOR_INFO_PHYSICAL_SIZE, 2)
+                .map(|v| [v[0], v[1]]),
             realtime_timestamps: entry(Tag::ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE).is_some_and(
                 |e| {
                     u32::from(*e.data.u8_)
@@ -698,6 +837,25 @@ mod phone {
 #[cfg(target_os = "android")]
 pub use phone::run_back_gray;
 
+/// The size a still camera asks for, from the `(width, height)` sizes the
+/// camera offers (landscape, as sensors report them): the largest **4:3** one
+/// no wider than [`STILL_MAX_WIDTH`], since a field check's halves are 3:4
+/// and a 16:9 picture would lose a quarter of itself to the crop; failing
+/// that, the largest of any shape within the width. `None` when nothing fits.
+#[must_use]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn still_size_from(sizes: &[(i32, i32)]) -> Option<(i32, i32)> {
+    let fits = |&&(w, h): &&(i32, i32)| w > 0 && h > 0 && w <= STILL_MAX_WIDTH;
+    let area = |&&(w, h): &&(i32, i32)| i64::from(w) * i64::from(h);
+    sizes
+        .iter()
+        .filter(fits)
+        .filter(|(w, h)| w * 3 == h * 4)
+        .max_by_key(area)
+        .or_else(|| sizes.iter().filter(fits).max_by_key(area))
+        .copied()
+}
+
 /// A picture of the person themselves as RGBA, at most `max_width` wide:
 /// **mirrored**, as a mirror shows you. What is sent is not mirrored (the
 /// other person should see you the right way round); only this view is.
@@ -742,6 +900,25 @@ pub fn to_size(picture: &I420, turn: u32, size: (u32, u32)) -> I420 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_still_camera_asks_for_the_largest_four_by_three_that_fits() {
+        let offered = [
+            (4000, 3000),
+            (1920, 1080),
+            (1920, 1440),
+            (1280, 960),
+            (640, 480),
+        ];
+        assert_eq!(still_size_from(&offered), Some((1920, 1440)));
+        // No 4:3 within the width: the largest of any shape that fits.
+        assert_eq!(
+            still_size_from(&[(4000, 3000), (1920, 1080), (1280, 720)]),
+            Some((1920, 1080))
+        );
+        assert_eq!(still_size_from(&[(4000, 3000)]), None);
+        assert_eq!(still_size_from(&[]), None);
+    }
 
     #[test]
     fn a_camera_picture_is_shrunk_then_turned_to_the_calls_size() {
