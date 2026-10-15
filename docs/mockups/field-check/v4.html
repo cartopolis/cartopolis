@@ -216,7 +216,26 @@ table.cmp td { padding:6px 12px; }
   <ul>
     <li>Real left, Cartopolis right, same spot, same direction.</li>
     <li>Under it: where, how accurate, which direction, which camera, when, and the app version: enough to render the same view again.</li>
-    <li>The same pose also goes along as data, with one extra: the ground height the receiver measured, so the agent can compare it with the height map (AHN). Not shown on screen.</li>
+    <li><b style="font-weight:inherit;color:var(--text)">The data is a shot preset</b>, the same format as <code>docs/shots.toml</code>, so the agent can put the camera back on exactly this view at any time with one command, before and after a fix:</li>
+  </ul>
+  <pre>[[shot]]
+name   = "field-2026-10-15-1203"
+group  = "field-check"
+at     = [53.21830, 6.56790, 1.6]   <i># metres above the ground there</i>
+look   = [14.0, -9.0]               <i># pitch, yaw</i>
+roll   = 0.4                        <i># new</i>
+fov    = 68.0                       <i># new: the phone lens, vertical</i>
+date   = "2026-10-15"               <i># new: with time, the sun's position</i>
+time   = 12.05                      <i># UTC</i>
+
+[shot.measured]                     <i># new: data only, not rendered</i>
+accuracy_m = 0.01
+ground_nap = 7.02                   <i># compare with AHN</i>
+camera     = "rear"
+client     = "410d46f4"</pre>
+  <pre style="margin-top:8px">cargo shots --shots docs/field-checks.toml --only field-2026-10-15-1203</pre>
+  <ul style="margin-top:8px">
+    <li>Every check is kept in <code>docs/field-checks.toml</code>, so the walk becomes a set of views that can all be re-rendered after any change.</li>
       </ul>
 </div>
 

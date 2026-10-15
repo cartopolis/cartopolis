@@ -21,6 +21,13 @@ The pose also travels as data, including the ground height the receiver
 measured (converted to NAP, minus the antenna height), so the agent can check
 it against AHN. That is data only, nothing on screen.
 
+The data is a shot preset (`docs/shots.toml` format), kept in
+`docs/field-checks.toml`, so the agent can put the camera back on exactly the
+same view later with `cargo shots --only <name>`. That needs three keys the
+harness does not have yet: `roll`, `fov` (the phone lens) and `date` (with
+`time`, the sun). Measured values go in a `[shot.measured]` table that is data
+only.
+
 ![v4](v4.png)
 
 ## Superseded: v3, what the position knows
