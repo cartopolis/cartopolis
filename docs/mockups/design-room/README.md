@@ -1,10 +1,36 @@
 ---
 topic: design-room
-triggers: [design room, "Design here", clean room, white room, Build, render_context_menu, ring of actions, render_edit_dialog, EditDialogState, prim editing, drafts, inventory, inventory_items, model_library.rs, library.rs, library_share, "shared library", Take, "Take copy"]
+triggers: [design room, library_publish, "server library", "Design here", clean room, white room, Build, render_context_menu, ring of actions, render_edit_dialog, EditDialogState, prim editing, drafts, inventory, inventory_items, model_library.rs, library.rs, library_share, "shared library", Take, "Take copy"]
 updated: 2026-10-15
 ---
 
 # A white room to design an object in, and an inventory to keep it in
+
+## v3 — thought through, proposed 2026-10-15
+
+![v3](v3.png)
+
+Redrawn around three answers (**all of the inventory on the server**, drafts
+included; **no isometric or orthographic views**; **sharing stays open to
+everyone**) and a second pass that changed four more things:
+
+- The room is drawn in **perspective** with the map's orbit camera. Its views
+  are places to stand: Orbit, Eye level, and From the street (the far side of
+  the spot's real kerb, at 1.65 m).
+- **Two ways to give to everyone.** *Share* is today's act, for any account,
+  now for designs too: a copy in Library ▸ Shared by people, still yours,
+  withdrawable. *Move to the server library* hands the item to the server
+  (owner cleared, like a content pack) and needs a new `library_publish`
+  permission, which only admins hold for now.
+- **Placing makes a copy**, as Second Life's rez does; *Take* makes a new
+  item, and *Design* on a placed group edits it in place.
+- **A group needs the wire after all**: a `group` field on each object so one
+  tap selects the whole stall (v2 claimed no wire change; that was wrong).
+- While you design, others see your avatar pale and marked **designing**.
+
+The sheet ends with what each piece is built on (the `/api/content/export`
+document, `/api/content/import` for placing, `inventory_items`,
+`library_entries`) and the questions still open.
 
 ## v2 — inventory and shared library, proposed 2026-10-15
 

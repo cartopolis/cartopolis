@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v3: the design room and the inventory, thought through</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.new { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:rgba(253,96,18,.18); color:#ffb48a; margin-left:4px; vertical-align:1px; }
+.today { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:#23392f; color:#9fd3b4; margin-left:4px; vertical-align:1px; }
+.row { display:flex; gap:40px; align-items:flex-start; margin-top:56px; }
+.shot { width:390px; }
+
+/* the white room */
+.room { position:absolute; inset:0; background:radial-gradient(ellipse at 50% 58%, #ffffff 0, #f6f7f8 40%, #e4e8ea 100%); overflow:hidden; }
+.room svg.scene { position:absolute; inset:0; }
+.dark { color:var(--ink) !important; }
+
+/* panels that float over the white */
+.gp { position:absolute; z-index:5; background:rgba(19,25,27,.92); backdrop-filter:blur(14px); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.22); }
+.gp h4 { font-size:12px; color:var(--dim); font-weight:inherit; text-transform:uppercase; letter-spacing:.8px; margin:12px 0 7px; }
+.gp .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.gp .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.gp .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.field { background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13.5px; color:var(--cream); }
+.part { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:10px; font-size:13.5px; color:var(--text); }
+.part .ic { width:26px; height:26px; border-radius:8px; background:var(--raised); display:grid; place-items:center; color:var(--dim); }
+.part small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.part.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); color:var(--cream); }
+.part.sel .ic { background:var(--brand); color:#fff; }
+.add { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+.add div { height:58px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:11px; color:var(--dim); }
+.tabs3 { display:flex; gap:4px; padding:10px 14px 0; }
+.tabs3 div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); }
+.tabs3 .on { background:var(--accent); color:var(--ink); }
+.grid2 { display:grid; grid-template-columns:96px 1fr; gap:8px 10px; align-items:center; font-size:13px; padding:12px 14px; }
+.grid2 > span { color:var(--dim); }
+.xyz { display:flex; gap:5px; }
+.xyz div { flex:1; background:var(--raised); border:1px solid var(--gline); border-radius:8px; padding:5px 7px; font-size:12.5px; color:var(--cream); display:flex; gap:5px; }
+.xyz i { font-style:normal; font-size:11px; }
+.xyz .rx { color:#ff7b7f; } .xyz .gy { color:#5fd394; } .xyz .bz { color:#6fb2ff; }
+.slider { height:4px; border-radius:2px; background:var(--muted); position:relative; }
+.slider::after { content:""; position:absolute; top:-6px; width:16px; height:16px; border-radius:50%; background:var(--cream); left:var(--v,30%); transform:translateX(-50%); }
+.slider b { position:absolute; left:0; top:0; bottom:0; width:var(--v,30%); background:var(--brand); border-radius:2px; }
+.btn { display:inline-flex; align-items:center; gap:7px; padding:10px 16px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:14px; color:var(--text); white-space:nowrap; }
+.btn.p { background:var(--brand); color:#fff; border-color:transparent; }
+.btn.q { background:transparent; }
+.segw { display:flex; background:rgba(19,25,27,.92); border:1px solid var(--gline); border-radius:12px; padding:3px; gap:2px; }
+.segw div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); display:flex; gap:6px; align-items:center; white-space:nowrap; }
+.segw .on { background:var(--accent); color:var(--ink); }
+.disc { width:40px; height:40px; border-radius:50%; background:rgba(19,25,27,.92); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); }
+.chipw { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border-radius:16px; background:rgba(19,25,27,.92); border:1px solid var(--gline); font-size:13px; color:var(--dim); white-space:nowrap; }
+.chipw b { color:var(--cream); font-weight:inherit; }
+.chipw .x { width:24px; height:24px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); }
+.callout { position:absolute; z-index:7; font-size:12px; color:#2b3a40; background:#fff; border:1px solid #cfd7db; border-radius:10px; padding:5px 9px; box-shadow:0 4px 12px rgba(0,0,0,.08); max-width:220px; line-height:1.3; }
+.callout b { color:var(--brand); font-weight:inherit; }
+.tg { width:30px; height:17px; border-radius:9px; background:var(--muted); position:relative; flex:none; }
+.tg::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--dim); }
+.tg.on { background:var(--brand); } .tg.on::after { left:15px; background:#fff; }
+.trow { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text); padding:5px 0; }
+.trow span { flex:1; }
+
+/* the ring, from layers-and-ring v1 */
+.ring { position:absolute; z-index:6; }
+.ring .b { position:absolute; width:56px; height:56px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); backdrop-filter:blur(10px); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:10px; color:var(--text); gap:1px; transform:translate(-50%,-50%); text-align:center; line-height:1.05; }
+.ring .b.p { background:var(--brand); color:#fff; border-color:transparent; }
+.ring .b.n { background:#fff; color:var(--ink); border:2px solid var(--brand); box-shadow:0 0 0 5px rgba(253,96,18,.25); }
+.ring .b.x { width:34px; height:34px; background:rgba(10,14,16,.85); color:var(--dim); }
+.ring .guide { position:absolute; width:164px; height:164px; border-radius:50%; border:1px dashed rgba(255,255,255,.18); transform:translate(-50%,-50%); }
+.pin { position:absolute; width:14px; height:14px; border-radius:50%; background:var(--brand); border:3px solid #fff; transform:translate(-50%,-50%); z-index:5; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+.ipill { position:absolute; z-index:6; transform:translateX(-50%); background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:14px; padding:7px 12px; font-size:12px; color:var(--dim); white-space:nowrap; text-align:center; }
+.ipill b { display:block; color:var(--cream); font-size:14px; font-weight:inherit; }
+.status.ondark span { color:var(--ink); }
+.washout { position:absolute; inset:0; z-index:3; background:radial-gradient(circle at 196px 430px, #fff 0, #fff 120px, rgba(255,255,255,.85) 190px, rgba(255,255,255,.35) 300px, rgba(255,255,255,0) 420px); }
+
+.sheetw { position:absolute; left:0; right:0; bottom:0; z-index:6; background:rgba(19,25,27,.95); border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 26px; }
+.sheetw .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.pchips { display:flex; gap:6px; overflow:hidden; margin-bottom:10px; }
+.pchips div { padding:6px 10px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:12.5px; color:var(--text); white-space:nowrap; display:flex; gap:5px; align-items:center; }
+.pchips .sel { background:rgba(253,96,18,.16); border-color:rgba(253,96,18,.7); color:var(--cream); }
+.pchips .plus { color:var(--dim); }
+</style>
+<style>
+.inv { position:absolute; z-index:5; background:rgba(19,25,27,.96); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.3); overflow:hidden; }
+.inv .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.inv .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.inv .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.inv .search { margin:10px 14px 8px; background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13px; color:var(--line); display:flex; gap:7px; align-items:center; }
+.fchips { display:flex; gap:5px; padding:0 14px 8px; flex-wrap:wrap; }
+.fchips div { font-size:12px; padding:3px 9px; border-radius:10px; background:var(--raised); border:1px solid var(--gline); color:var(--dim); }
+.fchips .on { background:var(--accent); color:var(--ink); border-color:transparent; }
+.tree { padding:2px 8px 10px; font-size:13.5px; }
+.fold { display:flex; align-items:center; gap:8px; padding:6px 6px; color:var(--cream); border-radius:8px; }
+.fold .car { width:12px; color:var(--dim); font-size:10px; }
+.fold small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.fold .fi { color:var(--amber); }
+.fold.lib .fi { color:var(--accent); }
+.item { display:flex; align-items:center; gap:9px; padding:6px 6px 6px 28px; border-radius:8px; color:var(--text); }
+.item .th { width:30px; height:30px; border-radius:8px; background:#e9edef; flex:none; display:grid; place-items:center; overflow:hidden; }
+.item .tx { flex:1; min-width:0; line-height:1.2; }
+.item .tx span { display:block; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); }
+.item.later, .fold.later { opacity:.45; }
+.ipt { font-size:10.5px; padding:1px 6px; border-radius:6px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); white-space:nowrap; }
+.ipt.inw { background:#23392f; color:#9fd3b4; border-color:transparent; }
+.ipt.dev { background:#2a3340; color:#a9c4e8; border-color:transparent; }
+.ipt.adm { background:rgba(253,96,18,.18); color:#ffb48a; border-color:transparent; }
+.divl { margin:8px 6px; border-top:1px solid var(--gline); padding-top:6px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.8px; }
+.menu { position:absolute; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:12px; padding:5px; width:250px; box-shadow:0 12px 30px rgba(0,0,0,.45); font-size:13.5px; }
+.menu div { display:flex; align-items:center; gap:9px; padding:7px 10px; border-radius:8px; color:var(--text); }
+.menu div.h { background:var(--hover); color:var(--cream); }
+.menu div .ipt { margin-left:auto; }
+.menu hr { border:0; border-top:1px solid var(--gline); margin:4px 2px; }
+.menu .dang { color:#ff9b8f; }
+.ghost3d { position:absolute; z-index:6; }
+.dropring { position:absolute; z-index:5; width:90px; height:36px; border-radius:50%; border:2.5px dashed var(--brand); transform:translate(-50%,-50%); background:rgba(253,96,18,.12); }
+.tip { position:absolute; z-index:7; background:var(--glass); border:1px solid var(--gline); border-radius:10px; padding:5px 10px; font-size:12px; color:var(--cream); white-space:nowrap; }
+.decided { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:44px; }
+.decided div { background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:13px 15px; font-size:13px; color:var(--dim); }
+.decided b { display:block; color:var(--cream); font-weight:inherit; font-size:14.5px; margin-bottom:4px; }
+.decided b::before { content:"✓ "; color:#7fd0a0; }
+.full { position:absolute; left:0; right:0; top:44px; bottom:0; z-index:5; background:var(--surface); }
+.full .ph { display:flex; align-items:center; gap:8px; padding:8px 16px 10px; }
+.full .ph b { color:var(--cream); font-weight:inherit; font-size:22px; flex:1; letter-spacing:-.3px; }
+.asheet { position:absolute; left:0; right:0; bottom:0; z-index:7; background:#1D2427; border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 28px; }
+.asheet .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.asheet .hd { display:flex; gap:12px; align-items:center; padding:0 4px 12px; border-bottom:1px solid var(--gline); margin-bottom:6px; }
+.asheet .hd .th { width:54px; height:54px; border-radius:12px; background:#e9edef; display:grid; place-items:center; }
+.asheet .hd b { display:block; color:var(--cream); font-weight:inherit; font-size:16px; }
+.asheet .hd span { color:var(--dim); font-size:12.5px; }
+.arow { display:flex; align-items:center; gap:12px; padding:11px 6px; font-size:14.5px; color:var(--text); border-radius:10px; }
+.arow .ipt { margin-left:auto; }
+.arow.p { color:var(--brand); }
+.dlg { position:absolute; left:14px; right:14px; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:20px; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,.5); }
+.dlg h3 { color:var(--cream); font-size:17px; font-weight:inherit; margin-bottom:4px; }
+.dlg p { color:var(--dim); font-size:12.5px; margin-bottom:10px; }
+.radio { display:flex; gap:10px; align-items:flex-start; padding:7px 4px; font-size:13.5px; color:var(--text); }
+.radio i { width:16px; height:16px; border-radius:50%; border:2px solid var(--line); flex:none; margin-top:2px; }
+.radio i.on { border-color:var(--brand); box-shadow:inset 0 0 0 3px #1D2427; background:var(--brand); }
+.radio span { display:block; font-size:11.5px; color:var(--dim); }
+.radio.off { opacity:.45; }
+.lbl { font-size:12px; color:var(--dim); margin:10px 0 5px; }
+.dim-bg { position:absolute; inset:0; z-index:7; background:rgba(5,8,10,.55); }
+.cardx { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:16px 18px; }
+.cardx h3 { color:var(--cream); font-weight:inherit; font-size:16px; margin-bottom:10px; }
+table.perm { border-collapse:collapse; width:100%; font-size:13px; margin:0; }
+table.perm td, table.perm th { padding:8px 8px; border-bottom:1px solid var(--gline); text-align:center; }
+table.perm td:first-child, table.perm th:first-child { text-align:left; }
+table.perm th { color:var(--dim); font-weight:inherit; font-size:12px; }
+.ck { display:inline-block; width:16px; height:16px; border-radius:4px; border:1.5px solid var(--line); vertical-align:-3px; }
+.ck.on { background:var(--brand); border-color:var(--brand); position:relative; }
+.ck.on::after { content:"✓"; color:#fff; font-size:11px; position:absolute; left:2px; top:-2px; }
+.ck.fixed { background:var(--muted); border-color:var(--muted); position:relative; }
+.ck.fixed::after { content:"✓"; color:var(--dim); font-size:11px; position:absolute; left:2px; top:-2px; }
+tr.newrow td { background:rgba(253,96,18,.07); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h6a3 3 0 0 0 0-6h-4a3 3 0 0 1 0-6h6"/></symbol>
+  <symbol id="from" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+  <symbol id="star" viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="room" viewBox="0 0 24 24"><path d="M3 18l9 4 9-4M3 18V7l9-4 9 4v11"/><path d="M12 22V11M3 7l9 4 9-4" opacity=".5"/></symbol>
+  <symbol id="box" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+  <symbol id="sphere" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3"/></symbol>
+  <symbol id="cyl" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/></symbol>
+  <symbol id="cone" viewBox="0 0 24 24"><path d="M12 3L5 18.5M12 3l7 15.5"/><ellipse cx="12" cy="18.5" rx="7" ry="2.5"/></symbol>
+  <symbol id="model" viewBox="0 0 24 24"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M8 9l4 2 4-2M12 11v5"/></symbol>
+  <symbol id="undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+  <symbol id="drop" viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0 1 12 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></symbol>
+  <symbol id="tune" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="hand" viewBox="0 0 24 24"><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6M11 11V3.5a1.5 1.5 0 0 1 3 0V11M14 11V5a1.5 1.5 0 0 1 3 0v8c0 5-3 8-7 8s-6-3-7-6l-1.5-3a1.5 1.5 0 0 1 2.6-1.4L8 14"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8" r="1.4"/></symbol>
+  <symbol id="edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/></symbol>
+  <symbol id="lib" viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="take" viewBox="0 0 24 24"><path d="M12 3v11M7 9l5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="orbit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4.5"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="street" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2"/><path d="M7 8v7M4 21l3-6 3 6M2 21h20M13 21l5-12" opacity=".9"/></symbol>
+  <symbol id="pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+</svg>
+<style>
+.changes { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:44px; }
+.changes div { background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:14px 16px; font-size:13.5px; color:var(--dim); }
+.changes b { display:block; color:var(--cream); font-weight:inherit; font-size:15px; margin-bottom:5px; }
+.changes b span { color:var(--brand); margin-right:6px; }
+.changes .was { display:block; margin-top:7px; font-size:12px; color:var(--line); }
+.saved { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--dim); }
+.saved i { width:7px; height:7px; border-radius:50%; background:#5fd394; }
+.mk .av.ds { background:#f3f7f9; color:var(--ink); border-color:#fff; box-shadow:0 0 0 6px rgba(255,255,255,.35), 0 0 26px 10px rgba(255,255,255,.55); }
+.glow { position:absolute; z-index:2; width:70px; height:150px; transform:translate(-50%,-100%); background:radial-gradient(ellipse at 50% 80%, rgba(255,255,255,.75), rgba(255,255,255,0) 70%); }
+.bubble { position:absolute; z-index:5; transform:translateX(-50%); background:var(--glass); border:1px solid var(--gline); border-radius:12px; padding:6px 10px; font-size:12px; color:var(--dim); white-space:nowrap; }
+.bubble b { color:var(--cream); font-weight:inherit; }
+.two { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:4px; }
+.give { background:var(--raised); border:1px solid var(--gline); border-radius:14px; padding:14px; }
+.give.adm { border-color:rgba(253,96,18,.55); }
+.give h4 { color:var(--cream); font-weight:inherit; font-size:15px; display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.give dl { display:grid; grid-template-columns:110px 1fr; gap:6px 10px; font-size:12.5px; }
+.give dt { color:var(--line); }
+.give dd { color:var(--text); }
+.flow { display:flex; align-items:center; gap:10px; margin:6px 0 16px; font-size:13px; color:var(--dim); }
+.flow .nd { background:var(--raised); border:1px solid var(--gline); border-radius:12px; padding:8px 12px; color:var(--cream); display:flex; gap:7px; align-items:center; white-space:nowrap; }
+.flow .ar { color:var(--line); }
+</style>
+
+<h1>v3: the design room and the inventory, <b>thought through</b></h1>
+<p class="lede">v2 redrawn around three answers (everything in the inventory lives on the server, no isometric views, sharing stays open to everyone), plus a second pass over the whole design that changed four more things. The room is now drawn in perspective, the way the app would actually show it. Everything marked <span class="new">new</span> does not exist today.</p>
+
+<div class="changes">
+  <div><b><span>1</span>Everything is on the server, drafts too</b>The room saves the draft every few seconds after an edit. A stall started on the phone on the square can be finished on the desktop at home. So Design here needs to be signed in, as Build does.<span class="was">v2: drafts on the device</span></div>
+  <div><b><span>2</span>Perspective only, with views as places to stand</b>The room uses the map's own orbit camera. Instead of Front / Side / Top it offers <i>Orbit</i>, <i>Eye level</i> and <i>From the street</i>: standing on the far side of the real kerb, at 1.65 m, looking at it the way a passer-by will.<span class="was">v1: Around / Front / Side / Top</span></div>
+  <div><b><span>3</span>Two ways to give to everyone</b><i>Share</i> stays what it is today, for anyone: a copy in the library, still yours, credited, and you can take it back. <i>Move to the server library</i> is new and admin-only: the server takes the item over, and the maker can't withdraw it any more.<span class="was">v2: one share act, admin-only, which took today's sharing away</span></div>
+  <div><b><span>4</span>Placing makes a copy</b>As in Second Life: an inventory item works like a stamp, and what stands in the world is separate from it. <i>Take</i> makes a new item. <i>Design</i> on something placed edits that thing, and the room's button then reads <i>Update in the world</i>.<span class="was">v2: items marked "in world", linked to their copies</span></div>
+  <div><b><span>5</span>A group does need the wire</b>Correcting v2: for one tap to select the whole stall, every client has to know which objects belong together. That means a <code>group</code> field on each object, a protocol revision and a column. A group still doesn't move as one piece on its own; editing it moves every member.<span class="was">v2: "no wire change"</span></div>
+  <div><b><span>6</span>Others can see you are designing</b>While you are in the room your avatar stays on the map, drawn pale with a soft glow and labelled "designing", so nobody talks to a frozen figure and wonders why it doesn't answer. It says that you are designing, not what.<span class="was">new</span></div>
+</div>
+
+<!-- ============ DESKTOP ROOM ============ -->
+<div class="sec" style="margin-top:0">
+<h2>1 · The room, in perspective</h2>
+<p class="cap">The same stall, now with a model from the inventory (a lantern) among its parts. The draft has been saved; leaving keeps it in Inventory ▸ Drafts.</p>
+</div>
+<div class="desk" style="display:block;height:880px">
+  <div class="room" style="background:#fbfcfc"><svg class="scene" id="deskScene" width="1740" height="880"></svg></div>
+
+  <div style="position:absolute;top:16px;left:16px;z-index:6;display:flex;gap:10px;align-items:center">
+    <div class="chipw"><svg class="i s"><use href="#back"/></svg><b>Back to the map</b></div>
+    <div class="chipw" style="padding-right:12px"><svg class="i s" style="color:var(--brand)"><use href="#pin"/></svg>Draft for <b>Grote Markt 1</b><span style="color:var(--line)">·</span><span class="saved"><i></i>Saved</span></div>
+  </div>
+  <div style="position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:6" class="segw">
+    <div class="on"><svg class="i s"><use href="#orbit"/></svg>Orbit</div><div><svg class="i s"><use href="#eye"/></svg>Eye level</div><div><svg class="i s"><use href="#street"/></svg>From the street</div>
+  </div>
+  <div style="position:absolute;top:16px;right:16px;z-index:6;display:flex;gap:8px;align-items:center">
+    <div class="segw"><div class="on"><svg class="i s"><use href="#bulb"/></svg>Studio</div><div><svg class="i s"><use href="#sun"/></svg>As there, 14:20</div></div>
+    <div class="disc"><svg class="i s"><use href="#undo"/></svg></div>
+    <div class="disc"><svg class="i s"><use href="#redo"/></svg></div>
+  </div>
+
+  <div class="gp" style="left:16px;top:72px;width:290px;padding:0 0 14px">
+    <div class="tabs3" style="padding:12px 14px 4px"><div class="on">Parts</div><div>Inventory</div></div>
+    <div style="padding:0 14px">
+      <h4>Name</h4>
+      <div class="field">Market stall</div>
+      <h4>Parts · 8 objects</h4>
+      <div class="part"><div class="ic"><svg class="i s"><use href="#box"/></svg></div>Counter<small>box</small></div>
+      <div class="part"><div class="ic"><svg class="i s"><use href="#box"/></svg></div>Counter top<small>box</small></div>
+      <div class="part"><div class="ic"><svg class="i s"><use href="#cyl"/></svg></div>Post × 4<small>cylinder</small></div>
+      <div class="part sel"><div class="ic"><svg class="i s"><use href="#box"/></svg></div>Awning<small>box · tapered</small></div>
+      <div class="part"><div class="ic"><svg class="i s"><use href="#model"/></svg></div>Lantern<small>model · CC0</small></div>
+      <h4>Add a part</h4>
+      <div class="add">
+        <div><svg class="i"><use href="#box"/></svg>Box</div>
+        <div><svg class="i"><use href="#sphere"/></svg>Sphere</div>
+        <div><svg class="i"><use href="#cyl"/></svg>Cylinder</div>
+        <div><svg class="i"><use href="#cone"/></svg>Cone</div>
+        <div><svg class="i"><use href="#model"/></svg>Model…</div>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">Models and whole objects also drag in from the Inventory tab.</div>
+    </div>
+  </div>
+
+  <div class="gp" style="right:16px;top:72px;width:330px">
+    <div class="ph"><div class="med"><svg class="i s"><use href="#tune"/></svg></div><b>Awning</b><span class="today">today's dialog</span></div>
+    <div class="tabs3"><div>Basics</div><div class="on">Shape</div><div>Surface</div></div>
+    <div class="grid2">
+      <span>Type</span><div class="field" style="padding:5px 10px">Box ▾</div>
+      <span>Position</span><div class="xyz"><div><i class="rx">X</i>0.00</div><div><i class="gy">Y</i>2.26</div><div><i class="bz">Z</i>0.02</div></div>
+      <span>Size</span><div class="xyz"><div><i class="rx">X</i>2.70</div><div><i class="gy">Y</i>0.12</div><div><i class="bz">Z</i>1.45</div></div>
+      <span>Rotation</span><div class="xyz"><div><i class="rx">X</i>8°</div><div><i class="gy">Y</i>0°</div><div><i class="bz">Z</i>0°</div></div>
+      <span>Taper</span><div class="slider" style="--v:22%"><b></b></div>
+      <span>Hollow</span><div class="slider" style="--v:0%"><b></b></div>
+    </div>
+    <div style="border-top:1px solid var(--gline);padding:10px 14px 14px">
+      <div class="trow"><span>Snap to 10 cm</span><div class="tg on"></div></div>
+      <div class="trow"><span>Mirror left ↔ right</span><div class="tg"></div></div>
+    </div>
+  </div>
+
+  <div class="gp" style="left:16px;bottom:16px;width:290px;padding:12px 14px">
+    <div style="display:flex;gap:12px;align-items:center">
+      <svg width="46" height="46" viewBox="0 0 46 46"><circle cx="23" cy="23" r="21" fill="#1D2427" stroke="rgba(255,255,255,.14)"/><path d="M23 6l5 17h-10z" fill="#FD6012"/><path d="M23 40l5-17h-10z" fill="#69757A"/><text x="23" y="16" font-size="8" fill="#fff" text-anchor="middle" font-family="Jakarta">N</text></svg>
+      <div style="font-size:12.5px;color:var(--dim);line-height:1.35">North as it is at the spot.<br>Turn the object, not the room.</div>
+    </div>
+    <div class="trow" style="margin-top:8px"><span>Show the spot's outline</span><div class="tg on"></div></div>
+    <div class="trow"><span>My avatar for scale</span><div class="tg on"></div></div>
+  </div>
+
+  <div style="position:absolute;bottom:18px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:10px;padding:8px;border-radius:18px;background:rgba(19,25,27,.92);border:1px solid var(--gline)">
+    <div class="btn q">⋯</div>
+    <div class="btn"><svg class="i s"><use href="#box"/></svg>Save to Objects</div>
+    <div class="btn p"><svg class="i s"><use href="#drop"/></svg>Place at Grote Markt 1</div>
+  </div>
+
+  <div class="callout" style="left:1060px;top:590px">Saved to the server every few seconds after an edit, so nothing is lost if the phone dies, and <b>⋯ ▸ Discard draft</b> is the only way to lose it.</div>
+  <div class="callout" style="left:350px;top:640px">The spot's <b>kerb and facade</b>, faint on the floor. <i>From the street</i> puts the camera on the far side of that kerb.</div>
+</div>
+
+<!-- ============ PHONES ============ -->
+<div class="row">
+
+<div class="shot">
+<div class="phone" style="background:#fff">
+  <div class="room" style="background:#fbfcfc"><svg class="scene" id="eyeScene" width="390" height="844"></svg></div>
+  <div class="status ondark" style="z-index:7"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div style="position:absolute;top:50px;left:12px;right:12px;z-index:6;display:flex;justify-content:space-between;align-items:center">
+    <div class="chipw" style="font-size:12px"><svg class="i s" style="color:var(--brand)"><use href="#pin"/></svg><b>Grote Markt 1</b><span class="saved"><i></i></span></div>
+    <div class="segw" style="font-size:12px"><div>Orbit</div><div class="on">Street</div></div>
+  </div>
+  <div class="tip" style="left:118px;top:112px">From the kerb · eye height 1.65 m</div>
+  <div class="sheetw" style="padding-bottom:30px">
+    <div class="handle"></div>
+    <div class="pchips"><div>Counter</div><div>Top</div><div>Posts</div><div class="sel">Awning</div><div>Lantern</div></div>
+    <div style="display:flex;gap:8px"><div class="btn" style="flex:1;justify-content:center">Save to Objects</div><div class="btn p" style="flex:1.3;justify-content:center"><svg class="i s"><use href="#drop"/></svg>Place</div></div>
+  </div>
+</div>
+<h2><span>a</span>From the street</h2>
+<ul>
+  <li>The view to check a design in: a passer-by's eye height, from the far side of the real kerb. It shows what Orbit hides: a lantern hung at head height, an awning too low to walk under.</li>
+  <li>Drag still turns the view, but around your own standing point, the way a person turns their head.</li>
+</ul>
+</div>
+
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="glow" style="left:200px;top:470px"></div>
+  <div class="mk" style="left:200px;top:470px;z-index:4"><div class="av ds">S</div><div class="stem"></div><div class="foot"></div><div class="name">Sam · designing</div></div>
+  <div class="mk" style="left:96px;top:650px"><div class="av c2">A</div><div class="stem"></div><div class="foot"></div><div class="name">Ana</div></div>
+  <div class="bubble" style="left:200px;top:500px">Sam is <b>designing something</b> · back soon</div>
+</div>
+<h2><span>b</span>What others see meanwhile</h2>
+<ul>
+  <li>Your avatar stays where you were, pale and glowing, labelled "designing", like someone stepping out of the world for a moment.</li>
+  <li>A message still reaches you: chat and calls stay connected in the room and show as a badge.</li>
+  <li>One more bit on the wire, beside the existing "away" states. It says <i>that</i> you are designing, never <i>what</i>.</li>
+</ul>
+</div>
+
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dim-bg" style="z-index:6"></div>
+  <div class="asheet">
+    <div class="handle"></div>
+    <div class="hd"><div class="th"><svg width="54" height="54" id="ath"></svg></div><div><b>Market stall</b><span>8 objects · 2.7 × 1.5 m · yours</span></div></div>
+    <div class="arow p"><svg class="i"><use href="#drop"/></svg>Place in front of me</div>
+    <div class="arow"><svg class="i"><use href="#room"/></svg>Open in the design room</div>
+    <div class="arow"><svg class="i"><use href="#edit"/></svg>Rename</div>
+    <div class="arow"><svg class="i"><use href="#copy"/></svg>Make a copy</div>
+    <div style="border-top:1px solid var(--gline);margin:4px 0"></div>
+    <div class="arow"><svg class="i"><use href="#share"/></svg>Share with everyone…</div>
+    <div class="arow"><svg class="i"><use href="#lib"/></svg>Move to the server library…<span class="ipt adm">admin</span></div>
+    <div style="border-top:1px solid var(--gline);margin:4px 0"></div>
+    <div class="arow" style="color:#ff9b8f"><svg class="i"><use href="#trash"/></svg>Move to Trash</div>
+  </div>
+</div>
+<h2><span>c</span>An item's actions</h2>
+<ul>
+  <li><b>Share with everyone</b> is today's share, for every account, now for designs too. It asks the licence question, and a design that contains a "something else" model can't be shared.</li>
+  <li><b>Move to the server library</b> needs <code>library_publish</code> <span class="new">new</span>. Without it the row is not shown.</li>
+  <li>No "in world" mark and no "Fly to it": a placed copy is separate from its item (change 4).</li>
+</ul>
+</div>
+
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(../chat-world/city.jpg); background-position:45% 55%;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dim-bg"></div>
+  <div class="dlg" style="top:200px">
+    <h3>Move to the server library</h3>
+    <p>The server takes this over. It becomes part of what every player finds under Library ▸ Server, credited to you as its maker.</p>
+    <div class="lbl">Name</div>
+    <div class="field">Market stall</div>
+    <div class="lbl">Category</div>
+    <div class="field">Market ▾</div>
+    <div style="margin:12px 0 8px;padding:10px;border-radius:10px;background:rgba(253,96,18,.10);border:1px solid rgba(253,96,18,.35);font-size:12.5px;color:#ffcfb4;line-height:1.4">
+      It leaves your inventory. You can't change it or take it back afterwards: only a curator can. Keep a copy first if you want to keep working on it.
+    </div>
+    <div class="trow"><span>Keep a copy in my inventory</span><div class="tg on"></div></div>
+    <div style="display:flex;gap:8px;margin-top:10px"><div class="btn" style="flex:1;justify-content:center">Cancel</div><div class="btn p" style="flex:1.6;justify-content:center"><svg class="i s"><use href="#lib"/></svg>Move it</div></div>
+  </div>
+</div>
+<h2><span>d</span>Moving it to the server</h2>
+<ul>
+  <li>A move, not a share: ownership changes, so the dialog says so and offers to keep a copy (on by default).</li>
+  <li>It needs a licence that allows redistribution, like any share. "I made it" is the usual answer for a design.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============ INVENTORY + SHARING ============ -->
+<div class="row">
+
+<div style="width:400px">
+<div class="inv" style="position:relative;height:560px;width:400px">
+  <div class="ph"><div class="med"><svg class="i s"><use href="#box"/></svg></div><b>Inventory</b><svg class="i s" style="color:var(--dim)"><use href="#x"/></svg></div>
+  <div class="search"><svg class="i s"><use href="#search"/></svg>Search your inventory</div>
+  <div class="fchips"><div class="on">All</div><div>Objects</div><div>Models</div><div>Drafts</div></div>
+  <div class="tree">
+    <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#pencil"/></svg>Drafts<small>2</small></div>
+    <div class="item"><div class="th"><svg width="30" height="30" id="th4"></svg></div><div class="tx">Kiosk, second try<span>saved 10 minutes ago · on the phone</span></div></div>
+    <div class="item"><div class="th"><svg width="30" height="30" id="th5"></svg></div><div class="tx">Bike rack<span>saved yesterday</span></div></div>
+    <div class="fold"><span class="car">▾</span><svg class="i s fi"><use href="#folder"/></svg>Objects<small>3</small></div>
+    <div class="item sel"><div class="th"><svg width="30" height="30" id="th1"></svg></div><div class="tx">Market stall<span>8 objects · 1 model</span></div></div>
+    <div class="item"><div class="th"><svg width="30" height="30" id="th2"></svg></div><div class="tx">Oak bench<span>2 objects</span></div><span class="ipt">shared</span></div>
+    <div class="item"><div class="th"><svg width="30" height="30" id="th3"></svg></div><div class="tx">Beacon (taken)<span>1 object · scripted</span></div></div>
+    <div class="fold"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Models<small>5</small></div>
+    <div class="fold"><span class="car">▸</span><svg class="i s fi"><use href="#folder"/></svg>Market day<small>4</small><span class="ipt">your folder</span></div>
+    <div class="fold"><span class="car">▸</span><svg class="i s fi" style="color:var(--dim)"><use href="#trash"/></svg>Trash<small>1</small></div>
+    <div class="divl">Library</div>
+    <div class="fold lib"><span class="car">▸</span><svg class="i s fi" style="color:var(--brand)"><use href="#lib"/></svg>Server<small>18</small></div>
+    <div class="fold lib"><span class="car">▸</span><svg class="i s fi"><use href="#share"/></svg>Shared by people<small>41</small></div>
+  </div>
+</div>
+<h2 style="font-size:17px;color:var(--cream);margin:16px 0 6px"><span style="color:var(--brand);margin-right:6px">e</span>The inventory</h2>
+<ul style="color:var(--dim);font-size:13.5px;padding-left:18px">
+  <li>All on the server, one tree on every device. Drafts first, because that is where unfinished work is.</li>
+  <li>The Library has two shelves, the server's and everyone's, matching the two ways to give.</li>
+  <li>Drag onto the map to place (desktop), or tap ▸ Place in front of me (phone).</li>
+</ul>
+</div>
+
+<div style="width:700px">
+<div class="cardx">
+  <h3>Two ways to give to everyone</h3>
+  <div class="flow"><div class="nd"><svg class="i s"><use href="#box"/></svg>Your inventory</div><span class="ar">→</span><div class="nd"><svg class="i s"><use href="#share"/></svg>Share</div><span class="ar">→</span><span>Library ▸ Shared by people</span></div>
+  <div class="flow" style="margin-top:-8px"><div class="nd" style="visibility:hidden">Your inventory</div><span class="ar">→</span><div class="nd" style="border-color:rgba(253,96,18,.6)"><svg class="i s"><use href="#lib"/></svg>Move</div><span class="ar">→</span><span>Library ▸ Server</span></div>
+  <div class="two">
+    <div class="give"><h4><svg class="i s"><use href="#share"/></svg>Share <span class="today">today</span></h4>
+      <dl>
+        <dt>Who may</dt><dd>Any account, as today (and designs as well as models)</dd>
+        <dt>Licence</dt><dd>Must allow redistribution; asked each time</dd>
+        <dt>Whose after</dt><dd>Still yours. The library holds a copy</dd>
+        <dt>Credited</dt><dd>"Shared by" you</dd>
+        <dt>Undo</dt><dd>You can take it back out (today's unshare); copies already placed stay</dd>
+        <dt>Curators</dt><dd>Can hide it (<code>library_manage</code>, as today)</dd>
+      </dl>
+    </div>
+    <div class="give adm"><h4><svg class="i s"><use href="#lib"/></svg>Move <span class="new">new</span></h4>
+      <dl>
+        <dt>Who may</dt><dd><code>library_publish</code>, held by admins only for now</dd>
+        <dt>Licence</dt><dd>Same check</dd>
+        <dt>Whose after</dt><dd>The server's, like a content pack. Leaves your inventory unless you keep a copy</dd>
+        <dt>Credited</dt><dd>"Made by" you</dd>
+        <dt>Undo</dt><dd>Not by you; a curator can withdraw it</dd>
+        <dt>Shown as</dt><dd>Server content: first in pickers, the set a new server starts with</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+<div class="cardx" style="margin-top:16px">
+  <h3>Roles, in Admin ▸ People ▸ Roles</h3>
+  <table class="perm">
+    <tr><th>Permission</th><th>Player</th><th>Builder</th><th>Curator</th><th>Admin</th></tr>
+    <tr><td>prim_create <span style="color:var(--dim)">· place objects, design</span></td><td><span class="ck on"></span></td><td><span class="ck on"></span></td><td><span class="ck on"></span></td><td><span class="ck fixed"></span></td></tr>
+    <tr><td>library_manage <span style="color:var(--dim)">· curate, hide, withdraw</span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck on"></span></td><td><span class="ck fixed"></span></td></tr>
+    <tr class="newrow"><td>library_publish <span class="new">new</span> <span style="color:var(--dim)">· move items to the server library</span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck"></span></td><td><span class="ck fixed"></span></td></tr>
+  </table>
+  <p style="color:var(--dim);font-size:12.5px;margin-top:10px">Granted to no role at first, so only admins have it. Builder and Curator are examples of roles an operator might make, not built in. <span style="color:#9fd3b4">Sharing needs no permission and doesn't change.</span></p>
+</div>
+</div>
+
+<div style="width:560px">
+<div class="cardx">
+  <h3>What it takes, against what exists</h3>
+  <table class="map" style="margin-top:0">
+    <tr><th>Piece</th><th>Built on</th></tr>
+    <tr><td>Objects</td><td>The <code>{version, prims}</code> document <code>/api/content/export</code> writes today, stored like a model: a file named by its own hash. That keeps sharing and the library per file, as they are now. <span class="new">new kind</span></td></tr>
+    <tr><td>Drafts</td><td>The same document, but in a row that changes on every save. It only becomes a hashed file when saved to Objects or placed, so autosave doesn't leave a trail of files. <span class="new">new</span></td></tr>
+    <tr><td>Folders</td><td>One <code>folder</code> on today's <code>inventory_items</code>, plus a table of the folders people make. Models move in unchanged. <span class="new">new</span></td></tr>
+    <tr><td>Place</td><td><code>/api/content/import</code>, which already creates objects owned by the caller. It gains a spot to place at and a group id. <span class="today">today</span>, extended</td></tr>
+    <tr><td>Group</td><td>A <code>group</code> on each object, sent to every client: one protocol revision. <span class="new">wire</span></td></tr>
+    <tr><td>Take</td><td>Export the group as a document, then delete it: two existing steps, done as one. <span class="new">new route</span></td></tr>
+    <tr><td>Designing</td><td>A presence bit beside the existing away state. <span class="new">wire</span></td></tr>
+    <tr><td>Server library</td><td><code>library_entries</code> gains <code>shelf</code> (server | people). A moved item's owner is cleared, as for a content pack. <span class="new">new</span></td></tr>
+    <tr><td>Room camera</td><td>The orbit camera, plus two fixed standing points. No orthographic camera.</td></tr>
+  </table>
+</div>
+</div>
+
+</div>
+
+<div class="sec">
+<h2>Still open</h2>
+<table>
+  <tr><th>Question</th><th>Recommended</th><th>Why</th></tr>
+  <tr><td>Designing together</td><td>Later, but keep it possible</td><td>With the draft on the server, inviting a second person into your room is "two clients editing one draft". Worth doing once the room exists; nothing here should rule it out.</td></tr>
+  <tr><td>How big can a design be?</td><td>64 objects, 20 m across</td><td>A bound per design, so one Place can't flood a square. A cap per account in the world is a separate question for the server.</td></tr>
+  <tr><td>Can a curator move someone else's shared item to the server shelf?</td><td>Only with the maker's yes</td><td>It changes ownership. The maker gets a notice ("Move Market stall to the server library?") and the move waits for their answer.</td></tr>
+  <tr><td>Giving an item to one person</td><td>Later, from a private chat</td><td>The licence question is the same as for sharing, so it fits once both kinds of giving are settled.</td></tr>
+  <tr><td>Next-owner rights (copy / modify / transfer)</td><td>Not in v1</td><td>Every copy is fully yours. Rights only matter once things change hands between people.</td></tr>
+</table>
+</div>
+<script>
+// A small perspective renderer for the mockup: metres in, SVG out. The room
+// camera is the app's orbit camera, so the drawing is perspective too.
+const V = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: a => { const l = Math.hypot(...a); return a.map(x => x / l); },
+};
+function mk(svg, tag, attrs) { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; }
+const shade = (hex, f) => { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.min(255, v * f) | 0); return `rgb(${c})`; };
+function scene(svg, o) {
+  const cam = o.cam, fw = V.norm(V.sub(o.tgt, cam)), rt = V.norm(V.cross(fw, [0, 1, 0])), up = V.cross(rt, fw);
+  const Pz = (x, y, z) => { const v = V.sub([x, y, z], cam); const d = V.dot(v, fw); return [o.cx + o.f * V.dot(v, rt) / d, o.cy - o.f * V.dot(v, up) / d, d]; };
+  const P = (x, y, z) => Pz(x, y, z).slice(0, 2);
+  const pts = a => a.map(p => P(...p).join(",")).join(" ");
+  const defs = mk(svg, "defs", {});
+  defs.innerHTML = `<filter id="blur${o.id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${Math.max(1.5, o.f * .006)}"/></filter>
+    <linearGradient id="sky${o.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e9edef"/><stop offset="1" stop-color="#fbfcfc"/></linearGradient>`;
+  if (o.room) {
+    // The horizon: where the floor meets the white, softened.
+    const fh = V.norm([fw[0], 0, fw[2]]);
+    const hz = P(cam[0] + fh[0] * 1e5, 0, cam[2] + fh[2] * 1e5)[1];
+    mk(svg, "rect", { x: 0, y: 0, width: 4000, height: Math.max(0, hz), fill: `url(#sky${o.id})` });
+    mk(svg, "rect", { x: 0, y: hz - 6, width: 4000, height: 14, fill: "#ffffff", filter: `url(#blur${o.id})` });
+  }
+  // A floor line, cut into short pieces so the part behind the camera drops out
+  // and the far part fades into the white.
+  const line = (a, b, attrs, fade) => {
+    const n = 40;
+    for (let i = 0; i < n; i++) {
+      const t0 = i / n, t1 = (i + 1) / n;
+      const p0 = a.map((v, k) => v + (b[k] - v) * t0), p1 = a.map((v, k) => v + (b[k] - v) * t1);
+      const q0 = Pz(...p0), q1 = Pz(...p1);
+      if (q0[2] < .4 || q1[2] < .4) continue;
+      const mid = p0.map((v, k) => (v + p1[k]) / 2);
+      const op = Math.max(0, 1 - Math.hypot(mid[0], mid[2]) / fade);
+      if (op <= 0) continue;
+      mk(svg, "line", { x1: q0[0], y1: q0[1], x2: q1[0], y2: q1[1], opacity: op, ...attrs });
+    }
+  };
+  if (o.grid) {
+    for (let i = -16; i <= 16; i++) {
+      const w = i % 5 === 0 ? 1.5 : .8;
+      line([i, 0, -16], [i, 0, 16], { stroke: "#c3ccd1", "stroke-width": w }, 15);
+      line([-16, 0, i], [16, 0, i], { stroke: "#c3ccd1", "stroke-width": w }, 15);
+    }
+  }
+  if (o.spot) {
+    const st = { stroke: "#5b9bd5", "stroke-width": 2, "stroke-dasharray": "9 6" };
+    line([-16, 0, 1.75], [16, 0, 1.75], st, 16);
+    const fac = [[-16, -3.1], [-2.5, -3.1], [-2.5, -3.6], [3, -3.6], [3, -3.1], [16, -3.1]];
+    for (let i = 0; i + 1 < fac.length; i++) line([fac[i][0], 0, fac[i][1]], [fac[i + 1][0], 0, fac[i + 1][1]], st, 16);
+    if (o.labels) {
+      const t1 = Pz(3.4, 0, 1.75), t2 = Pz(4.2, 0, -3.1);
+      if (t1[2] > 0) mk(svg, "text", { x: t1[0] + 10, y: t1[1] + 22, fill: "#5b9bd5", "font-size": 15, "font-family": "Jakarta" }).textContent = "kerb";
+      if (t2[2] > 0) mk(svg, "text", { x: t2[0], y: t2[1] - 10, fill: "#5b9bd5", "font-size": 15, "font-family": "Jakarta" }).textContent = "facade, Grote Markt 1";
+    }
+  }
+  // contact shadow, cast a little away from the studio light
+  if (!o.noShadow) mk(svg, "polygon", { points: pts([[-1.4, 0, -0.75], [1.5, 0, -0.75], [1.65, 0, 0.95], [-1.25, 0, 0.95]]), fill: "rgba(40,55,62,.2)", filter: `url(#blur${o.id})` });
+  if (o.spot) {
+    const ring = []; for (let i = 0; i < 48; i++) { const a = i / 48 * Math.PI * 2; ring.push([Math.cos(a) * .8, 0, Math.sin(a) * .8]); }
+    mk(svg, "polygon", { points: pts(ring), fill: "none", stroke: "#FD6012", "stroke-width": 2.5 });
+  }
+  if (o.avatar) {
+    const f = P(-2.6, 0, .5), hd = P(-2.6, 1.8, .5), h = f[1] - hd[1], cx = f[0], by = f[1];
+    mk(svg, "ellipse", { cx, cy: by, rx: h * .18, ry: h * .05, fill: "rgba(40,55,62,.22)", filter: `url(#blur${o.id})` });
+    const g = mk(svg, "g", { fill: "#55646b" });
+    mk(g, "rect", { x: cx - h * .085, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .015, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx - h * .12, y: by - h * .84, width: h * .24, height: h * .4, rx: h * .07 });
+    mk(g, "rect", { x: cx - h * .17, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .115, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "circle", { cx, cy: by - h * .92, r: h * .075 });
+    if (o.dims) {
+      const x = cx - h * .32, s = { stroke: "#8a979d", "stroke-width": 1.2 };
+      mk(svg, "line", { x1: x, y1: by, x2: x, y2: by - h, ...s });
+      mk(svg, "line", { x1: x - 6, y1: by, x2: x + 6, y2: by, ...s });
+      mk(svg, "line", { x1: x - 6, y1: by - h, x2: x + 6, y2: by - h, ...s });
+      mk(svg, "text", { x: x - 10, y: by - h / 2, fill: "#5d6b72", "font-size": 17, "text-anchor": "end", "font-family": "Jakarta" }).textContent = "1.8 m";
+    }
+  }
+  // A box draws whichever of its six faces look toward the camera.
+  const box = (x0, x1, y0, y1, z0, z1, col, outline) => {
+    const F = [
+      [[0, 1, 0], [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], 1.08],
+      [[0, -1, 0], [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], .55],
+      [[1, 0, 0], [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], .82],
+      [[-1, 0, 0], [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]], .74],
+      [[0, 0, 1], [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], .66],
+      [[0, 0, -1], [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]], .9],
+    ];
+    for (const [n, q, k] of F) {
+      if (V.dot(n, V.sub(cam, q[0])) <= 0) continue;
+      if (outline) mk(svg, "polygon", { points: pts(q), fill: "none", stroke: "#FD6012", "stroke-width": 2.4, "stroke-linejoin": "round" });
+      else mk(svg, "polygon", { points: pts(q), fill: shade(col, k), stroke: shade(col, .7), "stroke-width": .6 });
+    }
+  };
+  if (o.kind === "bench") { box(-.85,-.78,0,.42,-.18,.18,"#3a3f42"); box(.78,.85,0,.42,-.18,.18,"#3a3f42"); box(-.95,.95,.42,.48,-.22,.22,"#8a6a48"); box(-.95,.95,.55,.85,-.24,-.18,"#8a6a48"); return; }
+  if (o.kind === "beacon") { box(-.15,.15,0,1.5,-.15,.15,"#6b7a80"); box(-.25,.25,1.5,1.9,-.25,.25,"#FD9212"); return; }
+  if (o.kind === "kiosk") { box(-.8,.8,0,2.0,-.8,.8,"#3e6f8e"); box(-1,1,2.0,2.2,-1,1,"#2b3a40"); return; }
+  if (o.kind === "rack") { for (const x of [-.9,-.3,.3,.9]) { box(x-.04,x+.04,0,.8,-.35,-.3,"#8d989e"); box(x-.04,x+.04,.8,.86,-.35,.35,"#8d989e"); box(x-.04,x+.04,0,.8,.3,.35,"#8d989e"); } return; }
+  const wood = "#a8754a", post = "#6b5644";
+  box(-1.25, -1.17, 0, 2.2, -0.62, -0.54, post);
+  box(1.17, 1.25, 0, 2.2, -0.62, -0.54, post);
+  box(-1.2, 1.2, 0, 1.0, -0.4, 0.4, wood);
+  box(-1.3, 1.3, 1.0, 1.06, -0.5, 0.5, "#d8b48a");
+  box(-1.25, -1.17, 0, 2.2, 0.54, 0.62, post);
+  box(1.17, 1.25, 0, 2.2, 0.54, 0.62, post);
+  const n = 9, w = 2.7 / n;
+  for (let i = 0; i < n; i++) { const x0 = -1.35 + i * w; box(x0, x0 + w, 2.2, 2.32, -0.72, 0.73, i % 2 ? "#efe6d6" : "#c8463a"); }
+  if (o.selected) box(-1.35, 1.35, 2.2, 2.32, -0.72, 0.73, null, true);
+  if (o.lantern) {
+    // the model from the inventory, hung under the awning's front edge
+    box(.6, .62, 1.9, 2.2, .6, .62, "#3a3f42");
+    box(.5, .72, 1.62, 1.9, .5, .72, "#2f3436");
+    box(.53, .69, 1.65, 1.87, .53, .69, "#ffd27a");
+  }
+  if (o.dims) {
+    const s = { stroke: "#8a979d", "stroke-width": 1.2 };
+    const a = P(-1.3, 0, 1.25), b = P(1.3, 0, 1.25), m = P(0, 0, 1.25);
+    mk(svg, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...s });
+    mk(svg, "text", { x: m[0], y: m[1] + 24, fill: "#5d6b72", "font-size": 17, "font-family": "Jakarta", "text-anchor": "middle" }).textContent = "2.7 m";
+  }
+  if (o.gizmo) {
+    const c = P(0, 2.32, 0), L = 1.0;
+    for (const [[dx, dy, dz], col] of [[[L, 0, 0], "#e5484d"], [[0, L, 0], "#30a46c"], [[0, 0, L], "#3e8ed0"]]) {
+      const e = P(dx, 2.32 + dy, dz);
+      mk(svg, "line", { x1: c[0], y1: c[1], x2: e[0], y2: e[1], stroke: col, "stroke-width": 4, "stroke-linecap": "round" });
+      mk(svg, "circle", { cx: e[0], cy: e[1], r: 8, fill: col });
+    }
+    mk(svg, "circle", { cx: c[0], cy: c[1], r: 6, fill: "#fff", stroke: "#2b3a40", "stroke-width": 2 });
+  }
+}
+const T = (id, o) => { const e = document.getElementById(id); if (e) scene(e, { id, cam: [5, 3.6, 6.4], tgt: [0, 1.1, 0], ...o }); };
+T("deskScene", { f: 1450, cx: 880, cy: 500, cam: [5.2, 4.3, 7.0], tgt: [0, 1.0, 0], room: true, grid: true, spot: true, avatar: true, dims: true, selected: true, gizmo: true, lantern: true });
+T("eyeScene", { f: 440, cx: 200, cy: 360, cam: [0.7, 1.65, 5.4], tgt: [0, 1.35, 0], room: true, grid: true, spot: true, lantern: true });
+T("th1", { f: 38, cx: 15, cy: 17 });
+T("th2", { f: 60, cx: 15, cy: 19, tgt: [0, .45, 0], kind: "bench", noShadow: true });
+T("th3", { f: 50, cx: 15, cy: 15, tgt: [0, .95, 0], kind: "beacon", noShadow: true });
+T("th4", { f: 44, cx: 15, cy: 15, tgt: [0, 1.1, 0], kind: "kiosk", noShadow: true });
+T("th5", { f: 60, cx: 15, cy: 17, tgt: [0, .45, 0], kind: "rack", noShadow: true });
+T("ath", { f: 120, cx: 27, cy: 34 });
+</script>
+</body>
+</html>
