@@ -880,6 +880,11 @@ pub struct DevPanelState {
     /// times and peak elevation track the season instead of the old fixed
     /// 06:00-sunrise/18:00-sunset equinox arc. See `utils::sun::sun_direction`.
     pub sun_declination_rad: f32,
+    /// The day of the year to light the world for instead of today's: set by a
+    /// scripted capture that names a `date`, because a field check re-rendered
+    /// later must be lit for the day it was photographed or every shadow moves.
+    /// `None` is today.
+    pub sun_day_of_year: Option<f32>,
 }
 
 // The render feature toggles that used to live here — shadows, atmosphere,
@@ -913,6 +918,7 @@ impl Default for DevPanelState {
             // Overwritten from the real date on frame 1 by `apply_sun_mode`; this
             // default is the equinox (0°), only ever seen before the first update.
             sun_declination_rad: 0.0,
+            sun_day_of_year: None,
         }
     }
 }
@@ -947,6 +953,9 @@ pub struct ScreenshotState {
     /// A snapshot of the map for a public post's polaroid
     /// (`community_posts`): captured the same way, framed as a polaroid after.
     pub post_snapshot: bool,
+    /// The world half of a field check (`systems::field_check`): captured the
+    /// same chrome-free way and handed back to the field check as pixels.
+    pub field_check_snapshot: bool,
     /// Group the dev panel's "Copy as preset" writes into the block it copies —
     /// the subject a remembered viewpoint is *for* (`tunnels`, `bridges`,
     /// `doors`). Empty means the published documentation set.
@@ -1545,6 +1554,12 @@ pub struct CameraState {
     pub pitch: f32,
     pub pan_offset: Option<Vec2>, // Last mouse position for delta calculation
     pub free_camera_rotation: Vec2, // pitch, yaw
+    /// Fly mode's turn about the line of sight, radians: the third angle of the
+    /// same `EulerRot::YXZ` rotation. Nothing a person does sets it, only a
+    /// scripted capture or a field check, which must match a photograph taken
+    /// with the phone held a little crooked. Any jump with a pose puts it back
+    /// to level (`CameraPose::apply`).
+    pub free_camera_roll: f32,
     /// Follow (Avatar) mode is *derived* from the avatar, so it has no saved pose:
     /// cleared on entry so the first frame snaps the rig straight onto the avatar
     /// (reposition reliably even when returning from a distant Orbit `GridCell`),
@@ -1708,6 +1723,7 @@ impl Default for CameraState {
             pitch: std::f32::consts::PI / 6.0,
             pan_offset: None,
             free_camera_rotation: Vec2::new(0.0, 0.0),
+            free_camera_roll: 0.0,
             avatar_initialized: false,
             free_initialized: false,
             free_saved: None,

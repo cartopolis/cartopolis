@@ -766,6 +766,7 @@ fn push_view(
         settle: req.settle,
         wait: req.wait,
         env: req.env.clone(),
+        ..ShotSpec::default()
     };
     if req.in_place {
         // Record where "here" actually is, so the reply and the metrics row say

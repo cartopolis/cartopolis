@@ -2267,7 +2267,7 @@ fn fly_mode(ctx: ModeCtx) {
         EulerRot::YXZ,
         camera_state.free_camera_rotation.y,
         camera_state.free_camera_rotation.x,
-        0.0,
+        camera_state.free_camera_roll,
     );
     camera_transform.rotation = rotation_quat;
 

@@ -709,6 +709,9 @@ impl CameraPose {
             self.free_rotation[0].clamp(-pitch_max, pitch_max),
             self.free_rotation[1],
         );
+        // A pose has no roll: a jump arrives level, whatever a scripted capture
+        // last tilted the camera to.
+        cs.free_camera_roll = 0.0;
         cs.azimuth = self.azimuth;
         cs.pitch = self.pitch;
         cs.distance = self.distance;

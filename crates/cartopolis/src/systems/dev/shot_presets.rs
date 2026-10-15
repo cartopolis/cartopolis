@@ -183,6 +183,47 @@ pub struct Preset {
     /// Per-shot override of the manifest's `hide_ui`.
     #[serde(default)]
     pub hide_ui: Option<bool>,
+    /// Degrees about the line of sight, the third angle after `look`'s pitch
+    /// and yaw (the free camera's `EulerRot::YXZ`). For matching a photograph
+    /// taken with the phone held a little crooked; a field check writes it.
+    #[serde(default)]
+    pub roll: Option<f32>,
+    /// Vertical field of view, degrees. Unset keeps the camera's own. A view
+    /// that must frame like a photograph names its lens here, and the run's
+    /// `size` must then have the photograph's shape, or the same vertical angle
+    /// frames a different picture.
+    #[serde(default)]
+    pub fov: Option<f32>,
+    /// `YYYY-MM-DD`: light the world for this day of the year rather than for
+    /// today, so a view photographed in October and re-rendered in March keeps
+    /// its shadows. Pairs with `time`, which is UTC.
+    #[serde(default)]
+    pub date: Option<String>,
+    /// `at`'s altitude is metres above the measured ground at that spot, not
+    /// above the map anchor's. A camera a person held at eye height needs this:
+    /// with the terrain layer on, the anchor's ground and the ground underfoot
+    /// differ by metres, which would put the camera underground or in the air.
+    #[serde(default)]
+    pub on_ground: Option<bool>,
+    /// What was measured when the view was taken (a field check's receiver,
+    /// accuracy, compass). Kept as data for whoever reads the file; nothing in
+    /// it is rendered.
+    #[serde(default)]
+    #[allow(dead_code)] // data for whoever reads the file; the harness never does
+    pub measured: Option<toml::Table>,
+}
+
+impl Preset {
+    /// [`Self::date`] as a day of the year, `None` when the shot names no date.
+    pub fn day_of_year(&self) -> Result<Option<f32>, String> {
+        let Some(d) = self.date.as_deref() else {
+            return Ok(None);
+        };
+        d.trim()
+            .parse::<jiff::civil::Date>()
+            .map(|d| Some(f32::from(d.day_of_year())))
+            .map_err(|e| format!("shot {:?} has date {d:?}, not YYYY-MM-DD: {e}", self.name))
+    }
 }
 
 impl Manifest {
@@ -211,6 +252,18 @@ impl Manifest {
                 return Err(format!("duplicate shot name {:?} in manifest", s.name));
             }
             seen.push(&s.name);
+            s.day_of_year()?;
+            if let Some(f) = s.fov {
+                if !(1.0..170.0).contains(&f) {
+                    return Err(format!(
+                        "shot {:?} has fov {f}: a vertical field of view is degrees, 1 to 170",
+                        s.name
+                    ));
+                }
+            }
+            if s.roll.is_some_and(|r| !r.is_finite()) {
+                return Err(format!("shot {:?} has a roll that is not a number", s.name));
+            }
             // `all` is how a run asks for everything, so a shot or group wearing
             // that name would turn "capture the lot" into "capture this one" — a
             // wrong answer that looks like a successful run.
@@ -658,5 +711,70 @@ at = [1.0, 2.0, 3.0]
         m.validate().unwrap();
         assert_eq!(m.shots[0].at[2], 420.0);
         assert_eq!(m.shots[0].look.unwrap()[0], -18.0);
+    }
+
+    fn field_check() -> cartopolis_core::field_check::FieldPose {
+        use cartopolis_core::field_check::{Facing, FieldPose, PoseSource, Receiver};
+        FieldPose {
+            lat: 53.2183,
+            lng: 6.5679,
+            height_m: 1.5,
+            heading_deg: 9.0,
+            pitch_deg: 14.0,
+            roll_deg: -2.5,
+            fov_y_deg: 68.0,
+            camera: Facing::Rear,
+            taken_ms: 1_792_065_791_000,
+            source: PoseSource::Sensors,
+            accuracy_m: Some(0.012),
+            fix: Some("RTK fixed".into()),
+            heading_accuracy_deg: Some(3.0),
+            ground_ahn_m: Some(6.97),
+            receiver: Some(Receiver {
+                station: Some("DELZ00NLD0".into()),
+                sigma_m: Some([0.009, 0.011]),
+                ..Receiver::default()
+            }),
+            client: "410d46f4".into(),
+        }
+    }
+
+    #[test]
+    fn a_field_check_is_a_preset_this_loader_accepts() {
+        // What the agent appends to `docs/field-checks.toml` — the header and a
+        // check's block — has to load, or the view cannot be put back.
+        let text = format!(
+            "{}\n{}",
+            cartopolis_core::field_check::MANIFEST_HEADER,
+            field_check().preset_toml()
+        );
+        let m: Manifest = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        m.validate().unwrap();
+        let shots = m.select(&["field-check".to_string()]).unwrap();
+        assert_eq!(shots.len(), 1);
+        let s = shots[0];
+        assert_eq!(s.name, "field-2026-10-15-120311");
+        assert_eq!(s.look, Some([14.0, -9.0]));
+        assert_eq!(s.roll, Some(-2.5));
+        assert_eq!(s.fov, Some(68.0));
+        assert_eq!(s.on_ground, Some(true));
+        // 15 October is day 288.
+        assert_eq!(s.day_of_year().unwrap(), Some(288.0));
+        let measured = s.measured.as_ref().expect("the measurements are kept");
+        assert_eq!(measured["station"].as_str(), Some("DELZ00NLD0"));
+        // The header's shape is the picture's.
+        let (w, h) = m.size.as_deref().unwrap().split_once('x').unwrap();
+        let aspect = w.parse::<f32>().unwrap() / h.parse::<f32>().unwrap();
+        assert!((aspect - cartopolis_core::field_check::PICTURE_ASPECT).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_date_that_is_not_a_date_is_refused() {
+        let bad = "[[shot]]\nname = \"a\"\nat = [0,0,10]\ndate = \"15-10-2026\"\n";
+        let m: Manifest = toml::from_str(bad).unwrap();
+        assert!(m.validate().unwrap_err().contains("YYYY-MM-DD"));
+        let bad = "[[shot]]\nname = \"a\"\nat = [0,0,10]\nfov = 0.5\n";
+        let m: Manifest = toml::from_str(bad).unwrap();
+        assert!(m.validate().is_err());
     }
 }

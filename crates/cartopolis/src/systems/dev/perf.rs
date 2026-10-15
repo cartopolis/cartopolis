@@ -842,6 +842,7 @@ pub fn build(
                     clouds: s.clouds,
                     rain: s.rain,
                 },
+                ..ShotSpec::default()
             }
         })
         .collect();

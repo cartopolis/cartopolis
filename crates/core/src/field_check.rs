@@ -34,6 +34,34 @@ pub const GROUP: &str = "field-check";
 /// pose (`Receiver::altitude_m`) rather than trusted as the camera's height.
 pub const EYE_HEIGHT_M: f64 = 1.5;
 
+/// Each half of the picture is this wide for its height: 3:4, portrait, the
+/// shape of a phone camera's sensor held upright. The photograph is cropped to
+/// it and the render is drawn in it, and [`FieldPose::fov_y_deg`] is the
+/// vertical angle of *that* shape — so a re-render must be made at the same
+/// shape ([`MANIFEST_HEADER`]'s `size`) to frame the same picture.
+pub const PICTURE_ASPECT: f32 = 3.0 / 4.0;
+
+/// The top of `docs/field-checks.toml`, for whoever creates it: the run-wide
+/// settings every field check is re-rendered with. The size has the picture's
+/// shape ([`PICTURE_ASPECT`]); the tile source is pinned as in the other
+/// manifests; the aerial photograph is written beside every render.
+pub const MANIFEST_HEADER: &str = "\
+# Field checks: places photographed in the field, re-rendered from the pose the
+# photograph was taken at. Each [[shot]] is a field check's FieldPose::preset_toml,
+# appended by the agent that received it. Re-render one, or all of them:
+#
+#   cargo shots --shots docs/field-checks.toml --only field-2026-10-15-120311
+#   cargo shots --shots docs/field-checks.toml --only field-check
+tile_url = \"https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}\"
+size = \"750x1000\"
+out_dir = \"gpu\"
+hide_ui = true
+mode = \"free\"
+settle = 3.0
+wait = 180.0
+aerial_reference = true
+";
+
 /// Which camera took the photograph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,9 +118,12 @@ pub struct Receiver {
     pub station: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub station_km: Option<f64>,
-    /// One-sigma error east-west, north-south and up, metres.
+    /// One-sigma error east-west and north-south, metres (the receiver's GST).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sigma_m: Option<[f64; 3]>,
+    pub sigma_m: Option<[f64; 2]>,
+    /// One-sigma error up, metres, when the receiver gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigma_up_m: Option<f64>,
 }
 
 /// A photograph's pose.
@@ -107,9 +138,12 @@ pub struct FieldPose {
     pub heading_deg: f32,
     /// Up from the horizon, degrees.
     pub pitch_deg: f32,
-    /// Clockwise about the line of sight, degrees, as the picture is turned.
+    /// The turn about the line of sight, degrees: the third angle of the
+    /// camera's `YXZ` Euler rotation, read off the phone's attitude in the same
+    /// convention the renderer applies it, so it needs no interpretation.
     pub roll_deg: f32,
-    /// The photograph's vertical field of view, degrees.
+    /// The vertical field of view of the picture's half, degrees — of the
+    /// photograph as cropped to [`PICTURE_ASPECT`], which is also the render's.
     pub fov_y_deg: f32,
     pub camera: Facing,
     /// The shutter, Unix milliseconds UTC.
@@ -269,6 +303,7 @@ impl FieldPose {
             "at = [{:.7}, {:.7}, {:.2}]\n",
             self.lat, self.lng, self.height_m
         );
+        t += "on_ground = true\n";
         t += &format!(
             "look = [{:.2}, {:.2}]\n",
             self.pitch_deg,
@@ -323,12 +358,50 @@ impl FieldPose {
             if let Some(v) = r.station_km {
                 t += &format!("station_km = {v:.1}\n");
             }
-            if let Some([e, n, u]) = r.sigma_m {
-                t += &format!("sigma_m = [{e:.3}, {n:.3}, {u:.3}]\n");
+            if let Some([e, n]) = r.sigma_m {
+                t += &format!("sigma_m = [{e:.3}, {n:.3}]\n");
+            }
+            if let Some(u) = r.sigma_up_m {
+                t += &format!("sigma_up_m = {u:.3}\n");
             }
         }
         t
     }
+}
+
+/// The centred crop of a `width × height` picture to [`PICTURE_ASPECT`]:
+/// `(x, y, w, h)` in its pixels.
+#[must_use]
+pub fn picture_crop(width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let (w, h) = (width as f32, height as f32);
+    if w / h > PICTURE_ASPECT {
+        let cw = ((h * PICTURE_ASPECT).round() as u32).clamp(1, width);
+        ((width - cw) / 2, 0, cw, height)
+    } else {
+        let ch = ((w / PICTURE_ASPECT).round() as u32).clamp(1, height);
+        (0, (height - ch) / 2, width, ch)
+    }
+}
+
+/// The vertical field of view of [`picture_crop`] of a picture whose own
+/// vertical field of view is `fov_y_deg`: unchanged when the crop takes the
+/// sides, narrower when it takes the top and bottom.
+#[must_use]
+pub fn cropped_fov_y_deg(width: u32, height: u32, fov_y_deg: f32) -> f32 {
+    let (_, _, _, ch) = picture_crop(width, height);
+    let half = (fov_y_deg.to_radians() / 2.0).tan() * ch as f32 / height.max(1) as f32;
+    2.0 * half.atan().to_degrees()
+}
+
+/// The vertical field of view to give a camera drawing into a `width ×
+/// height` window so that the window's [`picture_crop`] sees `fov_y_deg`
+/// vertically — the inverse of [`cropped_fov_y_deg`]. A phone held upright is
+/// taller than 3:4, so its window must see more than the picture does.
+#[must_use]
+pub fn window_fov_y_deg(width: u32, height: u32, fov_y_deg: f32) -> f32 {
+    let (_, _, _, ch) = picture_crop(width, height);
+    let half = (fov_y_deg.to_radians() / 2.0).tan() * height as f32 / ch.max(1) as f32;
+    2.0 * half.atan().to_degrees()
 }
 
 /// A caption as a person should read it: everything but the pose line.
@@ -414,10 +487,29 @@ mod tests {
                 correction_age_s: Some(1.0),
                 station: Some("DELZ00NLD0".into()),
                 station_km: Some(26.0),
-                sigma_m: Some([0.009, 0.011, 0.02]),
+                sigma_m: Some([0.009, 0.011]),
+                sigma_up_m: Some(0.02),
             }),
             client: "410d46f4".into(),
         }
+    }
+
+    #[test]
+    fn a_picture_is_cropped_to_three_by_four_and_its_lens_follows() {
+        // Already 3:4: nothing cut, nothing changes.
+        assert_eq!(picture_crop(1440, 1920), (0, 0, 1440, 1920));
+        assert!((cropped_fov_y_deg(1440, 1920, 70.0) - 70.0).abs() < 1e-3);
+        // A tall phone window: the top and bottom go, the angle narrows.
+        assert_eq!(picture_crop(1080, 2400), (0, 480, 1080, 1440));
+        let narrowed = cropped_fov_y_deg(1080, 2400, 100.0);
+        assert!(narrowed < 100.0);
+        // …and the window's lens is the inverse: give the window this, and its
+        // crop sees exactly what the photograph did.
+        let window = window_fov_y_deg(1080, 2400, narrowed);
+        assert!((window - 100.0).abs() < 1e-3, "{window}");
+        // A landscape desktop window: the sides go, the angle is kept.
+        assert_eq!(picture_crop(1600, 900), (462, 0, 675, 900));
+        assert!((window_fov_y_deg(1600, 900, 60.0) - 60.0).abs() < 1e-3);
     }
 
     #[test]
@@ -491,7 +583,10 @@ mod tests {
         assert!(t.starts_with(
             "[[shot]]\nname = \"field-2026-10-15-120311\"\ngroup = \"field-check\"\n"
         ));
-        assert!(t.contains("at = [53.2183000, 6.5679000, 1.50]\n"), "{t}");
+        assert!(
+            t.contains("at = [53.2183000, 6.5679000, 1.50]\non_ground = true\n"),
+            "{t}"
+        );
         assert!(t.contains("look = [14.00, -9.00]\n"), "{t}");
         assert!(
             t.contains("roll = 0.40\nfov = 68.00\ndate = \"2026-10-15\"\n"),

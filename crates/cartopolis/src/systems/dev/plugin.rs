@@ -172,6 +172,13 @@ impl Plugin for ShotHarnessPlugin {
                         .before(systems::free_camera::camera_controls)
                         .run_if(systems::shot_harness::shot_in_progress)
                         .in_set(ClientPhase::Anchor),
+                    // A preset's roll, lens and ground-relative height, held for
+                    // the reasons and with the gate the aim has.
+                    systems::shot_harness::pose_scripted_camera
+                        .after(systems::geo_nav::apply_teleport)
+                        .before(systems::free_camera::camera_controls)
+                        .run_if(systems::shot_harness::shot_in_progress)
+                        .in_set(ClientPhase::Anchor),
                     // Ungated, and it has to be: it owns the advance past the last
                     // viewpoint — which is the edge that parks a live run and the
                     // one that ends a scripted one.

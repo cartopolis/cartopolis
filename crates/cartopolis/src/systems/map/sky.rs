@@ -687,9 +687,12 @@ pub(crate) fn apply_sun_mode(
     // the time of day, but the season is still today's). This is what gives the
     // sun its correct seasonal day length; without it the arc set sunset at 18:00
     // year-round (a July evening in NL read as dark hours too early).
-    let day_of_year = jiff::Timestamp::from_second(clock.now_unix as i64)
-        .map(|ts| ts.to_zoned(jiff::tz::TimeZone::UTC).date().day_of_year() as f32)
-        .unwrap_or(80.0); // equinox fallback
+    // A scripted capture that names its date overrides today (`sun_day_of_year`).
+    let day_of_year = dev.sun_day_of_year.unwrap_or_else(|| {
+        jiff::Timestamp::from_second(clock.now_unix as i64)
+            .map(|ts| ts.to_zoned(jiff::tz::TimeZone::UTC).date().day_of_year() as f32)
+            .unwrap_or(80.0) // equinox fallback
+    });
     let target_decl = utils::sun::solar_declination_rad(day_of_year);
     if (dev.sun_declination_rad - target_decl).abs() > 1e-5 {
         dev.sun_declination_rad = target_decl;

@@ -131,7 +131,9 @@ pub struct ShotSpec {
     pub alt: f64,
     /// Degrees: −90 = straight down, 0 = horizon.
     pub pitch_deg: f32,
-    /// Degrees: 0 = north, clockwise.
+    /// Degrees: 0 = north, **counter-clockwise** seen from above (90 looks west):
+    /// +Y up with north at −Z, so a positive turn swings the view towards −X.
+    /// A compass heading is this negated (`field_check::FieldPose::harness_yaw_deg`).
     pub yaw_deg: f32,
     /// Preset name, when this viewpoint came from a `--shots` manifest. Names
     /// the file and labels the metrics row.
@@ -179,6 +181,14 @@ pub struct ShotSpec {
     pub wait: Option<f32>,
     /// Time of day and weather for this shot.
     pub env: ShotEnv,
+    /// Degrees about the line of sight (the preset's `roll`).
+    pub roll_deg: f32,
+    /// Vertical field of view, degrees; `None` keeps the camera's own.
+    pub fov_y_deg: Option<f32>,
+    /// Light the world for this day of the year (the preset's `date`).
+    pub day_of_year: Option<f32>,
+    /// `alt` is above the measured ground at (lat, lng), not the anchor's.
+    pub on_ground: bool,
 }
 
 impl ShotSpec {
@@ -215,6 +225,10 @@ impl ShotSpec {
             settle: a.settle,
             wait: a.wait,
             env: a.env.clone(),
+            roll_deg: lin(a.roll_deg as f64, b.roll_deg as f64) as f32,
+            fov_y_deg: a.fov_y_deg,
+            day_of_year: a.day_of_year,
+            on_ground: a.on_ground,
         }
     }
 }
@@ -1640,6 +1654,11 @@ impl ShotHarness {
                         clouds: p.clouds.or(manifest.clouds),
                         rain: p.rain.or(manifest.rain),
                     },
+                    roll_deg: p.roll.unwrap_or(0.0),
+                    fov_y_deg: p.fov,
+                    // `Manifest::load` has already refused a date it cannot read.
+                    day_of_year: p.day_of_year().ok().flatten(),
+                    on_ground: p.on_ground.unwrap_or(false),
                 }
             })
             .collect();
@@ -3027,6 +3046,11 @@ pub fn place_camera(
             dev.precipitation = r.clamp(0.0, 1.0);
         }
     }
+    // The season, beside the hour: a view re-rendered on another day is lit
+    // for the day it names, and one that names none goes back to today's.
+    if dev.sun_day_of_year != shot.day_of_year {
+        dev.sun_day_of_year = shot.day_of_year;
+    }
 
     // `in_place`: the camera is already where this shot wants it, so issue no
     // teleport. Everything above still runs — the clocks are reset and the
@@ -3147,6 +3171,67 @@ pub fn aim_scripted_camera(
     let want = Vec2::new(pitch, yaw);
     if cam_state.free_camera_rotation.distance(want) > 1e-4 {
         cam_state.free_camera_rotation = want;
+    }
+}
+
+/// The camera's own field of view when a shot names none: Bevy's default
+/// `PerspectiveProjection`, which `free_camera::setup_camera` keeps.
+const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_4;
+
+/// Hold the current shot's roll, lens and ground height, every frame.
+///
+/// Every frame for the reasons [`aim_scripted_camera`] is: the teleport's pose
+/// arrives level (`CameraPose::apply` zeroes the roll) after this shot was
+/// placed, and the terrain field lands a second or two after the anchor, so the
+/// ground an `on_ground` camera stands on moves after the teleport. A shot that
+/// names none of these still has its lens put back to the default, or a field
+/// check's narrow lens would carry over into the next view of a sweep.
+pub fn pose_scripted_camera(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    anchor: Res<MapAnchor>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    mut cam_state: ResMut<CameraState>,
+    mut camera: Query<(&GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
+) {
+    if !progress.placed {
+        return;
+    }
+    let Some(shot) = harness.shots.get(progress.index) else {
+        return;
+    };
+    if shot.in_place {
+        return;
+    }
+    let roll = shot.roll_deg.to_radians();
+    if (cam_state.free_camera_roll - roll).abs() > 1e-6 {
+        cam_state.free_camera_roll = roll;
+    }
+    let Ok((cell, mut tf, mut projection)) = camera.single_mut() else {
+        return;
+    };
+    // Follow mode sets its own lens every frame (`free_camera::set_fov`).
+    if harness.mode_for(progress.index) != "avatar" {
+        let want = shot.fov_y_deg.map_or(DEFAULT_FOV, f32::to_radians);
+        if let Projection::Perspective(p) = projection.as_ref() {
+            if (p.fov - want).abs() > 1e-5 {
+                if let Projection::Perspective(p) = projection.as_mut() {
+                    p.fov = want;
+                }
+            }
+        }
+    }
+    if shot.on_ground {
+        let Some(geo) = anchor.geo else {
+            return;
+        };
+        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, shot.lat, shot.lng);
+        let here = crate::grid::anchored_position(cell, tf.translation);
+        let want_y = terrain.at(wx as f32, wz as f32) + shot.alt as f32;
+        let dy = want_y - here.y;
+        if dy.abs() > 0.01 {
+            tf.translation.y += dy;
+        }
     }
 }
 
