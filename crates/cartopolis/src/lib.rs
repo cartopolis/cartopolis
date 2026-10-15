@@ -1053,7 +1053,9 @@ fn run_client() {
             Some(server) => Some(SessionRequest::Remote {
                 server,
                 credential: login.credential,
-                persist_token: true,
+                // Off for `CARTO_TOKEN` (`login::from_env`): an access token is
+                // neither read from nor written to `user.json`.
+                persist_token: login.persist_token,
             }),
             None if !session_prefs.auto_enter => None,
             None => match session_prefs.kind {

@@ -1,7 +1,13 @@
 //! Resolve connect credentials for the ADR-016 handshake, so you don't log in each
 //! run. Precedence: explicit `--login` (a file, or inline `user:pass`) → a default
-//! login file → `CARTO_USER`/`CARTO_PASSWORD` env → the `dev:dev` default a
-//! freshly provisioned dev sim answers to.
+//! login file → `CARTO_TOKEN` env → `CARTO_USER`/`CARTO_PASSWORD` env → the
+//! `dev:dev` default a freshly provisioned dev sim answers to.
+//!
+//! `CARTO_TOKEN` is an **access token** made on the server's Tokens page
+//! (`docs/notes/access-tokens.md`): how a bot signs in without its password ever
+//! being on the machine it runs on. It is not remembered in `user.json` — the
+//! environment already has it, and a second copy on disk would outlive the
+//! process that was given it.
 //!
 //! Login file (gitignored TOML), all fields optional:
 //! ```toml
@@ -36,6 +42,9 @@ pub struct Login {
     /// is absent (lets one file pin both destination and identity).
     pub server: Option<String>,
     pub credential: AuthCredential,
+    /// Whether the session token the server answers with should be remembered
+    /// in `user.json` for a silent reconnect. Not for `CARTO_TOKEN`.
+    pub persist_token: bool,
 }
 
 /// Resolve credentials from the optional `--login` value.
@@ -52,6 +61,7 @@ pub fn resolve(cli_login: Option<&str>) -> Login {
             return Login {
                 server: None,
                 credential,
+                persist_token: true,
             };
         }
         tracing::error!("--login {value} is neither a file nor user:pass; using dev account");
@@ -86,16 +96,38 @@ fn from_file(path: &str) -> anyhow::Result<Login> {
     Ok(Login {
         server: file.server,
         credential,
+        persist_token: true,
     })
 }
 
 fn env_or_dev() -> Login {
+    from_env(
+        std::env::var("CARTO_TOKEN").ok(),
+        std::env::var("CARTO_USER").ok(),
+        std::env::var("CARTO_PASSWORD").ok(),
+    )
+}
+
+/// [`env_or_dev`] with the environment passed in, so the precedence is testable
+/// without mutating the process environment under a parallel test runner.
+fn from_env(token: Option<String>, user: Option<String>, password: Option<String>) -> Login {
+    if let Some(token) = token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        return Login {
+            server: None,
+            credential: AuthCredential::Token(token),
+            persist_token: false,
+        };
+    }
     Login {
         server: None,
         credential: AuthCredential::Password {
-            username: std::env::var("CARTO_USER").unwrap_or_else(|_| DEV_USER.to_string()),
-            password: std::env::var("CARTO_PASSWORD").unwrap_or_else(|_| DEV_PASSWORD.to_string()),
+            username: user.unwrap_or_else(|| DEV_USER.to_string()),
+            password: password.unwrap_or_else(|| DEV_PASSWORD.to_string()),
         },
+        persist_token: true,
     }
 }
 
@@ -106,5 +138,27 @@ fn dev_login() -> Login {
             username: DEV_USER.to_string(),
             password: DEV_PASSWORD.to_string(),
         },
+        persist_token: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An access token in the environment wins over a username and password
+    /// there, and is not remembered; a blank one is no token at all.
+    #[test]
+    fn an_env_token_wins_and_is_not_persisted() {
+        let login = from_env(Some(" abc ".into()), Some("u".into()), Some("p".into()));
+        assert!(matches!(login.credential, AuthCredential::Token(ref t) if t == "abc"));
+        assert!(!login.persist_token);
+
+        let login = from_env(Some("  ".into()), Some("u".into()), Some("p".into()));
+        assert!(matches!(
+            login.credential,
+            AuthCredential::Password { ref username, ref password } if username == "u" && password == "p"
+        ));
+        assert!(login.persist_token);
     }
 }
