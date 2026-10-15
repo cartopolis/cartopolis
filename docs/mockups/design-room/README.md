@@ -68,3 +68,14 @@ with the object standing on the spot, sent to the server as one act.
 Drawn isometric for legibility: the client has no orthographic camera today
 (every camera is `Projection::Perspective`), so the room's Front / Side / Top
 views are new work.
+
+## Note added 2026-10-15: one pin for a person, everywhere
+
+The person pins on the v3 sheet (the disc in the person's colour on a short
+stem, name underneath; pale and glowing while they design) are to be used
+**everywhere a person's location is shared**, not only here. The app already
+draws this pin for avatars in a chat's World view and on the Friends layer
+(`chat_people::marker`). A real GPS location shared with a private chat is
+still a blue teardrop (`place_pins.rs`) and should become the same disc pin,
+kept blue (`theme::REAL_LOCATION`) so a phone's position stays distinct from
+an avatar's. Teardrops remain for places: saved places, chat points, posts.
