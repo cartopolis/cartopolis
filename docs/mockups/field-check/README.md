@@ -17,6 +17,10 @@ with the position, accuracy, direction, camera, time and app version under it
 the two differ. The capture screen is the camera, a corner render, a shutter
 and front/rear, with one chip for the position quality.
 
+The pose also travels as data, including the ground height the receiver
+measured (converted to NAP, minus the antenna height), so the agent can check
+it against AHN. That is data only, nothing on screen.
+
 ![v4](v4.png)
 
 ## Superseded: v3, what the position knows
