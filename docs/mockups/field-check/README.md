@@ -6,7 +6,36 @@ updated: 2026-10-15
 
 # Field check: the real view and Cartopolis's view, side by side
 
-A design mockup, not code. **v2 is the current proposal.**
+A design mockup, not code. **v3 is the current proposal**: v2 plus what the
+position itself can check.
+
+## v3: what the position knows
+
+The receiver reports far more than a position, and each part is a check on the
+world. Its **height** (converted to NAP, minus the antenna height) checks AHN and
+the ground we grade from it. **Lining up the ghost** gives a true heading beside
+the compass heading, and keeping both measures the compass over a walk. A
+**touch check** (receiver held against a building corner, kerb or pole, no
+camera) compares a centimetre point with where the BAG and BGT put that object.
+The quality rows (fix, error per direction, satellites, correction age, station
+distance, antenna height) decide how far each check may be trusted, and all of
+it goes into the picture's strip.
+
+![v3](v3.png)
+
+The picture with the full strip:
+
+![the picture, v3](pair-v3.jpg)
+
+Real in v3: the BAG outline of building 0014100010906600, AHN4 ground height
+6.97 m NAP at `53.2183, 6.5679`, the PDOK aerial, the correction station
+DELZ00NLD0 at 26 km, and the BGT having no surveyed poles on the Grote Markt.
+Every receiver reading, the compass log and the agent's walk summary are
+examples.
+
+Open: a touch on something the registers do not have is a measurement, not a
+check. Whether those may become world content is undecided; the rule so far is
+real registers only.
 
 ## v2: a harness for correcting the world
 
