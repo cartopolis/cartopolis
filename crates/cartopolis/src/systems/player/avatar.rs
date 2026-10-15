@@ -1289,7 +1289,10 @@ pub fn update_avatar_animation(
     mut running: Local<bool>,
 ) {
     let dt = time.delta_secs();
-    let moving = avatar_state.ground_speed >= locomotion::MOVING_EPS;
+    // The stride speed, not the wish: a GPS walk carries the avatar without a
+    // wish, and an idle clip sliding down the street is what that looked like.
+    let stride = avatar_state.stride_speed();
+    let moving = stride >= locomotion::MOVING_EPS;
     let started = avatar_state.pending_emote.take();
 
     for (avatar_entity, emote_playback) in avatar_query.iter_mut() {
@@ -1333,9 +1336,7 @@ pub fn update_avatar_animation(
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
-            (false, None) => {
-                locomotion_pose(avatar_state.ground_speed, avatar_state.is_flying, *running)
-            }
+            (false, None) => locomotion_pose(stride, avatar_state.is_flying, *running),
         };
         *running = pose.clip == PoseClip::Run;
 

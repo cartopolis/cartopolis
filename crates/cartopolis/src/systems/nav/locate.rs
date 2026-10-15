@@ -107,6 +107,61 @@ fn yaw_from_bearing(bearing_rad: f32) -> f32 {
 /// shimmer the whole view.
 const DEVICE_VIEW_RATE: f32 = 24.0;
 
+/// How fast the avatar's legs take up the pace a GPS walk carries it at, per
+/// second (exponential). Slow enough that the glide's step from one fix interval
+/// to the next is not heard as a lurch in the footsteps, fast enough that
+/// stopping at a crossing stops the walk within a stride.
+const CARRY_RATE: f32 = 4.0;
+
+/// Below this pace (m/s) a GPS walk moves the avatar without moving its legs.
+/// A receiver held still still wanders a metre or two between reports, and a
+/// figure that shuffles on the spot to follow that reads as restless, not as
+/// standing.
+const CARRY_MIN_MS: f32 = 0.5;
+
+/// Above this pace (m/s) the phone is in a vehicle, not on a pavement, and the
+/// avatar rides rather than runs — legs at four times a sprint look broken, not
+/// fast.
+const CARRY_MAX_MS: f32 = 10.0;
+
+/// Let the avatar's body follow one frame of a GPS walk from `from` to `to`
+/// (absolute anchored world metres): ease [`AvatarState::carried_speed`] toward the
+/// pace that step implies, and turn the avatar to face along it.
+///
+/// The position itself has already been written (`driver::place_avatar`); this is
+/// what makes it a walk rather than a slide. Before it the avatar idled while the
+/// street moved under it, because the clip and the footsteps only knew about the
+/// pace the *keys* ask for. The facing is left alone while the player is steering
+/// with the keys or the stick — their wish turns the avatar, as it always has.
+fn carry_avatar(state: &mut AvatarState, from: Option<(f64, f64)>, to: (f64, f64), dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    let step = from.map_or(Vec2::ZERO, |(x, z)| {
+        Vec2::new((to.0 - x) as f32, (to.1 - z) as f32)
+    });
+    let pace = step.length() / dt;
+    let target = if (CARRY_MIN_MS..=CARRY_MAX_MS).contains(&pace) {
+        pace
+    } else {
+        0.0
+    };
+    let mut carried =
+        state.carried_speed + (target - state.carried_speed) * (1.0 - (-CARRY_RATE * dt).exp());
+    if carried < 0.01 {
+        carried = 0.0;
+    }
+    if carried != state.carried_speed {
+        state.carried_speed = carried;
+    }
+    let steering = state.ground_speed >= crate::systems::locomotion::MOVING_EPS;
+    if target > 0.0 && !steering {
+        if let Some(yaw) = crate::systems::avatar::yaw_from_dir(Vec3::new(step.x, 0.0, step.y)) {
+            state.facing_yaw = crate::systems::avatar::advance_facing(state.facing_yaw, yaw, dt);
+        }
+    }
+}
+
 /// Whether the device's own attitude is what aims the camera this frame.
 ///
 /// The "6DoF" gate in one place, so the live path and the scripted capture seed
@@ -858,6 +913,10 @@ pub fn track_device_pose(
         if camera_state.device_rotation.is_some() {
             camera_state.device_rotation = None;
         }
+        // Nothing is carrying the avatar any more. Guarded for the same reason.
+        if avatar_state.carried_speed != 0.0 {
+            avatar_state.carried_speed = 0.0;
+        }
         return;
     }
 
@@ -888,6 +947,9 @@ pub fn track_device_pose(
             .last_fix_at
             .map(|t| now.duration_since(t).as_secs_f32()),
     );
+    // Whether this frame walked the avatar along a fix (`carry_avatar`). Every
+    // other outcome — a teleport, no fix yet, no anchor — leaves it standing.
+    let mut carried = false;
     if let (Some(fix), Some(anchor)) = (fix, map_anchor.geo) {
         // Near or far, exactly as driver mode decides it: a *move* is a write and
         // a *jump* is a teleport, because nothing on the write path re-anchors the
@@ -916,6 +978,7 @@ pub fn track_device_pose(
             // advance on one clock — the frame's — rather than lurching together
             // once a second.
             let (wx, wz) = lat_lng_to_world(anchor, fix.lat, fix.lng);
+            let glided_from = tracking.glide.shown();
             let (gx, gz) = tracking
                 .glide
                 .advance((wx, wz), fix_is_new, now, time.delta_secs());
@@ -929,6 +992,8 @@ pub fn track_device_pose(
                 online.as_deref(),
                 fix_is_new,
             );
+            carry_avatar(&mut avatar_state, glided_from, (gx, gz), time.delta_secs());
+            carried = true;
             // Where that put the avatar, in absolute world metres — recorded in
             // every mode, not only the two that read it below. Recording it only
             // while the camera needed it would leave a spell in Follow as a gap,
@@ -963,6 +1028,10 @@ pub fn track_device_pose(
                 }
             }
         }
+    }
+
+    if !carried && avatar_state.carried_speed != 0.0 {
+        avatar_state.carried_speed = 0.0;
     }
 
     // ── Heading ──
@@ -1072,6 +1141,73 @@ pub fn track_device_pose(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Walk the avatar east at `pace` m/s for `secs`, one 60 Hz frame at a time,
+    /// the way `track_device_pose` hands `carry_avatar` the glide's steps.
+    fn walk(state: &mut AvatarState, pace: f32, secs: f32) {
+        let dt = 1.0 / 60.0;
+        let mut x = 0.0_f64;
+        for _ in 0..(secs / dt) as usize {
+            let next = x + f64::from(pace * dt);
+            carry_avatar(state, Some((x, 0.0)), (next, 0.0), dt);
+            x = next;
+        }
+    }
+
+    /// A GPS walk is a walk: the legs take up the pace the fixes imply and the
+    /// avatar turns to face along it. Before this the clip read only the keys'
+    /// pace, so the avatar idled while the street slid under it.
+    #[test]
+    fn a_gps_walk_moves_the_legs_and_turns_the_avatar() {
+        let mut state = AvatarState::default();
+        walk(&mut state, 1.4, 3.0);
+        assert!(
+            (state.carried_speed - 1.4).abs() < 0.05,
+            "carried {}",
+            state.carried_speed
+        );
+        assert!(state.stride_speed() >= crate::systems::locomotion::MOVING_EPS);
+        // East is +X, which is a yaw of a quarter turn.
+        assert!(
+            (state.facing_yaw - std::f32::consts::FRAC_PI_2).abs() < 0.05,
+            "facing {}",
+            state.facing_yaw
+        );
+        // …and stopping stops the legs, within a stride or two.
+        walk(&mut state, 0.0, 1.5);
+        assert!(
+            state.carried_speed < 0.05,
+            "carried {}",
+            state.carried_speed
+        );
+    }
+
+    /// The fixes of a phone held still wander, and a vehicle's pace is not a run;
+    /// neither moves the legs. A first fix (nothing to measure from) does not either.
+    #[test]
+    fn jitter_and_vehicles_do_not_walk_the_avatar() {
+        for pace in [0.3, 25.0] {
+            let mut state = AvatarState::default();
+            walk(&mut state, pace, 3.0);
+            assert_eq!(state.carried_speed, 0.0, "pace {pace}");
+            assert_eq!(state.facing_yaw, 0.0, "pace {pace} turned the avatar");
+        }
+        let mut state = AvatarState::default();
+        carry_avatar(&mut state, None, (500.0, 0.0), 1.0 / 60.0);
+        assert_eq!(state.carried_speed, 0.0);
+    }
+
+    /// A player steering with the keys keeps the facing their wish gives; the fix
+    /// only times the legs.
+    #[test]
+    fn steering_keeps_its_own_facing() {
+        let mut state = AvatarState {
+            ground_speed: crate::systems::locomotion::WALK_SPEED,
+            ..AvatarState::default()
+        };
+        walk(&mut state, 1.4, 2.0);
+        assert_eq!(state.facing_yaw, 0.0);
+    }
 
     /// The four cardinals, checked through the same arithmetic `free_camera` does
     /// — yaw → azimuth → the ground direction the camera looks along — so the test

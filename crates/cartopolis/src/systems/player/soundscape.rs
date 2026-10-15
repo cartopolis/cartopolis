@@ -196,7 +196,8 @@ pub fn play_avatar_sounds(
         *stride = 0.0;
     }
 
-    let speed = avatar_state.ground_speed;
+    // Timed by the legs, which a GPS walk moves too (`AvatarState::stride_speed`).
+    let speed = avatar_state.stride_speed();
     if avatar_state.is_flying || !avatar_state.grounded || speed < locomotion::MOVING_EPS {
         // Keep the phase where it is: stopping mid-stride and starting again from
         // there is exactly what a person does.

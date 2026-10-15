@@ -147,6 +147,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use big_space::prelude::{BigSpace, Grid, GridCell};
+use cartopolis_core::motion;
 use web_time::Instant;
 
 use crate::components::{Avatar, FreeCamera};
@@ -1542,6 +1543,12 @@ impl FixGlide {
     /// stops existing — a teleport, a re-anchor, entering or leaving the mode —
     /// so the next fix is placed outright instead of glided to from a coordinate
     /// that now means somewhere else.
+    /// Where the marker was drawn last frame, if anywhere — what a caller measures
+    /// this frame's step from.
+    pub(crate) fn shown(&self) -> Option<(f64, f64)> {
+        self.shown
+    }
+
     pub(crate) fn reset(&mut self) {
         self.shown = None;
         self.fix_at = None;
@@ -1600,7 +1607,17 @@ impl FixGlide {
 }
 
 /// Split a position in absolute anchored world metres into the big_space cell and
-/// the local translation that stand for it, at standing height.
+/// the local translation that stand for it, at the height `y` the avatar already
+/// has — a fix carries no height, so it moves the avatar across the ground and
+/// leaves its height alone.
+///
+/// **The floor is the sim's own, [`motion::GROUND_Y`], and not a centimetre above
+/// it.** It was `0.05` — the fox-era `GROUND_HEIGHT` — while the sim and the
+/// prediction stand an avatar at exactly zero. So every frame of a GPS walk put the
+/// avatar five centimetres up, `network::send_network_intent` predicted the fall
+/// from there, and the frame that fall crossed the floor reported a landing.
+/// At 120 Hz that is a 6 m/s touchdown several times a second: the landing thud
+/// and the camera's landing dip, over and over, for as long as the phone moved.
 ///
 /// Pure, and split out of [`place_avatar`] for one reason: the local half is what
 /// goes on the wire, and a version of this that handed the sim `wx`/`wz` instead
@@ -1609,7 +1626,7 @@ impl FixGlide {
 #[must_use]
 fn placement(wx: f64, wz: f64, y: f32) -> (GridCell, Vec3) {
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-    grid.translation_to_grid(DVec3::new(wx, f64::from(y.max(0.05)), wz))
+    grid.translation_to_grid(DVec3::new(wx, f64::from(y.max(motion::GROUND_Y)), wz))
 }
 
 /// Is this fix further from the avatar than [`GPS_TELEPORT_M`]?
@@ -4069,7 +4086,30 @@ mod tests {
     #[test]
     fn a_fix_never_places_the_avatar_below_the_ground() {
         let (_, local) = placement(0.0, 0.0, -12.0);
-        assert!(local.y > 0.0, "y was {}", local.y);
+        assert!(local.y >= motion::GROUND_Y, "y was {}", local.y);
+    }
+
+    /// …and never *above* it either. An avatar standing on the sim's floor must
+    /// be placed on that floor: lifting it even five centimetres makes the
+    /// prediction drop it back every frame, and every drop is a landing — the
+    /// thud and the camera dip that played continuously while GPS walked the
+    /// avatar. Run through the same fall the prediction runs, so the property
+    /// pinned is "no landing", not a number.
+    #[test]
+    fn a_fix_leaves_a_standing_avatar_standing() {
+        let (_, local) = placement(120.0, -40.0, motion::GROUND_Y);
+        assert_eq!(local.y, motion::GROUND_Y);
+        let mut y = local.y;
+        let mut vy = 0.0;
+        for _ in 0..240 {
+            // Every frame re-places the avatar, as `locate` does between fixes.
+            y = placement(120.0, -40.0, y).1.y;
+            let step = motion::step_fall(y, vy, motion::GROUND_Y, 1.0 / 120.0);
+            assert_eq!(step.landing_speed, None, "a standing avatar landed");
+            assert!(step.grounded);
+            y = step.y;
+            vy = step.vertical_velocity;
+        }
     }
 
     #[test]

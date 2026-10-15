@@ -1353,6 +1353,17 @@ pub struct AvatarState {
     /// it, `send_network_intent` turns it into the wish magnitude the sim scales,
     /// and the animation systems read it to match the clip to the ground.
     pub ground_speed: f32,
+    /// Horizontal speed (m/s) the avatar is being *carried* at by something other
+    /// than its own wish — the locate button walking it from one device fix to the
+    /// next (`locate::track_device_pose`). Zero whenever nothing is.
+    ///
+    /// Separate from [`Self::ground_speed`] because that one is also a *request*:
+    /// `send_network_intent` turns it into the wish the sim integrates, so writing
+    /// the GPS pace there would have the sim walk the avatar on top of the fix that
+    /// already moved it. The body still has to follow the ground it covers — a
+    /// GPS walk used to slide an idling avatar down the street — so the clip and
+    /// the footsteps read [`Self::stride_speed`], which takes both.
+    pub carried_speed: f32,
     /// Unit horizontal direction of travel, **held across a release** so the
     /// avatar coasts to a stop along its own heading instead of stopping dead the
     /// frame the key comes up (the wish direction is zero by then).
@@ -1406,6 +1417,14 @@ pub struct AvatarState {
 }
 
 impl AvatarState {
+    /// The speed the legs should move at: the avatar's own pace, or the pace it is
+    /// being carried at (`carried_speed`), whichever is faster. What the walk
+    /// clip and the footsteps are timed by; never what is sent to the sim.
+    #[must_use]
+    pub fn stride_speed(&self) -> f32 {
+        self.ground_speed.max(self.carried_speed)
+    }
+
     /// Whether the avatar is on a seat right now — which is not the same as
     /// [`Self::seated`] being set, because a seat that is unwinding still is.
     /// This is the one to ask before blocking movement or choosing the pose.
@@ -1452,6 +1471,7 @@ impl Default for AvatarState {
             is_flying: false,
             is_walking: false,
             ground_speed: 0.0,
+            carried_speed: 0.0,
             move_dir: Vec3::ZERO,
             gait: crate::systems::locomotion::Gait::Walk,
             vertical_velocity: 0.0,
