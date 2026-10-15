@@ -88,7 +88,7 @@ pub fn render_mcp_activity(
                             .strong(),
                     );
                     ui.label(
-                        egui::RichText::new(bridge.listen.to_string())
+                        egui::RichText::new(bridge.listen.display().to_string())
                             .size(theme::SIZE_TINY)
                             .color(theme::TEXT_DIM),
                     );

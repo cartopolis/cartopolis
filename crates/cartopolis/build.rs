@@ -10,12 +10,12 @@
 //!    target it's a no-op. Non-fatal: a missing resource compiler just omits the
 //!    icon rather than failing the build.
 //!
-//! 2. Set the `mcp` cfg on desktop targets, so `#[cfg(mcp)]` says "this is a
-//!    machine an IDE can drive" in one word instead of repeating
-//!    `all(not(target_arch = "wasm32"), not(target_os = "android"))` at every
-//!    site. It matches the dependency table in `Cargo.toml`, which puts `rmcp`
-//!    and its HTTP stack under exactly that target predicate — the same shape
-//!    `arboard` and `rfd` already use for "the desktop, and Android is not one".
+//! 2. Set the `mcp` cfg on Unix desktops (Linux, macOS), so `#[cfg(mcp)]` says
+//!    "this is a machine an IDE can drive" in one word instead of repeating
+//!    `all(unix, not(target_os = "android"))` at every site. It matches the
+//!    dependency table in `Cargo.toml`, which puts `cartopolis_mcp` under
+//!    exactly that target predicate. Windows is not on it: the listener is a
+//!    Unix domain socket (`docs/notes/driving-the-client-from-an-ide.md`).
 //!
 //!    Why not a cargo feature: Android and the web both build
 //!    `--no-default-features`, so a default feature would be dropped there — which
@@ -25,7 +25,8 @@
 
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    // A comma-separated list (`unix`, or `unix,wasm` on emscripten-likes).
+    let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
 
     if target_os == "windows" {
         // Path is relative to this crate's root (build.rs CWD).
@@ -37,7 +38,7 @@ fn main() {
     }
 
     println!("cargo::rustc-check-cfg=cfg(mcp)");
-    if target_arch != "wasm32" && target_os != "android" {
+    if target_family.split(',').any(|f| f == "unix") && target_os != "android" {
         println!("cargo::rustc-cfg=mcp");
     }
 

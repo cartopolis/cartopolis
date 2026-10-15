@@ -1,33 +1,45 @@
-//! The listener: a tokio runtime on its own thread, an axum router, a bearer
-//! check, and the MCP tool surface.
+//! The listener: a tokio runtime on its own thread, a Unix domain socket, and
+//! the MCP tool surface.
 //!
 //! Nothing in here touches the `World`. Every tool builds a
 //! [`Job`](crate::protocol::Job), pushes it at the schedule and awaits the oneshot — so a
 //! call that takes twenty seconds to settle is twenty seconds of one tokio task
 //! and no frames at all.
 //!
+//! # Why a socket and no token
+//!
+//! Every accepted connection is **one MCP session, served straight over the
+//! stream** with rmcp's async-rw transport — line-delimited JSON-RPC, which is
+//! the stdio framing — so `cartopolis mcp` (the relay an editor or an `ssh`
+//! command line launches) is a byte pipe and nothing more. There used to be a
+//! streamable-HTTP listener on 127.0.0.1:4750 with a bearer token in front of
+//! it. The token only ever kept out *other users' processes* and *web pages*:
+//! any process of the same user could read it out of `user.json`. A socket in a
+//! directory only its owner can open does both of those things with nothing to
+//! mint, store, show or regenerate — and a page cannot reach a Unix socket at
+//! all, which retires the `Host`/`Origin` allow-lists along with it.
+//!
 //! # Why the SDK
 //!
-//! Hand-rolling JSON-RPC over HTTP was the 2025 answer and is no longer the
-//! right one: the stable 2026-07-28 spec carries session negotiation, SSE and
-//! *long-running tasks*, and a settle that takes twenty seconds is precisely a
-//! long-running task. `rmcp` also brings the DNS-rebinding guard a local server
-//! needs — `StreamableHttpServerConfig::allowed_hosts` defaults to loopback, and
-//! `allowed_origins` is enabled here so a browser cannot be talked into driving
-//! somebody's client from a page.
+//! Hand-rolling JSON-RPC was the 2025 answer and is no longer the right one:
+//! the protocol carries capability negotiation, notifications and *long-running
+//! tasks*, and a settle that takes twenty seconds is precisely a long-running
+//! task. rmcp serves the requests on one session concurrently, so a parked
+//! `read_chat` (up to ten minutes) does not hold up a `state` behind it.
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt as _};
 
-use axum::response::IntoResponse as _;
 use base64::Engine as _;
 use futures_channel::mpsc::UnboundedSender;
 use futures_channel::oneshot;
-use std::sync::Arc;
+use std::os::unix::fs::{
+    DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, PermissionsExt as _,
+};
+use std::path::{Path, PathBuf};
+use tokio_util::sync::CancellationToken;
 
 use crate::args::{
     AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
@@ -36,25 +48,65 @@ use crate::args::{
     SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
 };
 use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
-use crate::protocol::{
-    BearerToken, ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE,
-};
+use crate::protocol::{ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
 use cartopolis_core::ShotEnv;
 
-/// Handle on the running listener; dropping it stops the server.
+// ---------------------------------------------------------------------------
+// Where the socket lives
+// ---------------------------------------------------------------------------
+
+/// Where a client serves, and where `cartopolis mcp` looks, unless told
+/// otherwise: `$XDG_RUNTIME_DIR/cartopolis/mcp.sock`.
+///
+/// The runtime directory is the right home and the reason is its mode: it is
+/// the user's own, 0700, and gone at logout, so a socket in it is reachable by
+/// the user's processes and nobody else's without this code checking anything.
+/// Where there is none (macOS, a bare container, an ssh session without a
+/// login manager), `$TMPDIR` or `/tmp` with a per-user directory of our own,
+/// which [`spawn`] creates 0700 and refuses if somebody else got there first.
+pub fn default_socket_path() -> PathBuf {
+    socket_path_from(
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("TMPDIR"),
+        // SAFETY: `getuid` takes nothing, cannot fail and touches no memory.
+        unsafe { libc::getuid() },
+    )
+}
+
+/// [`default_socket_path`] with its inputs made explicit, so the choice can be
+/// tested without touching this process's environment.
+pub fn socket_path_from(
+    runtime_dir: Option<std::ffi::OsString>,
+    tmp_dir: Option<std::ffi::OsString>,
+    uid: u32,
+) -> PathBuf {
+    // An empty variable is unset, not "the current directory".
+    let nonempty = |v: Option<std::ffi::OsString>| v.filter(|v| !v.is_empty());
+    match nonempty(runtime_dir) {
+        Some(dir) => PathBuf::from(dir).join("cartopolis").join("mcp.sock"),
+        None => PathBuf::from(nonempty(tmp_dir).unwrap_or_else(|| "/tmp".into()))
+            .join(format!("cartopolis-{uid}"))
+            .join("mcp.sock"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The listener
+// ---------------------------------------------------------------------------
+
 /// A live listener. **Dropping it stops the server**, which is what makes the
-/// Settings switch a switch: removing the resource cancels the token, axum's
-/// graceful shutdown returns, the thread ends and its runtime goes with it.
+/// Settings switch a switch: removing the resource cancels the token, the accept
+/// loop and every session on it return, the socket file is removed, the thread
+/// ends and its runtime goes with it.
 ///
 /// An ordinary `Resource` rather than a non-send one, so a system can insert and
 /// remove it through `Commands` (the client wraps it as `mcp::Running`, since a
 /// type from this crate cannot derive Bevy's `Resource`). It holds only a
 /// `CancellationToken`; the runtime lives on the thread that is blocked on it.
 pub struct Running {
-    pub cancel: tokio_util::sync::CancellationToken,
-    /// What it is serving on, for the Settings readout — which must say where an
-    /// editor should point rather than where it was asked to.
-    pub listen: std::net::SocketAddr,
+    pub cancel: CancellationToken,
+    /// The socket it is serving on, for the Settings readout.
+    pub listen: PathBuf,
 }
 
 impl Drop for Running {
@@ -63,121 +115,163 @@ impl Drop for Running {
     }
 }
 
-/// Bind the listener and serve, on a thread of this process's own.
+/// Bind the socket and serve, on a thread of this process's own.
 ///
-/// Binding happens **on the calling thread, before returning**, so "the port is
-/// taken" is an answer the caller gets rather than a line in a log nobody reads
-/// — which is what lets the Settings row say so.
-///
-/// `listen` and `hosts` are the client's `mcp::Config::listen` and `hosts`
-/// (`--mcp-listen`, `--mcp-host`).
-pub fn spawn(
-    listen: std::net::SocketAddr,
-    hosts: Vec<String>,
-    auth: BearerToken,
-    jobs: UnboundedSender<Job>,
-) -> Result<Running, String> {
+/// Binding happens **on the calling thread, before returning**, so "somebody
+/// else is serving there" is an answer the caller gets rather than a line in a
+/// log nobody reads — which is what lets the Settings row say so.
+pub fn spawn(listen: &Path, jobs: UnboundedSender<Job>) -> Result<Running, String> {
+    let std_listener = bind(listen)?;
+    // Which file is ours, so the cleanup at the end removes the socket this
+    // listener made and never one a later client has since bound at the path.
+    let identity = std::fs::symlink_metadata(listen)
+        .map(|m| (m.dev(), m.ino()))
+        .ok();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .thread_name("cartopolis-mcp")
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
+    let listener = {
+        let _guard = rt.enter();
+        std_listener
+            .set_nonblocking(true)
+            .and_then(|()| tokio::net::UnixListener::from_std(std_listener))
+            .map_err(|e| format!("cannot listen on {}: {e}", listen.display()))?
+    };
 
-    let listener = rt
-        .block_on(tokio::net::TcpListener::bind(listen))
-        .map_err(|e| format!("cannot listen on {listen}: {e}"))?;
-
-    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel = CancellationToken::new();
     let serve_cancel = cancel.clone();
-    let extra_hosts = hosts;
+    let path = listen.to_path_buf();
 
     std::thread::Builder::new()
         .name("cartopolis-mcp".into())
         .spawn(move || {
-            // Assigned rather than written as a literal: the config is
-            // `#[non_exhaustive]`, so a struct expression will not compile.
-            let mut http = StreamableHttpServerConfig::default();
-            // Refuse every request that carries an `Origin` at all
-            // (`enforce_origin_validation` turns the empty list into a deny).
-            // This is not a browser surface: the only thing that would send one
-            // is a page trying to reach a server running on the machine somebody
-            // is reading that page on, which is the whole of DNS rebinding.
-            http.allowed_origins = Vec::new();
-            // The `Host` allow-list defaults to loopback, which silently refuses
-            // a deliberate LAN bind. Name the address we were actually asked to
-            // listen on as well, so `--mcp-listen 0.0.0.0:4750` does what it says
-            // — the reason not to do that is the missing encryption, not a guard
-            // pretending the flag does not exist.
-            http.allowed_hosts = vec![
-                "localhost".into(),
-                "127.0.0.1".into(),
-                "::1".into(),
-                listen.to_string(),
-                listen.ip().to_string(),
-            ];
-            // …and whatever a forward in front of it is called (`--mcp-host`).
-            http.allowed_hosts.extend(extra_hosts);
-            // **Stateless, with a plain JSON reply.** Sessions are gone from the
-            // 2026-07-28 spec, and what they would buy here is a second round
-            // trip and an identifier to expire; nothing in this surface is a
-            // conversation. `json_response` falls back to an event stream by
-            // itself if a handler ever emits a notification before its result, so
-            // this is a preference rather than a restriction.
-            http.legacy_session_mode = false;
-            http.json_response = true;
-            let service = StreamableHttpService::new(
-                move || Ok(Tools::new(jobs.clone())),
-                Arc::new(LocalSessionManager::default()),
-                http.enforce_origin_validation(),
-            );
-            let app = axum::Router::new()
-                .nest_service("/mcp", service)
-                .layer(axum::middleware::from_fn_with_state(auth, require_bearer))
-                .with_state(());
-            let result = rt.block_on(async move {
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
-                    .await
-            });
-            match result {
-                Ok(()) => tracing::info!(%listen, "mcp: listener closed"),
-                Err(e) => tracing::error!(%listen, error = %e, "mcp: listener died"),
+            rt.block_on(accept_loop(listener, jobs, serve_cancel));
+            // The sessions' tasks die with the runtime; the file must be removed
+            // by hand, or the next bind finds a stale socket (which it handles,
+            // but `ls` and the relay's error message would both lie meanwhile).
+            let still_ours = std::fs::symlink_metadata(&path)
+                .is_ok_and(|m| Some((m.dev(), m.ino())) == identity);
+            if still_ours {
+                let _ = std::fs::remove_file(&path);
             }
+            tracing::info!(listen = %path.display(), "mcp: listener closed");
         })
         .map_err(|e| format!("cannot start the mcp thread: {e}"))?;
 
-    Ok(Running { cancel, listen })
+    Ok(Running {
+        cancel,
+        listen: listen.to_path_buf(),
+    })
 }
 
-/// Reject anything without the right bearer token, before it reaches the
-/// protocol at all.
-async fn require_bearer(
-    axum::extract::State(auth): axum::extract::State<BearerToken>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let presented = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or("")
-        .trim();
-    if !auth.accepts(presented) {
-        // `WWW-Authenticate` so a client that has no token is told what kind it
-        // needs, rather than being left to guess at a bare 401.
-        return (
-            axum::http::StatusCode::UNAUTHORIZED,
-            [(
-                axum::http::header::WWW_AUTHENTICATE,
-                "Bearer realm=\"cartopolis\"",
-            )],
-            "this client wants its MCP token — Settings ▸ General ▸ Editor access\n",
-        )
-            .into_response();
+/// Accept until cancelled. Each connection is one MCP session on a task of its
+/// own, so several editors may be attached at once and a slow one holds up
+/// nobody.
+async fn accept_loop(
+    listener: tokio::net::UnixListener,
+    jobs: UnboundedSender<Job>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let accepted = tokio::select! {
+            () = cancel.cancelled() => return,
+            accepted = listener.accept() => accepted,
+        };
+        match accepted {
+            Ok((stream, _)) => {
+                let tools = Tools::new(jobs.clone());
+                // A child, so dropping `Running` ends the sessions as well as
+                // the accept loop rather than leaving them answering into a
+                // runtime that is about to go.
+                let session_cancel = cancel.child_token();
+                tokio::spawn(async move {
+                    match tools.serve_with_ct(stream, session_cancel).await {
+                        Ok(session) => {
+                            let _ = session.waiting().await;
+                        }
+                        // A peer that connected and left, or sent something that
+                        // was not an `initialize`. Not this process's problem.
+                        Err(e) => tracing::debug!(error = %e, "mcp: session ended before it began"),
+                    }
+                });
+            }
+            Err(e) => {
+                // Out of descriptors, mostly. Pause rather than spin on it.
+                tracing::warn!(error = %e, "mcp: accept failed");
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
     }
-    next.run(request).await
+}
+
+/// Bind `path`, after making sure it is ours to bind.
+///
+/// - The parent is created **0700** if it is missing — the directory is the
+///   access control, so one that came into being world-readable would be none.
+/// - The default path's directory must also *belong* to this user: under `/tmp`
+///   somebody else can create `cartopolis-1000` first and wait for a socket to
+///   appear in it.
+/// - A socket already at the path that **refuses** a connection is stale — a
+///   client that died without cleaning up — and is replaced. One that
+///   **answers** is another Cartopolis serving there, and is left alone.
+/// - Anything at the path that is not a socket is refused rather than removed.
+/// - The socket itself is made 0600, which is what protects a path somebody
+///   chose in a directory that is not private.
+pub fn bind(path: &Path) -> Result<std::os::unix::net::UnixListener, String> {
+    let shown = path.display();
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if !parent.exists() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        if path == default_socket_path() {
+            let meta = std::fs::metadata(parent)
+                .map_err(|e| format!("cannot read {}: {e}", parent.display()))?;
+            // SAFETY: as in `default_socket_path`.
+            if meta.uid() != unsafe { libc::getuid() } {
+                return Err(format!(
+                    "{} belongs to another user — refusing to serve in it",
+                    parent.display()
+                ));
+            }
+        }
+    }
+
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => {
+            match std::os::unix::net::UnixStream::connect(path) {
+                Ok(_) => {
+                    return Err(format!(
+                        "another Cartopolis is already serving MCP at {shown}"
+                    ))
+                }
+                Err(_) => {
+                    tracing::info!(listen = %shown, "mcp: replacing a stale socket");
+                    std::fs::remove_file(path)
+                        .map_err(|e| format!("cannot remove the stale socket {shown}: {e}"))?;
+                }
+            }
+        }
+        Ok(_) => {
+            return Err(format!(
+                "{shown} exists and is not a socket — refusing to replace it"
+            ))
+        }
+        Err(_) => {}
+    }
+
+    let listener = std::os::unix::net::UnixListener::bind(path)
+        .map_err(|e| format!("cannot listen on {shown}: {e}"))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("cannot make {shown} private: {e}"))?;
+    Ok(listener)
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,5 +1277,163 @@ fn parse_format(name: Option<&str>) -> Result<ImageFormat, ErrorData> {
             format!("format wants 'jpeg' or 'png', got {other:?}"),
             None,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::os::unix::net::UnixStream;
+
+    /// A directory of this test's own under the system temp dir, removed again
+    /// when the guard goes. Short, because a socket path is capped at ~104 bytes.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("cmcp-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+        fn sock(&self) -> PathBuf {
+            self.0.join("mcp.sock")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_runtime_dir_wins_and_tmp_is_per_user() {
+        assert_eq!(
+            socket_path_from(Some("/run/user/1000".into()), Some("/var/tmp".into()), 1000),
+            PathBuf::from("/run/user/1000/cartopolis/mcp.sock")
+        );
+        assert_eq!(
+            socket_path_from(None, Some("/var/tmp".into()), 1000),
+            PathBuf::from("/var/tmp/cartopolis-1000/mcp.sock")
+        );
+        assert_eq!(
+            socket_path_from(None, None, 501),
+            PathBuf::from("/tmp/cartopolis-501/mcp.sock")
+        );
+        assert_eq!(
+            socket_path_from(Some("".into()), Some("".into()), 7),
+            PathBuf::from("/tmp/cartopolis-7/mcp.sock"),
+            "an empty variable is unset, not the current directory"
+        );
+    }
+
+    /// The directory is created private and the socket is the owner's alone.
+    #[test]
+    fn a_fresh_bind_is_private() {
+        let scratch = Scratch::new("fresh");
+        let _listener = bind(&scratch.sock()).unwrap();
+        let dir_mode = std::fs::metadata(&scratch.0).unwrap().permissions().mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+        let sock_mode = std::fs::symlink_metadata(scratch.sock())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(sock_mode & 0o777, 0o600);
+    }
+
+    /// A socket left behind by a client that died refuses connections; the next
+    /// bind replaces it rather than reporting the path taken.
+    #[test]
+    fn a_stale_socket_is_replaced() {
+        let scratch = Scratch::new("stale");
+        drop(bind(&scratch.sock()).unwrap());
+        assert!(
+            std::fs::symlink_metadata(scratch.sock()).is_ok(),
+            "dropping a std listener leaves its file behind, which is the case"
+        );
+        let _again = bind(&scratch.sock()).expect("a stale socket is not a live one");
+    }
+
+    #[test]
+    fn a_live_socket_is_left_alone() {
+        let scratch = Scratch::new("live");
+        let _first = bind(&scratch.sock()).unwrap();
+        let err = bind(&scratch.sock()).unwrap_err();
+        assert!(err.contains("another Cartopolis"), "{err}");
+    }
+
+    #[test]
+    fn something_that_is_not_a_socket_is_not_removed() {
+        let scratch = Scratch::new("file");
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        std::fs::write(scratch.sock(), b"keep me").unwrap();
+        assert!(bind(&scratch.sock()).is_err());
+        assert_eq!(std::fs::read(scratch.sock()).unwrap(), b"keep me");
+    }
+
+    /// The whole path an editor takes: bind, connect, `initialize`, the
+    /// `initialized` notification, `tools/list` — line-delimited, as the relay
+    /// passes it through. `tools/list` needs no answer from the schedule, so the
+    /// job receiver can be dropped.
+    #[test]
+    fn a_connection_is_a_session() {
+        let scratch = Scratch::new("e2e");
+        let (tx, _rx) = futures_channel::mpsc::unbounded();
+        let running = spawn(&scratch.sock(), tx).unwrap();
+
+        let stream = UnixStream::connect(scratch.sock()).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+
+        writeln!(
+            writer,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-11-25","capabilities":{{}},"clientInfo":{{"name":"test","version":"0"}}}}}}"#
+        )
+        .unwrap();
+        reader.read_line(&mut line).unwrap();
+        let init: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(init["id"], 1);
+        assert!(
+            init["result"]["capabilities"]["tools"].is_object(),
+            "{line}"
+        );
+
+        writeln!(
+            writer,
+            r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+        )
+        .unwrap();
+        writeln!(
+            writer,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}"#
+        )
+        .unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let listed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(listed["id"], 2);
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"state") && names.contains(&"view"),
+            "{names:?}"
+        );
+
+        // Stopping removes the file, so the next client's bind is a fresh one.
+        drop(running);
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::symlink_metadata(scratch.sock()).is_err()
+        });
+        assert!(gone, "the socket file outlived its listener");
     }
 }

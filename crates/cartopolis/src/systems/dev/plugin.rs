@@ -307,8 +307,8 @@ impl Plugin for PerfPlugin {
 /// running*, and a launch flag cannot serve that: the moment somebody wants it
 /// is the moment something is on screen.
 ///
-/// Added after the `UserStore` is in the world: the token and the allow-list are
-/// read out of it here.
+/// Added after the `UserStore` is in the world: the allow-list is read out of
+/// it here.
 #[cfg(mcp)]
 pub struct McpPlugin {
     pub config: systems::mcp::Config,
@@ -323,56 +323,15 @@ pub struct McpPlugin {
 impl Plugin for McpPlugin {
     fn build(&self, app: &mut App) {
         let cfg = &self.config;
-        // The token: the environment wins (a headless run has no screen to read
-        // one off), then whatever this installation last minted, then a fresh
-        // one. The fresh one is written back so Settings has something to show
-        // and an editor's configuration keeps working across launches.
-        //
-        // **Written back only when something will save it.** A windowless run
-        // takes `harness_active`'s exemption from the user store — no restore, no
-        // autosave — so marking the store dirty there would be a promise nothing
-        // keeps, and the next launch would mint a different token having appeared
-        // to remember one. It logs the token instead.
-        let (token, minted_here) = match std::env::var("CARTO_MCP_TOKEN") {
-            Ok(t) if !t.trim().is_empty() => (t.trim().to_string(), false),
-            _ => {
-                let store = app.world().resource::<systems::user_store::UserStore>();
-                match store.data.mcp_token.clone() {
-                    Some(t) if !t.trim().is_empty() => (t, false),
-                    _ => {
-                        let minted = systems::mcp::mint_token();
-                        if !cfg.headless {
-                            let mut store = app
-                                .world_mut()
-                                .resource_mut::<systems::user_store::UserStore>();
-                            store.data.mcp_token = Some(minted.clone());
-                            store.dirty = true;
-                        }
-                        (minted, true)
-                    }
-                }
-            }
-        };
-        // A windowless run has no Settings panel to read the token off, so a token
-        // it *made up* is logged — once, at startup, beside where it *will* serve —
-        // because that is the only place anybody could find it. One that came from
-        // `CARTO_MCP_TOKEN` or the store is not: whoever set it already has it, and
-        // a system log is read by more people than the bearer token is meant for
-        // (the Deck bot's was in its journal on every start until 2026-10-01).
-        //
         // "will", and the wording matters: the socket is opened a frame later by
-        // `reconcile_listener`, which is the only thing that knows whether the
-        // port was free. A line here saying "serving" is a claim this code cannot
-        // make, and the run that proves it is the second client on one port,
-        // which logged "serving" and then "cannot serve" three lines apart.
+        // `reconcile_listener`, which is the only thing that knows whether
+        // another client already serves there. A line here saying "serving" is a
+        // claim this code cannot make, and the run that proves it is the second
+        // client on one socket, which would log "serving" and then "cannot
+        // serve" three lines apart.
         if cfg.headless {
-            if minted_here {
-                tracing::info!(listen = %cfg.listen, token = %token, "mcp: headless, will serve (set CARTO_MCP_TOKEN to keep this token out of the log)");
-            } else {
-                tracing::info!(listen = %cfg.listen, "mcp: headless, will serve, with the token it was given");
-            }
+            tracing::info!(listen = %cfg.listen.display(), "mcp: headless, will serve");
         }
-        let auth = systems::mcp::McpAuth::new(token);
         let (tx, rx) = futures_channel::mpsc::unbounded();
         let headless = cfg.headless;
         // Whose chat the agent may read: the flag for this run, else what Settings
@@ -413,10 +372,9 @@ impl Plugin for McpPlugin {
                     .in_set(ClientPhase::Input),
             );
         app.insert_resource(cfg.clone())
-            .insert_resource(auth)
             .insert_resource(systems::mcp::JobSender(tx))
             .init_resource::<systems::mcp::McpTrouble>()
-            .insert_resource(systems::mcp::McpBridge::new(rx, cfg.listen))
+            .insert_resource(systems::mcp::McpBridge::new(rx, cfg.listen.clone()))
             .add_systems(
                 Update,
                 (

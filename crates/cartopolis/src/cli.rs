@@ -227,17 +227,17 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) aerial_reference: bool,
 
-    /// Serve the Model Context Protocol somewhere other than the default
-    /// `127.0.0.1:4750`, so an editor can drive this client: move the camera,
-    /// photograph what it sees, read the scene's numbers (`systems::mcp`).
+    /// Serve the Model Context Protocol on this Unix socket rather than the
+    /// default (`$XDG_RUNTIME_DIR/cartopolis/mcp.sock`), so an editor can drive
+    /// this client: move the camera, photograph what it sees, read the scene's
+    /// numbers (`systems::mcp`). An editor reaches it through `cartopolis mcp`.
     ///
-    /// **Serving is on by default on the desktop** and switched in Settings ▸
+    /// **Serving is on by default on Linux and macOS** and switched in Settings ▸
     /// General ▸ Editor access; this flag only changes *where*, and forces it on
-    /// for the run regardless of that switch, as a flag should. A bearer token is
-    /// always required — `CARTO_MCP_TOKEN`, else the one in `user.json` that
-    /// Settings shows.
+    /// for the run regardless of that switch, as a flag should. Bare, it forces
+    /// the default path on. There is no token: the socket is the owner's alone.
     #[cfg(mcp)]
-    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = systems::mcp::DEFAULT_LISTEN)]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     pub(crate) mcp_listen: Option<String>,
 
     /// Serve MCP with no window at all: the same offscreen rendering `--shot`
@@ -262,13 +262,6 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "NAMES")]
     pub(crate) mcp_allow: Option<String>,
 
-    /// Accept MCP requests addressed to this host name too (repeatable). For a
-    /// client reached through a forward, whose requests carry the forward's
-    /// name — the DNS-rebinding guard refuses any other.
-    #[cfg(mcp)]
-    #[arg(long, value_name = "HOST")]
-    pub(crate) mcp_host: Vec<String>,
-
     /// Offscreen surface size for `--mcp-headless`, `WxH`. Ignored when there is
     /// a window, where the window *is* the surface.
     #[cfg(mcp)]
@@ -277,7 +270,7 @@ pub(crate) struct Cli {
 
     /// Don't serve MCP this run, whatever Settings remembers.
     ///
-    /// For running a second client beside one that already holds the port, and
+    /// For running a second client beside one that already serves the socket, and
     /// for anyone who would rather decide per launch. It does not change the
     /// stored preference — a flag is an instruction for this launch, never
     /// written back, the same rule the sky flags follow.

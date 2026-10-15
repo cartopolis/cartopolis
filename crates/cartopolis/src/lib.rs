@@ -102,6 +102,13 @@ use systems::*;
 /// thread, and Bevy's winit backend hands control to the event loop rather than
 /// looping here, so starting it from inside a promise callback is ordinary.
 pub fn run() {
+    // `cartopolis mcp`: the stdio relay an editor launches. First, before any
+    // of the rest exists, because its stdout is the protocol and nothing else
+    // may be written there (`systems::mcp::relay`).
+    #[cfg(mcp)]
+    if systems::mcp::relay::requested() {
+        systems::mcp::relay::main();
+    }
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(async {
         use crate::platform::storage;
@@ -336,7 +343,7 @@ fn run_client() {
         }
     };
     // Same rule, same reason: `--mcp-headless` also decides whether there is a
-    // window, so a bad address or size has to fail here rather than at the first
+    // window, so a bad socket path or size has to fail here rather than at the first
     // call an editor makes. A scripted capture resolves to `None` — see
     // `Config::resolve`, which is also where the two are refused together.
     #[cfg(mcp)]
@@ -348,10 +355,7 @@ fn run_client() {
         // capture is: no config, no listener, no Settings row, nothing to switch.
         harness.is_some() || cli.no_mcp,
     ) {
-        Ok(c) => c.map(|mut c| {
-            c.hosts = cli.mcp_host.clone();
-            c
-        }),
+        Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);

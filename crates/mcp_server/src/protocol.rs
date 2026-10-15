@@ -4,7 +4,6 @@
 
 use futures_channel::oneshot;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use crate::args::{AgentReply, AgentRequest};
 use cartopolis_core::ShotEnv;
@@ -16,44 +15,6 @@ use cartopolis_core::ShotEnv;
 /// there, is the ground flat, did that change anything) are all legible at this
 /// size. Ask for more when the question is about pixels.
 pub const DEFAULT_MAX_EDGE: u32 = 1024;
-
-/// The token the server checks, shared with the thread that checks it.
-///
-/// A lock rather than a copy because Settings can regenerate it while the server
-/// is running, and a regenerated token that only took effect on the next launch
-/// would not be a revocation.
-///
-/// The client keeps it as a resource (`mcp::McpAuth`, a wrapper, since a type
-/// from this crate cannot be a Bevy `Resource` there).
-#[derive(Clone)]
-pub struct BearerToken(pub Arc<RwLock<String>>);
-
-impl BearerToken {
-    pub fn set(&self, token: &str) {
-        if let Ok(mut g) = self.0.write() {
-            token.clone_into(&mut g);
-        }
-    }
-
-    /// Constant-time-ish comparison against the presented bearer.
-    ///
-    /// Equal length first, then a byte fold that does not stop early. This is a
-    /// loopback service and the realistic threat is another process on the same
-    /// machine rather than a remote timing attack, but the cost of not leaking
-    /// the prefix is four lines.
-    pub fn accepts(&self, presented: &str) -> bool {
-        let Ok(want) = self.0.read() else {
-            return false;
-        };
-        if want.is_empty() || want.len() != presented.len() {
-            return false;
-        }
-        want.bytes()
-            .zip(presented.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The job protocol

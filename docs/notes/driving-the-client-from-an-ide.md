@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
-updated: 2026-10-01
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
+updated: 2026-10-15
 ---
 
 # Driving the client from an editor
@@ -21,22 +21,26 @@ about it. A flag asks them to have decided before they knew, and the answer to
 "can I attach?" becomes "restart it first", which is the one thing the whole
 feature exists to avoid.
 
-So: on by default on the desktop, loopback only, and `AppPrefs::mcp_enabled` is a
-switch in Settings that opens and closes the socket while the app runs
-(`reconcile_listener`). The flags only decide *where* (`--mcp-listen`), or take a
-run out of it (`--no-mcp`, a scripted capture, any non-desktop target).
+So: on by default on Linux and macOS, on a Unix socket only its owner can open,
+and `AppPrefs::mcp_enabled` is a switch in Settings that opens and closes the
+socket while the app runs (`reconcile_listener`). The flags only decide *where*
+(`--mcp-listen PATH`), or take a run out of it (`--no-mcp`, a scripted capture,
+any target without the `mcp` cfg).
 
-What that costs is a socket on 127.0.0.1:4750 that refuses everything without the
-bearer token. The exposure it adds is another process on the same machine driving
-your client — and that process could read the token out of `user.json` anyway, so
-the socket is not what would let it in.
+What that costs is a socket at `$XDG_RUNTIME_DIR/cartopolis/mcp.sock` (else
+`$TMPDIR` or `/tmp` + `cartopolis-$UID/mcp.sock`, in a directory created 0700 and
+refused if another user owns it). The exposure it adds is another process *of
+the same user* driving your client — which could already read and write
+everything the client stores, so the socket is not what would let it in.
 
-Two consequences worth knowing. A **second client** on the same machine finds the
-port taken; it says so in that Settings row rather than in a log, because the
-reader's next move depends on knowing which of "you switched it off" and "somebody
-else has the port" happened. And the bind is **not retried** — a port in use is a
-state a person resolves, and a system that kept trying would fill the log and bury
-the reason. Switch off and on again to try once more.
+Two consequences worth knowing. A **second client** on the same machine finds
+the first one answering on the socket; it says so in that Settings row rather
+than in a log, because the reader's next move depends on knowing which of "you
+switched it off" and "somebody else is serving there" happened. A socket that
+*refuses* a connection is a client that died without cleaning up, and is
+replaced. And the bind is **not retried** — a live server on the path is a state
+a person resolves, and a system that kept trying would fill the log and bury the
+reason. Switch off and on again to try once more.
 
 ## What it replaced, and why the panel could not be fixed
 
@@ -155,22 +159,46 @@ client panics on the next frame. The types are private to `bevy_pbr`, so there
 is nothing on this side to switch off instead. The remaining 6 % is what that
 would buy.
 
-## The token is in `user.json`, and on screen
+## A socket, and no token (2026-10-15)
 
-It is a secret from other processes, not from its owner: the person who needs it
-is configuring an editor on the same machine. So it lives in the user store and
-is shown in **Settings ▸ General ▸ Editor access**, with Copy and Regenerate
-beside it. `CARTO_MCP_TOKEN` overrides it for a headless run with no screen to
-read it off, where it is logged once at startup instead.
+Until 2026-10-15 this was streamable HTTP on `127.0.0.1:4750` behind a bearer
+token, kept in `user.json`, shown in Settings with Copy and Regenerate, and
+overridable with `CARTO_MCP_TOKEN`. **The token went because of what it actually
+kept out**: other users' processes, and web pages (with a `Host`/`Origin`
+allow-list for DNS rebinding beside it). Any process of the same user could read
+it out of `user.json` — this note said so. A Unix socket in a directory only the
+user can open keeps out exactly those two, with nothing to mint, store, display,
+log by accident or regenerate, and a browser cannot reach a Unix socket at all.
+The socket file is made 0600 as well, which is what protects a `--mcp-listen`
+path in a directory that is not private.
 
-The address and the token are shown **only while it is actually serving**. They
-are what you copy into an editor, and copying them off a client that is switched
-off is a configuration that silently will not work.
+Each connection is **one MCP session served straight over the stream** — rmcp's
+async-rw transport, line-delimited JSON-RPC, i.e. the stdio framing. An editor
+launches MCP servers as commands over stdio, so the bridge is `cartopolis mcp
+[--socket PATH]` (`mcp::relay`): a byte pipe, two threads and two `io::copy`s,
+run from the very top of `lib::run` before the logger or anything Bevy exists,
+because its stdout is the protocol. Several editors may be attached at once
+(a task per connection), and rmcp serves one session's requests concurrently,
+so a parked `read_chat` holds up nothing behind it.
 
-Binding is loopback by default and reaching another machine is an `ssh -L`, not a
-flag — the tunnel is authenticated and encrypted and this is not. A non-loopback
-bind is allowed (the `Host` allow-list names whatever was asked for) because a
-guard that silently ignores a flag is worse than one that does what it says.
+**Reaching another machine is ssh running the relay there**: the editor's MCP
+command is `ssh HOST cartopolis mcp`. ssh does the authentication and the
+encryption and nothing listens on a network. The immediate consumer is a bot on
+a remote build machine reached exactly that way, which is also why the relay
+had to be a plain stdio program rather than another listener.
+
+Settings ▸ General ▸ Editor access shows the socket and the line to paste into
+an editor's configuration — `{"command": "<this binary>", "args": ["mcp"]}`, the
+running binary's absolute path (what works for somebody who unpacked a download)
+plus `--socket` when the path is not the default. Both are shown **only while it
+is actually serving**: copying them off a client that is switched off is a
+configuration that silently will not work. An old `user.json` with an
+`mcp_token` in it still loads; the field is ignored and not written back.
+
+**No MCP on Windows, for now.** `build.rs` sets the `mcp` cfg on Unix desktops
+(Linux, macOS) and `cartopolis_mcp` is a dependency on the same predicate. The
+socket's directory is the whole of the access control, and the Windows
+equivalent is a named pipe with an ACL — a second arm nobody has needed yet.
 
 ## Rejected: relaying through the simulator
 
@@ -233,7 +261,7 @@ chat line arrives: a session acts only inside a turn. Checking on a timer
 anything new, the call is parked (`Pending::Chat`) and answered the frame a
 line lands, or at the timeout. An idle bot then costs about six short turns an
 hour and answers within a second. While the call waits, the model does
-nothing, because it is one open HTTP request.
+nothing, because it is one open request.
 
 **The host decides how long a call may wait, not this server.** Claude Code gives
 an MCP tool call 60 s by default, so the first bot's `wait_s: 600` came back as
@@ -329,11 +357,16 @@ coming step and strolls the last four metres.
 
 ## The bot on the Steam Deck
 
+> Superseded by the socket transport above: the tunnel, the token, `--mcp-host`
+> and the `127.0.0.1:4760` address are gone from the code, and the bot is being
+> moved to a midas bot mode that reaches the client as `ssh <machine> cartopolis
+> mcp`. Kept for why it was shaped this way.
+
 `viberfox` is an ordinary account driven this way, running headless on the
 Deck's GPU. The Deck's ssh endpoint is a **rootless podman container** (`arch`),
 so its root cannot touch the Deck's netfilter. The first plan, a firewall rule
 admitting only the VPS to the MCP port, is not available there. What replaced
-it needs no root anywhere:
+it needed no root anywhere:
 
 - The client runs as its own user (`viberbot`) inside that container, from its
   own copy of the binary and `assets/` (`CARTO_ASSET_ROOT`; the compiled-in path
@@ -347,8 +380,9 @@ it needs no root anywhere:
   `http://172.19.0.1:4750/mcp` with the bearer token, and nothing else. The
   client accepts that `Host` because of `--mcp-host`.
 
-So an agent environment that should drive the bot gets the URL and the token and
-**no ssh key**. The setup, the unit names and how to undo each piece are in
+So an agent environment that should drive the bot got the URL and the token and
+**no ssh key**. With the socket the equivalent is an ssh key restricted to the
+one command (`command="cartopolis mcp"` in `authorized_keys`). The setup, the unit names and how to undo each piece are in
 `docs/guides/deck-bot.md`.
 
 ## What is not built yet

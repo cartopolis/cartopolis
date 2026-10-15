@@ -447,13 +447,19 @@ README images have identical dimensions no matter how big the window was.
 
 The client serves the **Model Context Protocol**, so an agent in your editor can
 fly its camera and photograph what it sees without you doing it by hand. It is
-**on by default** on desktop, listening on `127.0.0.1:4750` — this computer only,
-and it refuses anything that does not present your token.
+**on by default** on Linux and macOS (not Windows, for now), listening on a
+socket only your own user account can open — so there is no password or token to
+copy.
 
 Everything is in **Settings ▸ General ▸ Editor access**: the switch that turns it
-off, the address, the token, a Copy button beside each, and a Regenerate that
-revokes whatever is connected. Point your editor's MCP configuration at
-`http://127.0.0.1:4750/mcp` with the token as a bearer.
+off, the socket it is listening on, and the line to paste into your editor's MCP
+configuration, with a Copy button beside each. That line runs the client's own
+binary as `cartopolis mcp`, a small relay between the editor and the running
+client:
+
+```json
+{"command": "/path/to/cartopolis", "args": ["mcp"]}
+```
 
 The switch takes effect immediately — turning it off closes the socket, turning
 it back on opens one — so you never have to restart to let an editor in.
@@ -461,14 +467,15 @@ it back on opens one — so you never have to restart to let an editor in.
 From the command line, if you want to decide per launch:
 
 ```bash
-cargo run -p cartopolis -- --no-mcp                    # not this run
-cargo run -p cartopolis -- --mcp-listen 127.0.0.1:4790 # somewhere else
-cargo run -p cartopolis -- --mcp-headless              # no window, for a
-                                                       # machine nobody is at
+cargo run -p cartopolis -- --no-mcp                      # not this run
+cargo run -p cartopolis -- --mcp-listen /tmp/second.sock # somewhere else
+cargo run -p cartopolis -- --mcp-headless                # no window, for a
+                                                         # machine nobody is at
 ```
 
-Running two clients at once, the second will find the port taken and say so in
-that Settings row; give it `--mcp-listen` with another port, or `--no-mcp`.
+Running two clients at once, the second will find another one already serving
+on the socket and say so in that Settings row; give it `--mcp-listen` with
+another path (and the editor `--socket` with the same one), or `--no-mcp`.
 
 It offers three tools today: `state` (where the camera is and whether the map has
 finished loading — no picture, so it costs nothing), `view` (fly somewhere and
@@ -480,17 +487,13 @@ While something is driving the client, a box in the top-right corner says what i
 is doing and what it answered, so the camera never moves without an explanation
 on screen.
 
-To reach a client on another machine, forward the port rather than binding a
-public one — the tunnel is encrypted and this is not:
-
-```bash
-ssh -N -L 4750:127.0.0.1:4750 <host> &
-```
+To reach a client on another machine, let ssh run the relay there — make the
+editor's MCP command `ssh <host> cartopolis mcp`. ssh does the authentication
+and the encryption; nothing listens on the network.
 
 There is a command-line client too, for a smoke test or a shell:
 
 ```bash
-export CARTO_MCP_TOKEN=…            # from Settings
 bun tools/mcp.ts state
 bun tools/mcp.ts view --at 53.2194,6.5665,300 --look=-20,180 --out /tmp/a.jpg
 ```

@@ -308,7 +308,6 @@ pub fn render_settings_panel(
             crate::systems::mcp::Serving::Off => EditorServing::Off,
             crate::systems::mcp::Serving::Failed(why) => EditorServing::Failed(why),
         });
-        editor.token = mcp.token().unwrap_or_default();
         (editor.allow, editor.allow_pinned) = mcp.allow();
     }
 
@@ -403,10 +402,6 @@ pub fn render_settings_panel(
         cache.requested = true;
     }
 
-    #[cfg(mcp)]
-    if editor.regenerate {
-        mcp.regenerate();
-    }
     #[cfg(mcp)]
     if let Some(list) = editor.allow_edited.take() {
         mcp.set_allow(list);
@@ -1021,11 +1016,6 @@ struct EditorRow {
     /// scripted capture — where the whole section is skipped.
     #[cfg(mcp)]
     serving: Option<EditorServing>,
-    #[cfg(mcp)]
-    token: String,
-    /// Set by the button; acted on after the panel closes its borrow.
-    #[cfg(mcp)]
-    regenerate: bool,
     /// Whose chat an agent may read, as typed (`mcp::agent::Audience`), and
     /// whether `--mcp-allow` fixed it for this run.
     #[cfg(mcp)]
@@ -1041,19 +1031,17 @@ struct EditorRow {
 /// in its signatures.
 #[cfg(mcp)]
 enum EditorServing {
-    At(std::net::SocketAddr),
+    At(std::path::PathBuf),
     Off,
     Failed(String),
 }
 
-/// The token an editor presents to drive this client, and the address it
-/// presents it to (`systems::mcp`).
+/// Where an editor reaches this client (`systems::mcp`): the socket, and the
+/// line to paste into the editor's MCP configuration.
 ///
-/// **Shown, not hidden.** It is a secret in the sense that somebody else's
-/// process must not have it, and not in the sense that its owner should never
-/// see it: the person reading this panel is configuring an editor on this
-/// machine, and what they need is to copy the string. A token written to a file
-/// beside the app data would be a secret nobody can find.
+/// There is nothing secret to show. The socket sits in a directory only this
+/// user can open, which is all the bearer token it replaced ever protected
+/// against — so the row is a path and a command, both safe to copy anywhere.
 ///
 /// Nothing to draw on a target that has no listener — see the desktop arm below
 /// for what this would be.
@@ -1066,9 +1054,9 @@ fn editor_access_section(_ui: &mut egui::Ui, _prefs: &mut AppPrefs, _editor: &mu
 /// there is no listener to explain and a row about one would be a setting that
 /// does nothing.
 ///
-/// The address and token are shown only while it is actually serving: they are
-/// what you copy into an editor, and copying them off a client that is switched
-/// off is a configuration that silently will not work.
+/// The socket and the editor line are shown only while it is actually serving:
+/// they are what you copy into an editor, and copying them off a client that is
+/// switched off is a configuration that silently will not work.
 #[cfg(mcp)]
 fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut EditorRow) {
     let Some(serving) = &editor.serving else {
@@ -1081,9 +1069,8 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
         egui::Label::new(
             egui::RichText::new(
                 "An editor on this machine can drive this client — fly the camera, \
-                 photograph what it sees, read what the map is doing. It listens on \
-                 this computer only, and refuses anything that does not present the \
-                 token below.",
+                 photograph what it sees, read what the map is doing. It listens on a \
+                 socket only your own user account can open.",
             )
             .size(theme::SIZE_SUB)
             .color(theme::TEXT_DIM),
@@ -1097,7 +1084,7 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
     );
 
     let listen = match serving {
-        EditorServing::At(addr) => *addr,
+        EditorServing::At(path) => path,
         EditorServing::Off => {
             theme::note(
                 ui,
@@ -1105,14 +1092,14 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
             );
             return;
         }
-        // Almost always a second client already holding the port. Said plainly,
+        // Almost always a second client already serving there. Said plainly,
         // because the reader's next move — close the other one, or switch this
         // off and on again — depends on knowing which it was.
         EditorServing::Failed(why) => {
             ui.colored_label(theme::WARN, format!("Not listening: {why}"));
             theme::note(
                 ui,
-                "Another client on this machine is probably using the port. Switch this \
+                "Another client on this machine is probably serving there. Switch this \
                  off and on again to try once more.",
             );
             return;
@@ -1121,8 +1108,11 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
 
     ui.add_space(4.0);
     for (label, value) in [
-        ("Address", format!("http://{listen}/mcp")),
-        ("Token", editor.token.clone()),
+        ("Socket", listen.display().to_string()),
+        // The `mcpServers` entry, by the binary that is running: what works for
+        // somebody who unpacked a download, which a bare `cartopolis` on `PATH`
+        // would not.
+        ("Editor", crate::systems::mcp::editor_config_here(listen)),
     ] {
         ui.horizontal(|ui| {
             ui.label(
@@ -1147,21 +1137,10 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
             }
         });
     }
-    ui.add_space(4.0);
-    // Behind a confirm because it is the revoke: whatever an editor is holding
-    // stops working the moment this is pressed, including the session that may be
-    // driving the client right now.
-    if theme::confirm_button(
-        ui,
-        egui::Id::new("mcp_token_regen"),
-        "Regenerate the token",
-        "Regenerate it",
-    ) {
-        editor.regenerate = true;
-    }
     theme::note(
         ui,
-        "Regenerating stops any editor that is already connected.",
+        "Paste the editor line into its MCP configuration. From another machine, \
+         run `ssh this-machine cartopolis mcp` as the command instead.",
     );
 
     // Whose words the agent reads. Worded around the risk rather than the

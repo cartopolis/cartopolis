@@ -7,6 +7,17 @@ avatar, read chat from an allow-list, reply, and build and script objects
 [driving-the-client-from-an-ide.md](../notes/driving-the-client-from-an-ide.md);
 this page is what runs where and how to change it.
 
+> **Superseded (2026-10-15).** The client no longer serves MCP over HTTP with a
+> bearer token: it serves on a Unix socket only its own user can open, and is
+> reached as `ssh <machine> cartopolis mcp` (stdio over ssh). So the tunnel,
+> the token, `--mcp-host` and the `127.0.0.1:4760` listen address below are
+> gone from the code, and this setup does not work as written until it is
+> redeployed. It is being replaced by a bot mode in midas that drives the bot
+> over that ssh relay. What follows describes the deployment as it stood, with
+> the parts the change made false marked as such.
+
+As deployed until 2026-10-15:
+
 ```
 agent container on the VPS ──http──▶ 172.19.0.1:4750  (VPS, agent Docker network gateway)
                                         │  viberbot-mcp-tunnel.service: ssh -L, a key that can
@@ -17,8 +28,10 @@ agent container on the VPS ──http──▶ 172.19.0.1:4750  (VPS, agent Dock
                               cartopolis --mcp-headless --connect cartopolis.org
 ```
 
-An agent environment that drives the bot needs **the URL and the token and
-nothing else**: no ssh key to the VPS or the Deck.
+An agent environment that drove the bot needed **the URL and the token and
+nothing else**: no ssh key to the VPS or the Deck. With the socket transport
+the equivalent is an ssh key that may run only `cartopolis mcp` as `viberbot`
+(a `command=` restriction in `authorized_keys`).
 
 ## The agent that plays it: `viberfox-bot`
 
@@ -30,9 +43,9 @@ strangers write in chat, so it holds as little as possible:
 |---|---|
 | Its own claude.ai login | the `agent_bot-claude` volume, and no other volume of the other agent's |
 | Its instructions, MCP server and permissions | `/data/agent/bot/` (root-owned, mounted read-only): `CLAUDE.md`, `.mcp.json`, `.claude/settings.json` |
-| The MCP token | `/data/agent/bot.env` (0600), read by the `.mcp.json` header as `${VIBERFOX_MCP_TOKEN}` |
+| The MCP token (retired) | `/data/agent/bot.env` (0600), read by the `.mcp.json` header as `${VIBERFOX_MCP_TOKEN}`. The client no longer checks one; `.mcp.json`'s server must become a `command` running the ssh relay |
 | Tool-call timeout | `"timeout": 660000` in `.mcp.json`. Without it Claude Code cuts every call at 60 s, and a waiting `read_chat` never returns |
-| Network | `agent_bot`, its own. It reaches the tunnel and the internet, not the other agent containers |
+| Network | `agent_bot`, its own. It reaches the tunnel (now unused) and the internet, not the other agent containers |
 
 The session runs in `dontAsk` mode with only `mcp__viberfox` allowed. The shell,
 file reading and writing, the web and subagents are denied. Because the
@@ -48,20 +61,24 @@ by the permission check as creating an agent, and that refusal is correct.
 
 The Deck's ssh endpoint (`ssh deck`, port 2222) is a **rootless podman
 container**. Its root cannot change the Deck's own firewall, which is why the MCP
-port is kept on loopback and reached through a tunnel instead of being opened
-on the WireGuard address.
+port was kept on loopback and reached through a tunnel instead of being opened
+on the WireGuard address. A Unix socket has no port to open, so the question is
+gone.
 
 | What | Where |
 |---|---|
 | The account's own Unix user | `viberbot` (no password, no login shell) |
 | The binary and its assets | `/home/viberbot/cartopolis/{cartopolis,assets/}`, found through `CARTO_ASSET_ROOT` |
-| Secrets | `/home/viberbot/bot.env` (mode 600): `CARTO_USER`, `CARTO_PASSWORD`, `CARTO_MCP_TOKEN` |
+| Secrets | `/home/viberbot/bot.env` (mode 600): `CARTO_USER`, `CARTO_PASSWORD` (a `CARTO_MCP_TOKEN` there is now ignored) |
 | The service | `/etc/systemd/system/viberbot.service` |
 | The tunnel's key | one line in `/home/deck/.ssh/authorized_keys`, marked `viberbot-mcp-tunnel` |
 
-The service listens on `127.0.0.1:4760`, not the default 4750, because other
-agents run clients on the Deck and 4750 is theirs. `--mcp-allow jeroen` is the
-allow-list. Change it in the unit and `systemctl restart viberbot`.
+The service listened on `127.0.0.1:4760`, not the default 4750, because other
+agents ran clients on the Deck and 4750 was theirs. **That unit line now fails
+at startup** (`--mcp-listen` takes a socket path); drop it, and the client
+serves on `viberbot`'s own default socket, which no other user's client can
+collide with. `--mcp-allow jeroen` is the allow-list. Change it in the unit and
+`systemctl restart viberbot`.
 
 **On and off.** The service is **enabled** (since 2026-10-01; it was off from
 2026-09-27), so it starts at boot and restarts itself if it crashes. Idle it
@@ -91,6 +108,8 @@ ssh deck 'cd ~/bot-build && git fetch -q origin main && git checkout -q --detach
 Logs: `ssh deck 'sudo journalctl -u viberbot -n 100'`.
 
 ## On the VPS
+
+The tunnel below carried the HTTP transport and has nothing to carry now.
 
 | What | Where |
 |---|---|

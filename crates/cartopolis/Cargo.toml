@@ -270,28 +270,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # The receiver's serial port (`cartopolis_gnss::serial`): a tty here, and no
 # such thing on a phone — see the entry under `not(wasm32)`.
 cartopolis_gnss = { path = "../gnss", features = ["serial"] }
-# The Model Context Protocol server this client hosts (`systems::mcp`,
-# `--mcp-listen`), so an IDE can drive it: move the camera, photograph what it
-# sees, read the scene's metrics.
-#
-# **Desktop-only, and that is the same judgement arboard and rfd make below.** A
-# phone has no IDE pointed at it and a browser tab cannot listen on a socket at
-# all, so neither target gains anything from an HTTP server — while both would
-# pay for hyper, tower and a second JSON-RPC stack in a binary whose size is a
-# shipping constraint. `build.rs` sets the `mcp` cfg on exactly this predicate,
-# so the code and the dependency cannot disagree about which targets have it.
-#
-# Not a cargo feature: Android and the web build `--no-default-features`, so a
-# default feature would be dropped there by accident rather than by decision —
-# the trap `audio` documents at the top of this file.
-#
-# The listener, the tool surface and the SDK (rmcp, axum, hyper, tower) are in
-# their own Bevy-free crate, `crates/mcp_server`, so that heavy async generic code
-# is compiled outside this crate; the two talk only through its job channel.
-cartopolis_mcp = { path = "../mcp_server" }
-# MCP carries an image as base64 in a JSON message, so a capture has to be
-# encoded before it can be handed over. Already in the lock under the simulator.
-base64 = "0.22"
 arboard.workspace = true
 # The file dialog behind `platform::photo` on the desktop — the arm that answers
 # "attach a photo to this place" where there is no camera to point at one.
@@ -309,6 +287,32 @@ arboard.workspace = true
 # macOS and Windows are unaffected — their backends are cfg-selected, not
 # feature-selected.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+# The Model Context Protocol server this client hosts (`systems::mcp`,
+# `--mcp-listen`), so an IDE can drive it: move the camera, photograph what it
+# sees, read the scene's metrics.
+#
+# **Unix desktops only.** A phone has no IDE pointed at it and a browser tab
+# cannot listen on a socket at all, so neither target gains anything from a
+# server — while both would pay for a second JSON-RPC stack in a binary whose
+# size is a shipping constraint. Windows is out because the listener is a Unix
+# domain socket and the socket's directory is the whole of the access control
+# (`docs/notes/driving-the-client-from-an-ide.md`); a named-pipe arm is what it
+# would take. `build.rs` sets the `mcp` cfg on exactly this predicate, so the
+# code and the dependency cannot disagree about which targets have it.
+#
+# Not a cargo feature: Android and the web build `--no-default-features`, so a
+# default feature would be dropped there by accident rather than by decision —
+# the trap `audio` documents at the top of this file.
+#
+# The listener, the tool surface and the SDK are in their own Bevy-free crate,
+# `crates/mcp_server`, so that heavy async generic code is compiled outside
+# this crate; the two talk only through its job channel.
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+cartopolis_mcp = { path = "../mcp_server" }
+# MCP carries an image as base64 in a JSON message, so a capture has to be
+# encoded before it can be handed over. Already in the lock under the simulator.
+base64 = "0.22"
 
 # Android (`docs/notes/android-build.md`). `android-native-activity` picks the
 # `android-activity` backend, and without one of the two that crate is a bare

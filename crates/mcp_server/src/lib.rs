@@ -2,13 +2,13 @@
 //!
 //! The server half of `systems::dev::mcp` (see that module's note for the
 //! design, and `docs/notes/driving-the-client-from-an-ide.md` for what it
-//! costs): a tokio runtime on a thread of its own, an axum router, the bearer
-//! check, and the rmcp tool surface. **It touches no ECS.** Every tool builds a
+//! costs): a tokio runtime on a thread of its own, a Unix domain socket, and the
+//! rmcp tool surface. **It touches no ECS.** Every tool builds a
 //! [`protocol::Job`], pushes it down a channel and awaits the oneshot; the
 //! client's `mcp::pump` drains the channel in `Update` and answers from the
 //! world. That channel was already the whole boundary, which is what lets this
-//! be its own crate: the heavy generic code (rmcp's `#[tool]` expansions, axum,
-//! hyper, tower) compiles here and no longer rides along with every edit to the
+//! be its own crate: the heavy generic code (rmcp's `#[tool]` expansions and
+//! its transport) compiles here and no longer rides along with every edit to the
 //! Bevy client.
 //!
 //! What crosses the channel lives here too — [`protocol`] for the camera calls
@@ -19,6 +19,9 @@
 pub mod args;
 mod guide;
 pub mod protocol;
+/// Unix only: the listener is a Unix domain socket, and Windows has no MCP for
+/// now (`docs/notes/driving-the-client-from-an-ide.md`).
+#[cfg(unix)]
 pub mod server;
 
 pub use guide::scripting_guide;

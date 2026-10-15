@@ -133,8 +133,8 @@ await cdp("Page.navigate", { url: "http://127.0.0.1:8195/?answer&camera" });
 
 // Bob calls alice once alice has had a moment to sign in and publish keys.
 await Bun.sleep(90000);
-procs.push(spawn([`${BIN}/cartopolis`, "--mcp-headless", "--connect", "127.0.0.1:4777", "--mcp-listen", "127.0.0.1:4781"], {
-  env: { ...env, CARTO_DATA_DIR: `${RUN}/bob`, CARTO_USER: "bob", CARTO_PASSWORD: "pw", CARTO_MCP_TOKEN: "test",
+procs.push(spawn([`${BIN}/cartopolis`, "--mcp-headless", "--connect", "127.0.0.1:4777", "--mcp-listen", `${RUN}/bob-mcp.sock`], {
+  env: { ...env, CARTO_DATA_DIR: `${RUN}/bob`, CARTO_USER: "bob", CARTO_PASSWORD: "pw",
     CARTO_QUALITY: "phone", CARTO_CALL: "alice", CARTO_FAKE_CAMERA: "1", CARTO_FAKE_MIC: "1",
     RUST_LOG: "info,cartopolis::systems::net::calls=debug,cartopolis::systems::net::private_chat=debug" },
   stdout: Bun.file(`${RUN}/bob.log`), stderr: Bun.file(`${RUN}/bob.err`),

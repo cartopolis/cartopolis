@@ -2,7 +2,8 @@
 //!
 //! A [Model Context Protocol](https://modelcontextprotocol.io) server hosted by
 //! this client, so an editor's agent can move the camera, photograph what it
-//! sees, and read the scene's numbers — over loopback HTTP, with a bearer token.
+//! sees, and read the scene's numbers — over a Unix domain socket only its owner
+//! can open, which `cartopolis mcp` ([`relay`]) pipes an editor's stdio into.
 //!
 //! **On by default on the desktop, switched in Settings ▸ General ▸ Editor
 //! access.** The thing it enables is an editor attaching to a client that is
@@ -50,6 +51,7 @@
 
 pub mod agent;
 pub mod overlay;
+pub mod relay;
 pub mod surroundings;
 
 /// The job protocol — what crosses the channel between that crate's server
@@ -62,27 +64,24 @@ pub use cartopolis_mcp::protocol::{
 /// this one. Named `server` here as it always was.
 pub use cartopolis_mcp::server;
 
-use crate::platform::sync::{Arc, RwLock};
 use bevy::prelude::*;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use std::collections::VecDeque;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, FrameStats, MapAnchor};
 use crate::systems::globe::GlobeState;
 use crate::systems::shot_harness::{ShotHarness, ShotProgress, ShotSpec, StreamWatch};
 
-/// Where a bare `--mcp-listen` binds.
-///
-/// Loopback, and a port nothing else here uses (the sim is 4747, its HTTP
-/// surface 4748). Reaching a client on another machine is an `ssh -L` away,
-/// which is both how everything else already reaches the Steam Deck and a
-/// meaningfully better answer than binding a LAN address: the tunnel is
-/// authenticated and encrypted, and this is not.
-pub const DEFAULT_LISTEN: &str = "127.0.0.1:4750";
+/// Where a client serves unless `--mcp-listen` names another socket:
+/// `$XDG_RUNTIME_DIR/cartopolis/mcp.sock`, else a per-user directory under the
+/// temp dir. One function, shared with the relay, so the two cannot disagree
+/// about where to meet ([`server::default_socket_path`]).
+pub fn default_socket_path() -> PathBuf {
+    server::default_socket_path()
+}
 
 /// How long a `view` may sit unanswered before the caller is told something is
 /// wrong.
@@ -105,7 +104,8 @@ const JOB_TIMEOUT_S: f64 = 300.0;
 /// needs to know where to bind when it is switched back on.
 #[derive(Resource, Clone, Debug)]
 pub struct Config {
-    pub listen: SocketAddr,
+    /// The socket path.
+    pub listen: PathBuf,
     /// No window: render offscreen at [`Config::size`] and stay up serving calls.
     pub headless: bool,
     /// The offscreen surface, when there is no window to be the surface.
@@ -115,11 +115,6 @@ pub struct Config {
     /// `user.json` carried from a desktop with the switch off would otherwise
     /// leave a capture server answering nothing, with no way to say so.
     pub forced: bool,
-    /// More `Host` header values to accept besides the listen address itself
-    /// (`--mcp-host`). A client reached through a forward — the Steam Deck's,
-    /// behind a port on the VPS — is asked for by the *forward's* name, which the
-    /// DNS-rebinding guard would otherwise refuse as a stranger.
-    pub hosts: Vec<String>,
 }
 
 impl Config {
@@ -134,6 +129,9 @@ impl Config {
     ///
     /// `--mcp-headless` implies a listener: a windowless client that serves
     /// nothing would render to nobody and answer to nobody.
+    ///
+    /// `listen` is `--mcp-listen`; a bare flag arrives as the empty string and
+    /// means the default path, forced on.
     pub fn resolve(
         listen: Option<&str>,
         headless: bool,
@@ -153,10 +151,20 @@ impl Config {
             }
             return Ok(None);
         }
-        let addr = listen.unwrap_or(DEFAULT_LISTEN);
-        let parsed: SocketAddr = addr
-            .parse()
-            .map_err(|e| format!("--mcp-listen wants host:port, got {addr:?}: {e}"))?;
+        let path = match listen.filter(|l| !l.is_empty()) {
+            None => default_socket_path(),
+            // It was `host:port` until 2026-10-15, and a launch line or a unit
+            // file written then would otherwise bind a socket file called
+            // `127.0.0.1:4760` in the working directory and serve nobody.
+            Some(l) if looks_like_an_address(l) => {
+                return Err(format!(
+                    "--mcp-listen takes a socket path now, not host:port (got {l:?}). \
+                     MCP is served on a Unix socket; reach it from elsewhere with \
+                     `ssh HOST cartopolis mcp`."
+                ))
+            }
+            Some(l) => PathBuf::from(l),
+        };
         let size = match size {
             Some(s) => crate::systems::shot_harness::parse_size(s)
                 .ok_or_else(|| format!("--mcp-size wants WxH, got {s:?}"))?,
@@ -166,51 +174,61 @@ impl Config {
             }
         };
         Ok(Some(Self {
-            listen: parsed,
+            listen: path,
             headless,
             size,
             // A flag is an instruction for this launch and outranks the
             // remembered preference — the same rule the sky flags follow
             // (`user_store::SkyCliOverrides`).
             forced: headless || listen.is_some(),
-            hosts: Vec::new(),
         }))
     }
 }
 
-/// The token the server checks, shared with the thread that checks it — as a
-/// resource. The token itself, and the comparison, are
-/// [`cartopolis_mcp::protocol::BearerToken`]; this wrapper exists because a type
-/// from another crate cannot derive `Resource` here.
-#[derive(Resource, Clone, Deref)]
-pub struct McpAuth(pub cartopolis_mcp::protocol::BearerToken);
-
-impl McpAuth {
-    pub fn new(token: String) -> Self {
-        Self(cartopolis_mcp::protocol::BearerToken(Arc::new(
-            RwLock::new(token),
-        )))
-    }
+/// `127.0.0.1:4750`, `localhost:4760`, `[::1]:4750` — no slash, and a port
+/// after the last colon. A relative socket path with a colon in it would need a
+/// `./` in front, which is a fair price for catching the old syntax.
+fn looks_like_an_address(s: &str) -> bool {
+    !s.contains('/')
+        && s.rsplit_once(':')
+            .is_some_and(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A live listener, as a resource; see [`server::Running`], which it wraps for
-/// the same reason [`McpAuth`] wraps the token. **Dropping it stops the server.**
+/// What to paste into an editor's MCP configuration to reach this client: the
+/// relay, by the absolute path of the binary that is running — which is what
+/// works for somebody who unpacked a download rather than installing it on
+/// `PATH` — plus `--socket` when the client is not serving on the default.
+pub fn editor_config(exe: &Path, listen: &Path, default: &Path) -> String {
+    let mut args = vec!["mcp".to_string()];
+    if listen != default {
+        args.push("--socket".into());
+        args.push(listen.display().to_string());
+    }
+    serde_json::json!({
+        "command": exe.display().to_string(),
+        "args": args,
+    })
+    .to_string()
+}
+
+/// [`editor_config`] for this process: the running binary, and the default
+/// path the relay would look at. Falls back to a bare `cartopolis` only if the
+/// OS will not say where the binary is, which `PATH` may still answer.
+pub fn editor_config_here(listen: &Path) -> String {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cartopolis"));
+    editor_config(&exe, listen, &default_socket_path())
+}
+
+/// A live listener, as a resource; see [`server::Running`], which it wraps
+/// because a type from another crate cannot derive `Resource` here. **Dropping
+/// it stops the server.**
 #[derive(Resource)]
 pub struct Running(pub server::Running);
 
-/// Mint a token. 128 bits of v4 UUID, hex, no dashes — long enough that it is
-/// not guessable and short enough to copy off a screen.
-///
-/// `uuid` is already in this crate's graph, and this is desktop-only code, so the
-/// wasm trap in that crate's note (v4 needs its `js` feature) cannot apply here.
-pub fn mint_token() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
-}
-
 /// Why the client is not serving, when it is not.
 ///
-/// Kept so Settings can say *which* — "you switched it off" and "the port was
-/// already taken" want different things from the reader, and a row that only
+/// Kept so Settings can say *which* — "you switched it off" and "another client
+/// is already serving there" want different things from the reader, and a row that only
 /// said "not serving" would send somebody looking for a setting they had not
 /// touched.
 #[derive(Resource, Default)]
@@ -222,17 +240,17 @@ pub struct McpTrouble(pub Option<String>);
 /// already running, so the decision to allow that is one somebody makes *while*
 /// it runs — which a launch flag cannot serve. This system is what makes the
 /// checkbox mean something: tick it and a socket opens, untick it and the
-/// listener is dropped, which cancels its token and ends its thread.
+/// listener is dropped, which cancels its token, removes the socket and ends
+/// its thread.
 ///
 /// It is change-detected on the preference rather than run every frame, and it
-/// does not retry a failed bind: a port in use is a state a person resolves (by
-/// closing the other client), and a system that kept trying would fill the log
+/// does not retry a failed bind: a socket somebody else is serving on is a
+/// state a person resolves (by closing the other client), and a system that kept trying would fill the log
 /// and hide the reason. Untick and re-tick to try again.
 pub fn reconcile_listener(
     mut commands: Commands,
     config: Res<Config>,
     prefs: Res<crate::resources::AppPrefs>,
-    auth: Res<McpAuth>,
     sender: Res<JobSender>,
     running: Option<Res<Running>>,
     mut trouble: ResMut<McpTrouble>,
@@ -245,14 +263,9 @@ pub fn reconcile_listener(
     }
     *was = Some(want);
     match (want, running.is_some()) {
-        (true, false) => match server::spawn(
-            config.listen,
-            config.hosts.clone(),
-            auth.0.clone(),
-            sender.0.clone(),
-        ) {
+        (true, false) => match server::spawn(&config.listen, sender.0.clone()) {
             Ok(handle) => {
-                tracing::info!(listen = %config.listen, "mcp: serving");
+                tracing::info!(listen = %config.listen.display(), "mcp: serving");
                 trouble.0 = None;
                 commands.insert_resource(Running(handle));
             }
@@ -260,9 +273,9 @@ pub fn reconcile_listener(
             // that cannot open the socket is still a perfectly good client and
             // says so in Settings; `--mcp-headless` with no socket is a process
             // rendering for nobody, and the usual cause — another client already
-            // on the port — is one a person fixes rather than waits out.
+            // serving on the socket — is one a person fixes rather than waits out.
             Err(e) if config.headless => {
-                tracing::error!(listen = %config.listen, error = %e, "mcp: headless run cannot serve");
+                tracing::error!(listen = %config.listen.display(), error = %e, "mcp: headless run cannot serve");
                 exit.write(AppExit::error());
             }
             Err(e) => {
@@ -319,7 +332,7 @@ pub struct McpBridge {
     agent: Vec<(agent::AgentRequest, oneshot::Sender<Reply>)>,
     /// Newest last. Bounded — this is a readout, not a record.
     pub log: VecDeque<Entry>,
-    pub listen: SocketAddr,
+    pub listen: PathBuf,
     /// Calls answered since the process started, for the overlay's heading.
     pub served: u64,
 }
@@ -338,7 +351,7 @@ struct Waiting {
 }
 
 impl McpBridge {
-    pub fn new(jobs: UnboundedReceiver<Job>, listen: SocketAddr) -> Self {
+    pub fn new(jobs: UnboundedReceiver<Job>, listen: PathBuf) -> Self {
         Self {
             jobs,
             waiting: Vec::new(),
@@ -379,16 +392,14 @@ impl McpBridge {
 /// **One rather than three, because Bevy caps a system at sixteen** and
 /// `render_settings_panel` was already at thirteen — the same cap
 /// `free_camera::camera_controls` and `picking::prim_picking` each hit and
-/// answered the same way. Every field is optional: the two resources exist only
-/// on a build that was asked to serve, and the store is absent in a scripted run.
+/// answered the same way. Every field is optional: the resources exist only on a
+/// build that was asked to serve, and the store is absent in a scripted run.
 ///
-/// The user store is in here, rather than beside it, because the token *is* store
-/// data: showing it and regenerating it are one row's worth of work and there is
-/// no version of this row that reads one without the other.
+/// The user store is in here, rather than beside it, because the allow-list is
+/// store data and the row both shows and edits it.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct EditorAccess<'w> {
     pub config: Option<Res<'w, Config>>,
-    pub auth: Option<Res<'w, McpAuth>>,
     pub running: Option<Res<'w, Running>>,
     pub trouble: Option<Res<'w, McpTrouble>>,
     pub store: Option<ResMut<'w, crate::systems::user_store::UserStore>>,
@@ -397,46 +408,27 @@ pub struct EditorAccess<'w> {
 
 /// What the Editor access row has to say about the listener right now.
 pub enum Serving {
-    /// Open, at this address.
-    At(SocketAddr),
+    /// Open, on this socket.
+    At(PathBuf),
     /// Switched off here.
     Off,
     /// Wanted, and could not. The string is the reason, written for a reader —
-    /// almost always another client already holding the port.
+    /// almost always another client already serving on the socket.
     Failed(String),
 }
 
 impl EditorAccess<'_> {
-    /// The token an editor must present, or `None` when this build has no
-    /// listener at all (a phone, a browser, a scripted capture).
-    pub fn token(&self) -> Option<String> {
-        self.config.as_deref()?;
-        self.store.as_deref()?.data.mcp_token.clone()
-    }
-
     /// Where it is serving, or why it is not.
     pub fn serving(&self) -> Option<Serving> {
         self.config.as_deref()?;
         Some(match (&self.running, &self.trouble) {
-            (Some(running), _) => Serving::At(running.0.listen),
+            (Some(running), _) => Serving::At(running.0.listen.clone()),
             (None, Some(trouble)) => match &trouble.0 {
                 Some(why) => Serving::Failed(why.clone()),
                 None => Serving::Off,
             },
             (None, None) => Serving::Off,
         })
-    }
-
-    /// Mint a new token, into the store *and* the lock the listener reads — so
-    /// whatever an editor is holding stops working now rather than next launch.
-    pub fn regenerate(&mut self) {
-        let (Some(store), Some(auth)) = (self.store.as_deref_mut(), self.auth.as_deref()) else {
-            return;
-        };
-        let minted = mint_token();
-        auth.set(&minted);
-        store.data.mcp_token = Some(minted);
-        store.dirty = true;
     }
 
     /// Whose chat the agent may read, as the person typed it — the list is
@@ -887,14 +879,13 @@ fn encode_capture(
 mod tests {
     use super::*;
 
-    /// An ordinary desktop run resolves to a loopback config it did not ask for
+    /// An ordinary desktop run resolves to the default socket it did not ask for
     /// — that is what "on by default" means — and leaves the decision to the
     /// preference rather than forcing it.
     #[test]
     fn an_ordinary_run_can_serve_without_being_asked() {
         let cfg = Config::resolve(None, false, None, false).unwrap().unwrap();
-        assert!(cfg.listen.ip().is_loopback());
-        assert_eq!(cfg.listen.port(), 4750);
+        assert_eq!(cfg.listen, default_socket_path());
         assert!(!cfg.headless);
         assert!(
             !cfg.forced,
@@ -905,11 +896,22 @@ mod tests {
     /// A flag is an instruction for this launch and outranks what Settings
     /// remembers — the rule the sky flags already follow.
     #[test]
-    fn naming_an_address_forces_it_on() {
-        let cfg = Config::resolve(Some("127.0.0.1:4790"), false, None, false)
+    fn naming_a_path_forces_it_on() {
+        let cfg = Config::resolve(Some("/tmp/elsewhere.sock"), false, None, false)
             .unwrap()
             .unwrap();
-        assert_eq!(cfg.listen.port(), 4790);
+        assert_eq!(cfg.listen, PathBuf::from("/tmp/elsewhere.sock"));
+        assert!(cfg.forced);
+    }
+
+    /// A bare `--mcp-listen` (clap hands over the empty string) is the default
+    /// path, and still a flag.
+    #[test]
+    fn a_bare_flag_is_the_default_path_forced() {
+        let cfg = Config::resolve(Some(""), false, None, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.listen, default_socket_path());
         assert!(cfg.forced);
     }
 
@@ -919,7 +921,7 @@ mod tests {
     fn a_scripted_capture_never_serves() {
         assert!(Config::resolve(None, false, None, true).unwrap().is_none());
         assert!(
-            Config::resolve(Some(DEFAULT_LISTEN), false, None, true).is_err(),
+            Config::resolve(Some("/tmp/x.sock"), false, None, true).is_err(),
             "and asking for both is a startup error rather than a silent winner"
         );
     }
@@ -932,35 +934,36 @@ mod tests {
             cfg.forced,
             "there is no Settings panel to switch it on from"
         );
-        assert_eq!(cfg.listen.to_string(), DEFAULT_LISTEN);
+        assert_eq!(cfg.listen, default_socket_path());
     }
 
+    /// The old `host:port` syntax is a startup error that says what changed,
+    /// rather than a socket file called `127.0.0.1:4750`.
     #[test]
-    fn a_bad_address_is_a_startup_error() {
-        assert!(Config::resolve(Some("not-an-address"), false, None, false).is_err());
-        assert!(Config::resolve(Some(DEFAULT_LISTEN), false, Some("big"), false).is_err());
+    fn an_address_is_refused_with_the_reason() {
+        for old in ["127.0.0.1:4750", "localhost:4760", "[::1]:4750"] {
+            let err = Config::resolve(Some(old), false, None, false).unwrap_err();
+            assert!(err.contains("socket path"), "{old}: {err}");
+        }
+        assert!(Config::resolve(Some("./odd:4750"), false, None, false).is_ok());
+        assert!(Config::resolve(Some("/tmp/x.sock"), false, Some("big"), false).is_err());
     }
 
-    /// The comparison must not accept a prefix, a suffix, or the empty token —
-    /// the last one being the case that matters, since an unset token would
-    /// otherwise let every caller in.
+    /// The editor line names the binary absolutely and adds `--socket` only off
+    /// the default, so the common case is the short one.
     #[test]
-    fn the_token_is_compared_whole() {
-        let auth = McpAuth::new(String::new());
-        assert!(!auth.accepts(""), "an unset token accepts nothing");
-        auth.set("0123456789abcdef");
-        assert!(auth.accepts("0123456789abcdef"));
-        assert!(!auth.accepts("0123456789abcde"));
-        assert!(!auth.accepts("0123456789abcdef0"));
-        assert!(!auth.accepts("0123456789abcdee"));
-        assert!(!auth.accepts(""));
-    }
-
-    #[test]
-    fn a_minted_token_is_long_and_hex() {
-        let t = mint_token();
-        assert_eq!(t.len(), 32);
-        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(t, mint_token());
+    fn the_editor_line_names_the_socket_only_when_it_must() {
+        let exe = Path::new("/opt/cartopolis/cartopolis");
+        let default = Path::new("/run/user/1000/cartopolis/mcp.sock");
+        let plain: serde_json::Value =
+            serde_json::from_str(&editor_config(exe, default, default)).unwrap();
+        assert_eq!(plain["command"], "/opt/cartopolis/cartopolis");
+        assert_eq!(plain["args"], serde_json::json!(["mcp"]));
+        let other: serde_json::Value =
+            serde_json::from_str(&editor_config(exe, Path::new("/tmp/b.sock"), default)).unwrap();
+        assert_eq!(
+            other["args"],
+            serde_json::json!(["mcp", "--socket", "/tmp/b.sock"])
+        );
     }
 }

@@ -2,74 +2,120 @@
 /**
  * Drive a running Cartopolis client from a shell, through its MCP server.
  *
- * The client serves the Model Context Protocol when started with `--mcp-listen`
+ * The client serves the Model Context Protocol on a Unix socket
  * (`crates/cartopolis/src/systems/dev/mcp/`), so an editor's agent can fly its
  * camera and photograph what it sees. This is the same surface without an
  * editor: a smoke test for the server, and the way an agent with no MCP client
  * of its own reaches it.
  *
  * Usage:
- *   export CARTO_MCP_TOKEN=…                 # Settings ▸ General ▸ Editor access
- *   export CARTO_MCP=http://127.0.0.1:4750/mcp    # the default
- *
  *   bun tools/mcp.ts tools                   # what this client offers
  *   bun tools/mcp.ts state                   # where it is looking, and is it loaded
  *   bun tools/mcp.ts view --at 53.2194,6.5665,300 --look=-20,180 --out /tmp/a.jpg
  *   bun tools/mcp.ts view-here --out /tmp/b.jpg    # the same view, moving nothing
  *   bun tools/mcp.ts call view '{"lat":53.2,"lng":6.5,"altitude_m":900}'
  *
- * Reaching a client on another machine is an ssh forward, not a flag — the
- * tunnel is authenticated and encrypted and this is not:
+ * The socket is the client's default — `$XDG_RUNTIME_DIR/cartopolis/mcp.sock`,
+ * else `$TMPDIR` or `/tmp` + `cartopolis-$UID/mcp.sock` — unless `--socket` or
+ * `CARTO_MCP_SOCKET` names another (a client started with `--mcp-listen PATH`).
+ * There is no token: the socket's directory is its owner's alone.
  *
- *   ssh -N -L 4750:127.0.0.1:4750 deck &
- *   bun tools/mcp.ts state
+ * A client on another machine is reached through its own relay over ssh, which
+ * an editor can launch as its MCP command directly:
+ *
+ *   ssh deck cartopolis mcp                  # stdio ↔ the Deck's client socket
  *
  * Note the `=` in `--look=-20,180`: a leading `-20` reads as a flag otherwise,
  * exactly as it does for the client's own `--look`.
  */
 import { parseArgs } from "node:util";
+import { join } from "node:path";
+import { userInfo } from "node:os";
 
-const DEFAULT_ENDPOINT = "http://127.0.0.1:4750/mcp";
-const PROTOCOL_VERSION = "2026-07-28";
+const PROTOCOL_VERSION = "2025-11-25";
 const CLIENT_NAME = "tools/mcp.ts";
 
 type Json = Record<string, unknown>;
 
+/** The client's own rule (`cartopolis_mcp::server::default_socket_path`). */
+function defaultSocket(): string {
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  if (runtime) return join(runtime, "cartopolis", "mcp.sock");
+  const tmp = process.env.TMPDIR || "/tmp";
+  return join(tmp, `cartopolis-${userInfo().uid}`, "mcp.sock");
+}
+
 /**
- * One connection's worth of state: the endpoint, the token, a request id.
- *
- * The transport is Streamable HTTP with a plain JSON reply — the client serves
- * statelessly (see `server.rs`), so there is no session to establish and no
- * event stream to parse. `initialize` is still sent first, because the handshake
- * is what tells the server which protocol version we speak.
+ * One MCP session: a connection to the socket, newline-delimited JSON-RPC both
+ * ways (the stdio framing), and a table of requests waiting on their answers.
+ * The connection *is* the session, so `initialize` is sent once and nothing
+ * else needs restating per request.
  */
 class Client {
   #nextId = 0;
-  #initialized = false;
+  #buffer = "";
+  // One decoder for the stream, so a character split across two reads survives.
+  #decoder = new TextDecoder();
+  #waiting = new Map<number, { resolve: (m: Json) => void; reject: (e: Error) => void }>();
+  #socket: Awaited<ReturnType<typeof Bun.connect>> | undefined;
 
-  constructor(
-    private endpoint: string,
-    private token: string,
-  ) {}
+  constructor(private path: string) {}
+
+  async connect(): Promise<void> {
+    try {
+      this.#socket = await Bun.connect({
+        unix: this.path,
+        socket: {
+          data: (_socket, chunk) => this.#receive(this.#decoder.decode(chunk, { stream: true })),
+          close: () => this.#fail(new Error("the client closed the connection")),
+          error: (_socket, e) => this.#fail(e),
+        },
+      });
+    } catch (e) {
+      throw new Error(
+        `no Cartopolis is serving MCP at ${this.path} — is it running with MCP on? ` +
+          `(${e instanceof Error ? e.message : e})`,
+      );
+    }
+  }
+
+  close(): void {
+    this.#socket?.end();
+  }
+
+  #receive(text: string): void {
+    this.#buffer += text;
+    let newline: number;
+    while ((newline = this.#buffer.indexOf("\n")) >= 0) {
+      const line = this.#buffer.slice(0, newline).trim();
+      this.#buffer = this.#buffer.slice(newline + 1);
+      if (!line) continue;
+      const message = JSON.parse(line) as Json;
+      // Notifications and server-to-client requests carry no id we sent.
+      const pending = this.#waiting.get(message.id as number);
+      if (!pending) continue;
+      this.#waiting.delete(message.id as number);
+      pending.resolve(message);
+    }
+  }
+
+  #fail(e: Error): void {
+    for (const pending of this.#waiting.values()) pending.reject(e);
+    this.#waiting.clear();
+  }
+
+  #write(body: Json): void {
+    this.#socket!.write(JSON.stringify(body) + "\n");
+  }
 
   async rpc(method: string, params?: unknown): Promise<Json> {
-    const body: Json = { jsonrpc: "2.0", id: ++this.#nextId, method };
+    const id = ++this.#nextId;
+    const body: Json = { jsonrpc: "2.0", id, method };
     if (params !== undefined) body.params = params;
-    // Every ordinary request under 2026-07-28 restates who is asking and which
-    // version they negotiated, in `_meta`. It duplicates the handshake on
-    // purpose: the transport is stateless, so a request has to carry everything
-    // needed to serve it. Not on `initialize` itself, which is the handshake.
-    if (this.#initialized) {
-      const params = (body.params ?? {}) as Json;
-      params._meta = {
-        ...((params._meta as Json) ?? {}),
-        "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
-        "io.modelcontextprotocol/clientInfo": { name: CLIENT_NAME, version: "1" },
-        "io.modelcontextprotocol/clientCapabilities": {},
-      };
-      body.params = params;
-    }
-    const message = await this.#send(body, true);
+    const message = await new Promise<Json>((resolve, reject) => {
+      this.#waiting.set(id, { resolve, reject });
+      this.#write(body);
+    });
     if (message.error) {
       const err = message.error as { message?: string; code?: number };
       throw new Error(`${err.message ?? "refused"} (${err.code})`);
@@ -77,60 +123,10 @@ class Client {
     return (message.result ?? {}) as Json;
   }
 
-  async notify(method: string, params?: unknown): Promise<void> {
+  notify(method: string, params?: unknown): void {
     const body: Json = { jsonrpc: "2.0", method };
     if (params !== undefined) body.params = params;
-    await this.#send(body, false);
-  }
-
-  async #send(body: Json, expectReply: boolean): Promise<Json> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      // Both, because a server is allowed to answer either way and ours picks
-      // JSON only when the handler emits nothing before its result.
-      Accept: "application/json, text/event-stream",
-      Authorization: `Bearer ${this.token}`,
-    };
-    if (this.#initialized) headers["MCP-Protocol-Version"] = PROTOCOL_VERSION;
-
-    // SEP-2243 routing headers, which 2026-07-28 requires and the server
-    // validates against the body: `Mcp-Method` always, and `Mcp-Name` for the
-    // methods that carry a name — `tools/call` here. They exist so a proxy can
-    // route MCP traffic without parsing JSON. A mismatch is a 400, not a silent
-    // difference, which is the right trade for a header that duplicates the
-    // body.
-    headers["Mcp-Method"] = String(body.method);
-    const params = body.params as Json | undefined;
-    if (body.method === "tools/call" && typeof params?.name === "string") {
-      headers["Mcp-Name"] = params.name;
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(this.endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
-    } catch (e) {
-      throw new Error(
-        `cannot reach ${this.endpoint}: ${e instanceof Error ? e.message : e}. ` +
-          `Is the client running with --mcp-listen?`,
-      );
-    }
-    if (!response.ok) {
-      const detail = (await response.text()).trim();
-      if (response.status === 401) {
-        throw new Error(
-          "the client refused the token — check CARTO_MCP_TOKEN against " +
-            "Settings ▸ General ▸ Editor access",
-        );
-      }
-      throw new Error(`HTTP ${response.status}: ${detail}`);
-    }
-    const raw = await response.text();
-    if (!expectReply || !raw) return {};
-    return parseBody(raw, response.headers.get("content-type") ?? "");
+    this.#write(body);
   }
 
   async initialize(): Promise<void> {
@@ -139,25 +135,12 @@ class Client {
       capabilities: {},
       clientInfo: { name: CLIENT_NAME, version: "1" },
     });
-    this.#initialized = true;
-    await this.notify("notifications/initialized");
+    this.notify("notifications/initialized");
   }
 
   call(name: string, args: Json): Promise<Json> {
     return this.rpc("tools/call", { name, arguments: args });
   }
-}
-
-/** A JSON-RPC message, whether it arrived as JSON or as one SSE event. */
-function parseBody(raw: string, contentType: string): Json {
-  if (!contentType.includes("text/event-stream")) return JSON.parse(raw);
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("data:")) {
-      const payload = line.slice(5).trim();
-      if (payload) return JSON.parse(payload);
-    }
-  }
-  throw new Error("the event stream carried no message");
 }
 
 /**
@@ -194,8 +177,7 @@ function numbers(text: string, want: number, what: string): number[] {
 const { values: opt, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    endpoint: { type: "string" },
-    token: { type: "string" },
+    socket: { type: "string" },
     at: { type: "string" },
     look: { type: "string", default: "-30,0" },
     mode: { type: "string" },
@@ -209,19 +191,11 @@ const { values: opt, positionals } = parseArgs({
   },
 });
 
-const endpoint = opt.endpoint ?? process.env.CARTO_MCP ?? DEFAULT_ENDPOINT;
-const token = opt.token ?? process.env.CARTO_MCP_TOKEN ?? "";
+const socketPath = opt.socket ?? process.env.CARTO_MCP_SOCKET ?? defaultSocket();
 const [command, ...rest] = positionals;
 
 if (!command) {
   console.error("usage: bun tools/mcp.ts <tools|state|view|view-here|call> [options]");
-  process.exit(2);
-}
-if (!token) {
-  console.error(
-    "no token. Copy it from Settings ▸ General ▸ Editor access in the running " +
-      "client and export CARTO_MCP_TOKEN.",
-  );
   process.exit(2);
 }
 
@@ -235,8 +209,9 @@ function present(pairs: Array<[string, unknown]>): Json {
   return out;
 }
 
-const client = new Client(endpoint, token);
+const client = new Client(socketPath);
 try {
+  await client.connect();
   await client.initialize();
   switch (command) {
     case "tools": {
@@ -302,3 +277,4 @@ try {
   console.error(e instanceof Error ? e.message : String(e));
   process.exit(1);
 }
+client.close();

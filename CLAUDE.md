@@ -134,7 +134,8 @@ whether the map has finished streaming, no picture), `view` (fly and capture) an
 `view_here` (re-capture without moving, for a before/after). `systems::dev::mcp`,
 and `docs/notes/driving-the-client-from-an-ide.md` for the trade-offs.
 
-**On by default on the desktop**, loopback only, switched in Settings ▸ General ▸
+**On by default on Linux and macOS**, on a Unix socket only its owner can open
+(`$XDG_RUNTIME_DIR/cartopolis/mcp.sock`; no token), switched in Settings ▸ General ▸
 Editor access — the switch opens and closes the socket while the app runs, because
 the moment somebody wants an editor attached is the moment something is already on
 screen. A scripted capture never serves (it would collide with the client that is
@@ -142,7 +143,8 @@ already up, for a process no editor can reach before it exits), and `--no-mcp`
 takes any run out of it.
 
 ```bash
-cargo run -p cartopolis                        # already serving on 127.0.0.1:4750
+cargo run -p cartopolis                        # already serving on the default socket
+cargo run -p cartopolis -- mcp                 # the stdio relay an editor launches (or `ssh HOST cartopolis mcp`)
 cargo run -p cartopolis -- --no-mcp            # not this run
 cargo run -p cartopolis -- --mcp-headless      # no window; the shape for a VPS
 cargo run -p cartopolis -- --mcp-headless --connect HOST --mcp-allow jeroen   # an account an agent drives
@@ -157,8 +159,8 @@ risk**, so chat reaches it only from `--mcp-allow` / Settings ▸ Editor access.
 That list is empty by default, and `view` drops the chrome (the chat overlay)
 while it is narrower than everyone. A public line counts only with an avatar
 behind it (`ChatLine::sender_is_account`), because `say` speaks under a prim
-name anyone can choose. The `viberfox` bot on the Deck is this, reached through
-a single-port tunnel: `docs/guides/deck-bot.md`.
+name anyone can choose. The `viberfox` bot on the Deck is this:
+`docs/guides/deck-bot.md`.
 
 **It is not a second screenshot path.** `view` pushes a `ShotSpec` onto the shot
 harness below, which owns the only cycle that places a camera, waits for every
@@ -167,11 +169,11 @@ streamer, quiesces the worker pool and then fires — a live harness differs fro
 So a windowed client captures its *window* (`--mcp-size` does nothing there), and
 the holds that keep a camera mode for the duration of a capture run only while
 one is in progress, or an idle camera operator would take the camera away from
-whoever is using the client. The token lives in `user.json` and is shown in
-Settings ▸ General ▸ Editor access; `CARTO_MCP_TOKEN` overrides it for a headless
-run. Desktop only — `build.rs` sets the `mcp` cfg on the same target predicate
-`Cargo.toml` gates `rmcp` on, so the code and the dependency cannot disagree
-about which platforms have it.
+whoever is using the client. There is **no token**: the socket's directory is
+the access control, which is all the bearer token it replaced ever was.
+Unix desktops only, **not Windows** — `build.rs` sets the `mcp` cfg on the same
+target predicate `Cargo.toml` gates `cartopolis_mcp` on, so the code and the
+dependency cannot disagree about which platforms have it.
 
 ### Scripted screenshots (`--shot`)
 
@@ -348,7 +350,7 @@ This is a **Cargo workspace** with sixteen crates:
 | `cartopolis_viewer` (`crates/viewer`, binary `carto-view`) | Draws what `cartopolis_geo` builds from a tile, in seconds, with stock materials — for looking at a ground change without launching the client. Deliberately does **not** depend on `cartopolis`. Note it is a second Bevy binary in every `--workspace` build. | Bevy 0.20 + `cartopolis_geo` |
 | `cartopolis` | Bevy 0.20 client; rendering, ECS systems, UI | Bevy 0.20 + `big_space` (path dep), `egui` 0.36 |
 | `cartopolis_android` | The Android app: a `cdylib` owning `android_main`, plus `AndroidManifest.xml` and `build-apk.sh`. **Both its dependencies are target-gated**, so off Android the crate is empty — 8.4 s and a 4.3 MB artifact in a workspace build, not the second full static link of Bevy that a `cdylib` on `cartopolis`'s own `[lib]` would cost. "Empty" is not free and cannot be: a cdylib links std regardless. It also means `cargo check --workspace` proves nothing about the crate, which is why CI checks it for `aarch64-linux-android` separately. `docs/notes/android-build.md` | Bevy 0.20 + `cartopolis`, on `cfg(target_os = "android")` only |
-| `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server (`systems::dev::mcp`): the listener, the bearer check, the rmcp `#[tool]` surface, and the job protocol and tool arguments that cross its channel to the ECS. Split out so the async/tower generic code is not compiled inside the client crate. **Nothing here may depend on `bevy` or `cartopolis`**; the client re-exports it as `mcp::server` and wraps what must be a `Resource`. The client depends on it on the desktop predicate only — the same one `build.rs` sets the `mcp` cfg on | `rmcp`, `axum`, `tokio` — **no Bevy** |
+| `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server (`systems::dev::mcp`): the Unix-socket listener, the rmcp `#[tool]` surface, and the job protocol and tool arguments that cross its channel to the ECS. Split out so the async/tower generic code is not compiled inside the client crate. **Nothing here may depend on `bevy` or `cartopolis`**; the client re-exports it as `mcp::server` and wraps what must be a `Resource`. The client depends on it on Unix desktops only — the same predicate `build.rs` sets the `mcp` cfg on | `rmcp`, `tokio` — **no Bevy** |
 | `cartopolis_materials` (`crates/materials`) | The client's custom render materials — the types, their `Material`/`MaterialExtension` impls and `MaterialsPlugin`, which registers all of them. Split out because each `MaterialPlugin::<M>` was ~1.5 % of the client's generated IR (`docs/notes/client-build-cost.md`). **Only types and their material impls live here, and nothing here may depend on `cartopolis`**; the client re-exports each type from its old path (`systems::water::WaterMaterial`, …) and keeps every system that uses them | Bevy 0.20 (declared exactly as the client declares it), `cartopolis_core` |
 | `big_space` | **Vendored fork** of `big_space` 0.10 ported to Bevy 0.20 (floating-origin transform propagation, ADR-019). Upstream tops out at Bevy 0.18, so we keep a copy under `crates/big_space` and advance it on each Bevy bump — re-sync the vendored transform-propagation code (`bevy_compat.rs`) against Bevy when upgrading. | Bevy sub-crates |
 
