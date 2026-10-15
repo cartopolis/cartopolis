@@ -30,7 +30,7 @@ use bevy::prelude::*;
 use cartopolis_core::NetMessage;
 
 pub use cartopolis_chat::{
-    caption_of, channel_key, group_of, picture_caption, point_caption, Engine, Event,
+    caption_of, channel_key, group_of, picture_caption, point_caption, readable, Engine, Event,
 };
 
 /// Where a device's state is kept: per server and per account, because the same

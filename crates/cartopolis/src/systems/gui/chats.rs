@@ -147,6 +147,9 @@ pub struct ChatsView {
     viewing: Option<crate::systems::chat_pictures::PictureRef>,
     /// Why the last picture could not be picked, until the next try.
     picture_error: Option<String>,
+    /// The open chat offers a field check (`FieldCheck::offered`), worked out
+    /// each frame the panel draws.
+    field_check_here: bool,
 }
 
 impl ChatsView {
@@ -693,6 +696,8 @@ struct Actions {
     view_picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Send a snapshot of the map to this chat.
     snapshot: Option<String>,
+    /// Open a field check for this chat (`systems::field_check`).
+    field_check: Option<String>,
 }
 
 /// The call key in a chat's header: between the call screen's banner size
@@ -748,6 +753,7 @@ pub fn render_chats_panel(
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
     mut screenshot: ResMut<crate::resources::ScreenshotState>,
     mut communities: ResMut<crate::systems::communities::Communities>,
+    mut field_check: ResMut<crate::systems::field_check::FieldCheck>,
 ) {
     for said in communities.take_admin_results() {
         chat.notice = Some(crate::systems::chat::ChatNotice {
@@ -766,6 +772,10 @@ pub fn render_chats_panel(
         }
         return;
     }
+    view.field_check_here = view
+        .open
+        .as_deref()
+        .is_some_and(|key| field_check.offered(&chat, key));
     // Reading a chat is seeing its lines.
     if let Some(key) = view.open.clone() {
         if let Some(c) = chat.channels.iter().find(|c| c.key == key) {
@@ -938,6 +948,11 @@ pub fn render_chats_panel(
         screenshot.hide_ui = true;
         view.attach = false;
     }
+    if let Some(channel) = act.field_check.take() {
+        // What is typed in the field goes with it, as the line under the picture.
+        field_check.request = Some((channel, std::mem::take(&mut view.draft)));
+        view.attach = false;
+    }
     let viewport = egui.viewport_pts();
     picture_viewer(&egui.ctx, viewport, &mut view, &mut pictures);
 
@@ -1059,22 +1074,25 @@ fn list_screen(
                     .filter(|l| !chat.is_blocked(&l.sender))
                     .collect();
                 let last = visible.last();
+                // A field check's pose is for the agent; a person reads its note.
+                let shown =
+                    |l: &ChatLine| crate::systems::private_chat::readable(&l.body).into_owned();
                 let preview = match last {
                     None => match kind_of(&c.key) {
                         ChatKind::Here => "Whoever is near your avatar".into(),
                         ChatKind::Everyone => "Everyone on this server".into(),
                         _ => "No messages yet".into(),
                     },
-                    Some(l) if is_mine(chat, l) => format!("You: {}", l.body),
+                    Some(l) if is_mine(chat, l) => format!("You: {}", shown(l)),
                     Some(l)
                         if kind_of(&c.key) == ChatKind::Private && !c.label.contains(&l.sender) =>
                     {
-                        format!("{}: {}", l.sender, l.body)
+                        format!("{}: {}", l.sender, shown(l))
                     }
                     Some(l) if kind_of(&c.key) != ChatKind::Private => {
-                        format!("{}: {}", l.sender, l.body)
+                        format!("{}: {}", l.sender, shown(l))
                     }
-                    Some(l) => l.body.clone(),
+                    Some(l) => shown(l),
                 };
                 let at = last.map_or(0, |l| l.at_ms);
                 let kind = kind_of(&c.key);
@@ -2140,10 +2158,14 @@ fn bubble(
                         picture_tile(ui, pictures, picture, size, act);
                         // The deep bottom edge: the caption, else blank paper.
                         ui.add_space(6.0);
-                        let caption = crate::systems::private_chat::caption_of(&line.body);
+                        // A field check's caption is its note; its pose line is
+                        // for the agent (`cartopolis_core::field_check`).
+                        let caption = crate::systems::private_chat::caption_of(&line.body)
+                            .map(cartopolis_core::field_check::display_caption)
+                            .filter(|c| !c.is_empty());
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(caption.unwrap_or(" "))
+                                egui::RichText::new(caption.as_deref().unwrap_or(" "))
                                     .size(14.0)
                                     .italics()
                                     .color(POLAROID_INK),
@@ -2753,13 +2775,21 @@ fn composer(
             }
         });
     }
-    compose_row(ui, view, key, "chats_message_field", act);
+    let offer = view.field_check_here;
+    compose_row(ui, view, key, "chats_message_field", offer, act);
 }
 
 /// "+", the field and send, shared by the Chat view and the World view: the
 /// design's composer, a round raised "+", a raised pill of a field, and the
 /// pale round button that sends.
-fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act: &mut Actions) {
+fn compose_row(
+    ui: &mut egui::Ui,
+    view: &mut ChatsView,
+    key: &str,
+    id: &str,
+    field_check: bool,
+    act: &mut Actions,
+) {
     let claim = std::mem::take(&mut view.claim_focus);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -2781,6 +2811,20 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ready = !view.draft.trim().is_empty();
             let send = circle_button(ui, icons::SEND, true, ready, "Send");
+            // The field check: a photograph and Cartopolis from the same spot,
+            // for the agent (`systems::field_check`). Only in a chat with one.
+            if field_check
+                && circle_button(
+                    ui,
+                    icons::CAMERA,
+                    false,
+                    true,
+                    "Field check: a photo and Cartopolis from the same spot",
+                )
+                .clicked()
+            {
+                act.field_check = Some(key.to_string());
+            }
             let field = egui::Frame::NONE
                 .fill(theme::SURFACE_RAISED)
                 .corner_radius(egui::CornerRadius::same(20))
@@ -3398,9 +3442,11 @@ pub fn render_chat_world(
                                 theme::BRAND
                             }));
                             ui.label(
-                                egui::RichText::new(&line.body)
-                                    .size(13.5)
-                                    .color(theme::TEXT),
+                                egui::RichText::new(
+                                    crate::systems::private_chat::readable(&line.body).as_ref(),
+                                )
+                                .size(13.5)
+                                .color(theme::TEXT),
                             );
                         });
                     }
@@ -3425,7 +3471,7 @@ pub fn render_chat_world(
                             theme::note(ui, "Places go in private chats only: this one is public.");
                         }
                     }
-                    compose_row(ui, &mut view, &key, "chat_world_field", &mut act);
+                    compose_row(ui, &mut view, &key, "chat_world_field", false, &mut act);
                 });
         });
 

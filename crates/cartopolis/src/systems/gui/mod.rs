@@ -20,6 +20,7 @@ pub mod data_layers;
 pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;
+pub mod field_check;
 pub mod floor_picker;
 pub mod glass;
 pub mod hud;

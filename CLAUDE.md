@@ -103,7 +103,9 @@ add it to any new job.
 
 The README images are **data, not a manual ritual**: `docs/shots.toml` remembers
 six named camera positions (name, `at = [lat, lng, alt]`, `look = [pitch, yaw]`,
-plus per-shot `mode` / `time` / `fog` / `clouds` / `rain` / `ui` / `hide_ui`), and
+plus per-shot `mode` / `time` / `fog` / `clouds` / `rain` / `ui` / `hide_ui`, and
+for a view that must match a photograph `roll` / `fov` / `date` / `on_ground` /
+`[shot.measured]`), and
 
 ```bash
 cargo shots                      # all of them → docs/img/<name>.png
@@ -125,6 +127,13 @@ as a chrome-covered README image later). To add a view, fly there and use the de
 panel's **📋 Copy as preset** button — it puts a pasteable `[[shot]]` block on the
 clipboard. The dev panel's numbered capture slots remain, but they are scratch
 files now; the README links to the preset outputs.
+
+**A field check is a preset that came from a phone** (`systems::field_check`,
+`docs/notes/field-check.md`): a photograph beside Cartopolis from the same pose,
+sent to the agent's chat, whose pose `read_chat` hands over as a `[[shot]]` for
+`docs/field-checks.toml`. **The harness's yaw turns counter-clockwise** (90 looks
+west), so a compass heading is its negation — the comment on `ShotSpec` said
+otherwise until 2026-10-15.
 
 ### Driving a running client from an editor (`--mcp-listen`)
 

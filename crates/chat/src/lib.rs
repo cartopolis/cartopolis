@@ -331,6 +331,29 @@ pub fn picture_caption(caption: &str) -> String {
 /// The text of a picture line with no caption, and the prefix of one with.
 pub const PICTURE_LINE: &str = "Picture";
 
+/// What a field check's picture line reads as (`cartopolis_core::field_check`).
+pub const FIELD_CHECK_LINE: &str = "Field check";
+
+/// A line's text as a person reads it. Only a field check differs: its caption
+/// carries the pose as a marked line of JSON for the agent, which a person
+/// should see as "Field check: <the note>", not as JSON. The line itself keeps
+/// the whole caption, because the agent reads the line.
+#[must_use]
+pub fn readable(body: &str) -> std::borrow::Cow<'_, str> {
+    use cartopolis_core::field_check as fc;
+    if !fc::is_field_check(body) {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    let note = caption_of(body)
+        .map(fc::display_caption)
+        .unwrap_or_default();
+    std::borrow::Cow::Owned(if note.is_empty() {
+        FIELD_CHECK_LINE.to_string()
+    } else {
+        format!("{FIELD_CHECK_LINE}: {note}")
+    })
+}
+
 /// The caption back out of a picture line's text, if it has one.
 #[must_use]
 pub fn caption_of(line_body: &str) -> Option<&str> {
@@ -2408,6 +2431,20 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_field_check_reads_as_its_note_and_keeps_its_pose() {
+        let pose = r#"cartopolis:field-check {"lat":53.2}"#;
+        let body = picture_caption(&format!("the tower\n{pose}"));
+        // The line keeps the pose, for the agent…
+        assert!(body.contains(pose));
+        // …and a person reads the note.
+        assert_eq!(readable(&body), "Field check: the tower");
+        assert_eq!(readable(&picture_caption(pose)), "Field check");
+        // Everything else is untouched.
+        assert_eq!(readable("Picture: a cat"), "Picture: a cat");
+        assert_eq!(readable("hello"), "hello");
+    }
 
     #[test]
     fn a_channel_key_round_trips_to_its_group() {

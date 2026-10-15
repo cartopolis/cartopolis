@@ -60,7 +60,25 @@ impl Plugin for GuiPlugin {
             // Drawn over everything until the first tiles are up. Mirrors the
             // splash in index.html, which covers the wasm load this cannot.
             .init_resource::<systems::splash::BootSplash>()
-            .init_resource::<systems::chats::ScreenRestore>();
+            .init_resource::<systems::chats::ScreenRestore>()
+            .init_resource::<systems::field_check::FieldCheck>();
+
+        // The field check (`systems::field_check`): the camera drives the world
+        // camera after any teleport has landed and before the camera system reads
+        // the rotation, and its screen is drawn over everything, as the call
+        // screen is — its own `Foreground` area, so not in the panel chain.
+        app.add_systems(
+            Update,
+            (
+                systems::field_check::drive_field_check
+                    .after(systems::geo_nav::apply_teleport)
+                    .before(systems::free_camera::camera_controls)
+                    .in_set(ClientPhase::Anchor),
+                systems::field_check::render_field_check
+                    .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+            ),
+        );
 
         // Chats or World, and the open chat, kept across Android stopping the
         // app (`chats::remember_screen`). Before the panels, so a restored tab

@@ -595,7 +595,11 @@ impl Tools {
                        has allowed are shown; lines from anyone else are counted and \
                        withheld. Each line has a sequence number. With `wait_s` it waits \
                        for the next line instead of answering 'nothing new' — the way to \
-                       stay in a conversation without checking over and over."
+                       stay in a conversation without checking over and over. A field \
+                       check (a photograph beside Cartopolis drawn from the same spot) \
+                       comes with its pose in `field_check`, as a [[shot]] block that \
+                       re-renders the same view: `cargo shots --shots \
+                       docs/field-checks.toml --only <name>`."
     )]
     async fn read_chat(
         &self,
@@ -1013,7 +1017,9 @@ impl Tools {
 
     #[tool(
         description = "Look at a picture somebody sent you in a private chat, by the line \
-                       number `read_chat` gave it. Returns the image."
+                       number `read_chat` gave it. Returns the image. A field check is one \
+                       image: the photograph on the left, Cartopolis from the same pose on \
+                       the right, the pose written under them."
     )]
     async fn see_picture(
         &self,

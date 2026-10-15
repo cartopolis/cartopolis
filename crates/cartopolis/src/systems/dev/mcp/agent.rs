@@ -1872,7 +1872,19 @@ fn read_chat(
                 .distance
                 .map(|d| format!(" ({d:.0} m away)"))
                 .unwrap_or_default();
-            let seen = if line.picture.is_some() {
+            let field_check = line
+                .picture
+                .as_ref()
+                .and_then(|_| cartopolis_core::field_check::FieldPose::from_caption(&line.body));
+            let seen = if let Some((_, pose)) = &field_check {
+                // A field check: the photograph and Cartopolis side by side, and
+                // the pose to put the camera back on (`systems::field_check`).
+                format!(
+                    " (a field check, {} — `see_picture` {} shows the photograph beside                      Cartopolis; this reply's `field_check` holds the pose as a                      [[shot]] for docs/field-checks.toml)",
+                    pose.name(),
+                    line.seq
+                )
+            } else if line.picture.is_some() {
                 format!(" (`see_picture` {} shows it)", line.seq)
             } else if let Some(p) = &line.point {
                 // A place card's text is only its caption — often just "a
@@ -1900,7 +1912,8 @@ fn read_chat(
                 "[{}] {} — {from}{near}: {}{seen}\n",
                 line.seq,
                 w.channel_name(key),
-                line.body
+                // The pose is in the reply's data; the line reads as its note.
+                crate::systems::private_chat::readable(&line.body)
             ));
         }
     }
@@ -1930,6 +1943,17 @@ fn read_chat(
                 "text": line.body,
                 "distance_m": line.distance,
                 "picture": line.picture.is_some(),
+                "field_check": line
+                    .picture
+                    .as_ref()
+                    .and_then(|_| cartopolis_core::field_check::FieldPose::from_caption(&line.body))
+                    .map(|(note, pose)| json!({
+                        "name": pose.name(),
+                        "note": note,
+                        "pose": pose,
+                        "preset_toml": pose.preset_toml(),
+                        "manifest_header": cartopolis_core::field_check::MANIFEST_HEADER,
+                    })),
                 "place": line.point.as_ref().map(|p| json!({
                     "lat": p.latitude, "lng": p.longitude, "name": p.name,
                 })),

@@ -551,6 +551,26 @@ pub fn drive_screenshots(
         );
         return;
     }
+    if std::mem::take(&mut shot.field_check_snapshot) {
+        // A field check's world half: the window with no UI, from the pose the
+        // field check is holding the camera on, handed back as pixels for it to
+        // put beside the photograph.
+        shot.hide_ui = true;
+        commands.spawn(Screenshot::primary_window()).observe(
+            |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+             mut check: ResMut<crate::systems::field_check::FieldCheck>| {
+                let image = &captured.image;
+                let size = image.size();
+                match image.clone().try_into_dynamic() {
+                    Ok(dynamic) => {
+                        check.world_in = Some((dynamic.to_rgba8().into_raw(), [size.x, size.y]));
+                    }
+                    Err(e) => warn!("a field check's world could not be read: {e}"),
+                }
+            },
+        );
+        return;
+    }
     if let Some(channel) = shot.chat_snapshot.take() {
         // The pixels go to the chat as raw RGBA: encoding a full window here
         // would stall the frame, and `chat_pictures` re-encodes on a worker
