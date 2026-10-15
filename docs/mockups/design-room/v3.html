@@ -350,7 +350,7 @@ tr.newrow td { background:rgba(253,96,18,.07); }
 <ul>
   <li>Your avatar stays where you were, pale and glowing, labelled "designing", like someone stepping out of the world for a moment.</li>
   <li>A message still reaches you: chat and calls stay connected in the room and show as a badge.</li>
-  <li>One more bit on the wire, beside the existing "away" states. It says <i>that</i> you are designing, never <i>what</i>.</li>
+  <li>Entering the room sends today's <code>SetPresence { active: false }</code>, so the server stops sending you world updates you wouldn't draw, and chat still arrives. What is new is that others are told: it says <i>that</i> you are designing, never <i>what</i>.</li>
 </ul>
 </div>
 
@@ -413,7 +413,7 @@ tr.newrow td { background:rgba(253,96,18,.07); }
 <div class="row">
 
 <div style="width:400px">
-<div class="inv" style="position:relative;height:560px;width:400px">
+<div class="inv" style="position:relative;height:610px;width:400px">
   <div class="ph"><div class="med"><svg class="i s"><use href="#box"/></svg></div><b>Inventory</b><svg class="i s" style="color:var(--dim)"><use href="#x"/></svg></div>
   <div class="search"><svg class="i s"><use href="#search"/></svg>Search your inventory</div>
   <div class="fchips"><div class="on">All</div><div>Objects</div><div>Models</div><div>Drafts</div></div>
@@ -492,7 +492,7 @@ tr.newrow td { background:rgba(253,96,18,.07); }
     <tr><td>Place</td><td><code>/api/content/import</code>, which already creates objects owned by the caller. It gains a spot to place at and a group id. <span class="today">today</span>, extended</td></tr>
     <tr><td>Group</td><td>A <code>group</code> on each object, sent to every client: one protocol revision. <span class="new">wire</span></td></tr>
     <tr><td>Take</td><td>Export the group as a document, then delete it: two existing steps, done as one. <span class="new">new route</span></td></tr>
-    <tr><td>Designing</td><td>A presence bit beside the existing away state. <span class="new">wire</span></td></tr>
+    <tr><td>Designing</td><td>Today's <code>SetPresence { active: false }</code> (protocol 35) while in the room, plus one new message telling others. <span class="new">wire</span></td></tr>
     <tr><td>Server library</td><td><code>library_entries</code> gains <code>shelf</code> (server | people). A moved item's owner is cleared, as for a content pack. <span class="new">new</span></td></tr>
     <tr><td>Room camera</td><td>The orbit camera, plus two fixed standing points. No orthographic camera.</td></tr>
   </table>
