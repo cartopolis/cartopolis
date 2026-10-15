@@ -61,10 +61,9 @@ const HOVER_SCALE: f32 = 1.18;
 /// counts up from 1.
 const CHAT_PIN_IDS: u64 = 1 << 48;
 /// Where a community's public posts' pins number from: a range of their own,
-/// clear of the chat points (`1 << 48`) and the people (`1 << 49`).
+/// clear of the chat points (`1 << 48`). People are not pins at all
+/// (`chat_people::marker`), so nothing numbers from `1 << 49` any more.
 const POST_PIN_IDS: u64 = 1 << 50;
-/// First pin id used for people's shared locations.
-const PEOPLE_PIN_IDS: u64 = 1 << 49;
 
 /// The "you are sharing your real location" chip: top centre of the screen,
 /// naming who can see it and for how long, with a Stop for each. Answers the
@@ -355,15 +354,10 @@ pub fn render_place_pins(
         communities.posts.focus(community, post);
         communities.screen = Some(crate::systems::communities::Screen::Community(community));
     }
-    // People's real locations, shared with a private chat, in the blue that
-    // means nothing else (`theme::REAL_LOCATION`).
-    let blue = theme::REAL_LOCATION;
-    let blue = [
-        f32::from(blue.r()) / 255.0,
-        f32::from(blue.g()) / 255.0,
-        f32::from(blue.b()) / 255.0,
-    ];
-    for (i, l) in people.iter().enumerate() {
+    // People's real locations, shared with a private chat: a person's marker,
+    // not a place's teardrop, in the blue that means nothing else
+    // (`chat_people::MarkerKind::Phone`, `theme::REAL_LOCATION`).
+    for l in &people {
         let Some(delta) = place_delta(
             &globe,
             anchor,
@@ -383,8 +377,7 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
-        let label = format!("{} (where their phone is)", l.from);
-        if pin(&ctx, map_rect, PEOPLE_PIN_IDS + i as u64, tip, blue, &label) {
+        if chat_people::marker(&ctx, map_rect, tip, &l.from, chat_people::MarkerKind::Phone) {
             jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
         }
     }
@@ -425,7 +418,13 @@ pub fn render_place_pins(
                 continue;
             }
             drawn += 1;
-            if chat_people::marker(&ctx, map_rect, tip, &w.username) {
+            if chat_people::marker(
+                &ctx,
+                map_rect,
+                tip,
+                &w.username,
+                chat_people::MarkerKind::Avatar,
+            ) {
                 jump = Some((Teleport::geo(lat, lng, None), w.username.clone()));
             }
             if let Some((text, alpha)) = chat_people::latest_said(&chat, &key, &w.username) {

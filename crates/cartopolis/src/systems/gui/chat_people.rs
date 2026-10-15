@@ -95,14 +95,44 @@ fn fade(age: f64) -> f32 {
     (1.0 - (age - BALLOON_HOLD_SECS) / BALLOON_FADE_SECS).clamp(0.0, 1.0) as f32
 }
 
-/// The marker: the design's `.mk` — the person's disc in their colour with an
-/// orange ring, a short orange stem down to a shadow at `tip`, and their name
-/// under it. Returns whether it was tapped.
-pub fn marker(ctx: &egui::Context, map_rect: egui::Rect, tip: egui::Pos2, name: &str) -> bool {
+/// Which of a person's two positions a [`marker`] stands on. The design keeps
+/// them apart by colour alone (chat-world v5): where their avatar is, in the
+/// brand orange, and where their phone is, in the blue that means nothing else.
+/// The shape is the same for both, because both mean "a person is here" — a
+/// teardrop is a *place*.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MarkerKind {
+    Avatar,
+    Phone,
+}
+
+impl MarkerKind {
+    fn colour(self) -> egui::Color32 {
+        match self {
+            Self::Avatar => theme::BRAND,
+            Self::Phone => theme::REAL_LOCATION,
+        }
+    }
+}
+
+/// The marker: the design's `.mk` — the person's disc in their colour with a
+/// ring, a short stem down to a shadow at `tip`, and their name under it. The
+/// ring and stem are orange at an avatar and blue at a phone ([`MarkerKind`]).
+/// Returns whether it was tapped.
+pub fn marker(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    tip: egui::Pos2,
+    name: &str,
+    kind: MarkerKind,
+) -> bool {
     let font = egui::FontId::proportional(11.5);
     let disc_r = DISC / 2.0;
     let height = DISC + 2.0 * RING + STEM;
-    let response = egui::Area::new(egui::Id::new(("chat_person", name.to_lowercase())))
+    let colour = kind.colour();
+    // Keyed by kind as well as name: somebody sharing their phone's location
+    // with a chat whose World view is open stands on the map twice.
+    let response = egui::Area::new(egui::Id::new(("chat_person", kind, name.to_lowercase())))
         .fixed_pos(tip)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .order(egui::Order::Middle)
@@ -125,16 +155,16 @@ pub fn marker(ctx: &egui::Context, map_rect: egui::Rect, tip: egui::Pos2, name: 
                     egui::pos2(tip.x + 1.5, tip.y),
                 ),
                 egui::CornerRadius::ZERO,
-                theme::BRAND,
+                colour,
             );
             let centre = egui::pos2(tip.x, stem_top - RING - disc_r);
             // The glow, then the ring, then the disc (`.av.ring`).
             p.circle_filled(
                 centre,
                 disc_r + RING + 5.0,
-                egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 70),
+                egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 70),
             );
-            p.circle_filled(centre, disc_r + RING, theme::BRAND);
+            p.circle_filled(centre, disc_r + RING, colour);
             crate::systems::chats::paint_avatar(
                 p,
                 centre,
@@ -164,9 +194,14 @@ pub fn marker(ctx: &egui::Context, map_rect: egui::Rect, tip: egui::Pos2, name: 
             response
         })
         .inner;
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // The colour says which position this is; the hover says it in words, as
+    // the teardrop this replaced did.
+    let response = match kind {
+        MarkerKind::Avatar => response,
+        MarkerKind::Phone => response.on_hover_text("Where their phone is"),
+    };
+    response.clicked()
 }
 
 /// The height of a [`marker`] above its tip, so a balloon can sit over it.
