@@ -2,6 +2,7 @@
 
 pub mod address;
 pub mod error;
+pub mod field_check;
 pub mod geo;
 pub mod lens;
 pub mod model_limits;
