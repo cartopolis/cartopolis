@@ -870,3 +870,175 @@ async fn a_building_is_claimed_with_the_session_confirmation_hands_back() {
     .await;
     assert_eq!(status, 403);
 }
+
+/// Sign in over HTTP as a player would, for the routes a person manages.
+async fn player_session(base: &str, username: &str, password: &str) -> String {
+    let (status, body) = api(
+        "POST",
+        format!("{base}/api/login"),
+        None,
+        Some(serde_json::json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, 200, "{username} signs in");
+    body["token"].as_str().unwrap().to_string()
+}
+
+async fn make_token(
+    base: &str,
+    session: &str,
+    password: &str,
+    elevated: bool,
+) -> (u16, serde_json::Value) {
+    api(
+        "POST",
+        format!("{base}/api/tokens"),
+        Some(session.to_string()),
+        Some(serde_json::json!({"label": "bot", "password": password, "elevated": elevated})),
+    )
+    .await
+}
+
+/// An access token is made from a sign-in with the password, signs in on both
+/// carriers, acts as a player on an admin account unless made elevated, and can
+/// manage nothing — not even itself.
+#[tokio::test]
+async fn an_access_token_is_made_used_and_limited() {
+    let (handle, _dir) = server().await;
+    let base = http_base(&handle);
+    let session = player_session(&base, "root", "adminpass").await;
+
+    let (status, _) = make_token(&base, &session, "wrong", false).await;
+    assert_eq!(status, 403, "the password is asked again");
+    let (status, body) = make_token(&base, &session, "adminpass", false).await;
+    assert_eq!(status, 200);
+    let plain = body["token"].as_str().unwrap().to_string();
+    let (_, body) = make_token(&base, &session, "adminpass", true).await;
+    let elevated = body["token"].as_str().unwrap().to_string();
+
+    let get = |token: &str, path: &str| {
+        api(
+            "GET",
+            format!("{base}{path}"),
+            Some(token.to_string()),
+            None,
+        )
+    };
+    assert_eq!(
+        get(&plain, "/api/buildings/mine").await.0,
+        200,
+        "a token works where a session does"
+    );
+    assert_eq!(
+        get(&plain, "/api/admin/accounts").await.0,
+        403,
+        "a plain token on an admin is a player"
+    );
+    assert_eq!(
+        get(&elevated, "/api/admin/accounts").await.0,
+        200,
+        "an elevated one is not"
+    );
+    assert_eq!(
+        get(&plain, "/api/tokens").await.0,
+        403,
+        "a token cannot list tokens"
+    );
+    let (status, _) = make_token(&base, &plain, "adminpass", false).await;
+    assert_eq!(
+        status, 403,
+        "a token cannot mint a sibling, even with the password"
+    );
+
+    let (status, list) = get(&session, "/api/tokens").await;
+    assert_eq!(status, 200);
+    assert_eq!(list["tokens"].as_array().unwrap().len(), 2);
+    assert!(
+        list.to_string().find(&plain).is_none(),
+        "the list never carries a secret"
+    );
+
+    // On the wire the token signs in, and the ack hands back the token itself
+    // rather than minting a session per connect.
+    match tcp_hello(&handle, AuthCredential::Token(plain.clone())).await {
+        NetMessage::ServerHelloAck { session_token, .. } => assert_eq!(session_token, plain),
+        other => panic!("expected an ack, got {other:?}"),
+    }
+}
+
+/// Revoking a token refuses it everywhere at once, and closes a connection it
+/// already holds open — revoking is how a running bot is stopped.
+#[tokio::test]
+async fn revoking_a_token_ends_its_open_connection() {
+    let (handle, _dir) = server().await;
+    let base = http_base(&handle);
+    let session = player_session(&base, "player", "playerpw").await;
+    let (_, body) = make_token(&base, &session, "playerpw", false).await;
+    let token = body["token"].as_str().unwrap().to_string();
+    let id = body["info"]["id"].as_str().unwrap().to_string();
+
+    // A live connection made with the token.
+    let stream = TcpStream::connect(handle.local_addr).await.unwrap();
+    let mut client = Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(32 << 20)
+            .little_endian()
+            .new_codec(),
+    );
+    let hello = encode_app_frame(&NetMessage::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        auth: AuthCredential::Token(token.clone()),
+    })
+    .unwrap();
+    client.send(Bytes::from(hello)).await.unwrap();
+    assert!(matches!(
+        decode_app_frame(&client.next().await.unwrap().unwrap()).unwrap(),
+        NetMessage::ServerHelloAck { .. }
+    ));
+
+    // Somebody else's revoke finds nothing; the owner's works.
+    let other = player_session(&base, "root", "adminpass").await;
+    let (status, _) = api(
+        "DELETE",
+        format!("{base}/api/tokens/{id}"),
+        Some(other),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+    let (status, _) = api(
+        "DELETE",
+        format!("{base}/api/tokens/{id}"),
+        Some(session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    let (status, _) = api(
+        "GET",
+        format!("{base}/api/buildings/mine"),
+        Some(token.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 401, "a revoked token is dead on HTTP");
+    assert!(matches!(
+        tcp_hello(&handle, AuthCredential::Token(token)).await,
+        NetMessage::ServerError { code: 401, .. }
+    ));
+
+    // The open connection is told and closed within the check interval.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while let Some(frame) = client.next().await {
+            let Ok(bytes) = frame else { return true };
+            if let Ok(NetMessage::ServerError { code: 401, .. }) = decode_app_frame(&bytes) {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+    assert_eq!(ended, Ok(true), "the connection outlived its revoked token");
+}

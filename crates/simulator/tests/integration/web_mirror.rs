@@ -146,3 +146,21 @@ fn public_info() {
     assert_eq!(web_fields("PublicSettings"), keys(&settings), "{drift}");
     assert_eq!(web_fields("FollowDto"), keys(&follow), "{drift}");
 }
+
+#[test]
+fn access_token() {
+    // Every optional field is `Some`, so serde writes every key.
+    let token = cartopolis_simulator::auth::AccessTokenInfo {
+        id: String::new(),
+        label: String::new(),
+        elevated: false,
+        created_at: 0,
+        last_used: Some(0),
+        expires_at: Some(0),
+    };
+    assert_eq!(
+        web_fields("AccessToken"),
+        keys(&token),
+        "atlas/web/src/types.ts's AccessToken has drifted from auth::AccessTokenInfo"
+    );
+}

@@ -111,6 +111,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/push/key", get(push_key))
         .route("/api/login", post(player_login))
         .route("/api/logout", post(logout))
+        .route("/api/tokens", get(list_tokens).post(create_token))
+        .route("/api/tokens/{id}", delete(revoke_token))
         .route("/api/admin/login", post(login))
         .route("/api/admin/logout", post(logout))
         .route("/api/admin/me", get(me))
@@ -644,6 +646,15 @@ pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<b
     with_db(state, |c| auth::is_admin(c, principal))
 }
 
+/// [`is_caller_admin`] for a credential: an access token made without the
+/// elevated permissions is not an admin, whatever the account is.
+pub(crate) fn is_access_admin(state: &HttpState, access: &auth::Access) -> ApiResult<bool> {
+    if access.permissions(PermissionSet::all()) != PermissionSet::all() {
+        return Ok(false);
+    }
+    is_caller_admin(state, access.principal)
+}
+
 /// What a principal may do *right now* (`roles::effective`).
 ///
 /// Read per request rather than carried in the session: the token proves who,
@@ -654,6 +665,18 @@ pub(crate) fn caller_permissions(state: &HttpState, principal: Uuid) -> ApiResul
     with_db(state, |c| crate::roles::effective(c, principal))
 }
 
+/// What a presented credential may do right now: the account's permissions,
+/// less the elevated ones when it is a restricted access token
+/// (`auth::Access::permissions`). Every route that decides on a permission asks
+/// this rather than [`caller_permissions`], so a bot's token cannot run the
+/// server just because its account can.
+pub(crate) fn access_permissions(
+    state: &HttpState,
+    access: &auth::Access,
+) -> ApiResult<PermissionSet> {
+    Ok(access.permissions(caller_permissions(state, access.principal)?))
+}
+
 /// The caller's principal, if they presented a live token and their roles hold
 /// `p` right now (`docs/notes/permissions.md`). Every operator route begins
 /// here; the refusal names what was missing.
@@ -662,8 +685,8 @@ pub(crate) fn require(
     headers: &HeaderMap,
     p: Permission,
 ) -> ApiResult<(Uuid, String)> {
-    let (principal, username) = require_session(state, headers)?;
-    if !caller_permissions(state, principal)?.has(p) {
+    let access = require_access(state, headers)?;
+    if !access_permissions(state, &access)?.has(p) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             format!(
@@ -673,7 +696,7 @@ pub(crate) fn require(
             ),
         ));
     }
-    Ok((principal, username))
+    Ok((access.principal, access.username))
 }
 
 /// Whether an account has anything to do in the operator web UI: a permission
@@ -810,12 +833,111 @@ async fn logout(State(state): State<HttpState>, headers: HeaderMap) -> StatusCod
     StatusCode::NO_CONTENT
 }
 
+/// The caller, if a person signed in with a password for this request: access
+/// tokens are managed by the account, never by one another, so a stolen token
+/// can neither mint its siblings nor revoke the one its owner would use to lock
+/// it out (`docs/notes/access-tokens.md`).
+fn require_person(state: &HttpState, headers: &HeaderMap) -> ApiResult<auth::Access> {
+    let access = require_access(state, headers)?;
+    if !access.is_session() {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "access tokens are managed from a sign-in, not with another token".into(),
+        ));
+    }
+    Ok(access)
+}
+
+/// The caller's access tokens: everything but the secrets.
+async fn list_tokens(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    let access = require_person(&state, &headers)?;
+    Ok(Json(
+        json!({ "tokens": state.sessions.access_tokens(access.principal) }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct CreateTokenRequest {
+    label: String,
+    /// Asked again although the caller is signed in: a session can be a
+    /// remembered one on a device somebody else is holding, and a token made
+    /// there outlives the device — the reasoning `DeleteAccount` follows.
+    password: String,
+    #[serde(default)]
+    elevated: bool,
+    /// Unix seconds; absent for a token that lasts until it is revoked.
+    #[serde(default)]
+    expires_at: Option<u64>,
+}
+
+/// Make an access token. The answer carries the raw token, and nothing will
+/// ever show it again.
+async fn create_token(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateTokenRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let access = require_person(&state, &headers)?;
+    let proved = check_password_login(
+        &state,
+        &LoginRequest {
+            username: access.username.clone(),
+            password: body.password,
+        },
+    )
+    .await
+    .map_err(|_| ApiError(StatusCode::FORBIDDEN, "that password is not right".into()))?;
+    if proved != access.principal {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "that password is not right".into(),
+        ));
+    }
+    let (token, info) = state
+        .sessions
+        .create_access_token(
+            access.principal,
+            &access.username,
+            &body.label,
+            body.elevated,
+            body.expires_at,
+        )
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    tracing::info!(
+        account = %access.username,
+        id = %info.id,
+        elevated = info.elevated,
+        "access token created"
+    );
+    Ok(Json(json!({ "token": token, "info": info })))
+}
+
+/// Revoke one of the caller's access tokens. It stops working at once, on the
+/// wire's next handshake and on HTTP's next request; a connection it already
+/// opened carries on until it drops, as a disabled account's does.
+async fn revoke_token(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<StatusCode> {
+    let access = require_person(&state, &headers)?;
+    if !state.sessions.revoke_access_token(access.principal, &id) {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no such token".into()));
+    }
+    tracing::info!(account = %access.username, %id, "access token revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn me(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, username) = require_session(&state, &headers)?;
-    let perms = caller_permissions(&state, principal)?;
+    let access = require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
+    let perms = access_permissions(&state, &access)?;
     if !is_operator(perms) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -827,7 +949,7 @@ async fn me(
     Ok(Json(json!({
         "principal": principal,
         "username": username,
-        "admin": is_caller_admin(&state, principal)?,
+        "admin": is_access_admin(&state, &access)?,
         "permissions": perms.slugs(),
     })))
 }
@@ -1057,6 +1179,13 @@ async fn remove_account(
 /// three routes: everything they do is scoped to the principal this returns, so
 /// there is no id in any request body that could name somebody else's claim.
 pub(crate) fn require_session(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
+    require_access(state, headers).map(|a| (a.principal, a.username))
+}
+
+/// [`require_session`], keeping what kind of credential it was — for a route
+/// that decides on a permission (`access_permissions`) or that only a person
+/// may use (`auth::Access::is_session`).
+pub(crate) fn require_access(state: &HttpState, headers: &HeaderMap) -> ApiResult<auth::Access> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -1067,7 +1196,7 @@ pub(crate) fn require_session(state: &HttpState, headers: &HeaderMap) -> ApiResu
             StatusCode::UNAUTHORIZED,
             "sign in first".to_string(),
         ))?;
-    state.sessions.resolve(token).ok_or(ApiError(
+    state.sessions.resolve_access(token).ok_or(ApiError(
         StatusCode::UNAUTHORIZED,
         "that session has expired".to_string(),
     ))
@@ -1276,9 +1405,10 @@ async fn building_access(
     Path(pand): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, username) = require_session(&state, &headers)?;
-    let admin = is_caller_admin(&state, principal)?;
-    let perms = caller_permissions(&state, principal)?;
+    let access = require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
+    let admin = is_access_admin(&state, &access)?;
+    let perms = access_permissions(&state, &access)?;
     let row = with_db(&state, |c| buildings::ownership(c, &pand))?;
     let owner = with_db(&state, |c| buildings::owner_of(c, &pand))?
         .is_some_and(|p| p == principal.to_string());

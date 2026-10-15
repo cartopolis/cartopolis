@@ -181,9 +181,13 @@ async fn authenticate(
     conn: &SharedConn,
     sessions: &crate::auth::Sessions,
     auth: &AuthCredential,
-) -> Result<(uuid::Uuid, String), AuthRefusal> {
+) -> Result<crate::auth::Access, AuthRefusal> {
     match auth {
-        AuthCredential::Token(token) => sessions.resolve(token).ok_or(AuthRefusal::BadCredential),
+        // A session or an access token, which the hello does not distinguish:
+        // the store says which (`Sessions::resolve_access`).
+        AuthCredential::Token(token) => sessions
+            .resolve_access(token)
+            .ok_or(AuthRefusal::BadCredential),
         AuthCredential::Password { username, password } => {
             let name = username.clone();
             let stored = db::call(conn, move |c| crate::auth::lookup_credential(c, &name))
@@ -201,7 +205,11 @@ async fn authenticate(
             if stored.email_pending {
                 return Err(AuthRefusal::EmailUnconfirmed);
             }
-            Ok((stored.principal, username.clone()))
+            Ok(crate::auth::Access {
+                principal: stored.principal,
+                username: username.clone(),
+                via: crate::auth::Credential::Session,
+            })
         }
     }
 }
@@ -562,8 +570,8 @@ pub async fn handle_connection<T: FrameTransport>(
 
     // ADR-016: authenticate before any world traffic. No snapshot or mutating
     // message is served until this succeeds.
-    let (principal, username) = match authenticate(&conn, &sessions, &auth).await {
-        Ok(p) => p,
+    let access = match authenticate(&conn, &sessions, &auth).await {
+        Ok(a) => a,
         Err(refusal) => {
             let message = refusal.message();
             let err = encode_app_frame(&server_error(0, 401, message))?;
@@ -571,15 +579,29 @@ pub async fn handle_connection<T: FrameTransport>(
             return Err(anyhow::anyhow!("{message}"));
         }
     };
-    let session_token = sessions.issue(principal, &username);
+    let (principal, username) = (access.principal, access.username.clone());
+    // A sign-in gets a fresh session token to reconnect with. An access token is
+    // answered with itself: it already is the credential to reconnect with, and a
+    // bot reconnecting all day must not mint a session per connect — sessions
+    // are evicted at a ceiling, and that would push real people's out.
+    // `model_assets` uses whatever comes back here for the HTTP surface, so it
+    // has to be a credential that works there too.
+    let (session_token, revocable) = match (&access.via, &auth) {
+        (crate::auth::Credential::AccessToken { .. }, AuthCredential::Token(token)) => {
+            (token.clone(), Some(token.clone()))
+        }
+        _ => (sessions.issue(principal, &username), None),
+    };
 
     // What this connection may do (`roles::effective`; see `ConnCtx`'s note on
     // why this is read once). A database error grants nothing.
-    let perms = db::call(&conn, move |c| crate::roles::effective(c, principal))
-        .await
-        .ok()
-        .and_then(|p| p.ok())
-        .unwrap_or_default();
+    let perms = access.permissions(
+        db::call(&conn, move |c| crate::roles::effective(c, principal))
+            .await
+            .ok()
+            .and_then(|p| p.ok())
+            .unwrap_or_default(),
+    );
     let principal_key = principal.to_string();
     // Kept current for the rest of the session (`roles::refresh_grants`).
     let mut grants = chat.watch_grants(&principal_key, perms);
@@ -722,6 +744,14 @@ pub async fn handle_connection<T: FrameTransport>(
         ctx.framed.send(Bytes::from(frame)).await?;
     }
 
+    // How often a connection made with an access token checks that the token
+    // still exists. Revoking one is how its owner stops a bot, so it has to end
+    // the bot's *open* connection, not just its next handshake; a check every
+    // few seconds is a hash lookup, and costs nothing for a sign-in (the arm is
+    // disabled when there is no token to watch).
+    let mut revocation = tokio::time::interval(std::time::Duration::from_secs(5));
+    revocation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let mut outcome: anyhow::Result<()> = Ok(());
     loop {
         // No `biased;`. It polled `framed.next()` first, and the rate limiters in
@@ -789,7 +819,9 @@ pub async fn handle_connection<T: FrameTransport>(
             // the gate this connection's edits are checked against, and the
             // client's copy, which decides what it offers.
             Ok(()) = grants.changed() => {
-                let now = *grants.borrow_and_update();
+                // Through the same mask as at the handshake: a role change must
+                // not hand a restricted access token what it was made without.
+                let now = access.permissions(*grants.borrow_and_update());
                 ctx.actor.perms = now;
                 if let Err(e) = ctx.send(&permissions_message(now)).await {
                     outcome = Err(e);
@@ -808,6 +840,15 @@ pub async fn handle_connection<T: FrameTransport>(
                     // which this loop calls on its way out — so a closed inbox
                     // means the connection is already finished.
                     None => break,
+                }
+            }
+            _ = revocation.tick(), if revocable.is_some() => {
+                if revocable.as_deref().is_some_and(|t| !ctx.sessions.access_token_live(t)) {
+                    let _ = ctx
+                        .send(&server_error(0, 401, "this access token was revoked"))
+                        .await;
+                    outcome = Err(anyhow::anyhow!("access token revoked"));
+                    break;
                 }
             }
             voice_frame = voice_rx.recv() => {

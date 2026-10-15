@@ -26,6 +26,7 @@ use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use blake2::{Blake2s256, Digest};
+use cartopolis_core::permissions::PermissionSet;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -454,6 +455,98 @@ struct Session {
     touched: SystemTime,
 }
 
+/// One access token, as the store holds it. The raw token is not here — only
+/// its hash, as the map key — so neither the map nor the table is worth stealing.
+struct AccessToken {
+    id: String,
+    principal: Uuid,
+    username: String,
+    label: String,
+    elevated: bool,
+    created_at: u64,
+    last_used: Option<u64>,
+    expires_at: Option<u64>,
+}
+
+impl AccessToken {
+    fn info(&self) -> AccessTokenInfo {
+        AccessTokenInfo {
+            id: self.id.clone(),
+            label: self.label.clone(),
+            elevated: self.elevated,
+            created_at: self.created_at,
+            last_used: self.last_used,
+            expires_at: self.expires_at,
+        }
+    }
+
+    fn expired(&self, now: u64) -> bool {
+        self.expires_at.is_some_and(|at| now >= at)
+    }
+}
+
+/// An access token as its owner sees it in a list: everything but the secret.
+/// Times are unix seconds, like the table. `crates/atlas/web/src/types.ts`
+/// describes the same shape as `AccessTokenRow`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AccessTokenInfo {
+    pub id: String,
+    pub label: String,
+    pub elevated: bool,
+    pub created_at: u64,
+    pub last_used: Option<u64>,
+    pub expires_at: Option<u64>,
+}
+
+/// How a request proved who it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// A sign-in: a password was typed on some device, and this is its session.
+    Session,
+    /// An access token the account made (`docs/notes/access-tokens.md`).
+    AccessToken { id: String, elevated: bool },
+}
+
+/// Who a presented token belongs to, and what kind of token it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Access {
+    pub principal: Uuid,
+    pub username: String,
+    pub via: Credential,
+}
+
+impl Access {
+    /// What this credential may do, given what the account may do: an access
+    /// token made without `elevated` acts as a player would, whatever the
+    /// account's roles say (`Permission::elevated`).
+    #[must_use]
+    pub fn permissions(&self, account: PermissionSet) -> PermissionSet {
+        match self.via {
+            Credential::AccessToken {
+                elevated: false, ..
+            } => account.without_elevated(),
+            _ => account,
+        }
+    }
+
+    /// Whether a person signed in with a password for this — what managing
+    /// tokens asks for, so a token can neither mint nor revoke its siblings.
+    #[must_use]
+    pub fn is_session(&self) -> bool {
+        self.via == Credential::Session
+    }
+}
+
+/// How many access tokens one account may hold. Creating one needs the password,
+/// so this is not a defence against strangers; it bounds what a careless script
+/// can pile up in a map every handshake consults.
+pub const MAX_ACCESS_TOKENS: usize = 50;
+
+/// How stale an access token's `last_used` may get before a use writes it back.
+/// A bot makes a request per tool call, and a database write per request to keep
+/// a "last used" column accurate to the second would be most of its traffic.
+const LAST_USED_RESOLUTION_S: u64 = 60;
+
 /// The session store: hash of an opaque token → (principal, username).
 ///
 /// It used to be `issue` and `resolve` and nothing else — no expiry, no
@@ -471,8 +564,15 @@ struct Session {
 /// failed write is a `warn!`, not an error, because a session that lasts only
 /// until the next restart is degraded, while a sign-in refused over a disk
 /// hiccup is broken.
+///
+/// It also holds the **access tokens** (`access_tokens` table), so the two
+/// places that accept a token — the wire's handshake and HTTP's `Bearer` — take
+/// either kind through one [`Self::resolve_access`] and nothing else had to learn
+/// a second path. They are kept in a map of their own because they age by
+/// different rules: no sliding TTL, no eviction at [`MAX_SESSIONS`].
 pub struct Sessions {
     by_token: Mutex<HashMap<String, Session>>,
+    tokens: Mutex<HashMap<String, AccessToken>>,
     /// Configurable so a test can assert expiry in milliseconds rather than
     /// waiting a month or mocking the clock.
     ttl: Duration,
@@ -496,6 +596,7 @@ impl Sessions {
     pub fn with_ttl(ttl: Duration) -> Self {
         Self {
             by_token: Mutex::new(HashMap::new()),
+            tokens: Mutex::new(HashMap::new()),
             ttl,
             conn: None,
         }
@@ -512,6 +613,7 @@ impl Sessions {
     /// without a month on the clock.
     fn persistent_with_ttl(conn: Arc<Mutex<Connection>>, ttl: Duration) -> Self {
         let mut map = HashMap::new();
+        let mut tokens = HashMap::new();
         {
             let guard = locked(&conn);
             match load_sessions(&guard, ttl, &mut map) {
@@ -520,9 +622,16 @@ impl Sessions {
                 }
                 Err(e) => tracing::warn!("could not restore sessions: {e:#}"),
             }
+            match load_access_tokens(&guard, &mut tokens) {
+                Ok(expired) => {
+                    tracing::info!(live = tokens.len(), expired, "access tokens restored");
+                }
+                Err(e) => tracing::warn!("could not restore access tokens: {e:#}"),
+            }
         }
         Self {
             by_token: Mutex::new(map),
+            tokens: Mutex::new(tokens),
             ttl,
             conn: Some(conn),
         }
@@ -572,12 +681,31 @@ impl Sessions {
         token
     }
 
-    /// Resolve a token to its (principal, username), if still valid.
+    /// Resolve a token of either kind to its (principal, username), if still valid.
+    pub fn resolve(&self, token: &str) -> Option<(Uuid, String)> {
+        self.resolve_access(token)
+            .map(|a| (a.principal, a.username))
+    }
+
+    /// Resolve a token of either kind, saying which kind it was.
+    pub fn resolve_access(&self, token: &str) -> Option<Access> {
+        let hash = token_hash(token);
+        if let Some((principal, username)) = self.resolve_session(&hash) {
+            return Some(Access {
+                principal,
+                username,
+                via: Credential::Session,
+            });
+        }
+        self.resolve_token(&hash)
+    }
+
+    /// The session half of [`Self::resolve_access`].
     ///
     /// Expired tokens are removed as they are found — the first presentation
     /// after the TTL is both the rejection and the cleanup.
-    pub fn resolve(&self, token: &str) -> Option<(Uuid, String)> {
-        let hash = token_hash(token);
+    fn resolve_session(&self, hash: &str) -> Option<(Uuid, String)> {
+        let hash = hash.to_string();
         let mut map = locked(&self.by_token);
         let session = map.get_mut(&hash)?;
         if age(session.touched) >= self.ttl {
@@ -601,6 +729,160 @@ impl Sessions {
             Ok(())
         });
         Some(out)
+    }
+
+    /// The access-token half of [`Self::resolve_access`]. An expired token is
+    /// removed as it is found, as a session is.
+    fn resolve_token(&self, hash: &str) -> Option<Access> {
+        let now = unix(SystemTime::now());
+        let mut map = locked(&self.tokens);
+        let token = map.get_mut(hash)?;
+        if token.expired(now) {
+            let id = token.id.clone();
+            map.remove(hash);
+            drop(map);
+            self.db(|c| {
+                c.execute("DELETE FROM access_tokens WHERE id = ?1", [&id])?;
+                Ok(())
+            });
+            return None;
+        }
+        let stale = token
+            .last_used
+            .is_none_or(|t| now.saturating_sub(t) >= LAST_USED_RESOLUTION_S);
+        if stale {
+            token.last_used = Some(now);
+        }
+        let access = Access {
+            principal: token.principal,
+            username: token.username.clone(),
+            via: Credential::AccessToken {
+                id: token.id.clone(),
+                elevated: token.elevated,
+            },
+        };
+        let id = token.id.clone();
+        drop(map);
+        if stale {
+            self.db(|c| {
+                c.execute(
+                    "UPDATE access_tokens SET last_used = ?1 WHERE id = ?2",
+                    rusqlite::params![now, id],
+                )?;
+                Ok(())
+            });
+        }
+        Some(access)
+    }
+
+    /// Whether an access token still exists and has not expired — what an open
+    /// connection made with one asks every few seconds, so revoking stops a bot
+    /// that is already in the world. Touches nothing, unlike a resolve.
+    #[must_use]
+    pub fn access_token_live(&self, token: &str) -> bool {
+        let now = unix(SystemTime::now());
+        locked(&self.tokens)
+            .get(&token_hash(token))
+            .is_some_and(|t| !t.expired(now))
+    }
+
+    /// Make an access token for `principal`, and return the raw token — the
+    /// only time it exists outside the caller's hands — with what the list will
+    /// show for it. `expires_at` is unix seconds, `None` for never.
+    pub fn create_access_token(
+        &self,
+        principal: Uuid,
+        username: &str,
+        label: &str,
+        elevated: bool,
+        expires_at: Option<u64>,
+    ) -> anyhow::Result<(String, AccessTokenInfo)> {
+        let label = label.trim();
+        if label.is_empty() || label.chars().count() > 60 {
+            return Err(anyhow!("give the token a name of 1 to 60 characters"));
+        }
+        let now = unix(SystemTime::now());
+        if expires_at.is_some_and(|at| at <= now) {
+            return Err(anyhow!("that expiry date has already passed"));
+        }
+        let raw = random_token();
+        let token = AccessToken {
+            id: random_token()[..16].to_string(),
+            principal,
+            username: username.to_string(),
+            label: label.to_string(),
+            elevated,
+            created_at: now,
+            last_used: None,
+            expires_at,
+        };
+        let info = token.info();
+        {
+            let mut map = locked(&self.tokens);
+            let held = map
+                .values()
+                .filter(|t| t.principal == principal && !t.expired(now))
+                .count();
+            if held >= MAX_ACCESS_TOKENS {
+                return Err(anyhow!(
+                    "this account already has {MAX_ACCESS_TOKENS} access tokens; revoke one first"
+                ));
+            }
+            map.insert(token_hash(&raw), token);
+        }
+        self.db(|c| {
+            c.execute(
+                "INSERT INTO access_tokens \
+                 (id, token_hash, principal, username, label, elevated, created_at, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    info.id,
+                    token_hash(&raw),
+                    principal.to_string(),
+                    username,
+                    info.label,
+                    elevated,
+                    now,
+                    expires_at
+                ],
+            )?;
+            Ok(())
+        });
+        Ok((raw, info))
+    }
+
+    /// One account's live access tokens, newest first.
+    #[must_use]
+    pub fn access_tokens(&self, principal: Uuid) -> Vec<AccessTokenInfo> {
+        let now = unix(SystemTime::now());
+        let mut out: Vec<AccessTokenInfo> = locked(&self.tokens)
+            .values()
+            .filter(|t| t.principal == principal && !t.expired(now))
+            .map(AccessToken::info)
+            .collect();
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+        out
+    }
+
+    /// Revoke one of `principal`'s access tokens by its id. `false` when there
+    /// is no such token *of theirs* — another account's id is "not found", not a
+    /// different answer, so the route cannot be used to probe for ids.
+    pub fn revoke_access_token(&self, principal: Uuid, id: &str) -> bool {
+        let mut map = locked(&self.tokens);
+        let Some(hash) = map
+            .iter()
+            .find(|(_, t)| t.id == id && t.principal == principal)
+            .map(|(h, _)| h.clone())
+        else {
+            return false;
+        };
+        map.remove(&hash);
+        drop(map);
+        self.db(|c| {
+            c.execute("DELETE FROM access_tokens WHERE id = ?1", [id])?;
+            Ok(())
+        });
+        true
     }
 
     /// Invalidate a token immediately (sign-out, or an operator revoking access).
@@ -627,15 +909,28 @@ impl Sessions {
     /// surviving token would resolve to a principal with no account behind it and
     /// keep playing. It is a handful of thousand entries at most and it runs once
     /// per deletion.
+    ///
+    /// Access tokens go with them: deletion and a moderator's kick both mean
+    /// "this account is not in the world any more", and a bot's token that
+    /// survived either would put it straight back.
     pub fn revoke_principal(&self, principal: Uuid) -> usize {
         let mut map = locked(&self.by_token);
         let before = map.len();
         map.retain(|_, s| s.principal != principal);
-        let gone = before - map.len();
+        let mut gone = before - map.len();
         drop(map);
+        let mut tokens = locked(&self.tokens);
+        let before = tokens.len();
+        tokens.retain(|_, t| t.principal != principal);
+        gone += before - tokens.len();
+        drop(tokens);
         self.db(|c| {
             c.execute(
                 "DELETE FROM sessions WHERE principal = ?1",
+                [principal.to_string()],
+            )?;
+            c.execute(
+                "DELETE FROM access_tokens WHERE principal = ?1",
                 [principal.to_string()],
             )?;
             Ok(())
@@ -692,6 +987,46 @@ fn load_sessions(
                 touched: std::time::UNIX_EPOCH + Duration::from_secs(touched),
             },
         );
+    }
+    Ok(expired)
+}
+
+/// Fill `map` from the `access_tokens` table, deleting what has expired.
+/// Returns how many expired rows were dropped.
+fn load_access_tokens(
+    conn: &Connection,
+    map: &mut HashMap<String, AccessToken>,
+) -> anyhow::Result<usize> {
+    let now = unix(SystemTime::now());
+    let expired = conn.execute(
+        "DELETE FROM access_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+        [now],
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, token_hash, principal, username, label, elevated, created_at, last_used, expires_at \
+         FROM access_tokens",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            AccessToken {
+                id: r.get(0)?,
+                principal: Uuid::nil(),
+                username: r.get(3)?,
+                label: r.get(4)?,
+                elevated: r.get::<_, i64>(5)? != 0,
+                created_at: r.get(6)?,
+                last_used: r.get(7)?,
+                expires_at: r.get(8)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (hash, principal, mut token) = row?;
+        token.principal =
+            Uuid::parse_str(&principal).context("bad principal in access_tokens table")?;
+        map.insert(hash, token);
     }
     Ok(expired)
 }
@@ -948,13 +1283,10 @@ mod tests {
 
     /// A database with the `sessions` table, shared the way `serve` shares it.
     fn sessions_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, principal TEXT NOT NULL, \
-             username TEXT NOT NULL, touched INTEGER NOT NULL);",
-        )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        // The real migrations, for the reason `mem_db` gives: this was a
+        // hand-written `sessions` table, and it would have hidden the
+        // `access_tokens` one from every test that restarts the store.
+        Arc::new(Mutex::new(mem_db()))
     }
 
     fn table_count(conn: &Arc<Mutex<Connection>>) -> i64 {
@@ -1043,5 +1375,152 @@ mod tests {
         assert!(verify_password("secret", &phc));
         assert!(!verify_password("wrong", &phc));
         assert!(lookup_account(&conn, "ghost").unwrap().is_none());
+    }
+
+    fn token_count(db: &Arc<Mutex<Connection>>) -> i64 {
+        locked(db)
+            .query_row("SELECT COUNT(*) FROM access_tokens", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// An access token resolves through the same call a session does, says
+    /// which kind it is, and ignores the session TTL entirely — a bot left
+    /// running for a quiet month must not find itself signed out.
+    #[test]
+    fn an_access_token_resolves_and_outlives_the_session_ttl() {
+        let s = Sessions::with_ttl(Duration::from_millis(20));
+        let p = Uuid::new_v4();
+        let (raw, info) = s
+            .create_access_token(p, "viberfox", "deck-2 bot", false, None)
+            .unwrap();
+        let session = s.issue(p, "viberfox");
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(s.resolve(&session), None, "the session has slid out");
+        let access = s.resolve_access(&raw).expect("the token");
+        assert_eq!(access.principal, p);
+        assert_eq!(access.username, "viberfox");
+        assert_eq!(
+            access.via,
+            Credential::AccessToken {
+                id: info.id.clone(),
+                elevated: false
+            }
+        );
+        assert!(!access.is_session());
+        assert!(
+            s.access_tokens(p)[0].last_used.is_some(),
+            "a use is recorded"
+        );
+    }
+
+    /// A token on an admin account acts as a player unless it was made to carry
+    /// the elevated permissions; a session is never masked.
+    #[test]
+    fn an_access_token_is_a_player_unless_made_elevated() {
+        let s = Sessions::new();
+        let p = Uuid::new_v4();
+        let (plain, _) = s
+            .create_access_token(p, "admin", "bot", false, None)
+            .unwrap();
+        let (full, _) = s
+            .create_access_token(p, "admin", "ops", true, None)
+            .unwrap();
+        let all = PermissionSet::all();
+        assert_eq!(
+            s.resolve_access(&plain).unwrap().permissions(all),
+            all.without_elevated()
+        );
+        assert_eq!(s.resolve_access(&full).unwrap().permissions(all), all);
+        let session = s.issue(p, "admin");
+        assert_eq!(s.resolve_access(&session).unwrap().permissions(all), all);
+    }
+
+    /// An expiry is honoured, a past one is refused at creation, and a bad label
+    /// is refused rather than stored.
+    #[test]
+    fn an_access_token_expires_when_it_says() {
+        let s = Sessions::new();
+        let p = Uuid::new_v4();
+        let now = unix(SystemTime::now());
+        assert!(s
+            .create_access_token(p, "a", "late", false, Some(now))
+            .is_err());
+        assert!(s.create_access_token(p, "a", "  ", false, None).is_err());
+        assert!(s
+            .create_access_token(p, "a", &"x".repeat(61), false, None)
+            .is_err());
+        let (raw, _) = s
+            .create_access_token(p, "a", "brief", false, Some(now + 1))
+            .unwrap();
+        assert!(s.resolve(&raw).is_some());
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(s.resolve(&raw), None);
+        assert!(
+            s.access_tokens(p).is_empty(),
+            "an expired token is not listed"
+        );
+    }
+
+    /// Only the owner revokes, and somebody else's id reads as "not found".
+    #[test]
+    fn only_the_owner_revokes_an_access_token() {
+        let s = Sessions::new();
+        let (me, them) = (Uuid::new_v4(), Uuid::new_v4());
+        let (raw, info) = s.create_access_token(me, "me", "bot", false, None).unwrap();
+        assert!(!s.revoke_access_token(them, &info.id));
+        assert!(s.resolve(&raw).is_some());
+        assert!(s.revoke_access_token(me, &info.id));
+        assert_eq!(s.resolve(&raw), None);
+        assert!(
+            !s.revoke_access_token(me, &info.id),
+            "revoking twice finds nothing"
+        );
+    }
+
+    /// The cap is per account.
+    #[test]
+    fn access_tokens_are_capped_per_account() {
+        let s = Sessions::new();
+        let (me, them) = (Uuid::new_v4(), Uuid::new_v4());
+        for i in 0..MAX_ACCESS_TOKENS {
+            s.create_access_token(me, "me", &format!("t{i}"), false, None)
+                .unwrap();
+        }
+        assert!(s
+            .create_access_token(me, "me", "one more", false, None)
+            .is_err());
+        assert!(s
+            .create_access_token(them, "them", "theirs", false, None)
+            .is_ok());
+    }
+
+    /// Tokens survive a restart as hashes, and deleting or kicking the account
+    /// takes them along — on disk too.
+    #[test]
+    fn access_tokens_persist_and_go_with_the_account() {
+        let db = sessions_db();
+        let p = Uuid::new_v4();
+        let first = Sessions::persistent(db.clone());
+        let (raw, info) = first
+            .create_access_token(p, "dev", "bot", true, None)
+            .unwrap();
+        drop(first);
+        let stored: String = locked(&db)
+            .query_row("SELECT token_hash FROM access_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_ne!(stored, raw, "the raw token is never written down");
+
+        let rebooted = Sessions::persistent(db.clone());
+        let access = rebooted.resolve_access(&raw).expect("restored");
+        assert_eq!(
+            access.via,
+            Credential::AccessToken {
+                id: info.id,
+                elevated: true
+            }
+        );
+        assert_eq!(rebooted.revoke_principal(p), 1);
+        assert_eq!(token_count(&db), 0);
+        assert_eq!(rebooted.resolve(&raw), None);
     }
 }

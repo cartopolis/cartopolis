@@ -601,10 +601,11 @@ async fn export_content(
     headers: HeaderMap,
     Query(q): Query<ExportQuery>,
 ) -> ApiResult<Json<ContentDocument>> {
-    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    let access = crate::http::require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
     let wants_others = q.all || q.owner.is_some();
     if wants_others
-        && !crate::http::caller_permissions(&state, principal)?.has(Permission::ContentInstall)
+        && !crate::http::access_permissions(&state, &access)?.has(Permission::ContentInstall)
     {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -665,12 +666,13 @@ async fn transfer_content(
     headers: HeaderMap,
     Json(body): Json<TransferRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    let access = crate::http::require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
     if body.prims.is_empty() {
         return Err(bad("name at least one prim to transfer"));
     }
     // Re-homing anybody's build is editing anybody's prims.
-    let admin = crate::http::caller_permissions(&state, principal)?.has(Permission::PrimEditAny);
+    let admin = crate::http::access_permissions(&state, &access)?.has(Permission::PrimEditAny);
     let to = crate::http::with_db(&state, |c| crate::db::enabled_account_id(c, &body.to))?
         .ok_or_else(|| {
             ApiError(
@@ -730,7 +732,8 @@ async fn import_content(
     headers: HeaderMap,
     Json(doc): Json<ContentDocument>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    let access = crate::http::require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
     if doc.version > CONTENT_DOCUMENT_VERSION {
         return Err(bad(format!(
             "this document is version {} and this server reads up to {CONTENT_DOCUMENT_VERSION}",
@@ -751,7 +754,7 @@ async fn import_content(
     // and in the world's own map both (`SimWorld::may_edit`), so they can edit it
     // straight away. With their own permissions, so a role that may not build
     // cannot build by import either.
-    let perms = crate::http::caller_permissions(&state, principal)?;
+    let perms = crate::http::access_permissions(&state, &access)?;
     let importer = Actor::with_permissions(principal.to_string(), perms);
     let mut created = Vec::new();
     for spec in &doc.prims {

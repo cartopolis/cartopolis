@@ -661,8 +661,9 @@ async fn unshare_item(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    let (principal, username) = require_session(&state, &headers)?;
-    let admin = crate::http::caller_permissions(&state, principal)?.has(Permission::LibraryManage);
+    let access = crate::http::require_access(&state, &headers)?;
+    let (principal, username) = (access.principal, access.username.clone());
+    let admin = crate::http::access_permissions(&state, &access)?.has(Permission::LibraryManage);
     let gone = with_conn(&state, |conn| {
         let Some(item) = read_item(conn, principal, id)? else {
             return Ok(false);

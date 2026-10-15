@@ -199,6 +199,24 @@ impl Permission {
         )
     }
 
+    /// Whether this reaches past the holder's own things: running the server,
+    /// or editing what somebody else made. An access token leaves these behind
+    /// unless it was created to carry them (`PermissionSet::without_elevated`) —
+    /// a token sits in a bot's environment on a machine its owner does not
+    /// control, so a stolen one should be able to act as the account in the
+    /// world and nothing more.
+    #[must_use]
+    pub fn elevated(self) -> bool {
+        self.group() == PermissionGroup::Server
+            || matches!(
+                self,
+                Self::PrimEditAny
+                    | Self::ScriptEditAny
+                    | Self::BuildingDesignAny
+                    | Self::BuildingOverride
+            )
+    }
+
     fn bit(self) -> u32 {
         1 << (self as u32)
     }
@@ -237,6 +255,12 @@ impl PermissionSet {
     /// The members, in [`ALL`] order.
     pub fn iter(self) -> impl Iterator<Item = Permission> {
         ALL.iter().copied().filter(move |p| self.has(*p))
+    }
+
+    /// The same set with every [`Permission::elevated`] member taken out.
+    #[must_use]
+    pub fn without_elevated(self) -> Self {
+        self.iter().filter(|p| !p.elevated()).collect()
     }
 
     /// The slugs, for an answer over HTTP.
@@ -301,5 +325,19 @@ mod tests {
         for p in ALL.iter().filter(|p| p.player_default()) {
             assert_ne!(p.group(), PermissionGroup::Server, "{}", p.slug());
         }
+    }
+
+    /// A restricted access token on an admin account keeps exactly what a
+    /// player starts with: nothing elevated is a player default, and nothing a
+    /// player starts with is lost.
+    #[test]
+    fn without_elevated_leaves_an_admin_a_player() {
+        let player: PermissionSet = ALL.iter().copied().filter(|p| p.player_default()).collect();
+        assert_eq!(PermissionSet::all().without_elevated(), player);
+        assert_eq!(player.without_elevated(), player);
+        assert!(ALL
+            .iter()
+            .filter(|p| p.group() == PermissionGroup::Server)
+            .all(|p| p.elevated()));
     }
 }

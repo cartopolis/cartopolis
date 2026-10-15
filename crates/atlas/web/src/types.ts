@@ -498,3 +498,26 @@ export interface PublicInfo {
     may_moderate: boolean
     federating: boolean
 }
+
+/**
+ * One of the signed-in person's access tokens, as `/api/tokens` lists it: what a
+ * bot or a script signs in with instead of a password (`docs/notes/access-tokens.md`).
+ * Everything but the secret, which only `POST /api/tokens` returns, once.
+ *
+ * Guarded by the Rust test `web_mirror::access_token` in
+ * `crates/simulator/tests/integration/`, which compares its serialised keys
+ * with these fields.
+ */
+export interface AccessToken {
+    /** Unix seconds. */
+    created_at: number
+    /** Carries the account's elevated permissions (running the server, editing others' things). */
+    elevated: boolean
+    /** Unix seconds; null for a token that lasts until it is revoked. */
+    expires_at: number | null
+    /** What the revoke route takes; not a secret. */
+    id: string
+    label: string
+    /** Unix seconds, to the minute; null if it was never used. */
+    last_used: number | null
+}

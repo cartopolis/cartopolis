@@ -338,7 +338,7 @@ pub fn forget_account(conn: &Connection, account: &str) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 use crate::http::{
-    caller_permissions, is_operator, require, require_session, with_db, with_db_mut, ApiError,
+    access_permissions, is_operator, require, require_access, with_db, with_db_mut, ApiError,
     ApiResult, HttpState,
 };
 use axum::extract::{Path, State};
@@ -372,8 +372,8 @@ async fn list_permissions(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (principal, _) = require_session(&state, &headers)?;
-    if !is_operator(caller_permissions(&state, principal)?) {
+    let access = require_access(&state, &headers)?;
+    if !is_operator(access_permissions(&state, &access)?) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "that account may not administer this server".into(),
@@ -398,8 +398,8 @@ async fn get_roles(
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     // Read by whoever manages accounts too: assigning a role means seeing them.
-    let (principal, _) = require_session(&state, &headers)?;
-    let perms = caller_permissions(&state, principal)?;
+    let access = require_access(&state, &headers)?;
+    let perms = access_permissions(&state, &access)?;
     if !perms.has(Permission::RolesManage) && !perms.has(Permission::AccountsManage) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
