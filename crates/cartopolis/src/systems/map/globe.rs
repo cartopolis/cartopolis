@@ -991,11 +991,20 @@ fn space_raymarch() -> bool {
         && !*FORCED_OFF.get_or_init(|| crate::env_flag("CARTO_NO_SPACE_RAYMARCH"))
 }
 
-/// Raymarch sky samples per fragment in the space tier. Held at Bevy's default:
-/// measured offscreen at 200 km and 15,000 km, 16 samples costs the same as 6
-/// within run-to-run noise (~2 ms over `LookupTexture` either way), so there's
-/// nothing to buy by starving the integration.
-const GLOBE_SKY_SAMPLES: u32 = 16;
+/// Raymarch sky samples per fragment whenever the globe is drawn — the space tier
+/// and, since the switch moved to `GLOBE_DRAW_ALT`, every view high enough to see
+/// the globe's horizon, which over a city is anything above a few hundred metres.
+///
+/// Half Bevy's default of 16. The march runs once per main-pass pixel, so its cost
+/// is pixels × samples and nothing else, and on a Retina panel that made it the
+/// largest thing in the frame. Measured 2026-10-16 on an M5 Pro at 3134×1952
+/// (`cargo perf`, two flights each): `city` 10.2 → 7.0 ms and `orbit` 14.7 →
+/// 11.4 ms going from 16 to 8, and 5.8 / 9.1 ms at 4. Side by side, 16 and 8
+/// cannot be told apart from 3 km, from orbit or along the limb; 4 reads a shade
+/// hazier near the camera, so it stays at 8. An earlier measurement on an Intel
+/// iGPU found 16 and 6 within noise of each other, so this costs that machine
+/// nothing either.
+const GLOBE_SKY_SAMPLES: u32 = 8;
 
 /// Thickness of `Atmosphere::earth` (outer − inner radius), in metres.
 const EARTH_ATMOSPHERE_THICKNESS: f32 = 100_000.0;
