@@ -25,7 +25,9 @@
 //!   variant this crate refuses), and its own commit was already applied by
 //!   [`Device::confirm_pending`]. The log replays everything to everyone, so a
 //!   device skips entries whose sender is itself ([`Device::is_me`]) and shows
-//!   what it sent from its own copy.
+//!   what it sent from its own copy. The one exception is its own commit when
+//!   the server's answer to it was lost: [`Device::own_commit`] recognises it,
+//!   and the device applies it from the log instead.
 //!
 //! # Identity
 //!
@@ -134,6 +136,22 @@ pub enum Received {
     Message { from: Identity, bytes: Vec<u8> },
     /// Membership changed; [`Device::members`] has the new list.
     Membership { by: Identity },
+}
+
+/// One of a device's own log entries, seen from the device ([`Device::own_commit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnCommit {
+    /// Not a commit (or not readable as one): skip it, as every own entry.
+    NotACommit,
+    /// A commit this device has already applied.
+    Applied,
+    /// The commit this device is waiting to hear about: the server took it,
+    /// so apply it ([`Device::confirm_pending`]).
+    Pending,
+    /// A commit of this device's in its current epoch that it no longer
+    /// holds (it was discarded as refused, and was not). The chat moved on
+    /// without this device, which cannot follow it.
+    Lost,
 }
 
 /// The plaintext inside an application message.
@@ -585,6 +603,50 @@ impl Device {
         g.clear_pending_commit(self.provider.storage()).map_err(mls)
     }
 
+    /// Whether this device made a commit to `group` that is neither confirmed
+    /// nor discarded yet. While it is, the server's epoch is either the one
+    /// this device is in or the one after it, and this device cannot tell
+    /// which; nothing should be sealed until it can.
+    #[must_use]
+    pub fn has_pending(&self, group: &[u8]) -> bool {
+        self.groups
+            .get(group)
+            .is_some_and(|g| g.pending_commit().is_some())
+    }
+
+    /// What one of this device's own log entries is, as a commit. The log
+    /// replays a device's own entries to it, and its own commit is the one
+    /// entry that cannot simply be skipped: if the server's answer to it was
+    /// lost (the connection dropped first), the replayed entry is the only
+    /// word this device will ever get that the commit was accepted.
+    ///
+    /// The server accepts one commit per epoch, and this device can make no
+    /// second commit while one is pending, so its own commit in the epoch it
+    /// is still in *is* the pending one.
+    #[must_use]
+    pub fn own_commit(&self, group: &[u8], message: &[u8]) -> OwnCommit {
+        let Some(g) = self.groups.get(group) else {
+            return OwnCommit::NotACommit;
+        };
+        let Ok(msg) = MlsMessageIn::tls_deserialize(&mut &message[..]) else {
+            return OwnCommit::NotACommit;
+        };
+        let Ok(protocol) = msg.try_into_protocol_message() else {
+            return OwnCommit::NotACommit;
+        };
+        if protocol.content_type() != ContentType::Commit {
+            return OwnCommit::NotACommit;
+        }
+        let epoch = protocol.epoch();
+        if epoch < g.epoch() {
+            OwnCommit::Applied
+        } else if epoch == g.epoch() && g.pending_commit().is_some() {
+            OwnCommit::Pending
+        } else {
+            OwnCommit::Lost
+        }
+    }
+
     /// Seal a message for everyone else in the chat.
     pub fn encrypt(&mut self, group: &[u8], payload: &Payload) -> Result<Outgoing, Error> {
         let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
@@ -946,6 +1008,41 @@ mod tests {
         // as a second copy of Alice's own line.
         assert!(!matches!(
             alice.receive(&g, &m.message),
+            Ok(Received::Message { .. })
+        ));
+    }
+
+    #[test]
+    fn a_commit_whose_answer_was_lost_is_recognised_in_the_log() {
+        let mut alice = Device::new("alice@test.example", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let mut phone = Device::new("bob@test.example", Uuid::new_v4()).unwrap();
+        let g = alice.create_group(&test_group()).unwrap();
+        let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        alice.confirm_pending(&g).unwrap();
+        bob.join(add.welcome.as_ref().unwrap()).unwrap();
+        assert!(!alice.has_pending(&g));
+        let line = alice.encrypt(&g, &say("hi")).unwrap();
+        assert_eq!(alice.own_commit(&g, &line.message), OwnCommit::NotACommit);
+        assert_eq!(alice.own_commit(&g, &add.message), OwnCommit::Applied);
+
+        // Alice adds Bob's phone; the server takes it, and its answer is lost.
+        let add_phone = alice
+            .add_member_devices(&g, &phone.key_packages(1).unwrap())
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(alice.has_pending(&g));
+        phone.join(add_phone.welcome.as_ref().unwrap()).unwrap();
+        // The replay brings the commit back: it is the pending one.
+        assert_eq!(alice.own_commit(&g, &add_phone.message), OwnCommit::Pending);
+        alice.confirm_pending(&g).unwrap();
+        assert!(!alice.has_pending(&g));
+        assert_eq!(alice.own_commit(&g, &add_phone.message), OwnCommit::Applied);
+        // And what Alice says now, the phone can read.
+        let m = alice.encrypt(&g, &say("welcome, phone")).unwrap();
+        assert!(matches!(
+            phone.receive(&g, &m.message),
             Ok(Received::Message { .. })
         ));
     }

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use cartopolis_core::address;
 use cartopolis_core::point::Point;
 use cartopolis_core::{E2eeCursor, E2eeWelcome, NetMessage};
-use cartopolis_e2ee::{Device, Payload, Received};
+use cartopolis_e2ee::{Device, OwnCommit, Payload, Received};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -479,6 +479,17 @@ pub struct Engine {
     /// Commits in flight that add more devices of people already in a chat
     /// (`NetMessage::E2eeAddDevices`): the request and the chat.
     device_adds: Vec<(u32, Vec<u8>)>,
+    /// Lines written while this device had a commit to their chat in flight:
+    /// the request id they were given, the chat and what to seal. Sealing
+    /// waits for the commit to be settled (`flush_held`), because until then
+    /// this device cannot know which epoch the chat is in, and a line sealed
+    /// in the wrong one cannot be read by whoever the commit added.
+    held: Vec<(u32, Vec<u8>, Payload)>,
+    /// Chats whose pending commit outlived the connection it was sent on, so
+    /// that nothing here is waiting for its answer: the sync request that
+    /// should settle it and the chat's cursor when that sync was asked
+    /// (`on_synced`).
+    settling: Vec<(u32, Vec<u8>, u64)>,
     next_request: u32,
 }
 
@@ -498,6 +509,8 @@ impl Engine {
             communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
+            held: Vec::new(),
+            settling: Vec::new(),
             next_request: 1,
         })
     }
@@ -517,6 +530,8 @@ impl Engine {
             communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
+            held: Vec::new(),
+            settling: Vec::new(),
             next_request: 1,
         })
     }
@@ -645,6 +660,11 @@ impl Engine {
     }
 
     fn sync_request(&mut self, only: Option<&[u8]>) -> NetMessage {
+        self.sync_for(only).1
+    }
+
+    /// A sync, and the request id its `E2eeSynced` will carry.
+    fn sync_for(&mut self, only: Option<&[u8]>) -> (u32, NetMessage) {
         let cursors = self
             .cursors
             .iter()
@@ -654,10 +674,14 @@ impl Engine {
                 after: *after,
             })
             .collect();
-        NetMessage::E2eeSync {
-            request_id: self.request(),
-            cursors,
-        }
+        let request_id = self.request();
+        (
+            request_id,
+            NetMessage::E2eeSync {
+                request_id,
+                cursors,
+            },
+        )
     }
 
     /// Just connected (or reconnected): register this device with a fresh stock
@@ -669,13 +693,28 @@ impl Engine {
             device: self.device.identity().device,
             key_packages,
         });
-        let sync = self.sync_request(None);
+        let (sync_id, sync) = self.sync_for(None);
         out.push(sync);
         // Whatever was half set up belonged to the previous connection's requests.
         self.starting.clear();
         self.group_starts.clear();
         self.device_adds.clear();
         self.removing.clear();
+        self.adding.clear();
+        // Their answers will never come, but a commit one of them sent may
+        // still have been taken: the server answers before it can know the
+        // answer arrived. So a commit still pending in a chat is settled from
+        // the log rather than dropped here — the replay brings it back if it
+        // landed (`on_deliver`), and if the replay ends without it, it did
+        // not (`on_synced`). This also covers a device restored from a save
+        // made while a commit was in flight: the pending commit is part of
+        // the saved state.
+        self.settling = self
+            .cursors
+            .iter()
+            .filter(|(g, _)| self.device.has_pending(g))
+            .map(|(g, c)| (sync_id, g.clone(), *c))
+            .collect();
         // Communities are part of the chat list, so ask for them now too.
         self.list_communities(out);
     }
@@ -1347,8 +1386,12 @@ impl Engine {
     }
 
     /// Whether this device has a change to `group`'s membership in flight.
+    /// A pending commit counts even when nothing here remembers sending it
+    /// (it outlived its connection, or the app restarted): it is settled from
+    /// the log first, and MLS refuses a second commit until it is anyway.
     fn changing(&self, group: &[u8]) -> bool {
-        self.device_adds.iter().any(|(_, g)| g == group)
+        self.device.has_pending(group)
+            || self.device_adds.iter().any(|(_, g)| g == group)
             || self.removing.iter().any(|(_, g, _)| g == group)
             || self.adding.iter().any(|a| a.group == group)
             || self
@@ -1384,9 +1427,23 @@ impl Engine {
         if let Err(e) = result {
             tracing::warn!(error = %e, "could not settle a device add");
         }
-        // The new device reads from after this commit: a group's name has to be
-        // said again for it, as for a newcomer.
-        if seq.is_some() && self.groups.contains(group) {
+        if seq.is_some() {
+            self.greet_new_devices(group, out, events);
+        }
+        true
+    }
+
+    /// Devices were just added to `group` by this device's commit. They read
+    /// from after it: a group's name has to be said again for them, as for a
+    /// newcomer, and what was said before them is packed up by this device's
+    /// host.
+    fn greet_new_devices(
+        &mut self,
+        group: &[u8],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        if self.groups.contains(group) {
             if let Some(label) = self.peers.get(group).cloned() {
                 let name = Payload::GroupName {
                     name: label,
@@ -1397,13 +1454,50 @@ impl Engine {
                 }
             }
         }
-        // And what was said before them: this device's host packs it up.
-        if seq.is_some() {
-            events.push(Event::HistoryWanted {
-                group: group.to_vec(),
-            });
+        events.push(Event::HistoryWanted {
+            group: group.to_vec(),
+        });
+    }
+
+    /// This device's own commit, replayed from the log. Normally it was
+    /// applied when the server answered, and is skipped like any own entry.
+    /// But the answer can be lost — the server sends it and the connection
+    /// drops — and then this entry is the only proof the commit landed.
+    /// Skipping it here was the 2026-10-16 bug: the device stayed in the old
+    /// epoch for good, sealing every line with keys the devices its commit had
+    /// added never had, so each of them failed to open (`TooDistantInThePast`).
+    fn on_own_commit(
+        &mut self,
+        group: &[u8],
+        seq: u64,
+        message: &[u8],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        match self.device.own_commit(group, message) {
+            OwnCommit::NotACommit | OwnCommit::Applied => {}
+            OwnCommit::Pending => {
+                let before = self.device.members(group).len();
+                if let Err(e) = self.device.confirm_pending(group) {
+                    tracing::warn!(error = %e, seq, "could not apply this device's own commit");
+                    return;
+                }
+                tracing::info!(seq, "applied this device's own commit from the log");
+                self.settling.retain(|(_, g, _)| g != group);
+                // Whatever asked for it went with the old connection; what it
+                // would have done next is done here. A removal needs nothing:
+                // the server asks again, and is told nobody by those names is
+                // left.
+                if self.device.members(group).len() > before {
+                    self.greet_new_devices(group, out, events);
+                }
+            }
+            OwnCommit::Lost => tracing::error!(
+                seq,
+                "the log holds a commit of this device's that it no longer has; \
+                 it cannot follow this chat any more"
+            ),
         }
-        true
     }
 
     /// The server registered a topic's chat: list it in its community and open
@@ -1783,11 +1877,27 @@ impl Engine {
         payload: &Payload,
         out: &mut Vec<NetMessage>,
     ) -> Result<u32, String> {
+        let request_id = self.request();
+        if self.device.has_pending(group) {
+            self.held
+                .push((request_id, group.to_vec(), payload.clone()));
+            return Ok(request_id);
+        }
+        self.seal_and_send(request_id, group, payload, out)?;
+        Ok(request_id)
+    }
+
+    fn seal_and_send(
+        &mut self,
+        request_id: u32,
+        group: &[u8],
+        payload: &Payload,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
         let sealed = self
             .device
             .encrypt(group, payload)
             .map_err(|e| e.to_string())?;
-        let request_id = self.request();
         out.push(NetMessage::E2eeSend {
             request_id,
             group: group.to_vec(),
@@ -1796,13 +1906,71 @@ impl Engine {
             message: sealed.message,
             welcome: None,
         });
-        Ok(request_id)
+        Ok(())
+    }
+
+    /// Seal and send the lines held behind a commit, for every chat whose
+    /// commit has been settled one way or the other.
+    fn flush_held(&mut self, out: &mut Vec<NetMessage>, events: &mut Vec<Event>) {
+        if self.held.is_empty() {
+            return;
+        }
+        let held = std::mem::take(&mut self.held);
+        for (request_id, group, payload) in held {
+            if self.device.has_pending(&group) {
+                self.held.push((request_id, group, payload));
+            } else if let Err(e) = self.seal_and_send(request_id, &group, &payload, out) {
+                let peer = self.peers.get(&group).cloned().unwrap_or_default();
+                events.push(Event::Notice(format!("Not delivered to {peer}: {e}")));
+            }
+        }
+    }
+
+    /// A sync's replay has ended. A chat whose pending commit it was meant to
+    /// settle and did not: if the cursor never moved, the log holds nothing
+    /// past where this device was, so the commit is not in it — the server
+    /// never took it, and it is dropped so the chat can change again. If the
+    /// cursor did move, the replay may have stopped at its batch limit before
+    /// reaching the commit, so ask again from where it stopped. Dropping a
+    /// commit the server did take would strand this device in the old epoch
+    /// for good, which is why a guess is not good enough here.
+    fn on_synced(&mut self, request_id: u32, out: &mut Vec<NetMessage>) {
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.settling)
+            .into_iter()
+            .partition(|(r, ..)| *r == request_id);
+        self.settling = later;
+        for (_, group, before) in now {
+            if !self.device.has_pending(&group) {
+                continue;
+            }
+            let Some(&cursor) = self.cursors.get(&group) else {
+                let _ = self.device.discard_pending(&group);
+                continue;
+            };
+            if cursor == before {
+                tracing::info!("dropped a commit the server never took");
+                if let Err(e) = self.device.discard_pending(&group) {
+                    tracing::warn!(error = %e, "could not drop a commit the server never took");
+                }
+            } else {
+                let (again, sync) = self.sync_for(Some(&group));
+                out.push(sync);
+                self.settling.push((again, group, cursor));
+            }
+        }
     }
 
     /// Apply one message from the server. Anything that is not private-chat
     /// traffic is ignored.
     pub fn handle(&mut self, msg: NetMessage, out: &mut Vec<NetMessage>, events: &mut Vec<Event>) {
+        self.apply(msg, out, events);
+        // Whatever settled a commit, the lines waiting on it can go now.
+        self.flush_held(out, events);
+    }
+
+    fn apply(&mut self, msg: NetMessage, out: &mut Vec<NetMessage>, events: &mut Vec<Event>) {
         match msg {
+            NetMessage::E2eeSynced { request_id } => self.on_synced(request_id, out),
             NetMessage::E2eeDeviceStatus { key_packages, .. } => {
                 if key_packages < KEY_PACKAGE_LOW {
                     let more = self.key_packages(KEY_PACKAGE_STOCK - key_packages);
@@ -1868,10 +2036,10 @@ impl Engine {
                 sender,
                 device,
                 sent_at_ms,
+                commit,
                 message,
-                ..
             } => self.on_deliver(
-                group, seq, &sender, device, sent_at_ms, &message, out, events,
+                group, seq, &sender, device, sent_at_ms, commit, &message, out, events,
             ),
             NetMessage::ServerError {
                 request_id,
@@ -2295,6 +2463,7 @@ impl Engine {
         sender: &str,
         device: Uuid,
         sent_at_ms: u64,
+        commit: bool,
         message: &[u8],
         out: &mut Vec<NetMessage>,
         events: &mut Vec<Event>,
@@ -2314,6 +2483,9 @@ impl Engine {
         }
         self.cursors.insert(group.clone(), seq);
         if self.device.is_me(sender, device) {
+            if commit {
+                self.on_own_commit(&group, seq, message, out, events);
+            }
             return;
         }
         match self.device.receive(&group, message) {
@@ -2515,6 +2687,29 @@ mod loopback {
 
     impl Peer {
         async fn connect(addr: &str, name: &str) -> Self {
+            let (conn, server_name) = Self::dial(addr, name).await;
+            let mut p = Self {
+                conn,
+                engine: Engine::new(&address::person(name, &server_name)).unwrap(),
+                events: Vec::new(),
+            };
+            let mut out = Vec::new();
+            p.engine.on_connected(&mut out);
+            p.send_all(out).await;
+            p
+        }
+
+        /// The same device on a new connection, as after a phone's suspend:
+        /// the old one is dropped with whatever it still had in flight.
+        async fn reconnect(&mut self, addr: &str, name: &str) {
+            self.conn = Self::dial(addr, name).await.0;
+            let mut out = Vec::new();
+            self.engine.on_connected(&mut out);
+            self.send_all(out).await;
+        }
+
+        /// Sign in as `name`; answers the connection and the server's name.
+        async fn dial(addr: &str, name: &str) -> (Conn, String) {
             let mut conn = Framed::new(
                 TcpStream::connect(addr).await.unwrap(),
                 LengthDelimitedCodec::builder()
@@ -2540,15 +2735,7 @@ mod loopback {
                     break server_name;
                 }
             };
-            let mut p = Self {
-                conn,
-                engine: Engine::new(&address::person(name, &server_name)).unwrap(),
-                events: Vec::new(),
-            };
-            let mut out = Vec::new();
-            p.engine.on_connected(&mut out);
-            p.send_all(out).await;
-            p
+            (conn, server_name)
         }
 
         async fn send_all(&mut self, out: Vec<NetMessage>) {
@@ -2859,6 +3046,88 @@ mod loopback {
         assert_eq!(
             bob.lines(),
             vec![("alice".into(), "while you were out".into())]
+        );
+    }
+
+    /// The 2026-10-16 bug: Alice's device commits Bob's new device into their
+    /// chat, the server takes the commit, and the connection drops before its
+    /// answer arrives. The replayed log is then the only word Alice's device
+    /// gets that the commit landed; skipping it as "my own entry" left her in
+    /// the old epoch for good, sealing every line with keys Bob's new device
+    /// never had (`TooDistantInThePast` on each one).
+    #[tokio::test]
+    async fn a_commit_whose_answer_was_lost_is_applied_from_the_log() {
+        let (_dir, _h, addr) = server(&["alice", "bob"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .start_direct("bob", &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let group = alice.opened().unwrap();
+
+        // Bob's first device goes away, so the server has to ask Alice's to
+        // add his new one.
+        drop(bob);
+        alice.pump(PUMP).await;
+        let mut phone = Peer::connect(&addr, "bob").await;
+        phone.pump(PUMP).await;
+
+        // Alice's device commits the add, and then hears nothing back.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut committed = false;
+        while !committed {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let frame = tokio::time::timeout(left, alice.conn.next())
+                .await
+                .expect("the server asks Alice's device to add Bob's new one")
+                .unwrap()
+                .unwrap();
+            let msg = decode_app_frame(&frame).unwrap();
+            if !is_private_message(&msg) {
+                continue;
+            }
+            let mut out = Vec::new();
+            alice.engine.handle(msg, &mut out, &mut alice.events);
+            committed = out
+                .iter()
+                .any(|m| matches!(m, NetMessage::E2eeSend { commit: true, .. }));
+            alice.send_all(out).await;
+        }
+        // Wait for the server's answer, and lose it.
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), alice.conn.next())
+                .await
+                .expect("the server answers the commit")
+                .unwrap()
+                .unwrap();
+            if let Ok(NetMessage::E2eeSent { seq, .. }) = decode_app_frame(&frame) {
+                assert!(seq.is_some(), "the server took the commit");
+                break;
+            }
+        }
+        phone.pump(PUMP).await;
+        assert_eq!(phone.opened(), Some(group.clone()), "the phone joined");
+
+        // Alice's phone comes back on a new connection.
+        alice.reconnect(&addr, "alice").await;
+        alice.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_text(&group, "can your new phone read this?", 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        phone.pump(PUMP).await;
+        assert_eq!(
+            phone.lines(),
+            vec![("alice".into(), "can your new phone read this?".into())]
         );
     }
 

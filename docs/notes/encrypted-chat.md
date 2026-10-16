@@ -1,7 +1,7 @@
 ---
 topic: encrypted-chat
 triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql]
-updated: 2026-10-10
+updated: 2026-10-16
 ---
 
 # Private chats are end-to-end encrypted, and the server is only a relay
@@ -46,6 +46,18 @@ without it the wasm build stops at `getrandom`.
   own application message as a message, so clients skip log entries whose
   sender device is themselves and show their own line from their own copy.
   (An early version reported them as "membership changed", which hid this.)
+- **Except its own commit, when the server's answer to it was lost.** The
+  server answers a commit before it can know the answer arrived, so a phone
+  that suspends in between has a commit the chat took and a device that never
+  applied it. On reconnect the replayed log is the only proof: a device that
+  still holds a pending commit and finds its own commit in that epoch applies
+  it (`Device::own_commit`, `Engine::on_own_commit`); a replay that ends with
+  the cursor unmoved and the commit still pending means the server never took
+  it, and it is dropped. Skipping it instead left the device in the old epoch
+  for good, sealing every line with keys the device it had just added never
+  had (`TooDistantInThePast` on every line, 2026-10-16). **Nothing is sealed
+  while a commit is pending** (`Engine::held`): until it settles the device
+  cannot know which epoch the chat is in.
 - **Entries are applied strictly in order.** A gap means a line was dropped (the
   text backlog is bounded, `chat::TEXT_BACKLOG`); the client asks again from its
   cursor instead of skipping, because a skipped *commit* breaks the chat for good.
