@@ -24,9 +24,11 @@
 # head it has not passed. What lands on `main` has been tested; what it has not
 # been is tested *by something outside this machine* — see that script's header
 # and docs/notes/agent-verification.md, both of which say so in as many words.
-# CI has not been switched off: pushing `main` runs it, with the render smokes
-# and both cross-target lanes that a pull request never had. Its verdict now
-# arrives after the landing, and a red one is fixed forward.
+# CI has not been switched off: it runs on `main` nightly (on every push until
+# 2026-10-16), with the render smokes and both cross-target lanes that a pull
+# request never had. Its verdict arrives after the landing, and a red one is
+# fixed forward. The gate's pass is also recorded at the midas hub, which is
+# what `midas deploy` asks for before it publishes a commit.
 #
 # ## What it still refuses
 #
