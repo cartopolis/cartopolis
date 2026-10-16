@@ -10,11 +10,18 @@
 # grow (Android refuses an update with a lower one), and the workflow's codes
 # were 10000 + its run number, which never reached 20000.
 . "$(dirname "$0")/lib.sh"
+# What it needs, fetched once into $TOOLS where a node lacks it — on a Linux
+# node only the SDK pieces (the image has a JDK and the machine mounts an NDK);
+# on a Mac node all of it, for macOS.
+case "$(uname -s)" in
+    Darwin) host=darwin bt_zip=build-tools_r34-macosx.zip ;;
+    *)      host=linux  bt_zip=build-tools_r34-linux.zip ;;
+esac
 sdk="$TOOLS/android-sdk"
 if [ ! -x "$sdk/build-tools/34.0.0/aapt2" ] || [ ! -f "$sdk/platforms/android-34/android.jar" ]; then
-    echo "fetching the Android SDK pieces (build-tools 34, platform 34)" >&2
+    echo "fetching the Android SDK pieces (build-tools 34, platform 34) for $host" >&2
     tmp=$(mktemp -d)
-    curl -fsSL -o "$tmp/bt.zip" https://dl.google.com/android/repository/build-tools_r34-linux.zip
+    curl -fsSL -o "$tmp/bt.zip" "https://dl.google.com/android/repository/$bt_zip"
     curl -fsSL -o "$tmp/pl.zip" https://dl.google.com/android/repository/platform-34-ext8_r01.zip
     unzip -q "$tmp/bt.zip" -d "$tmp/bt" && unzip -q "$tmp/pl.zip" -d "$tmp/pl"
     rm -rf "$sdk/build-tools/34.0.0" "$sdk/platforms/android-34"
@@ -22,17 +29,55 @@ if [ ! -x "$sdk/build-tools/34.0.0/aapt2" ] || [ ! -f "$sdk/platforms/android-34
     mv "$tmp"/bt/* "$sdk/build-tools/34.0.0" && mv "$tmp/pl/android-34" "$sdk/platforms/"
     rm -rf "$tmp"
 fi
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    if [ -d /opt/android-ndk ]; then
+        ANDROID_NDK_HOME=/opt/android-ndk
+    else
+        ANDROID_NDK_HOME="$TOOLS/android-ndk-r27c"
+        if [ ! -x "$ANDROID_NDK_HOME/ndk-build" ]; then
+            echo "fetching Android NDK r27c for $host" >&2
+            tmp=$(mktemp -d)
+            if [ "$host" = darwin ]; then
+                # For macOS the NDK is only published as a disk image.
+                curl -fsSL -o "$tmp/ndk.dmg" https://dl.google.com/android/repository/android-ndk-r27c-darwin.dmg
+                hdiutil attach -quiet -nobrowse -readonly -mountpoint "$tmp/mnt" "$tmp/ndk.dmg"
+                rm -rf "$ANDROID_NDK_HOME" && cp -R "$tmp"/mnt/*.app/Contents/NDK "$ANDROID_NDK_HOME"
+                hdiutil detach -quiet "$tmp/mnt"
+            else
+                curl -fsSL -o "$tmp/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+                unzip -q "$tmp/ndk.zip" -d "$tmp" && rm -rf "$ANDROID_NDK_HOME" && mv "$tmp/android-ndk-r27c" "$ANDROID_NDK_HOME"
+            fi
+            rm -rf "$tmp"
+        fi
+    fi
+fi
+export ANDROID_NDK_HOME
+if [ -z "${JAVA_HOME:-}" ]; then
+    if [ "$host" = darwin ]; then
+        JAVA_HOME="$TOOLS/jdk-17/Contents/Home"
+        if [ ! -x "$JAVA_HOME/bin/javac" ]; then
+            echo "fetching a JDK 17 (Temurin) for macOS" >&2
+            rm -rf "$TOOLS/jdk-17" && mkdir -p "$TOOLS/jdk-17"
+            curl -fsSL "https://api.adoptium.net/v3/binary/latest/17/ga/mac/$(uname -m | sed 's/arm64/aarch64/')/jdk/hotspot/normal/eclipse" \
+                | tar -xz -C "$TOOLS/jdk-17" --strip-components=1
+        fi
+    else
+        JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+    fi
+fi
+export JAVA_HOME ANDROID_SDK_HOME="$sdk"
+case " $(rustup target list --installed | tr '\n' ' ') " in
+    *" aarch64-linux-android "*) ;;
+    *) rustup target add aarch64-linux-android ;;
+esac
 command -v cargo-ndk >/dev/null || cargo install --locked --root "$TOOLS" cargo-ndk
-export ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-/opt/android-ndk}
-export ANDROID_SDK_HOME="$sdk"
-export JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
 export VERSION_CODE=$(( 20000 + $(git -C "$ROOT" rev-list --count HEAD) ))
-[ -d "$ANDROID_NDK_HOME" ] || { echo "no Android NDK at $ANDROID_NDK_HOME" >&2; exit 1; }
 cd "$ROOT"
 crates/cartopolis_android/build-apk.sh
 
 apk="${CARGO_TARGET_DIR:-target}/android/cartopolis-arm64-v8a.apk"
-ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+ndk_bin=
+for d in "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin; do [ -d "$d" ] && { ndk_bin=$d; break; }; done
 aapt2="$sdk/build-tools/34.0.0/aapt2"
 # What deploy-android.yml checks before it publishes: each is an APK that
 # installs and then cannot start.
@@ -49,7 +94,12 @@ case "$manifest" in *"hasCode(0x0101000c)=false"*) echo "classes.dex is packaged
 dynamic=$("$ndk_bin/llvm-readelf" -d "$lib")
 case "$dynamic" in *libc++_shared*) echo "the .so needs libc++_shared.so, which the APK does not ship" >&2; exit 1 ;; esac
 headers=$("$ndk_bin/llvm-readelf" --program-headers "$lib")
-align=$(printf '%s\n' "$headers" | awk '$1 == "LOAD" { v = strtonum($NF); if (min == "" || v < min) min = v } END { print min + 0 }')
+align=0
+# Hex to number in the shell, not with gawk's strtonum: macOS's awk has none.
+for a in $(printf '%s\n' "$headers" | awk '$1 == "LOAD" { print $NF }'); do
+    v=$((a))
+    if [ "$align" = 0 ] || [ "$v" -lt "$align" ]; then align=$v; fi
+done
 [ "$align" -ge 16384 ] || { echo "LOAD segments aligned to $align bytes, under the 16384 Pixel 8+ require" >&2; exit 1; }
 rm -f "$lib"
 

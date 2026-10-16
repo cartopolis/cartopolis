@@ -405,10 +405,13 @@ echo "==> java + dex"
 # valid. Naming the encoding also makes the build independent of the CI image's
 # locale, which is the more important half.
 mkdir -p "$work/classes"
-mapfile -t java_src < <(find crates/cartopolis_android/java -name '*.java' | sort)
+# A loop rather than `mapfile`, which needs bash 4: macOS's /bin/bash is 3.2.
+java_src=()
+while IFS= read -r f; do java_src+=("$f"); done < <(find crates/cartopolis_android/java -name '*.java' | sort)
 [ ${#java_src[@]} -gt 0 ] || { echo "error: no .java under crates/cartopolis_android/java" >&2; exit 2; }
 "$JAVAC" -encoding UTF-8 -classpath "$android_jar" -d "$work/classes" "${java_src[@]}"
-mapfile -t class_files < <(find "$work/classes" -name '*.class' | sort)
+class_files=()
+while IFS= read -r f; do class_files+=("$f"); done < <(find "$work/classes" -name '*.class' | sort)
 # Guarded because **d8 given no inputs exits 0 and writes nothing**: the APK
 # would then ship without a `classes.dex`, and the only symptom would be a
 # ClassNotFoundError at runtime, on a phone, long after the build said OK.
@@ -433,7 +436,12 @@ cp "$so" "$work/lib/$ABI/"
 # Rust references it, so this is the step that would silently produce an APK that
 # installs and does not start. The deploy job re-asserts the symbol afterwards.
 if [ "${STRIP:-1}" != 0 ]; then
-    llvm_strip="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+    # Whichever host the NDK was built for: linux-x86_64, or darwin-x86_64 on a
+    # Mac. Naming one quietly skipped the strip on the other (the -x test below).
+    llvm_strip=
+    for c in "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip; do
+        [ -x "$c" ] && { llvm_strip=$c; break; }
+    done
     if [ -x "$llvm_strip" ]; then
         before=$(du -h "$work/lib/$ABI/libcartopolis_android.so" | cut -f1)
         "$llvm_strip" --strip-unneeded "$work/lib/$ABI/libcartopolis_android.so"
