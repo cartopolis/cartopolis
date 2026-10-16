@@ -333,10 +333,7 @@ fn track_main_pass_pixels(
         return;
     };
     let scaled = scaled_size(size, scale.0);
-    MAIN_PASS_PIXELS.store(
-        u64::from(scaled.x) * u64::from(scaled.y),
-        Ordering::Relaxed,
-    );
+    MAIN_PASS_PIXELS.store(u64::from(scaled.x) * u64::from(scaled.y), Ordering::Relaxed);
 }
 
 /// Scale one physical size, floored at 1 px and never larger than the input.
