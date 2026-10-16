@@ -168,6 +168,12 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas
     if [ "$status" -eq 0 ] && printf '%s\n' "$remote" | grep -qx "sha=$head"; then
         printf '%s\n' "$remote" | sed "s|^base=.*|base=$(git rev-parse "$mb")|" > "$receipt"
         printf '%s\n' "node=$gate_node" >> "$receipt"
+        # And at the hub, which is what `midas deploy` asks before it publishes
+        # this commit. Best effort: a hub that cannot be told does not make the
+        # gate red — the deploy will say the receipt is missing instead.
+        midas verified --sha "$head" --scope "$scope" --node "$gate_node" \
+            --steps "$(printf '%s\n' "$remote" | sed -n 's/^steps=//p')" >/dev/null 2>&1 \
+            || echo "note: the hub did not take the receipt; \`midas deploy\` will ask for --unverified" >&2
     else
         rm -f "$receipt"
         [ "$status" -eq 0 ] && { echo "the node passed, but its receipt is not for ${head:0:8}" >&2; status=1; }

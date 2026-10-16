@@ -204,7 +204,7 @@ if [ -n "$issue" ]; then
     if [ "$st" != "closed" ]; then
         body=$(python3 -c "
 import json,sys
-print(json.dumps({'body': '🤖 **Landed on \`main\`** as \`%s\`.\n\nVerified locally with \`verify-branch\` before the push; CI runs on \`main\` behind it.' % sys.argv[1]}))" "${sha:0:8}")
+print(json.dumps({'body': '🤖 **Landed on \`main\`** as \`%s\`.\n\nVerified locally with \`verify-branch\` before the push; CI runs nightly on \`main\`.' % sys.argv[1]}))" "${sha:0:8}")
         printf '%s' "$body" | api -X POST -d @- "$API/repos/$REPO/issues/$issue/comments" >/dev/null
         api -X PATCH -d '{"state":"closed"}' "$API/repos/$REPO/issues/$issue" >/dev/null
         echo "==> closed #$issue"

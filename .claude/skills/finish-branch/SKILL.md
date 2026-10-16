@@ -55,8 +55,10 @@ landing paid for two full 15-25 minute runs of one tree on a capacity-3 runner,
 and the last eight merges before this change spent a median of *zero seconds*
 between opening the PR and merging it. Nobody was reading the verdict it bought.
 
-CI is not switched off: the push to `main` runs it, including the render smokes
-and both cross-target lanes that a pull request never had. What changed is that
+CI is not switched off: it runs on `main` **nightly** (since 2026-10-16; it ran
+on every push before), including the render smokes and both cross-target lanes
+that a pull request never had, and the gate's pass is recorded at the midas hub
+(`midas verified`), which is what `midas deploy` asks for. What changed is that
 its verdict now arrives **after** the landing. That is a real weakening, it is
 the trade the speed comes from, and a red `main` is fixed forward — see
 [docs/notes/agent-verification.md](../../../docs/notes/agent-verification.md).
