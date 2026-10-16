@@ -3,6 +3,7 @@ use cartopolis_core::{GeoAnchor, PrimSurface};
 
 #[derive(Component, Debug, Clone)]
 #[allow(dead_code)] // name kept for future UI labelling
+#[require(PrimLift)]
 pub struct Prim {
     pub id: i64,
     pub name: String,
@@ -148,6 +149,35 @@ pub struct RemoteAvatar {
     /// sits down over the same fraction of a second the sitter does without
     /// twenty offsets a second on the wire to say so.
     pub seat_blend: f32,
+    /// The measured ground under this avatar that its `Transform` is currently
+    /// drawn on top of — **not replicated**, and a display offset only. The sim
+    /// is flat (`y = 0` is the ground everywhere), so each viewer stands other
+    /// people on its own terrain field exactly as it stands its own avatar
+    /// (`AvatarState::terrain_lift`); `avatar::smooth_remote_avatars` takes it off
+    /// before smoothing toward the flat snapshot and puts the new one back on.
+    pub terrain_lift: f32,
+}
+
+/// The terrain height a prim is drawn raised by on this client
+/// (`prim_geo::lift_prims_onto_terrain`).
+///
+/// **A display offset that never reaches `Update`.** The sim is flat and holds
+/// no terrain, so a prim's `Transform` must stay in the sim's frame for every
+/// system that reads it — the gizmo and the edit dialog send it back as the
+/// prim's position, and a lifted `y` echoed in an `UpdatePrim` would raise the
+/// prim by the ground under it on every edit. So the lift goes on in
+/// `PostUpdate`, just before transform propagation, and comes off again in
+/// `First`: only the `GlobalTransform` — what is drawn, picked and handled —
+/// carries it.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct PrimLift {
+    /// The ground height last added to the local `y`.
+    pub lift: f32,
+    /// The absolute world position (cell + local) the prim was left at with the
+    /// lift on, or `None` when the lift is not on. What `First` checks before
+    /// taking the lift off: a `Transform` that something rewrote after the lift
+    /// went on is already flat, and stripping it again would sink the prim.
+    pub shown: Option<bevy::math::DVec3>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

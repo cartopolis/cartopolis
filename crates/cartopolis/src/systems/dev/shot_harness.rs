@@ -2650,6 +2650,7 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
             last_emote_sequence: None,
             seated: None,
             seat_blend: 0.0,
+            terrain_lift: 0.0,
         },
         crate::systems::chat_overlay::ScriptedSpeaker,
         Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),

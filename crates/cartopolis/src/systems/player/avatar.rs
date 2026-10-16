@@ -1679,11 +1679,42 @@ fn remote_display_step(
     carried.lerp(target, a)
 }
 
+/// One frame of a remote avatar's drawn position **on this viewer's ground**:
+/// `shown` is last frame's drawn position, `lift` the ground it was raised by.
+/// Returns the new drawn position and the new lift.
+///
+/// The sim is flat — `y = 0` is the ground everywhere, because it holds no map
+/// data — so every viewer stands other people on its own measured field, the
+/// way [`smooth_online_avatar_display`] stands its own avatar. Until this only
+/// the local avatar was lifted, and a stranger standing where the ground is
+/// lower than the anchor's datum floated above it (or sank where it is higher).
+/// Last frame's lift comes off first for the reason it does there: smoothing a
+/// lifted position toward a flat snapshot would drag the avatar into the
+/// hillside every frame. The lift follows [`airborne_lift`], so a remote flying
+/// over a canal does not dip into it any more than the local one does.
+#[must_use]
+fn remote_display_on_ground(
+    shown: Vec3,
+    lift: f32,
+    net_position: Vec3,
+    net_velocity: Vec3,
+    age: f32,
+    dt: f32,
+    ground_at: impl Fn(f32, f32) -> f32,
+) -> (Vec3, f32) {
+    let flat = remote_display_step(shown - Vec3::Y * lift, net_position, net_velocity, age, dt);
+    // `flat.y` is the height above the sim's ground.
+    let lift = airborne_lift(lift, ground_at(flat.x, flat.z), flat.y, dt);
+    (flat + Vec3::Y * lift, lift)
+}
+
 /// Draw other players' avatars where they are now, not where the last snapshot
-/// said they were — see [`remote_display_step`].
+/// said they were — see [`remote_display_step`] — and on the ground this client
+/// measured under them ([`remote_display_on_ground`]).
 pub fn smooth_remote_avatars(
     online: Option<Res<crate::resources::OnlineSession>>,
     time: Res<Time>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
     mut q: Query<(&mut RemoteAvatar, &mut Transform), Without<Avatar>>,
 ) {
     if online.is_none() {
@@ -1693,13 +1724,17 @@ pub fn smooth_remote_avatars(
     let a_rot = 1.0 - (-REMOTE_ROT_SMOOTHING * dt).exp();
     for (mut remote, mut tf) in q.iter_mut() {
         remote.net_age += dt;
-        tf.translation = remote_display_step(
+        let (shown, lift) = remote_display_on_ground(
             tf.translation,
+            remote.terrain_lift,
             remote.net_position,
             remote.net_velocity,
             remote.net_age,
             dt,
+            |x, z| terrain.ground_at(x, z),
         );
+        tf.translation = shown;
+        remote.terrain_lift = lift;
         // Replicated world yaw from each client’s camera-facing convention.
         let target_rot = Quat::from_rotation_y(wrap_angle_pi(remote.net_yaw));
         tf.rotation = tf.rotation.slerp(target_rot, a_rot);
@@ -2583,6 +2618,71 @@ mod tests {
             worst = worst.max(lift.abs());
         }
         assert!(worst < 0.2, "the canal still reached the avatar: {worst} m");
+    }
+
+    #[test]
+    fn a_remote_avatar_stands_on_this_viewers_ground() {
+        // A stranger standing still in the canal-side street two metres below
+        // the anchor's datum: the sim says y = 0, and the drawn feet must be on
+        // the measured ground, every frame — the lift must not accumulate.
+        let dt = 1.0 / 60.0;
+        let net = Vec3::new(110.0, 0.0, 5.0);
+        let (mut shown, mut lift) = (net, 0.0);
+        for _ in 0..240 {
+            (shown, lift) =
+                remote_display_on_ground(shown, lift, net, Vec3::ZERO, 0.0, dt, |x, _| canal(x));
+            assert!(
+                (shown.y - -2.0).abs() < 1e-4,
+                "drawn at {} over ground at -2",
+                shown.y
+            );
+        }
+        assert!((lift - -2.0).abs() < 1e-4);
+        assert!((shown.x - 110.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_remote_walking_off_the_quay_steps_down_with_the_ground() {
+        let dt = 1.0 / 60.0;
+        let v = Vec3::new(2.0, 0.0, 0.0);
+        let (mut shown, mut lift, mut net) =
+            (Vec3::new(96.0, 0.0, 0.0), 0.0, Vec3::new(96.0, 0.0, 0.0));
+        for i in 0..240 {
+            // A fresh snapshot each tick (every third frame), as at 20 Hz.
+            let age = if i % 3 == 0 {
+                net += v * 3.0 * dt;
+                0.0
+            } else {
+                (i % 3) as f32 * dt
+            };
+            (shown, lift) = remote_display_on_ground(shown, lift, net, v, age, dt, |x, _| canal(x));
+            assert!(
+                (shown.y - canal(shown.x)).abs() < 1e-3,
+                "at x = {} the feet are at {}, the ground at {}",
+                shown.x,
+                shown.y,
+                canal(shown.x)
+            );
+        }
+        assert!(shown.x > 100.0, "never reached the low street: {}", shown.x);
+        assert!((lift - -2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_flying_remote_keeps_its_height_over_a_canal() {
+        // 300 m up, crossing the canal at 100 m/s: the sim's height is above the
+        // ground, and the ground a flier passes over does not shake it.
+        let dt = 1.0 / 60.0;
+        let v = Vec3::new(100.0, 0.0, 0.0);
+        let mut net = Vec3::new(0.0, 300.0, 0.0);
+        let (mut shown, mut lift) = (net, 0.0);
+        let mut worst = 0.0_f32;
+        for _ in 0..120 {
+            net += v * dt;
+            (shown, lift) = remote_display_on_ground(shown, lift, net, v, 0.0, dt, |x, _| canal(x));
+            worst = worst.max((shown.y - 300.0).abs());
+        }
+        assert!(worst < 0.2, "the canal reached the flier: {worst} m");
     }
 
     #[test]

@@ -112,6 +112,109 @@ pub fn place_geo_prims(
     *last_anchor = Some(anchor);
 }
 
+/// How far (m) a prim may have moved since the lift went on and still have it
+/// taken off at the top of the next frame. Covers `big_space` re-gridding a
+/// prim between the lift and the strip (same world point, new cell, float
+/// rounding); anything further means something rewrote the `Transform` after
+/// the lift went on, with a flat value, and there is nothing to take off.
+const LIFT_STRIP_TOLERANCE_M: f64 = 0.01;
+
+/// How much to take off a prim's local `y` at the top of a frame, given where
+/// it is now (cell + local).
+#[must_use]
+pub(crate) fn lift_to_strip(lift: &crate::components::PrimLift, world_now: DVec3) -> f32 {
+    match lift.shown {
+        Some(shown) if shown.distance(world_now) <= LIFT_STRIP_TOLERANCE_M => lift.lift,
+        _ => 0.0,
+    }
+}
+
+/// Put the lift for `ground` on a prim whose flat world position is `flat`.
+/// Returns whether the drawn position moved since the lift last went on — i.e.
+/// whether transform propagation has to hear about it.
+pub(crate) fn put_lift_on(
+    lift: &mut crate::components::PrimLift,
+    flat: DVec3,
+    ground: f32,
+) -> bool {
+    let moved = ground != lift.lift;
+    lift.lift = ground;
+    lift.shown = (ground != 0.0).then(|| flat + DVec3::Y * f64::from(ground));
+    moved
+}
+
+/// Take last frame's terrain lift back off every prim, so everything in
+/// `Update` sees a prim's `Transform` in the sim's flat frame — the frame the
+/// gizmo, the edit dialog, the MCP agent and `place_geo_prims` read it in and
+/// send it back to the server in. See [`crate::components::PrimLift`].
+///
+/// Bypasses change detection: the drawn position has not moved, only the frame
+/// the `Transform` is written in, and [`lift_prims_onto_terrain`] flags the
+/// prims whose drawn position does move.
+pub fn strip_prim_lift(
+    mut prims: Query<(
+        &mut crate::components::PrimLift,
+        &mut Transform,
+        Option<&GridCell>,
+    )>,
+) {
+    for (mut lift, mut transform, cell) in &mut prims {
+        if lift.shown.is_none() {
+            continue;
+        }
+        let take = lift_to_strip(&lift, world_position(cell, &transform));
+        lift.bypass_change_detection().shown = None;
+        if take != 0.0 {
+            transform.bypass_change_detection().translation.y -= take;
+        }
+    }
+}
+
+/// Stand every prim on the measured ground under it, for drawing only.
+///
+/// The sim is flat — `y = 0` is the ground everywhere, since it holds no map
+/// data — so a prim's `y` is its height above the ground, and each client adds
+/// the ground it measured, exactly as it does for its own avatar
+/// (`AvatarState::terrain_lift`) and for other people's
+/// (`RemoteAvatar::terrain_lift`). Before this only the local avatar was
+/// lifted: a build a kilometre from the anchor, where the ground is lower than
+/// the anchor's datum, floated above it on every screen.
+///
+/// **One height per prim**, sampled under its anchor — a prim is a rigid
+/// object, and draping its vertices would rack it out of shape (the rule the
+/// buildings and the water follow). Sampled every frame rather than on
+/// `TerrainField::revision`: the field lands a second or two after the anchor
+/// and refines after that, a scripted prim moves, and the lookup is a bilinear
+/// sample per prim. Only a prim whose lift *changed* is flagged for
+/// propagation; the rest are written around change detection, since their
+/// `GlobalTransform` already shows exactly this.
+///
+/// Runs in `PostUpdate` before propagation, and [`strip_prim_lift`] takes it
+/// off in `First`, so the lift lives only in the `GlobalTransform` — which is
+/// what picking, the gizmo handles, the hand sensor and the renderer read.
+pub fn lift_prims_onto_terrain(
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    mut prims: Query<(
+        &mut crate::components::PrimLift,
+        &mut Transform,
+        Option<&GridCell>,
+    )>,
+) {
+    for (mut lift, mut transform, cell) in &mut prims {
+        let flat = world_position(cell, &transform);
+        let ground = terrain.ground_at(flat.x as f32, flat.z as f32);
+        if ground == 0.0 && lift.lift == 0.0 {
+            continue;
+        }
+        let lift = lift.bypass_change_detection();
+        if put_lift_on(lift, flat, ground) {
+            transform.translation.y += ground;
+        } else {
+            transform.bypass_change_detection().translation.y += ground;
+        }
+    }
+}
+
 /// How far past the last pose a physical prim is carried along its velocity
 /// before it waits for the next one — four ticks. Further than that and a lost
 /// packet draws a ball sailing on through the goal it actually hit.
@@ -198,14 +301,89 @@ pub const PRIM_ATTACH_RANGE: crate::systems::camera_attach::AttachRange =
 /// While the camera follows an object, tell it where the object is. A prim a
 /// script moves is the case this is for; one that is deleted lets the camera go.
 pub fn report_attached_prim(
-    prims: Query<(&Prim, Option<&GridCell>, &Transform)>,
+    prims: Query<(
+        &Prim,
+        Option<&GridCell>,
+        &Transform,
+        &crate::components::PrimLift,
+    )>,
     mut attach: ResMut<crate::systems::camera_attach::CameraAttach>,
 ) {
     let Some(key) = attach.key().filter(|k| k.source == PRIM_ATTACH_SOURCE) else {
         return;
     };
-    match prims.iter().find(|(p, _, _)| p.id as u64 == key.id) {
-        Some((_, cell, tf)) => attach.report(key, world_position(cell, tf), DVec3::Y),
+    match prims.iter().find(|(p, ..)| p.id as u64 == key.id) {
+        // Where the object is *drawn*: the `Transform` is flat during `Update`
+        // and the terrain lift goes on in `PostUpdate` (`lift_prims_onto_terrain`).
+        Some((_, cell, tf, lift)) => attach.report(
+            key,
+            world_position(cell, tf) + DVec3::Y * f64::from(lift.lift),
+            DVec3::Y,
+        ),
         None => attach.detach_if(key),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::PrimLift;
+
+    /// One frame of the lift's life: the strip at the top of the frame, what
+    /// `Update` sees, then the lift going on again. Returns (`y` as `Update`
+    /// saw it, drawn `y`, whether propagation was told).
+    fn frame(lift: &mut PrimLift, local_y: &mut f32, ground: f32) -> (f32, f32, bool) {
+        let at = |y: f32| DVec3::new(250.0, f64::from(y), -40.0);
+        *local_y -= lift_to_strip(lift, at(*local_y));
+        lift.shown = None;
+        let seen = *local_y;
+        let flagged = put_lift_on(lift, at(*local_y), ground);
+        *local_y += ground;
+        (seen, *local_y, flagged)
+    }
+
+    #[test]
+    fn a_prim_is_drawn_on_the_ground_and_edited_in_the_sims_frame() {
+        // A theremin rod 0.5 m above the sim's ground, where the measured ground
+        // is three metres below the anchor's datum.
+        let (mut lift, mut y) = (PrimLift::default(), 0.5_f32);
+        for i in 0..10 {
+            let (seen, drawn, flagged) = frame(&mut lift, &mut y, -3.0);
+            assert_eq!(seen, 0.5, "frame {i}: Update saw a lifted prim");
+            assert_eq!(drawn, -2.5, "frame {i}: not drawn on the ground");
+            // Only the first frame moves what is drawn.
+            assert_eq!(flagged, i == 0, "frame {i}");
+        }
+    }
+
+    #[test]
+    fn a_new_field_moves_the_drawing_and_nothing_else() {
+        let (mut lift, mut y) = (PrimLift::default(), 1.0_f32);
+        frame(&mut lift, &mut y, 0.0);
+        // The field lands a second after the anchor…
+        assert_eq!(frame(&mut lift, &mut y, -2.0), (1.0, -1.0, true));
+        // …and refines after that.
+        assert_eq!(frame(&mut lift, &mut y, -2.25), (1.0, -1.25, true));
+        // Going away puts the prim back on the flat plane.
+        assert_eq!(frame(&mut lift, &mut y, 0.0), (1.0, 1.0, true));
+        assert!(lift.shown.is_none());
+    }
+
+    #[test]
+    fn a_transform_rewritten_after_the_lift_is_not_stripped_twice() {
+        let mut lift = PrimLift::default();
+        let flat = DVec3::new(10.0, 0.5, 10.0);
+        put_lift_on(&mut lift, flat, -3.0);
+        // Something wrote the sim's position back over the lifted one.
+        assert_eq!(lift_to_strip(&lift, flat), 0.0);
+        // A prim still where the lift left it has it taken off…
+        assert_eq!(lift_to_strip(&lift, flat - DVec3::Y * 3.0), -3.0);
+        // …including when big_space re-gridded it on the way (float rounding).
+        assert_eq!(
+            lift_to_strip(&lift, flat - DVec3::Y * 3.0 + DVec3::X * 0.001),
+            -3.0
+        );
+        // A prim with no lift on has nothing to strip.
+        assert_eq!(lift_to_strip(&PrimLift::default(), flat), 0.0);
     }
 }

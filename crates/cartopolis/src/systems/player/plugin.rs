@@ -113,6 +113,16 @@ impl Plugin for PlayerPlugin {
                 .before(rendering::spawn_prims)
                 .in_set(ClientPhase::Stream),
         )
+        // Prims stand on the measured ground for drawing only: the lift goes on
+        // just before propagation and comes off before anything in `Update` reads
+        // a prim's `Transform` again (`components::PrimLift` says why).
+        .add_systems(First, systems::prim_geo::strip_prim_lift)
+        .add_systems(
+            PostUpdate,
+            systems::prim_geo::lift_prims_onto_terrain
+                .before(big_space::prelude::BigSpaceSystems::RecenterLargeTransforms)
+                .before(bevy::transform::TransformSystems::Propagate),
+        )
         // A followed object's position, after it has been placed and before the
         // camera rides it (`systems::camera_attach`).
         .add_systems(
