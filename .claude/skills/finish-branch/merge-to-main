@@ -217,6 +217,5 @@ print(json.dumps({'body': '🤖 **Landed on \`main\`** as \`%s\`.\n\nVerified lo
 fi
 
 echo
-echo "done. CI is running on main for this commit; read it rather than assuming:"
-echo "    curl -sf -H \"Authorization: token \$FORGEJO_TOKEN\" \\"
-echo "        \"\$FORGEJO_API/repos/\$FORGEJO_REPO/commits/$sha/status\""
+echo "done. The gate's receipt is at the midas hub; CI runs on main tonight."
+echo "Deploy what changed with: midas deploy sim|atlas|web|wasm|apk"
