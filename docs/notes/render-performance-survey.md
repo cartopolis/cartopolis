@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
-updated: 2026-09-14
+triggers: [macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+updated: 2026-10-16
 ---
 
 # Where the frames go, and where they do not
@@ -295,6 +295,60 @@ pass among them. `perf::gpu_passes` does not filter; it reports what the store
 holds. Whether the prepass was turned off since, or is running unrecorded, is not
 established here — but the 3.0× figure cannot currently be reproduced, and
 something that renders is going unmeasured either way.
+
+## On Metal a batch set costs a kernel round trip, and the sky march costs the rest (2026-10-16)
+
+Measured on an M5 Pro (`cargo perf --features perf`, `--size 3134x1952`, a
+MacBook's Retina panel, `CARTO_FPS_CAP=0`, two flights each, every steady window
+`quiet`), with `sample(1)` for the call stacks. Three things, none of which the
+Deck could have shown.
+
+**`cargo perf` measured nothing on a Mac until this date.** `PerfPlugin` adds
+`RenderDiagnosticsPlugin`; wgpu's Metal backend cannot allocate its counter sample
+buffer, reports that as `DeviceLost`, and `handle_render_error` halts the renderer
+before the first frame. The suite then reports ~570 fps for an empty frame. It is
+skipped on Apple targets now (`CARTO_GPU_TIMINGS` still forces it).
+
+**Every `Queue::write_buffer` is a Metal buffer created and later freed through
+the kernel.** wgpu-core makes a fresh staging buffer per call
+(`StagingBuffer::new` → `newBuffer` → `IOGPUResourceCreate`, a `mach_msg`), and
+frees it when the submission retires (`triage_submissions` → `AGXBuffer dealloc`,
+another trap). Bevy's `write_binned_instance_buffers` makes three such calls per
+multidraw batch set per frame, so the render thread's time is batch sets × 6 kernel
+round trips. Over Groningen from 3 km the main pass had **373 batch sets**, ~330 of
+them globe tiles, each a non-bindless material of its own; creation showed up in
+`write_binned_instance_buffers` (4.5 ms) and the frees in
+`submit_pending_command_buffers` (~5 ms) — ~8 ms of a 12.6 ms frame. Making
+`GlobeOcean` bindless took it to 107 batch sets and the city frame to 10.2 ms.
+**On this backend a material that is not bindless costs per entity on the CPU,
+not only per draw.** Bevy caps a bindless slab at 64 resources on Apple targets
+(2048 elsewhere, `AUTO_BINDLESS_SLAB_RESOURCE_LIMIT`) for Metal's own limits, which
+is why the globe still splits into a few dozen sets; that cap was left alone.
+
+That change moved orbit the other way, 13.2 → 14.7 ms, because orbit was never
+CPU-bound: its render thread waits in `-[MTLCommandQueue commandBuffer]`, i.e. on
+the GPU, and the bindless globe shader costs a little more per pixel.
+
+**The GPU half was the raymarched atmosphere.** It runs whenever the globe is drawn
+— from orbit and over any city view high enough to see the globe's horizon — once
+per main-pass pixel at `GLOBE_SKY_SAMPLES` steps. `CARTO_NO_SPACE_RAYMARCH=1` took
+orbit to 7.7 ms and city to 5.5 ms, and `CARTO_RENDER_SCALE=0.7` landed in the same
+place, so both are fill. Halving the samples to 8 is invisible in side-by-side
+captures and is where the constant now sits; its doc comment has the sweep.
+
+| scenario, steady | before | bindless globe | + 8 sky samples |
+|---|---|---|---|
+| orbit | 13.2 ms | 14.7 ms | **11.0 ms** |
+| low-orbit | 13.4 ms | 14.7 ms | **10.4 ms** |
+| city | 13.3 ms | 10.2 ms | **6.7 ms** |
+| street | 10.3 ms | 8.1 ms | **8.5 ms** |
+
+`street` is ~0.4 ms of run-to-run spread on either side of its middle column: at
+150 m the globe is not drawn, so the sky samples cannot reach it. Two things were
+tried and moved nothing: dependency `debug_assertions` off (wgpu's and bevy's
+checks are not the cost) and `CARTO_GPU_PREPROCESS=preprocess` (worse:
+`submit` doubled). `CARTO_GPU_PREPROCESS=off` panics in bevy 0.20 ("Dynamic uniform
+batch sets shouldn't be used here").
 
 ## Negative results — do not re-open these first
 
