@@ -66,13 +66,17 @@ name: CI
 # change (a `Cargo.lock` bump, a toolchain bump, a variable added to `env:`)
 # every PR then runs cold until some later merge happens to touch the client.
 # Dispatching this workflow on `main` runs it whole and re-warms the store.
+# **Nightly on `main`, not on every push to it** (2026-10-16). Every commit
+# reaches `main` through merge-to-main, which runs this file's own commands on a
+# midas node first and records the receipt at the hub (`midas verified`); a run
+# here on the push proved the same tree again, ~10 minutes on the 3-slot runner
+# every landing shares, and the deploys no longer wait on it (`midas deploy`
+# asks for the receipt instead). What a nightly run still catches is what a
+# landing cannot: a farm that verified wrongly, and the world moving under an
+# unchanged tree (a crate yanked, a toolchain bumped).
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.claude/**'
+  schedule:
+    - cron: '17 3 * * *'
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -318,8 +322,10 @@ jobs:
           # A hand-started run is a request for the whole thing — see the
           # `workflow_dispatch` note at the top of this file. Both answers are
           # already the run-everything ones, so this just declines to narrow them.
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            echo "Dispatched by hand: running every step, gates not consulted."
+          # So is the nightly run: it answers for the whole of `main` as it stands,
+          # not for the last commit, so the narrowing below does not apply to it.
+          if [ "$EVENT" = "workflow_dispatch" ] || [ "$EVENT" = "schedule" ]; then
+            echo "Dispatched by hand or nightly: running every step, gates not consulted."
             echo "tested=$tested" >> "$GITHUB_OUTPUT"
             echo "render=$render" >> "$GITHUB_OUTPUT"
             exit 0

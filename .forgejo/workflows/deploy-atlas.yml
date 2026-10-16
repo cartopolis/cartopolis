@@ -7,6 +7,11 @@ name: Deploy atlas
 # `.path` unit on the host acts on (deploy/cartopolis-atlas-reload.*). The job
 # never holds the host's init system.
 #
+# **The fallback.** `midas deploy atlas` is the usual path since 2026-10-16: it
+# builds a landed, gate-verified commit on a farm node and publishes it with the
+# same checks (the `deploy.atlas` recipe in the hub's /etc/midas/hub.conf), with
+# no runner slot spent. This workflow is for when the farm is down.
+#
 # **Manual.** Atlas serves the terrain tiles and the web UI's pipeline API, and
 # publishing restarts it; a README typo on `main` is not a reason for that.
 #

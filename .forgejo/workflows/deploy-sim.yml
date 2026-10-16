@@ -2,6 +2,11 @@ name: Deploy simulator
 
 # Build the headless simulator and publish it to the host that runs it.
 #
+# **The fallback.** `midas deploy sim` is the usual path since 2026-10-16: it
+# builds a landed, gate-verified commit on a farm node and publishes it with the
+# same checks (the `deploy.sim` recipe in the hub's /etc/midas/hub.conf), with
+# no runner slot spent. This workflow is for when the farm is down.
+#
 # **Manual, unlike the admin site.** The simulator is a live service with people
 # connected to it, and publishing restarts it — every session drops and every
 # client falls back to offline (`session::teardown` is written for exactly this,
