@@ -353,9 +353,10 @@ impl DebugSwitches {
             "CARTO_GPU_TIMINGS",
             "Time the GPU passes",
             "Adds per-pass GPU and CPU timings to the Profiler tab. Needs Vulkan \
-             or DX12 — on Metal and the web the columns stay empty. Some drivers \
-             crash on the timestamp readback, so if the app dies at startup with \
-             this on, that is the answer.",
+             or DX12 — on the web the columns stay empty, and on Metal the \
+             timestamp buffer fails to allocate and stops the renderer. Some \
+             drivers crash on the timestamp readback, so if the app dies at \
+             startup with this on, that is the answer.",
         ),
     ];
 
