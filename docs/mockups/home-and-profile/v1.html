@@ -1,0 +1,269 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Community tab, profile and settings v1</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="town" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l4-3 4 3v10M13 20V6l3-2 3 2v14M8 13h2M8 16h2M15.5 9h1M15.5 12h1M15.5 15h1"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+  <symbol id="key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></symbol>
+  <symbol id="out" viewBox="0 0 24 24"><path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/></symbol>
+  <symbol id="shirt" viewBox="0 0 24 24"><path d="M8 4l-5 3 2 4 2-1v10h10V10l2 1 2-4-5-3c-.5 1.5-2 2.5-4 2.5S8.5 5.5 8 4z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/></symbol>
+  <symbol id="speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/></symbol>
+  <symbol id="image" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 16l5-5 4 4 3-3 5 5"/><circle cx="15.5" cy="9" r="1.5"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></symbol>
+  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.5"/></symbol>
+  <symbol id="ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="inbox" viewBox="0 0 24 24"><path d="M4 13l2-8h12l2 8v6H4zM4 13h5l1 2h4l1-2h5"/></symbol>
+</svg>
+
+<h1>Community tab, profile and settings v1: <b>less on the list</b>, a home for you</h1>
+<p class="lede">A design proposal, not code. The list keeps only conversations; making something new moves to a sheet; the people button becomes <b style="color:var(--cream);font-weight:inherit">your own disc</b>, which opens a profile page, and from there Settings, now including <b style="color:var(--cream);font-weight:inherit">access tokens</b> (today only on the web page). The tab is renamed to match the web page's <b style="color:var(--cream);font-weight:inherit">Community | World</b>. <span class="newtag">new</span> marks what the app does not have today.</p>
+
+<div class="row">
+
+<!-- 0. TODAY -->
+<div class="shot">
+<div class="today"><img src="today.jpg"></div>
+<h2><span>0</span>Today</h2>
+<ul>
+  <li>"Chats" is said twice (the title and the switch), and the list holds more than chats.</li>
+  <li>The new-chat choices open <i>inside</i> the list and push it down, with a two-line encryption note.</li>
+  <li>The person button at the top is Contacts, but looks like "me". There is no profile, and Settings is only in World's ☰ menu.</li>
+  <li>Every community and every topic is its own row; "Voice and blocked people" sits at the bottom of the list.</li>
+</ul>
+</div>
+
+<!-- A. LIST -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="bar">
+    <div class="seg"><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div><div><span class="live"></span>World</div></div>
+    <div class="me">J<span class="dot"></span></div>
+  </div>
+  <div class="find"><svg class="i s"><use href="#search"/></svg>Search<span class="newtag" style="margin-left:auto">new</span></div>
+  <div class="pubs">
+    <div class="pub"><div class="h"><div class="ic" style="background:#3f3b38"><svg class="i s"><use href="#pin"/></svg></div>Here</div><div class="p">Nieuwjaar — nog 76 dagen</div></div>
+    <div class="pub"><div class="h"><div class="ic" style="background:#4374c4"><svg class="i s"><use href="#globe"/></svg></div>Everyone</div><div class="p">viberfox: waving from Groningen</div><span class="badge b">12</span></div>
+  </div>
+  <div class="list-h"><span>Conversations</span></div>
+  <div class="chat-row">
+    <div class="av sq c5">G</div>
+    <div class="body"><div class="l1"><span>Gorecht buurt</span><time>19:40</time></div><div class="l2"><span># bankjes · Anna: de nieuwe bank staat er</span><span class="badge b">2</span></div></div>
+  </div>
+  <div class="chat-row">
+    <div class="av c4">S</div>
+    <div class="body"><div class="l1"><span>Sanne <svg class="i s lk"><use href="#lock"/></svg></span><time>18:05</time></div><div class="l2"><span>You: tot morgen bij de Vismarkt</span></div></div>
+  </div>
+  <div class="chat-row">
+    <div class="av sq c6">O</div>
+    <div class="body"><div class="l1"><span>oosterparkwijk</span><time>gister</time></div><div class="l2"><span># general · Karim: wie komt er zaterdag?</span></div></div>
+  </div>
+  <div class="chat-row">
+    <div class="av c1">F</div>
+    <div class="body"><div class="l1"><span>Fietsclub <svg class="i s lk"><use href="#lock"/></svg></span><time>ma</time></div><div class="l2"><span>Tom: route voor zondag staat erin</span></div></div>
+  </div>
+  <div class="fab"><svg class="i"><use href="#plus"/></svg></div>
+</div>
+<h2><span>A</span>The list</h2>
+<ul>
+  <li>No title: the switch says where you are. Its first half is renamed <b>Community</b>, as on the web page.</li>
+  <li><b>Here</b> and <b>Everyone</b>, the two public chats, share one row as tiles.</li>
+  <li>Then one list, newest first: people, groups and communities together. A community is one row; its preview names the topic that last spoke, and a tap opens the community (or its only topic).</li>
+  <li>The padlock stays on private rows. Voice and blocked people move to Settings.</li>
+</ul>
+</div>
+
+<!-- B. NEW SHEET -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="bar">
+    <div class="seg"><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div><div><span class="live"></span>World</div></div>
+    <div class="me">J</div>
+  </div>
+  <div class="find"><svg class="i s"><use href="#search"/></svg>Search</div>
+  <div class="pubs">
+    <div class="pub"><div class="h"><div class="ic" style="background:#3f3b38"><svg class="i s"><use href="#pin"/></svg></div>Here</div><div class="p">Nieuwjaar — nog 76 dagen</div></div>
+    <div class="pub"><div class="h"><div class="ic" style="background:#4374c4"><svg class="i s"><use href="#globe"/></svg></div>Everyone</div><div class="p">viberfox: waving from Groningen</div></div>
+  </div>
+  <div class="scrim"></div>
+  <div class="choose">
+    <div class="handle"></div>
+    <h4>New</h4>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#chat"/></svg></div><div><b>Message a person</b><span>From your contacts, or by name</span></div></div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#people"/></svg></div><div><b>Start a group</b><span>A few people you pick</span></div></div>
+    <div class="opt"><div class="ic c"><svg class="i"><use href="#search"/></svg></div><div><b>Find a community</b><span>Clubs, teams, neighbourhoods</span></div></div>
+    <div class="opt"><div class="ic c"><svg class="i"><use href="#town"/></svg></div><div><b>Start a community</b><span>Several topics, one set of people</span></div></div>
+    <p class="hint" style="padding:8px 20px 0"><svg class="i s" style="vertical-align:-3px"><use href="#lock"/></svg> All four are end-to-end encrypted.</p>
+  </div>
+</div>
+<h2><span>B</span>New, as a sheet</h2>
+<ul>
+  <li>The + button raises a sheet over the list instead of opening a box inside it, and a tap on the dimmed list closes it.</li>
+  <li>Shorter lines, and the encryption note fits on one line. That Here and Everyone are public is said where they are (their own header), not here.</li>
+</ul>
+</div>
+
+<!-- C. PROFILE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>You</div>
+  <div class="prof">
+    <div class="big">J</div>
+    <h3>jeroen</h3>
+    <div class="addr">@jeroen@cartopolis.org</div>
+    <div class="since">Here since March 2026</div>
+    <div class="pills"><div><svg class="i s"><use href="#share"/></svg>Share my link</div><div><svg class="i s"><use href="#shirt"/></svg>Avatar</div></div>
+  </div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#people"/></svg></div><div class="t">Contacts</div><span class="v">14</span><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic o"><svg class="i s"><use href="#inbox"/></svg></div><div class="t">Message requests</div><span class="badge b">1</span><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#shield"/></svg></div><div class="t">Who can message me<span>People near me</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#gear"/></svg></div><div class="t">Settings</div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#out"/></svg></div><div class="t">Sign out</div></div>
+  </div>
+</div>
+<h2><span>C</span>You <span class="newtag">new</span></h2>
+<ul>
+  <li>Tapping your disc (top right of the list) opens this. The orange dot on the disc means a request is waiting.</li>
+  <li>Everything on it exists today, scattered: your link and code (Contacts › Add), Appearance (World's ☰), contacts, requests, the request policy, sign out.</li>
+  <li>No display name, picture or bio: the server has none of those. See question 2.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="row" style="margin-top:56px">
+
+<!-- D. SETTINGS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Settings</div>
+  <div class="grp-h">Account</div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#shield"/></svg></div><div class="t">Privacy and safety<span>Blocked people, who can message me</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#key"/></svg></div><div class="t">Access tokens<span>For bots and scripts</span></div><span class="newtag">new</span><span class="v">2</span><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#person"/></svg></div><div class="t">Account<span>Signed in as jeroen · delete</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+  <div class="grp-h">App</div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#gear"/></svg></div><div class="t">General<span>Units, navigation, connection</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#speaker"/></svg></div><div class="t">Sound and voice<span>Volume, microphone, camera</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#image"/></svg></div><div class="t">Graphics</div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#sun"/></svg></div><div class="t">World<span>Time of day, weather</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic"><svg class="i s"><use href="#info"/></svg></div><div class="t">About</div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+</div>
+<h2><span>D</span>Settings as a list</h2>
+<ul>
+  <li>Today's five tabs (General, World, Graphics, Audio, Account) become pages in a list, which fits a phone better than five tabs in a row. Their contents do not change.</li>
+  <li>Two pages join: <b>Privacy and safety</b> (the block list, out of the chat list, and the request policy) and <b>Access tokens</b>. The voice switch that sat beside the blocks goes to Sound and voice.</li>
+  <li>The same screen opens from World's ☰ menu, as Settings does today.</li>
+</ul>
+</div>
+
+<!-- E. PRIVACY -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Privacy and safety</div>
+  <div class="grp-h">Who can message me</div>
+  <div class="grp">
+    <div class="radio" style="padding:10px 14px"><div class="dot"></div><div><b>Anyone</b></div></div>
+    <div class="radio" style="padding:10px 14px"><div class="dot on"></div><div><b>People near me</b><span>Near your avatar in the last hour, or a contact's contact</span></div></div>
+    <div class="radio" style="padding:10px 14px"><div class="dot"></div><div><b>Only with my link</b><span>Nobody finds you by name or in the world</span></div></div>
+  </div>
+  <div class="grp-h">Blocked</div>
+  <div class="grp">
+    <div class="it"><div class="av sm c6">P</div><div class="t">pieter</div><span class="v" style="color:var(--accent)">Unblock</span></div>
+  </div>
+  <div class="grp-h">Report</div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#ban"/></svg></div><div class="t">Reporting and blocking<span>How it works, and who reads a report</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+</div>
+<h2><span>E</span>Privacy and safety</h2>
+<ul>
+  <li>The request policy (today Contacts › Privacy) and the block list (today the bottom of the chat list) on one page.</li>
+  <li>The safety text that is in Account today moves here, where somebody looking for it would look.</li>
+</ul>
+</div>
+
+<!-- F. TOKENS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Access tokens</div>
+  <p class="hint" style="padding:0 18px 10px">What a bot or a script signs in with instead of your password. Revoking one stops it at once, also a bot already in the world.</p>
+  <div class="grp">
+    <div class="tok"><div class="t"><b>deck bot</b><span>Made 11 Oct · never expires</span><span>Last used today 14:02</span></div><span class="rv">Revoke</span></div>
+    <div class="tok"><div class="t"><b>field check script</b><span>Made 2 Oct · expires 2 Nov</span><span>Never used</span></div><span class="rv">Revoke</span></div>
+  </div>
+  <div class="grp-h">New token</div>
+  <div class="form" style="padding:0 16px">
+    <div class="inp ph">Name, e.g. "deck bot"</div>
+    <div class="chips" style="padding:0"><div>1 day</div><div>30 days</div><div class="on">Never</div></div>
+    <div class="toggle" style="padding:0 2px"><div>Admin rights too<span class="sub">Only shown to an admin</span></div><div class="sw"></div></div>
+    <div class="inp ph">Your password, to confirm</div>
+    <div class="btn">Make token</div>
+  </div>
+</div>
+<h2><span>F</span>Access tokens <span class="newtag">new in the app</span></h2>
+<ul>
+  <li>The web page's Tokens page (<code>/api/tokens</code>), in the app. Nothing new on the server.</li>
+  <li>The password is asked again, as the server already requires: a phone left signed in should not be enough to make a key that outlives it.</li>
+</ul>
+</div>
+
+<!-- G. TOKEN MADE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Access tokens</div>
+  <div class="secret">
+    <div class="w"><b style="color:#c9f0da;font-weight:inherit">deck bot 2</b> is ready. Copy it now: it is shown only this once.</div>
+    <div class="k">cpt_7Qe2mZx9Lr4vHc1sKd8aWf3nUj6yBt0pGo5iXe</div>
+    <div class="acts"><div>Copy</div><div>Done</div></div>
+  </div>
+  <div class="grp">
+    <div class="tok"><div class="t"><b>deck bot 2</b><span>Made just now · never expires</span><span>Never used</span></div><span class="rv">Revoke</span></div>
+    <div class="tok"><div class="t"><b>deck bot</b><span>Made 11 Oct · never expires</span><span>Last used today 14:02</span></div><span class="rv">Revoke</span></div>
+    <div class="tok"><div class="t"><b>field check script</b><span>Made 2 Oct · expires 2 Nov</span><span>Never used</span></div><span class="rv">Revoke</span></div>
+  </div>
+</div>
+<h2><span>G</span>Shown once</h2>
+<ul>
+  <li>The secret stays on screen until Done, and is never shown again, as on the web page.</li>
+  <li>Revoke asks once more before it acts.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="sec">
+<h2>Questions</h2>
+<table>
+<tr><th>#</th><th>Question</th><th>Proposed</th></tr>
+<tr><td>1</td><td>Name of the tab</td><td><b>Community</b>, the same word as the web page's switch. Others considered: People (but it also holds places), Home (unclear next to World), Talk.</td></tr>
+<tr><td>2</td><td>Should a profile have more than your name?</td><td>Not in this step. A display name, a picture and a line about yourself each need a server field and a way to moderate them; drawn here only what exists.</td></tr>
+<tr><td>3</td><td>Search</td><td>Filters the list on this device as you type. It does not search message text.</td></tr>
+</table>
+</div>
+</body></html>

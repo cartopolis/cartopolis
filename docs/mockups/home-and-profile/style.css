@@ -1,0 +1,61 @@
+/* Builds on communities' sheet (which builds on chat-world's phone frame,
+   rows and palette) and adds only the profile and settings screens. */
+@import url(../communities/style.css);
+
+.today { width:390px; height:844px; border-radius:46px; overflow:hidden; box-shadow:0 0 0 10px #1a2124, 0 0 0 11px #2b3438, 0 30px 60px rgba(0,0,0,.5); }
+.today img { width:390px; display:block; }
+
+/* top bar: the switch and your own disc, no title above it */
+.bar { display:flex; gap:10px; align-items:center; padding:6px 16px 10px; }
+.bar .seg { flex:1; }
+.me { width:42px; height:42px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:16px; background:#4374c4; box-shadow:0 0 0 2px var(--ink), 0 0 0 3px var(--gline); flex:none; position:relative; }
+.me .dot { position:absolute; right:-1px; top:-1px; width:11px; height:11px; border-radius:50%; background:var(--brand); box-shadow:0 0 0 2px var(--ink); }
+.find { margin:0 16px 12px; background:var(--raised); border:1px solid var(--gline); border-radius:14px; padding:10px 14px; color:var(--line); font-size:14.5px; display:flex; gap:8px; align-items:center; }
+
+/* Here and Everyone, side by side instead of two full rows */
+.pubs { display:flex; gap:10px; padding:0 16px 10px; }
+.pub { flex:1; background:rgba(255,255,255,.04); border:1px solid var(--gline); border-radius:16px; padding:10px 12px; min-width:0; position:relative; }
+.pub .h { display:flex; align-items:center; gap:8px; color:var(--cream); font-size:14.5px; }
+.pub .h .ic { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; flex:none; }
+.pub .p { color:var(--dim); font-size:12.5px; margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pub .badge { position:absolute; right:10px; top:10px; margin:0; }
+
+.list-h { display:flex; justify-content:space-between; align-items:center; padding:8px 18px 2px; color:var(--dim); font-size:12px; letter-spacing:.6px; text-transform:uppercase; }
+.chat-row .l3.t { color:var(--dim); }
+.chat-row .av.sq { border-radius:14px; }
+.chat-row .lk { color:var(--line); margin-left:4px; vertical-align:-2px; }
+
+/* profile */
+.prof { text-align:center; padding:8px 18px 16px; }
+.prof .big { width:92px; height:92px; border-radius:50%; margin:0 auto 12px; display:grid; place-items:center; font-size:36px; color:#fff; background:#4374c4; box-shadow:0 0 0 3px var(--ink), 0 0 0 5px var(--gline); }
+.prof h3 { color:var(--cream); font-size:22px; font-weight:inherit; }
+.prof .addr { color:var(--dim); font-size:13.5px; margin-top:2px; }
+.prof .since { color:var(--line); font-size:12.5px; margin-top:2px; }
+.prof .pills { margin-top:16px; }
+
+/* grouped settings list */
+.grp { margin:6px 16px 12px; background:var(--surface); border:1px solid var(--gline); border-radius:16px; overflow:hidden; }
+.grp-h { padding:10px 20px 4px; color:var(--dim); font-size:12px; letter-spacing:.6px; text-transform:uppercase; }
+.it { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--gline); color:var(--text); font-size:14.5px; }
+.it:last-child { border-bottom:0; }
+.it .ic { width:32px; height:32px; border-radius:10px; background:var(--raised); display:grid; place-items:center; color:var(--accent); flex:none; }
+.it .ic.o { color:var(--brand); }
+.it .t { flex:1; min-width:0; }
+.it .t span { display:block; color:var(--dim); font-size:12px; }
+.it .v { color:var(--dim); font-size:13px; }
+.it .chev { color:var(--line); }
+.it.bad, .it.bad .ic { color:#ff8a7a; }
+.ptitle { display:flex; align-items:center; gap:10px; padding:4px 14px 12px; color:var(--cream); font-size:18px; }
+
+/* tokens */
+.tok { display:flex; gap:12px; align-items:flex-start; padding:12px 14px; border-bottom:1px solid var(--gline); }
+.tok:last-child { border-bottom:0; }
+.tok .t { flex:1; }
+.tok b { display:block; color:var(--cream); font-weight:inherit; font-size:14.5px; }
+.tok span { display:block; color:var(--dim); font-size:12px; }
+.tok .rv { color:#ff8a7a; font-size:13px; padding-top:2px; }
+.secret { margin:0 16px 10px; padding:12px 14px; border-radius:14px; background:#16241d; border:1px solid #2f5a45; }
+.secret .k { font-family:ui-monospace, monospace; font-size:13px; color:#c9f0da; word-break:break-all; margin:6px 0 10px; }
+.secret .w { color:#9fd3b4; font-size:12.5px; }
+.secret .acts { display:flex; gap:8px; }
+.secret .acts div { flex:1; text-align:center; padding:9px; border-radius:10px; background:#23392f; color:#c9f0da; font-size:13.5px; }
