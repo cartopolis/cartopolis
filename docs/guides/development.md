@@ -219,8 +219,9 @@ and nothing has run on a device yet — read
 [`docs/notes/android-build.md`](../notes/android-build.md) before touching it,
 particularly the part about NativeActivity costing the soft keyboard.
 
-**The hosted simulator.** `deploy-sim.yml` builds `cartopolis_simulator` in
-release and publishes the binary to the VPS, where a systemd unit runs it. It
+**The hosted simulator.** `midas deploy sim` (or, with the farm down,
+`deploy-sim.yml`) builds `cartopolis_simulator` in release and publishes the
+binary to the VPS, where a systemd unit runs it. It
 serves the wire and the account admin API from one process and one account store,
 both behind Caddy's TLS: `--connect cartopolis.org` from any build — desktop,
 Android or browser — resolves to `wss://cartopolis.org/ws`. **Give it a hostname,
@@ -379,6 +380,10 @@ that to any new job. `deploy-wasm.yml`, `deploy-android.yml` and `deploy-sim.yml
 Every other deploy lane in this repo is manual, because publishing is either
 expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
+The simulator and atlas are deployed with `midas deploy sim` / `midas deploy
+atlas` now, built on a farm node rather than on the runner; their workflows are
+the fallback. The web UI and the wasm viewer stay here until the nodes carry
+`bun` and `trunk`.
 The web UI's lane, `deploy-web.yml`, is the opposite — seconds, and it
 interrupts nobody — so it runs on every push to `main` that touches
 `crates/atlas/web`. It publishes to `/data/cartopolis/admin`, which has been

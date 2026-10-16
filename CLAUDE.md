@@ -189,15 +189,18 @@ GPU draw the same scene in milliseconds, but there are few of them, so use one
 when the question needs it rather than by default:
 
 ```bash
-midas take gpu             # a node with a hardware GPU (deck-2)
-ssh deck-2 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
-scp deck-2:/tmp/x.png /tmp/x.png   # a node's output stays on its machine
+midas take gpu             # a node with a hardware GPU (deck-1)
+ssh deck-1 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
+scp deck-1:/tmp/x.png /tmp/x.png   # a node's output stays on its machine
 ```
 
 A **midas node** (jeroen/midas) is a contained checkout on the VPS
-(`vps-2`) or the Steam Deck (`deck-2`) that follows your worktree — each `ssh`,
+(`vps-1`) or the Steam Deck (`deck-1`) that follows your worktree — each `ssh`,
 `scp` or `rsync` to it first sends your new commits and uncommitted edits — and
-whose commands start in that checkout. `cargo` refuses to build in the agent
+whose commands start in that checkout. The farm also **deploys**: `midas deploy sim` / `midas deploy atlas` builds the
+tip of `main` on a VPS node and publishes it on the VPS, once `verify-branch`'s
+pass is on record at the hub (`docs/notes/hosted-simulator.md`); the Forgejo
+deploy workflows are the fallback, and `ci.yml` runs on `main` nightly. `cargo` refuses to build in the agent
 container itself.
 
 

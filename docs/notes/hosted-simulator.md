@@ -92,23 +92,32 @@ file copy, so there is no registry to push an image to and no image to build.
 Forgejo itself is deployed the same way for the same reason, and Caddy reaches
 both across the docker0 gateway (`172.17.0.1`).
 
-CI cannot call `systemctl` — it runs in a container and giving a CI job the host's
-init system would be a much larger grant than "may write these files". So
-`deploy-sim.yml` writes the binary and touches `restart.stamp`;
+Neither a deploy nor a CI job calls `systemctl` — giving either the host's init
+system would be a much larger grant than "may write these files". So the publish
+step (`midas deploy`'s, or `deploy-sim.yml`'s) writes the binary and touches `restart.stamp`;
 `cartopolis-sim-reload.path` on the host watches that file and restarts the
 service. The privilege stays on the host.
 
 The binary is written to `simulator.new` and `mv`d into place. An interrupted copy
 would otherwise leave a truncated file that `Restart=always` loops on forever.
 
-## Deploying the simulator (updated 2026-10-11)
+## Deploying the simulator (updated 2026-10-16)
 
-Every other deploy runs on a push to `main`; **`deploy-sim.yml` runs only when
-dispatched**, because publishing restarts a live service and drops every
-connection for a few seconds. So the server drifts behind `main` until somebody
-dispatches it, and a client a protocol revision ahead of it fails to sign in
-with "Connection reset without closing handshake" (the server's journal says
-`unsupported protocol version`).
+**`midas deploy sim`**, from an agent container. It builds the tip of `main` on
+a VPS node — only a commit that landed, only with the landing gate's receipt —
+and publishes it here as root, after the same two checks the workflow ran:
+startup and migrations against an empty database, then this commit's migrations
+against a *copy* of the live one, as `cartosim`. A failing check leaves the old
+binary serving. The recipe is the `deploy.sim` section of the hub's
+`/etc/midas/hub.conf` (jeroen/midas, `docs/hub.md`); `midas deploy atlas` is the
+same for atlas. It is never automatic: publishing restarts a live service and
+drops every connection for a few seconds. So the server drifts behind `main`
+until somebody deploys it, and a client a protocol revision ahead of it fails to
+sign in with "Connection reset without closing handshake" (the server's journal
+says `unsupported protocol version`).
+
+`deploy-sim.yml` still works and is the fallback when the farm is down — it
+builds on the Forgejo runner instead, and its checks are the recipe's:
 
 ```bash
 source ~/.config/viberfox/forgejo.env      # FORGEJO_REPO_TOKEN may dispatch
@@ -117,7 +126,7 @@ curl -X POST -H "Authorization: token $FORGEJO_REPO_TOKEN" -H 'Content-Type: app
 ```
 
 The run is "build & publish the simulator" in the actions list. Before
-dispatching, check what the deploy brings that a binary copy does not:
+deploying either way, check what the deploy brings that a binary copy does not:
 
 - **A migration.** It runs on start and claims its number for good; copy
   `world.db` aside first (`world.db.bak-<date>-pre-V<n>`, beside it), and never
