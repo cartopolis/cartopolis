@@ -445,8 +445,15 @@ async fn load_source(
     cy: i64,
 ) -> RegisteredCell {
     let key = cache_key(register, source, cx, cy);
+    // Both parses go to a worker (`workers::compute`): on the web this future
+    // runs on the thread that draws the frame, and a city's page of trees and
+    // lamps measured 224 ms there over one load (2026-10-16).
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return parse_normalised(&cached).unwrap_or_default();
+        return crate::platform::workers::compute("municipal", move || {
+            parse_normalised(&cached).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
     }
     if REGISTER_BREAKER.is_open_at(web_time::Instant::now()) {
         return RegisteredCell::default();
@@ -465,21 +472,25 @@ async fn load_source(
         REGISTER_BREAKER.trip();
         return RegisteredCell::default();
     };
-    let cell = match (register.parse)(&text, &source.yields) {
-        Ok(cell) => cell,
-        Err(e) => {
+    let parse = register.parse;
+    let parsed = crate::platform::workers::compute("municipal", move || {
+        parse(&text, &source.yields).map(|cell| {
+            let normalised = write_normalised(&cell);
+            (cell, normalised)
+        })
+    })
+    .await;
+    let (cell, normalised) = match parsed {
+        Some(Ok(parsed)) => parsed,
+        Some(Err(e)) => {
             tracing::warn!(register = register.id, source = source.id, cell = ?(cx, cy),
                 error = %e, "municipal register did not parse");
             REGISTER_BREAKER.trip();
             return RegisteredCell::default();
         }
+        None => return RegisteredCell::default(),
     };
-    storage::put(
-        storage::Namespace::Cache,
-        &key,
-        write_normalised(&cell).as_bytes(),
-    )
-    .await;
+    storage::put(storage::Namespace::Cache, &key, normalised.as_bytes()).await;
     cell
 }
 

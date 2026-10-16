@@ -120,14 +120,31 @@ impl WorldClock {
 pub fn update_local_timezone(
     globe: Res<crate::systems::globe::GlobeState>,
     clock: ResMut<WorldClock>,
-    // Built once — parsing the embedded boundary data isn't free.
-    mut finder: Local<Option<tzf_rs::DefaultFinder>>,
+    // Whether the finder has been asked for, so it is built once.
+    mut asked: Local<bool>,
     // The last anchor cell we resolved (quantized), so we only re-look-up on a
     // real move instead of every frame.
     mut last_key: Local<Option<(i64, i64)>>,
 ) {
+    // Built once, on a worker: parsing the embedded boundary data took 250 ms of
+    // one frame on the web build (2026-10-16, an M5; a phone is several times
+    // that), where every system shares the thread that draws. The offset is
+    // looked up a frame or two later instead, which nothing can tell apart.
+    static FINDER: crate::platform::sync::OnceLock<tzf_rs::DefaultFinder> =
+        crate::platform::sync::OnceLock::new();
+    let Some(finder) = FINDER.get() else {
+        if !*asked {
+            *asked = true;
+            crate::platform::workers::submit(
+                "timezone",
+                Box::new(|| {
+                    let _ = FINDER.set(tzf_rs::DefaultFinder::new());
+                }),
+            );
+        }
+        return;
+    };
     let mut clock = clock;
-    let finder = finder.get_or_insert_with(tzf_rs::DefaultFinder::new);
     // Quantize to ~0.1° (~11 km): fine enough to catch a zone change, coarse
     // enough that ordinary panning doesn't trigger a lookup every frame.
     let key = (

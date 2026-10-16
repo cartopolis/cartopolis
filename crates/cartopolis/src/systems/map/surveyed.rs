@@ -691,10 +691,6 @@ pub(crate) async fn raster_survey(
     let shift = BGT_ZOOM - source.z;
     let (x0, y0) = (source.x << shift, source.y << shift);
     let span = 1i64 << shift;
-    let to_unit = |&(lat, lng): &(f64, f64)| {
-        let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, source.z);
-        [(fx - source.x as f64) as f32, (fy - source.y as f64) as f32]
-    };
     let mut survey = Survey::default();
     for cx in x0..x0 + span {
         for cy in y0..y0 + span {
@@ -706,60 +702,77 @@ pub(crate) async fn raster_survey(
                 continue;
             }
             let measured = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
-            // `map_geometry`'s choice, made on the same file.
-            let cover = if paving
-                .areas
-                .iter()
-                .any(|(k, _, _)| matches!(k, PavingKind::Street | PavingKind::LivingStreet))
-            {
-                SurveyedCover::Streets
-            } else {
-                SurveyedCover::Paths
-            };
+            // The rest is arithmetic over every vertex of the cell — a projection
+            // each, a formatted key per area — and freeing both parsed files, which
+            // are megabytes of maps. On a worker (`workers::compute`): on the web
+            // this future runs on the thread that draws the frame, and doing it here
+            // was most of a basemap tile's main-thread time (2026-10-16).
             let s = span as f32;
             let (u, v) = ((cx - x0) as f32 / s, (cy - y0) as f32 / s);
-            survey.cells.push(CoveredCell {
-                bounds: [u, v, u + 1.0 / s, v + 1.0 / s],
-                cover,
-            });
-            for (kind, material, rings) in &paving.areas {
-                let Some(&(lat, lng)) = rings.first().and_then(|r| r.first()) else {
-                    continue;
+            let built = crate::platform::workers::compute("survey", move || {
+                let to_unit = |&(lat, lng): &(f64, f64)| {
+                    let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, source.z);
+                    [(fx - source.x as f64) as f32, (fy - source.y as f64) as f32]
                 };
-                let key = cartopolis_geo::formats::roofs::paving_key(lat, lng);
-                // A split garden is painted as its two halves here too, or the
-                // distant image would show every garden as paving while the
-                // meshes up close show it planted.
-                if *kind == PavingKind::Garden {
-                    if let Some(split) = measured.gardens.get(&key) {
-                        for (polys, material) in [
-                            (&split.planted, Some(PavingMaterial::Grass)),
-                            (&split.paved, None),
-                        ] {
-                            for poly in polys {
-                                survey.paving.push(OverlayFill {
-                                    rings: poly
-                                        .iter()
-                                        .map(|r| r.iter().map(to_unit).collect())
-                                        .collect(),
-                                    rgb: cartopolis_geo::paving::far_rgb(*kind, material, None),
-                                });
-                            }
-                        }
+                // `map_geometry`'s choice, made on the same file.
+                let cover = if paving
+                    .areas
+                    .iter()
+                    .any(|(k, _, _)| matches!(k, PavingKind::Street | PavingKind::LivingStreet))
+                {
+                    SurveyedCover::Streets
+                } else {
+                    SurveyedCover::Paths
+                };
+                let cell = CoveredCell {
+                    bounds: [u, v, u + 1.0 / s, v + 1.0 / s],
+                    cover,
+                };
+                let mut fills = Vec::new();
+                for (kind, material, rings) in &paving.areas {
+                    let Some(&(lat, lng)) = rings.first().and_then(|r| r.first()) else {
                         continue;
+                    };
+                    let key = cartopolis_geo::formats::roofs::paving_key(lat, lng);
+                    // A split garden is painted as its two halves here too, or the
+                    // distant image would show every garden as paving while the
+                    // meshes up close show it planted.
+                    if *kind == PavingKind::Garden {
+                        if let Some(split) = measured.gardens.get(&key) {
+                            for (polys, material) in [
+                                (&split.planted, Some(PavingMaterial::Grass)),
+                                (&split.paved, None),
+                            ] {
+                                for poly in polys {
+                                    fills.push(OverlayFill {
+                                        rings: poly
+                                            .iter()
+                                            .map(|r| r.iter().map(to_unit).collect())
+                                            .collect(),
+                                        rgb: cartopolis_geo::paving::far_rgb(*kind, material, None),
+                                    });
+                                }
+                            }
+                            continue;
+                        }
                     }
+                    let measured = measured.paving.get(&key).map(|m| {
+                        u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2])
+                    });
+                    fills.push(OverlayFill {
+                        rings: rings
+                            .iter()
+                            .map(|r| r.iter().map(to_unit).collect())
+                            .collect(),
+                        rgb: cartopolis_geo::paving::far_rgb(*kind, *material, measured),
+                    });
                 }
-                let measured = measured
-                    .paving
-                    .get(&key)
-                    .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
-                survey.paving.push(OverlayFill {
-                    rings: rings
-                        .iter()
-                        .map(|r| r.iter().map(to_unit).collect())
-                        .collect(),
-                    rgb: cartopolis_geo::paving::far_rgb(*kind, *material, measured),
-                });
+                (cell, fills)
+            })
+            .await;
+            if let Some((cell, fills)) = built {
+                survey.cells.push(cell);
+                survey.paving.extend(fills);
             }
         }
     }
