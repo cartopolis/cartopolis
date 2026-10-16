@@ -382,8 +382,10 @@ expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
 Everything is deployed with `midas deploy <target>` now — `sim`, `atlas`, `web`,
 `wasm`, `apk` — built on a farm node rather than on the runner, from the scripts
-in `deploy/build/` (the simulator and atlas need only cargo), with the workflows
-as the fallback. The APK is built and checked on the node but **signed on the
+in `deploy/build/`, with the workflows as the fallback. The simulator and atlas
+are linked by cargo-zigbuild against glibc 2.38 (`server.sh`): a node runs Arch,
+ahead of the host's Ubuntu, and a binary linked there asked for `GLIBC_2.44`
+from a host with 2.43 — the deploy's smoke test refused it. The APK is built and checked on the node but **signed on the
 deploy host**, by a user that may read the release key and nothing else: the key
 never reaches a node. Its version code is 20000 + the commit count on `main`,
 which only grows, and was never reached by the workflow's 10000 + run number.
