@@ -45,8 +45,15 @@ skipped and why, and a pass writes a receipt keyed on the head sha.
 **4. Land it.** One command, and it does the verify above if you have not:
 
 ```bash
-.claude/skills/finish-branch/merge-to-main
+.claude/skills/finish-branch/merge-to-main                 # land
+.claude/skills/finish-branch/merge-to-main --deploy wasm   # land, then publish
 ```
+
+**Keep the node you worked on.** The gate runs on the node this worktree holds
+— a VPS node or a Mac — and only queues for a VPS node when it holds none, so
+releasing it first just buys a wait. `--deploy` takes `midas deploy`'s targets
+(`sim`, `atlas`, `web`, `wasm`, `apk`, comma-separated) and runs them after the
+landing; a failed deploy leaves the landing in place and names what to re-run.
 
 It rebases onto `origin/main`, runs the gate, pushes the branch, fast-forwards
 `main` to it and closes the ticket. **No pull request.** `ci.yml` has no push

@@ -80,8 +80,19 @@ if [ -f "$alsa/pkgconfig/alsa.pc" ]; then
     export LD_LIBRARY_PATH="$alsa${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 # Mesa lavapipe, exactly as the CI image is configured. Wayland + GLES flickers
-# and there is no compositor here anyway.
-export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
+# and there is no compositor here anyway. A Mac node has Metal and no Vulkan.
+case "$(uname -s)" in
+    Darwin) export WGPU_BACKEND="${WGPU_BACKEND:-metal}" ;;
+    *)      export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}" ;;
+esac
+# The smokes are bounded by `timeout`, which macOS does not ship.
+if command -v timeout >/dev/null; then
+    bounded="timeout 900"
+elif command -v gtimeout >/dev/null; then
+    bounded="gtimeout 900"
+else
+    bounded="perl -e 'alarm shift; exec @ARGV' 900"
+fi
 export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
 tiles="${CARTO_TILE_URL:-https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}}"
 
@@ -147,19 +158,30 @@ $targets && steps="$steps wasm android"
 # `gate-<worktree>` (the flush accepts that lease for this worktree), runs this
 # same script there with the merge-base sha as its base, and brings back the
 # exit status and the receipt (checked against this head, and marked with the
-# node). The node image carries what the steps need: lavapipe, nightly's wasm32
-# target, the Android target and the NDK. Measured 2026-10-11 on vps-2 from a
+# node). A VPS node's image carries what the steps need: lavapipe, nightly's wasm32
+# target, the Android target and the NDK; a Mac renders on Metal and fetches the
+# NDK and the targets on first use. Measured 2026-10-11 on vps-2 from a
 # cold build directory: all six steps in 49 min.
 #
 # On the node itself (CARTO_GATE_NO_SLOT=1, set by the run that sent it there),
 # or on a machine with no midas (a workstation), the steps run in place.
 if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas >/dev/null; then
-    gate_owner="gate-$(basename "$root")"
-    gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 \
-        --purpose "landing gate for $(git rev-parse --abbrev-ref HEAD)") || {
-        echo "no VPS node came free in an hour; not gating" >&2; exit 3; }
-    trap 'midas release --owner "$gate_owner" >/dev/null 2>&1' EXIT
-    echo "node     $gate_node — running the gate there"
+    # **The node this worktree already holds, if it holds one** — a VPS node or a
+    # Mac. Taking a second lease for the gate meant releasing the node the work
+    # was done on and then queueing for a VPS node another session held, with the
+    # Mac idle (2026-10-16: twice in one landing). The steps below run on Linux
+    # and macOS alike; the node's checkout follows this worktree either way.
+    gate_node=$(midas mine 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+    if [ -n "$gate_node" ]; then
+        echo "node     $gate_node — this worktree holds it; running the gate there"
+    else
+        gate_owner="gate-$(basename "$root")"
+        gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 \
+            --purpose "landing gate for $(git rev-parse --abbrev-ref HEAD)") || {
+            echo "no VPS node came free in an hour; not gating" >&2; exit 3; }
+        trap 'midas release --owner "$gate_owner" >/dev/null 2>&1' EXIT
+        echo "node     $gate_node — running the gate there"
+    fi
     ssh -o BatchMode=yes "$gate_node" \
         "CARTO_GATE_NO_SLOT=1 .claude/skills/finish-branch/verify-branch --base $mb --scope $scope${only:+ --only $only}"
     status=$?
@@ -210,6 +232,9 @@ want() { printf '%s\n' $steps | grep -qx "$1"; }
 # first and a rustfmt slip is on screen two seconds in rather than ten minutes.
 if want fmt; then
     run fmt "cargo fmt --check over the owned crates (big_space is a vendored fork)" <<'CMD'
+# A Mac node's toolchain ships without it.
+command -v rustfmt >/dev/null && rustfmt --version >/dev/null 2>&1 \
+    || rustup component add rustfmt
 cargo fmt -p cartopolis -p cartopolis_geo -p cartopolis_core \
           -p cartopolis_simulator -p cartopolis_android --check
 CMD
@@ -239,7 +264,7 @@ fi
 
 if want smoke-orbit; then
     run smoke-orbit "headless orbit capture: a planet is on screen" <<CMD
-timeout 900 cargo run --locked -p cartopolis -- \\
+$bounded cargo run --locked -p cartopolis -- \\
     --shot /tmp/verify_orbit.png --dump-state /tmp/verify_orbit.json \\
     --at 53.2194,6.5665,180000 --look=-90,0 \\
     --size 640x360 --settle 2 --wait 60 \\
@@ -255,7 +280,7 @@ if want smoke-phone; then
     # different sky, and that absent `AtmosphereSettings` is what once deleted
     # the planet on the handset while the tier above kept passing.
     run smoke-phone "the same frame on the tier Android runs" <<CMD
-CARTO_QUALITY=phone timeout 900 cargo run --locked -p cartopolis -- \\
+CARTO_QUALITY=phone $bounded cargo run --locked -p cartopolis -- \\
     --shot /tmp/verify_phone.png --dump-state /tmp/verify_phone.json \\
     --at 53.2194,6.5665,180000 --look=-90,0 \\
     --size 640x360 --settle 2 --wait 60 \\
@@ -293,16 +318,26 @@ if want android; then
     # crate's dependencies are target-gated, so a host build proves nothing about
     # it. Needs the NDK's clang because blake3's build script runs `cc` at check
     # time. In this container the toolchain copy and the NDK are under $HOME
-    # (the shared RUSTUP_HOME is root-owned); on the runner they are /opt.
+    # (the shared RUSTUP_HOME is root-owned); on a Linux node the NDK is /opt,
+    # on a Mac node it is fetched once into the node's tools directory.
     run android "cargo check for aarch64-linux-android" <<'CMD'
 # `&&` on its own line would be the last command of a list under `bash -e`,
 # so a missing first candidate would end the step rather than try the second.
-ndk=""
-for c in "$HOME/android-ndk" /opt/android-ndk; do
-    if [ -d "$c" ]; then ndk="$c"; break; fi
+# Otherwise the deploy builds' own: /opt/android-ndk, or the copy a Mac node
+# fetches into its tools directory (`deploy/build/lib.sh`'s android_ndk).
+if [ -d "$HOME/android-ndk" ]; then
+    ndk="$HOME/android-ndk"
+else
+    . deploy/build/lib.sh
+    android_ndk
+    ndk="$ANDROID_NDK_HOME"
+fi
+# linux-x86_64, or darwin-x86_64 on a Mac: whichever host the NDK was built for.
+NDK_BIN=""
+for d in "$ndk"/toolchains/llvm/prebuilt/*/bin; do
+    if [ -d "$d" ]; then NDK_BIN="$d"; break; fi
 done
-[ -n "$ndk" ] || { echo "no Android NDK at ~/android-ndk or /opt/android-ndk"; exit 1; }
-NDK_BIN="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+[ -n "$NDK_BIN" ] || { echo "no NDK toolchain under $ndk"; exit 1; }
 if [ -d "$HOME/rustup" ]; then export RUSTUP_HOME="$HOME/rustup"; fi
 rustup target list --installed 2>/dev/null | grep -qx aarch64-linux-android \
     || rustup target add aarch64-linux-android

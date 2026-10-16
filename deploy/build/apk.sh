@@ -29,29 +29,7 @@ if [ ! -x "$sdk/build-tools/34.0.0/aapt2" ] || [ ! -f "$sdk/platforms/android-34
     mv "$tmp"/bt/* "$sdk/build-tools/34.0.0" && mv "$tmp/pl/android-34" "$sdk/platforms/"
     rm -rf "$tmp"
 fi
-if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-    if [ -d /opt/android-ndk ]; then
-        ANDROID_NDK_HOME=/opt/android-ndk
-    else
-        ANDROID_NDK_HOME="$TOOLS/android-ndk-r27c"
-        if [ ! -x "$ANDROID_NDK_HOME/ndk-build" ]; then
-            echo "fetching Android NDK r27c for $host" >&2
-            tmp=$(mktemp -d)
-            if [ "$host" = darwin ]; then
-                # For macOS the NDK is only published as a disk image.
-                curl -fsSL -o "$tmp/ndk.dmg" https://dl.google.com/android/repository/android-ndk-r27c-darwin.dmg
-                hdiutil attach -quiet -nobrowse -readonly -mountpoint "$tmp/mnt" "$tmp/ndk.dmg"
-                rm -rf "$ANDROID_NDK_HOME" && cp -R "$tmp"/mnt/*.app/Contents/NDK "$ANDROID_NDK_HOME"
-                hdiutil detach -quiet "$tmp/mnt"
-            else
-                curl -fsSL -o "$tmp/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
-                unzip -q "$tmp/ndk.zip" -d "$tmp" && rm -rf "$ANDROID_NDK_HOME" && mv "$tmp/android-ndk-r27c" "$ANDROID_NDK_HOME"
-            fi
-            rm -rf "$tmp"
-        fi
-    fi
-fi
-export ANDROID_NDK_HOME
+android_ndk
 if [ -z "${JAVA_HOME:-}" ]; then
     if [ "$host" = darwin ]; then
         JAVA_HOME="$TOOLS/jdk-17/Contents/Home"

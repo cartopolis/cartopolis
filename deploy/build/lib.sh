@@ -30,3 +30,35 @@ wasm_bindgen() {
     ln -sf "$dir/wasm-bindgen" "$TOOLS/bin/wasm-bindgen"
     echo "$dir/wasm-bindgen"
 }
+
+# The Android NDK, as ANDROID_NDK_HOME (exported): the one already set, the
+# machine's at /opt/android-ndk, or r27c fetched once into $TOOLS for this host —
+# a Mac node has none mounted. Used by apk.sh and the landing gate's Android
+# check.
+android_ndk() {
+    local host tmp
+    case "$(uname -s)" in Darwin) host=darwin ;; *) host=linux ;; esac
+    if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+        if [ -d /opt/android-ndk ]; then
+            ANDROID_NDK_HOME=/opt/android-ndk
+        else
+            ANDROID_NDK_HOME="$TOOLS/android-ndk-r27c"
+            if [ ! -x "$ANDROID_NDK_HOME/ndk-build" ]; then
+                echo "fetching Android NDK r27c for $host" >&2
+                tmp=$(mktemp -d)
+                if [ "$host" = darwin ]; then
+                    # For macOS the NDK is only published as a disk image.
+                    curl -fsSL -o "$tmp/ndk.dmg" https://dl.google.com/android/repository/android-ndk-r27c-darwin.dmg
+                    hdiutil attach -quiet -nobrowse -readonly -mountpoint "$tmp/mnt" "$tmp/ndk.dmg"
+                    rm -rf "$ANDROID_NDK_HOME" && cp -R "$tmp"/mnt/*.app/Contents/NDK "$ANDROID_NDK_HOME"
+                    hdiutil detach -quiet "$tmp/mnt"
+                else
+                    curl -fsSL -o "$tmp/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+                    unzip -q "$tmp/ndk.zip" -d "$tmp" && rm -rf "$ANDROID_NDK_HOME" && mv "$tmp/android-ndk-r27c" "$ANDROID_NDK_HOME"
+                fi
+                rm -rf "$tmp"
+            fi
+        fi
+    fi
+    export ANDROID_NDK_HOME
+}
