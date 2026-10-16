@@ -380,10 +380,13 @@ that to any new job. `deploy-wasm.yml`, `deploy-android.yml` and `deploy-sim.yml
 Every other deploy lane in this repo is manual, because publishing is either
 expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
-The simulator and atlas are deployed with `midas deploy sim` / `midas deploy
-atlas` now, built on a farm node rather than on the runner; their workflows are
-the fallback. The web UI and the wasm viewer stay here until the nodes carry
-`bun` and `trunk`.
+Everything is deployed with `midas deploy <target>` now — `sim`, `atlas`, `web`,
+`wasm`, `apk` — built on a farm node rather than on the runner, from the scripts
+in `deploy/build/` (the simulator and atlas need only cargo), with the workflows
+as the fallback. The APK is built and checked on the node but **signed on the
+deploy host**, by a user that may read the release key and nothing else: the key
+never reaches a node. Its version code is 20000 + the commit count on `main`,
+which only grows, and was never reached by the workflow's 10000 + run number.
 The web UI's lane, `deploy-web.yml`, is the opposite — seconds, and it
 interrupts nobody — so it runs on every push to `main` that touches
 `crates/atlas/web`. It publishes to `/data/cartopolis/admin`, which has been

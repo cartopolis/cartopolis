@@ -197,8 +197,8 @@ scp deck-1:/tmp/x.png /tmp/x.png   # a node's output stays on its machine
 A **midas node** (jeroen/midas) is a contained checkout on the VPS
 (`vps-1`) or the Steam Deck (`deck-1`) that follows your worktree — each `ssh`,
 `scp` or `rsync` to it first sends your new commits and uncommitted edits — and
-whose commands start in that checkout. The farm also **deploys**: `midas deploy sim` / `midas deploy atlas` builds the
-tip of `main` on a VPS node and publishes it on the VPS, once `verify-branch`'s
+whose commands start in that checkout. The farm also **deploys**: `midas deploy sim|atlas|web|wasm|apk` builds the
+tip of `main` on a VPS node (`deploy/build/` has the scripts) and publishes it on the VPS, once `verify-branch`'s
 pass is on record at the hub (`docs/notes/hosted-simulator.md`); the Forgejo
 deploy workflows are the fallback, and `ci.yml` runs on `main` nightly. `cargo` refuses to build in the agent
 container itself.
