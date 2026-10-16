@@ -116,7 +116,8 @@ until somebody deploys it, and a client a protocol revision ahead of it fails to
 sign in with "Connection reset without closing handshake" (the server's journal
 says `unsupported protocol version`).
 
-`deploy-sim.yml` still works and is the fallback when the farm is down — it
+No deploy runs on a push to `main` any more — the web UI's was the last to, until
+2026-10-16. `deploy-sim.yml` still works and is the fallback when the farm is down — it
 builds on the Forgejo runner instead, and its checks are the recipe's:
 
 ```bash

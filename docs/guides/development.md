@@ -389,9 +389,9 @@ from a host with 2.43 — the deploy's smoke test refused it. The APK is built a
 deploy host**, by a user that may read the release key and nothing else: the key
 never reaches a node. Its version code is 20000 + the commit count on `main`,
 which only grows, and was never reached by the workflow's 10000 + run number.
-The web UI's lane, `deploy-web.yml`, is the opposite — seconds, and it
-interrupts nobody — so it runs on every push to `main` that touches
-`crates/atlas/web`. It publishes to `/data/cartopolis/admin`, which has been
+The web UI's lane, `deploy-web.yml`, used to be the opposite — seconds, and it
+interrupts nobody — so it ran on every push to `main` that touched
+`crates/atlas/web`; it is manual now too, `midas deploy web` having replaced it. It publishes to `/data/cartopolis/admin`, which has been
 in the runner's `valid_volumes` since the web UI was its own repository.
 
 **A step may only use a tool the image already has.** The image is built by hand on

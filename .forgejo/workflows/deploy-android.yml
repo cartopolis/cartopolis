@@ -3,6 +3,11 @@ name: Deploy Android
 # Build the arm64 APK and publish it to https://cartopolis.org/apk/, so a
 # phone can install it by tapping a link.
 #
+# **The fallback.** `midas deploy apk` is the usual path since 2026-10-16: it builds
+# a landed, gate-verified commit on a farm node (deploy/build/apk.sh, these steps)
+# and publishes it on the VPS, where the release key signs it — the key never reaches a node.
+# This workflow is for when the farm is down.
+#
 # Separate from ci.yml for the reason deploy-wasm.yml is: this is a *link*, thin
 # LTO over the whole Bevy stack, tens of minutes cold against a runner with
 # capacity 3. ci.yml's android lane stays a `cargo check` and remains the gate on

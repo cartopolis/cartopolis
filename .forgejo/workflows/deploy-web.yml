@@ -4,26 +4,14 @@ name: Deploy web UI
 # https://cartopolis.org/ — the site root. It was a separate repository's deploy, to
 # web.cartopolis.org, until 2026-09.
 #
-# On every push to `main` that touches it, as it always was: the build is Bun
-# over ~35 KB of TypeScript, it takes seconds, and publishing static files
-# interrupts nobody — unlike the simulator or atlas, nothing restarts.
+# The build is Bun over ~35 KB of TypeScript, it takes seconds, and publishing
+# static files interrupts nobody — unlike the simulator or atlas, nothing restarts.
+#
+# **Manual since 2026-10-16**: `midas deploy web` is the usual path (it builds
+# on a farm node from deploy/build/web.sh, the same steps as below, and publishes
+# in about 80 s); this workflow is the fallback for when the farm is down. It ran
+# on every push to `main` that touched the web UI before.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "crates/atlas/web/**"
-      - ".forgejo/workflows/deploy-web.yml"
-      # The chat engine the site ships as WebAssembly (`docs/notes/web-chat.md`),
-      # and the protocol it speaks: a wire change the site did not follow would
-      # leave its chat worker refused by the server it talks to.
-      - "crates/chat/**"
-      - "crates/web_chat/**"
-      - "crates/cartopolis/web/webcall.js"
-      - "crates/cartopolis/web/call-worker.js"
-      - "crates/cartopolis/web/sframe.js"
-      - "crates/e2ee/**"
-      - "crates/core/**"
-      - "Cargo.lock"
   workflow_dispatch:
 
 concurrency:
