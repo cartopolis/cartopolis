@@ -94,6 +94,40 @@ pub fn prepare(bytes: &[u8]) -> Result<Prepared, String> {
     })
 }
 
+/// Edge of a person's picture (`systems::faces`). Larger than [`THUMB_EDGE`]
+/// because the You page draws it 90 points across, which is 270 pixels on a
+/// phone; a list row's 48 points are the same file scaled down.
+pub const FACE_EDGE: u32 = 256;
+const FACE_QUALITY: u8 = 82;
+
+/// A person's picture from whatever was picked: a [`FACE_EDGE`] square
+/// centre-crop, upright, as a JPEG plus the pixels it decodes to.
+pub fn face(bytes: &[u8]) -> Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String> {
+    face_of(decode_upright(bytes)?)
+}
+
+/// [`face`] from raw RGBA, as a snapshot arrives.
+pub fn face_from_rgba(
+    rgba: Vec<u8>,
+    size: [usize; 2],
+) -> Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String> {
+    let img = image::RgbaImage::from_raw(size[0] as u32, size[1] as u32, rgba)
+        .ok_or_else(|| "the snapshot was the wrong size".to_string())?;
+    face_of(DynamicImage::ImageRgba8(img))
+}
+
+fn face_of(img: DynamicImage) -> Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String> {
+    let square = img.resize_to_fill(
+        FACE_EDGE,
+        FACE_EDGE,
+        image::imageops::FilterType::CatmullRom,
+    );
+    let jpeg = encode_jpeg(&square, FACE_QUALITY)?;
+    let rgba = square.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Ok((jpeg, (rgba.into_raw(), size)))
+}
+
 /// Decode to RGBA8 for egui, which wants straight bytes and a size.
 ///
 /// Stored photos are already upright (see the module note), but this runs the

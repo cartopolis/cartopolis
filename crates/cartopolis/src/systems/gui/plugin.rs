@@ -55,6 +55,7 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::chat_overlay::ChatOverlay>()
             .init_resource::<systems::chats::ChatsView>()
             .init_resource::<systems::communities::Communities>()
+            .init_resource::<systems::faces::Faces>()
             .init_resource::<systems::script_editor::ScriptEditorState>()
             .init_resource::<systems::model_library::ModelLibraryState>()
             // Drawn over everything until the first tiles are up. Mirrors the
@@ -77,6 +78,21 @@ impl Plugin for GuiPlugin {
                     .before(systems::free_camera::camera_controls)
                     .in_set(ClientPhase::Anchor),
                 systems::field_check::render_field_check
+                    .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+            ),
+        );
+
+        // People's pictures (`systems::faces`): the table the discs read is
+        // rewritten before any panel paints one, and the polaroid's viewfinder
+        // is its own `Foreground` area over the map, so not in the panel chain.
+        app.add_systems(
+            Update,
+            (
+                systems::faces::drive_faces
+                    .before(systems::ui::render_main_menu)
+                    .in_set(ClientPhase::Input),
+                systems::faces::render_face_viewfinder
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
             ),

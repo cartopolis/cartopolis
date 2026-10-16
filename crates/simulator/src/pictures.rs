@@ -85,16 +85,109 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 
+use rusqlite::OptionalExtension as _;
+
 use crate::http::{internal, require_session, ApiError, ApiResult, HttpState};
 
-/// `POST /api/pictures` (an encrypted body) and `GET /api/pictures/{hash}`.
+/// `POST /api/pictures` (an encrypted body) and `GET /api/pictures/{hash}`;
+/// and a person's own picture, `PUT /api/pictures/mine`, with everybody's
+/// looked up by name at `GET /api/pictures/people?names=a,b`.
+///
+/// The people routes live under this prefix rather than a new one because the
+/// public host routes `/api/pictures/*` to the simulator already, and every
+/// other `/api` path there is listed by hand.
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route(
             "/api/pictures",
             post(upload).layer(axum::extract::DefaultBodyLimit::max(MAX_PICTURE_BYTES)),
         )
+        .route("/api/pictures/mine", axum::routing::put(set_mine))
+        .route("/api/pictures/people", get(people))
         .route("/api/pictures/{hash}", get(download))
+}
+
+/// Most names one lookup answers: a screen's worth of discs, with room over.
+pub const MAX_PEOPLE_PER_LOOKUP: usize = 100;
+
+#[derive(serde::Deserialize)]
+struct SetPicture {
+    /// A hash in this store, or `null` to go back to the initial.
+    picture: Option<String>,
+}
+
+/// Set the caller's own picture. The picture is uploaded first, as any other
+/// (`POST /api/pictures`), and this names it: a hash the store does not hold
+/// is refused, so a disc can never point at nothing.
+async fn set_mine(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<SetPicture>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, username) = require_session(&state, &headers)?;
+    if let Some(hash) = &body.picture {
+        let dir = state.config.asset_dir.clone();
+        let h = hash.clone();
+        let held = tokio::task::spawn_blocking(move || {
+            assets::is_hash(&h) && picture_path(&dir, &h).is_file()
+        })
+        .await
+        .map_err(|e| internal(anyhow::anyhow!("picture check panicked: {e}")))?;
+        if !held {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "upload the picture first; that one is not in the store".into(),
+            ));
+        }
+    }
+    let picture = body.picture.clone();
+    crate::http::with_db(&state, move |c| {
+        c.execute(
+            "UPDATE accounts SET picture = ?1 WHERE id = ?2",
+            rusqlite::params![picture, principal.to_string()],
+        )?;
+        Ok(())
+    })?;
+    tracing::info!(%username, picture = ?body.picture, "profile picture set");
+    Ok(Json(serde_json::json!({ "picture": body.picture })))
+}
+
+#[derive(serde::Deserialize)]
+struct PeopleQuery {
+    /// Usernames, comma-separated.
+    #[serde(default)]
+    names: String,
+}
+
+/// Each named person's picture: a hash, or `null` for none (and for nobody by
+/// that name, which a caller cannot tell apart — this is not a way to find out
+/// who has an account). Keyed by the name as asked, lowercased.
+async fn people(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<PeopleQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_session(&state, &headers)?;
+    let names: Vec<String> = q
+        .names
+        .split(',')
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty())
+        .take(MAX_PEOPLE_PER_LOOKUP)
+        .collect();
+    let found = crate::http::with_db(&state, move |c| {
+        let mut stmt = c.prepare_cached(
+            "SELECT picture FROM accounts WHERE username = ?1 COLLATE NOCASE AND disabled = 0",
+        )?;
+        let mut out = serde_json::Map::new();
+        for name in names {
+            let picture: Option<String> =
+                stmt.query_row([&name], |r| r.get(0)).optional()?.flatten();
+            out.insert(name, picture.map_or(serde_json::Value::Null, Into::into));
+        }
+        Ok(out)
+    })?;
+    Ok(Json(serde_json::json!({ "pictures": found })))
 }
 
 /// Anyone signed in may store a picture. The answer is its hash, which is what

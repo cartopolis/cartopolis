@@ -281,6 +281,13 @@ pub(crate) fn paint_avatar(
     kind: ChatKind,
     size: f32,
 ) {
+    // A person with a picture is their picture (`systems::faces`).
+    if matches!(kind, ChatKind::Private) {
+        if let Some(texture) = crate::systems::faces::texture_for(name) {
+            crate::systems::faces::paint_face(p, c, size / 2.0, texture);
+            return;
+        }
+    }
     let (tone, text, scale) = match kind {
         ChatKind::Here => (HERE_TONE, icons::PIN.to_string(), 0.45),
         ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), 0.45),
@@ -896,6 +903,7 @@ pub fn render_chats_panel(
     mut screenshot: ResMut<crate::resources::ScreenshotState>,
     mut communities: ResMut<crate::systems::communities::Communities>,
     mut field_check: ResMut<crate::systems::field_check::FieldCheck>,
+    mut faces: ResMut<crate::systems::faces::Faces>,
 ) {
     for said in communities.take_admin_results() {
         chat.notice = Some(crate::systems::chat::ChatNotice {
@@ -987,7 +995,9 @@ pub fn render_chats_panel(
                     online.as_deref(),
                     &me,
                 ),
-                (None, None) if view.you => you_screen(ui, &me, &me_full, &contacts, &mut act),
+                (None, None) if view.you => {
+                    you_screen(ui, &me, &me_full, &contacts, &mut faces, &mut act);
+                }
                 (None, None) => list_screen(
                     ui,
                     &mut chat,
@@ -1765,6 +1775,7 @@ fn you_screen(
     me: &str,
     address: &str,
     contacts: &crate::systems::contacts::Contacts,
+    faces: &mut crate::systems::faces::Faces,
     act: &mut Actions,
 ) {
     use crate::systems::contacts::Sub;
@@ -1775,12 +1786,9 @@ fn you_screen(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::Vec2::splat(96.0), egui::Sense::hover());
-                ui.painter()
-                    .circle_stroke(rect.center(), 48.0, egui::Stroke::new(1.5, GLINE));
-                let name = if me.is_empty() { "?" } else { me };
-                paint_avatar(ui.painter(), rect.center(), name, ChatKind::Private, 90.0);
+                // Your disc, or the picture you are about to make it, and the
+                // ways to make one (`systems::faces`).
+                crate::systems::faces::you_picture(ui, faces, me, &mut act.panel);
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(me).size(22.0).color(theme::CREAM));
                 ui.label(
@@ -2775,10 +2783,10 @@ const PICTURE_MAX_PT: f32 = 240.0;
 
 /// A Polaroid's paper: warm white rather than pure white, which would glare
 /// against the ink of the panel, and the edge it leaves round the picture.
-const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
+pub(crate) const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
 const POLAROID_EDGE: i8 = 10;
 /// What is written on it, and the time in the corner.
-const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);
+pub(crate) const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);
 const POLAROID_DIM: egui::Color32 = egui::Color32::from_rgb(0x7A, 0x7E, 0x82);
 
 /// A picture in the thread: the image once it has arrived, a placeholder of

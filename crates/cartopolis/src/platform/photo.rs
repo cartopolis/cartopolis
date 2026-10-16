@@ -85,10 +85,41 @@ pub fn action_label() -> &'static str {
     imp::ACTION_LABEL
 }
 
+/// What the image is asked for from. Only the web can tell the three apart: a
+/// desktop has a file dialog and nothing else, and the Android arm has the
+/// camera intent and no picker (`android-activity` surfaces no activity
+/// result, so a gallery's answer could not be read back).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Whatever this platform does by default: a photo of a place, so the rear
+    /// camera where a browser can be asked for one.
+    Place,
+    /// A file, with no camera suggested.
+    File,
+    /// The camera facing the user.
+    Selfie,
+}
+
+/// Whether [`start_from`] can do something distinct with `source` here, so a
+/// screen offers only the buttons that do something different.
+#[must_use]
+pub fn offers(source: Source) -> bool {
+    match source {
+        Source::Place => imp::AVAILABLE,
+        Source::File => cfg!(not(target_os = "android")),
+        Source::Selfie => cfg!(any(target_arch = "wasm32", target_os = "android")),
+    }
+}
+
 /// Ask the platform for an image.
 pub fn start() -> Result<Capture, String> {
+    start_from(Source::Place)
+}
+
+/// Ask the platform for an image from `source` (see [`offers`]).
+pub fn start_from(source: Source) -> Result<Capture, String> {
     let slot: Slot = Arc::new(Mutex::new(None));
-    let inner = imp::start(slot.clone())?;
+    let inner = imp::start(slot.clone(), source)?;
     Ok(Capture { slot, inner })
 }
 
@@ -114,7 +145,11 @@ mod imp {
         pub fn cancel(&mut self) {}
     }
 
-    pub fn start(slot: Slot) -> Result<Inner, String> {
+    pub fn start(slot: Slot, source: super::Source) -> Result<Inner, String> {
+        let title = match source {
+            super::Source::Place => "Photo for this place",
+            super::Source::File | super::Source::Selfie => "Choose a picture",
+        };
         // `AsyncFileDialog`, not the blocking one, and on the IO pool rather than
         // a thread of its own: the blocking API must be called from the main
         // thread on macOS, which is a rule this call site cannot honour from
@@ -125,7 +160,7 @@ mod imp {
         IoTaskPool::get()
             .spawn(async move {
                 let picked = rfd::AsyncFileDialog::new()
-                    .set_title("Photo for this place")
+                    .set_title(title)
                     // The filter is a convenience, not a guarantee: "All files"
                     // is always reachable, so `utils::photo::prepare` still has
                     // to survive being handed something that is not an image.
@@ -182,7 +217,7 @@ mod imp {
     /// handle, because a `Closure` is not `Send` and the caller lives in a Bevy
     /// resource; `forget()` leaks a few hundred bytes per capture, which is the
     /// cheapest correct answer for something the user does by hand.
-    pub fn start(slot: Slot) -> Result<Inner, String> {
+    pub fn start(slot: Slot, source: super::Source) -> Result<Inner, String> {
         let document = web_sys::window()
             .and_then(|w| w.document())
             .ok_or_else(|| "no document to attach the file input to".to_string())?;
@@ -193,7 +228,17 @@ mod imp {
             .map_err(|_| "the file input was not an input element".to_string())?;
         input.set_type("file");
         input.set_accept("image/*");
-        let _ = input.set_attribute("capture", "environment");
+        // A file is asked for with no `capture` at all, which a phone answers
+        // with its own choice of gallery or camera.
+        match source {
+            super::Source::Place => {
+                let _ = input.set_attribute("capture", "environment");
+            }
+            super::Source::Selfie => {
+                let _ = input.set_attribute("capture", "user");
+            }
+            super::Source::File => {}
+        }
         let _ = input.style().set_property("display", "none");
 
         let on_change = {
@@ -362,7 +407,7 @@ mod imp {
         }
     }
 
-    pub fn start(_slot: Slot) -> Result<Inner, String> {
+    pub fn start(_slot: Slot, _source: super::Source) -> Result<Inner, String> {
         let answer = Answer::default();
         let cancel = Arc::new(AtomicBool::new(false));
         let (out, stop) = (answer.clone(), cancel.clone());

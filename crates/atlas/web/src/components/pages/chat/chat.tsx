@@ -91,6 +91,10 @@ function hue(s: string): number {
 
 function Avatar(who: string, size = 32) {
     const name = who.split('@')[0]
+    const url = pictureUrl(faceHash(who))
+    if (url) {
+        return <img alt="" class="chat-avatar" src={url} style={`width:${size}px;height:${size}px;object-fit:cover`} />
+    }
     return (
         <span
             class="chat-avatar"
@@ -164,7 +168,7 @@ export function gridColumns(n: number, wide: boolean): number {
     return Math.max(1, Math.ceil(Math.sqrt(n)))
 }
 
-/** Community pictures as object URLs, by hash: fetched once, with the session. */
+/** Pictures — a community's, a person's — as object URLs, by hash: fetched once, with the session. */
 const pictures = new Map<string, string | 'loading' | 'failed'>()
 
 function pictureUrl(hash: string | null | undefined): string | null {
@@ -182,6 +186,54 @@ function pictureUrl(hash: string | null | undefined): string | null {
         return null
     }
     return have === 'loading' || have === 'failed' ? null : have
+}
+
+/**
+ * People's pictures by name, as the app keeps them (`systems::faces`): a hash
+ * in the picture store, asked for in batches and asked again every five
+ * minutes, which is how somebody's new picture arrives. Only for this server's
+ * people: a name on another server means nothing to this one's accounts.
+ */
+const faces = new Map<string, {at: number; hash: string | null}>()
+const faceQueue = new Set<string>()
+let faceTimer: ReturnType<typeof setTimeout> | null = null
+const FACE_REFRESH_MS = 300_000
+
+function faceHash(who: string): string | null {
+    const [name, server] = who.toLowerCase().split('@')
+    if (!name || (server && server !== location.hostname.toLowerCase())) return null
+    const known = faces.get(name)
+    if ((!known || Date.now() - known.at > FACE_REFRESH_MS) && !faceQueue.has(name)) {
+        faceQueue.add(name)
+        askFaces()
+    }
+    return known?.hash ?? null
+}
+
+function askFaces() {
+    if (faceTimer !== null || !$s.signup.token) return
+    faceTimer = setTimeout(() => {
+        faceTimer = null
+        const names = [...faceQueue].slice(0, 100)
+        const at = Date.now()
+        for (const n of names) {
+            faceQueue.delete(n)
+            faces.set(n, {at, hash: faces.get(n)?.hash ?? null})
+        }
+        void fetch(`/api/pictures/people?names=${encodeURIComponent(names.join(','))}`, {
+            headers: {Authorization: `Bearer ${$s.signup.token}`},
+        })
+            .then(async (r) => {
+                if (!r.ok) throw new Error(String(r.status))
+                const body = (await r.json()) as {pictures: Record<string, string | null>}
+                for (const [n, hash] of Object.entries(body.pictures)) faces.set(n, {at, hash})
+            })
+            .catch(() => {})
+            .finally(() => {
+                if (faceQueue.size) askFaces()
+                m.redraw()
+            })
+    }, 200)
 }
 
 /** A community's tile: its picture, or a rounded square with its initial. */

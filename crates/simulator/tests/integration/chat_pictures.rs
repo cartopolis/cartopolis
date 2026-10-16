@@ -154,3 +154,110 @@ async fn a_picture_is_stored_by_one_account_and_fetched_by_another() {
     .await;
     assert_eq!(status, 413);
 }
+
+async fn put_json(
+    url: String,
+    token: Option<String>,
+    body: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    tokio::task::spawn_blocking(move || {
+        let mut req = ureq::put(&url);
+        if let Some(t) = token {
+            req = req.set("Authorization", &format!("Bearer {t}"));
+        }
+        let json = |r: ureq::Response| {
+            serde_json::from_str(&r.into_string().unwrap_or_default()).unwrap_or_default()
+        };
+        match req
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+        {
+            Ok(r) => (r.status(), json(r)),
+            Err(ureq::Error::Status(code, r)) => (code, json(r)),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// A person's picture (`docs/notes/profile-pictures.md`): uploaded like any
+/// other, named as theirs, and read back by name by somebody else.
+#[tokio::test]
+async fn a_person_sets_their_picture_and_another_reads_it_by_name() {
+    let (s, _dir) = server().await;
+    let http = format!("http://{}", s.http_addr.unwrap());
+    let (_a, alice) = token(&s, "alice").await;
+    let (_b, bob) = token(&s, "bob").await;
+    let people = |names: &str| format!("{http}/api/pictures/people?names={names}");
+    let read = |bytes: Vec<u8>| -> serde_json::Value { serde_json::from_slice(&bytes).unwrap() };
+
+    // Nobody has one to start with, and a name with no account reads the same.
+    let (status, body) = get(people("alice,Bob,nobody"), Some(bob.clone())).await;
+    assert_eq!(status, 200);
+    let body = read(body);
+    assert!(body["pictures"]["alice"].is_null(), "{body}");
+    assert!(body["pictures"]["bob"].is_null(), "{body}");
+    assert!(body["pictures"]["nobody"].is_null(), "{body}");
+
+    // A hash the store does not hold cannot be named, nor can a non-hash.
+    let missing = "0".repeat(64);
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/mine"),
+        Some(alice.clone()),
+        serde_json::json!({ "picture": missing }),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/mine"),
+        Some(alice.clone()),
+        serde_json::json!({ "picture": "../pictures.db" }),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    // Upload, then name it.
+    let (status, row) = post(
+        format!("{http}/api/pictures"),
+        Some(alice.clone()),
+        b"a small square jpeg".to_vec(),
+    )
+    .await;
+    assert_eq!(status, 201, "{row}");
+    let hash = row["hash"].as_str().unwrap().to_string();
+    let (status, row) = put_json(
+        format!("{http}/api/pictures/mine"),
+        Some(alice.clone()),
+        serde_json::json!({ "picture": hash }),
+    )
+    .await;
+    assert_eq!(status, 200, "{row}");
+
+    // Bob sees it, whatever case he asks in; nobody signed out does.
+    let (status, body) = get(people("ALICE,bob"), Some(bob.clone())).await;
+    assert_eq!(status, 200);
+    let body = read(body);
+    assert_eq!(body["pictures"]["alice"], hash.as_str(), "{body}");
+    assert!(body["pictures"]["bob"].is_null(), "{body}");
+    let (status, _) = get(people("alice"), None).await;
+    assert_eq!(status, 401);
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/mine"),
+        None,
+        serde_json::json!({ "picture": null }),
+    )
+    .await;
+    assert_eq!(status, 401);
+
+    // And back to the initial.
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/mine"),
+        Some(alice),
+        serde_json::json!({ "picture": null }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, body) = get(people("alice"), Some(bob)).await;
+    assert!(read(body)["pictures"]["alice"].is_null());
+}

@@ -571,6 +571,32 @@ pub fn drive_screenshots(
         );
         return;
     }
+    if std::mem::take(&mut shot.face_snapshot) {
+        // A polaroid for your own picture: the window with no UI, cropped by
+        // `faces` to the square its viewfinder showed.
+        shot.hide_ui = true;
+        commands.spawn(Screenshot::primary_window()).observe(
+            |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+             mut faces: ResMut<crate::systems::faces::Faces>| {
+                let image = &captured.image;
+                let size = image.size();
+                match image.clone().try_into_dynamic() {
+                    Ok(dynamic) => {
+                        faces.snapshot_in = Some((
+                            dynamic.to_rgba8().into_raw(),
+                            [size.x as usize, size.y as usize],
+                        ));
+                    }
+                    Err(e) => {
+                        faces.shooting = false;
+                        faces.note = Some("The polaroid could not be read.".into());
+                        warn!("a face polaroid could not be read: {e}");
+                    }
+                }
+            },
+        );
+        return;
+    }
     if let Some(channel) = shot.chat_snapshot.take() {
         // The pixels go to the chat as raw RGBA: encoding a full window here
         // would stall the frame, and `chat_pictures` re-encodes on a worker

@@ -974,6 +974,9 @@ pub struct ScreenshotState {
     /// The world half of a field check (`systems::field_check`): captured the
     /// same chrome-free way and handed back to the field check as pixels.
     pub field_check_snapshot: bool,
+    /// A polaroid for your own picture (`systems::faces`): the same capture,
+    /// handed back for the viewfinder's square to be cut out of it.
+    pub face_snapshot: bool,
     /// Group the dev panel's "Copy as preset" writes into the block it copies —
     /// the subject a remembered viewpoint is *for* (`tunnels`, `bridges`,
     /// `doors`). Empty means the published documentation set.
