@@ -461,26 +461,44 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The pixel's footprint on the deck is taken out here, for every ground pixel,
     // because a derivative is not allowed inside the water-only branch — the mask
     // varies from texel to texel. It is a handful of arithmetic and one load.
+    // Field by field, never `let clouds = ground_clouds[i]` whole (`cf::Deck`):
+    // naga's Metal writer turns a whole load out of a `binding_array` of buffers
+    // into a pointer-to-struct conversion Metal refuses, the opaque pipeline fails
+    // to build, and the renderer halts on a black window (macOS, 2026-10-15).
     @if(BINDLESS)
-    let clouds = ground_clouds[ground_indices[slot].clouds];
+    let cloud_slot = ground_indices[slot].clouds;
+    @if(BINDLESS)
+    let deck_shape = ground_clouds[cloud_slot].shape;
     @else
-    let clouds = clouds_single;
+    let deck_shape = clouds_single.shape;
     let offset = in.world_position.xyz - view_bindings::view.world_position.xyz;
     let mirror_ray = reflect(-pbr_input.V, pbr_input.N);
-    let spread = length(fwidth(cf::mirror_hit(clouds.shape.w, offset, mirror_ray)));
+    let spread = length(fwidth(cf::mirror_hit(deck_shape.w, offset, mirror_ray)));
     // The same cut-off the surface applies, to the same weight, so it cannot
     // draw a line along the ring's edge.
     let cloud_fade = cloud_mirror_fade(reflected * water);
     if cloud_fade > 0.0 {
+        @if(BINDLESS)
         let deck = cf::Deck(
-            clouds.shape,
-            clouds.motion,
-            clouds.sun_dir,
-            clouds.sun_color,
-            clouds.sky_color,
-            clouds.place,
-            clouds.haze_color,
-            clouds.light,
+            deck_shape,
+            ground_clouds[cloud_slot].motion,
+            ground_clouds[cloud_slot].sun_dir,
+            ground_clouds[cloud_slot].sun_color,
+            ground_clouds[cloud_slot].sky_color,
+            ground_clouds[cloud_slot].place,
+            ground_clouds[cloud_slot].haze_color,
+            ground_clouds[cloud_slot].light,
+        );
+        @else
+        let deck = cf::Deck(
+            deck_shape,
+            clouds_single.motion,
+            clouds_single.sun_dir,
+            clouds_single.sun_color,
+            clouds_single.sky_color,
+            clouds_single.place,
+            clouds_single.haze_color,
+            clouds_single.light,
         );
         var cloud = cf::mirrored(
             deck,
