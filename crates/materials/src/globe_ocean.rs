@@ -4,7 +4,7 @@
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
 /// Roughness of open ocean in deep space.
@@ -36,8 +36,41 @@ const OCEAN_TINT: Vec3 = Vec3::new(0.42, 0.55, 0.72);
 /// `update_globe_albedo` still has one material type to walk.
 pub type GlobeSurfaceMaterial = ExtendedMaterial<StandardMaterial, GlobeOcean>;
 
+/// [`GlobeOcean`]'s two vectors, as the one buffer the shader reads them from
+/// (binding 100; in bindless mode an element of the array at 110).
+///
+/// **Bindless is what this shape is for**, as it is for
+/// `ground_detail::GroundUniform`. Every globe tile is a material of its own — it
+/// has its own imagery — so with two plain uniforms every tile was a bind group
+/// of its own, and with it a multidraw batch set of its own. Bevy rewrites three
+/// GPU buffers per batch set per frame through `Queue::write_buffer`, and on Metal
+/// each of those is a buffer created and later destroyed through the kernel:
+/// over Groningen from 3 km the ~320 globe tiles on the horizon were ~330 of the
+/// main pass's 373 batch sets, and creating and freeing their staging buffers was
+/// ~8 ms of a 12 ms frame (M5 Pro, 2026-10-16). Bindless, they share a handful.
+/// Where the platform cannot do bindless the same declaration falls back to an
+/// ordinary uniform at 100.
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct GlobeOceanUniform {
+    /// [`GlobeOcean::ocean`].
+    pub ocean: Vec4,
+    /// [`GlobeOcean::tint`].
+    pub tint: Vec4,
+}
+
+impl From<&GlobeOcean> for GlobeOceanUniform {
+    fn from(e: &GlobeOcean) -> Self {
+        Self {
+            ocean: e.ocean,
+            tint: e.tint,
+        }
+    }
+}
+
 /// Ocean uniforms for `shaders/globe_ocean.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug, Default)]
+#[data(100, GlobeOceanUniform, binding_array(110))]
+#[bindless(index_table(range(100..101), binding(109)))]
 pub struct GlobeOcean {
     /// x: effect strength, ramped with `space_factor` (0 = the surface behaves
     /// exactly as it did before this material existed).
@@ -45,10 +78,8 @@ pub struct GlobeOcean {
     /// the backstop sphere has no imagery at all, and an unbound texture reads as
     /// opaque white, which would otherwise turn the whole planet into ocean.
     /// z: ocean roughness. w: ocean reflectance.
-    #[uniform(100)]
     pub ocean: Vec4,
     /// rgb: the water tint. a unused.
-    #[uniform(101)]
     pub tint: Vec4,
 }
 

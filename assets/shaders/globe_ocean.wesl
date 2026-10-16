@@ -22,16 +22,45 @@ import bevy_pbr::render::{
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 };
+import bevy_pbr::render::mesh_bindings::mesh;
 
-// x: effect strength (space_factor ramp). y: 1 when alpha carries a real mask.
-// z: ocean roughness. w: ocean reflectance (StandardMaterial's 0..1 remap).
-@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> ocean: vec4<f32>;
-// rgb: water tint applied to the imagery. a unused.
-@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> tint: vec4<f32>;
+// The material's two vectors, one buffer (`globe_ocean::GlobeOceanUniform`):
+//
+// ocean — x: effect strength (space_factor ramp). y: 1 when alpha carries a real
+//   mask. z: ocean roughness. w: ocean reflectance (StandardMaterial's 0..1 remap).
+// tint — rgb: water tint applied to the imagery. a unused.
+struct GlobeOceanUniform {
+    ocean: vec4<f32>,
+    tint: vec4<f32>,
+}
+
+// Bindless where the platform has it, so the globe's tiles — each a material of
+// its own, with its own imagery — share a bind group and a batch set rather than
+// costing one each (`globe_ocean::GlobeOceanUniform` says what that cost).
+// One entry per material, naming bindless index 100.
+@if(BINDLESS)
+struct GlobeOceanIndices {
+    material: u32, // 100
+}
+@if(BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var<storage> globe_ocean_indices: array<GlobeOceanIndices>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var<storage> globe_ocean_array: array<GlobeOceanUniform>;
+}
+@else {
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> globe_ocean_single: GlobeOceanUniform;
+}
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    @if(BINDLESS)
+    let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    @if(BINDLESS)
+    let params = globe_ocean_array[globe_ocean_indices[slot].material];
+    @else
+    let params = globe_ocean_single;
+    let ocean = params.ocean;
+    let tint = params.tint;
 
     // Water coverage, 0..1. The imagery's mip chain averages the mask with the
     // colour, so a coastline softens with distance rather than aliasing — which
