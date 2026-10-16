@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
-triggers: [platform/workers.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, IoTaskPool, cdp_probe, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio"]
-updated: 2026-08-10
+triggers: [platform/workers.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+updated: 2026-10-16
 ---
 
 # What actually costs frames on the web build
@@ -57,6 +57,61 @@ Overpass's validate-before-persist survived the move via a derived
 `OverpassRemark` struct (serde skips `elements` without allocating). Its
 200-status `remark` error channel must still be rejected before caching —
 a 200 response is not a success there.
+
+## Where a load's hitches went (2026-10-16)
+
+Measured with `tools/cdp_probe.ts --gpu --profile-from 0 --profile-out`, a
+release build kept unstripped (`CARGO_PROFILE_WEB_RELEASE_STRIP=none`, so the
+profile has function names), in Chrome for Testing on a Mac node's Apple GPU
+(how to set that up is in the probe's header and in
+[checking-the-web-build.md](checking-the-web-build.md)). One 75 s load over
+Groningen per run, two runs per side, alternated:
+
+| | deployed code | fixed |
+|---|---|---|
+| main-thread busy time | 32.5 s, 42.8 s | 24.4 s, 22.9 s |
+| of which in stretches ≥100 ms with no idle | 15.8 s, 26.2 s | 5.0 s, 4.5 s |
+| re-preparing ground materials | 6.6 s, 8.5 s | 26 ms, 24 ms |
+| a basemap tile's future, on the main thread | 1.8 s, 2.2 s | 0.3 s, 0.1 s |
+
+**The big one was material churn, and it is a rule, not a one-off.** `get_mut`
+on an `Assets<M>` marks the asset changed the moment it is dereferenced
+mutably — assigning a field the value it already has counts — and a changed
+material is re-prepared: its bind groups rebuilt from scratch. Three systems
+(`ground_detail::refresh_ground_detail`, `map_stream::refresh_tile_lod_blend`,
+`wet_surfaces::apply_wet_surfaces`) re-ran whenever the *number* of materials
+changed, so that a newcomer gets the current value — which is right — and then
+wrote *every* material unconditionally — which re-prepared the whole clipmap and
+every ground surface once per tile landing, all through a load. **Read first,
+write only what differs.** `building_fade` and `sewers` already did.
+
+Re-preparing was so expensive on the web for a second reason: almost all of it was
+`wgpu::backend::webgpu::map_wgt_features`. wgpu's webgpu backend answers
+`Device::features()` by asking the browser about each of ~60 feature names, every
+call, marshalling a string each way, and bevy's `AsBindGroup` asks it several times
+per material prepare. It is not cached anywhere in wgpu 30. With the churn gone it is
+~0.4 s a load, which did not justify vendoring wgpu to cache it; if a new hot path
+calls `RenderDevice::features()` per item, it is worth reconsidering.
+
+The rest was CPU work running *between awaits* in futures on the `IoTaskPool` —
+on the web, the main thread. `workers::compute` existed for exactly this, and three
+places still did not use it: `surveyed::raster_survey` (a projection per vertex and a
+formatted key per area, then freeing two parsed files of megabytes), municipal
+register parses, and `tzf_rs::DefaultFinder::new` (250 ms, in a system). The
+shape to look for: anything after an `.await` in a future that loops over a parsed
+file, or a large value whose **drop** happens there.
+
+**Still costing, and upstream:** bevy compiles each new pipeline's WESL to WGSL on
+the main thread — ~1 s a load, and the single worst remaining frame (~600 ms on
+the M5) — and its mesh slab allocator copies vertex data there (~0.5 s). The first
+frame after start is ~0.9 s of browser and bevy start-up.
+
+**A freeze in the container's browser is the container's.** Headless Chrome there
+presents on lavapipe; its GPU process spends 7–8 s inside single WebGPU flushes,
+the page blocks on it (`GpuChannel::WaitForGetOffsetInRange` in a `--trace`), and
+neither the debugger nor the profiler can reach the main thread meanwhile. On the
+Mac's GPU the same build never froze. Use a node with a GPU for anything about
+time.
 
 ## The phone tier (2026-08-09)
 

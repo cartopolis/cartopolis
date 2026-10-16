@@ -1,7 +1,7 @@
 ---
 topic: checking-the-web-build
-triggers: [wasm32, "web build", trunk, deploy-wasm.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain", cdp_probe, "headless chromium", SwiftShader]
-updated: 2026-08-23
+triggers: [wasm32, "web build", trunk, deploy-wasm.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain", cdp_probe, "headless chromium", SwiftShader, callgrind, "real GPU", mac-1, mac-2]
+updated: 2026-10-16
 ---
 
 # The web build can be checked locally, but not with `cargo check --target`
@@ -110,3 +110,32 @@ deployed browser client therefore contains neither `bevy_audio` nor
 `platform::audio`'s web arm, and `AudioInput::available()` is `false` there.
 Browser voice needs that feature enabled for wasm first — a deliberate change,
 since it pulls Bevy's web audio path into a build kept small on purpose.
+
+## Timing it needs a real GPU, and the Mac nodes have one (2026-10-16)
+
+Nothing about time measured in the container's browser means anything: it
+presents on lavapipe, and its GPU process blocks the page for seconds at a time
+([wasm-performance.md](wasm-performance.md)). A Mac node (`midas take --node
+mac-2`) is a macOS VM with an Apple GPU, and Chrome there gets a real adapter
+(`vendor=apple`). What it took, all in the node's home, nothing system-wide:
+
+- **Chrome for Testing** (mac-arm64 zip, unzipped under `~/cft`) and a
+  `~/bin/chromium` shim that execs it — `cdp_probe` spawns `chromium` by name and
+  drops its Linux-only Vulkan flags on macOS.
+- **Bun** (`curl -fsSL https://bun.sh/install | bash`), because the probe has to
+  run *on* the node: nodes refuse port forwarding, so DevTools cannot be reached
+  from here.
+- **The build itself can be made there too**, in about five minutes cold:
+  `rustup component add rust-src --toolchain nightly`, plus the
+  `aarch64-apple-darwin` release binaries of trunk and of wasm-bindgen at the
+  version `Cargo.lock` names, then `deploy/build/wasm.sh`'s `trunk build` line
+  with its RUSTFLAGS. That is what to do when the Linux node is held.
+- `tools/serve_web_build.ts` serves the result the way the site does.
+
+Then `bun tools/cdp_probe.ts --url http://127.0.0.1:8297/viewer/?fps_log --gpu
+--profile-from 0 --profile-out /tmp/run` writes `run.cpuprofile` (Chrome DevTools,
+speedscope) and `run.callgrind` (kcachegrind/qcachegrind). Build with
+`CARGO_PROFILE_WEB_RELEASE_STRIP=none` or every frame is `wasm-function[N]`.
+`--trace` records every process, which is the only view into a page blocked on
+the GPU process; the probe also pauses a main thread that stops answering and
+prints its stack.
