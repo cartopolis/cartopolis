@@ -912,8 +912,8 @@ pub fn refresh_tile_lod_blend(
     } else {
         0.0
     };
-    for (tile, material) in &tiles {
-        let Some(mut material) = materials.get_mut(&material.0) else {
+    for (tile, handle) in &tiles {
+        let Some(material) = materials.get(&handle.0) else {
             continue;
         };
         let Some(&(_, ctx, cty)) = centres.iter().find(|(z, _, _)| *z == tile.key.z) else {
@@ -922,20 +922,30 @@ pub fn refresh_tile_lod_blend(
         // Belt and braces against the placeholder the query filter already excludes:
         // with no image of its own there is nothing to sample softer, and the bound
         // fallback is a white texture.
-        if tile.key.z == MIN_ZOOM || material.extension.basemap.is_none() {
-            material.extension.lod = Vec4::ZERO;
-            continue;
+        let lod = if tile.key.z == MIN_ZOOM || material.extension.basemap.is_none() {
+            Vec4::ZERO
+        } else {
+            let radius = reach.get(&tile.key.z).copied().unwrap_or(1).max(1);
+            let gs = tile_to_meters(tile.key.z, clat) as f32;
+            let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
+            // The ring's centre in the anchored world frame is its centre *tile's*
+            // centre, placed exactly as `update_map_stream` places every tile — then
+            // moved into render space, which is the frame `world_position` arrives in.
+            let cx = ((ctx as f64 + 0.5 - fcx) * gs as f64) as f32 - origin.0.x;
+            let cz = ((cty as f64 + 0.5 - fcy) * gs as f64) as f32 - origin.0.y;
+            let half = ring_half_extent_m(radius, gs);
+            Vec4::new(cx, cz, 1.0 / half, bias)
+        };
+        // Read before written: `get_mut` marks a material changed and a changed one
+        // is re-prepared, and the tile count in the key moves with every tile that
+        // lands — so an unconditional write re-prepared the whole clipmap per
+        // landing: the largest main-thread cost of a load on the web build
+        // (`docs/notes/wasm-performance.md`).
+        if material.extension.lod != lod {
+            if let Some(mut material) = materials.get_mut(&handle.0) {
+                material.extension.lod = lod;
+            }
         }
-        let radius = reach.get(&tile.key.z).copied().unwrap_or(1).max(1);
-        let gs = tile_to_meters(tile.key.z, clat) as f32;
-        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
-        // The ring's centre in the anchored world frame is its centre *tile's* centre,
-        // placed exactly as `update_map_stream` places every tile — then moved into
-        // render space, which is the frame `world_position` arrives in.
-        let cx = ((ctx as f64 + 0.5 - fcx) * gs as f64) as f32 - origin.0.x;
-        let cz = ((cty as f64 + 0.5 - fcy) * gs as f64) as f32 - origin.0.y;
-        let half = ring_half_extent_m(radius, gs);
-        material.extension.lod = Vec4::new(cx, cz, 1.0 / half, bias);
     }
     *applied = Some(want);
 }

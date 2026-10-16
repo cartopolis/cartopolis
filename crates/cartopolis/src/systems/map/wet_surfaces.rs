@@ -148,28 +148,41 @@ pub fn apply_wet_surfaces(
         if !hard_surface(group) {
             continue;
         }
-        let Some(mut mat) = plain.get_mut(handle) else {
+        // Read first: `get_mut` marks the material changed, and a changed one is
+        // re-prepared. The count above moves every time a cell lands, so writing
+        // unconditionally rebuilt every hard surface's bind group per landing.
+        let Some(mat) = plain.get(handle) else {
             continue;
         };
         let look = *dry
             .plain
             .entry(handle.id())
             .or_insert_with(|| DryLook::of(&mat.base));
-        look.apply(&mut mat.base, wet);
+        if look.is_applied(&mat.base, wet) {
+            continue;
+        }
+        if let Some(mut mat) = plain.get_mut(handle) {
+            look.apply(&mut mat.base, wet);
+        }
     }
     for (group, handle) in surfaces.road_materials() {
         live_roads.push(handle.id());
         if !hard_surface(group) {
             continue;
         }
-        let Some(mut mat) = roads.get_mut(handle) else {
+        let Some(mat) = roads.get(handle) else {
             continue;
         };
         let look = *dry
             .roads
             .entry(handle.id())
             .or_insert_with(|| DryLook::of(&mat.base));
-        look.apply(&mut mat.base, wet);
+        if look.is_applied(&mat.base, wet) {
+            continue;
+        }
+        if let Some(mut mat) = roads.get_mut(handle) {
+            look.apply(&mut mat.base, wet);
+        }
     }
     dry.plain.retain(|id, _| live_plain.contains(id));
     dry.roads.retain(|id, _| live_roads.contains(id));
@@ -207,16 +220,29 @@ impl DryLook {
     /// Write this material's appearance at a given wetness, always from the dry
     /// values — see the module note on why this must not compound.
     fn apply(self, mat: &mut StandardMaterial, wet: f32) {
+        (mat.base_color, mat.perceptual_roughness, mat.reflectance) = self.at(wet);
+    }
+
+    /// Whether `mat` already looks the way [`Self::apply`] would make it. Exact,
+    /// because both sides come from the same arithmetic on the same inputs.
+    fn is_applied(self, mat: &StandardMaterial, wet: f32) -> bool {
+        (mat.base_color, mat.perceptual_roughness, mat.reflectance) == self.at(wet)
+    }
+
+    /// Base colour, roughness and reflectance at a given wetness.
+    fn at(self, wet: f32) -> (Color, f32, f32) {
         let darken = 1.0 - (1.0 - WET_DARKEN) * wet;
         let dry = self.base_color.to_linear();
-        mat.base_color = Color::linear_rgba(
-            dry.red * darken,
-            dry.green * darken,
-            dry.blue * darken,
-            dry.alpha,
-        );
-        mat.perceptual_roughness = self.roughness + (WET_ROUGHNESS - self.roughness) * wet;
-        mat.reflectance = self.reflectance + (WET_REFLECTANCE - self.reflectance) * wet;
+        (
+            Color::linear_rgba(
+                dry.red * darken,
+                dry.green * darken,
+                dry.blue * darken,
+                dry.alpha,
+            ),
+            self.roughness + (WET_ROUGHNESS - self.roughness) * wet,
+            self.reflectance + (WET_REFLECTANCE - self.reflectance) * wet,
+        )
     }
 }
 

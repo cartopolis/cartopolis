@@ -281,17 +281,26 @@ pub fn refresh_ground_detail(
     *applied = Some(want);
     let params = detail.params(&origin);
     let slope = detail.slope.clone();
+    // Every write is guarded by a read. `get_mut` alone marks a material changed,
+    // a changed material is re-prepared, and the count above moves with every
+    // tile that lands — so writing unconditionally rebuilt *every* ground bind
+    // group once per landing, all through a load — with the same write in
+    // `map_stream::refresh_tile_lod_blend`, 6.6–8.5 s of a 75 s load's main-thread
+    // time on the web build, and 25 ms once both read first
+    // (`docs/notes/wasm-performance.md`).
     let ids: Vec<AssetId<GroundMaterial>> = materials.ids().collect();
     for id in ids {
-        let Some(mut material) = materials.get_mut(id) else {
+        let Some(material) = materials.get(id) else {
             continue;
         };
         // Opted out at creation and never overwritten — see [`DETAIL_OPTED_OUT`].
-        if material.extension.params.w < 0.0 {
+        if material.extension.params.w < 0.0
+            || (material.extension.params == params && material.extension.slope == slope)
+        {
             continue;
         }
-        material.extension.params = params;
-        if material.extension.slope != slope {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.params = params;
             material.extension.slope = slope.clone();
         }
     }
@@ -299,12 +308,87 @@ pub fn refresh_ground_detail(
     // they need a vertex stage of their own and cannot share the material type.
     let road_ids: Vec<AssetId<crate::systems::road_depth::RoadMaterial>> = roads.ids().collect();
     for id in road_ids {
-        let Some(mut material) = roads.get_mut(id) else {
+        if roads
+            .get(id)
+            .is_none_or(|m| m.extension.detail == params && m.extension.slope == slope)
+        {
             continue;
-        };
-        material.extension.detail = params;
-        if material.extension.slope != slope {
+        }
+        if let Some(mut material) = roads.get_mut(id) {
+            material.extension.detail = params;
             material.extension.slope = slope.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::road_depth::RoadMaterial;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<GroundMaterial>()
+            .init_asset::<RoadMaterial>()
+            .init_resource::<GridCellOrigin>()
+            .insert_resource(GroundDetail {
+                slope: Some(Handle::default()),
+                centre: Vec2::new(100.0, -50.0),
+                half_m: 48.0,
+                ..default()
+            })
+            .add_systems(Update, refresh_ground_detail);
+        app
+    }
+
+    fn modified(app: &mut App) -> Vec<AssetId<GroundMaterial>> {
+        app.world_mut()
+            .resource_mut::<Messages<AssetEvent<GroundMaterial>>>()
+            .drain()
+            .filter_map(|e| match e {
+                AssetEvent::Modified { id } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A material landing must not re-prepare the ones already right. The trigger
+    /// counts materials, so it fires once per landing — and on the web build an
+    /// unconditional write there rebuilt every ground bind group each time, the
+    /// largest single cost of a load.
+    #[test]
+    fn a_new_material_rewrites_only_itself() {
+        let mut app = app();
+        // Held, as a mesh's `MeshMaterial3d` holds them: a dropped handle is
+        // removed before the system ever sees the material.
+        let first = app
+            .world_mut()
+            .resource_mut::<Assets<GroundMaterial>>()
+            .add(GroundMaterial::default());
+        app.update();
+        assert_eq!(
+            modified(&mut app),
+            vec![first.id()],
+            "a new material takes the uniform"
+        );
+
+        app.update();
+        assert!(
+            modified(&mut app).is_empty(),
+            "nothing moved, nothing written"
+        );
+
+        let second = app
+            .world_mut()
+            .resource_mut::<Assets<GroundMaterial>>()
+            .add(GroundMaterial::default());
+        app.update();
+        assert_eq!(
+            modified(&mut app),
+            vec![second.id()],
+            "only the newcomer is written"
+        );
     }
 }
