@@ -293,7 +293,10 @@ pub fn apply_preferred_render_scale(
     }
     let want = match prefs.render_scale {
         Some(value) => RenderScale::new(value),
-        None => RenderScale::new(crate::quality::budget().render_scale),
+        // `initial_scale`, not the bare tier: `AppPrefs` reads as changed on its
+        // first frame, so answering the tier here silently undid
+        // `CARTO_RENDER_SCALE` before a single frame was drawn at it.
+        None => initial_scale(),
     };
     if *scale != want {
         *scale = want;
