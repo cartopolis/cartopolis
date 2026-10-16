@@ -1,0 +1,151 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Community tab, profile and settings v2: Admin</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="town" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l4-3 4 3v10M13 20V6l3-2 3 2v14M8 13h2M8 16h2M15.5 9h1M15.5 12h1M15.5 15h1"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+  <symbol id="key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></symbol>
+  <symbol id="out" viewBox="0 0 24 24"><path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/></symbol>
+  <symbol id="shirt" viewBox="0 0 24 24"><path d="M8 4l-5 3 2 4 2-1v10h10V10l2 1 2-4-5-3c-.5 1.5-2 2.5-4 2.5S8.5 5.5 8 4z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/></symbol>
+  <symbol id="speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/></symbol>
+  <symbol id="image" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 16l5-5 4 4 3-3 5 5"/><circle cx="15.5" cy="9" r="1.5"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></symbol>
+  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.5"/></symbol>
+  <symbol id="ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="inbox" viewBox="0 0 24 24"><path d="M4 13l2-8h12l2 8v6H4zM4 13h5l1 2h4l1-2h5"/></symbol>
+</svg>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+  <symbol id="badge" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 15.6 7.1 18.2l.9-5.5-4-3.9 5.5-.8z"/></symbol>
+  <symbol id="house" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 9.5V20h12V9.5"/></symbol>
+  <symbol id="cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5"/></symbol>
+  <symbol id="data" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
+</svg>
+<h1>v2: <b>Admin</b> as part of it</h1>
+<p class="lede">An account that may run something gets a third segment, <b style="color:var(--gold);font-weight:inherit">Admin</b>, in gold, as on the web page: Community | World | Admin. Everybody else sees the two-way switch from v1, unchanged. The pages are grouped the way the web page groups them, <b style="color:var(--cream);font-weight:inherit">People</b>, <b style="color:var(--cream);font-weight:inherit">Content</b> and <b style="color:var(--cream);font-weight:inherit">Data</b>, and all of it uses the server's existing <code>/api/admin</code> routes. Everything on this sheet is <span class="newtag">new</span> in the app.</p>
+
+<div class="row">
+
+<!-- H. ADMIN HOME -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="bar"><div class="seg three"><div><svg class="i s"><use href="#people"/></svg>Community</div><div><span class="live"></span>World</div><div class="on adm">Admin<span class="badge">2</span></div></div><div class="me">J</div></div>
+  <div class="grp-h g">People</div>
+  <div class="grp">
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#flag"/></svg></div><div class="t">Reports<span>About a person, from anyone</span></div><span class="badge b">2</span><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#people"/></svg></div><div class="t">Accounts<span>214 · 3 waiting on email</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#badge"/></svg></div><div class="t">Roles<span>What each role may do</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#house"/></svg></div><div class="t">Building claims<span>Who holds which building</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+  <div class="grp-h g">Content</div>
+  <div class="grp">
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#house"/></svg></div><div class="t">Building overrides</div><span class="web">web page</span></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#cube"/></svg></div><div class="t">Models<span>The shared library, street objects</span></div><span class="web">web page</span></div>
+  </div>
+  <div class="grp-h g">Data</div>
+  <div class="grp">
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#data"/></svg></div><div class="t">Pipeline<span>Map datasets per city</span></div><span class="web">web page</span></div>
+  </div>
+</div>
+<h2><span>H</span>Admin</h2>
+<ul>
+  <li>Shown only to an account whose role grants something on this list, and only the pages that role may open (a moderator who only triages reports sees Reports alone).</li>
+  <li>The badge on the segment counts open reports.</li>
+  <li><b>People</b> is built in the app: it is what an admin needs on the go. <b>Content</b> and <b>Data</b> open the web page's Admin at that page in the browser, where you sign in once (question 4).</li>
+</ul>
+</div>
+
+<!-- I. REPORTS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Reports</div>
+  <div class="chips"><div class="on">Open · 2</div><div>Handled</div></div>
+  <div class="grp">
+    <div class="rep"><div class="l1"><span>pieter</span><time>11:40</time></div><span class="why">Spam</span><q>"Cheap phones, DM me, crypto only 🚀🚀"</q><div class="by">Reported by tom · in Everyone</div></div>
+    <div class="rep"><div class="l1"><span>xx_unknown</span><time>gister</time></div><span class="why">Harassment</span><q>"keeps following my avatar around the Vismarkt"</q><div class="by">Reported by sanne · their note</div></div>
+  </div>
+  <p class="hint" style="padding:4px 18px">Reports from inside a community go to its moderators, not here.</p>
+</div>
+<h2><span>I</span>Reports</h2>
+<ul>
+  <li>Open first, newest first. Each shows who, why, the line that was reported (or the reporter's note) and where.</li>
+  <li>Today this queue is read only on the web page.</li>
+</ul>
+</div>
+
+<!-- J. ONE REPORT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Report about pieter</div>
+  <div class="quote">"Cheap phones, DM me, crypto only 🚀🚀"<span>Spam · reported by tom · Everyone · 11:40</span></div>
+  <div class="grp">
+    <div class="it"><div class="av sm c6">P</div><div class="t">pieter<span>Here since today · 2 reports</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+  </div>
+  <div class="grp-h">What was done</div>
+  <div class="form" style="padding:0 16px 12px"><div class="inp ph">e.g. "warned in chat", "suspended"</div></div>
+  <div class="acts2">
+    <div class="p">Mark handled</div>
+    <div class="bad">Suspend pieter</div>
+  </div>
+</div>
+<h2><span>J</span>Handling one</h2>
+<ul>
+  <li>The line as it was reported, the person (tap for their account), and what was done, stored with the report so it still reads a month later.</li>
+  <li><b>Suspend</b> is the account switch from K, offered here because it is the usual next step.</li>
+</ul>
+</div>
+
+<!-- K. ACCOUNT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i"><use href="#back"/></svg>Accounts</div>
+  <div class="find" style="color:var(--cream)"><svg class="i s"><use href="#search"/></svg>pie</div>
+  <div class="grp">
+    <div class="it"><div class="av sm c6">P</div><div class="t">pieter<span>Since today · pieter@example.com</span></div><span class="stat off">suspended</span></div>
+    <div class="it"><div class="av sm c2">P</div><div class="t">pietje<span>Since 3 Sep</span></div><span class="stat">active</span></div>
+    <div class="it"><div class="av sm c3">P</div><div class="t">piet.k<span>Since 15 Oct</span></div><span class="stat wait">email</span></div>
+  </div>
+  <div class="grp-h">pieter</div>
+  <div class="grp">
+    <div class="toggle" style="padding:12px 14px"><div>Can sign in<span class="sub">Off: stopped at the next sign-in</span></div><div class="sw"></div></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#badge"/></svg></div><div class="t">Roles<span>Player</span></div><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it"><div class="ic g"><svg class="i s"><use href="#flag"/></svg></div><div class="t">Reports about pieter</div><span class="v">2</span><svg class="i s chev"><use href="#chev"/></svg></div>
+    <div class="it bad"><div class="ic"><svg class="i s"><use href="#ban"/></svg></div><div class="t">Delete account</div></div>
+  </div>
+</div>
+<h2><span>K</span>Accounts</h2>
+<ul>
+  <li>Search, then one account: whether it can sign in, its roles, the reports about it, delete.</li>
+  <li>The person menu's admin section (Communities v3) and this page are the same actions, not a second set.</li>
+  <li>The server's rule stays: the last admin cannot be suspended, demoted or deleted.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="sec">
+<h2>Question</h2>
+<table>
+<tr><th>#</th><th>Question</th><th>Proposed</th></tr>
+<tr><td>4</td><td>Content and Data in the app too?</td><td>Not now. Overrides, Models and the Pipeline are desk work (uploading files, reading a run's log), and the web page has them already. The app opens it at the right page. They can come later on the same Admin segment.</td></tr>
+</table>
+</div>
+</body></html>
