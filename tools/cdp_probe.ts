@@ -29,6 +29,14 @@
  *   bun tools/cdp_probe.ts --no-webgpu            # prove the unsupported-browser gate
  *   bun tools/cdp_probe.ts --gpu                  # attempt a real adapter
  *   bun tools/cdp_probe.ts --raw                  # every console line, unfiltered
+ *   bun tools/cdp_probe.ts --profile-out /tmp/web  # also write web.cpuprofile + web.callgrind
+ *   bun tools/cdp_probe.ts --trace /tmp/web.json   # a Chrome trace of every process (chrome://tracing, Perfetto)
+ *   bun tools/cdp_probe.ts --remote --port 9444    # drive a browser already listening there (e.g. an
+ *                                                  # ssh -L to a machine with a real GPU) instead of spawning one
+ *
+ * A main thread that stops answering for `--hang-after` seconds is paused in
+ * the debugger and its stack printed, a few times over, so a spin and a hang
+ * read differently (see "main thread hung" in the report).
  */
 import { parseArgs } from "node:util";
 
@@ -41,10 +49,17 @@ const { values: opt } = parseArgs({
     profile: { type: "boolean", default: false },
     "no-webgpu": { type: "boolean", default: false },
     raw: { type: "boolean", default: false },
+    "profile-out": { type: "string" },
+    "profile-from": { type: "string" },
+    "hang-after": { type: "string", default: "8" },
+    trace: { type: "string" },
+    remote: { type: "boolean", default: false },
   },
 });
 
 const RUN_MS = Number(opt.seconds) * 1000;
+const PROFILING = opt.profile || opt["profile-out"] !== undefined;
+const HANG_MS = Number(opt["hang-after"]) * 1000;
 /** When the run started, for timing an exception against the console log. */
 const started = Date.now();
 const PORT = Number(opt.port);
@@ -72,7 +87,12 @@ if (opt["no-webgpu"]) {
 } else if (opt.gpu) {
   // Ask for the real device. Whether this works depends on the machine, which is
   // exactly why the report prints the adapter rather than assuming.
-  flags.push("--enable-unsafe-webgpu", "--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan", "--use-angle=vulkan");
+  // The Vulkan flags are what present without losing the device on Linux; a
+  // Mac has Metal and needs none of them.
+  flags.push("--enable-unsafe-webgpu");
+  if (process.platform !== "darwin") {
+    flags.push("--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan", "--use-angle=vulkan");
+  }
 } else {
   // Software, and honest about it.
   flags.push("--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=swiftshader");
@@ -84,10 +104,12 @@ await Bun.$`rm -rf ${profile}`.quiet().nothrow();
 // the opening requests or — if corrected with a reload — fetch the whole module
 // twice, which showed up as a 135 MB transfer of a 71 MB file. Attach first,
 // then navigate, and every byte is accounted for exactly once.
-const chrome = Bun.spawn(["chromium", ...flags, "about:blank"], {
-  stdout: "ignore",
-  stderr: "ignore",
-});
+const chrome = opt.remote
+  ? undefined
+  : Bun.spawn(["chromium", ...flags, "about:blank"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
 
 /** Poll the DevTools endpoint until Chromium is listening and has a page target. */
 async function pageTarget(): Promise<string> {
@@ -96,7 +118,8 @@ async function pageTarget(): Promise<string> {
     try {
       const list = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) as any[];
       const page = list.find((t) => t.type === "page" && t.webSocketDebuggerUrl);
-      if (page) return page.webSocketDebuggerUrl;
+      // A forwarded browser names its own port; reach it through ours.
+      if (page) return page.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://127.0.0.1:${PORT}`);
     } catch {
       // Not up yet. The endpoint refuses connections until the browser is ready,
       // which is indistinguishable from a crash for the first second or so.
@@ -119,6 +142,17 @@ function send(method: string, params: Record<string, unknown> = {}): Promise<any
   ws.send(JSON.stringify({ id, method, params }));
   return new Promise((res) => pending.set(id, res));
 }
+
+/** `send`, or `undefined` once `ms` pass — a hung main thread never answers. */
+function sendWithin(method: string, params: Record<string, unknown>, ms: number): Promise<any> {
+  return Promise.race([send(method, params), Bun.sleep(ms).then(() => undefined)]);
+}
+
+const traceEvents: any[] = [];
+let traceDone: (() => void) | undefined;
+
+/** The next `Debugger.paused`, for the hang sampler below. */
+let onPaused: ((frames: any[]) => void) | undefined;
 
 const console_: string[] = [];
 const errors: string[] = [];
@@ -159,6 +193,16 @@ ws.onmessage = (ev) => {
     return;
   }
   switch (msg.method) {
+    case "Tracing.dataCollected":
+      traceEvents.push(...msg.params.value);
+      break;
+    case "Tracing.tracingComplete":
+      traceDone?.();
+      break;
+    case "Debugger.paused":
+      onPaused?.(msg.params.callFrames ?? []);
+      onPaused = undefined;
+      break;
     case "Runtime.consoleAPICalled": {
       const line = formatConsole(msg.params.args);
       if (line) console_.push(line);
@@ -213,6 +257,24 @@ if (opt["no-webgpu"]) {
   });
 }
 
+// The trace is what sees past the page: a main thread blocked inside a
+// WebGPU call waits on the GPU process, where no JS profile can follow it.
+if (opt.trace) {
+  await send("Tracing.start", {
+    categories: [
+      "toplevel", "gpu", "gpu.dawn", "disabled-by-default-gpu.dawn", "gpu.service", "cc", "viz",
+      "blink", "v8", "v8.wasm", "v8.execute", "disabled-by-default-devtools.timeline", "ipc", "mojom",
+    ].join(","),
+    transferMode: "ReportEvents",
+  });
+}
+
+// A heartbeat the page cannot fake: requestAnimationFrame stops while a task
+// runs, so its age is how long the main thread has been busy.
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: "(function beat(){ window.__vfBeat = performance.now(); requestAnimationFrame(beat); })();",
+});
+
 await send("Page.navigate", { url: opt.url });
 
 /**
@@ -226,7 +288,8 @@ await send("Page.navigate", { url: opt.url });
  * the frame numbers below mean anything.
  */
 async function adapterInfo(): Promise<any> {
-  const r = await send("Runtime.evaluate", {
+  // Bounded: a page that hung after the hang check still owes the report.
+  const r = await sendWithin("Runtime.evaluate", {
     expression: `(async () => {
       if (!navigator.gpu) return { webgpu: false };
       const a = await navigator.gpu.requestAdapter();
@@ -239,7 +302,7 @@ async function adapterInfo(): Promise<any> {
     })()`,
     awaitPromise: true,
     returnByValue: true,
-  });
+  }, 10_000);
   return r?.result?.value;
 }
 
@@ -253,18 +316,65 @@ process.stderr.write(`probing ${opt.url} for ${opt.seconds}s …\n`);
 //
 // Give the scene time to stream in first: the opening seconds profile an empty
 // world and would dilute exactly the samples worth having.
-if (opt.profile) {
-  await Bun.sleep(Math.min(RUN_MS / 3, 12_000));
+if (PROFILING) {
+  // `--profile-from 0` keeps the opening seconds: the load is where the hitches are.
+  const from = opt["profile-from"] !== undefined ? Number(opt["profile-from"]) * 1000 : Math.min(RUN_MS / 3, 12_000);
+  await Bun.sleep(from);
   await send("Profiler.enable");
   await send("Profiler.setSamplingInterval", { interval: 1000 }); // µs
   await send("Profiler.start");
 }
 
-await Bun.sleep(RUN_MS);
+/**
+ * Watch the heartbeat for the rest of the run. A main thread that has not run a
+ * frame for `--hang-after` seconds (or will not even evaluate an expression) is
+ * paused in the debugger a few times, a second apart: the same frames every
+ * time is a spin or a loop that will not end, different frames is a slow task.
+ * The debugger is only attached at that point — attaching it moves wasm to
+ * debug code, and the run before the hang should be measured without it.
+ */
+const hangStacks: string[][] = [];
+let hungAt: number | undefined;
+while (Date.now() - started < RUN_MS) {
+  await Bun.sleep(2000);
+  const r = await sendWithin(
+    "Runtime.evaluate",
+    { expression: "window.__vfBeat === undefined ? 0 : performance.now() - window.__vfBeat", returnByValue: true },
+    3000,
+  );
+  const age = r?.result?.value;
+  if (r !== undefined && (typeof age !== "number" || age < HANG_MS)) continue;
+  hungAt = (Date.now() - started) / 1000;
+  process.stderr.write(`main thread unresponsive at t=${hungAt.toFixed(0)}s (beat age ${age ?? "no answer"}) — sampling its stack\n`);
+  await sendWithin("Debugger.enable", {}, 20_000);
+  for (let i = 0; i < 4; i++) {
+    const frames = new Promise<any[]>((res) => (onPaused = res));
+    await sendWithin("Debugger.pause", {}, 5000);
+    const got = await Promise.race([frames, Bun.sleep(10_000).then(() => undefined)]);
+    if (!got) {
+      hangStacks.push(["(the debugger could not pause it)"]);
+      break;
+    }
+    hangStacks.push(got.map((f: any) => f.functionName || "(anonymous)"));
+    await sendWithin("Debugger.resume", {}, 5000);
+    await Bun.sleep(1000);
+  }
+  break;
+}
+
+if (opt.trace) {
+  const done = new Promise<void>((res) => (traceDone = res));
+  await sendWithin("Tracing.end", {}, 10_000);
+  await Promise.race([done, Bun.sleep(60_000)]);
+  await Bun.write(opt.trace, JSON.stringify({ traceEvents }));
+  process.stderr.write(`wrote ${opt.trace} (${traceEvents.length} events)\n`);
+}
 
 let profileTop: { name: string; ms: number; pct: number }[] = [];
-if (opt.profile) {
-  const { profile } = await send("Profiler.stop");
+let inclusiveTop: { name: string; ms: number; pct: number }[] = [];
+if (PROFILING) {
+  const { profile } = (await sendWithin("Profiler.stop", {}, 30_000)) ?? {};
+  if (profile) {
   const byId = new Map<number, any>(profile.nodes.map((n: any) => [n.id, n]));
   const self = new Map<string, number>();
   let total = 0;
@@ -283,11 +393,117 @@ if (opt.profile) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 25)
     .map(([name, ms]) => ({ name, ms, pct: (100 * ms) / total }));
+
+  const tree = profileTree(profile);
+  inclusiveTop = [...tree.inclusive.entries()]
+    .filter(([name]) => !name.startsWith("("))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 40)
+    .map(([name, ms]) => ({ name, ms, pct: (100 * ms) / total }));
+  if (opt["profile-out"]) {
+    const out = opt["profile-out"];
+    await Bun.write(`${out}.cpuprofile`, JSON.stringify(profile));
+    await Bun.write(`${out}.callgrind`, callgrind(profile, tree));
+    process.stderr.write(`wrote ${out}.cpuprofile (Chrome DevTools) and ${out}.callgrind (kcachegrind)\n`);
+  }
+  }
+}
+
+/**
+ * Per-node self and inclusive time (ms) of a `Profiler.stop` profile, plus each
+ * function's inclusive time counted once per stack, so recursion does not add
+ * a function to itself.
+ */
+function profileTree(profile: any) {
+  const nodes = new Map<number, any>(profile.nodes.map((n: any) => [n.id, n]));
+  const selfMs = new Map<number, number>();
+  for (let i = 0; i < profile.samples.length; i++) {
+    const dt = (profile.timeDeltas[i] ?? 0) / 1000;
+    if (dt > 0) selfMs.set(profile.samples[i], (selfMs.get(profile.samples[i]) ?? 0) + dt);
+  }
+  const inclMs = new Map<number, number>();
+  const inclusive = new Map<string, number>();
+  const onStack = new Map<string, number>();
+  const nameOf = (n: any) => n.callFrame.functionName || "(anonymous)";
+  // Iterative post-order: a deep Bevy stack overflows a recursive walk.
+  const root = profile.nodes[0];
+  const stack: { n: any; i: number }[] = [{ n: root, i: 0 }];
+  onStack.set(nameOf(root), 1);
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    const kids: number[] = top.n.children ?? [];
+    if (top.i < kids.length) {
+      const child = nodes.get(kids[top.i++]);
+      if (!child) continue;
+      onStack.set(nameOf(child), (onStack.get(nameOf(child)) ?? 0) + 1);
+      stack.push({ n: child, i: 0 });
+      continue;
+    }
+    stack.pop();
+    let t = selfMs.get(top.n.id) ?? 0;
+    for (const k of kids) t += inclMs.get(k) ?? 0;
+    inclMs.set(top.n.id, t);
+    const name = nameOf(top.n);
+    const depth = onStack.get(name)! - 1;
+    if (depth === 0) {
+      onStack.delete(name);
+      inclusive.set(name, (inclusive.get(name) ?? 0) + t);
+    } else {
+      onStack.set(name, depth);
+    }
+  }
+  return { nodes, selfMs, inclMs, inclusive, nameOf };
+}
+
+/** The profile as a callgrind file, which kcachegrind/qcachegrind open as-is. */
+function callgrind(profile: any, tree: ReturnType<typeof profileTree>): string {
+  const us = (ms: number) => Math.round(ms * 1000);
+  type Fn = { file: string; name: string; self: number; calls: Map<string, { n: number; incl: number }> };
+  const fns = new Map<string, Fn>();
+  const keyOf = (n: any) => `${n.callFrame.url}\u0000${tree.nameOf(n)}`;
+  const fnOf = (n: any): Fn => {
+    const k = keyOf(n);
+    let f = fns.get(k);
+    if (!f) fns.set(k, (f = { file: n.callFrame.url || "(native)", name: tree.nameOf(n), self: 0, calls: new Map() }));
+    return f;
+  };
+  for (const n of profile.nodes) {
+    const f = fnOf(n);
+    f.self += tree.selfMs.get(n.id) ?? 0;
+    for (const k of n.children ?? []) {
+      const child = tree.nodes.get(k);
+      if (!child) continue;
+      const e = f.calls.get(keyOf(child)) ?? { n: 0, incl: 0 };
+      e.n += 1;
+      e.incl += tree.inclMs.get(k) ?? 0;
+      f.calls.set(keyOf(child), e);
+    }
+  }
+  const ids = new Map<string, number>();
+  const fileIds = new Map<string, number>();
+  const ref = (map: Map<string, number>, v: string) => {
+    const id = map.get(v);
+    if (id !== undefined) return `(${id})`;
+    map.set(v, map.size + 1);
+    return `(${map.size}) ${v}`;
+  };
+  let total = 0;
+  for (const f of fns.values()) total += us(f.self);
+  const lines = ["# callgrind format", "version: 1", "creator: tools/cdp_probe.ts", "positions: line", "events: us", `summary: ${total}`, ""];
+  for (const f of fns.values()) {
+    lines.push(`fl=${ref(fileIds, f.file)}`, `fn=${ref(ids, f.name)}`, `0 ${us(f.self)}`);
+    for (const [ck, e] of f.calls) {
+      const c = fns.get(ck)!;
+      lines.push(`cfl=${ref(fileIds, c.file)}`, `cfn=${ref(ids, c.name)}`, `calls=${e.n} 0`, `0 ${us(e.incl)}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------- report
 
-const gpu = await adapterInfo();
+const gpu = hungAt === undefined ? await adapterInfo() : undefined;
 const adapter = gpu?.adapter
   ? Object.entries(gpu.adapter)
       .filter(([, v]) => v)
@@ -344,7 +560,19 @@ if (!fps.length) {
   console.log(`  ── median ${median} fps over ${fps.length} samples`);
 }
 
-if (opt.profile) {
+if (hangStacks.length) {
+  console.log(`\n══ main thread hung at t=${hungAt!.toFixed(0)}s ═════════════════════════════`);
+  hangStacks.forEach((frames, i) => {
+    console.log(`  pause ${i + 1}:`);
+    for (const f of frames.slice(0, 30)) console.log(`    ${f.slice(0, 140)}`);
+  });
+}
+
+if (PROFILING) {
+  console.log("\n══ main-thread inclusive time ════════════════════════════");
+  for (const p of inclusiveTop) {
+    console.log(`  ${p.pct.toFixed(1).padStart(5)}%  ${p.ms.toFixed(0).padStart(6)} ms  ${p.name.slice(0, 110)}`);
+  }
   console.log("\n══ main-thread self time ═════════════════════════════════");
   if (!profileTop.length) console.log("  no samples");
   for (const p of profileTop) {
@@ -371,11 +599,16 @@ if (errors.length) {
 
 console.log(`\n(${console_.length} console lines captured)`);
 
+if (opt.remote) await sendWithin("Page.navigate", { url: "about:blank" }, 5000);
 ws.close();
-chrome.kill();
+if (opt.remote) {
+  // Someone else's browser: leave it running, on a blank page.
+  process.exit(errors.length ? 1 : 0);
+}
+chrome!.kill();
 // Chromium still holds its profile open for a moment after `kill`, and racing it
 // makes the tool fail *after* it has already printed everything it was asked for.
 // The temp dir is per-port and gets cleared on the next run anyway.
-await chrome.exited;
+await chrome!.exited;
 await Bun.$`rm -rf ${profile}`.quiet().nothrow();
 process.exit(errors.length ? 1 : 0);
