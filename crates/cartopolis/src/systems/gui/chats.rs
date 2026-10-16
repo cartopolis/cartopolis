@@ -4,9 +4,13 @@
 //!
 //! # Three screens, one state
 //!
-//!  * **Chats | World** at the top of the map. *World* is the app as it always
-//!    was; *Chats* is the list, which is the right-hand panel (the whole screen
-//!    on a phone).
+//!  * **Community | World** at the top of the map (and **Admin**, in gold, for
+//!    an account that may run something: `systems::admin`). *World* is the app
+//!    as it always was; *Community* is the list, which is the right-hand panel
+//!    (the whole screen on a phone). It was called Chats until 2026-10-16, when
+//!    it took the web page's word, since it holds communities and the public
+//!    chats as well as conversations (`docs/mockups/home-and-profile`). Your
+//!    disc beside the switch opens the You page, and from there Settings.
 //!  * **A chat's Chat view**: its thread, as bubbles, with points drawn as
 //!    numbered cards. Same panel, with the chat open.
 //!  * **A chat's World view**: the map, with the chat's points as numbered pins
@@ -150,6 +154,23 @@ pub struct ChatsView {
     /// The open chat offers a field check (`FieldCheck::offered`), worked out
     /// each frame the panel draws.
     field_check_here: bool,
+    /// The You page is showing instead of the list (your disc, top right).
+    pub you: bool,
+    /// What is typed into the list's search field: the list shows only the
+    /// chats and communities whose name or last line holds it.
+    pub search: String,
+    /// The contacts screen the You page opened, so its back arrow returns to
+    /// the You page rather than to the contacts list.
+    pub sub_root: Option<crate::systems::contacts::Sub>,
+    /// Settings was opened from the You page: its home gets a back arrow to
+    /// there instead of a close button (`settings::render_settings_panel`).
+    pub settings_from_you: bool,
+    /// Sign out was pressed on the You page, for [`apply_sign_out`].
+    pub sign_out: bool,
+    /// How many reports wait, for the switch's Admin side; `None` for an
+    /// account that may run nothing, which then has no Admin side at all.
+    /// Written by `admin::render_admin_panel`.
+    pub admin: Option<usize>,
 }
 
 impl ChatsView {
@@ -348,29 +369,45 @@ fn live_dot(p: &egui::Painter, c: egui::Pos2, on_orange: bool) {
     }
 }
 
+/// The three places the top switch leads: the Community panel (chats,
+/// communities, people), the World (the map), and, for an account that may run
+/// something, Admin.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Seg {
+    Community,
+    World,
+    Admin,
+}
+
 /// The design's segmented toggle (`.seg`), "the one control this whole design
-/// is about": a raised pill with a Chat side and a World side. A selected Chat
-/// is the pale accent; a selected World is brand orange, and World always
-/// carries the live dot. `glass` is the variant that floats over the map.
-/// Answers `Some(true)` for World, `Some(false)` for the other side.
-fn segmented(
+/// is about": a raised pill with a Community side and a World side, and a gold
+/// Admin side for an account that may run something
+/// (`docs/mockups/home-and-profile/v2`, as on the web page). A selected
+/// Community is the pale accent, a selected World brand orange (World always
+/// carries the live dot), a selected Admin gold. `admin` is `None` for
+/// everybody else, and otherwise how many reports wait. `glass` is the variant
+/// that floats over the map.
+pub(crate) fn segmented(
     ui: &mut egui::Ui,
     left: &str,
+    width: f32,
+    on: Seg,
     unread: usize,
-    world_on: bool,
+    admin: Option<usize>,
     glass: bool,
-) -> Option<bool> {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+) -> Option<Seg> {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::hover());
     let inner = rect.shrink(3.0);
-    let half = (inner.width() - 2.0) / 2.0;
-    let l = egui::Rect::from_min_size(inner.min, egui::vec2(half, inner.height()));
-    let r = egui::Rect::from_min_size(egui::pos2(l.right() + 2.0, inner.top()), l.size());
-    let id = ui.id().with(("chats_segmented", left));
-    let lr = ui.interact(l, id.with(0), egui::Sense::click());
-    let rr = ui.interact(r, id.with(1), egui::Sense::click());
+    let segs: &[Seg] = if admin.is_some() {
+        &[Seg::Community, Seg::World, Seg::Admin]
+    } else {
+        &[Seg::Community, Seg::World]
+    };
+    let n = segs.len() as f32;
+    let w = (inner.width() - 2.0 * (n - 1.0)) / n;
+    let id = ui.id().with("chats_segmented");
 
-    let p = ui.painter();
+    let p = ui.painter().clone();
     p.rect_filled(
         rect,
         egui::CornerRadius::same(12),
@@ -386,54 +423,144 @@ fn segmented(
         egui::Stroke::new(1.0, GLINE),
         egui::StrokeKind::Inside,
     );
-    let seg = egui::CornerRadius::same(9);
-    if !world_on {
-        p.rect_filled(l, seg, theme::ACCENT);
-    } else if lr.hovered() {
-        p.rect_filled(l, seg, theme::SURFACE_HOVER);
+    let corner = egui::CornerRadius::same(9);
+    // Three segments leave no room for the Community side's icon.
+    let size = if admin.is_some() { 13.5 } else { 14.0 };
+    let mut picked = None;
+    for (i, &seg) in segs.iter().enumerate() {
+        let r = egui::Rect::from_min_size(
+            egui::pos2(inner.left() + i as f32 * (w + 2.0), inner.top()),
+            egui::vec2(w, inner.height()),
+        );
+        let resp = ui.interact(r, id.with(i), egui::Sense::click());
+        if resp.clicked() && seg != on {
+            picked = Some(seg);
+        }
+        let selected = seg == on;
+        let (fill, ink) = match seg {
+            Seg::Community => (theme::ACCENT, theme::INK),
+            Seg::World => (theme::BRAND, egui::Color32::WHITE),
+            Seg::Admin => (theme::WARN, theme::INK),
+        };
+        if selected {
+            p.rect_filled(r, corner, fill);
+        } else if resp.hovered() {
+            p.rect_filled(r, corner, theme::SURFACE_HOVER);
+        }
+        let rest = if seg == Seg::Admin {
+            theme::WARN
+        } else {
+            theme::TEXT_DIM
+        };
+        let ink = if selected { ink } else { rest };
+        match seg {
+            Seg::Community => {
+                let mut parts = Vec::new();
+                if admin.is_none() {
+                    let icon = if left == "Chat" {
+                        icons::CHAT
+                    } else {
+                        icons::GROUP
+                    };
+                    parts.push((icon.to_string(), 16.0, ink));
+                }
+                parts.push((left.to_string(), size, ink));
+                if unread > 0 && !selected {
+                    parts.push((format!("{unread}"), 12.0, theme::BRAND));
+                }
+                centred_row(&p, r, &parts, 6.0);
+            }
+            Seg::World => {
+                let label = p.layout_no_wrap("World".into(), egui::FontId::proportional(size), ink);
+                let total = 7.0 + 6.0 + label.size().x;
+                let x0 = r.center().x - total / 2.0;
+                live_dot(&p, egui::pos2(x0 + 3.5, r.center().y), selected);
+                p.galley(
+                    egui::pos2(x0 + 13.0, r.center().y - label.size().y / 2.0),
+                    label,
+                    ink,
+                );
+            }
+            Seg::Admin => {
+                let waiting = admin.unwrap_or(0);
+                let label = p.layout_no_wrap("Admin".into(), egui::FontId::proportional(size), ink);
+                let badge = (waiting > 0).then(|| {
+                    p.layout_no_wrap(
+                        waiting.to_string(),
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::WHITE,
+                    )
+                });
+                let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 10.0 + 5.0);
+                let total = label.size().x + badge_w;
+                let x0 = r.center().x - total / 2.0;
+                let lx = label.size().x;
+                p.galley(
+                    egui::pos2(x0, r.center().y - label.size().y / 2.0),
+                    label,
+                    ink,
+                );
+                if let Some(g) = badge {
+                    let pill = egui::Rect::from_min_size(
+                        egui::pos2(x0 + lx + 5.0, r.center().y - 8.5),
+                        egui::vec2(g.size().x + 10.0, 17.0),
+                    );
+                    p.rect_filled(pill, egui::CornerRadius::same(9), theme::BRAND);
+                    let gs = g.size();
+                    p.galley(pill.center() - gs / 2.0, g, egui::Color32::WHITE);
+                }
+            }
+        }
     }
-    if world_on {
-        p.rect_filled(r, seg, theme::BRAND);
-    } else if rr.hovered() {
-        p.rect_filled(r, seg, theme::SURFACE_HOVER);
-    }
+    picked
+}
 
-    let left_ink = if world_on {
-        theme::TEXT_DIM
-    } else {
-        theme::INK
-    };
-    let mut parts = vec![
-        (icons::CHAT.to_string(), 16.0, left_ink),
-        (left.to_string(), 14.0, left_ink),
-    ];
-    if unread > 0 {
-        parts.push((format!("{unread}"), 12.0, theme::BRAND));
-    }
-    centred_row(p, l, &parts, 6.0);
+/// What [`top_bar`] was asked to do.
+#[derive(Default)]
+pub(crate) struct TopBar {
+    pub seg: Option<Seg>,
+    /// Your disc was tapped: open the You page.
+    pub you: bool,
+}
 
-    let right_ink = if world_on {
-        egui::Color32::WHITE
-    } else {
-        theme::TEXT_DIM
-    };
-    let label = p.layout_no_wrap("World".into(), egui::FontId::proportional(14.0), right_ink);
-    let total = 7.0 + 6.0 + label.size().x;
-    let x0 = r.center().x - total / 2.0;
-    live_dot(p, egui::pos2(x0 + 3.5, r.center().y), world_on);
-    p.galley(
-        egui::pos2(x0 + 13.0, r.center().y - label.size().y / 2.0),
-        label,
-        right_ink,
-    );
-
-    if lr.clicked() {
-        Some(false)
-    } else if rr.clicked() {
-        Some(true)
-    } else {
-        None
-    }
+/// The top of the Community and Admin panels: the switch, and your own disc
+/// beside it (`docs/mockups/home-and-profile/v1`, A). No title above it: the
+/// switch says where you are. `waiting` puts an orange dot on the disc, for a
+/// message request.
+pub(crate) fn top_bar(
+    ui: &mut egui::Ui,
+    on: Seg,
+    unread: usize,
+    admin: Option<usize>,
+    me: &str,
+    waiting: bool,
+) -> TopBar {
+    let mut out = TopBar::default();
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        let disc = 42.0;
+        let w = ui.available_width() - disc - ui.spacing().item_spacing.x;
+        out.seg = segmented(ui, "Community", w, on, unread, admin, false);
+        let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(disc), egui::Sense::click());
+        let p = ui.painter();
+        p.circle_stroke(
+            rect.center(),
+            disc / 2.0 + 1.0,
+            egui::Stroke::new(1.0, GLINE),
+        );
+        let name = if me.is_empty() { "?" } else { me };
+        paint_avatar(p, rect.center(), name, ChatKind::Private, disc - 2.0);
+        if waiting {
+            let c = rect.right_top() + egui::vec2(-4.0, 4.0);
+            p.circle_filled(c, 6.5, theme::PANEL);
+            p.circle_filled(c, 5.0, theme::BRAND);
+        }
+        out.you = resp
+            .on_hover_text("You: your profile and settings")
+            .clicked();
+    });
+    ui.add_space(10.0);
+    out
 }
 
 /// A round button of the design's composer (`.circ`): raised, or the pale
@@ -488,6 +615,10 @@ struct Row {
     preview: String,
     time: String,
     unread: usize,
+    /// When its last line was said, for the newest-first order.
+    at_ms: u64,
+    /// A community's picture, in place of its initial.
+    picture: Option<egui::TextureHandle>,
 }
 
 /// One row of the list (`.chat-row`): the 48 pt avatar, the name and time on
@@ -506,9 +637,6 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
         ROW_CARD
     };
     p.rect_filled(rect, card, fill);
-    if row.kind == ChatKind::Here {
-        paint_pinned_wash(p, rect);
-    }
     // Something new in it: a brand stripe down the card's left edge, so an
     // unread chat is found by the eye before the badge is read.
     if row.unread > 0 {
@@ -522,13 +650,19 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
         );
     }
     let size = 48.0;
-    paint_avatar(
-        p,
-        egui::pos2(rect.left() + 6.0 + size / 2.0, rect.center().y),
-        &row.name,
-        row.kind,
-        size,
-    );
+    let face = egui::pos2(rect.left() + 6.0 + size / 2.0, rect.center().y);
+    match &row.picture {
+        Some(t) => {
+            egui::Image::new(t)
+                .corner_radius(egui::CornerRadius::same((size * 0.29) as u8))
+                .paint_at(
+                    ui,
+                    egui::Rect::from_center_size(face, egui::Vec2::splat(size)),
+                );
+        }
+        None => paint_avatar(p, face, &row.name, row.kind, size),
+    }
+    let p = ui.painter();
     let x = rect.left() + 6.0 + size + 12.0;
     let time_w = if row.time.is_empty() {
         0.0
@@ -698,6 +832,15 @@ struct Actions {
     snapshot: Option<String>,
     /// Open a field check for this chat (`systems::field_check`).
     field_check: Option<String>,
+    /// Open (`true`) or leave (`false`) the You page.
+    you: Option<bool>,
+    /// Put another panel in this one's place: Admin, Settings, Appearance.
+    panel: Option<RightPanel>,
+    /// The contacts screen the You page opened, so back returns there.
+    sub_root: Option<crate::systems::contacts::Sub>,
+    /// Settings, opened from the You page.
+    settings_from_you: bool,
+    sign_out: bool,
 }
 
 /// The call key in a chat's header: between the call screen's banner size
@@ -744,7 +887,6 @@ pub fn render_chats_panel(
     mut view: ResMut<ChatsView>,
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,
-    mut voice: ResMut<crate::systems::voice::VoiceState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut calls: ResMut<crate::systems::calls::Calls>,
@@ -804,11 +946,16 @@ pub fn render_chats_panel(
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
-            let me = identity.username.clone().unwrap_or_default();
-            let me_full = cartopolis_core::address::person(
-                &me,
-                identity.server_name.as_deref().unwrap_or_default(),
-            );
+            let mut me = identity.username.clone().unwrap_or_default();
+            if me.is_empty() && view.demo {
+                // A scripted capture has nobody signed in to draw.
+                me = "jeroen".into();
+            }
+            let server = match identity.server_name.as_deref() {
+                None if view.demo => "cartopolis.org",
+                other => other.unwrap_or_default(),
+            };
+            let me_full = cartopolis_core::address::person(&me, server);
             let admin = identity.may(cartopolis_core::permissions::Permission::AccountsManage);
             if communities.screen.is_some() && view.sub.is_none() && view.open.is_none() {
                 let out = crate::systems::communities::screen(ui, &mut communities, &me_full);
@@ -837,15 +984,16 @@ pub fn render_chats_panel(
                     online.as_deref(),
                     &me,
                 ),
+                (None, None) if view.you => you_screen(ui, &me, &me_full, &contacts, &mut act),
                 (None, None) => list_screen(
                     ui,
                     &mut chat,
                     &mut view,
-                    &mut voice,
                     &contacts,
                     &mut communities,
                     &mut act,
-                    now,
+                    &me,
+                    lift,
                 ),
                 (None, Some(key)) => {
                     let call = call_button(&calls, &key);
@@ -970,36 +1118,35 @@ pub fn render_chats_panel(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn list_screen(
     ui: &mut egui::Ui,
     chat: &mut ChatState,
     view: &mut ChatsView,
-    voice: &mut crate::systems::voice::VoiceState,
     contacts: &crate::systems::contacts::Contacts,
     communities: &mut crate::systems::communities::Communities,
     act: &mut Actions,
-    now: u64,
+    me: &str,
+    lift: f32,
 ) {
-    // The v1 inbox: the title bar, then the Chats | World toggle under it.
-    // Contacts hang off the title bar's people button (`v5-contacts`).
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Chats")
-                .font(egui::FontId::new(28.0, theme::brand_family()))
-                .color(theme::CREAM),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::round_button(ui, icons::APPEARANCE, "Contacts", false).clicked() {
-                act.sub = Some(crate::systems::contacts::Sub::Contacts);
-            }
-        });
-    });
-    ui.add_space(10.0);
-    if segmented(ui, "Chats", 0, false, false) == Some(true) {
-        act.to_world = true;
+    // The switch and your disc; no title above them, since the switch says
+    // where you are (`docs/mockups/home-and-profile/v1`, A).
+    let bar = top_bar(
+        ui,
+        Seg::Community,
+        0,
+        view.admin,
+        me,
+        !contacts.incoming.is_empty(),
+    );
+    match bar.seg {
+        Some(Seg::World) => act.to_world = true,
+        Some(Seg::Admin) => act.panel = Some(RightPanel::Admin),
+        _ => {}
     }
-    ui.add_space(8.0);
+    if bar.you {
+        act.you = Some(true);
+    }
     if let Some(notice) = chat.notice.clone() {
         if notice.error {
             act.dismiss_notice = theme::inline_error(ui, &notice.text);
@@ -1044,11 +1191,37 @@ fn list_screen(
         ui.add_space(6.0);
     }
 
-    if view.new_chat {
-        let mut kind = view.new_kind;
-        new_chat_section(ui, chat, &mut kind, act);
-        view.new_kind = kind;
-    }
+    // Search: the list as you type, by name or by the last line. On this
+    // device only; it does not search message history.
+    egui::Frame::NONE
+        .fill(theme::SURFACE_RAISED)
+        .stroke(egui::Stroke::new(1.0, GLINE))
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(icons::SEARCH)
+                        .size(17.0)
+                        .color(theme::LINE),
+                );
+                crate::systems::text_touch::field(
+                    ui,
+                    egui::TextEdit::singleline(&mut view.search)
+                        .id(egui::Id::new("chats_search"))
+                        .frame(egui::Frame::NONE)
+                        .desired_width(ui.available_width())
+                        .hint_text("Search"),
+                );
+            });
+        });
+    ui.add_space(10.0);
+    let needle = view.search.trim().to_lowercase();
+    let matches = |name: &str, preview: &str| {
+        needle.is_empty()
+            || name.to_lowercase().contains(&needle)
+            || preview.to_lowercase().contains(&needle)
+    };
 
     // Message requests wait in one row above the chats, and the chats that
     // are still requests are not in the list until they are accepted.
@@ -1057,151 +1230,146 @@ fn list_screen(
     }
     let requests = contacts.request_channels(chat);
 
-    let rows = |filter: &dyn Fn(ChatKind) -> bool| -> Vec<Row> {
-        let mut out: Vec<(u64, Row)> = chat
-            .channels
+    let row_of = |c: &crate::systems::chat::ChatChannel| -> Row {
+        let visible: Vec<&ChatLine> = c
+            .lines
             .iter()
-            .filter(|c| {
-                filter(kind_of(&c.key))
-                    && !requests.contains(&c.key)
-                    // Topics are listed under their community.
-                    && !communities.is_topic(&c.key)
-            })
-            .map(|c| {
-                let visible: Vec<&ChatLine> = c
-                    .lines
-                    .iter()
-                    .filter(|l| !chat.is_blocked(&l.sender))
-                    .collect();
-                let last = visible.last();
-                // A field check's pose is for the agent; a person reads its note.
-                let shown =
-                    |l: &ChatLine| crate::systems::private_chat::readable(&l.body).into_owned();
-                let preview = match last {
-                    None => match kind_of(&c.key) {
-                        ChatKind::Here => "Whoever is near your avatar".into(),
-                        ChatKind::Everyone => "Everyone on this server".into(),
-                        _ => "No messages yet".into(),
-                    },
-                    Some(l) if is_mine(chat, l) => format!("You: {}", shown(l)),
-                    Some(l)
-                        if kind_of(&c.key) == ChatKind::Private && !c.label.contains(&l.sender) =>
-                    {
-                        format!("{}: {}", l.sender, shown(l))
-                    }
-                    Some(l) if kind_of(&c.key) != ChatKind::Private => {
-                        format!("{}: {}", l.sender, shown(l))
-                    }
-                    Some(l) => shown(l),
-                };
-                let at = last.map_or(0, |l| l.at_ms);
-                let kind = kind_of(&c.key);
-                (
-                    at,
-                    Row {
-                        key: c.key.clone(),
-                        name: display_name(&c.key, &c.label),
-                        kind,
-                        preview,
-                        time: if at > 0 {
-                            clock_time(at)
-                        } else {
-                            String::new()
-                        },
-                        unread: if kind == ChatKind::Here {
-                            0
-                        } else {
-                            view.unread(chat, &c.key, &c.lines)
-                        },
-                    },
-                )
-            })
+            .filter(|l| !chat.is_blocked(&l.sender))
             .collect();
-        // Newest conversation first, as every messenger orders it.
-        out.sort_by(|a, b| b.0.cmp(&a.0));
-        out.into_iter().map(|(_, r)| r).collect()
+        let last = visible.last();
+        // A field check's pose is for the agent; a person reads its note.
+        let shown = |l: &ChatLine| crate::systems::private_chat::readable(&l.body).into_owned();
+        let kind = kind_of(&c.key);
+        let preview = match last {
+            None => match kind {
+                ChatKind::Here => "Whoever is near your avatar".into(),
+                ChatKind::Everyone => "Everyone on this server".into(),
+                _ => "No messages yet".into(),
+            },
+            Some(l) if is_mine(chat, l) => format!("You: {}", shown(l)),
+            Some(l) if kind == ChatKind::Private && !c.label.contains(&l.sender) => {
+                format!("{}: {}", l.sender, shown(l))
+            }
+            Some(l) if kind != ChatKind::Private => format!("{}: {}", l.sender, shown(l)),
+            Some(l) => shown(l),
+        };
+        let at = last.map_or(0, |l| l.at_ms);
+        Row {
+            key: c.key.clone(),
+            name: display_name(&c.key, &c.label),
+            kind,
+            preview,
+            time: if at > 0 {
+                clock_time(at)
+            } else {
+                String::new()
+            },
+            unread: if kind == ChatKind::Here {
+                0
+            } else {
+                view.unread(chat, &c.key, &c.lines)
+            },
+            at_ms: at,
+            picture: None,
+        }
     };
-    // The v1 order, and no section headings: Here pinned first, every
-    // conversation by its latest line, Everyone last. Which chats are private
-    // is said on the row itself (the padlock), where it cannot be missed.
-    let here = rows(&|k| k == ChatKind::Here);
-    let middle = rows(&|k| k == ChatKind::Private);
-    let everyone = rows(&|k| k == ChatKind::Everyone);
+    let public: Vec<Row> = [ChatKind::Here, ChatKind::Everyone]
+        .iter()
+        .filter_map(|k| chat.channels.iter().find(|c| kind_of(&c.key) == *k))
+        .map(row_of)
+        .filter(|r| matches(&r.name, &r.preview))
+        .collect();
+    // One list, newest first: people, groups and communities together. A
+    // community is one row; a tap opens its only topic, or the community.
+    let mut rows: Vec<Row> = chat
+        .channels
+        .iter()
+        .filter(|c| {
+            kind_of(&c.key) == ChatKind::Private
+                && !requests.contains(&c.key)
+                // Topics are inside their community's row.
+                && !communities.is_topic(&c.key)
+        })
+        .map(row_of)
+        .collect();
+    let unread = |key: &str| {
+        chat.channels
+            .iter()
+            .find(|c| c.key == key)
+            .map_or(0, |c| view.unread(chat, key, &c.lines))
+    };
+    let mut community_of = HashMap::new();
+    for c in crate::systems::communities::list_rows(ui.ctx(), communities, chat, &unread) {
+        let key = format!("community:{}", c.id);
+        community_of.insert(key.clone(), (c.id, c.open.clone()));
+        rows.push(Row {
+            key,
+            name: c.name,
+            kind: ChatKind::Community,
+            preview: c.preview,
+            time: if c.at_ms > 0 {
+                clock_time(c.at_ms)
+            } else {
+                String::new()
+            },
+            unread: c.unread,
+            at_ms: c.at_ms,
+            picture: c.picture,
+        });
+    }
+    rows.retain(|r| matches(&r.name, &r.preview));
+    rows.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
 
     let panel = ui.max_rect();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // The world's two public chats, then communities with their topics
-            // folded under them, then people and groups (`docs/mockups/
-            // communities/v1.html`, A).
-            let pick = |ui: &mut egui::Ui, row: &Row, act: &mut Actions| {
-                if chat_row(ui, row, sending).clicked() {
-                    if sending && row.kind == ChatKind::Private {
-                        act.send_point_to = Some(row.key.clone());
-                    } else {
-                        act.open = Some(row.key.clone());
+            // Here and Everyone, the two public chats, side by side.
+            if !public.is_empty() {
+                ui.horizontal(|ui| {
+                    let gap = ui.spacing().item_spacing.x;
+                    let w = (ui.available_width() - gap) / 2.0;
+                    for row in &public {
+                        if public_tile(ui, row, w).clicked() {
+                            act.open = Some(row.key.clone());
+                        }
                     }
+                });
+                ui.add_space(8.0);
+            }
+            if !rows.is_empty() {
+                theme::section(ui, "Conversations");
+            }
+            for row in &rows {
+                if !chat_row(ui, row, sending).clicked() {
+                    continue;
                 }
-            };
-            for row in here.iter().chain(&everyone) {
-                pick(ui, row, act);
-            }
-            let unread = |key: &str| {
-                chat.channels
-                    .iter()
-                    .find(|c| c.key == key)
-                    .map_or(0, |c| view.unread(chat, key, &c.lines))
-            };
-            match crate::systems::communities::list_band(ui, communities, chat, &unread) {
-                Some(crate::systems::communities::ListPick::Open(key)) => act.open = Some(key),
-                Some(crate::systems::communities::ListPick::Community(id)) => {
-                    act.show_community = Some(id);
+                if let Some((id, open)) = community_of.get(&row.key) {
+                    match open {
+                        Some(key) => act.open = Some(key.clone()),
+                        None => act.show_community = Some(*id),
+                    }
+                } else if sending && row.kind == ChatKind::Private {
+                    act.send_point_to = Some(row.key.clone());
+                } else {
+                    act.open = Some(row.key.clone());
                 }
-                None => {}
             }
-            if !middle.is_empty() {
-                theme::section(ui, "People and groups");
-            }
-            for row in &middle {
-                pick(ui, row, act);
-            }
-            if !middle.iter().any(|r| r.kind == ChatKind::Private) {
+            if rows.is_empty() && !needle.is_empty() {
+                theme::note(ui, "Nothing here goes by that name.");
+            } else if !rows.iter().any(|r| r.kind == ChatKind::Private) {
                 ui.add_space(6.0);
                 theme::note(
                     ui,
-                    "Start a private chat with the pencil below. Only the people in it can read it.",
+                    "Start a private chat with the + below. Only the people in it can read it.",
                 );
             }
-            ui.add_space(8.0);
-            egui::CollapsingHeader::new("Voice and blocked people")
-                .id_salt("chats_settings")
-                .show(ui, |ui| {
-                    crate::systems::chat::voice_row(ui, voice);
-                    if chat.blocked.is_empty() {
-                        theme::note(ui, "You have not blocked anyone.");
-                    }
-                    for name in chat.blocked.clone() {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&name).color(theme::TEXT));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if theme::action_button(ui, "Unblock").clicked() {
-                                        act.unblock = Some(name.clone());
-                                    }
-                                },
-                            );
-                        });
-                    }
-                });
-            // Room under the last row for the compose button to float over.
+            // Room under the last row for the + button to float over.
             ui.add_space(80.0);
-            let _ = now;
         });
 
-    // New chat: the design's floating button (`.fab`), bottom right, pale
-    // accent with the compose icon. Drawn after the list so it sits on top.
+    // New: the design's floating button (`.fab`), bottom right, pale accent
+    // with a plus. Drawn after the list so it sits on top.
     let fab = egui::Rect::from_min_size(
         panel.right_bottom() - egui::vec2(56.0 + 6.0, 56.0 + 12.0),
         egui::Vec2::splat(56.0),
@@ -1212,11 +1380,7 @@ fn list_screen(
             egui::Id::new("chats_new_chat_fab"),
             egui::Sense::click(),
         )
-        .on_hover_text(if view.new_chat {
-            "Close"
-        } else {
-            "New: a person, a group or a community"
-        });
+        .on_hover_text("New: a person, a group or a community");
     let p = ui.painter();
     p.add(
         egui::epaint::Shadow {
@@ -1239,18 +1403,86 @@ fn list_screen(
     p.text(
         fab.center(),
         egui::Align2::CENTER_CENTER,
-        if view.new_chat {
-            icons::CLEAR
-        } else {
-            icons::RENAME
-        },
-        egui::FontId::proportional(24.0),
+        icons::ADD,
+        egui::FontId::proportional(26.0),
         theme::INK,
     );
     if resp.clicked() {
-        view.new_chat = !view.new_chat;
+        view.new_chat = true;
         view.new_kind = NewKind::Choose;
     }
+    if view.new_chat {
+        let mut kind = view.new_kind;
+        if new_sheet(ui.ctx(), panel, lift, chat, &mut kind, act) {
+            view.new_chat = false;
+        }
+        view.new_kind = kind;
+    }
+}
+
+/// Here or Everyone as a tile, half the list's width: the two public chats
+/// share one row instead of taking two (`docs/mockups/home-and-profile/v1`).
+fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 66.0), egui::Sense::click());
+    let p = ui.painter();
+    let card = egui::CornerRadius::same(16);
+    p.rect_filled(
+        rect,
+        card,
+        if resp.hovered() || resp.is_pointer_button_down_on() {
+            theme::SURFACE_HOVER
+        } else {
+            ROW_CARD
+        },
+    );
+    if row.kind == ChatKind::Here {
+        paint_pinned_wash(p, rect);
+    }
+    p.rect_stroke(
+        rect,
+        card,
+        egui::Stroke::new(1.0, GLINE),
+        egui::StrokeKind::Inside,
+    );
+    let face = egui::pos2(rect.left() + 12.0 + 14.0, rect.top() + 12.0 + 14.0);
+    paint_avatar(p, face, &row.name, row.kind, 28.0);
+    let mut name_room = rect.right() - face.x - 30.0;
+    if row.unread > 0 {
+        let g = p.layout_no_wrap(
+            if row.unread > 99 {
+                "99+".into()
+            } else {
+                row.unread.to_string()
+            },
+            egui::FontId::proportional(11.5),
+            egui::Color32::WHITE,
+        );
+        let pill = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 10.0 - g.size().x - 14.0, rect.top() + 10.0),
+            egui::vec2(g.size().x + 14.0, 19.0),
+        );
+        p.rect_filled(pill, egui::CornerRadius::same(10), theme::BRAND);
+        let gs = g.size();
+        p.galley(pill.center() - gs / 2.0, g, egui::Color32::WHITE);
+        name_room -= pill.width() + 6.0;
+    }
+    paint_line(
+        p,
+        egui::pos2(face.x + 22.0, face.y - 9.5),
+        &row.name,
+        14.5,
+        theme::CREAM,
+        name_room,
+    );
+    paint_line(
+        p,
+        egui::pos2(rect.left() + 12.0, rect.bottom() - 24.0),
+        &row.preview,
+        12.5,
+        theme::TEXT_DIM,
+        rect.width() - 24.0,
+    );
+    resp
 }
 
 /// Which of the "+" sheet's forms is open.
@@ -1306,26 +1538,109 @@ fn new_choice(ui: &mut egui::Ui, icon: &str, title: &str, line: &str, brand: boo
 }
 
 /// The "+" sheet: one question — a person, a group, or a community — and then
-/// the form for whichever was picked (`docs/mockups/communities/v2.html`, H).
-fn new_chat_section(
-    ui: &mut egui::Ui,
+/// the form for whichever was picked. It rises over the list with the list
+/// dimmed behind it, and a tap on the dimmed list closes it
+/// (`docs/mockups/home-and-profile/v1`, B); it used to open inside the list
+/// and push it down. `lift` keeps a form clear of the on-screen keys. Answers
+/// whether it should close.
+fn new_sheet(
+    ctx: &egui::Context,
+    panel: egui::Rect,
+    lift: f32,
     chat: &mut ChatState,
     kind: &mut NewKind,
     act: &mut Actions,
-) {
-    raised_frame().show(ui, |ui| match *kind {
-        NewKind::Choose => {
-            ui.label(
-                egui::RichText::new("Start something")
-                    .size(17.0)
-                    .color(theme::CREAM),
+) -> bool {
+    let mut close = false;
+    // One area for the scrim and the sheet, so the sheet is always the one on
+    // top: two areas at one order are stacked by egui's last-touched rule.
+    egui::Area::new(egui::Id::new("chats_new_sheet"))
+        .order(egui::Order::Middle)
+        .fixed_pos(panel.min)
+        .show(ctx, |ui| {
+            let scrim = ui.interact(
+                panel,
+                egui::Id::new("chats_new_scrim"),
+                egui::Sense::click(),
             );
-            ui.add_space(4.0);
+            ui.painter()
+                .rect_filled(panel, 0.0, egui::Color32::from_black_alpha(150));
+            if scrim.clicked() {
+                close = true;
+            }
+            // The sheet sits on the panel's bottom edge, at the height it
+            // measured itself last frame (a sheet's height is only known once
+            // drawn, and a frame of it a little off is never seen).
+            let height_id = egui::Id::new("chats_new_sheet_height");
+            let height = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(height_id))
+                .unwrap_or(panel.height() * 0.5)
+                .min(panel.height());
+            let bottom = panel.bottom() - lift;
+            let room = egui::Rect::from_min_max(
+                egui::pos2(panel.left(), (bottom - height).max(panel.top())),
+                egui::pos2(panel.right(), bottom),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(room)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    let sheet = egui::Frame::NONE
+                        .fill(theme::SURFACE)
+                        .stroke(egui::Stroke::new(1.0, GLINE))
+                        .corner_radius(egui::CornerRadius {
+                            nw: 24,
+                            ne: 24,
+                            sw: 0,
+                            se: 0,
+                        })
+                        .inner_margin(egui::Margin {
+                            left: 16,
+                            right: 16,
+                            top: 8,
+                            bottom: 22,
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(room.width() - 32.0);
+                            let (handle, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 14.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(
+                                    handle.center(),
+                                    egui::vec2(40.0, 5.0),
+                                ),
+                                egui::CornerRadius::same(3),
+                                theme::LINE,
+                            );
+                            new_sheet_body(ui, chat, kind, act);
+                        });
+                    // Taps on the sheet itself stay on it.
+                    let _ = sheet.response.interact(egui::Sense::click());
+                    let h = sheet.response.rect.height();
+                    ui.ctx().data_mut(|d| d.insert_temp(height_id, h));
+                },
+            );
+        });
+    if act.community_find || act.community_start || act.start_private.is_some() {
+        close = true;
+    }
+    close
+}
+
+fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, act: &mut Actions) {
+    match *kind {
+        NewKind::Choose => {
+            ui.label(egui::RichText::new("New").size(18.0).color(theme::CREAM));
+            ui.add_space(6.0);
             if new_choice(
                 ui,
                 icons::CHAT,
                 "Message a person",
-                "Just the two of you",
+                "From your contacts, or by name",
                 false,
             ) {
                 *kind = NewKind::Person;
@@ -1334,7 +1649,7 @@ fn new_chat_section(
                 ui,
                 icons::GROUP,
                 "Start a group",
-                "A few people you pick. Private.",
+                "A few people you pick",
                 false,
             ) {
                 *kind = NewKind::Group;
@@ -1343,7 +1658,7 @@ fn new_chat_section(
                 ui,
                 icons::SEARCH,
                 "Find a community",
-                "Clubs, teams and neighbourhoods on this server",
+                "Clubs, teams, neighbourhoods",
                 true,
             ) {
                 act.community_find = true;
@@ -1352,23 +1667,24 @@ fn new_chat_section(
                 ui,
                 icons::CAT_CITY,
                 "Start a community",
-                "People who share several topics, like a club or a team",
+                "Several topics, one set of people",
                 true,
             ) {
                 act.community_start = true;
             }
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             theme::note(
                 ui,
-                &format!(
-                    "{} All of these are end-to-end encrypted: the server passes them on \
-                     without being able to read them. Here and Everyone are public.",
-                    icons::LOCK
-                ),
+                &format!("{} All four are end-to-end encrypted.", icons::LOCK),
             );
         }
         NewKind::Person => {
-            ui.label(egui::RichText::new("Message a person").color(theme::CREAM));
+            ui.label(
+                egui::RichText::new("Message a person")
+                    .size(18.0)
+                    .color(theme::CREAM),
+            );
+            ui.add_space(4.0);
             let field = crate::systems::text_touch::field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.private_input)
@@ -1382,6 +1698,9 @@ fn new_chat_section(
                 if theme::action_button(ui, "Back").clicked() {
                     *kind = NewKind::Choose;
                 }
+                if theme::action_button(ui, "Contacts").clicked() {
+                    act.sub = Some(crate::systems::contacts::Sub::Contacts);
+                }
                 if (theme::action_enabled_because(ui, ready, "Start", "Type who to write to first")
                     .clicked()
                     || entered)
@@ -1392,7 +1711,12 @@ fn new_chat_section(
             });
         }
         NewKind::Group => {
-            ui.label(egui::RichText::new("Start a group").color(theme::CREAM));
+            ui.label(
+                egui::RichText::new("Start a group")
+                    .size(18.0)
+                    .color(theme::CREAM),
+            );
+            ui.add_space(4.0);
             crate::systems::text_touch::field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.group_name_input)
@@ -1426,8 +1750,144 @@ fn new_chat_section(
                 }
             });
         }
-    });
-    ui.add_space(6.0);
+    }
+}
+
+/// The You page, from your disc at the top of the list: who you are, your
+/// link, your avatar, your contacts and requests, and the way to Settings
+/// and out (`docs/mockups/home-and-profile/v1`, C). Everything on it existed
+/// before, in four different places.
+fn you_screen(
+    ui: &mut egui::Ui,
+    me: &str,
+    address: &str,
+    contacts: &crate::systems::contacts::Contacts,
+    act: &mut Actions,
+) {
+    use crate::systems::contacts::Sub;
+    if theme::back_title(ui, "You") {
+        act.you = Some(false);
+    }
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(96.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_stroke(rect.center(), 48.0, egui::Stroke::new(1.5, GLINE));
+                let name = if me.is_empty() { "?" } else { me };
+                paint_avatar(ui.painter(), rect.center(), name, ChatKind::Private, 90.0);
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(me).size(22.0).color(theme::CREAM));
+                ui.label(
+                    egui::RichText::new(address)
+                        .size(13.5)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add_space(12.0);
+                // The two pills, centred as a pair.
+                let pill = |ui: &mut egui::Ui, icon: &str, text: &str| {
+                    ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("{icon}  {text}"))
+                                .size(13.5)
+                                .color(theme::TEXT),
+                        )
+                        .fill(theme::SURFACE_RAISED)
+                        .stroke(egui::Stroke::new(1.0, GLINE))
+                        .corner_radius(egui::CornerRadius::same(12))
+                        .min_size(egui::vec2(0.0, 36.0)),
+                    )
+                };
+                let w = 300.0_f32.min(ui.available_width());
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, 40.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(((w - 250.0) / 2.0).max(0.0));
+                        if pill(ui, icons::SHARE, "Share my link").clicked() {
+                            act.sub = Some(Sub::Add);
+                            act.sub_root = Some(Sub::Add);
+                        }
+                        if pill(ui, icons::APPEARANCE, "Avatar").clicked() {
+                            act.panel = Some(RightPanel::Appearance);
+                        }
+                    },
+                );
+            });
+            ui.add_space(14.0);
+            theme::list_group(ui, |ui| {
+                if theme::list_row(
+                    ui,
+                    icons::GROUP,
+                    "Contacts",
+                    None,
+                    theme::RowEnd::Count(contacts.contacts.len()),
+                    theme::ACCENT,
+                )
+                .clicked()
+                {
+                    act.sub = Some(Sub::Contacts);
+                    act.sub_root = Some(Sub::Contacts);
+                }
+                if theme::list_row(
+                    ui,
+                    icons::CHAT,
+                    "Message requests",
+                    None,
+                    theme::RowEnd::Badge(contacts.incoming.len()),
+                    theme::BRAND,
+                )
+                .clicked()
+                {
+                    act.sub = Some(Sub::Requests);
+                    act.sub_root = Some(Sub::Requests);
+                }
+                if theme::list_row(
+                    ui,
+                    icons::LOCK,
+                    "Who can message me",
+                    Some(crate::systems::contacts::policy_word(
+                        contacts.settings.policy,
+                    )),
+                    theme::RowEnd::Chevron,
+                    theme::ACCENT,
+                )
+                .clicked()
+                {
+                    act.sub = Some(Sub::Privacy);
+                    act.sub_root = Some(Sub::Privacy);
+                }
+            });
+            theme::list_group(ui, |ui| {
+                if theme::list_row(
+                    ui,
+                    icons::SETTINGS,
+                    "Settings",
+                    None,
+                    theme::RowEnd::Chevron,
+                    theme::ACCENT,
+                )
+                .clicked()
+                {
+                    act.panel = Some(RightPanel::Settings);
+                    act.settings_from_you = true;
+                }
+                if theme::list_row(
+                    ui,
+                    icons::LOGOUT,
+                    "Sign out",
+                    None,
+                    theme::RowEnd::Nothing,
+                    theme::ACCENT,
+                )
+                .clicked()
+                {
+                    act.sign_out = true;
+                }
+            });
+        });
 }
 
 /// The header of an open chat: back, who, and (for a private chat) its menu.
@@ -1577,7 +2037,9 @@ fn chat_screen(
         .collect();
     chat_header(ui, chat, key, &name, kind, act, now, call, topic.as_ref());
     ui.add_space(8.0);
-    if segmented(ui, "Chat", 0, false, false) == Some(true) {
+    // A chat's own Chat | World: its thread, or the map with its points.
+    let w = ui.available_width();
+    if segmented(ui, "Chat", w, Seg::Community, 0, None, false) == Some(Seg::World) {
         act.world_of = Some(key.to_string());
     }
     ui.add_space(10.0);
@@ -2936,9 +3398,31 @@ fn apply(
         view.sub = Some(sub);
         view.new_chat = false;
     }
+    if let Some(root) = act.sub_root {
+        view.sub_root = Some(root);
+    }
+    if let Some(you) = act.you {
+        view.you = you;
+        view.new_chat = false;
+    }
+    if act.sign_out {
+        view.sign_out = true;
+    }
+    if let Some(panel) = act.panel {
+        // Admin is a place of its own on the switch, so the You page is not
+        // waiting behind it; Settings and Appearance come back to it.
+        if panel == RightPanel::Admin {
+            view.you = false;
+        }
+        view.settings_from_you = act.settings_from_you;
+        view.new_chat = false;
+        *right_panel = panel;
+    }
     if act.to_world || act.close {
         *right_panel = RightPanel::None;
         chat.world = None;
+        view.you = false;
+        view.new_chat = false;
     }
     if let Some(key) = act.open {
         view.open_chat(&key);
@@ -3284,6 +3768,7 @@ pub fn render_chats_switch(
     if (online.is_none() && !view.demo)
         || driver.active
         || right_panel.is(RightPanel::Chat)
+        || right_panel.is(RightPanel::Admin)
         || chat.world.is_some()
         || (egui.compact() && !right_panel.is(RightPanel::None))
     {
@@ -3296,21 +3781,42 @@ pub fn render_chats_switch(
         .map(|c| view.unread(&chat, &c.key, &c.lines))
         .sum();
     let ctx = egui.ctx_mut().clone();
-    let mut to_chats = false;
+    let mut picked = None;
+    let width = if view.admin.is_some() { 320.0 } else { 260.0 };
     egui::Area::new(egui::Id::new("chats_world_switch"))
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset(&chat)))
         .show(&ctx, |ui| {
             // `.topseg`: the glass segmented pill on its own, no frame around it.
-            ui.set_width(250.0);
-            if segmented(ui, "Chats", unread, true, true) == Some(false) {
-                to_chats = true;
-            }
+            ui.set_width(width);
+            picked = segmented(ui, "Community", width, Seg::World, unread, view.admin, true);
         });
-    if to_chats {
-        *right_panel = RightPanel::Chat;
-        view.open = None;
+    match picked {
+        Some(Seg::Community) => {
+            *right_panel = RightPanel::Chat;
+            view.open = None;
+            view.you = false;
+        }
+        Some(Seg::Admin) => *right_panel = RightPanel::Admin,
+        _ => {}
     }
+}
+
+/// Sign out from the You page: the same path as the main menu's Log out.
+pub fn apply_sign_out(
+    mut view: ResMut<ChatsView>,
+    mut session: ResMut<crate::systems::session::SessionState>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+    mut right_panel: ResMut<RightPanel>,
+) {
+    if !std::mem::take(&mut view.sign_out) {
+        return;
+    }
+    view.you = false;
+    view.sub = None;
+    view.sub_root = None;
+    *right_panel = RightPanel::None;
+    crate::systems::session::sign_out(&mut session, &mut store);
 }
 
 /// A chat's World view: its header over the map, and its last lines and text
@@ -3386,7 +3892,8 @@ pub fn render_chat_world(
                     None,
                 );
                 ui.add_space(8.0);
-                if segmented(ui, "Chat", 0, true, false) == Some(false) {
+                let w = ui.available_width();
+                if segmented(ui, "Chat", w, Seg::World, 0, None, false) == Some(Seg::Community) {
                     act.to_world = false;
                     act.open = Some(key.clone());
                 }

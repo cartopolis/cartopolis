@@ -1,7 +1,7 @@
 ---
 topic: access-tokens
 triggers: [access token, access_tokens, CARTO_TOKEN, "/api/tokens", "/tokens", resolve_access, "Credential::AccessToken", without_elevated, elevated, bot account, "midas bot setup", revoke]
-updated: 2026-10-15
+updated: 2026-10-16
 ---
 
 # Access tokens
@@ -12,6 +12,12 @@ account, open **/tokens**, make one, paste it where the bot runs (`CARTO_TOKEN`,
 or `midas bot setup`). The password never leaves the person who knows it, and
 **Revoke** on the same page is the off switch — including for a bot that is in the
 world at that moment.
+
+The app has the same page since 2026-10-16, at Settings ▸ Access tokens
+(`systems::access_tokens`), over the same routes: the list, the form with the
+password asked again, and the secret shown once and held in memory only until
+Done. A session token is what the app signs its HTTP calls with, which is what
+`require_person` asks for, so nothing on the server changed for it.
 
 ## Why not a session
 

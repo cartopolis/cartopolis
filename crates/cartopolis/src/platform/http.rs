@@ -103,6 +103,9 @@ pub enum Method {
     /// Change part of a resource, with a JSON body: suspending an account from
     /// the person menu (`PATCH /api/admin/accounts/{id}`), as the web UI does.
     Patch,
+    /// Replace a resource with a JSON body: an account's roles on the Admin
+    /// pages (`PUT /api/admin/accounts/{id}/roles`).
+    Put,
 }
 
 /// One HTTP request. Build with [`Request::get`] / [`Request::post`] and the
@@ -150,6 +153,14 @@ impl Request {
     pub fn patch(url: impl Into<String>) -> Self {
         Self {
             method: Method::Patch,
+            ..Self::get(url)
+        }
+    }
+
+    /// A PUT for `url`; set the payload with [`Request::body`].
+    pub fn put(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Put,
             ..Self::get(url)
         }
     }
@@ -504,6 +515,7 @@ mod imp {
             Method::Post => AGENT.post(&req.url),
             Method::Delete => AGENT.delete(&req.url),
             Method::Patch => AGENT.request("PATCH", &req.url),
+            Method::Put => AGENT.put(&req.url),
         };
         builder = builder.timeout(req.timeout);
 
@@ -652,6 +664,11 @@ mod imp {
             Method::Patch => {
                 let mut r = ehttp::Request::post(&req.url, req.body.clone().unwrap_or_default());
                 r.method = "PATCH".into();
+                r
+            }
+            Method::Put => {
+                let mut r = ehttp::Request::post(&req.url, req.body.clone().unwrap_or_default());
+                r.method = "PUT".into();
                 r
             }
         };

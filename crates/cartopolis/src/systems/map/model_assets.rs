@@ -191,6 +191,24 @@ pub async fn api_patch(path: &str, body: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
+/// `PUT` a JSON document to the API.
+pub async fn api_put(path: &str, body: String) -> Result<String, String> {
+    let request = api_request(http::Request::put, path)
+        .ok_or("not signed in")?
+        .header("Content-Type", "application/json")
+        .body(body.into_bytes());
+    let bytes = http::fetch(request).await?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+/// The connected server's HTTP base (`https://cartopolis.org`), for a link to
+/// one of its web pages; `None` with no session.
+#[must_use]
+pub fn api_base() -> Option<String> {
+    let slot = ENDPOINT.read().ok()?;
+    slot.as_ref().map(|e| e.base.clone())
+}
+
 /// `DELETE` a path on the model API.
 pub async fn api_delete(path: &str) -> Result<(), String> {
     let request = api_request(http::Request::delete, path).ok_or("not signed in")?;

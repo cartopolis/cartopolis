@@ -2116,6 +2116,204 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
 }
 
+/// [`section`] in a colour of its own: the admin pages' headings are
+/// [`WARN`] gold, the colour Admin wears everywhere it appears
+/// (`docs/mockups/home-and-profile/v2`).
+pub fn section_tinted(ui: &mut egui::Ui, title: &str, tone: Color32) {
+    ui.add_space(12.0);
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .size(SIZE_CHIP)
+            .extra_letter_spacing(0.6)
+            .color(tone),
+    );
+    ui.add_space(2.0);
+}
+
+/// What a [`list_row`] carries at its right-hand end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowEnd<'a> {
+    /// Opens a page: a chevron.
+    Chevron,
+    /// A plain count before the chevron ("Contacts 14").
+    Count(usize),
+    /// Something waiting: the brand-orange pill before the chevron.
+    Badge(usize),
+    /// A word in place of the chevron ("web page", "Unblock").
+    Word(&'a str),
+    /// Nothing: an action row.
+    Nothing,
+}
+
+/// The hairline between the rows of a [`list_group`].
+const LIST_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22);
+
+/// A list of rows on one rounded surface, with hairlines between them: the
+/// shape of the You page, Settings and Admin. One surface per group, so a page
+/// reads as a few blocks of related things rather than one long column.
+pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let out = egui::Frame::NONE
+        .fill(SURFACE)
+        .stroke(egui::Stroke::new(1.0, LIST_LINE))
+        .corner_radius(egui::CornerRadius::same(16))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui)
+        })
+        .inner;
+    ui.add_space(6.0);
+    out
+}
+
+/// One row of a [`list_group`]: an icon on a small raised square, a title, an
+/// optional line under it, and `end` on the right. `tone` is the icon's ink
+/// ([`ACCENT`] for most, [`WARN`] on the admin pages, [`ERROR`] for a row that
+/// destroys something, whose title takes the same colour).
+pub fn list_row(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    sub: Option<&str>,
+    end: RowEnd<'_>,
+    tone: Color32,
+) -> egui::Response {
+    let h = if sub.is_some() { 58.0 } else { 50.0 };
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let p = ui.painter();
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        p.rect_filled(rect, egui::CornerRadius::same(8), SURFACE_HOVER);
+    }
+    p.line_segment(
+        [
+            egui::pos2(rect.left() + 58.0, rect.bottom() - 0.5),
+            egui::pos2(rect.right(), rect.bottom() - 0.5),
+        ],
+        egui::Stroke::new(1.0, LIST_LINE),
+    );
+    let chip = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 12.0 + 16.0, rect.center().y),
+        egui::Vec2::splat(32.0),
+    );
+    let chip_fill = if tone == WARN {
+        WARN.gamma_multiply(0.14)
+    } else {
+        SURFACE_RAISED
+    };
+    p.rect_filled(chip, egui::CornerRadius::same(10), chip_fill);
+    p.text(
+        chip.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(17.0),
+        tone,
+    );
+
+    // The right-hand end, painted first so the title knows how much room it has.
+    let mut right = rect.right() - 12.0;
+    let chevron = |p: &egui::Painter, right: &mut f32| {
+        p.text(
+            egui::pos2(*right, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            crate::systems::icons::CHEVRON_RIGHT,
+            egui::FontId::proportional(18.0),
+            LINE,
+        );
+        *right -= 24.0;
+    };
+    match end {
+        RowEnd::Chevron => chevron(p, &mut right),
+        RowEnd::Count(n) => {
+            chevron(p, &mut right);
+            let r = p.text(
+                egui::pos2(right, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                n.to_string(),
+                egui::FontId::proportional(13.0),
+                TEXT_DIM,
+            );
+            right = r.left() - 8.0;
+        }
+        RowEnd::Badge(n) => {
+            chevron(p, &mut right);
+            if n > 0 {
+                let g = p.layout_no_wrap(
+                    if n > 99 { "99+".into() } else { n.to_string() },
+                    egui::FontId::proportional(11.5),
+                    Color32::WHITE,
+                );
+                let pill = egui::Rect::from_min_size(
+                    egui::pos2(right - g.size().x - 14.0, rect.center().y - 9.5),
+                    egui::vec2(g.size().x + 14.0, 19.0),
+                );
+                p.rect_filled(pill, egui::CornerRadius::same(10), BRAND);
+                let gs = g.size();
+                p.galley(pill.center() - gs / 2.0, g, Color32::WHITE);
+                right = pill.left() - 8.0;
+            }
+        }
+        RowEnd::Word(word) => {
+            let r = p.text(
+                egui::pos2(right, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                word,
+                egui::FontId::proportional(12.5),
+                TEXT_DIM,
+            );
+            right = r.left() - 8.0;
+        }
+        RowEnd::Nothing => {}
+    }
+
+    let x = chip.right() + 12.0;
+    let room = (right - x).max(20.0);
+    let line = |text: &str, size: f32, color: Color32, y: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.to_string(),
+            egui::FontId::proportional(size),
+            color,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let g = p.layout_job(job);
+        let gy = y - g.size().y / 2.0;
+        p.galley(egui::pos2(x, gy), g, color);
+    };
+    let title_tone = if tone == ERROR { ERROR } else { TEXT };
+    match sub {
+        Some(sub) => {
+            line(title, 14.5, title_tone, rect.center().y - 9.0);
+            line(sub, 12.0, TEXT_DIM, rect.center().y + 10.0);
+        }
+        None => line(title, 14.5, title_tone, rect.center().y),
+    }
+    paint_focus_ring(ui, &resp, rect, false);
+    resp
+}
+
+/// A page's title with a way back: the chevron and the name, at the top of a
+/// screen inside a panel (You, a Settings page, an Admin page). Answers whether
+/// back was pressed.
+pub fn back_title(ui: &mut egui::Ui, title: &str) -> bool {
+    let mut back = false;
+    ui.horizontal(|ui| {
+        let resp = ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(crate::systems::icons::BACK)
+                        .size(22.0)
+                        .color(CREAM),
+                )
+                .frame(false),
+            )
+            .on_hover_text("Back");
+        back = resp.clicked();
+        ui.label(egui::RichText::new(title).size(18.0).color(CREAM));
+    });
+    ui.add_space(6.0);
+    back
+}
+
 /// One control with several positions: a raised pill with equal-width
 /// segments, the chosen one on the [`ACCENT`] plate in [`INK`] — the Chats
 /// screen's toggle (`chats::segmented`) made general. Returns whether the
@@ -3110,6 +3308,7 @@ mod tests {
             8 => P::Models,
             9 => P::Settings,
             10 => P::About,
+            11 => P::Admin,
             _ => return None,
         };
         let back = match panel {
@@ -3124,6 +3323,7 @@ mod tests {
             P::Models => 8,
             P::Settings => 9,
             P::About => 10,
+            P::Admin => 11,
         };
         assert_eq!(back, i, "panel_at's two tables disagree at {i}");
         Some(panel)

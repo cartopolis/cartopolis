@@ -60,6 +60,10 @@ pub enum RightPanel {
     /// distributed work, and until this existed the app's only credit was three
     /// `ui.small()` lines at the foot of the Layers panel.
     About,
+    /// The server's admin pages, for an account whose role grants any of them:
+    /// the third, gold segment of Community | World | Admin
+    /// (`systems::admin`, `docs/mockups/home-and-profile/v2`).
+    Admin,
 }
 
 impl RightPanel {
@@ -90,12 +94,15 @@ impl RightPanel {
             // Sentence case throughout: these strings are the dock tooltip, the
             // menu entry and the panel header, and "Nearby Chat" beside "Map
             // layers" read as two different applications.
-            Self::Chat => "Chats",
+            // "Community", the word the web page's switch uses: the panel
+            // holds communities, the public chats and people, not only chats.
+            Self::Chat => "Community",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
             Self::Models => "Models",
             Self::Settings => "Settings",
             Self::About => "About",
+            Self::Admin => "Admin",
         }
     }
 
@@ -130,6 +137,7 @@ impl RightPanel {
             Self::Models => icons::CABINET,
             Self::Settings => icons::SETTINGS,
             Self::About => icons::ABOUT,
+            Self::Admin => icons::TUNE,
         }
     }
 }

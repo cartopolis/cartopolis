@@ -301,7 +301,7 @@ impl Contacts {
         });
     }
 
-    fn push_settings(&mut self, reset_link: bool) {
+    pub fn push_settings(&mut self, reset_link: bool) {
         let request_id = self.request_id();
         let s = &self.settings;
         self.outbox.push(NetMessage::SetContactSettings {
@@ -1249,7 +1249,12 @@ pub fn screen(
         Sub::Privacy => privacy_screen(ui, contacts, &mut act),
     }
 
-    if act.back {
+    if act.back && view.sub_root.as_ref() == Some(sub) {
+        // Opened from the You page: back goes there.
+        view.sub = None;
+        view.sub_root = None;
+        contacts.error = None;
+    } else if act.back {
         view.sub = match sub {
             Sub::Request(_) if contacts.incoming.len() > 1 => Some(Sub::Requests),
             Sub::Add | Sub::Privacy => Some(Sub::Contacts),
@@ -1884,111 +1889,130 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
         });
 }
 
+/// A request policy in a few words, as the You page's row says it.
+#[must_use]
+pub fn policy_word(policy: RequestPolicy) -> &'static str {
+    match policy {
+        RequestPolicy::Anyone => "Anyone",
+        RequestPolicy::Near => "People you've been near",
+        RequestPolicy::LinkOnly => "Only with my link",
+    }
+}
+
 fn privacy_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act) {
     title_row(ui, "Privacy", act, |_, _| {});
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("Who can send you a request").color(theme::CREAM));
-            theme::note(
-                ui,
-                "Your contacts can always message you. Anyone with your link can always send \
-                 a request.",
-            );
-            ui.add_space(4.0);
-            let s = &mut contacts.settings;
-            for (policy, title, sub) in [
-                (RequestPolicy::Anyone, "Anyone", "including by username"),
-                (
-                    RequestPolicy::Near,
-                    "People you've been near",
-                    "in the world in the last hour, or who share a contact with you",
-                ),
-                (
-                    RequestPolicy::LinkOnly,
-                    "Only with my link",
-                    "nobody finds you by name or in the world",
-                ),
-            ] {
-                let on = s.policy == policy;
-                let resp = egui::Frame::NONE
-                    .fill(if on {
-                        theme::BRAND.gamma_multiply(0.12)
-                    } else {
-                        theme::SURFACE
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        if on {
-                            theme::BRAND
-                        } else {
-                            theme::OVERLAY_LINE
-                        },
-                    ))
-                    .corner_radius(egui::CornerRadius::same(12))
-                    .inner_margin(egui::Margin::symmetric(12, 9))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::Vec2::splat(18.0), egui::Sense::hover());
-                            let c = rect.center();
-                            ui.painter().circle_stroke(
-                                c,
-                                8.0,
-                                egui::Stroke::new(2.0, if on { theme::BRAND } else { theme::LINE }),
-                            );
-                            if on {
-                                ui.painter().circle_filled(c, 4.5, theme::BRAND);
-                            }
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(title).size(14.0).color(theme::TEXT));
-                                ui.label(
-                                    egui::RichText::new(sub).size(12.0).color(theme::TEXT_DIM),
-                                );
-                            });
-                        });
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                if resp.clicked() && !on {
-                    s.policy = policy;
-                    act.settings = true;
-                }
-                ui.add_space(4.0);
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Requests").color(theme::CREAM));
-            if theme::checkbox(
-                ui,
-                &mut s.separate_new_accounts,
-                "Requests from accounts younger than a week wait in their own section",
-            )
-            .changed()
-            {
+            if privacy_body(ui, contacts) {
                 act.settings = true;
             }
-            if theme::checkbox(
-                ui,
-                &mut s.notify_requests,
-                "Say so when a request arrives (off: they wait quietly in the tray)",
-            )
-            .changed()
-            {
-                act.settings = true;
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Contacts can see").color(theme::CREAM));
-            if theme::checkbox(ui, &mut s.show_online, "That I'm online").changed() {
-                act.settings = true;
-            }
-            ui.add_space(8.0);
-            theme::note(
-                ui,
-                "Where your avatar is stays per chat and until a time you set, as before. \
-                 Being a contact doesn't show it.",
-            );
         });
+}
+
+/// Who may send a request, how requests arrive, and what contacts see: the
+/// body of the Privacy screen here and of Settings ▸ Privacy and safety.
+/// Answers whether a setting changed, for [`Contacts::push_settings`].
+pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
+    let mut act = Act::default();
+    ui.label(egui::RichText::new("Who can send you a request").color(theme::CREAM));
+    theme::note(
+        ui,
+        "Your contacts can always message you. Anyone with your link can always send \
+                 a request.",
+    );
+    ui.add_space(4.0);
+    let s = &mut contacts.settings;
+    for (policy, title, sub) in [
+        (RequestPolicy::Anyone, "Anyone", "including by username"),
+        (
+            RequestPolicy::Near,
+            "People you've been near",
+            "in the world in the last hour, or who share a contact with you",
+        ),
+        (
+            RequestPolicy::LinkOnly,
+            "Only with my link",
+            "nobody finds you by name or in the world",
+        ),
+    ] {
+        let on = s.policy == policy;
+        let resp = egui::Frame::NONE
+            .fill(if on {
+                theme::BRAND.gamma_multiply(0.12)
+            } else {
+                theme::SURFACE
+            })
+            .stroke(egui::Stroke::new(
+                1.0,
+                if on {
+                    theme::BRAND
+                } else {
+                    theme::OVERLAY_LINE
+                },
+            ))
+            .corner_radius(egui::CornerRadius::same(12))
+            .inner_margin(egui::Margin::symmetric(12, 9))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(18.0), egui::Sense::hover());
+                    let c = rect.center();
+                    ui.painter().circle_stroke(
+                        c,
+                        8.0,
+                        egui::Stroke::new(2.0, if on { theme::BRAND } else { theme::LINE }),
+                    );
+                    if on {
+                        ui.painter().circle_filled(c, 4.5, theme::BRAND);
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(title).size(14.0).color(theme::TEXT));
+                        ui.label(egui::RichText::new(sub).size(12.0).color(theme::TEXT_DIM));
+                    });
+                });
+            })
+            .response
+            .interact(egui::Sense::click());
+        if resp.clicked() && !on {
+            s.policy = policy;
+            act.settings = true;
+        }
+        ui.add_space(4.0);
+    }
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Requests").color(theme::CREAM));
+    if theme::checkbox(
+        ui,
+        &mut s.separate_new_accounts,
+        "Requests from accounts younger than a week wait in their own section",
+    )
+    .changed()
+    {
+        act.settings = true;
+    }
+    if theme::checkbox(
+        ui,
+        &mut s.notify_requests,
+        "Say so when a request arrives (off: they wait quietly in the tray)",
+    )
+    .changed()
+    {
+        act.settings = true;
+    }
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Contacts can see").color(theme::CREAM));
+    if theme::checkbox(ui, &mut s.show_online, "That I'm online").changed() {
+        act.settings = true;
+    }
+    ui.add_space(8.0);
+    theme::note(
+        ui,
+        "Where your avatar is stays per chat and until a time you set, as before. \
+                 Being a contact doesn't show it.",
+    );
+    act.settings
 }
 
 /// Draw `text` as a QR code, `size` points square, on a white card.

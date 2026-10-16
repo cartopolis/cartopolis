@@ -647,124 +647,110 @@ fn badge(ui: &mut egui::Ui, text: &str, tone: egui::Color32) {
         });
 }
 
-// ── The communities band of the chat list ─────────────────────────────────
+// ── The communities in the Community list ─────────────────────────────────
 
-/// What a tap in the list's communities band asked for.
-pub enum ListPick {
-    Open(String),
-    Community(Uuid),
+/// One community as a row of the Community list: one row per community,
+/// whose last line names the topic that spoke last
+/// (`docs/mockups/home-and-profile/v1`, A). It was a row per community with a
+/// row per topic under it, which put the whole membership of every community
+/// on the list.
+pub struct CommunityRow {
+    pub id: Uuid,
+    pub name: String,
+    pub picture: Option<egui::TextureHandle>,
+    /// "# bankjes · Anna: de nieuwe bank staat er", or what the community is
+    /// waiting for.
+    pub preview: String,
+    /// When the line in `preview` was said, for the list's newest-first order.
+    pub at_ms: u64,
+    /// Unread lines in its topics, plus requests to join for a moderator.
+    pub unread: usize,
+    /// Where a tap goes: the only topic you are in, or (`None`) the community.
+    pub open: Option<String>,
 }
 
-/// The communities band of the chat list: each community, and under it the
-/// topics this account is in. `unread` counts a chat's unread lines.
-pub fn list_band(
-    ui: &mut egui::Ui,
+/// Every community this account is in or asked to join, as list rows.
+/// `unread` counts a chat's unread lines.
+pub fn list_rows(
+    ctx: &egui::Context,
     communities: &mut Communities,
     chat: &ChatState,
     unread: &dyn Fn(&str) -> usize,
-) -> Option<ListPick> {
-    if communities.list.is_empty() {
-        return None;
-    }
-    let mut pick = None;
-    theme::section(ui, "Communities");
+) -> Vec<CommunityRow> {
+    let mut out = Vec::new();
     for c in communities.list.clone() {
-        let picture = communities.picture(ui.ctx(), c.settings.picture.as_deref());
-        let sub = match c.role {
-            None => "Waiting for a moderator".to_string(),
-            Some(_) => format!(
-                "{} {} · {} {}",
-                c.members.len(),
-                if c.members.len() == 1 {
-                    "person"
-                } else {
-                    "people"
-                },
-                c.topics.iter().filter(|t| !t.archived).count(),
-                if c.topics.len() == 1 {
-                    "topic"
-                } else {
-                    "topics"
-                },
-            ),
-        };
-        let waiting: usize = c
+        let picture = communities.picture(ctx, c.settings.picture.as_deref());
+        let joined: Vec<_> = c
             .topics
+            .iter()
+            .filter(|t| t.joined && !t.archived)
+            .collect();
+        let waiting: usize = joined
             .iter()
             .map(|t| channel_key(&t.group))
             .filter(|k| !communities.is_muted(k))
             .map(|k| unread(&k))
             .sum::<usize>()
             + c.requests.len();
-        let row = card_row_with(
-            ui,
-            ("band", c.id),
-            &c.settings.name,
-            ChatKind::Community,
-            picture.as_ref(),
-            &sub,
-            if c.role.is_none() {
-                theme::WARN
-            } else {
-                theme::TEXT_DIM
-            },
-            |ui| {
-                if waiting > 0 {
-                    badge(ui, &waiting.to_string(), theme::BRAND);
-                }
-            },
-        );
-        if row.clicked() {
-            pick = Some(ListPick::Community(c.id));
-        }
-        for t in c.topics.iter().filter(|t| t.joined && !t.archived) {
-            let key = channel_key(&t.group);
-            let muted = communities.is_muted(&key);
-            let n = if muted { 0 } else { unread(&key) };
-            let last = chat
-                .channels
-                .iter()
-                .find(|ch| ch.key == key)
-                .and_then(|ch| ch.lines.last())
-                .map(|l| {
-                    if l.removed {
-                        "Message removed by a moderator".to_string()
-                    } else {
-                        format!("{}: {}", l.sender, l.body)
-                    }
-                })
-                .unwrap_or_default();
-            let resp = ui
-                .horizontal(|ui| {
-                    ui.add_space(52.0);
-                    let text = egui::RichText::new(format!("# {}", t.name))
-                        .size(14.5)
-                        .color(if n > 0 { theme::CREAM } else { theme::TEXT });
-                    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if n > 0 {
-                            badge(ui, &n.to_string(), theme::BRAND);
-                        } else if muted {
-                            badge(ui, "Muted", theme::TEXT_DIM);
-                        }
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(last).size(12.0).color(theme::TEXT_DIM),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    r
-                })
-                .inner;
-            if resp.clicked() {
-                pick = Some(ListPick::Open(key));
+        // The topic that spoke last, and what it said.
+        let last = joined
+            .iter()
+            .filter_map(|t| {
+                let key = channel_key(&t.group);
+                let line = chat
+                    .channels
+                    .iter()
+                    .find(|ch| ch.key == key)?
+                    .lines
+                    .iter()
+                    .rev()
+                    .find(|l| !chat.is_blocked(&l.sender))?
+                    .clone();
+                Some((t.name.clone(), line))
+            })
+            .max_by_key(|(_, l)| l.at_ms);
+        let (preview, at_ms) = match (&c.role, last) {
+            (None, _) => ("Waiting for a moderator".to_string(), 0),
+            (Some(_), Some((topic, l))) => {
+                let said = if l.removed {
+                    "Message removed by a moderator".to_string()
+                } else {
+                    format!(
+                        "{}: {}",
+                        l.sender,
+                        crate::systems::private_chat::readable(&l.body)
+                    )
+                };
+                (format!("# {topic} · {said}"), l.at_ms)
             }
-            ui.add_space(4.0);
-        }
-        ui.add_space(4.0);
+            (Some(_), None) => (
+                format!(
+                    "{} {} · {} {}",
+                    c.members.len(),
+                    if c.members.len() == 1 {
+                        "person"
+                    } else {
+                        "people"
+                    },
+                    joined.len(),
+                    if joined.len() == 1 { "topic" } else { "topics" },
+                ),
+                0,
+            ),
+        };
+        let open = (c.role.is_some() && joined.len() == 1 && c.requests.is_empty())
+            .then(|| channel_key(&joined[0].group));
+        out.push(CommunityRow {
+            id: c.id,
+            name: c.settings.name.clone(),
+            picture,
+            preview,
+            at_ms,
+            unread: waiting,
+            open,
+        });
     }
-    pick
+    out
 }
 
 // ── The screens ───────────────────────────────────────────────────────────

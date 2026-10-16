@@ -89,7 +89,10 @@ use crate::systems::cache_reset::CacheReset;
 use crate::systems::icons;
 use crate::systems::theme;
 
-/// Which tab of the Settings panel is showing.
+/// Which page of the Settings panel is showing. Settings is a list of these
+/// (`docs/mockups/home-and-profile/v1`, D): five tabs in a row was more than a
+/// phone's width holds, and the list has room for the two pages that joined —
+/// Privacy and safety, and Access tokens.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsTab {
     #[default]
@@ -104,34 +107,90 @@ pub enum SettingsTab {
     Graphics,
     Audio,
     Account,
+    /// Who may message you, who you blocked, and how to report somebody. The
+    /// block list was at the foot of the chat list until 2026-10-16.
+    Privacy,
+    /// The access tokens a bot or a script signs in with (`access_tokens`).
+    Tokens,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 5] = [
-        Self::General,
-        Self::World,
-        Self::Graphics,
-        Self::Audio,
+    /// Every page, in the list's order: the account's, then the app's. The
+    /// list is drawn from this, so a page left out of it cannot be reached.
+    const ALL: [Self; 7] = [
+        Self::Privacy,
+        Self::Tokens,
         Self::Account,
+        Self::General,
+        Self::Audio,
+        Self::Graphics,
+        Self::World,
     ];
+
+    /// Under "Account" in the list, rather than "App".
+    fn about_the_account(self) -> bool {
+        matches!(self, Self::Privacy | Self::Tokens | Self::Account)
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => icons::SETTINGS,
+            Self::World => icons::CAT_ORBIT,
+            Self::Graphics => icons::PALETTE,
+            Self::Audio => icons::MIC,
+            Self::Account => icons::APPEARANCE,
+            Self::Privacy => icons::LOCK,
+            Self::Tokens => icons::KEY,
+        }
+    }
+
+    /// The line under the page's name in the list.
+    fn hint(self) -> Option<&'static str> {
+        match self {
+            Self::General => Some("Units, navigation, connection"),
+            Self::World => Some("Time of day, weather"),
+            Self::Graphics => None,
+            Self::Audio => Some("Volume, microphone, camera"),
+            Self::Account => None,
+            Self::Privacy => Some("Blocked people, who can message me"),
+            Self::Tokens => Some("For bots and scripts"),
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::World => "World",
             Self::Graphics => "Graphics",
-            // "Audio & video" until the tabs became one segmented row, where
-            // five equal segments leave no room for three words.
-            Self::Audio => "Audio",
+            Self::Audio => "Sound and voice",
             Self::Account => "Account",
+            Self::Privacy => "Privacy and safety",
+            Self::Tokens => "Access tokens",
         }
     }
+}
+
+/// What the Settings panel needs of the people side of the app — the block
+/// list, the request policy, the voice switch, the access tokens — in one
+/// parameter, because the panel's system was already at fifteen of Bevy's
+/// sixteen.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PeopleSettings<'w, 's> {
+    chat: ResMut<'w, crate::systems::chat::ChatState>,
+    contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    voice: ResMut<'w, crate::systems::voice::VoiceState>,
+    tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
+    view: ResMut<'w, crate::systems::chats::ChatsView>,
+    windows: Query<'w, 's, &'static Window>,
 }
 
 /// Panel state, plus the live microphone while a mic test is running.
 #[derive(Resource, Default)]
 pub struct SettingsState {
-    pub tab: SettingsTab,
+    /// The page showing; `None` is the list of them.
+    pub page: Option<SettingsTab>,
+    /// The panel was open last frame, so its closing can be seen.
+    was_open: bool,
     /// `Some` only while the mic test is active — see the module note on why
     /// this is not held open for the process lifetime.
     pub mic: Option<AudioInput>,
@@ -266,7 +325,7 @@ pub fn render_settings_panel(
     #[cfg(feature = "audio")] soundscape: Option<
         Res<crate::systems::player::soundscape::Soundscape>,
     >,
-    windows: Query<&Window>,
+    mut people: PeopleSettings,
     mut commands: Commands,
     mut identity: ResMut<crate::resources::AuthIdentity>,
     online: Option<Res<crate::resources::OnlineSession>>,
@@ -291,7 +350,7 @@ pub fn render_settings_panel(
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
     // sentence without numbers rather than inventing a resolution.
-    let target = windows.iter().next().map(|w| {
+    let target = people.windows.iter().next().map(|w| {
         UVec2::new(
             w.resolution.physical_width(),
             w.resolution.physical_height(),
@@ -326,25 +385,64 @@ pub fn render_settings_panel(
     let observed = weather.latest;
     let mut receiver_edit = receiver.clone();
 
-    crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        RightPanel::Settings,
-        "settings_panel",
-        340.0,
-        |ui| {
-            let tabs = SettingsTab::ALL.map(|t| (t, t.label()));
-            crate::systems::theme::segmented(ui, &mut state.tab, &tabs);
-            ui.add_space(6.0);
+    let mut open = right_panel.is(RightPanel::Settings);
+    let was_open = std::mem::replace(&mut state.was_open, open);
+    if was_open && !open {
+        // Closed: the next time it opens, it opens on the list.
+        state.page = None;
+        people.view.settings_from_you = false;
+        people.tokens.forget();
+    }
+    let signed_in = identity.username.is_some() && online.is_some();
+    let may_elevate = identity
+        .permissions
+        .iter()
+        .filter_map(|s| cartopolis_core::permissions::Permission::from_slug(s))
+        .any(|p| p.elevated());
+    let mut close = false;
+    let mut back_to_you = false;
+    let mut to_about = false;
+    let mut unblock: Option<String> = None;
+    if open {
+        let compact = egui.compact();
+        let viewport_w = egui.viewport_pts().x;
+        crate::systems::egui_manager::responsive_right_panel(
+            "settings_panel",
+            compact,
+            viewport_w,
+            340.0,
+        )
+        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+            // The list's title is the panel's header, with a close button — or,
+            // opened from the You page, a way back there. A page's title leads
+            // back to the list.
+            match state.page {
+                None if people.view.settings_from_you => {
+                    back_to_you = theme::back_title(ui, "Settings");
+                }
+                None => {
+                    close = theme::panel_header(ui, icons::SETTINGS, "Settings");
+                }
+                Some(page) => {
+                    if theme::back_title(ui, page.label()) {
+                        state.page = None;
+                    }
+                }
+            }
 
-            // Every tab is a list that can outgrow a phone's 609 pt of viewport, and
-            // a `Panel` clips rather than scrolls (the Layers panel had lost its last
-            // ten rows to exactly this). The header stays outside, so the close
-            // button cannot scroll away.
+            // Every page is a list that can outgrow a phone's 609 pt of viewport,
+            // and a `Panel` clips rather than scrolls (the Layers panel had lost
+            // its last ten rows to exactly this). The header stays outside, so
+            // the way back cannot scroll away.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| match state.tab {
-                    SettingsTab::General => {
+                .show(ui, |ui| match state.page {
+                    None => {
+                        if let Some(page) = settings_home(ui, &identity, signed_in, &mut to_about) {
+                            state.page = Some(page);
+                        }
+                    }
+                    Some(SettingsTab::General) => {
                         reset_cache = general_tab(
                             ui,
                             &mut edited,
@@ -354,20 +452,62 @@ pub fn render_settings_panel(
                             &mut receiver_edit,
                         );
                     }
-                    SettingsTab::World => {
+                    Some(SettingsTab::World) => {
                         world_tab(ui, &mut world, &mut weather_live, observed);
                     }
-                    SettingsTab::Graphics => {
+                    Some(SettingsTab::Graphics) => {
                         graphics_tab(ui, &mut edited, target, sky.as_deref().copied());
                     }
-                    SettingsTab::Audio => play_tone = audio_tab(ui, &mut state, &mut edited),
-                    SettingsTab::Account => {
+                    Some(SettingsTab::Audio) => {
+                        if signed_in {
+                            section(ui, "Voice");
+                            crate::systems::chat::voice_row(ui, &mut people.voice);
+                        }
+                        play_tone = audio_tab(ui, &mut state, &mut edited);
+                    }
+                    Some(SettingsTab::Account) => {
                         delete_account =
                             account_tab(ui, &mut state, &mut identity, online.is_some());
                     }
+                    Some(SettingsTab::Privacy) => {
+                        unblock = privacy_tab(ui, &mut people, signed_in);
+                    }
+                    Some(SettingsTab::Tokens) => {
+                        if signed_in || people.tokens.demo {
+                            crate::systems::access_tokens::page(
+                                ui,
+                                &mut people.tokens,
+                                may_elevate,
+                            );
+                        } else {
+                            theme::note(ui, "Sign in to make or revoke access tokens.");
+                        }
+                    }
                 });
-        },
-    );
+        });
+    }
+    if close || !open {
+        if right_panel.is(RightPanel::Settings) {
+            *right_panel = RightPanel::None;
+        }
+    }
+    if back_to_you {
+        people.view.you = true;
+        *right_panel = RightPanel::Chat;
+    }
+    if to_about {
+        *right_panel = RightPanel::About;
+    }
+    if let (Some(username), Some(online)) = (unblock, online.as_deref()) {
+        online.send(
+            "set blocked",
+            cartopolis_core::NetMessage::SetBlocked {
+                request_id: 0,
+                username,
+                blocked: false,
+            },
+        );
+    }
 
     if edited != *prefs {
         *prefs = edited;
@@ -388,7 +528,7 @@ pub fn render_settings_panel(
     }
     // The camera likewise, and on leaving the tab too: a camera light that
     // stays on behind another screen is the same problem, more visible.
-    if (!right_panel.is(RightPanel::Settings) || state.tab != SettingsTab::Audio)
+    if (!right_panel.is(RightPanel::Settings) || state.page != Some(SettingsTab::Audio))
         && state.camera_running()
     {
         state.stop_camera();
@@ -435,6 +575,107 @@ pub fn render_settings_panel(
     {
         let _ = (play_tone, &mut commands);
     }
+}
+
+/// The Settings list (`docs/mockups/home-and-profile/v1`, D): the account's
+/// pages, then the app's. Answers the page picked.
+fn settings_home(
+    ui: &mut egui::Ui,
+    identity: &crate::resources::AuthIdentity,
+    signed_in: bool,
+    to_about: &mut bool,
+) -> Option<SettingsTab> {
+    let mut picked = None;
+    let who = identity.username.as_deref().map_or_else(
+        || "Not signed in".to_string(),
+        |u| format!("Signed in as {u}"),
+    );
+    for account in [true, false] {
+        section(ui, if account { "Account" } else { "App" });
+        theme::list_group(ui, |ui| {
+            for page in SettingsTab::ALL
+                .into_iter()
+                .filter(|p| p.about_the_account() == account)
+            {
+                // Tokens are made and revoked over a session.
+                if page == SettingsTab::Tokens && !signed_in {
+                    continue;
+                }
+                let hint = if page == SettingsTab::Account {
+                    Some(who.as_str())
+                } else {
+                    page.hint()
+                };
+                if theme::list_row(
+                    ui,
+                    page.icon(),
+                    page.label(),
+                    hint,
+                    theme::RowEnd::Chevron,
+                    theme::ACCENT,
+                )
+                .clicked()
+                {
+                    picked = Some(page);
+                }
+            }
+            if !account
+                && theme::list_row(
+                    ui,
+                    icons::ABOUT,
+                    "About",
+                    None,
+                    theme::RowEnd::Chevron,
+                    theme::ACCENT,
+                )
+                .clicked()
+            {
+                *to_about = true;
+            }
+        });
+    }
+    picked
+}
+
+/// Privacy and safety: who may message you, who you blocked, and how to
+/// report somebody. Answers a person to unblock.
+fn privacy_tab(ui: &mut egui::Ui, people: &mut PeopleSettings, signed_in: bool) -> Option<String> {
+    let mut unblock = None;
+    if signed_in {
+        if crate::systems::contacts::privacy_body(ui, &mut people.contacts) {
+            people.contacts.push_settings(false);
+        }
+        section(ui, "Blocked");
+        if people.chat.blocked.is_empty() {
+            theme::note(ui, "You have not blocked anyone.");
+        } else {
+            theme::list_group(ui, |ui| {
+                for name in people.chat.blocked.clone() {
+                    if theme::list_row(
+                        ui,
+                        icons::APPEARANCE,
+                        &name,
+                        None,
+                        theme::RowEnd::Word("Unblock"),
+                        theme::ACCENT,
+                    )
+                    .clicked()
+                    {
+                        unblock = Some(name);
+                    }
+                }
+            });
+        }
+        ui.add_space(8.0);
+    } else {
+        theme::note(
+            ui,
+            "Signed out, nobody can message you and there is nobody to block.",
+        );
+    }
+    ui.separator();
+    safety_section(ui);
+    unblock
 }
 
 /// A section title. Delegates to `theme::section`, which is where this idiom
@@ -549,10 +790,10 @@ fn pending(ui: &mut egui::Ui, text: &str) {
 /// and fails the person using it.
 pub const SAFETY_CONTACT: &str = "safety@cartopolis.org";
 
-/// The safety summary shown in About and in the Account tab.
+/// The safety summary shown in About and on the Privacy and safety page.
 ///
-/// Both places, deliberately. About is where a reviewer looks; the Account tab is
-/// where a person who has just been harassed looks.
+/// Both places, deliberately. About is where a reviewer looks; Privacy and
+/// safety is where a person who has just been harassed looks.
 fn safety_section(ui: &mut egui::Ui) {
     ui.label(egui::RichText::new("Safety").strong().color(theme::CREAM));
     ui.add(
@@ -581,7 +822,7 @@ fn safety_section(ui: &mut egui::Ui) {
     });
 }
 
-/// Account: who you are signed in as, the safety summary, and the way out.
+/// Account: who you are signed in as, and the way out.
 ///
 /// Returns `true` when a confirmed deletion should be sent.
 ///
@@ -630,8 +871,6 @@ fn account_tab(
     }
 
     ui.add_space(8.0);
-    ui.separator();
-    safety_section(ui);
     ui.separator();
     ui.add_space(8.0);
 
@@ -2492,6 +2731,8 @@ mod tests {
             SettingsTab::Graphics,
             SettingsTab::Audio,
             SettingsTab::Account,
+            SettingsTab::Privacy,
+            SettingsTab::Tokens,
         ] {
             assert!(SettingsTab::ALL.contains(&tab), "{tab:?} is not in ALL");
             assert!(!tab.label().is_empty());

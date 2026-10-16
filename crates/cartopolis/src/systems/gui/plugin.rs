@@ -61,7 +61,9 @@ impl Plugin for GuiPlugin {
             // splash in index.html, which covers the wasm load this cannot.
             .init_resource::<systems::splash::BootSplash>()
             .init_resource::<systems::chats::ScreenRestore>()
-            .init_resource::<systems::field_check::FieldCheck>();
+            .init_resource::<systems::field_check::FieldCheck>()
+            .init_resource::<systems::admin::AdminState>()
+            .init_resource::<systems::access_tokens::AccessTokens>();
 
         // The field check (`systems::field_check`): the camera drives the world
         // camera after any teleport has landed and before the camera system reads
@@ -88,6 +90,7 @@ impl Plugin for GuiPlugin {
             (
                 systems::chats::restore_screen,
                 systems::chats::remember_screen,
+                systems::chats::apply_sign_out,
                 systems::communities::sync_device,
                 // Public posts' answers, and the camera's view for the one
                 // being written.
@@ -306,6 +309,9 @@ impl Plugin for GuiPlugin {
                     // (`systems::chats`). Its World view and the Chats | World
                     // switch are drawn over the map, after the composer below.
                     systems::chats::render_chats_panel,
+                    // The switch's Admin side (`systems::admin`), in the same
+                    // right-hand slot as the Community panel.
+                    systems::admin::render_admin_panel,
                     systems::script_editor::render_script_panel,
                     systems::model_library::render_model_library_panel,
                     systems::ui::render_avatar_chooser,

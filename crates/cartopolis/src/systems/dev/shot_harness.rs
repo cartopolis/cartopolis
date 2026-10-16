@@ -2103,6 +2103,11 @@ pub struct ScriptedCards<'w, 's> {
     /// Nested rather than added beside: the ceiling this type exists to work
     /// around is a *parameter* count, so a second bundle would hit it again.
     chat: ScriptedChat<'w, 's>,
+    /// The Admin pages (`--ui admin` / `adminreports` / `adminreport` /
+    /// `adminaccount`).
+    admin: ResMut<'w, crate::systems::admin::AdminState>,
+    /// Settings ▸ Access tokens (`--ui tokens`).
+    tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
 }
 
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
@@ -2192,6 +2197,15 @@ const UI_ELEMENTS: &[&str] = &[
     "chatthread",
     "chatworld",
     "chatswitch",
+    // The You page, Settings' pages and the switch's Admin side
+    // (`docs/mockups/home-and-profile`).
+    "you",
+    "tokens",
+    "safety",
+    "admin",
+    "adminreports",
+    "adminreport",
+    "adminaccount",
     "contacts",
     "requests",
     "request",
@@ -2331,7 +2345,13 @@ pub fn open_scripted_ui(
         // `avatar.open` bool above is what the HUD reads, not the panel, so
         // `--ui avatar` opened nothing at all until this arm existed.
         crate::resources::RightPanel::Appearance
-    } else if want("settings") || want("graphics") || want("world") || want("audio") {
+    } else if want("settings")
+        || want("graphics")
+        || want("world")
+        || want("audio")
+        || want("tokens")
+        || want("safety")
+    {
         // `--ui graphics` opens Settings on the Graphics tab, `--ui world` on the
         // World tab. A tab is not reachable by opening the panel alone, so naming
         // the panel would capture whichever tab was last selected — which for a
@@ -2345,14 +2365,21 @@ pub fn open_scripted_ui(
             cards.settings.start_camera();
             cards.settings.demo_level = Some((0.62, 0.81));
         }
-        cards.settings.tab = if want("audio") {
-            crate::systems::settings::SettingsTab::Audio
+        // `--ui settings` is the list of pages; the others open one of them.
+        use crate::systems::settings::SettingsTab;
+        cards.settings.page = if want("audio") {
+            Some(SettingsTab::Audio)
         } else if want("graphics") {
-            crate::systems::settings::SettingsTab::Graphics
+            Some(SettingsTab::Graphics)
         } else if want("world") {
-            crate::systems::settings::SettingsTab::World
+            Some(SettingsTab::World)
+        } else if want("tokens") {
+            crate::systems::access_tokens::seed_demo(&mut cards.tokens);
+            Some(SettingsTab::Tokens)
+        } else if want("safety") {
+            Some(SettingsTab::Privacy)
         } else {
-            crate::systems::settings::SettingsTab::General
+            None
         };
         crate::resources::RightPanel::Settings
     } else {
@@ -2380,7 +2407,14 @@ pub fn open_scripted_ui(
         Some("find")
     } else if want("newchat") {
         Some("new")
-    } else if want("chats") || want("communities") {
+    } else if want("chats")
+        || want("communities")
+        || want("you")
+        || want("admin")
+        || want("adminreports")
+        || want("adminreport")
+        || want("adminaccount")
+    {
         Some("list")
     } else {
         None
@@ -2428,6 +2462,20 @@ pub fn open_scripted_ui(
                 cards.chat.contacts.whereabouts.clear();
             }
         }
+    }
+    // The You page, over the demo chats and contacts.
+    cards.chat.chats.you = want("you");
+    // The Admin side: stand-in reports, accounts, roles and claims.
+    let admin_screen = ["adminreports", "adminreport", "adminaccount", "admin"]
+        .into_iter()
+        .find(|k| want(k));
+    match admin_screen {
+        Some(screen) => {
+            crate::systems::admin::seed_demo(&mut cards.admin, screen);
+            *right_panel = crate::resources::RightPanel::Admin;
+        }
+        None if cards.admin.demo => *cards.admin = default(),
+        None => {}
     }
     // The call screens (`systems::call_screen`): a call ringing, a voice call, a
     // video call, a group, and a call folded to its bar — seeded, since a
@@ -2483,6 +2531,10 @@ pub fn open_scripted_ui(
                 cards.chat.chats.sub = None;
             }
         }
+    }
+    // The You page counts contacts and requests, so it wants them seeded.
+    if want("you") {
+        crate::systems::contacts::seed_demo(&mut cards.chat.contacts, &mut cards.chat.state);
     }
     if panels.is_empty() {
         return;
