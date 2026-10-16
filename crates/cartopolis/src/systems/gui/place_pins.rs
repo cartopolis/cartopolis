@@ -156,6 +156,9 @@ pub fn render_place_pins(
     local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
     // A community's public posts, when its page asked for them on the map.
     mut communities: ResMut<crate::systems::communities::Communities>,
+    // Your own name, for the marker over your own avatar. The sixteenth
+    // parameter, which is Bevy's cap: the next one needs a `SystemParam`.
+    identity: Option<Res<crate::resources::AuthIdentity>>,
 ) {
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
@@ -190,12 +193,18 @@ pub fn render_place_pins(
         .world
         .clone()
         .filter(|k| crate::systems::chat::ChatState::is_private(k));
+    // Signed in with an avatar on the map: you are one of the people on it.
+    let me = identity
+        .as_ref()
+        .and_then(|i| i.username.clone())
+        .filter(|_| !local.is_empty());
     if store.data.bookmarks.is_empty()
         && chat_points.is_empty()
         && post_points.is_empty()
         && people.is_empty()
         && chat_world.is_none()
         && contacts.whereabouts.is_empty()
+        && me.is_none()
     {
         return;
     }
@@ -386,7 +395,7 @@ pub fn render_place_pins(
     // With no chat's view open, `whereabouts` is every contact the Friends
     // layer asked after, drawn the same way without the balloons: there is no
     // conversation for them to come from.
-    if chat_world.is_some() || !contacts.whereabouts.is_empty() {
+    if chat_world.is_some() || !contacts.whereabouts.is_empty() || me.is_some() {
         let key = chat_world.unwrap_or_default();
         let now = chat.clock;
         // Over the head on the flat map; from orbit a head is not a distance.
@@ -432,17 +441,33 @@ pub fn render_place_pins(
                 balloons.push((w.username.clone(), over, text, alpha, false));
             }
         }
-        // Your own last line, over your own avatar, which has no marker: it is
-        // the one person on the map you do not need to find.
-        if let (false, Some((text, alpha)), Ok((cell, tf))) = (
-            in_space,
-            chat_people::latest_mine(&chat, &key),
-            local.single(),
-        ) {
-            let foot = anchored_position_f64(cell, tf.translation) - cam_world;
-            if let Ok(screen) = cam.world_to_viewport(&cam_view, (foot + head_up).as_vec3()) {
-                let over = to_ui(screen);
-                if map_rect.contains(over) {
+        // You, over your own avatar and with your own last line over that:
+        // from a city's height your avatar is a speck, and the map showed
+        // everybody but the person holding it. Placed from this client's own
+        // avatar, which is exact; from orbit through its latitude and
+        // longitude, as everybody else is.
+        if let (Some(name), Ok((cell, tf))) = (&me, local.single()) {
+            let abs = anchored_position_f64(cell, tf.translation);
+            let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(anchor, abs.x, abs.z);
+            let foot = if in_space {
+                place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)
+            } else {
+                Some(abs - cam_world)
+            };
+            let tip = foot
+                .and_then(|foot| {
+                    cam.world_to_viewport(&cam_view, (foot + head_up).as_vec3())
+                        .ok()
+                })
+                .map(to_ui)
+                .filter(|tip| map_rect.contains(*tip));
+            if let Some(tip) = tip {
+                drawn += 1;
+                if chat_people::marker(&ctx, map_rect, tip, name, chat_people::MarkerKind::Avatar) {
+                    jump = Some((Teleport::geo(lat, lng, None), name.clone()));
+                }
+                if let Some((text, alpha)) = chat_people::latest_mine(&chat, &key) {
+                    let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
                     balloons.push((String::new(), over, text, alpha, true));
                 }
             }
