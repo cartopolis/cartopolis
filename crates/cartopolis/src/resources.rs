@@ -685,13 +685,22 @@ impl AppPrefs {
     /// something the run cannot produce is answered honestly, the way
     /// `SkyPreference::Full` still has to pass the atmosphere's own capability
     /// test.
+    ///
+    /// One judgement *is* made for `None`, and only for `None`: a main pass too
+    /// large to march (`light_shafts::AUTO_MAX_PIXELS`) leaves them off, because
+    /// on a Retina panel they were two thirds of the frame. That is a matter of
+    /// degree, so an explicit `Some(true)` overrides it.
     #[must_use]
     pub fn light_shafts_on(&self) -> bool {
         let Some(caps) = crate::quality::capabilities() else {
             return false;
         };
         let possible = !caps.software_renderer && self.shadows_on();
-        self.light_shafts.unwrap_or(possible) && possible
+        let automatic = possible
+            && crate::systems::light_shafts::affordable_at(
+                crate::systems::render_scale::main_pass_pixels(),
+            );
+        self.light_shafts.unwrap_or(automatic) && possible
     }
 
     /// Sun rays, with `None` resolved against the adapter.

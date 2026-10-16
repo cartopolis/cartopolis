@@ -89,6 +89,28 @@ pub struct ShaftVolume;
 /// count has to grow with it.
 const VOLUME_EDGE_M: f32 = 600.0;
 
+/// Main-pass pixels above which "Automatic" leaves the shafts off.
+///
+/// Bevy's march runs at full main-pass resolution, `MARCH_STEPS` shadow-map
+/// samples per pixel, with no reduced-resolution option — so its cost is pixels
+/// times steps and nothing else. Measured 2026-10-15 on an M5 Pro over Groningen
+/// at street level (`--shot --hide-ui --time 12 --clouds 0 --rain 0`, two runs
+/// each): 38 ms a frame with the shafts at 3134×1952, a MacBook's Retina panel,
+/// against 12.5 ms without — ~4 ms per megapixel. 4 MP keeps them on at 1440p
+/// and below, where they cost what they were judged worth, and drops them on
+/// Retina and 4K, where they were most of the frame. A person who asks for them
+/// in Settings still gets them; this only decides what nobody asked about.
+pub const AUTO_MAX_PIXELS: u64 = 4_000_000;
+
+/// Whether "Automatic" can afford the shafts at a main pass of `pixels`.
+///
+/// 0 — the camera has no target yet — answers yes, so the first frames of a
+/// small window are not drawn without them only to have them appear.
+#[must_use]
+pub fn affordable_at(pixels: u64) -> bool {
+    pixels <= AUTO_MAX_PIXELS
+}
+
 /// How much light the medium takes out of a ray per metre per unit of density:
 /// the `absorption + scattering` sum the march multiplies by. Written once here
 /// so [`density_for`] and [`spawn_volume`] cannot drift apart about it.
@@ -260,6 +282,16 @@ mod tests {
             per_sample <= 15.0,
             "{VOLUME_EDGE_M} m over {steps} steps is {per_sample} m per sample"
         );
+    }
+
+    /// Retina and 4K lose the shafts on Automatic; 1080p and 1440p keep them.
+    #[test]
+    fn automatic_drops_the_shafts_only_on_a_large_main_pass() {
+        assert!(affordable_at(0));
+        assert!(affordable_at(1920 * 1080));
+        assert!(affordable_at(2560 * 1440));
+        assert!(!affordable_at(3134 * 1952));
+        assert!(!affordable_at(3840 * 2160));
     }
 
     /// Rain must not make the air *clearer*, which is the sign error this

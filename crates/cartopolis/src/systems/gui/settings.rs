@@ -1612,7 +1612,10 @@ fn graphics_tab(
     let caps = crate::quality::capabilities();
     let shafts_possible_adapter = caps.is_some_and(|caps| !caps.software_renderer);
     let shadows_now = prefs.shadows_on();
-    let prefs_shafts_default = shafts_possible_adapter && shadows_now;
+    let shafts_affordable = crate::systems::light_shafts::affordable_at(
+        crate::systems::render_scale::main_pass_pixels(),
+    );
+    let prefs_shafts_default = shafts_possible_adapter && shadows_now && shafts_affordable;
 
     ui.add_space(6.0);
     // Two things can hold this one down, so they are reported separately rather
@@ -1661,6 +1664,11 @@ fn graphics_tab(
         } else if !shadows_now {
             "Needs shadows: without a shadow map there is nothing to cut a shaft \
              out of, and the effect is a flat wash."
+        } else if !shafts_affordable {
+            "Sunlight picked out by the air, in the volume around you. Automatic \
+             leaves it off at this resolution: the ray march runs once per pixel, \
+             and on a screen this sharp it costs more than the rest of the frame. \
+             Lowering the render scale brings it back. Applies immediately."
         } else {
             "Sunlight picked out by the air, in the volume around you. The most \
              expensive setting here — a ray march that samples the sun's shadows \
