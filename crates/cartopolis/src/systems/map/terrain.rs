@@ -123,6 +123,18 @@ pub const FINE_SAMPLE_M: f32 = FINE_HALF_M * 2.0 / (FINE_GRID as f32 - 1.0);
 /// asks for nothing and walking back onto a box re-uses it.
 const FINE_RECENTRE_M: f32 = 96.0;
 
+/// Camera altitude above which the fine tier stops following and keeps the box it
+/// has.
+///
+/// Half-metre ground is below a pixel from here: at 800 m a 45° lens over 1080 rows
+/// puts ~0.6 m in a pixel at nadir, and every other point in view is further away.
+/// Following anyway is a 4 MB patch, a worker bake, a 2 MB slope upload and a
+/// rewrite of every ground material's uniform per [`FINE_RECENTRE_M`] crossed —
+/// and a rotate-drag in Earth mode swings the camera round a kilometre-wide circle,
+/// so it crossed one every few frames of the turn (`cargo perf`'s `earth`
+/// scenario, 2026-10-16). The first box is still baked wherever the camera starts.
+const FINE_FREEZE_ALT: f32 = 800.0;
+
 /// Width of the ring, in world metres, over which the fine tier fades into the coarse
 /// field at its own boundary.
 ///
@@ -2713,7 +2725,8 @@ pub fn update_fine_terrain(
     // Freeze from orbit, like every other streamer. Half-metre ground is not a question
     // anything on screen can express from 60 km up, and the camera up there would drag
     // the box across a continent.
-    if globe.altitude_m(cell, tf) as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
+    let altitude = globe.altitude_m(cell, tf) as f32;
+    if altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
     let cam = anchored_xz(cell, tf.translation);
@@ -2730,6 +2743,11 @@ pub fn update_fine_terrain(
     let gen = stream.anchor_generation;
     if field.fine_gen.is_some_and(|g| g != gen) || field.fine_job.is_some_and(|(_, g)| g != gen) {
         field.clear_fine();
+    }
+    // After the generation check, so a re-anchor up here still clears a box counted
+    // from the old origin — and the cleared tier then bakes its first box again.
+    if altitude > FINE_FREEZE_ALT && (field.fine_wanted.is_some() || field.fine_job.is_some()) {
+        return;
     }
     let snap = |v: f32| (v / FINE_RECENTRE_M).round() * FINE_RECENTRE_M;
     let want = Vec2::new(snap(cam.x), snap(cam.y));
