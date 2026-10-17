@@ -3138,7 +3138,11 @@ pub fn place_camera(
         // `altitude`, so this only needs to be non-zero.
         orbit_distance: shot.alt,
         orbit_yaw: shot.yaw_deg.to_radians(),
-        orbit_pitch: 1.55,
+        // Earth mode's elevation above the ground, from `--look`'s pitch below the
+        // horizon. It was a constant 1.55 — straight down — so no capture could
+        // frame the oblique view the app opens on; the clamp is `apply_teleport`'s,
+        // and keeps `--look=-90` exactly where the constant was.
+        orbit_pitch: (-shot.pitch_deg).to_radians().clamp(0.12, 1.55),
     };
     nav.pending_teleport = Some(Teleport {
         lat: shot.lat,
