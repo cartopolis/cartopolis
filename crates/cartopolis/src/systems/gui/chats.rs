@@ -1600,6 +1600,15 @@ fn new_sheet(
                     .max_rect(room)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
                 |ui| {
+                    // Taps on the sheet itself stay on it. Registered before
+                    // the rows, because egui hands a tap to the last widget
+                    // under it: registered after, this took every tap and no
+                    // choice on the sheet could be picked.
+                    let _ = ui.interact(
+                        room,
+                        egui::Id::new("chats_new_sheet_body"),
+                        egui::Sense::click(),
+                    );
                     let sheet = egui::Frame::NONE
                         .fill(theme::SURFACE)
                         .stroke(egui::Stroke::new(1.0, GLINE))
@@ -1631,8 +1640,6 @@ fn new_sheet(
                             );
                             new_sheet_body(ui, chat, kind, act);
                         });
-                    // Taps on the sheet itself stay on it.
-                    let _ = sheet.response.interact(egui::Sense::click());
                     let h = sheet.response.rect.height();
                     ui.ctx().data_mut(|d| d.insert_temp(height_id, h));
                 },
@@ -4250,6 +4257,55 @@ mod tests {
         assert_eq!(view.unread(&chat, "dm:ab", &lines), 2);
         view.seen.insert("dm:ab".into(), 2);
         assert_eq!(view.unread(&chat, "dm:ab", &lines), 1);
+    }
+
+    /// The "+" sheet's choices take a tap. A click-catcher laid over the
+    /// whole sheet after its rows once swallowed every one, so the sheet
+    /// opened and nothing on it could be picked.
+    #[test]
+    fn a_tap_on_the_new_sheet_picks_a_choice() {
+        use crate::systems::egui_manager::UnpaintedPasses as _;
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 720.0));
+        let frame = |kind: &mut NewKind, events: Vec<egui::Event>| {
+            let mut act = Actions::default();
+            let mut chat = ChatState::default();
+            let _ = ctx.run_ui_unpainted(
+                egui::RawInput {
+                    screen_rect: Some(panel),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    new_sheet(ui.ctx(), panel, 0.0, &mut chat, kind, &mut act);
+                },
+            );
+            act
+        };
+        // Two frames: the sheet sits at the height it measured last frame.
+        let mut kind = NewKind::Choose;
+        frame(&mut kind, Vec::new());
+        frame(&mut kind, Vec::new());
+        let height: f32 = ctx
+            .data(|d| d.get_temp(egui::Id::new("chats_new_sheet_height")))
+            .unwrap();
+        // Sweep taps down the sheet; the first choice under one is "Message
+        // a person".
+        let mut y = panel.bottom() - height;
+        while y < panel.bottom() && kind == NewKind::Choose {
+            let at = egui::pos2(panel.center().x, y);
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            frame(&mut kind, vec![egui::Event::PointerMoved(at), button(true)]);
+            frame(&mut kind, vec![button(false)]);
+            y += 4.0;
+        }
+        assert_eq!(kind, NewKind::Person, "no tap on the sheet picked a choice");
     }
 
     /// A private line is sealed by `private_chat`; it must never leave as a
