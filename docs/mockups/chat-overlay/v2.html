@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat over the map, v2</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+    <symbol id="micoff" viewBox="0 0 24 24"><path d="M9 9v2a3 3 0 0 0 5.1 2.1M15 9.3V6a3 3 0 0 0-5.7-1.3"/><path d="M5.5 11a6.5 6.5 0 0 0 10.6 5M18.5 11c0 .8-.1 1.5-.4 2.2M12 17.5V21M4 4l16 16"/></symbol>
+    <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="shout" viewBox="0 0 24 24"><path d="M3.5 10.5l16-5v13l-16-5z"/><path d="M11 15.8a3 3 0 1 1-5.6-1.7"/></symbol>
+    <symbol id="vol" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="voloff" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5.5h16v10.5H9.5L5 19.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/></symbol>
+    <symbol id="plane" viewBox="0 0 24 24"><path d="M10.5 4.5a1.5 1.5 0 0 1 3 0V10l7 4v2l-7-2v4l2 1.5V21L12 20l-3.5 1v-1.5l2-1.5v-4l-7 2v-2l7-4z"/></symbol>
+    <symbol id="bm" viewBox="0 0 24 24"><path d="M6.5 3.5h11v17L12 16.5l-5.5 4z"/></symbol>
+    <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 12.5l8.5 4.5 8.5-4.5"/></symbol>
+    <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></symbol>
+    <symbol id="nav" viewBox="0 0 24 24"><path d="M12 3l7 18-7-4.5L5 21z"/></symbol>
+    <symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4.5M5 4.5h11l-2 4 2 4H5"/></symbol>
+    <symbol id="block" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+    <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <!-- a standing avatar, roughly a Quaternius figure from behind; the shirt is currentColor -->
+    <symbol id="fig" viewBox="0 0 40 92">
+      <ellipse cx="20" cy="89" rx="13" ry="3" fill="rgba(0,0,0,.35)"/>
+      <rect x="10" y="50" width="9" height="38" rx="4" fill="#2b333a"/>
+      <rect x="21" y="50" width="9" height="38" rx="4" fill="#2b333a"/>
+      <rect x="6.5" y="21" width="27" height="35" rx="9" fill="currentColor"/>
+      <rect x="2.5" y="24" width="6.5" height="26" rx="3.2" fill="currentColor"/>
+      <rect x="31" y="24" width="6.5" height="26" rx="3.2" fill="currentColor"/>
+      <circle cx="20" cy="11.5" r="9.5" fill="#d9a983"/>
+      <path d="M10.5 10a9.5 9.5 0 0 1 19 0c-3-2.5-16-2.5-19 0z" fill="#3a2a22"/>
+    </symbol>
+  </defs>
+</svg>
+
+<h1>Chat over the map: <b>thirty seconds on screen, a day on the server</b></h1>
+<p class="lede">
+  A proposal for the chat overlay (<code style="font:13px ui-monospace,Menlo,monospace;color:var(--text)">systems::chat_overlay</code>).
+  It changes three things. Here and Everyone stop being an archive: a line is on the map for
+  thirty seconds and in the Community thread for a day, then it is deleted, on the server too.
+  The overlay becomes one quiet column with the composer under it. And voice moves out of
+  ☰&nbsp;▸&nbsp;Chat into the chat itself.
+  Private chats keep their own rules. Only how a new private message is announced over the map changes.
+  Marked <span class="new">NEW</span> where it does not exist in the app today.
+</p>
+<p class="lede" style="margin-top:-16px"><b style="color:var(--brand);font-weight:600">v2, 2026-10-17.</b>
+  The action buttons stay centred along the bottom, as in the app. Nothing is pinned to the window's
+  right edge, where every panel opens. The private notice goes under the Community | World switch at
+  the top, and section 1b shows the screen with a panel open. The list is called Community, as the app
+  has called it since 2026-10-16.</p>
+
+<div class="principles">
+  <div><h3>Public chat is a conversation</h3><p>Here and Everyone keep <i>one day</i>, on the server and on the device. Sign-in replays only that day. Today the server keeps Everyone forever and replays the last 50 lines.</p></div>
+  <div><h3>The map shows the last 30 seconds</h3><p>A line holds for 25 s and fades over 5. Lines replayed at sign-in are <i>never</i> drawn over the map, including while you write. They are in Community.</p></div>
+  <div><h3>Private stays out of the public column</h3><p>A 🔒 line is never mixed into Here and Everyone over the map. It comes as one notice, under the Community | World switch it belongs to, and leaves after 30 s.</p></div>
+  <div><h3>Voice is where you talk</h3><p>A mic disc beside the chat disc, a mic in the composer when the field is empty, a badge over whoever is speaking, and the mode is one tap away.</p></div>
+</div>
+
+<!-- ───────────────────────────── 0. today ───────────────────────────── -->
+<section class="sec">
+  <h2><span>0</span>Today</h2>
+  <p class="cap">The screenshot from 2026-10-17, with the composer open. The lines are from yesterday and earlier.</p>
+  <div class="row">
+    <div class="today">
+      <img src="today.png" alt="today">
+      <div class="pin-n" style="left:392px;top:272px">1</div>
+      <div class="pin-n" style="left:384px;top:390px">2</div>
+      <div class="pin-n" style="left:250px;top:520px">3</div>
+      <div class="pin-n" style="left:414px;top:640px">4</div>
+      <div class="pin-n" style="left:748px;top:640px">5</div>
+      <div class="pin-n" style="left:740px;top:690px">6</div>
+    </div>
+    <div class="notes">
+      <ol class="problems">
+        <li><b>Yesterday's lines, because the composer is open.</b>
+          While composing, the transcript's window is <code>f64::INFINITY</code>. That includes the
+          50 Everyone lines the server replays at every sign-in (<code>CHAT_REPLAY</code>), which have
+          <code>arrived = −∞</code> so they don't pop up at rest, but pass an infinite window.
+          The server never deletes from <code>chat_messages</code>.</li>
+        <li><b>Private lines in the public column.</b> Your own lines to viberfox, from a 🔒 chat,
+          land in the same stream as Here and Everyone as <code>[🔒 viberfox] jeroen:</code>: the chat's
+          name in brackets, and you by username rather than “You”. It is drawn over the map, where anyone near your
+          screen reads it.</li>
+        <li><b>A chip per line.</b> Eight boxes with a ragged right edge. Each wraps on its own,
+          and the type is as large as a panel heading. From a distance it reads as a stack of
+          notifications, not a conversation.</li>
+        <li><b>“Local” here, “Here” in Community.</b> One chat has two names. Shout is a second chip
+          beside it, and the scope chip also cycles through private chats, so the column above
+          and the field below can be about different chats.</li>
+        <li><b>The composer runs off the window.</b> The field ends at the right edge with no
+          Send and no ✕ in view.</li>
+        <li><b>No voice in sight.</b> Off / Hold / Open mic is in ☰ ▸ Chat (<code>chat::voice_row</code>).
+          Nothing on the map says who is talking or that your microphone is armed.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 1. at rest ───────────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>At rest: the last thirty seconds</h2>
+  <p class="cap">Nobody is typing. The column shows what was said in the last 30 seconds and does not take taps (as today). With nothing new, it is gone.</p>
+  <div class="row">
+    <div class="desk">
+      <div class="bar"><i></i><i></i><i></i>Cartopolis</div>
+      <div class="world dim">
+        <div class="osd-left">
+          <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          <div class="disc"><svg class="i f"><use href="#nav"/></svg></div>
+        </div>
+        <div class="switch c">
+          <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+          <div class="on"><span class="dot"></span>World</div>
+        </div>
+
+        <div class="notice" style="top:62px;left:50%;transform:translateX(-50%)">
+          <div class="av bg5">M<span class="lk"><svg class="i xs"><use href="#lock"/></svg></span></div>
+          <div class="t"><b>Marit <small>private · now</small></b><p>i am at the gorechtkade, can you join me?</p></div>
+          <div class="btn">Reply</div>
+          <div class="life"></div>
+        </div>
+
+        <div class="fig" style="left:470px;top:452px;color:#6c5aa8"><svg width="26" height="60"><use href="#fig"/></svg></div>
+        <div class="vb" style="left:470px;top:384px"><span class="bars"><i></i><i></i><i></i><i></i></span>Bram</div>
+
+        <div class="fig" style="left:300px;top:492px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+        <div class="bub" style="left:300px;top:404px"><b class="c2">Wieke</b>Are you coming down to the Vismarkt?</div>
+
+        <div class="fig" style="left:800px;top:640px;color:#C06630"><svg width="42" height="96"><use href="#fig"/></svg></div>
+
+        <div class="tx" style="left:16px;bottom:76px;width:340px">
+          <div class="ln f1"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who c2">Wieke</span><span class="body">Are you coming down to the Vismarkt?</span></div></div>
+          <div class="ln f2"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+          <div class="ln mine"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who">You</span><span class="body">On my way</span></div></div>
+        </div>
+        <div class="scalebar">10 m<i></i></div>
+
+        <div class="dock c">
+          <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#mic"/></svg><span class="caret"><svg class="i xs"><use href="#up"/></svg></span></div>
+          <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#bm"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>The column <span class="new">NEW</span></h3>
+      <ul>
+        <li><b>One glass card</b>, fixed width, lines wrapping inside it. It replaces a <code>chip_frame</code> per line.
+          Type at the body size, not the heading size.</li>
+        <li><b>The scope is an icon, not a prefix:</b> a pin for Here, a globe in the
+          <i style="color:var(--public);font-style:normal">public</i> tone for Everyone. <code>[Global]</code> goes away.</li>
+        <li><b>A colour per person</b>, from the same six tones as their disc in Community, so a
+          name in the column and a disc in the list look like one person. Your own lines are “You” in cream, body dimmed.</li>
+        <li><b>30 seconds</b>: hold 25 s, fade 5 s (today 10 + 4), oldest line first.
+          At most four lines. <code>HOLD_SECS</code>, <code>FADE_SECS</code>.</li>
+      </ul>
+      <h3>Over heads</h3>
+      <ul>
+        <li><b>Speech bubble</b> <span class="has">EXISTS</span>: a Here line over the person
+          who said it. It is restyled to the column's glass and takes their name colour.</li>
+        <li><b>Voice badge</b> <span class="new">NEW</span>: bars and a name over whoever is
+          audible. <code>VoiceState::speakers</code> is keyed by <code>sender_id</code>, which is
+          <code>RemoteAvatar::sim_id</code>, so it finds its head the way a bubble does, with no wire change.</li>
+      </ul>
+      <h3>A private message <span class="new">NEW</span></h3>
+      <ul>
+        <li><b>One notice, at the top</b>, under the Community | World switch whose count it just raised.
+          Lock, name, the first line, Reply. Reply opens that chat in Community.
+          The bar along the bottom is its 30 seconds running out.</li>
+        <li>A second message from the same chat updates the notice (“3 new”) rather than stacking.</li>
+      </ul>
+      <h3>The mic disc <span class="new">NEW</span></h3>
+      <ul>
+        <li>Beside the chat disc, while signed in. Its face shows the mode: mic-off, armed, live.
+          The caret opens the voice popover (section 3).</li>
+        <li>The row stays centred along the bottom, as it is today, with one disc more.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 1b. a panel open ───────────────────────────── -->
+<section class="sec">
+  <h2><span>1b</span>With a panel open</h2>
+  <p class="cap">Every panel opens on the right. The switch, the notice and the action buttons are centred on the map the panel leaves, so none of them ends up behind it.</p>
+  <div class="row">
+    <div class="desk">
+      <div class="bar"><i></i><i></i><i></i>Cartopolis</div>
+      <div class="world dim">
+        <div class="osd-left">
+          <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          <div class="disc"><svg class="i f"><use href="#nav"/></svg></div>
+        </div>
+        <div class="switch" style="left:370px;right:auto;transform:translateX(-50%)">
+          <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+          <div class="on"><span class="dot"></span>World</div>
+        </div>
+        <div class="notice" style="top:62px;left:370px;transform:translateX(-50%)">
+          <div class="av bg5">M<span class="lk"><svg class="i xs"><use href="#lock"/></svg></span></div>
+          <div class="t"><b>Marit <small>private · now</small></b><p>i am at the gorechtkade, can you join me?</p></div>
+          <div class="btn">Reply</div>
+          <div class="life"></div>
+        </div>
+
+        <div class="fig" style="left:470px;top:452px;color:#6c5aa8"><svg width="26" height="60"><use href="#fig"/></svg></div>
+        <div class="vb" style="left:470px;top:384px"><span class="bars"><i></i><i></i><i></i><i></i></span>Bram</div>
+        <div class="fig" style="left:300px;top:492px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+        <div class="bub" style="left:300px;top:404px"><b class="c2">Wieke</b>Are you coming down to the Vismarkt?</div>
+
+        <div class="tx" style="left:16px;bottom:76px;width:340px">
+          <div class="ln f2"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+          <div class="ln mine"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who">You</span><span class="body">On my way</span></div></div>
+        </div>
+        <div class="scalebar">10 m<i></i></div>
+
+        <div class="dock" style="left:370px;right:auto;transform:translateX(-50%)">
+          <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#mic"/></svg><span class="caret"><svg class="i xs"><use href="#up"/></svg></span></div>
+          <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+          <div class="disc on"><svg class="i"><use href="#bm"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+      <div class="rpanel">
+        <div class="ph">Places <svg class="i" style="color:var(--dim)"><use href="#x"/></svg></div>
+        <div class="pr"><span class="sw" style="background:#5CC6C0"></span>Groningen<small>6</small></div>
+        <div class="pr on"><span class="sw" style="background:#FD9212"></span>Vismarkt<small>2 km</small></div>
+        <div class="pr"><span class="sw" style="background:#FD9212"></span>Gorechtkade<small>1.4 km</small></div>
+        <div class="pr"><span class="sw" style="background:#B39DFF"></span>Noorderplantsoen<small>2.3 km</small></div>
+        <div class="pr"><span class="sw" style="background:#5CC6C0"></span>Assen<small>25 km</small></div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>Centred on the map, not the window <span class="new">NEW</span></h3>
+      <ul>
+        <li>Today the action buttons are centred on the <b>window</b> (<code>dock.rs</code> anchors them
+          <code>CENTER_BOTTOM</code> of the viewport), and so is the switch at the top. With a panel open on a
+          narrow window, the right end of the row already slides under the panel.</li>
+        <li>Centred on the <b>map area</b> instead, the space the panels leave, which is the rect
+          <code>place_pins</code> already culls its pins against, they stay clear at any width.</li>
+        <li>The private notice hangs from the switch, so it moves with it.</li>
+        <li>On a phone a panel is the whole screen and the buttons hide, as today.</li>
+      </ul>
+      <h3>Why not the right-hand corner</h3>
+      <ul>
+        <li>v1 put the action buttons and the voice popover bottom right and the notice top right.
+          Every panel opens on the right, so all three would have been behind the first panel opened.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 2. composing ───────────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>Writing: the composer under the column</h2>
+  <p class="cap">Tap the chat disc (or Enter). The composer opens <b style="color:var(--text)">under the column, in the corner where the column already was</b>, above the action buttons rather than centred over them. The column grows to the last five minutes of this session and takes taps.</p>
+  <div class="row">
+    <div class="desk">
+      <div class="bar"><i></i><i></i><i></i>Cartopolis</div>
+      <div class="world dim">
+        <div class="osd-left">
+          <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          <div class="disc"><svg class="i f"><use href="#nav"/></svg></div>
+        </div>
+        <div class="switch c">
+          <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+          <div class="on"><span class="dot"></span>World</div>
+        </div>
+
+        <div class="fig" style="left:640px;top:400px;color:#6c5aa8"><svg width="26" height="60"><use href="#fig"/></svg></div>
+        <div class="bub" style="left:640px;top:318px"><b class="c3">Bram</b>we're by the fish stalls, north side</div>
+        <div class="fig" style="left:800px;top:640px;color:#C06630"><svg width="42" height="96"><use href="#fig"/></svg></div>
+
+        <div class="tx open" style="left:16px;bottom:162px;width:470px">
+          <div class="earlier"><span>Earlier today: 14 lines in Here</span><a>Open in Community <svg class="i xs"><use href="#chev"/></svg></a></div>
+          <div class="ln"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+          <div class="ln"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who c2">Wieke</span><span class="body">Are you coming down to the Vismarkt?</span></div></div>
+          <div class="ln mine"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who">You</span><span class="body">On my way</span></div></div>
+          <div class="ln hov"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who c3">Bram</span><span class="body">we're by the fish stalls, north side</span></div></div>
+          <div class="ln"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who c2">Wieke</span><span class="body">see you there</span></div></div>
+        </div>
+
+        <div class="menu tl" style="left:498px;top:408px;--ty:64px">
+          <div class="h"><svg class="i s"><use href="#chat"/></svg>Message Bram</div>
+          <div><svg class="i s"><use href="#pin"/></svg>Show on map</div>
+          <div><svg class="i s"><use href="#voloff"/></svg>Mute voice <span class="new">NEW</span></div>
+          <hr>
+          <div class="warn"><svg class="i s"><use href="#block"/></svg>Block</div>
+          <div class="warn"><svg class="i s"><use href="#flag"/></svg>Report…</div>
+        </div>
+
+        <div class="cbar" style="left:16px;bottom:76px;width:470px">
+          <div class="top">
+            <div class="seg sm"><div class="on"><svg class="i s"><use href="#pin"/></svg>Here</div><div><svg class="i s"><use href="#globe"/></svg>Everyone</div></div>
+            <span class="pubtag"><svg class="i xs"><use href="#eye"/></svg>Public</span><span class="sep">·</span>within 50 m<span class="sep">·</span>gone after a day<span style="flex:1"></span><span class="esc">Esc</span>
+          </div>
+          <div class="r">
+            <div class="field typed"><span style="flex:none">Coming, two minutes</span><i class="caret-line"></i><span></span><div class="tog" title="Shout"><svg class="i s"><use href="#shout"/></svg></div></div>
+            <div class="rb go"><svg class="i"><use href="#send"/></svg></div>
+          </div>
+        </div>
+
+        <div class="dock c">
+          <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+          <div class="disc on"><svg class="i"><use href="#chat"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#mic"/></svg><span class="caret"><svg class="i xs"><use href="#up"/></svg></span></div>
+          <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#bm"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>One column, bottom left <span class="new">NEW</span></h3>
+      <ul>
+        <li>The composer is the column's bottom edge, as in most games' chat. Opening it doesn't move
+          what you were reading, and the line you reply to sits right above the field.
+          Its width is the column's, so it cannot run off the window.</li>
+        <li>On a phone it is full width above the keyboard (section 4), and
+          <code>stack_bottoms</code> keeps doing that job.</li>
+      </ul>
+      <h3>While writing, five minutes, never older <span class="new">NEW</span></h3>
+      <ul>
+        <li>Up to eight lines that <b>arrived during this session</b> in the last five minutes.
+          The infinite window goes away, so a replayed line can never show here.</li>
+        <li>Anything older is one tap away: <b>Open in Community</b> goes to the Here or
+          Everyone thread, whichever scope is selected.</li>
+        <li>Names take taps, as today (<code>person_menu</code>), plus
+          <b>Mute voice</b>: quiet for you only, not a block.</li>
+      </ul>
+      <h3>The bar</h3>
+      <ul>
+        <li><b>Here | Everyone</b>, the names Community already uses, as two segments instead of a
+          chip that cycles. Private chats are no longer in it. They are answered in Community or
+          from the notice's Reply. <span class="new">NEW</span></li>
+        <li><b>Shout</b> is a toggle in the field, shown only for Here. <span class="has">EXISTS</span>, moved.</li>
+        <li><b>One button on the right</b>: Send while there is text, a mic while the field is
+          empty (section 4). <span class="new">NEW</span></li>
+        <li><b>The scope row says what this chat is</b>: public, how far it reaches,
+          and that it is gone after a day. For Everyone it reads “everyone on this server”. <span class="new">NEW</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 3. voice ───────────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>Voice: the mic disc and its popover</h2>
+  <p class="cap">Holding V (or the mic disc) to talk. The popover is open from the disc's caret to show what it holds. It does not need to be open to talk.</p>
+  <div class="row">
+    <div class="desk">
+      <div class="bar"><i></i><i></i><i></i>Cartopolis</div>
+      <div class="world dim">
+        <div class="osd-left">
+          <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          <div class="disc"><svg class="i f"><use href="#nav"/></svg></div>
+        </div>
+        <div class="switch c">
+          <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+          <div class="on"><span class="dot"></span>World</div>
+        </div>
+
+        <div class="fig" style="left:470px;top:452px;color:#6c5aa8"><svg width="26" height="60"><use href="#fig"/></svg></div>
+        <div class="vb" style="left:470px;top:384px"><span class="bars"><i></i><i></i><i></i><i></i></span>Bram</div>
+        <div class="fig" style="left:300px;top:492px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+        <div class="fig" style="left:800px;top:640px;color:#C06630"><svg width="42" height="96"><use href="#fig"/></svg></div>
+        <div class="vb me" style="left:800px;top:534px"><span class="bars"><i></i><i></i><i></i><i></i></span>You</div>
+
+        <div class="tx" style="left:16px;bottom:76px;width:340px">
+          <div class="ln f2"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+          <div class="ln speaking"><span class="sc"><span class="bars"><i></i><i></i><i></i><i></i></span></span><div><span class="who c4">Anouk</span>talking · 40 m behind you</div></div>
+        </div>
+        <div class="scalebar">10 m<i></i></div>
+
+        <div class="pop" style="left:357px;bottom:76px;--tail:157px">
+          <h4><svg class="i"><use href="#mic"/></svg>Voice nearby</h4>
+          <div class="sub"><span class="pubtag"><svg class="i xs"><use href="#eye"/></svg>Public</span>· within 50 m · never recorded</div>
+          <div class="seg"><div>Off</div><div class="on">Hold to talk</div><div>Open mic</div></div>
+          <div class="meter"><svg class="i s"><use href="#mic"/></svg><div class="track"><i></i><b></b></div></div>
+          <div class="keyhint">Hold <kbd>V</kbd> or the mic button to talk.</div>
+          <div class="lbl">Hearing <span>2 people</span></div>
+          <div class="hear"><div class="nm"><div class="av sm bg3">B</div>Bram <span class="d">12 m</span></div><div class="mt"><svg class="i s"><use href="#vol"/></svg></div></div>
+          <div class="hear muted"><div class="nm"><div class="av sm bg4">A</div>Anouk <span class="d">40 m · muted for you</span></div><div class="mt off"><svg class="i s"><use href="#voloff"/></svg></div></div>
+          <div class="slider"><svg class="i s"><use href="#vol"/></svg>Voices<div class="t"><i></i><b></b></div></div>
+          <div class="foot">Microphone and speakers<span>Settings ›</span></div>
+        </div>
+
+        <div class="dock c">
+          <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+          <div class="disc live"><svg class="i"><use href="#mic"/></svg><span class="caret"><svg class="i xs"><use href="#up"/></svg></span></div>
+          <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#bm"/></svg></div>
+          <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>The disc does the mode's main action <span class="new">NEW</span></h3>
+      <ul>
+        <li><b>Off</b> (mic-off face): tap opens the popover, the first time with the permission ask.</li>
+        <li><b>Hold to talk</b>: press and hold to talk, as V does. The disc turns orange
+          and rings while frames go out (<code>VoiceState::transmitting</code>).</li>
+        <li><b>Open mic</b>: tap mutes and unmutes. The face carries a thin teal level ring so
+          an open microphone is never invisible.</li>
+        <li><b>The caret</b> always opens the popover. Right-click or a long press on the disc does too.</li>
+      </ul>
+      <h3>The popover <span class="new">NEW</span>, from parts that exist</h3>
+      <ul>
+        <li>Off / Hold to talk / Open mic, the meter, the error line and “Hearing N people”
+          are <code>chat::voice_row</code> today, moved here from ☰ ▸ Chat.</li>
+        <li>New: the list of who you hear with their distance, from <code>VoiceState::speakers</code> and
+          <code>distance_m</code>, and <b>mute per person</b>. Muting is local, nothing on the wire,
+          and is the same toggle as the name menu's Mute voice.</li>
+        <li>The Voices slider is <code>AppPrefs::voice_volume</code>, which Settings already has.</li>
+        <li>The subtitle states what voice is: public, 50 m (<code>SAY_RADIUS_M</code>), and not
+          stored anywhere, which is already true.</li>
+      </ul>
+      <h3>Who is talking</h3>
+      <ul>
+        <li>On screen: the badge over their head. Your own badge is orange, so you see what
+          others see while you hold V.</li>
+        <li>Off screen: a <b>talking row</b> in the column, with distance and direction,
+          for as long as they talk. It is the same rule the transcript already follows for Here lines from people out of view.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 4. phones ───────────────────────────── -->
+<section class="sec">
+  <h2><span>4</span>On a phone</h2>
+  <p class="cap">The same pieces, laid out for a thumb: the column clears the thumbstick, the composer sits above the keyboard, and hold-to-talk is the mic disc.</p>
+  <div class="phones">
+
+    <div class="pcol">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+        <div class="world dim">
+          <div class="osd-left">
+            <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          </div>
+          <div class="switch c">
+            <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+            <div class="on"><span class="dot"></span>World</div>
+          </div>
+          <div class="notice" style="top:104px;left:72px;right:12px;width:auto">
+            <div class="av bg5">M<span class="lk"><svg class="i xs"><use href="#lock"/></svg></span></div>
+            <div class="t"><b>Marit <small>private · 3 new</small></b><p>I'm by the bridge</p></div>
+            <div class="btn">Reply</div>
+            <div class="life" style="width:30%"></div>
+          </div>
+
+          <div class="fig" style="left:130px;top:470px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+          <div class="bub" style="left:130px;top:382px"><b class="c2">Wieke</b>Are you coming down to the Vismarkt?</div>
+          <div class="fig" style="left:290px;top:515px;color:#C06630"><svg width="40" height="92"><use href="#fig"/></svg></div>
+
+          <div class="tx" style="bottom:212px">
+            <div class="ln f2"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+            <div class="ln mine"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who">You</span><span class="body">On my way</span></div></div>
+            <div class="ln speaking"><span class="sc"><span class="bars"><i></i><i></i><i></i><i></i></span></span><div><span class="who c4">Anouk</span>talking · 40 m behind you</div></div>
+          </div>
+          <div class="stick"></div>
+          <div class="dock c">
+            <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#mic"/></svg><span class="caret"><svg class="i xs"><use href="#up"/></svg></span></div>
+            <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#bm"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+          </div>
+        </div>
+      </div>
+      <h3><span>a</span>At rest</h3>
+      <ul>
+        <li>The column spans the width above the thumbstick (<code>reserved_left_bottom</code>, as today).</li>
+        <li>The private notice sits under the switch. Three messages in a row from one chat are one notice.</li>
+        <li>Anouk is behind the camera, so she is a talking row rather than a badge.</li>
+      </ul>
+    </div>
+
+    <div class="pcol">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+        <div class="world dim">
+          <div class="switch c">
+            <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+            <div class="on"><span class="dot"></span>World</div>
+          </div>
+          <div class="fig" style="left:150px;top:420px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+
+          <div class="tx open" style="left:8px;right:8px;bottom:392px">
+            <div class="earlier"><span>Earlier today: 14 lines</span><a>Open in Community <svg class="i xs"><use href="#chev"/></svg></a></div>
+            <div class="ln"><span class="sc pub"><svg class="i s"><use href="#globe"/></svg></span><div><span class="who c5">Sanne</span><span class="body">Anyone else seeing rain over Assen?</span></div></div>
+            <div class="ln"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who c2">Wieke</span><span class="body">Are you coming down to the Vismarkt?</span></div></div>
+            <div class="ln mine"><span class="sc"><svg class="i s"><use href="#pin"/></svg></span><div><span class="who">You</span><span class="body">On my way</span></div></div>
+          </div>
+
+          <div class="cbar" style="bottom:300px">
+            <div class="top">
+              <div class="seg sm"><div class="on"><svg class="i s"><use href="#pin"/></svg>Here</div><div><svg class="i s"><use href="#globe"/></svg>Everyone</div></div>
+              <span class="pubtag">Public</span><span class="sep">·</span>300 m<span class="sep">·</span>a day<span style="flex:1"></span><svg class="i" style="color:var(--text)"><use href="#x"/></svg>
+            </div>
+            <div class="r">
+              <div class="field"><i class="caret-line"></i><span>&nbsp;Say something nearby…</span><div class="tog on" title="Shout"><svg class="i s"><use href="#shout"/></svg></div></div>
+              <div class="rb"><svg class="i"><use href="#mic"/></svg></div>
+            </div>
+          </div>
+          <div class="kbd">
+            <div class="kr"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="kr"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="kr"><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i></div>
+            <div class="kr"><i class="wide"></i><i class="sp"></i><i class="wide"></i></div>
+          </div>
+        </div>
+      </div>
+      <h3><span>b</span>Writing</h3>
+      <ul>
+        <li>Full width above the keyboard. The dock is hidden while the keys are up, as today, so ✕ is on the scope row.</li>
+        <li>The field is empty, so the right button is a <b>mic</b>: hold to talk instead of typing.</li>
+        <li>Shout is on, and the scope row says what that means: 300 m (<code>SHOUT_RADIUS_M</code>) instead of 50.</li>
+      </ul>
+    </div>
+
+    <div class="pcol">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+        <div class="world dim">
+          <div class="osd-left">
+            <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+          </div>
+          <div class="switch c">
+            <div><svg class="i s"><use href="#chat"/></svg>Community <em>23</em></div>
+            <div class="on"><span class="dot"></span>World</div>
+          </div>
+          <div class="fig" style="left:150px;top:520px;color:#2C917C"><svg width="34" height="78"><use href="#fig"/></svg></div>
+          <div class="fig" style="left:250px;top:572px;color:#C06630"><svg width="40" height="92"><use href="#fig"/></svg></div>
+          <div class="vb me" style="left:250px;top:468px"><span class="bars"><i></i><i></i><i></i><i></i></span>You</div>
+
+          <div class="stick"></div>
+          <div class="talkchip" style="left:50%;transform:translateX(-50%);bottom:216px"><span class="bars"><i></i><i></i><i></i><i></i></span>Talking · within 50 m <small>release to stop</small></div>
+          <div class="dock c">
+            <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+            <div class="disc live"><svg class="i"><use href="#mic"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#bm"/></svg></div>
+            <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+          </div>
+          <div class="hold-finger" style="left:165px;bottom:-4px;top:auto;transform:translate(-50%,0)"></div>
+        </div>
+      </div>
+      <h3><span>c</span>Holding the mic disc</h3>
+      <ul>
+        <li>The disc is the push-to-talk button. Nothing has to be opened first, which today
+          takes ☰ ▸ Chat ▸ Hold to talk.</li>
+        <li>A chip above the dock says it is live and how far it reaches. Your badge shows what others see.</li>
+        <li>Nothing has been said in the last 30 s, so there is no column. Quiet looks quiet.</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────── 5. retention ───────────────────────────── -->
+<section class="sec">
+  <h2><span>5</span>How long a line lives</h2>
+  <p class="cap">One rule for both public chats: on the map for thirty seconds, in Community for a day, then gone, on the server as well as the device.</p>
+  <div class="timeline">
+    <div class="axis"></div>
+    <div class="tick" style="left:0"></div>
+    <div class="tick" style="left:16%"></div>
+    <div class="tick" style="left:84%"></div>
+    <div class="span" style="left:0;width:16%">On the map<small>column and bubble</small></div>
+    <div class="span" style="left:16%;width:68%">In Community ▸ Here / Everyone<small>scroll back, reply, report</small></div>
+    <div class="span" style="left:84%;width:16%">Deleted<small>server and device</small></div>
+    <div class="tl" style="left:0;transform:none;text-align:left"><b>sent</b>0 s</div>
+    <div class="tl" style="left:16%"><b>30 s</b>25 s hold + 5 s fade</div>
+    <div class="tl" style="left:84%"><b>24 h</b>pruned and never replayed</div>
+  </div>
+  <table>
+    <tr><th></th><th>Over the map</th><th>In Community</th><th>On the server</th><th>At sign-in</th></tr>
+    <tr><td><svg class="i s" style="vertical-align:-3px"><use href="#pin"/></svg> Here</td>
+      <td><b>30 s</b> <s>14 s, ∞ while writing</s></td>
+      <td><b>this session, up to 24 h</b>, in memory as today</td>
+      <td>never stored (unchanged)</td>
+      <td>nothing (unchanged)</td></tr>
+    <tr><td><svg class="i s" style="vertical-align:-3px;color:var(--public)"><use href="#globe"/></svg> Everyone</td>
+      <td><b>30 s</b> <s>14 s, ∞ while writing</s></td>
+      <td><b>up to 24 h</b></td>
+      <td><b>deleted after 24 h</b> <s>kept forever</s></td>
+      <td><b>the last 24 h</b>, up to 50 lines <s>the last 50, any age</s></td></tr>
+    <tr><td><svg class="i s" style="vertical-align:-3px"><use href="#lock"/></svg> Private chats</td>
+      <td><b>a notice for 30 s</b> <s>lines in the public column</s></td>
+      <td>unchanged</td>
+      <td>unchanged (sealed, <code>docs/notes/encrypted-chat.md</code>)</td>
+      <td>unchanged</td></tr>
+    <tr><td><svg class="i s" style="vertical-align:-3px"><use href="#mic"/></svg> Voice</td>
+      <td>a badge while audible</td>
+      <td>—</td>
+      <td>never stored (unchanged)</td>
+      <td>—</td></tr>
+    <tr><td><svg class="i s" style="vertical-align:-3px"><use href="#flag"/></svg> A reported line</td>
+      <td>—</td>
+      <td>—</td>
+      <td>the report keeps its own copy (V9), so moderation still has it after 24 h</td>
+      <td>—</td></tr>
+  </table>
+</section>
+
+<!-- ───────────────────────────── 6. decide ───────────────────────────── -->
+<section class="sec">
+  <h2><span>6</span>To decide</h2>
+  <div class="decide">
+    <div><h4>Five minutes while writing, or 30 s throughout?</h4>
+      <p>Drawn: <b>30 s at rest, five minutes of this session while the composer is open</b>, never anything replayed.
+        That lets you answer a line from a minute ago without leaving the map. Strictly 30 s is simpler, and then “Open in Community” is the only way back.</p></div>
+    <div><h4>Does a private notice show the text?</h4>
+      <p>Drawn: <b>name and first line</b>, as a phone notification does. The private alternative is “Marit sent you a message” with no text, since this is drawn over the map where others may see the screen.</p></div>
+    <div><h4>Private chats out of the composer?</h4>
+      <p>Drawn: <b>yes</b>. The overlay composer is Here and Everyone only, and a private chat is answered in Community or from the notice's Reply. Today the scope chip cycles into private chats too.</p></div>
+    <div><h4>Is the mic disc always in the dock?</h4>
+      <p>Drawn: <b>always, while signed in</b>, because discoverability is today's problem. The alternative is to show it only once voice has been switched on (from the composer's mic or the popover), which keeps the dock at five on a phone.</p></div>
+  </div>
+</section>
+
+</body>
+</html>

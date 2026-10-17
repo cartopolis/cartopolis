@@ -239,3 +239,13 @@ td b { color:var(--text); font-weight:600; }
 .seg.sm { padding:2px; border-radius:9px; }
 .seg.sm div { padding:4px 9px; font-size:12.5px; border-radius:7px; }
 .menu.tl::before { content:""; position:absolute; left:-7px; top:var(--ty,20px); border:7px solid transparent; border-right-color:var(--surface); border-left:0; }
+
+/* v2: centred along the bottom and the top, as the app has them */
+.dock.c { left:50%; right:auto; transform:translateX(-50%); }
+.switch.c { left:50%; right:auto; transform:translateX(-50%); }
+.rpanel { position:absolute; right:0; top:28px; bottom:0; width:360px; background:#121819; border-left:1px solid rgba(255,255,255,.18); padding:12px 14px; z-index:7; }
+.rpanel .ph { display:flex; align-items:center; justify-content:space-between; color:var(--cream); font-size:18px; font-weight:600; margin-bottom:12px; }
+.rpanel .pr { display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:10px; color:var(--text); font-size:14px; }
+.rpanel .pr.on { background:var(--raised); }
+.rpanel .pr .sw { width:12px; height:12px; border-radius:3px; flex:none; }
+.rpanel .pr small { margin-left:auto; color:var(--dim); font-size:12px; }
