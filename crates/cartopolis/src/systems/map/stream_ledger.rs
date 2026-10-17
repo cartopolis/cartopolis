@@ -37,10 +37,10 @@
 //! locked a handful of times per frame; the same pattern as
 //! `platform::workers`' pause flag, for the same reason.
 //!
-//! Uncapped tiers (everything but the phone, absent `CARTO_UPLOAD_KB`) admit
-//! everything: [`open_frame`] funds the ledger with "no ceiling" and [`admit`]
-//! short-circuits, so desktop behaviour is byte-identical to before this module
-//! existed. Scripted captures keep the ledger **in force**, exactly as the tile
+//! Uncapped tiers (everything but the phone and the browser, absent
+//! `CARTO_UPLOAD_KB`) admit everything: [`open_frame`] funds the ledger with "no
+//! ceiling" and [`admit`] short-circuits, so desktop behaviour is byte-identical
+//! to before this module existed. Scripted captures keep the ledger **in force**, exactly as the tile
 //! cap they inherit it from does: a deferred finalisation stays in its streamer,
 //! is counted by the settle test, and is therefore the code path the handset
 //! actually runs (`map_stream` documents why the bevy-side budget makes the

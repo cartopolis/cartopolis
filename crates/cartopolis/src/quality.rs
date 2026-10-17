@@ -358,7 +358,8 @@ pub struct Budget {
     /// are the same bytes over a bus with an order of magnitude more of them, the
     /// burst has never cost a desktop run a device, and a throttle there would slow
     /// `cargo shots` for nothing. This is one of the few fields where the phone rung
-    /// is not simply a smaller number than the rungs above it.
+    /// is not simply a smaller number than the rungs above it. The exception is
+    /// [`Self::browser`], whose uploads cross into another process — see there.
     ///
     /// Measure before changing it: `systems::upload_meter` reports the frame that
     /// queues the most, in the same units, in the `slow frame` line and as
@@ -495,6 +496,13 @@ impl AtmosphereLuts {
 /// `ShotMetrics::upload_peak_asset_kb` is the column to watch. Neither number means
 /// much without the other.
 const PHONE_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
+
+/// Per-frame upload ceiling for a desktop browser ([`Budget::browser`]): ~1 GB/s
+/// at 60 fps, so it bounds the burst without being what a fill waits on. Four
+/// times the phone's because a desktop GPU process has the memory to stage it,
+/// and still at least `lod22::MAX_CELL_MESH_BYTES`, so a building piece never
+/// exceeds a frame on its own.
+const BROWSER_UPLOAD_BYTES_PER_FRAME: usize = 16 * 1024 * 1024;
 
 /// The largest flat-map tile raster a handset rasterises, on any rung.
 ///
@@ -707,11 +715,25 @@ impl Budget {
     /// beside it and changed nothing (23 fps), so the weight is the lever, not the
     /// rate. The relief survives at 6.25 m — the Hondsrug is kilometres wide — and
     /// everything finer than the geometry was already the ground-detail normal.
+    ///
+    /// **And a per-frame upload ceiling, which the rung above it does not have.**
+    /// That measurement was about frame rate and was right about it; this one is
+    /// about the device. In a browser every buffer and texture write is copied
+    /// across to the GPU process, and the only failure a page sees is "the GPU
+    /// process went away" — so the burst that loses a phone's device is the burst
+    /// to keep away from here too. Measured natively on this rung over Groningen
+    /// (2026-10-17, M-series Mac, `CARTO_WEB_LIMITS=1`): the opening view handed
+    /// over **71 MB in its worst frame** (93–214 MB across three runs before the
+    /// furniture stopped being built at altitude), and 16 MB caps that at 15.7 MB
+    /// for a settle of
+    /// 12.3 s against 8.3 s, with the 30 km view unchanged. Same picture — the
+    /// ledger defers, never drops ([`Self::upload_bytes_per_frame`]).
     pub(crate) const fn browser() -> Self {
         Self {
             shadows: false,
             shadow_distance_m: 400.0,
             terrain_grid: 1025,
+            upload_bytes_per_frame: Some(BROWSER_UPLOAD_BYTES_PER_FRAME),
             ..Self::balanced()
         }
     }
@@ -2077,6 +2099,8 @@ mod tests {
             ("handset-balanced", handset_guarded(Budget::balanced())),
             ("handset-desktop", handset_guarded(Budget::desktop())),
             ("desktop", Budget::desktop()),
+            // The desktop browser's default, which has a ceiling of its own.
+            ("browser", Budget::browser()),
         ] {
             let Some(per_frame) = budget.upload_bytes_per_frame else {
                 continue;
