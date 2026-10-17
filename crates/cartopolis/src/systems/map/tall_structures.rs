@@ -326,14 +326,80 @@ fn push_blade(buf: &mut MeshData, angle: f32, len: f32, root_w: f32, tip_w: f32,
     );
 }
 
-/// A rotor: hub position in cell-local metres plus its mesh and spin rate.
+/// A rotor: hub position in cell-local metres, which shared shape it wears and
+/// how it is placed, and its spin rate.
 struct RotorBuild {
     /// Hub centre, cell-local (x, y-above-ground-absolute, z).
     hub: Vec3,
     yaw: f32,
-    mesh: Mesh,
+    shape: RotorShape,
+    /// Blade length in metres — the shared shape's scale.
+    radius: f32,
+    /// Starting angle about the shaft, so a wind farm is not in lockstep.
+    phase: f32,
     /// Radians per second at a reference 8 m/s wind.
     spin: f32,
+}
+
+/// The two rotors there are. Each is **one mesh shared by every instance**, sized
+/// and phased by its `Transform`.
+///
+/// It was one mesh per rotor, and that is a draw call apiece: the ±30 km ring
+/// over Groningen holds 612 of them, 490 on screen from 30 km up (measured
+/// 2026-10-17) — on the web, where every draw is issued from the one thread, a
+/// third of the frame's draws for a few hundred specks. One mesh and one material
+/// is one batch. Every dimension of a blade was already proportional to its
+/// length, so a unit shape scaled by the radius is the same geometry; only the
+/// hub plate, which was a fixed 1 × 2.4 m, now scales with the rotor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RotorShape {
+    Turbine,
+    Windmill,
+}
+
+impl RotorShape {
+    /// The shape at unit blade length, blades in the XY plane about +Z.
+    fn mesh(self) -> Option<Mesh> {
+        let mut buf = MeshData::default();
+        match self {
+            Self::Turbine => {
+                let blade = linear(BLADE_WHITE);
+                for b in 0..3 {
+                    push_blade(
+                        &mut buf,
+                        b as f32 * std::f32::consts::TAU / 3.0,
+                        1.0,
+                        0.09,
+                        0.025,
+                        blade,
+                    );
+                }
+                // The hub plate, at its old 1 × 2.4 m on a 45 m rotor.
+                push_blade(&mut buf, 0.0, 1.0 / 45.0, 2.4 / 45.0, 2.4 / 45.0, blade);
+            }
+            Self::Windmill => {
+                let wood = linear(SAIL_WOOD);
+                for b in 0..4 {
+                    push_blade(
+                        &mut buf,
+                        b as f32 * std::f32::consts::TAU / 4.0 + 0.4,
+                        1.0,
+                        0.22,
+                        0.18,
+                        wood,
+                    );
+                }
+            }
+        }
+        buf.into_mesh()
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Turbine => 0,
+            Self::Windmill => 1,
+        }
+    }
 }
 
 /// One built tall-structure cell.
@@ -417,28 +483,14 @@ fn build_cell(
                     .map(|d| d * 0.5)
                     .unwrap_or(h * 0.55)
                     .clamp(4.0, 90.0);
-                let mut blades = MeshData::default();
-                let blade = linear(BLADE_WHITE);
-                for b in 0..3 {
-                    push_blade(
-                        &mut blades,
-                        b as f32 * std::f32::consts::TAU / 3.0 + srand(seed, 2) * 2.0,
-                        rotor_r,
-                        rotor_r * 0.09,
-                        rotor_r * 0.025,
-                        blade,
-                    );
-                }
-                // The hub cone.
-                push_blade(&mut blades, 0.0, 1.0, 2.4, 2.4, blade);
-                if let Some(mesh) = blades.into_mesh() {
-                    rotors.push(RotorBuild {
-                        hub: Vec3::new(p.x, y0 + h + 1.2, p.y),
-                        yaw,
-                        mesh,
-                        spin: 1.0 + srand(seed, 3) * 0.3,
-                    });
-                }
+                rotors.push(RotorBuild {
+                    hub: Vec3::new(p.x, y0 + h + 1.2, p.y),
+                    yaw,
+                    shape: RotorShape::Turbine,
+                    radius: rotor_r,
+                    phase: srand(seed, 2) * 2.0,
+                    spin: 1.0 + srand(seed, 3) * 0.3,
+                });
             }
             StructureKind::Windmill => {
                 let body = linear(BRICK);
@@ -455,27 +507,14 @@ fn build_cell(
                 );
                 // Four lattice sails on a slow rotor, on the prevailing wind.
                 let yaw = PREVAILING_YAW + (srand(seed, 1) - 0.5) * 0.4;
-                let sail_r = h * 0.85;
-                let mut sails = MeshData::default();
-                let wood = linear(SAIL_WOOD);
-                for b in 0..4 {
-                    push_blade(
-                        &mut sails,
-                        b as f32 * std::f32::consts::TAU / 4.0 + 0.4,
-                        sail_r,
-                        sail_r * 0.22,
-                        sail_r * 0.18,
-                        wood,
-                    );
-                }
-                if let Some(mesh) = sails.into_mesh() {
-                    rotors.push(RotorBuild {
-                        hub: Vec3::new(p.x, y0 + h * 0.9, p.y),
-                        yaw,
-                        mesh,
-                        spin: 0.25,
-                    });
-                }
+                rotors.push(RotorBuild {
+                    hub: Vec3::new(p.x, y0 + h * 0.9, p.y),
+                    yaw,
+                    shape: RotorShape::Windmill,
+                    radius: h * 0.85,
+                    phase: 0.0,
+                    spin: 0.25,
+                });
             }
             StructureKind::Mast => {
                 let steel = linear(STEEL);
@@ -577,6 +616,8 @@ pub struct TallStructures {
     cells: CellStream<(i64, i64), CellResult>,
     cell_entities: HashMap<(i64, i64), Vec<Entity>>,
     material: Option<Handle<StandardMaterial>>,
+    /// The shared rotor meshes, by [`RotorShape::index`], made on first use.
+    rotor_meshes: [Option<Handle<Mesh>>; 2],
     /// When the lane first wanted cells, for [`COVERAGE_WAIT_SECS`].
     coverage_wait_since: Option<f64>,
 }
@@ -603,6 +644,7 @@ impl Default for TallStructures {
             }),
             cell_entities: HashMap::new(),
             material: None,
+            rotor_meshes: [None, None],
             coverage_wait_since: None,
         }
     }
@@ -736,16 +778,12 @@ pub fn update_tall_structures(
     let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
     let done =
         crate::systems::stream_ledger::take_admitted(&mut ts.cells, cap, |built| match built {
-            Ok(Some(b)) => {
-                b.mesh
-                    .iter()
-                    .map(crate::systems::stream_ledger::mesh_cost)
-                    .sum::<usize>()
-                    + b.rotors
-                        .iter()
-                        .map(|r| crate::systems::stream_ledger::mesh_cost(&r.mesh))
-                        .sum::<usize>()
-            }
+            // The rotors' meshes are shared and already resident.
+            Ok(Some(b)) => b
+                .mesh
+                .iter()
+                .map(crate::systems::stream_ledger::mesh_cost)
+                .sum::<usize>(),
             _ => 0,
         });
 
@@ -778,13 +816,24 @@ pub fn update_tall_structures(
                     );
                 }
                 for rotor in &build.rotors {
+                    let slot = &mut ts.rotor_meshes[rotor.shape.index()];
+                    if slot.is_none() {
+                        *slot = rotor.shape.mesh().map(|m| meshes.add(m));
+                    }
+                    let Some(mesh) = slot.clone() else {
+                        continue;
+                    };
                     entities.push(
                         commands
                             .spawn((
-                                Mesh3d(meshes.add(rotor.mesh.clone())),
+                                Mesh3d(mesh),
                                 MeshMaterial3d(material.clone()),
                                 Transform::from_translation(rotor.hub)
-                                    .with_rotation(Quat::from_rotation_y(rotor.yaw)),
+                                    .with_rotation(
+                                        Quat::from_rotation_y(rotor.yaw)
+                                            * Quat::from_rotation_z(rotor.phase),
+                                    )
+                                    .with_scale(Vec3::splat(rotor.radius)),
                                 build.grid_cell,
                                 ChildOf(root),
                                 TurbineRotor {
@@ -828,7 +877,7 @@ pub fn update_tall_structures(
 pub fn spin_rotors(
     time: Res<Time>,
     weather: Res<crate::systems::weather::WeatherState>,
-    mut rotors: Query<(&TurbineRotor, &mut Transform)>,
+    mut rotors: Query<(&TurbineRotor, &mut Transform, &ViewVisibility)>,
 ) {
     if rotors.is_empty() {
         return;
@@ -841,7 +890,12 @@ pub fn spin_rotors(
         .clamp(1.0, 20.0);
     let factor = wind_ms / 8.0;
     let dt = time.delta_secs();
-    for (rotor, mut tf) in &mut rotors {
+    for (rotor, mut tf, seen) in &mut rotors {
+        // A rotor off screen keeps its angle: every write is a transform to
+        // propagate and a mesh uniform to re-extract, for ~600 of them a frame.
+        if !seen.get() {
+            continue;
+        }
         tf.rotate_local_z(rotor.base_spin * factor * dt);
     }
 }
@@ -896,6 +950,46 @@ mod tests {
             "{}",
             build.rotors[0].hub.y
         );
+    }
+
+    /// Every rotor of a shape is one shared mesh at unit blade length, so the
+    /// instance's scale is its blade length: the tip sits at radius 1.
+    #[test]
+    fn a_rotor_shape_is_unit_length_and_shared() {
+        for shape in [RotorShape::Turbine, RotorShape::Windmill] {
+            let mesh = shape.mesh().expect("a rotor has blades");
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("positions");
+            };
+            let reach = positions
+                .iter()
+                .map(|p| Vec2::new(p[0], p[1]).length())
+                .fold(0.0f32, f32::max);
+            assert!((reach - 1.0).abs() < 0.05, "{shape:?} reaches {reach}");
+            assert!(positions.iter().all(|p| p[2] == 0.0), "{shape:?} is planar");
+        }
+        let text = r#"{"elements":[
+            {"type":"node","id":1,"lat":53.3,"lon":6.5,"tags":{"power":"generator","generator:source":"wind","rotor:diameter":"112"}},
+            {"type":"node","id":2,"lat":53.301,"lon":6.501,"tags":{"power":"generator","generator:source":"wind"}}
+        ]}"#;
+        let (cx, cy) = lat_lng_to_tile(53.3, 6.5, TALL_ZOOM);
+        let build = build_cell(
+            text,
+            cx,
+            cy,
+            8600,
+            5500,
+            14,
+            53.3,
+            &TerrainSnapshot::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(build.rotors.len(), 2);
+        assert!(build.rotors.iter().all(|r| r.shape == RotorShape::Turbine));
+        assert!(build.rotors.iter().any(|r| (r.radius - 56.0).abs() < 1e-3));
     }
 
     /// A covered cell is read from the atlas host's pre-cut file; an uncovered
