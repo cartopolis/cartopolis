@@ -363,6 +363,25 @@ pub fn find_loop(
         .map(|v| v.length())
         .fold(0.0f32, f32::max)
         .max(1.0e-3);
+    // For a take that travels: the hips' path over the ground, and the pace
+    // the performer usually keeps (the 75th percentile over cycle-long
+    // windows). A take of walking is mostly walking but also turns at the
+    // walls of the room, and a turn on the spot can match its ends as well as a
+    // stride does; the pace and straightness terms keep the loop on the straight.
+    let ground: Vec<Vec3> = worlds
+        .iter()
+        .map(|w| Vec3::new(w[root].0.x, 0.0, w[root].0.z))
+        .collect();
+    let mut walked = vec![0.0f32; n];
+    for i in 1..n {
+        walked[i] = walked[i - 1] + (ground[i] - ground[i - 1]).length();
+    }
+    let mut paces: Vec<f32> = (0..n - min)
+        .map(|i| (ground[i + min] - ground[i]).length() / min as f32)
+        .collect();
+    paces.sort_by(f32::total_cmp);
+    let usual = paces.get(paces.len() * 3 / 4).copied().unwrap_or(0.0);
+    let travels = usual * min as f32 > 0.2 * scale;
     let mut best: Option<(f32, usize, usize)> = None;
     for a in 0..n - min - 1 {
         let va = vel(a);
@@ -382,7 +401,13 @@ pub fn find_loop(
             let turn = (heading_of(worlds[a][root].1) - heading_of(worlds[b][root].1))
                 .sin()
                 .abs();
-            let cost = pos / (scale * scale) + 40.0 * v / (scale * scale) + 0.5 * turn;
+            let mut cost = pos / (scale * scale) + 40.0 * v / (scale * scale) + 0.5 * turn;
+            if travels {
+                let net = (ground[b] - ground[a]).length();
+                let path = (walked[b] - walked[a]).max(1.0e-6);
+                let pace = net / len as f32;
+                cost += 3.0 * ((pace - usual) / usual).powi(2) + 3.0 * (1.0 - net / path);
+            }
             if best.is_none_or(|(c, _, _)| cost < c) {
                 best = Some((cost, a, len));
             }

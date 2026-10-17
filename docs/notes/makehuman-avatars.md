@@ -85,9 +85,15 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
   the conversion added.
 - **Raw capture is cut, not used**: a loop is the stretch whose ends match best
   (`mocap::find_loop`), its remaining mismatch spread over it, its travel
-  subtracted and kept as the clip's speed. 100STYLE's neutral walk is slow —
-  about 0.9 m/s on the default man, so the game's 1.8 m/s walk plays it at
-  twice its pace. A faster style (`Rushed`, `BigSteps`) is the obvious next try.
+  subtracted and kept as the clip's speed. A take turns at the walls of the
+  capture room, and a turn on the spot can match its ends as well as a stride,
+  so a travelling loop must also keep the take's usual pace in a straight line
+  (before that, `Rushed`'s walk came out at 0.2 m/s).
+- **The gaits were chosen by speed** (`human-pack --probe`, 2026-10-17, on the
+  default man): 100STYLE's Neutral walk is 0.86 m/s, and the game walks at
+  1.8 — twice its cadence. `Rushed` is 1.65 m/s on a 0.9 s cycle and plays at
+  1.1×. Every 100STYLE run is a jog (2.3 m/s at best, `Rushed`) and the game
+  runs at 6 m/s; CMU 09_01 is a real run, 3.46 m/s on 0.73 s, played at 1.7×.
 - - **A capture rests in a T-pose and MakeHuman in an A-pose**, with different
   bone rolls, so clips cannot be copied channel for channel. They are stored as
   each bone's world rotation relative to the take's T-pose, and replayed

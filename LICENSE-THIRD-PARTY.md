@@ -185,14 +185,14 @@ Only the data is used. MPFB's code is GPL-3 and none of it is copied: `crates/hu
 
 ## 100STYLE — motion capture
 
-role: The trial avatar's walk, run and idle (cut into the human pack, assets/models/avatar/human)
+role: The trial avatar's walk (the Rushed style) and idle (Neutral), cut into the human pack (assets/models/avatar/human)
 license: CC BY 4.0
 url: https://www.ianxmason.com/100style/ (data: https://zenodo.org/records/8127870)
-notice: Walking, running and idle motion from The 100STYLE Dataset — Ian Mason, CC BY 4.0.
+notice: Walking and idle motion from The 100STYLE Dataset — Ian Mason, CC BY 4.0.
 
 ## CMU Graphics Lab Motion Capture Database
 
-role: The trial avatar's gestures and seated pose (wave, reach, roll, punch, kick, fall, sit)
+role: The trial avatar's run, gestures and seated pose (run, wave, reach, roll, punch, kick, fall, sit)
 license: "free for all uses": may be copied, modified and redistributed, including in products that are sold; the data may not be resold directly, even converted
 url: http://mocap.cs.cmu.edu/ (BVH conversion by Bruce Hahne, mirrored at https://github.com/una-dinosauria/cmu-mocap)
 notice: The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.
