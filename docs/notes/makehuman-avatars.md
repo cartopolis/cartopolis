@@ -83,3 +83,14 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
   relative to MakeHuman's own T-pose (`poses/game_engine_fk/t-pose.json`).
   `the_shipped_clips_play_like_people` is the guard: idle hands hang by the
   sides, and a walking ankle reaches the ground.
+
+## Open: may the Quaternius clips be in the pack?
+
+`LICENSE-THIRD-PARTY.md` says nothing downloaded from Quaternius after the
+2026-08-28 licence change may be added to `assets/`. The library in this pack
+was downloaded on 2026-10-17, but it is the March 2025 release on OpenGameArt,
+whose zip carries its own CC0 `License.txt` (files dated 2025-03-19..25), and
+the pack holds clip data derived from it, not the glb. Undecided as of
+2026-10-17; the branch is not to land until it is. The alternatives are other
+clips (CMU motion capture is free to use but not CC0) or animation generated in
+code.

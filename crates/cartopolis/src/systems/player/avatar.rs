@@ -1,6 +1,7 @@
 use crate::components::AvatarModelLoaded;
 use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::AvatarState;
+use crate::systems::human_avatar;
 use crate::systems::locomotion;
 use crate::systems::sit_pose;
 use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
@@ -843,6 +844,7 @@ pub fn spawn_avatar(
             Or<(With<Avatar>, With<RemoteAvatar>)>,
         ),
     >,
+    mut human: human_avatar::HumanAssets,
 ) {
     for (entity, is_local, mut transform) in avatar_query.iter_mut() {
         // The local player uses the chosen appearance; remotes use the default
@@ -852,6 +854,47 @@ pub fn spawn_avatar(
         } else {
             AvatarAppearance::default()
         };
+        if is_local && human_avatar::enabled() {
+            // Not loaded yet: leave the avatar unmarked and come back next frame.
+            let Some(pack) = human.pack() else { continue };
+            let look = human_avatar::default_look(appearance.sex);
+            let spawned = human_avatar::spawn_human(
+                &mut commands,
+                &mut human,
+                &mut clip_assets,
+                &pack,
+                &look,
+                entity,
+                SlotMask::ALL,
+            );
+            let (graph, indices) = AnimationGraph::from_clips(spawned.clips);
+            let anims = AvatarAnimations {
+                graph_handle: graphs.add(graph),
+                idle_index: indices[0],
+                walk_index: indices[1],
+                run_index: indices[2],
+                fly_index: indices[0],
+                emote_indices: indices[3..indices.len() - 1].to_vec(),
+                sit_index: indices[indices.len() - 1],
+                speed: 1.0,
+            };
+            let mut player = AnimationPlayer::default();
+            let mut transitions = AnimationTransitions::new();
+            transitions
+                .play(&mut player, anims.idle_index, Duration::ZERO)
+                .repeat();
+            commands.entity(spawned.holder).insert((
+                anims.clone(),
+                player,
+                transitions,
+                AnimationGraphHandle(anims.graph_handle.clone()),
+            ));
+            transform.scale = Vec3::ONE;
+            commands
+                .entity(entity)
+                .try_insert((AvatarModelLoaded, anims));
+            continue;
+        }
         let holders = resolve_avatar_holders(&appearance);
 
         // Scale lives with the model, not the spawn site. Set it before the scenes

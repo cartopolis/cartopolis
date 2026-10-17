@@ -17,6 +17,11 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        // The MakeHuman body pack (`systems::human_avatar`), loaded only when
+        // its switch is on.
+        app.init_asset::<systems::human_avatar::HumanPackAsset>()
+            .init_asset_loader::<systems::human_avatar::HumanPackLoader>()
+            .add_systems(Startup, systems::human_avatar::load_human_pack);
         app.init_resource::<systems::touch::TouchGestures>()
             // What the camera is riding along with (`systems::camera_attach`).
             .init_resource::<systems::camera_attach::CameraAttach>()

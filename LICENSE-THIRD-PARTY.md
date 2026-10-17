@@ -174,6 +174,15 @@ these files entered this repository on 2026-07-22, five weeks earlier, under CC0
 So what is here is fine and stays. **Anything downloaded from Quaternius from now
 on is not**, and must not be added to `assets/`.
 
+## MakeHuman — base mesh, targets, rig, weights, system assets
+
+role: The trial avatar bodies (assets/models/avatar/human: the pack and its textures)
+license: CC0 1.0 (mpfb2 LICENSE.md section C; each system asset file says "explicitly released as CC0 in September 2020")
+url: https://github.com/makehumancommunity/mpfb2 and https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html
+notice: Human base mesh, shape targets, rig, skins, clothes and hair from the MakeHuman project, CC0.
+
+Only the data is used. MPFB's code is GPL-3 and none of it is copied: `crates/human` implements the file formats from their documentation.
+
 ## HYG Database
 
 role: The naked-eye star catalog behind the night sky (assets/sky/bright_stars.bin)
