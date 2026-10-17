@@ -342,6 +342,9 @@ fn run_client() {
             std::process::exit(2);
         }
     };
+    // Taken before the MCP block below can swap in a live harness, which is the
+    // windowed app being driven and keeps its owner's settings.
+    let scripted_capture = harness.is_some();
     // Same rule, same reason: `--mcp-headless` also decides whether there is a
     // window, so a bad socket path or size has to fail here rather than at the first
     // call an editor makes. A scripted capture resolves to `None` — see
@@ -748,7 +751,20 @@ fn run_client() {
     // Lifted out before the store is moved into the world, so the Settings panel
     // comes up holding what the user last chose rather than the defaults. This is
     // also why `AppPrefs` is `Copy`.
-    let app_prefs = user_store.data.settings;
+    //
+    // **Except in a scripted capture, which starts from the defaults** — the rule
+    // the layer and sky restores already follow (they never run for one). Settings ▸
+    // Graphics is per-person state, and a capture or a perf run that inherits it
+    // measures whoever ran it: a `light_shafts: true` left in one person's file
+    // forced a per-pixel ray march into every `cargo perf` run on their machine —
+    // ~15 ms of a 27 ms frame at 3134x1952, past the 4 MP rule that turns the
+    // shafts off on Automatic (2026-10-16). The switches a scripted run is meant to
+    // be steered by are its flags and the `CARTO_*` variables.
+    let app_prefs = if scripted_capture {
+        resources::AppPrefs::default()
+    } else {
+        user_store.data.settings
+    };
 
     // Headless (`--shot`): no window, and therefore no winit event loop to pump
     // the app — `ScheduleRunnerPlugin` drives the frames instead, as fast as the
