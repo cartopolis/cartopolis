@@ -219,7 +219,21 @@ const GLOBE_MESH_USAGE: RenderAssetUsages = RenderAssetUsages::RENDER_WORLD;
 ///
 /// Enough for any tile whose own angular span is small — which, past about z5, is
 /// all of them. Coarse tiles get more; see [`qt_segs`].
-const QT_SEGS: usize = 12;
+///
+/// **A power of two, or a parent pokes through its children.** This was 12, and
+/// z4 — the last zoom that [`qt_segs`] refines — gets 16. A 12-segment z5 grid
+/// does not contain the 16-segment z4 one: every z4 vertex lands in the middle
+/// of a z5 facet, which sags ~200 m below the sphere there, while the vertex sits
+/// on it. Wherever a z4 ancestor was standing in for a z5 leaf still loading, its
+/// vertices stuck up through the loaded z5 siblings beside it, ~200 m against a
+/// 4 m lift ladder — a lattice of diamonds every 2.8° (where both axes are
+/// mid-facet) with slivers between them (where one is), matte against the sea's
+/// glint. It showed on a fast zoom-out, which is when ancestors are drawn under
+/// half-loaded children, and stayed wherever a leaf's fetch had failed
+/// (2026-10-17). With every count a power of two each grid is a refinement of
+/// its parent's, so a parent is a coarser chord of the same sphere and lies
+/// under its children everywhere (`each_zooms_grid_contains_its_parents`).
+const QT_SEGS: usize = 8;
 
 /// Ceiling on the tessellation [`qt_segs`] will hand out, so a coarse tile cannot
 /// cost an unbounded mesh. 64 segments is 4,225 vertices, and there are only ever
@@ -247,9 +261,11 @@ const QT_MAX_SAG_M: f64 = 500.0;
 /// is the conservative answer everywhere.
 ///
 /// The rounding happens **before** the [`QT_SEGS`] floor, not after: rounding
-/// afterwards turns the floor itself into 16 and quietly hands every fine tile a
-/// bigger grid than it needs — which, fine tiles being nearly the whole live set,
-/// is where the vertex budget would actually have gone.
+/// afterwards would hand every fine tile a bigger grid than it needs — which,
+/// fine tiles being nearly the whole live set, is where the vertex budget would
+/// actually have gone. That only works because the floor is a power of two
+/// itself; a floor that is not breaks the halving at the zoom where it takes
+/// over (see [`QT_SEGS`]).
 fn qt_segs(z: u32) -> usize {
     let span = std::f64::consts::TAU / f64::from(1u32 << z);
     let needed = span * (EARTH_RADIUS_M / (8.0 * QT_MAX_SAG_M)).sqrt();
@@ -2224,6 +2240,29 @@ mod tests {
             qt_segs(QT_MIN_Z) > QT_SEGS,
             "the coarse floor got no refinement"
         );
+    }
+
+    /// Every vertex of a parent's patch must also be a vertex of its children's.
+    ///
+    /// A child spans half its parent per axis, so the parent's vertex spacing is
+    /// `span / segs(z)` and the child's `span / (2·segs(z+1))`; the parent's grid
+    /// sits inside the child's exactly when the second divides the first. When
+    /// it does not, a parent vertex lands mid-facet in a child, where the child
+    /// sags below the sphere and the vertex does not, and an ancestor drawn under
+    /// a half-loaded set of children pokes through the loaded ones as a lattice
+    /// of diamonds (`QT_SEGS` has the measurement).
+    #[test]
+    fn each_zooms_grid_contains_its_parents() {
+        for z in QT_MIN_Z..QT_MAX_Z {
+            let (parent, child) = (qt_segs(z), qt_segs(z + 1));
+            assert_eq!(
+                (2 * child) % parent,
+                0,
+                "z{z} has {parent} segments and z{} has {child}: the parent's \
+                 vertices fall mid-facet in its children and poke through them",
+                z + 1
+            );
+        }
     }
 
     /// The ancestor chain that backs a set of leaves — the rule

@@ -1,7 +1,7 @@
 ---
 topic: globe-tile-cost
 triggers: [globe.rs, update_globe_tiles, qt_segs, GLOBE_TILE_PX, QT_LIFT_PER_Z, QT_MAX_TILES, tile_px, "globe is slow", "globe artifacts", "flat globe", "tile grid", "zoom out"]
-updated: 2026-08-10
+updated: 2026-10-17
 ---
 
 # What the globe quadtree actually costs, and the three ways it showed
@@ -97,6 +97,15 @@ specifically, because that is when the coarse floor is all that has arrived.
 minimum from z5 down. Only 16 tiles ever exist at z2 and 64 at z3, so the extra
 vertices are bounded and the fine tiles — the overwhelming majority of the live
 set — pay nothing (`fine_tiles_keep_the_minimum_grid`).
+
+**That minimum has to be a power of two too** (2026-10-17). It was 12, so z4's 16
+segments and z5's 12 were not one grid halved: every z4 vertex lay mid-facet in a
+z5 tile, ~200 m above the z5 surface there. An ancestor is drawn under a leaf that
+has not loaded, so on a fast zoom-out — and for as long as a leaf's fetch kept
+failing — the z4 parent stuck up through its loaded z5 children as a lattice of
+matte diamonds every 2.8°, light on open sea and dark inside the sun's glint.
+The minimum is 8 now (z5's facets are z4's, 480 m of sag, inside the budget), and
+`each_zooms_grid_contains_its_parents` pins the nesting.
 
 **The flat clipmap is a different thing and is still genuinely flat.** It is a
 tangent plane: `map_stream::clipmap` gives each level a constant `y` with no
