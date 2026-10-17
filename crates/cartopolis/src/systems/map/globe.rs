@@ -1198,6 +1198,20 @@ pub fn update_globe_visibility(
             // they are already gone by the time this system would care. Two
             // visibility writers on one entity is the documented race.
             Without<crate::components::VegetationSurface>,
+            // The same holds for street furniture (`street_furniture::
+            // update_furniture_lod`, gone by 450 m) and the street-detail props
+            // (`street_detail::update_prop_fade`, gone by 2 km). Both write their
+            // `Hidden` only when their band flips, so this system's every-frame
+            // `Inherited` always won: until 2026-10-17 both were drawn at every
+            // altitude up to the space tier — over Groningen, 166 furniture meshes
+            // holding ~11 M vertices of sub-pixel boxes from 30 km up.
+            Without<crate::components::FurnitureSurface>,
+            Without<crate::systems::street_detail::PropNear>,
+            Without<crate::systems::street_detail::PropFar>,
+            // Traffic is its own writer every frame (`traffic::drive_traffic`
+            // hides an agent until it is placed on a road, and the whole pool
+            // above 700 m); this one made the unplaced ones visible at the origin.
+            Without<crate::systems::traffic::Car>,
             Without<crate::components::GroundSkirt>,
         ),
     >,
