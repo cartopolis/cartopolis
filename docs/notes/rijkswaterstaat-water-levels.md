@@ -174,7 +174,7 @@ hold.
 
 ## What would have to exist before this is revisited
 
-Two things, in this order. Neither is this ticket.
+Two things, in this order. Neither is this change.
 
 1. **A hole in the clipmap under water polygons.** `hidden_tiles`
    (`map_stream.rs:884`) hides a tile only when finer ready tiles paint over it

@@ -42,7 +42,7 @@
 //!   `Fl`, `Q`, …) and a period, and this paints the lantern in the colour and
 //!   stops. The group is one shared `StandardMaterial` lit by vertex colour with
 //!   no per-object emissive anywhere in it; a flashing light is a second material
-//!   or an emitter, and its own ticket.
+//!   or an emitter, and its own piece of work.
 //! * **Height.** `obj_hoogte` is `0,00000` on every fixed mark in the country, so
 //!   a light tower is drawn as the same post as a groyne mark. The tall-landmark
 //!   lane is the client's `systems::tall_structures` and takes its heights from

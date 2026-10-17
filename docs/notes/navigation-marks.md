@@ -62,8 +62,8 @@ IJ, the Nieuwe Maas, Hollands Diep), 2026-08-30. The numbers matter because
 census is what says the rule covers the register.
 
 * `obj_vorm` (floating shape) — 5 values: `spar` 702, `stomp` 163, `spits` 113,
-  `Pilaar` 12, `bol` 8. **`Pilaar` is real and easy to miss**: the ticket that
-  proposed this layer listed only four.
+  `Pilaar` 12, `bol` 8. **`Pilaar` is real and easy to miss**: the proposal for
+  this layer listed only four.
 * `obj_kleur` — 15 floating values and 14 fixed, every one of the form `A`,
   `A/B`, `A/B/A` or `A/B repeterend` over {Rood, Groen, Geel, Wit, Zwart, Grijs}.
   Parsed by splitting on `/` and stripping a trailing ` repeterend`, so the
@@ -141,7 +141,7 @@ envelope above.
   `Fl` 28, `Q` 7 …) and `sign_perio` the period, on the marks that carry a light.
   The Furniture group is one shared `StandardMaterial` lit by vertex colour with
   no per-object emissive anywhere in it, so a flashing light is a second material
-  or an emitter and is its own ticket. This paints the lantern in the registered
+  or an emitter and is its own piece of work. This paints the lantern in the registered
   colour and stops.
 * **Light towers as structures.** With `obj_hoogte` zero on every fixed mark
   there is no height to build one from, so `Lichttoren (vuurtoren)` and

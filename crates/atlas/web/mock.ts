@@ -4,7 +4,7 @@
  *
  * What it is for: running and photographing the web UI on a machine with no
  * simulator, no atlas and no world database — a design review, a screenshot for
- * a ticket, a layout change checked on a phone. It is not a test double and must
+ * a session, a layout change checked on a phone. It is not a test double and must
  * not become one: the Rust tests `web_mirror::*` are what check this UI against
  * the real wire, and a mock that the tests leaned on would be a second, unchecked
  * description of the same wire.

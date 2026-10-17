@@ -107,7 +107,7 @@ The precondition is therefore a **split, not a move**: each hub has to be divide
 into the state half everyone reads and the machinery half one system owns, the
 same operation `vegetation` needed (870 pure lines / 130 ECS). Until that is
 done, a state crate buys little. That is three non-trivial refactors ahead of the
-one the ticket describes, and it is why phase 2 stalled here rather than
+one the plan describes, and it is why phase 2 stalled here rather than
 shipping.
 
 ## What did work: markers, and correcting a layering inversion

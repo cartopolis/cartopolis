@@ -57,7 +57,7 @@ repeated — `docs/direction.md`'s values in brackets:
   switch is invisible at every altitude and no `--dump-state` field would move
   for anything a person could see. **Value 6, ship the smallest thing a machine
   can judge.** Worth revisiting only if rails are ever modelled as geometry,
-  which is a different ticket.
+  which is a different change.
 - **`station`** — already a POI through `places.rs`.
 - **`kilometrering` (km posts)** — a small unlabelled plate on a post, with
   `rotatie` null on all 6,000 features sampled, so it has no orientation either.

@@ -98,7 +98,7 @@ against `hits`, exactly as the paging section of
   `map_geometry` already fetches, so it costs no request and no extra decode, and
   it is global rather than Dutch-only. **Not verified:** what its `population`
   actually resolves to per feature, or whether it is usable at cell resolution.
-  That is its own ticket off that note, not this one.
+  That is its own change off that note, not this one.
 - **The honest counter-argument, so it is not re-derived.** CBS is the *only*
   source here for how many people live in a specific block. If this project ever
   grows a layer whose subject is residents rather than streets — occupancy that

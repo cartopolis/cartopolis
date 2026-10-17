@@ -110,7 +110,7 @@ hand-imported IFC model, has nothing to be replaced by.
 
 - **The combined file carries bridge decks with a real z.** 45
   `Overbruggingsdeel_vlak` objects in the Groningen block, one viaduct running
-  0.96 → 6.62 m. `docs/direction.md` says the separate BGT bridge-decks ticket is
+  0.96 → 6.62 m. `docs/direction.md` says the separate BGT bridge-decks item is
   blocked on "a deck height the register does not carry" — this is a place that
   height exists. It is still **not** a reason to take the source:
   [bridge-heights.md](bridge-heights.md) already measures the same clearance from
