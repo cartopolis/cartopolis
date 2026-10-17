@@ -45,6 +45,18 @@ and `systems::ws_transport` (wasm). **The frame body is identical**, so a WS
 carrier is not a protocol revision and `PROTOCOL_HISTORY` did not gain a row for
 it (`wire-protocol-versions.md`).
 
+**Writes are batched, not flushed per frame** (2026-10-17). Every `send` used to
+flush, so a tick's snapshot, the chat and the voice queued beside it were a
+write (and through Caddy a WebSocket message) each, and the sign-in's run of
+permissions, block list, contacts, fifty Global lines, capacity and the full
+snapshot was fifty-odd. The loop now `feed`s what woke it, takes whatever else
+is already waiting on the three queues (`feed_ready`, at most `SEND_BATCH`),
+and flushes once; the sign-in feeds its run and the snapshot's `send` flushes
+it. Telling contacts that someone came online is spawned rather than awaited
+by the newcomer's sign-in. Not timed yet. Already right before this, and not
+worth revisiting: Nagle is off at both ends and in Caddy, each snapshot is
+encoded once for everyone, and every outgoing queue is bounded.
+
 The alternative was a second copy of a 700-line select loop carrying its own rate
 limiters, chat replay and avatar teardown. Two loops that must stay identical, and
 nothing that says when they stop being — the transport refactor was cheaper than

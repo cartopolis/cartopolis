@@ -174,7 +174,11 @@ impl Stream for WsFrames {
                     Poll::Ready(Some(Err(std::io::Error::other(e.to_string()))))
                 }
                 Poll::Ready(Some(Ok(Message::Binary(bytes)))) => {
-                    Poll::Ready(Some(Ok(BytesMut::from(&bytes[..]))))
+                    // The frame's own buffer when nothing else holds it, which is
+                    // the usual case; a copy only when it is shared.
+                    Poll::Ready(Some(Ok(bytes
+                        .try_into_mut()
+                        .unwrap_or_else(|b| BytesMut::from(&b[..])))))
                 }
                 Poll::Ready(Some(Ok(Message::Close(_)))) => Poll::Ready(None),
                 // Text/Ping/Pong: not ours. Poll again rather than returning

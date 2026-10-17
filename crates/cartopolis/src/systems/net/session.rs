@@ -177,6 +177,11 @@ pub struct SessionState {
     /// into a [`LinkProbe`] on its next run.
     probe_wanted: bool,
     probe: Option<LinkProbe>,
+    /// `NetworkMailbox::received` and when it last moved, while online.
+    heard: Option<(u64, f64)>,
+    /// The app is in the background (`lifecycle`): the sim sends no snapshots
+    /// then, so silence means nothing.
+    backgrounded: bool,
 }
 
 /// A link being watched for silence after the app came back to the screen.
@@ -193,6 +198,14 @@ struct LinkProbe {
 /// presence returns, at 20 Hz — so a live link is heard from within a tick or
 /// two, and this is generous for a slow mobile round trip.
 const RESUME_SILENCE_S: f64 = 6.0;
+
+/// How long a link on screen may say nothing before it is treated as lost. The
+/// sim sends a snapshot every tick to a client that is being looked at, so six
+/// seconds is a hundred and twenty missed; without this a link that died in
+/// the foreground (Wi-Fi to mobile data on the move) froze the client until the
+/// TCP stack gave up, which can be minutes. The counter is the network
+/// thread's, so a long frame here is not mistaken for silence there.
+const FOREGROUND_SILENCE_S: f64 = 6.0;
 
 /// Seconds to wait before each attempt to get a lost session back, counted from
 /// the failure before it. The first is immediate because the common loss is the
@@ -234,6 +247,14 @@ impl SessionState {
         if self.is_online() && self.link.is_some() {
             self.probe_wanted = true;
         }
+    }
+
+    /// Whether the app is off the screen, where the sim goes quiet on purpose.
+    /// Coming back starts the silence count afresh; the resume probe covers
+    /// the first seconds.
+    pub fn set_backgrounded(&mut self, backgrounded: bool) {
+        self.backgrounded = backgrounded;
+        self.heard = None;
     }
 
     /// A session that was lost rather than left, and is being got back — the gap
@@ -380,6 +401,7 @@ pub fn drive_session(
         session.resumed = false;
         session.probe = None;
         session.probe_wanted = false;
+        session.heard = None;
         teardown(
             &mut commands,
             &mut session,
@@ -472,23 +494,40 @@ pub fn drive_session(
             let received = mailbox
                 .as_ref()
                 .map_or(0, |m| m.received.load(std::sync::atomic::Ordering::Relaxed));
-            if std::mem::take(&mut session.probe_wanted) {
-                session.probe = Some(LinkProbe {
-                    deadline: now + RESUME_SILENCE_S,
-                    seen: received,
-                });
+            match session.heard {
+                Some((seen, _)) if seen == received => {}
+                _ => session.heard = Some((received, now)),
             }
-            match session.probe {
-                Some(p) if received != p.seen => {
-                    session.probe = None;
-                    return;
+            // On screen, the sim is heard from every tick; the resume probe has
+            // the first seconds after coming back.
+            let silent_on_screen = !session.backgrounded
+                && session.probe.is_none()
+                && !session.probe_wanted
+                && session
+                    .heard
+                    .is_some_and(|(_, since)| now - since >= FOREGROUND_SILENCE_S);
+            if silent_on_screen {
+                warn!(server = %session.mode.where_(), "session: silent on screen, reconnecting");
+            } else {
+                if std::mem::take(&mut session.probe_wanted) {
+                    session.probe = Some(LinkProbe {
+                        deadline: now + RESUME_SILENCE_S,
+                        seen: received,
+                    });
                 }
-                Some(p) if now >= p.deadline => {
-                    warn!(server = %session.mode.where_(), "session: silent since resume, reconnecting");
-                    session.probe = None;
+                match session.probe {
+                    Some(p) if received != p.seen => {
+                        session.probe = None;
+                        return;
+                    }
+                    Some(p) if now >= p.deadline => {
+                        warn!(server = %session.mode.where_(), "session: silent since resume, reconnecting");
+                        session.probe = None;
+                    }
+                    _ => return,
                 }
-                _ => return,
             }
+            session.heard = None;
             Some("connection went silent".to_string())
         }
         LinkState::Rejected(message) => {
@@ -566,7 +605,13 @@ fn schedule_reconnect(
         return false;
     };
     let attempts = session.reconnect.as_ref().map_or(0, |r| r.attempts);
-    let due = RECONNECT_DELAYS_S.get(attempts).map(|delay| now + delay);
+    // ±25 %, so the clients a sim restart dropped together do not all knock
+    // again on the same second. The spread comes from the clock's sub-millisecond
+    // digits, which differ per client; nothing here needs real randomness.
+    let jitter = 0.75 + 0.5 * (now * 1000.0).fract();
+    let due = RECONNECT_DELAYS_S
+        .get(attempts)
+        .map(|delay| now + delay * jitter);
     session.reconnect = Some(Reconnect {
         server: server.clone(),
         auth,
@@ -740,6 +785,7 @@ fn teardown(
     session.link = None;
     session.probe = None;
     session.probe_wanted = false;
+    session.heard = None;
     session.mode = SessionMode::Offline;
     session.status = SessionStatus::Offline;
 

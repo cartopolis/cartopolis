@@ -148,6 +148,19 @@ The background-connection service (`docs/notes/background-connection.md`) is the
 other half: with it on the socket is not taken away at all, and this is only
 what happens when it is.
 
+**A link that dies on screen is noticed too** (2026-10-17). Until then silence
+was only looked for after a resume (`RESUME_SILENCE_S`), so a link lost in the
+foreground — Wi-Fi to mobile data on the move — left the client frozen and
+"online" until the TCP stack gave up, which can be minutes. The sim sends a
+snapshot every tick to a client that is being looked at, so `drive_session`
+now treats `FOREGROUND_SILENCE_S` (6 s, 120 ticks) without a frame as a lost
+link, except while backgrounded (`SessionState::set_backgrounded`, from
+`lifecycle`), where the sim is quiet on purpose. The count is
+`NetworkMailbox::received`, which the network thread moves, so a long frame on
+the main thread is not mistaken for silence. Reconnect waits are spread ±25 %
+(the web chat's too), so the clients a sim restart dropped together do not all
+knock again on the same second.
+
 ## Teardown is the inverse of connect, and both halves are load-bearing
 
 Dropping `OnlineSession` is what actually closes the socket (the network thread's

@@ -320,7 +320,9 @@ pub fn start_link(
     {
         let status_for_thread = status.clone();
         std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
+            // One socket and one loop on this thread: a multi-thread runtime
+            // started a worker per core (eight on the phone) to wait on it.
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {

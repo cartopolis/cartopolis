@@ -2305,15 +2305,15 @@ pub fn decode_message(bytes: &[u8]) -> Result<NetMessage, postcard::Error> {
 /// Full ADR-009 app frame: version + kind + request_id + postcard payload.
 #[must_use]
 pub fn encode_app_frame(msg: &NetMessage) -> Result<Vec<u8>, postcard::Error> {
-    let body = encode_message(msg)?;
     let kind = message_kind(msg) as u16;
     let rid = message_request_id(msg);
-    let mut out = Vec::with_capacity(APP_HEADER_LEN + body.len());
+    let mut out = Vec::with_capacity(APP_HEADER_LEN + 64);
     out.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     out.extend_from_slice(&kind.to_le_bytes());
     out.extend_from_slice(&rid.to_le_bytes());
-    out.extend_from_slice(&body);
-    Ok(out)
+    // Serialised straight after the header, not into a second buffer that is
+    // then copied: a full snapshot is the size of the world.
+    postcard::to_extend(msg, out)
 }
 
 /// The kind in an encoded frame's header, without decoding its payload.
@@ -2401,6 +2401,23 @@ mod tests {
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
         assert_eq!(m, m2);
+    }
+
+    /// The frame is the header then exactly `encode_message`'s bytes: encoding
+    /// straight after the header must not change a byte on the wire.
+    #[test]
+    fn an_app_frame_is_the_header_then_the_message() {
+        let m = NetMessage::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            auth: AuthCredential::Password {
+                username: "dev".into(),
+                password: "x".repeat(300),
+            },
+        };
+        let b = encode_app_frame(&m).unwrap();
+        assert_eq!(b.len(), APP_HEADER_LEN + encode_message(&m).unwrap().len());
+        assert_eq!(&b[..2], &PROTOCOL_VERSION.to_le_bytes());
+        assert_eq!(&b[APP_HEADER_LEN..], &encode_message(&m).unwrap()[..]);
     }
 
     #[test]

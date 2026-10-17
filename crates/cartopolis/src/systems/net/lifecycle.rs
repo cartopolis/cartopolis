@@ -57,6 +57,9 @@ pub fn quiesce_while_backgrounded(
                 // nothing to draw. Chat, voice and prim updates keep arriving,
                 // which is what makes staying connected worth anything.
                 set_presence(session.as_deref(), false);
+                if let Some(state) = session_state.as_deref_mut() {
+                    state.set_backgrounded(true);
+                }
                 #[cfg(target_os = "android")]
                 let _ = std::fs::remove_file(run_breadcrumb_path());
             }
@@ -79,6 +82,7 @@ pub fn quiesce_while_backgrounded(
                 // back on a back-off, which may have run out against a network
                 // that was down in the background. Coming back is when to try.
                 if let Some(state) = session_state.as_deref_mut() {
+                    state.set_backgrounded(false);
                     state.retry_now();
                     state.check_link_after_resume();
                 }

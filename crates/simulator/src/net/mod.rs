@@ -530,6 +530,76 @@ impl<T: FrameTransport> ConnCtx<T> {
             .await?;
         Ok(())
     }
+
+    /// Encode and queue one message, written at the next flush: for a run of
+    /// messages that would otherwise be a write (and a WebSocket message
+    /// through Caddy) each.
+    async fn feed(&mut self, msg: &NetMessage) -> anyhow::Result<()> {
+        self.framed
+            .feed(Bytes::from(encode_app_frame(msg)?))
+            .await?;
+        Ok(())
+    }
+}
+
+/// How many already-waiting frames one wake of the send loop writes before it
+/// flushes: enough to batch a tick's snapshot with the chat and voice queued
+/// beside it, few enough that a flood cannot keep the loop from reading.
+const SEND_BATCH: usize = 32;
+
+/// Queue whatever else is already waiting for this client behind the frame
+/// just fed, then flush once. Returns `Ok(false)` when a queue has closed and
+/// the connection is finished.
+async fn feed_ready<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    snap_rx: &mut broadcast::Receiver<Bytes>,
+    chat_rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
+    voice_rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
+) -> anyhow::Result<bool> {
+    let mut open = true;
+    for _ in 0..SEND_BATCH {
+        let mut fed = false;
+        match snap_rx.try_recv() {
+            Ok(bytes) => {
+                if !skips_snapshot(ctx, &bytes) {
+                    ctx.framed.feed(bytes).await?;
+                }
+                fed = true;
+            }
+            Err(broadcast::error::TryRecvError::Lagged(_)) => fed = true,
+            Err(broadcast::error::TryRecvError::Closed) => open = false,
+            Err(broadcast::error::TryRecvError::Empty) => {}
+        }
+        match chat_rx.try_recv() {
+            Ok(frame) => {
+                ctx.framed.feed(frame).await?;
+                fed = true;
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => open = false,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+        }
+        match voice_rx.try_recv() {
+            Ok(frame) => {
+                ctx.framed.feed(frame).await?;
+                fed = true;
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => open = false,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+        }
+        if !fed || !open {
+            break;
+        }
+    }
+    ctx.framed.flush().await?;
+    Ok(open)
+}
+
+/// An idle client (`SetPresence`) is not sent everyone's positions; it still
+/// gets every other broadcast, which says a prim changed.
+fn skips_snapshot<T: FrameTransport>(ctx: &ConnCtx<T>, bytes: &[u8]) -> bool {
+    !ctx.presence_active
+        && cartopolis_core::protocol::frame_kind(bytes)
+            == Some(cartopolis_core::protocol::MessageKind::WorldSnapshot)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -691,8 +761,12 @@ pub async fn handle_connection<T: FrameTransport>(
         push_endpoint: None,
     };
 
-    ctx.send(&permissions_message(perms)).await?;
-    ctx.send(&NetMessage::BlockedList { usernames: blocked })
+    // Everything from here to the full snapshot is fed and flushed once, after
+    // it: one write instead of one per message (and fifty of those are the
+    // Global history), and the client does nothing with any of it before the
+    // world has arrived anyway.
+    ctx.feed(&permissions_message(perms)).await?;
+    ctx.feed(&NetMessage::BlockedList { usernames: blocked })
         .await?;
     // Contacts: this connection's own list, and "online" to the contacts who can
     // see it. The own list goes straight onto this connection rather than
@@ -701,14 +775,23 @@ pub async fn handle_connection<T: FrameTransport>(
     // *after* the answer to a message it sent later — and read that stale list
     // as the reply. Every later update still arrives through the inbox.
     if let Some(msg) = contacts::contacts_message(&ctx.conn, &ctx.chat, &ctx.principal_key).await {
-        ctx.send(&msg).await?;
+        ctx.feed(&msg).await?;
     }
-    contacts::push_contacts_to_contacts(&ctx.conn, &ctx.chat, &ctx.principal_key).await;
+    // Telling the others is theirs, not this connection's: a database read and
+    // one more per online contact, which the newcomer's world need not wait for.
+    {
+        let (conn, chat, key) = (
+            ctx.conn.clone(),
+            ctx.chat.clone(),
+            ctx.principal_key.clone(),
+        );
+        tokio::spawn(async move { contacts::push_contacts_to_contacts(&conn, &chat, &key).await });
+    }
     for r in chat_history(&ctx.conn, GLOBAL_CHANNEL).await {
         if blocked_lower.contains(&r.sender_name.to_lowercase()) {
             continue;
         }
-        ctx.send(&NetMessage::ChatMessage {
+        ctx.feed(&NetMessage::ChatMessage {
             channel: GLOBAL_CHANNEL.into(),
             sender_id: r.sender_id as u64,
             sender_name: r.sender_name,
@@ -723,7 +806,7 @@ pub async fn handle_connection<T: FrameTransport>(
     // rather than discovering it at the moment a create is refused.
     {
         let usage = ctx.world.read().await.capacity();
-        ctx.send(&capacity_message(&usage)).await?;
+        ctx.feed(&capacity_message(&usage)).await?;
     }
 
     // The one full snapshot this connection gets. The client builds its prim
@@ -737,11 +820,12 @@ pub async fn handle_connection<T: FrameTransport>(
     // out on `framed` before the select loop below reads its first broadcast
     // frame, and a broadcast snapshot that was already queued cannot overtake it.
     {
-        let frame = {
-            let w = ctx.world.read().await;
-            encode_app_frame(&w.snapshot(0))?
-        };
-        ctx.framed.send(Bytes::from(frame)).await?;
+        // Copied under the lock, encoded after it: the tick's write waits for
+        // the copy, not for postcard.
+        let snapshot = ctx.world.read().await.snapshot(0);
+        ctx.framed
+            .send(Bytes::from(encode_app_frame(&snapshot)?))
+            .await?;
     }
 
     // How often a connection made with an access token checks that the token
@@ -800,15 +884,20 @@ pub async fn handle_connection<T: FrameTransport>(
                         // `frame_kind` reads the header rather than decoding the
                         // payload — decoding a snapshot to discard it would cost
                         // more than sending it.
-                        if !ctx.presence_active
-                            && cartopolis_core::protocol::frame_kind(&bytes)
-                                == Some(cartopolis_core::protocol::MessageKind::WorldSnapshot)
-                        {
+                        if skips_snapshot(&ctx, &bytes) {
                             continue;
                         }
-                        if let Err(e) = ctx.framed.send(bytes).await {
+                        if let Err(e) = ctx.framed.feed(bytes).await {
                             outcome = Err(e.into());
                             break;
+                        }
+                        match feed_ready(&mut ctx, &mut snap_rx, &mut chat_rx, &mut voice_rx).await {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(e) => {
+                                outcome = Err(e);
+                                break;
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -831,9 +920,17 @@ pub async fn handle_connection<T: FrameTransport>(
             chat_frame = chat_rx.recv() => {
                 match chat_frame {
                     Some(frame) => {
-                        if let Err(e) = ctx.framed.send(Bytes::from(frame)).await {
+                        if let Err(e) = ctx.framed.feed(frame).await {
                             outcome = Err(e.into());
                             break;
+                        }
+                        match feed_ready(&mut ctx, &mut snap_rx, &mut chat_rx, &mut voice_rx).await {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(e) => {
+                                outcome = Err(e);
+                                break;
+                            }
                         }
                     }
                     // The hub holds the only sender and drops it in `unregister`,
@@ -854,9 +951,17 @@ pub async fn handle_connection<T: FrameTransport>(
             voice_frame = voice_rx.recv() => {
                 match voice_frame {
                     Some(frame) => {
-                        if let Err(e) = ctx.framed.send(Bytes::from(frame)).await {
+                        if let Err(e) = ctx.framed.feed(frame).await {
                             outcome = Err(e.into());
                             break;
+                        }
+                        match feed_ready(&mut ctx, &mut snap_rx, &mut chat_rx, &mut voice_rx).await {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(e) => {
+                                outcome = Err(e);
+                                break;
+                            }
                         }
                     }
                     None => break,
