@@ -16,6 +16,9 @@
 //   * a Beer-Powder term darkens thin edges when the sun is behind the camera,
 //     which is what makes a cloud read as thick rather than as fog;
 //   * three scattering octaves keep thick bases luminous grey instead of black;
+//   * light that has scattered many times diffuses through the column — the sun's
+//     and the blue sky's above it — so a base is bright, smooth and sky-tinted
+//     rather than a dark grey step behind a lit rim;
 //   * and the deck recedes into the horizon haze by aerial perspective instead of
 //     fading its alpha to nothing — the sky used to visibly *end* at the horizon.
 //
@@ -65,7 +68,8 @@ import super::cloud_field as cf;
 // x: the sunlight's scale apart from its colour — the sun disc's occlusion through
 // sunrise and sunset times the deck's gain — for the atmosphere path of
 // `cf::deck_sunlight`. y: 1 on the cheap tier, for `cf::mirrored`; this shader
-// reads `CLOUDS_LOW` instead. zw: unused.
+// reads `CLOUDS_LOW` instead. z: the strength of the clear sky above the deck,
+// as light on its top (`cf::SKY_ABOVE_TINT` is its colour). w: unused.
 // → `deck.light`, read as `params3` in `fragment`.
 //
 // One uniform rather than eight: WebGPU allows 12 uniform buffers per shader
@@ -110,6 +114,54 @@ const SUN_STEPS: i32 = 3;
 const MS_OCTAVES: i32 = 2;
 @else
 const MS_OCTAVES: i32 = 3;
+// Steps the view ray takes climbing through the low deck's relief, and the
+// octaves of the field each one reads. Each step is a coarse fbm, so this is the
+// relief's whole cost; the march stops at the first cloud it enters.
+@if(CLOUDS_LOW)
+const RELIEF_STEPS: i32 = 4;
+@else
+const RELIEF_STEPS: i32 = 8;
+@if(CLOUDS_LOW)
+const MARCH_OCTAVES: i32 = 2;
+@else
+const MARCH_OCTAVES: i32 = cf::RELIEF_MARCH_OCTAVES;
+// Secant steps refining where the ray crosses into a cloud (see the march).
+@if(CLOUDS_LOW)
+const SECANT_STEPS: i32 = 1;
+@else
+const SECANT_STEPS: i32 = 2;
+// How far into a cloud, as a fraction of the deck's thickness, its opacity and
+// thickness are read: one march step, so a ray that only clips a top is past
+// it there.
+// Optical depth, along the view ray, of a column the deck's whole thickness
+// tall seen straight up (see the opacity). 4 makes a column a tenth of the deck
+// (90 m) about 30 % opaque overhead and one a third of it (300 m) 70 %.
+const VIEW_DEPTH_LOW: f32 = 4.0;
+@if(CLOUDS_LOW)
+const READ_DEPTH: f32 = 0.25;
+@else
+const READ_DEPTH: f32 = 0.125;
+
+// How far the coarse field stands above the relief's surface at height `h`
+// (0..1) up the deck along the view ray: positive inside a cloud.
+fn relief_excess(
+    dir: vec3<f32>,
+    h: f32,
+    t_base: f32,
+    t_top: f32,
+    anchor_m: vec2<f32>,
+    drift_m: vec2<f32>,
+    warp_off: vec2<f32>,
+    thresh: f32,
+    span: f32,
+    octaves: i32,
+    coarse: f32,
+    evolve: vec2<f32>,
+) -> f32 {
+    let uv = cf::low_uv(dir.xz * mix(t_base, t_top, h), anchor_m, drift_m) + warp_off;
+    return cf::relief_field(uv, octaves, coarse, evolve, 0.0)
+        - cf::relief_floor(h, thresh, span);
+}
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -132,7 +184,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let cover = params0.x;
     let soft = max(params0.y, 1e-3);
-    let thresh = 1.0 - cover;
+    let thresh = cf::low_threshold(cover, CHEAP);
     let clock = params0.z;
     let evolve = cf::EVOLVE_DETAIL * clock;
     // The sample point is absolute world position: camera-relative projection plus
@@ -141,19 +193,77 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let anchor_m = params2.xy;
     let drift_m = params1.xy;
 
-    // ---- low deck ---------------------------------------------------------
-    let t_low = params0.w / dir.y;
-    let detail_low = cf::detail_at(t_low);
-    let uv_low = cf::low_warped(cf::low_uv(dir.xz * t_low, anchor_m, drift_m), clock, detail_low);
-    let shape_low = cf::low_shape(
-        uv_low,
-        clock,
-        cover,
-        soft,
-        detail_low,
-        cf::low_octaves(CHEAP),
-        cf::low_billow(CHEAP),
-    );
+    // ---- low deck, in relief ----------------------------------------------
+    // Climb the view ray through the slab from the deck's base to its top, on
+    // the coarse field, until it is inside a column (`cf::relief_column`): at the
+    // first step that is a base, after it a side. The crossing is placed between
+    // the last two steps by linear interpolation, as parallax occlusion mapping
+    // places it, so a surface is smooth rather than terraced by the step count.
+    let octaves = cf::low_octaves(CHEAP);
+    let span = cf::relief_span(cover);
+    let thick_m = sun_dir.w;
+    let t_base = params0.w / dir.y;
+    let t_top = (params0.w + thick_m) / dir.y;
+    let detail_low = cf::detail_at(t_base);
+    let coarse = cf::detail_keeping(MARCH_OCTAVES, octaves, detail_low);
+    // The warp is low-frequency — a cloud's lean, not its edge — so it is taken
+    // once, where the ray meets the base, and moves every step alike. Per step it
+    // would cost two more fbms each.
+    let uv_base = cf::low_uv(dir.xz * t_base, anchor_m, drift_m);
+    let warp_off = cf::low_warped(uv_base, clock, detail_low) - uv_base;
+    var h_hit = -1.0;
+    var prev_h = 0.0;
+    var prev_e = -1.0;
+    for (var i = 0; i <= RELIEF_STEPS; i = i + 1) {
+        let h = f32(i) / f32(RELIEF_STEPS);
+        let e = relief_excess(dir, h, t_base, t_top, anchor_m, drift_m, warp_off, thresh, span, octaves, coarse, evolve);
+        if e > 0.0 {
+            if i == 0 {
+                h_hit = 0.0;
+            } else {
+                // Two secant steps on the crossing. Which step first lands inside
+                // changes from one pixel to the next across a cloud's side, and a
+                // single interpolation is off by a different amount on each
+                // side of that change, which drew the side as contour lines.
+                var lo_h = prev_h;
+                var lo_e = prev_e;
+                var hi_h = h;
+                var hi_e = e;
+                for (var k = 0; k < SECANT_STEPS; k = k + 1) {
+                    let mid_h = lo_h + (hi_h - lo_h) * lo_e / (lo_e - hi_e);
+                    let mid_e = relief_excess(dir, mid_h, t_base, t_top, anchor_m, drift_m, warp_off, thresh, span, octaves, coarse, evolve);
+                    if mid_e > 0.0 {
+                        hi_h = mid_h;
+                        hi_e = mid_e;
+                    } else {
+                        lo_h = mid_h;
+                        lo_e = mid_e;
+                    }
+                }
+                h_hit = lo_h + (hi_h - lo_h) * lo_e / (lo_e - hi_e);
+            }
+            break;
+        }
+        prev_h = h;
+        prev_e = e;
+    }
+    let h_low = max(h_hit, 0.0);
+    let t_low = mix(t_base, t_top, h_low);
+    let uv_low = cf::low_uv(dir.xz * t_low, anchor_m, drift_m) + warp_off;
+    // The fine octaves, once, a little inside the surface — at the crossing the
+    // coarse field is exactly at the threshold, half in and half out by
+    // construction. They fray the edge the coarse field put there (a ray that
+    // only clips a column's top comes out of it again, and reads thin) and set
+    // the column's thickness. A ray that met no cloud skips them.
+    var shape_low = 0.0;
+    var column_low = 0.0;
+    if h_hit >= 0.0 {
+        let h_read = min(h_low + READ_DEPTH, 1.0);
+        let uv_read = cf::low_uv(dir.xz * mix(t_base, t_top, h_read), anchor_m, drift_m) + warp_off;
+        let v_low = cf::relief_field(uv_read, octaves, detail_low, evolve, 0.0);
+        shape_low = smoothstep(-cf::RELIEF_SOFT, cf::RELIEF_SOFT, v_low - cf::relief_floor(h_read, thresh, span));
+        column_low = cf::relief_column(v_low, thresh, span, cover);
+    }
 
     // ---- high deck --------------------------------------------------------
     let t_high = params2.w / dir.y;
@@ -164,18 +274,26 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let shape_high = smoothstep(
         thresh_high,
         thresh_high + soft,
-        cf::fbm(uv_high, OCT_HIGH, 0, detail_high, evolve * 0.7),
+        cf::fbm(uv_high, OCT_HIGH, detail_high, evolve * 0.7),
     );
 
     // ---- opacity ----------------------------------------------------------
-    // Beer's law on the view ray, so a core saturates smoothly rather than being
-    // clipped by the `pow()` curve this used to shape the alpha with.
-    let od_low = shape_low * cf::OPTICAL_DEPTH_LOW;
+    // The low deck's opacity is Beer's law on the cloud the ray crosses: the
+    // column's thickness where it is read, lengthened by the slant of the ray.
+    // A thick core hides the sun completely, which the sheet's capped opacity
+    // never did; a column only a few tens of metres thick — a cloud's fringe,
+    // a small young puff — lets the sky through. Before this every cloud was
+    // solid to its last pixel. The edge itself still fades over `RELIEF_SOFT`.
+    // The high deck keeps its own Beer's law: cirrus is thin.
     let od_high = shape_high * cf::OPTICAL_DEPTH_HIGH;
 
     let graze = smoothstep(cf::GRAZE_MIN, cf::GRAZE_MAX, dir.y);
     let fade = sun_color.a * params1.w * (1.0 - params1.z) * graze;
-    let a_low = (1.0 - exp(-od_low)) * fade;
+    let crossed = column_low / max(dir.y, 0.25);
+    // A closed deck is stratocumulus, optically deep everywhere: its thinnest
+    // places must still hide the sun disc.
+    let view_depth = VIEW_DEPTH_LOW * mix(1.0, 5.0, smoothstep(0.75, 1.0, cover));
+    let a_low = shape_low * (1.0 - exp(-crossed * view_depth)) * fade;
     let a_high = (1.0 - exp(-od_high)) * sky_color.a * fade;
     let alpha = a_low + a_high * (1.0 - a_low);
     // Bail before the march: on a part-covered sky this is most of the screen, and
@@ -192,30 +310,30 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sun_low_rgb = cf::deck_sunlight(sun, params0.w, sun_color.rgb, params3.x);
     let sun_high_rgb = cf::deck_sunlight(sun, params2.w, sun_color.rgb, params3.x);
 
-    let sun_od = cf::sun_optical_depth(
+    let sun_od = cf::relief_sun_od(
         uv_low,
+        h_low,
         sun,
-        sun_dir.w,
+        thick_m,
         thresh,
-        soft,
-        detail_low,
+        span,
+        coarse,
         evolve,
+        octaves,
         SUN_STEPS,
     );
-    let ms = cf::multi_scatter(sun_od, cos_theta, MS_OCTAVES);
-    // Beer-Powder (Schneider, Nubis / Horizon Zero Dawn). The powder factor
-    // darkens thin edges — the reason a cumulus reads as solid rather than as
-    // fog — but only when the sun is behind the camera. Looking *into* the sun
-    // those same edges are the brightest thing in the sky, and applying powder
-    // there would cancel exactly the silver lining the phase function just built.
-    let powder = 1.0 - exp(-2.0 * od_low);
-    let powder_w = clamp(0.5 - 0.5 * cos_theta, 0.0, 1.0);
-    // Cloud bases go dark, but never black — the ground bounces light back up at
-    // them, and an overcast deck is the sky's own light source rather than
-    // something standing in front of it. How dark is `haze_color.a`, above.
-    let sky_floor = haze_color.a;
-    let low_rgb = sun_low_rgb * ms * mix(1.0, powder, powder_w)
-        + sky_color.rgb * (sky_floor + (1.0 - sky_floor) * (1.0 - shape_low));
+    let low_rgb = cf::low_deck_light(
+        column_low,
+        max(column_low - h_low, 0.0),
+        sun_od,
+        cos_theta,
+        sun,
+        sun_low_rgb,
+        cf::SKY_ABOVE_TINT * params3.z,
+        sky_color.rgb,
+        haze_color.a,
+        MS_OCTAVES,
+    );
 
     // The high deck is thin enough that self-shadowing is not a thing it does:
     // phase function and ambient only, no march.

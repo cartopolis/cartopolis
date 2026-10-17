@@ -7,7 +7,7 @@ triggers:
   - adding a cloud layer, or wondering why there are two
   - how fast or which way the clouds move
   - cloud shadows on the ground (see cloud-shadows.md)
-updated: 2026-09-29
+updated: 2026-10-17
 ---
 
 # Cloud lighting: why the deck is a scattering model, not a shaded surface
@@ -31,6 +31,18 @@ shader.** A projected plane with a scattering model beats a volumetric with a
 surface model, at a fraction of the cost. That is the load-bearing conclusion of
 the whole exercise, and it is the reason to be suspicious of any future proposal
 that starts by adding a march through a 3D density field.
+
+**But a plane has no sides, and that was the limit (2026-10-17).** With the
+lighting done, the deck still looked like brush strokes: toward the horizon every
+cloud foreshortened to a sliver, the far deck was a stack of stripes, and nothing
+had a top to light. The shell now draws the low deck **in relief** — the same 2D
+field read as a height map, a flat base with a dome over it, which the view ray
+climbs in eight steps and two secant refinements (see "The low deck in relief"
+below). That is a march, but through a height field, not a density field: one
+coarse 3-octave fbm a step, stopping at the first cloud, lit once. On the M5 Pro
+node at 1920×1080 the phone tier went 5.8 → 6.0 ms with clouds on; the desktop
+tier was inside the run-to-run noise. The conclusion above stands for the
+*lighting*; it was never an argument for flat geometry.
 
 ## The five mechanisms, and why each is here
 
@@ -136,7 +148,118 @@ Plus two terms from the volumetric-cloud literature, both ALU-only:
 - **Multi-octave scattering** (Wrenninge et al. 2013; Hillaire 2016). Three
   evaluations with geometrically decaying extinction, energy and anisotropy. Costs
   three multiplies and no extra samples. Without it a thick cloud base goes black;
-  with it, luminous grey.
+  with it, luminous grey — but only just: every octave still decays as
+  exp(−depth), so a core got almost nothing from it, which is the next term.
+
+## Diffusion through the column (2026-10-17)
+
+The octaves above are the first few bounces. Light that has scattered dozens of
+times diffuses through a cloud, and diffusion falls off as 1/(1 + (1−g)τ), not
+exponentially. Without it the deck's cores lived on the ambient floor alone: grey
+bases with a hard step behind a lit rim, and at sunset a muddy brown. Frozen
+Fractal (*Around the World 34: A pretty sky*, 2026) hit the same thing and
+measured it with a Monte Carlo tracer: real multiple scattering makes cloud
+bottoms brighter and the lighting smoother, and the old look was "metallic".
+
+`cloud_field::low_deck_light` (shared by the shell and the mirror) adds the
+*diffuse* part of the Eddington two-stream transmittance of a conservative slab —
+everything but what still travels near the incoming direction, which the phase
+octaves already draw — for two sources:
+
+- **the sun**, at its own incidence `sun.y`;
+- **the clear sky above the deck** — Rayleigh blue (`SKY_ABOVE_TINT`), as bright
+  as the camera's horizon (`params3.z` = fog luminance × `CLOUD_SKY_ABOVE_GAIN`),
+  at a hemisphere's mean incidence. This is what tints a base blue by day, and
+  under a low sun mixes the red beam and the blue sky into mauve. Frozen Fractal
+  got it by bending the bases' normals up into Godot's sky light; a plane has no
+  normals, so here it goes through the slab. It is taken from the fog rather than
+  `daylight` because exposure follows the sky: by the clock, the skylight faded
+  at dusk while the sky on screen stayed bright, and the bases went brown.
+
+The column's depth for diffusion is `DIFFUSE_DEPTH_LOW` = 30 per unit of
+coverage — a real cumulus is 30–100 — and not `OPTICAL_DEPTH_LOW` (7), which is
+tuned as the view ray's opacity and the march's shadow. With that light in, the
+sky floors came down (0.35 → 0.2 scattered, 0.85 → 0.55 overcast), because part
+of what they stood in for is now modelled. The sun's diffused part is weighted
+by `sun.y`, as a beam spread over a slanted top is: without it a closed deck
+under a 16 h sun glowed orange. At noon an opaque cumulus core lands at 0.63×
+the horizon haze and a closed overcast at 0.98×
+(`print_noon_core_bases`, an ignored test, prints both; the two tests beside it
+mirror the shader's constants and must move with them).
+
+On its own, on the old flat deck, this was a small change — the person steering
+said they could barely see it. It earns its place in the relief, where `above`
+(the cloud over the point seen) differs from `column` (the cloud's thickness):
+a crown has little above it and is lit, a base has all of it and is grey.
+
+**After sunset the base is the lit face.** The deck's horizon dips √(2h/R) —
+1.6° at 2.5 km — below the street's, so it keeps the sun for minutes after the
+city has lost it (`utils::sun::sun_disc_at`), and then the sun is *under* it:
+what a viewer below sees is what the column reflects (1 − T of the same slab).
+That is the red glow on a deck's underside just after sunset.
+
+## The deck's sunlight follows eye adaptation (2026-10-17)
+
+The deck's sun term is written in the screen's units at the day exposure, and
+the camera opens up toward dusk and night by up to 4.5 stops
+(`sky::eye_adaptation_stops`: the night and twilight lifts). The sky and the fog
+colour followed; the deck's lit side did not, so a sunset cloud's lit side was
+that many stops too dark — the muddy brown decks of the evening. `update_clouds`
+now multiplies the sun term by 2^stops. The overcast lift is left out on
+purpose: it pays for the beam the overcast model takes off the *ground*, which
+the deck, being that overcast, never lost.
+
+## The low deck in relief (2026-10-17)
+
+`cloud_field.wesl`'s relief section and the shell's march. In short:
+
+- **A height map, not a sheet.** A column stands from the deck's flat base to
+  `relief_column` of its thickness; the surface is where the field reaches
+  `relief_floor(h) = thresh + span·h²` — quadratic, so a cloud's sides climb
+  steeply off the base and round over at the top. Linear stood clouds up as
+  cones. The view ray climbs from base to top in `RELIEF_STEPS` (8; 4 on the
+  phone) on a 3-octave field (2 on the phone), stops at the first step inside,
+  and places the crossing by two secant steps. With one linear interpolation
+  the step that first lands inside changes from pixel to pixel across a side,
+  and the side was drawn as contour lines.
+- **Opacity and thickness are read a step inside** (`READ_DEPTH`), with the full
+  octaves: at the crossing the coarse field is exactly at the threshold, half in
+  and half out, which made every side half transparent.
+- **The edge is narrow** (`RELIEF_SOFT` 0.05 of the field, against the sheet's
+  0.30). The sheet's wide ramp is most of why its clouds read as smears.
+- **Opacity is the cloud crossed, not the edge alone.** Beer's law on the
+  column's thickness over the ray's slant (`VIEW_DEPTH_LOW`): a fringe or a
+  small puff lets the sky through, a core hides the sun. Five times deeper
+  toward a closed deck, whose thinnest places must still hide the disc. The
+  first relief had every cloud solid to its last pixel, and that read wrong.
+- **The field is cauliflower, not billows** (`relief_field`). The old billow fold
+  (`1 − |2v − 1|`) is round valleys under knife-edge ridges; stood up as a height
+  map the ridges were paper folds, and rounding them off left smooth blobs the
+  person steering called "too liquid". Its twin `|2v − 1|` is round humps with
+  cusped creases between — a heap of puffs — so the masses (first two octaves)
+  are plain noise, the middle octaves puffs, and the last plain grain. The march
+  reads four octaves so the puffs are in the silhouette, and the domain warp
+  went 0.28 → 0.12: its curls were the other half of the liquid look.
+- **Cover is a computed quantile, not `1 − cover`.** The field is narrow and off
+  centre, so `1 − cover` put four fifths of the sky under a "45 %" deck once the
+  edges were crisp. `low_threshold` holds the field's quantiles for both tiers,
+  computed by a TypeScript mirror of `relief_field` over 600,000 points,
+  counting what the relief draws. It moves if the field does. (Counting cloud
+  pixels in zenith shots was tried first and is worthless: a 5 km patch holds a
+  handful of clouds, and the dark zenith sky failed a colour test for "sky".)
+- **Overcast gets cells.** At full cover every point is cloud, so thickness is
+  measured from `RELIEF_COLUMN_FLOOR` (the field's ~90 % quantile) rather than
+  from the threshold, linearly from `RELIEF_OVERCAST_MIN` up, which leaves
+  thinner, brighter places between thick, dark cells. A thin place of no
+  thickness at all drew as a hard-edged dark blotch (the powder term darkens
+  what it takes for a thin edge).
+  The cloud opacity is now 1.0, not 0.92: at 0.92 the sun disc shone through a
+  closed deck as a white dot.
+- **The mirror keeps the sheet**, but takes the same field, threshold and edge,
+  so a lake reflects as much cloud as the sky has.
+
+Before/after sets for all of this were rendered on the M5 Pro node (Groningen,
+40 m up, headings S, N and WNW, 12–17.4 h, covers 0.25–1.0).
 
 And **aerial perspective**: Bevy composites its own over opaque geometry only, so
 an alpha-blended shell never receives any. The deck now extincts toward the
@@ -165,7 +288,8 @@ nothing, which reads as the sky *ending*.
   fill-bound on the iGPU. The first two octaves are folded into *billow* noise
   (`1 − |2v − 1|`) instead — one sample, and it puts a crease at every zero
   crossing, which is most of what the cauliflower edge of a cumulus is.
-- **Raymarching.** See the top of this note.
+- **Raymarching a 3D density field.** See the top of this note; the relief march
+  through a 2D height field is the step that was taken instead.
 
 ## Constraints that shape the code
 

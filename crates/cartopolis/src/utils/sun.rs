@@ -150,11 +150,20 @@ pub fn sun_transmittance_at(hours: f32, decl_rad: f32, alt_m: f32) -> Vec3 {
 /// Fraction of the solar disc's light clearing the horizon — the soft boundary for
 /// the *direct* beam around sunrise/sunset (no hard on/off at 6:00/18:00).
 pub fn sun_disc(hours: f32, decl_rad: f32) -> f32 {
+    sun_disc_at(hours, decl_rad, 0.0)
+}
+
+/// [`sun_disc`] for a point `alt_m` above the ground, whose horizon dips below
+/// the horizontal by √(2h/R): a cloud deck 2.5 km up keeps the sun 1.6° — some
+/// minutes — after the city under it has lost it, which is when its base glows.
+pub fn sun_disc_at(hours: f32, decl_rad: f32, alt_m: f32) -> f32 {
+    const EARTH_RADIUS_M: f32 = 6_371_000.0;
+    let dip = (2.0 * alt_m.max(0.0) / EARTH_RADIUS_M).sqrt();
     let lo: f32 = std::env::var("CARTO_EXP_DISC_LO")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(-0.03);
-    smoothstep(lo, 0.06, sun_direction(hours, decl_rad).y)
+    smoothstep(lo - dip, 0.06 - dip, sun_direction(hours, decl_rad).y)
 }
 
 /// Smooth 0–1 daylight factor for sky-driven light (ambient, fog color). Rises

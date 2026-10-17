@@ -87,6 +87,21 @@ maroon) keeps the hue mild, and `TWILIGHT_EXPOSURE_LIFT` (2.5 stops) is the eye
 adaptation that makes twilight read bright. Every one of them moves the sky and
 the ground together; check both.
 
+**The light must stay on after sunset, or there is no twilight** (2026-10-17).
+`sun_light` cuts the light with `utils::sun::sun_disc` as the disc sets, for the
+surfaces; but the atmosphere is lit by this light and nothing else, so the sky
+went black within minutes of sunset (17.3 h in mid-October) — no afterglow at
+all. With the atmosphere drawing the sky, `apply_day_night_cycle` takes
+`sun_light_in_atmosphere` instead, which holds the light to the end of civil
+twilight (−6°) and fades it out by astronomical dusk (−18°). The surfaces do
+not need the cut there: bevy 0.20's lighting already drops a sun below each
+point's horizon (`atmosphere_visible_sun_ratio` in the patched
+`bevy_pbr_lighting.wesl`; the "bevy does not attenuate surfaces" above is about
+air-mass extinction, not the horizon). The dome sky keeps the old cut.
+`horizonhaze.wesl` and `water.wesl` read the light directly, so a sun below the
+horizon still reaches their glow and glint terms; neither showed anything wrong
+in the 17.3 h shots, but they were not looked at closely.
+
 The disc is bevy's procedural `SunDisk` on that light, drawn by the sky pass, so
 it needs no geometry and works raymarched from orbit. The true 0.53° is a ~6 px
 dot at 1080p; `SUN_DISK_ANGULAR_SIZE` is 0.024 rad (~1.4°), and `Bloom` (the

@@ -314,6 +314,15 @@ pub(crate) const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
 /// The residual ~0.6 stop is that difference, and `overcast_tests` holds it
 /// there — the three constants here only mean anything as a set.
 pub(crate) const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
+
+/// Stops the camera opens up for the time of day — the eye adapting to night
+/// ([`NIGHT_EXPOSURE_LIFT`]) and to dusk ([`TWILIGHT_EXPOSURE_LIFT`]). The overcast
+/// lift is not in it: that one pays for the beam the overcast model takes off
+/// the ground, which the cloud deck, being that overcast, never lost.
+pub(crate) fn eye_adaptation_stops(hours: f32, decl_rad: f32) -> f32 {
+    NIGHT_EXPOSURE_LIFT * (1.0 - utils::sun::daylight(hours, decl_rad))
+        + TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(hours, decl_rad)
+}
 /// Fraction of the direct beam a full overcast takes away.
 ///
 /// A stratus deck does not thin the sun, it *replaces* it: at full cover there is
@@ -439,6 +448,38 @@ pub(crate) fn moonlight_factor(hours: f32, moon_age_days: f32, decl_rad: f32) ->
 /// the light warms and dims exactly as the sky it hangs in: warm white at noon,
 /// gold in the morning/evening, deep red and faint as the disc grazes the horizon.
 pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
+    sun_light_cut(
+        hours,
+        decl_rad,
+        fog_density,
+        utils::sun::sun_disc(hours, decl_rad),
+    )
+}
+
+/// [`sun_light`] for a sky drawn by bevy's atmosphere, which keeps the light on
+/// through twilight.
+///
+/// The atmosphere is lit by this light and nothing else, so cutting it as the
+/// disc sets — what [`sun_light`] does, for the surfaces — turned the sky black
+/// within minutes of sunset (at 17.3 h in October, 2026-10-17), with no twilight
+/// at all. It need not be cut for the surfaces here: with the atmosphere on,
+/// bevy's own lighting already drops a sun below each point's horizon
+/// (`atmosphere_visible_sun_ratio` in the patched `bevy_pbr_lighting.wesl`). So the
+/// light holds until the end of civil twilight and goes out by astronomical dusk,
+/// when the atmosphere's planet shadow has darkened the sky anyway.
+pub(crate) fn sun_light_in_atmosphere(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
+    let y = sun_direction(hours, decl_rad).y;
+    let on = utils::sun::smoothstep(TWILIGHT_SUN_OFF_Y, TWILIGHT_SUN_FULL_Y, y);
+    sun_light_cut(hours, decl_rad, fog_density, on)
+}
+
+/// Sun elevations (sine) between which [`sun_light_in_atmosphere`] fades the light
+/// out: the end of civil twilight (−6°) and astronomical dusk (−18°).
+const TWILIGHT_SUN_FULL_Y: f32 = -0.105;
+const TWILIGHT_SUN_OFF_Y: f32 = -0.309;
+
+/// [`sun_light`] with the horizon's cut given: `cut` 0..1 of the light survives it.
+fn sun_light_cut(hours: f32, decl_rad: f32, fog_density: f32, cut: f32) -> (Color, f32) {
     let t = utils::sun::sun_transmittance(hours, decl_rad);
     let peak = t.max_element().max(1e-4);
     // Hue in the color (peak-normalized), magnitude in the illuminance. Desaturated
@@ -454,11 +495,8 @@ pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, 
     // atmosphere is lit correctly — its sky brightness/colour scale with the sun's
     // illuminance. The camera's Exposure (see setup_camera) brings this back to a
     // sensible scene brightness; tune `ATMOSPHERE_EXPOSURE_EV100` to taste.
-    let illuminance = RAW_SUNLIGHT
-        * SUN_SCALE
-        * peak.powf(SUN_EXTINCTION_SOFTNESS)
-        * utils::sun::sun_disc(hours, decl_rad)
-        * sun_through_fog;
+    let illuminance =
+        RAW_SUNLIGHT * SUN_SCALE * peak.powf(SUN_EXTINCTION_SOFTNESS) * cut * sun_through_fog;
     (color, illuminance)
 }
 
@@ -789,6 +827,9 @@ pub(crate) fn apply_day_night_cycle(
     // so either arriving or leaving has to re-apply, as a climb through the
     // space ramp does.
     mut was_features: Local<Option<(bool, bool)>>,
+    // Whether bevy's atmosphere draws the sky, which keeps the sun on through
+    // twilight (`sun_light_in_atmosphere`).
+    sky: Option<Res<systems::sky_dome::SkyMode>>,
 ) {
     let mut camera = camera;
     // 0 on the ground, 1 in deep space, smooth in between: every lighting term
@@ -802,7 +843,11 @@ pub(crate) fn apply_day_night_cycle(
         .single()
         .is_ok_and(|(_, _, _, bloom, _)| bloom.is_some());
     let features = Some((sky_ibl, bloom_on));
+    let in_atmosphere = sky
+        .as_ref()
+        .is_some_and(|s| **s == systems::sky_dome::SkyMode::Atmosphere);
     if !dev.is_changed()
+        && !sky.as_ref().is_some_and(|s| s.is_changed())
         && (space - *was_space).abs() < SPACE_RAMP_STEP
         && *was_features == features
     {
@@ -826,8 +871,7 @@ pub(crate) fn apply_day_night_cycle(
     // daylight whatever the local clock says — so the day exposure holds.
     let day = utils::sun::daylight(dev.time_of_day, dev.sun_declination_rad);
     let ground_ev = DAY_EXPOSURE_EV100
-        - NIGHT_EXPOSURE_LIFT * (1.0 - day)
-        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day, dev.sun_declination_rad)
+        - eye_adaptation_stops(dev.time_of_day, dev.sun_declination_rad)
         // A small lift so an overcast scene reads dim-but-legible rather than
         // being crushed once the direct sun is pulled down.
         - OVERCAST_EXPOSURE_LIFT * overcast;
@@ -858,8 +902,11 @@ pub(crate) fn apply_day_night_cycle(
     // at 18:00 and unlit at all at night, when what the view should show is a
     // fully sunlit day side and a dark night side, terminator between. Crossfaded
     // rather than switched, or climbing out at dusk changed the light in a step.
-    let (ground_color, ground_lux) =
-        sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
+    let (ground_color, ground_lux) = if in_atmosphere {
+        sun_light_in_atmosphere(dev.time_of_day, dev.sun_declination_rad, dev.fog_density)
+    } else {
+        sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density)
+    };
     let mut sun_color = Color::from(LinearRgba::from_vec4(
         LinearRgba::from(ground_color)
             .to_vec4()
@@ -1415,8 +1462,10 @@ pub(crate) const CLOUD_HIGH_LAYER_HEIGHT: f32 = 7_000.0;
 /// Vertical extent of the low deck, in metres. The sun march traverses it, so it
 /// sets how far a shadow is thrown across the field at a given sun elevation.
 pub(crate) const CLOUD_DECK_THICKNESS: f32 = 900.0;
-/// Overall cloud opacity before the coverage/altitude/space fades.
-pub(crate) const CLOUD_OPACITY: f32 = 0.92;
+/// Overall cloud opacity before the coverage/altitude/space fades. Whole: at 0.92
+/// the sun disc, thousands of times brighter than the sky, shone through a fully
+/// overcast deck as a white dot.
+pub(crate) const CLOUD_OPACITY: f32 = 1.0;
 /// How prominent the high cirrus deck is relative to the low one.
 pub(crate) const CLOUD_HIGH_OPACITY: f32 = 0.55;
 /// Edge softness of the coverage cutoff (0 = hard, higher = wispier margins).
@@ -1537,6 +1586,16 @@ impl FromWorld for CloudField {
 pub(crate) const CLOUD_SUN_GAIN: f32 = 1.0;
 /// Gain on the ambient sky term — how much the shadowed side is filled in.
 pub(crate) const CLOUD_AMBIENT_GAIN: f32 = 1.0;
+/// Brightness of the clear sky above the deck, as light on its top, against the
+/// luminance of the horizon the camera sees (the fog colour). It diffuses down
+/// through the deck with the sun's own many-times-scattered light
+/// (`cloud_field.wesl`'s `low_deck_light`), and is what tints a cloud's base
+/// blue by day and, under a red sun, pink. Taken from the fog rather than from
+/// the clock because exposure follows the sky: at dusk the sky on screen is still
+/// bright, and a skylight that faded with `daylight` left the bases brown.
+pub(crate) const CLOUD_SKY_ABOVE_GAIN: f32 = 1.0;
+/// Rec. 709 luminance weights, for linear RGB.
+const LUMINANCE: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
 /// Floor under the deck's ambient colour, for the hours when the sky it is taken
 /// from has gone dark. See the argument at the `sky_rgb` it clamps.
 pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.045, 0.045, 0.055);
@@ -1550,10 +1609,14 @@ pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.045, 0.045, 0.055);
 /// against. The old single 0.35 was the cumulus answer applied to both, which is
 /// how a fully overcast day came out as a grey ceiling with the horizon glowing
 /// white underneath it. At full cover the base now lands on the haze colour it
-/// meets at the horizon, give or take the 15 % of modulation left so the deck
-/// still has some structure in it rather than being one flat field of grey.
-pub(crate) const CLOUD_SKY_FLOOR_SCATTERED: f32 = 0.35;
-pub(crate) const CLOUD_SKY_FLOOR_OVERCAST: f32 = 0.85;
+/// meets at the horizon, a little above it, as an overcast zenith is.
+///
+/// These are only the fill from below now: the sun and the sky above also reach
+/// a base by diffusing through it (`low_deck_light`), which these numbers used to
+/// stand in for, so both came down when that light went in (0.35 and 0.85 before,
+/// 2026-10-17). `print_noon_core_bases` prints where they land.
+pub(crate) const CLOUD_SKY_FLOOR_SCATTERED: f32 = 0.2;
+pub(crate) const CLOUD_SKY_FLOOR_OVERCAST: f32 = 0.55;
 /// Clouds are at full strength up to this camera altitude, then fade out so a
 /// high flight or orbit view sees clear sky (the shell is a ceiling seen from
 /// below; flying *above* the deck to look down on the tops is a follow-up).
@@ -1676,9 +1739,18 @@ pub(crate) fn update_clouds(
     // difference is what makes a sunset deck read as lit from above rather than
     // as a grey lid, and it is why the sun colour can't just be reused from
     // `sun_light`. Faded out through sunrise/sunset by the disc's own occlusion,
-    // so the scattering term goes to nothing rather than snapping off.
+    // so the scattering term goes to nothing rather than snapping off — by the
+    // *deck's* horizon, which is lower than the city's: the sun lights the base
+    // from below for a few minutes after it has set on the street.
+    let deck_disc = utils::sun::sun_disc_at(hours, decl, CLOUD_LAYER_HEIGHT);
     let beam = utils::sun::sun_transmittance_at(hours, decl, CLOUD_LAYER_HEIGHT);
-    let sun_rgb = beam * utils::sun::sun_disc(hours, decl) * CLOUD_SUN_GAIN;
+    // The deck's sunlight is written in the screen's units at the day exposure,
+    // and the camera opens up toward dusk by up to 4.5 stops. Not following it
+    // left the lit side of a sunset cloud that many stops too dark — muddy brown
+    // against a sky and a fog colour that had been lifted (2026-10-17).
+    let adapt = 2f32.powf(eye_adaptation_stops(hours, decl));
+    let sun_gain = deck_disc * CLOUD_SUN_GAIN * adapt;
+    let sun_rgb = beam * sun_gain;
 
     // Ambient sky light filling the shadowed side — and, at full cover, the deck's
     // whole colour.
@@ -1714,11 +1786,13 @@ pub(crate) fn update_clouds(
         mat.sun_dir = sun_direction(hours, decl).extend(CLOUD_DECK_THICKNESS);
         mat.sun_color = LinearRgba::new(sun_rgb.x, sun_rgb.y, sun_rgb.z, CLOUD_OPACITY);
         mat.params3 = Vec4::new(
-            utils::sun::sun_disc(hours, decl) * CLOUD_SUN_GAIN,
+            sun_gain,
             // The shell's tier, for the water that mirrors it: its pipelines have
             // no `CLOUDS_LOW` to read, and must find the same shapes.
             if quality::is_phone() { 1.0 } else { 0.0 },
-            0.0,
+            // The sky above, as bright as the sky the camera shows: the fog
+            // colour is that sky's horizon, in the same post-exposure units.
+            haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN,
             0.0,
         );
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
@@ -2022,12 +2096,10 @@ pub(crate) fn update_globe_clouds(
     tf.translation = centre;
     tf.scale = Vec3::splat(radius);
 
-    // Sunlit cloud colour is white lightly warmed by the current sun tint; the
-    // shader's terminator handles the day→night falloff across the sphere.
-    let (sun_c, _) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
-    let sun_v = LinearRgba::from(sun_c).to_vec4();
-    let mut lit = Vec4::splat(1.0).lerp(sun_v, 0.35);
-    lit.w = GLOBE_CLOUD_OPACITY;
+    // Sunlit cloud colour is white: the shader reddens it per fragment toward
+    // the terminator. It used to take the sun colour at the *map anchor*, so at
+    // the anchor's sunset every cloud on the planet turned orange.
+    let lit = Vec4::new(1.0, 1.0, 1.0, GLOBE_CLOUD_OPACITY);
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.centre = centre.extend(radius);
@@ -2128,22 +2200,72 @@ mod overcast_tests {
         );
     }
 
+    /// The fog colour the horizon shell paints at noon.
+    fn noon_haze() -> Vec3 {
+        let fog = systems::free_camera::distance_fog(0.2, 12.0, 0.0);
+        fog.color.to_linear().to_vec3()
+    }
+
+    /// The base tone of an opaque core of the low deck at noon, under `cover`:
+    /// `cloud_field.wesl`'s `low_deck_light` with `shape == 1`, where the phase
+    /// octaves are negligible under the march's depth and what is left is light
+    /// diffused through the column — the sun's and the sky's above — plus the
+    /// fill from below. The shader's constants are mirrored here, so a change to
+    /// `G_DIFFUSE`, `DIFFUSE_DEPTH_LOW`, `SKY_ABOVE_TINT` or `SKY_ABOVE_MU` there
+    /// belongs here too. The sun is `utils::sun`'s, the shader's no-atmosphere path.
+    fn noon_core_base(cover: f32) -> Vec3 {
+        const G_DIFFUSE: f32 = 0.85;
+        const DIFFUSE_DEPTH_LOW: f32 = 30.0;
+        const SKY_ABOVE_TINT: Vec3 = Vec3::new(0.59, 1.02, 1.97);
+        const SKY_ABOVE_MU: f32 = 0.5;
+        let diffuse_through = |tau: f32, mu: f32| {
+            let mu = mu.max(0.05);
+            let total = ((2.0 / 3.0 + mu) + (2.0 / 3.0 - mu) * (-tau / mu).exp())
+                / (4.0 / 3.0 + (1.0 - G_DIFFUSE) * tau);
+            (total - (-(1.0 - G_DIFFUSE) * tau / mu).exp()).max(0.0)
+        };
+        let (hours, decl) = (12.0, 0.0);
+        let haze = noon_haze();
+        let sun = utils::sun::sun_transmittance_at(hours, decl, CLOUD_LAYER_HEIGHT)
+            * utils::sun::sun_disc(hours, decl)
+            * CLOUD_SUN_GAIN
+            * 2f32.powf(eye_adaptation_stops(hours, decl));
+        let sky_above = SKY_ABOVE_TINT * haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN;
+        let tau = DIFFUSE_DEPTH_LOW;
+        sun * diffuse_through(tau, sun_direction(hours, decl).y) * sun_direction(hours, decl).y
+            + sky_above * diffuse_through(tau, SKY_ABOVE_MU)
+            + haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN * cloud_sky_floor(cover)
+    }
+
+    /// Prints the noon core bases against the haze, for tuning the floors.
+    #[test]
+    #[ignore = "a probe, not a check"]
+    fn print_noon_core_bases() {
+        let haze = noon_haze();
+        for cover in [0.3, 0.6, 1.0] {
+            let base = noon_core_base(cover);
+            println!(
+                "cover {cover}: base {base} = {:.2}× haze {haze}",
+                base.length() / haze.length()
+            );
+        }
+    }
+
     /// The deck and the horizon are one sky. At full cover the base tone the
     /// shader lands on must sit within a small fraction of the fog colour the
     /// horizon-haze shell paints, or the two meet in the step the Fairphone
     /// screenshots showed — a grey lid over a white band.
     ///
-    /// This is the arithmetic of `update_clouds` + `clouds.wesl`'s ambient term
-    /// for an opaque core (`shape_low == 1`), which is what a solid overcast is
-    /// made of; the sun term is negligible under an optical depth of 7.
+    /// This is the arithmetic of `update_clouds` + `cloud_field.wesl`'s
+    /// `low_deck_light` for an opaque core (`shape == 1`), which is what a solid
+    /// overcast is made of — see [`noon_core_base`]. A little brighter than the
+    /// horizon is right (an overcast zenith is), a lid darker than it is not.
     #[test]
     fn an_overcast_deck_meets_the_horizon_it_recedes_into() {
-        let fog = systems::free_camera::distance_fog(0.2, 12.0, 0.0);
-        let haze = fog.color.to_linear().to_vec3();
-        let base = haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN * cloud_sky_floor(1.0);
-        let ratio = base.length() / haze.length();
+        let haze = noon_haze();
+        let ratio = noon_core_base(1.0).length() / haze.length();
         assert!(
-            (0.8..=1.0).contains(&ratio),
+            (0.85..=1.15).contains(&ratio),
             "an overcast deck should land on the haze colour, lands at {ratio}× it"
         );
         // The old constants, for the record: a base of 0.35 × (0.38, 0.44, 0.55)
@@ -2157,7 +2279,11 @@ mod overcast_tests {
     /// the one cue that says the thing is solid.
     #[test]
     fn scattered_cloud_keeps_a_dark_base() {
-        assert!(cloud_sky_floor(0.3) < 0.5 * cloud_sky_floor(1.0));
+        let (scattered, overcast) = (noon_core_base(0.3), noon_core_base(1.0));
+        assert!(
+            scattered.length() < 0.8 * overcast.length(),
+            "a cumulus base {scattered} should be darker than an overcast one {overcast}"
+        );
         // Monotonic across the range, so no coverage between the two ends is
         // darker than one below it.
         let mut last = -1.0;
