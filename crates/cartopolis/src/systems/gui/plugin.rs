@@ -346,8 +346,12 @@ impl Plugin for GuiPlugin {
                     // transcript it expands, and — being ordered before the
                     // on-screen keyboard — its field is registered in time for the
                     // keyboard to find it.
+                    // And after the other people have been moved this frame: the
+                    // two were unordered, so a balloon hung over where its speaker
+                    // was on whichever frames the scheduler ran it first.
                     systems::chat_overlay::render_chat_bubbles
-                        .after(systems::free_camera::camera_controls),
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::avatar::smooth_remote_avatars),
                     systems::chat_overlay::render_chat_transcript,
                     systems::chat_overlay::render_chat_composer,
                     // A chat's World view has a text field, so it is ordered before
@@ -359,8 +363,11 @@ impl Plugin for GuiPlugin {
                     systems::contacts::render_person_card,
                     // Also after the camera has moved, so pins project onto this
                     // frame's view.
+                    // And after the people it stands markers on have moved
+                    // (`render_chat_bubbles` says why).
                     systems::place_pins::render_place_pins
-                        .after(systems::free_camera::camera_controls),
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::avatar::smooth_remote_avatars),
                     // The device arrow: where the phone is, in the views where the
                     // avatar isn't standing in for it. Same placement rules as the
                     // pins above — it reads the root `Ui`'s leftover space to find
