@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meetings: professional tools for calls, v1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+    <symbol id="micoff" viewBox="0 0 24 24"><path d="M15 9.5V6a3 3 0 0 0-5.6-1.5M9 9v2a3 3 0 0 0 4.6 2.5"/><path d="M5.5 11a6.5 6.5 0 0 0 10.8 4.9M18.5 11a6.4 6.4 0 0 1-.4 2.2M12 17.5V21M4 4l16 16"/></symbol>
+    <symbol id="cam" viewBox="0 0 24 24"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></symbol>
+    <symbol id="camoff" viewBox="0 0 24 24"><path d="M9 6.5h4a2.5 2.5 0 0 1 2.5 2.5v4M15.5 15A2.5 2.5 0 0 1 13 17.5H5.5A2.5 2.5 0 0 1 3 15V9a2.5 2.5 0 0 1 2-2.4M15.5 10.5l5-3v9l-3-1.8M3 3l18 18"/></symbol>
+    <symbol id="share" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20M12 13V8M9.5 10.5L12 8l2.5 2.5"/></symbol>
+    <symbol id="hand" viewBox="0 0 24 24"><path d="M8 12.5V5.5a1.5 1.5 0 0 1 3 0V11M11 4.5a1.5 1.5 0 0 1 3 0V11M14 5.5a1.5 1.5 0 0 1 3 0V12M17 8.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a6 6 0 0 1-4.6-2.2L4.2 15a1.6 1.6 0 0 1 2.4-2.1L8 14.5"/></symbol>
+    <symbol id="smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 14a4 4 0 0 0 7 0"/><circle cx="9.3" cy="10" r=".6"/><circle cx="14.7" cy="10" r=".6"/></symbol>
+    <symbol id="cc" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M10.5 10.2a2.2 2.2 0 1 0 0 3.6M17 10.2a2.2 2.2 0 1 0 0 3.6"/></symbol>
+    <symbol id="dots" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/></symbol>
+    <symbol id="end" viewBox="0 0 24 24"><path d="M3.5 13.5c4.7-4.2 12.3-4.2 17 0l-2.2 2.6-3.4-1.4V12a12 12 0 0 0-5.8 0v2.7l-3.4 1.4z"/></symbol>
+    <symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.5a3.3 3.3 0 0 1 0 6.2M17.5 14a6 6 0 0 1 3.5 5.5"/></symbol>
+    <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5.5h16v10.5H9.5L5 19.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/></symbol>
+    <symbol id="notes" viewBox="0 0 24 24"><path d="M6 3.5h9l4 4v13H6z"/><path d="M14.5 3.5V8h4.5M9 12h7M9 15.5h7M9 9h3"/></symbol>
+    <symbol id="list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.8" cy="6.5" r="1"/><circle cx="4.8" cy="12" r="1"/><circle cx="4.8" cy="17.5" r="1"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 7.7-1.5"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="chevup" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
+    <symbol id="grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="speaker" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="11" rx="2"/><rect x="3.5" y="17" width="5" height="3.5" rx="1"/><rect x="9.5" y="17" width="5" height="3.5" rx="1"/><rect x="15.5" y="17" width="5" height="3.5" rx="1"/></symbol>
+    <symbol id="present" viewBox="0 0 24 24"><rect x="3.5" y="4" width="12.5" height="16" rx="2"/><rect x="17.5" y="4" width="3.5" height="4.5" rx="1"/><rect x="17.5" y="10" width="3.5" height="4.5" rx="1"/><rect x="17.5" y="15.5" width="3.5" height="4.5" rx="1"/></symbol>
+    <symbol id="rec" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/></symbol>
+    <symbol id="rooms" viewBox="0 0 24 24"><rect x="3.5" y="4" width="7.5" height="7" rx="1.5"/><rect x="13" y="4" width="7.5" height="7" rx="1.5"/><rect x="3.5" y="13" width="7.5" height="7" rx="1.5"/><rect x="13" y="13" width="7.5" height="7" rx="1.5"/></symbol>
+    <symbol id="poll" viewBox="0 0 24 24"><path d="M5 20V11M10 20V5M15 20v-6M20 20V9"/></symbol>
+    <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+    <symbol id="link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="blur" viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.2"/><path d="M6 20a6 6 0 0 1 12 0"/><circle cx="4" cy="6" r=".8"/><circle cx="20" cy="6" r=".8"/><circle cx="3.5" cy="12" r=".8"/><circle cx="20.5" cy="12" r=".8"/><circle cx="4" cy="18" r=".8"/><circle cx="20" cy="18" r=".8"/></symbol>
+    <symbol id="wave" viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0"/></symbol>
+    <symbol id="pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3v1.5H7V13l3-3z"/><path d="M12 14.5V21"/></symbol>
+    <symbol id="star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/></symbol>
+    <symbol id="userminus" viewBox="0 0 24 24"><circle cx="10" cy="8.5" r="3.3"/><path d="M4 19.5a6 6 0 0 1 12 0M15.5 11h6"/></symbol>
+    <symbol id="userplus" viewBox="0 0 24 24"><circle cx="10" cy="8.5" r="3.3"/><path d="M4 19.5a6 6 0 0 1 12 0M18.5 8v6M15.5 11h6"/></symbol>
+    <symbol id="crown" viewBox="0 0 24 24"><path d="M4 17.5l-1-10 5 4 4-6 4 6 5-4-1 10z"/><path d="M4 20.5h16"/></symbol>
+    <symbol id="door" viewBox="0 0 24 24"><path d="M5 20.5h14M7 20.5V4h10v16.5"/><circle cx="14" cy="12.5" r=".9"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="signal" viewBox="0 0 24 24"><path d="M5 19v-3M10 19v-7M15 19V8M20 19V4"/></symbol>
+    <symbol id="vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></symbol>
+    <symbol id="cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 3.5 5.4 3.5 8.5s-1 5.9-3.5 8.5c-2.5-2.6-3.5-5.4-3.5-8.5s1-5.9 3.5-8.5z"/></symbol>
+  </defs>
+</svg>
+
+<h1>Calls: <b>the tools a professional meeting needs</b></h1>
+<p class="lede">
+  A design proposal, not code. Today a call can ring, be answered, mute, turn the camera on and off,
+  fold to a bar and end (<code>systems::call_screen</code>, <code>src/lib/call.ts</code>). This sheet
+  adds what a work meeting expects from Zoom, Teams or Meet: scheduling, a lobby, hosts, screen sharing,
+  raised hands, captions, notes and a record afterwards. Everything is drawn so it still holds under the
+  rule calls already live by: <b>the server forwards sealed frames and must never be able to open one.</b>
+  So every tool says where it runs. <b>It builds on <code>../workspace/</code> v1, sheet 2</b>: a call
+  belongs to a chat that has a place in the world, and <i>Room</i> (everyone's avatar in that place) stays
+  one of the layouts. Nothing here adds more to do in the world; the new tools are the ordinary
+  conferencing ones. Drawn in the web UI's tokens (<code>src/css/theme.css</code>, dark half)
+  and the app's call keys (<code>theme::call_button</code>). Everything here is <span class="new">NEW</span>
+  except what is marked <span class="has">TODAY</span>.
+</p>
+
+<!-- ───────────────────────────── 1. the meeting ───────────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>A meeting in progress, on the web</h2>
+  <p class="cap">Nine people, Sanne presenting a slide, captions on, two people in the lobby and two hands up. The meeting takes the whole page; the chat's sidebar folds into the rail, and the right panel holds People, Chat, Notes and Agenda.</p>
+  <div class="row">
+    <div class="win">
+      <div class="top">
+        <div class="wm"><img src="../../../assets/icon/cartopolis.svg" alt=""><span>carto<i>polis</i></span></div>
+        <div class="seg"><div class="on">Community</div><div><span class="live"></span>World</div></div>
+        <div class="crumbs"><span>Street party crew</span><span class="sep">›</span><b>Meeting</b></div>
+        <div class="sp"></div>
+        <div class="me">J</div>
+      </div>
+      <div class="body">
+        <div class="rail">
+          <div class="tile tool"><svg class="i"><use href="#chat"/></svg></div>
+          <div class="tile h4">G</div>
+          <div class="tile on" style="background:var(--h3);color:#fff">S</div>
+        </div>
+        <div class="mt">
+          <div class="mtop">
+            <div class="ttl"><b>Q4 planning</b><span><svg class="i xs"><use href="#lock"/></svg>Encrypted · 24:10 · <svg class="i xs"><use href="#cube"/></svg>Courtyard, Ebbingekwartier</span></div>
+            <span class="chip ag"><svg class="i xs"><use href="#list"/></svg>Budget · 6 min<span class="prog"><i style="width:62%"></i></span></span>
+            <span class="chip rec"><i></i>Rec · Sanne</span>
+            <div class="sp"></div>
+            <div class="seg ico"><div title="Speaker"><svg class="i s"><use href="#speaker"/></svg></div><div title="Gallery"><svg class="i s"><use href="#grid"/></svg></div><div class="on" title="Shared screen"><svg class="i s"><use href="#present"/></svg></div><div title="Room"><svg class="i s"><use href="#cube"/></svg></div></div>
+          </div>
+          <div class="stage">
+            <div class="screen" style="flex:1">
+              <div class="sl">
+                <h5>Street party 2026 · budget</h5>
+                <div class="sub">Spent against planned, per line · € hundreds</div>
+                <div class="chart">
+                  <i style="height:40%"></i><i class="o" style="height:46%"></i>
+                  <i style="height:28%"></i><i class="o" style="height:66%"></i>
+                  <i style="height:55%"></i><i class="o" style="height:50%"></i>
+                  <i style="height:22%"></i><i class="o" style="height:20%"></i>
+                </div>
+                <div class="lg"><span><b style="background:#2c917c"></b>Planned</span><span><b style="background:#c06630"></b>Spent</span><span style="margin-left:auto">Stage · Gazebos · Food · Waste</span></div>
+              </div>
+              <div class="cursor" style="left:41%;top:40%"></div>
+              <div class="by"><svg class="i xs"><use href="#share"/></svg>Sanne's screen · Keynote window</div>
+              <div class="caps" style="bottom:46px;width:76%;max-width:none"><b>Sanne</b>so the gazebo line is the one that grew, from one-eighty to four-twenty, because the council wants them anchored</div>
+            </div>
+            <div class="strip">
+              <div class="vid world" style="height:72px;flex:none;background:url(../workspace/meet.jpg) center/cover"><div class="nm"><svg class="i"><use href="#cube"/></svg>Room · +4 there</div></div>
+              <div class="vid r1 talk"><div class="nm"><svg class="i"><use href="#mic"/></svg>Sanne</div><div class="tag"><span><svg class="i xs"><use href="#share"/></svg></span></div></div>
+              <div class="vid r2"><div class="hand"><svg class="i xs"><use href="#hand"/></svg>1</div><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Fatima</div></div>
+              <div class="vid r3 blur"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Daan</div><div class="hand" style="top:8px"><svg class="i xs"><use href="#hand"/></svg>2</div></div>
+              <div class="vid r5"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>You</div></div>
+            </div>
+          </div>
+          <div class="bar">
+            <div class="key off"><div class="k"><svg class="i"><use href="#micoff"/></svg><span class="car"><svg class="i"><use href="#chevup"/></svg></span></div>Unmute</div>
+            <div class="key"><div class="k"><svg class="i"><use href="#cam"/></svg><span class="car"><svg class="i"><use href="#chevup"/></svg></span></div>Camera</div>
+            <div class="key"><div class="k"><svg class="i"><use href="#share"/></svg></div>Share</div>
+            <div class="key"><div class="k"><svg class="i"><use href="#hand"/></svg></div>Hand</div>
+            <div class="key"><div class="k"><svg class="i"><use href="#smile"/></svg></div>React</div>
+            <div class="key on"><div class="k"><svg class="i"><use href="#cc"/></svg></div>Captions</div>
+            <div class="key"><div class="k"><svg class="i"><use href="#dots"/></svg></div>More</div>
+            <div class="gap"></div>
+            <div class="key red"><div class="k"><svg class="i"><use href="#end"/></svg><span class="car" style="right:-5px"><svg class="i"><use href="#chevup"/></svg></span></div>Leave</div>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="tabs"><div class="on"><svg class="i s"><use href="#users"/></svg>People <span class="badge q">9</span></div><div><svg class="i s"><use href="#chat"/></svg>Chat <span class="badge">3</span></div><div><svg class="i s"><use href="#notes"/></svg>Notes</div><div><svg class="i s"><use href="#list"/></svg>Agenda</div></div>
+          <div class="pbody">
+            <div class="lobby">
+              <div class="ph">In the lobby <span><span class="mini">Admit all</span></span></div>
+              <div class="pp"><div class="av sm h4">W</div><div class="b">Wethouder Bakker<span class="role g">Guest</span><small>by invite link · 1 min</small></div><span class="mini">Deny</span><span class="mini pri">Admit</span></div>
+              <div class="pp"><div class="av sm h6">A</div><div class="b">anna.devries<small>member · 20 s</small></div><span class="mini">Deny</span><span class="mini pri">Admit</span></div>
+            </div>
+            <div class="ph">Hands up <span>in order</span></div>
+            <div class="pp"><span class="ord">1</span><div class="b">Fatima<small>2 min</small></div><span class="mini">Lower</span><span class="mini pri">Let talk</span></div>
+            <div class="pp"><span class="ord">2</span><div class="b">Daan<small>40 s</small></div><span class="mini">Lower</span></div>
+            <div class="ph">In the meeting <span>9</span></div>
+            <div class="pp"><div class="av sm h3">S</div><div class="b">Sanne<span class="role">Host</span><small>presenting · recording</small></div><div class="ic"><svg class="i s"><use href="#share"/></svg><svg class="i s"><use href="#mic"/></svg></div></div>
+            <div class="pp"><div class="av sm h4">J</div><div class="b">You<span class="role">Co-host</span></div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+            <div class="pp h"><div class="av sm h5">M</div><div class="b">mei</div><div class="ic"><svg class="i s"><use href="#mic"/></svg><span class="dots" style="width:24px;height:24px"><svg class="i s"><use href="#dots"/></svg></span></div></div>
+            <div class="pp"><div class="av sm h2">F</div><div class="b">Fatima</div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+            <div class="pp"><div class="av sm h6">D</div><div class="b">Daan</div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+            <div class="pp"><div class="av sm h1">J</div><div class="b">Joris<small>on the phone app</small></div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+          </div>
+        </div>
+        <div class="pop" style="left:646px;top:430px;width:250px">
+          <div class="row2"><svg class="i s"><use href="#micoff"/></svg>Mute</div>
+          <div class="row2"><svg class="i s"><use href="#camoff"/></svg>Stop camera</div>
+          <div class="row2 h"><svg class="i s"><use href="#star"/></svg>Spotlight for everyone</div>
+          <div class="row2"><svg class="i s"><use href="#pin"/></svg>Pin for me</div>
+          <div class="row2"><svg class="i s"><use href="#crown"/></svg>Make co-host</div>
+          <hr>
+          <div class="row2"><svg class="i s"><use href="#door"/></svg>Back to the lobby</div>
+          <div class="row2 dan"><svg class="i s"><use href="#userminus"/></svg>Remove from meeting</div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>The top line</h3>
+      <ul>
+        <li>Title, chat, timer and <b>Encrypted</b> as today's call header has them <span class="has">TODAY</span>.</li>
+        <li><b>The agenda item</b> in a chip with the time it has left. It turns gold at one minute and red when over; the host moves on with one click in the Agenda tab.</li>
+        <li><b>Recording</b> names whose device records. The server cannot record (it has no key), so a recording only ever exists on someone's own device, and everybody sees that it does.</li>
+        <li><b>Four layouts.</b> Speaker (who talks is big), Gallery (everyone equal), Shared screen (picked automatically when somebody shares), and <b>Room</b> from <code>../workspace/</code>, where the call takes place in the chat's place. Each person picks their own; a host's Spotlight overrides it for everyone.</li>
+        <li><b>The place is in the header</b>, and the strip's last tile is a live look into it: four people joined from the world, by walking into the courtyard.</li>
+      </ul>
+      <h3>The stage</h3>
+      <ul>
+        <li>A shared screen fills the stage, with the speakers in a strip. The presenter's pointer shows as a ring, as in <code>../workspace/</code>'s Share my view.</li>
+        <li><b>Whoever talks gets a teal ring</b>, worked out on each device from the sound it decodes, so the server learns nothing new.</li>
+        <li>Hand numbers on the pictures match the queue in the panel. Daan blurred his background.</li>
+        <li><b>Captions</b> at the bottom, with the speaker's name. Each speaker's own device writes them (section 7).</li>
+      </ul>
+      <h3>The keys</h3>
+      <ul>
+        <li>Today's round keys and labels <span class="has">TODAY</span>, plus Share, Hand, React, Captions and More. The small arrow on Mic and Camera picks the device. The arrow on Leave offers <b>End for everyone</b> to a host.</li>
+      </ul>
+      <h3>The People tab</h3>
+      <ul>
+        <li><b>Lobby</b> first, because someone is waiting. A guest is marked as one.</li>
+        <li><b>Hands in the order they went up</b>; <i>Let talk</i> lowers the hand and lets a muted person unmute.</li>
+        <li>A host's <b>⋯</b> on a person: mute, stop camera, spotlight, co-host, back to the lobby, remove.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 2. layouts and quick menus ───────────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>The other two layouts, and the menus behind the keys</h2>
+  <p class="cap">Speaker for a discussion, Gallery for a round of updates. Then React, More, and the device picker under the Mic arrow.</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:560px;height:350px;background:var(--stage);padding:10px;display:flex;flex-direction:column;gap:8px">
+        <div class="vid r2 talk" style="flex:1"><div class="nm"><svg class="i"><use href="#mic"/></svg>Fatima</div><div class="caps" style="font-size:13.5px"><b>Fatima</b>can we ask the council to pay for the anchors?</div></div>
+        <div style="display:flex;gap:8px;height:74px">
+          <div class="vid r1" style="flex:1"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Sanne</div></div>
+          <div class="vid r3 blur" style="flex:1"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Daan</div></div>
+          <div class="vid r4" style="flex:1"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>mei</div></div>
+          <div class="vid r5" style="flex:1"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>You</div></div>
+          <div class="vid noc" style="flex:1;display:grid;place-items:center;color:var(--dim);font-size:13px">+4</div>
+        </div>
+      </div>
+      <p class="fcap"><b>Speaker.</b> The one talking fills the stage and the rest sit in a row. Who is big changes after 1.5 s of talking, not on every cough.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:560px;height:350px;background:var(--stage);padding:10px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:8px">
+        <div class="vid r1"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Sanne</div></div>
+        <div class="vid r2 talk"><div class="nm"><svg class="i"><use href="#mic"/></svg>Fatima</div></div>
+        <div class="vid r3 blur"><div class="hand"><svg class="i xs"><use href="#hand"/></svg>1</div><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Daan</div></div>
+        <div class="vid r4"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>mei</div><div class="react">👍</div></div>
+        <div class="vid r5"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>You</div></div>
+        <div class="vid r6"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Joris</div><div class="react">👏</div></div>
+        <div class="vid noc"><div class="ini"><div class="av lg h4" style="width:52px;height:52px;font-size:20px">A</div></div><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>anna.devries</div></div>
+        <div class="vid r4" style="--shirt:#555;--skin:#e2b190"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Wethouder Bakker</div></div>
+        <div class="vid world" style="background:url(../workspace/meet.jpg) center/cover"><div class="nm"><svg class="i"><use href="#cube"/></svg>Room</div></div>
+      </div>
+      <p class="fcap"><b>Gallery.</b> Today's even grid of camera-shaped tiles <span class="has">TODAY</span>, up to 3×3 on a page; more pages scroll. Reactions float up from a tile for 4 s. A camera that is off shows the initial, as today. The last tile is the Room, as in <code>../workspace/</code>; clicking it switches to that layout.</p>
+    </div>
+    <div style="position:relative;width:560px;height:350px">
+      <div class="pop" style="left:0;top:0;width:250px">
+        <div class="lab">React</div>
+        <div class="emo"><span>👍</span><span class="h">👏</span><span>😂</span><span>❤️</span><span>🎉</span></div>
+        <hr>
+        <div class="row2"><svg class="i s"><use href="#hand"/></svg>Raise hand<small>H</small></div>
+      </div>
+      <div class="pop" style="left:0;top:142px;width:250px">
+        <div class="lab">Microphone</div>
+        <div class="row2"><svg class="i s"><use href="#check"/></svg>Jabra Speak 510<small><span class="meter"><i style="height:6px"></i><i style="height:11px"></i><i style="height:15px"></i><i class="o" style="height:9px"></i></span></small></div>
+        <div class="row2" style="padding-left:34px">Laptop microphone</div>
+        <hr>
+        <div class="row2"><svg class="i s"><use href="#wave"/></svg>Hide background noise<span class="tog on"></span></div>
+        <div class="row2"><svg class="i s"><use href="#vol"/></svg>Speaker: Jabra Speak 510</div>
+      </div>
+      <div class="pop" style="left:270px;top:0;width:290px">
+        <div class="row2"><svg class="i s"><use href="#rooms"/></svg>Breakout rooms<small>host</small></div>
+        <div class="row2"><svg class="i s"><use href="#poll"/></svg>Poll<small>host</small></div>
+        <div class="row2 h"><svg class="i s"><use href="#rec"/></svg>Record on this device</div>
+        <div class="row2"><svg class="i s"><use href="#notes"/></svg>Keep a transcript</div>
+        <hr>
+        <div class="row2"><svg class="i s"><use href="#blur"/></svg>Blur my background<span class="tog"></span></div>
+        <div class="row2"><svg class="i s"><use href="#speaker"/></svg>Layout<small>Shared screen</small></div>
+        <div class="row2"><svg class="i s"><use href="#shield"/></svg>Meeting controls<small>host</small></div>
+        <div class="row2"><svg class="i s"><use href="#sliders"/></svg>Settings</div>
+        <hr>
+        <div class="row2"><svg class="i s"><use href="#lock"/></svg>Verify encryption…</div>
+      </div>
+      <p class="fcap" style="position:absolute;left:0;top:392px;max-width:560px"><b>React, Mic and More.</b> Keyboard keys on desktop: Space held to talk while muted, M, V, H. <i>Verify encryption</i> shows the call's safety code, the same for everyone in it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 3. before ───────────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>Before: plan it, invite to it, check your camera</h2>
+  <p class="cap">A meeting is a call with a time, a title and an agenda, held in a chat that already exists. Planning it posts a card into that chat; the card is how people join. Guests come in through a link and wait in the lobby.</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:430px;padding:30px;display:grid;place-items:center;background:#0b1012">
+        <div class="dlg" style="width:370px">
+          <h4><svg class="i"><use href="#cal"/></svg>Plan a meeting</h4>
+          <div class="form">
+            <div class="fld"><label>Title</label><div class="inp">Q4 planning</div></div>
+            <div class="two"><div class="fld"><label>When</label><div class="inp">Thu 23 Oct · 19:30</div></div><div class="fld" style="flex:.6"><label>Length</label><div class="inp">1 h</div></div></div>
+            <div class="fld"><label>In</label><div class="inp"><div class="av xs grp h3">S</div>Street party crew · 7 people</div></div>
+            <div class="fld"><label>Where in the world</label><div class="inp"><svg class="i s"><use href="#cube"/></svg>Courtyard, Ebbingekwartier</div></div>
+            <div class="fld"><label>Agenda</label><div class="inp ta"><span>1. Last year · 5 min</span><span>2. Budget · 20 min</span><span>3. Permits · 15 min</span><span class="ph2">+ item</span></div></div>
+            <div class="opt"><svg class="i s"><use href="#link"/></svg><div>Guests by link<small>No account needed; they wait in the lobby</small></div><span class="tog on"></span></div>
+            <div class="opt"><svg class="i s"><use href="#door"/></svg><div>Lobby for members too<small>Off: members come straight in</small></div><span class="tog"></span></div>
+            <div class="opt"><svg class="i s"><use href="#rec"/></svg><div>Recording allowed<small>Everyone sees when someone records</small></div><span class="tog"></span></div>
+          </div>
+          <div class="acts"><span class="btn ghost">Cancel</span><span class="btn pri">Plan and post</span></div>
+        </div>
+      </div>
+      <p class="fcap"><b>Plan a meeting</b>, from a chat's call button (a long press, or its arrow) or the + menu. Whoever plans it is its host.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:520px;padding:18px 20px;background:var(--bg)">
+        <div class="msg"><div class="av sm h3">S</div><div class="mb"><div class="who">Sanne<time>Mon 14:02</time></div>
+          <div class="mcard" style="margin-top:6px">
+            <div class="mh"><div class="cal"><b>OCT</b><span>23</span></div><div><h5>Q4 planning</h5><div class="when">Thursday 19:30–20:30 · host Sanne</div><div class="when" style="display:flex;gap:5px;align-items:center"><svg class="i xs"><use href="#cube"/></svg>Courtyard, Ebbingekwartier · join here or walk in</div><div class="when" style="margin-top:2px;color:var(--accent-text)">5 going · 1 maybe · guests by link</div></div></div>
+            <ol class="ag" style="padding-left:92px"><li>Last year · 5 min</li><li>Budget · 20 min</li><li>Permits · 15 min</li></ol>
+            <div class="mf"><span class="btn pri"><svg class="i s"><use href="#check"/></svg>Going</span><span class="btn">Maybe</span><span class="btn ghost"><svg class="i s"><use href="#cal"/></svg>Add to calendar</span><div class="sp"></div><span class="ib b"><svg class="i s"><use href="#link"/></svg></span></div>
+          </div>
+        </div></div>
+        <div class="msg" style="margin-top:10px"><div class="av sm" style="background:var(--raised);color:var(--dim)"><svg class="i s"><use href="#bell"/></svg></div><div class="mb">
+          <div class="mcard" style="width:440px;border-color:#25503a">
+            <div class="mh" style="align-items:center"><span class="live" style="background:var(--call-green);width:10px;height:10px"></span><div style="flex:1"><h5 style="font-size:15px">Q4 planning has started</h5><div class="when">Sanne, mei and Daan are in · 2 min</div></div><span class="btn" style="background:var(--call-green);color:#fff;border-color:transparent;font-weight:600">Join</span></div>
+          </div>
+        </div></div>
+      </div>
+      <p class="fcap"><b>The card in the chat.</b> Going and Maybe are replies in the chat, so the server never learns who is coming. <b>Add to calendar</b> downloads an <code>.ics</code>. Each device sets its own reminder ten minutes before, so no server keeps a schedule. When it starts, the card turns into today's green Join pill <span class="has">TODAY</span>.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:560px;height:440px;padding:22px;background:var(--bg);display:flex;gap:18px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:10px">
+          <div class="vid r5 blur" style="flex:1"><div class="nm">You · background blurred</div></div>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <div class="key off" style="width:auto"><div class="k"><svg class="i"><use href="#micoff"/></svg></div></div>
+            <div class="key" style="width:auto"><div class="k" style="background:var(--raised)"><svg class="i"><use href="#cam"/></svg></div></div>
+            <div class="key" style="width:auto"><div class="k" style="background:var(--raised)"><svg class="i"><use href="#blur"/></svg></div></div>
+          </div>
+        </div>
+        <div style="width:220px;display:flex;flex-direction:column;gap:10px">
+          <h4 style="color:var(--strong);font-size:17px;font-weight:600">Q4 planning</h4>
+          <div style="color:var(--dim);font-size:13px">Sanne, mei and Daan are in.</div>
+          <div class="fld"><label style="font-size:12px;color:var(--dim)">Microphone</label><div class="inp" style="font-size:12.5px">Jabra Speak 510<span class="sp"></span><span class="meter"><i style="height:5px"></i><i style="height:10px"></i><i style="height:14px"></i><i class="o" style="height:8px"></i></span></div></div>
+          <div class="fld"><label style="font-size:12px;color:var(--dim)">Speaker</label><div class="inp" style="font-size:12.5px">Jabra Speak 510<span class="sp"></span><span style="color:var(--accent-text)">Test</span></div></div>
+          <div class="fld"><label style="font-size:12px;color:var(--dim)">Camera</label><div class="inp" style="font-size:12.5px">Logitech C920</div></div>
+          <div class="opt" style="font-size:12.5px"><svg class="i s"><use href="#wave"/></svg>Hide background noise<span class="tog on"></span></div>
+          <div class="sp"></div>
+          <span class="btn pri" style="justify-content:center;padding:10px">Join meeting</span>
+          <div style="color:var(--faint);font-size:12px;text-align:center">You join muted: 9+ people are in</div>
+        </div>
+      </div>
+      <p class="fcap"><b>Check before joining</b>, for a planned meeting and a group call with more than three people; a one-to-one call still answers straight away <span class="has">TODAY</span>. A guest sees the same page with a name field, then “Waiting for Sanne to let you in”.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 4. hosting ───────────────────────────── -->
+<section class="sec">
+  <h2><span>4</span>Hosting: controls, being muted, and breakout rooms</h2>
+  <p class="cap">What a host can do to the whole meeting, what someone muted by the host sees, and splitting into rooms.</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:340px;height:440px;background:var(--stage)">
+        <div class="pop" style="left:20px;top:20px;width:300px;position:absolute">
+          <div class="lab">Meeting controls</div>
+          <div class="row2"><svg class="i s"><use href="#lock"/></svg>Lock the meeting<span class="tog"></span></div>
+          <div class="row2"><svg class="i s"><use href="#door"/></svg>Lobby<small>Guests only</small></div>
+          <hr>
+          <div class="lab">Everyone else may</div>
+          <div class="row2"><svg class="i s"><use href="#mic"/></svg>Unmute themselves<span class="tog on"></span></div>
+          <div class="row2"><svg class="i s"><use href="#cam"/></svg>Turn on their camera<span class="tog on"></span></div>
+          <div class="row2"><svg class="i s"><use href="#share"/></svg>Share their screen<span class="tog"></span></div>
+          <div class="row2"><svg class="i s"><use href="#chat"/></svg>Write in the call chat<span class="tog on"></span></div>
+          <hr>
+          <div class="row2"><svg class="i s"><use href="#micoff"/></svg>Mute everyone</div>
+          <div class="row2 dan"><svg class="i s"><use href="#end"/></svg>End for everyone</div>
+        </div>
+      </div>
+      <p class="fcap"><b>Meeting controls</b>, under More, for hosts. Lock means nobody new gets in, not even through the lobby.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:440px;height:440px;background:var(--stage);padding:12px;display:flex;flex-direction:column;gap:10px">
+        <div class="vid r1 talk" style="flex:1"><div class="nm"><svg class="i"><use href="#mic"/></svg>Sanne</div></div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;gap:12px;align-items:center">
+          <svg class="i" style="color:var(--danger)"><use href="#micoff"/></svg>
+          <div style="flex:1;font-size:13.5px;color:var(--text)"><b style="color:var(--strong)">Sanne muted you.</b><br><span style="color:var(--dim)">Raise your hand to ask to talk.</span></div>
+          <span class="btn pri"><svg class="i s"><use href="#hand"/></svg>Raise hand</span>
+        </div>
+        <div class="bar" style="height:64px">
+          <div class="key off" style="opacity:.45"><div class="k"><svg class="i"><use href="#micoff"/></svg><span class="car"><svg class="i"><use href="#lock"/></svg></span></div>Muted</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#cam"/></svg></div>Camera</div>
+          <div class="key on"><div class="k"><svg class="i"><use href="#hand"/></svg></div>Hand</div>
+          <div class="key red"><div class="k"><svg class="i"><use href="#end"/></svg></div>Leave</div>
+        </div>
+      </div>
+      <p class="fcap"><b>Muted by the host, and unable to unmute.</b> This one is not a polite request: the server stops forwarding that person's sound, so a modified client can't talk over the meeting either. When the host lets them talk, the lock goes and the microphone stays off until they press it.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:520px;padding:30px;display:grid;place-items:center;background:#0b1012">
+        <div class="dlg" style="width:460px">
+          <h4><svg class="i"><use href="#rooms"/></svg>Breakout rooms</h4>
+          <div class="two" style="margin-bottom:10px"><div class="inp">3 rooms</div><div class="inp">At random</div><div class="inp"><svg class="i s"><use href="#clock"/></svg>10 min</div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div class="room"><h6>Stage <span>3</span></h6><div class="ppl"><div class="av xs h3">S</div><div class="av xs h2">F</div><div class="av xs h1">J</div></div></div>
+            <div class="room"><h6>Gazebos <span>3</span></h6><div class="ppl"><div class="av xs h6">D</div><div class="av xs h5">M</div><div class="av xs h4">W</div></div></div>
+            <div class="room"><h6>Food <span>3</span></h6><div class="ppl"><div class="av xs h4">J</div><div class="av xs h6">A</div><div class="av xs h1">K</div></div></div>
+          </div>
+          <div class="opt" style="margin-top:10px"><div>People may move between rooms</div><span class="tog on"></span></div>
+          <div class="opt"><div>Bring everyone back after the timer<small>with a 60 s warning</small></div><span class="tog on"></span></div>
+          <div class="acts"><span class="btn ghost">Cancel</span><span class="btn pri">Open rooms</span></div>
+        </div>
+      </div>
+      <p class="fcap"><b>Breakout rooms.</b> Drag a face to move it. While rooms are open the host can visit any room, write to all rooms at once, and close them. Each room is a call of its own inside the meeting; what that means for the keys is the first question in section 9.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 5. during & after ───────────────────────────── -->
+<section class="sec">
+  <h2><span>5</span>Notes during, the record after</h2>
+  <p class="cap">The Agenda and Notes tabs are one shared document that everybody in the meeting can write in. When the meeting ends, it is posted to the chat as the meeting's record, with the decisions, the actions and a poll's result.</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:340px;height:610px;display:flex">
+        <div class="pane" style="width:340px;border:0">
+          <div class="tabs"><div><svg class="i s"><use href="#users"/></svg>People</div><div><svg class="i s"><use href="#chat"/></svg>Chat</div><div class="on"><svg class="i s"><use href="#notes"/></svg>Notes</div><div><svg class="i s"><use href="#list"/></svg>Agenda</div></div>
+          <div class="pbody" style="padding:8px 14px">
+            <div class="ph" style="padding-left:0">Agenda <span><svg class="i xs"><use href="#clock"/></svg>24:10</span></div>
+            <div class="check"><span class="bx y"></span><div>Last year<small> · 5 min, took 7</small></div></div>
+            <div class="check"><span class="bx" style="border-color:var(--accent)"></span><div style="color:var(--strong)">Budget<small> · 6 of 20 min left</small></div></div>
+            <div class="check"><span class="bx"></span><div>Permits<small> · 15 min</small></div></div>
+            <div style="display:flex;gap:6px;margin:8px 0 4px"><span class="mini pri">Next item</span><span class="mini">+5 min</span></div>
+            <div class="ph" style="padding-left:0">Decided</div>
+            <div style="font-size:13.5px;color:var(--text);padding:2px 0 6px">Ask the council to pay for anchoring the gazebos.</div>
+            <div class="ph" style="padding-left:0">To do</div>
+            <div class="check"><span class="bx"></span><div>Write to the council<small> · Fatima · Fri</small></div></div>
+            <div class="check"><span class="bx"></span><div>Three quotes for anchors<small> · Daan</small></div></div>
+            <div class="ph" style="padding-left:0">Poll <span>7 of 9 voted</span></div>
+            <div class="poll"><div style="font-size:13.5px;color:var(--strong);margin-bottom:6px">Move the party to 6 Sept?</div>
+              <div class="opt2"><i style="width:71%"></i><span>Yes</span><span>5</span></div>
+              <div class="opt2"><i style="width:29%"></i><span>No</span><span>2</span></div></div>
+            <div class="ph" style="padding-left:0">Notes <span>Sanne and mei are typing</span></div>
+            <div style="font-size:13px;color:var(--dim)">Gazebo rental up from €180 to €420 because of the anchoring rule. Food unchanged…</div>
+          </div>
+        </div>
+      </div>
+      <p class="fcap"><b>Notes and Agenda</b> are one document: the agenda with its timer, then Decided, To do (a person and a day), polls, and free notes.</p>
+    </div>
+    <div>
+      <div class="frame" style="width:620px;padding:18px 20px;background:var(--bg)">
+        <div class="msg"><div class="av sm" style="background:var(--raised);color:var(--dim)"><svg class="i s"><use href="#notes"/></svg></div><div class="mb">
+          <div class="who">Meeting record<time>Thu 20:34</time></div>
+          <div class="mcard" style="width:540px;margin-top:6px">
+            <div class="mh"><div class="cal"><b>OCT</b><span>23</span></div><div style="flex:1"><h5>Q4 planning</h5><div class="when">19:31–20:34 · 63 min · 9 people, 1 guest</div>
+              <div style="display:flex;gap:3px;margin-top:6px"><div class="av xs h3">S</div><div class="av xs h4">J</div><div class="av xs h5">M</div><div class="av xs h2">F</div><div class="av xs h6">D</div><div class="av xs h1">J</div><div class="av xs h6">A</div><div class="av xs h1">K</div><div class="av xs h4">W</div></div></div></div>
+            <div style="padding:0 16px 10px 74px">
+              <div class="ph" style="padding-left:0">Decided</div>
+              <div style="font-size:13.5px;color:var(--text)">Ask the council to pay for anchoring the gazebos. Party moves to 6 September (5 of 7).</div>
+              <div class="ph" style="padding-left:0">To do</div>
+              <div class="check"><span class="bx"></span><div>Write to the council<small> · Fatima · Fri 24 Oct</small></div></div>
+              <div class="check"><span class="bx"></span><div>Three quotes for anchors<small> · Daan</small></div></div>
+              <div class="check"><span class="bx y"></span><div>Book the square for 6 Sept<small> · Sanne · done</small></div></div>
+            </div>
+            <div class="mf"><span class="btn"><svg class="i s"><use href="#notes"/></svg>Notes</span><span class="btn"><svg class="i s"><use href="#cc"/></svg>Transcript · 58 min</span><div class="sp"></div><span style="font-size:12.5px;color:var(--faint);display:flex;gap:6px;align-items:center"><svg class="i s"><use href="#rec"/></svg>Recorded on Sanne's device, not uploaded</span></div>
+          </div>
+        </div></div>
+      </div>
+      <p class="fcap" style="max-width:620px"><b>The meeting record</b>, an ordinary sealed message in the chat. The checkboxes still work afterwards, so To do is also where the actions get ticked off. The transcript is the captions joined up, if anyone had them on. A recording stays where it was made; sending it to the chat is the recorder's choice, as any file is.</p>
+    </div>
+    <div class="notes" style="padding-top:4px">
+      <h3>Why it is all chat messages</h3>
+      <ul>
+        <li>The chat is already end-to-end encrypted and already reaches every member's devices, including the ones that were not in the call. Notes, polls, hands, reactions, spotlight and the record are <b>new kinds of sealed chat messages</b>, not new server features.</li>
+        <li>So the server's view of a meeting is what it already sees for a call: who joined and left, and when.</li>
+        <li>A meeting with guests gets its own short-lived group with the members in it, and the record is posted back to the home chat without the guests in it.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 6. phone ───────────────────────────── -->
+<section class="sec">
+  <h2><span>6</span>The same meeting in the phone app</h2>
+  <p class="cap">The app's call screen (<code>systems::call_screen</code>) with the same tools. Five keys fit across a phone; the rest go in a sheet. People and Notes are sheets too.</p>
+  <div class="row">
+    <div class="phone app">
+      <div class="status"><span>19:54</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+      <div class="pstage">
+        <div style="padding:6px 16px 8px;display:flex;align-items:center;gap:8px">
+          <div style="flex:1"><div style="color:var(--strong);font-weight:600;font-size:15px">Q4 planning</div><div style="color:var(--dim);font-size:12px;display:flex;gap:5px;align-items:center"><svg class="i xs"><use href="#lock"/></svg>24:10 · Budget, 6 min left</div></div>
+          <span class="chip rec" style="padding:3px 8px"><i></i>Rec</span>
+        </div>
+        <div class="screen" style="height:206px;margin:0 10px;border-radius:10px">
+          <div class="sl" style="padding:14px 16px"><h5 style="font-size:15px">Street party 2026 · budget</h5><div class="sub" style="font-size:10px;margin-bottom:8px">Spent against planned</div>
+            <div class="chart" style="gap:5%"><i style="height:40%"></i><i class="o" style="height:46%"></i><i style="height:28%"></i><i class="o" style="height:66%"></i><i style="height:55%"></i><i class="o" style="height:50%"></i><i style="height:22%"></i><i class="o" style="height:20%"></i></div></div>
+          <div class="cursor" style="left:40%;top:46%;width:16px;height:16px;border-width:2px"></div>
+          <div class="by" style="font-size:10.5px"><svg class="i xs"><use href="#share"/></svg>Sanne · turn the phone for full screen</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px 10px 0;flex:1">
+          <div class="vid r1 talk"><div class="nm"><svg class="i"><use href="#mic"/></svg>Sanne</div></div>
+          <div class="vid r2"><div class="hand"><svg class="i xs"><use href="#hand"/></svg>1</div><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Fatima</div></div>
+          <div class="vid r3 blur"><div class="nm"><svg class="i mu"><use href="#micoff"/></svg>Daan</div></div>
+          <div class="vid noc" style="display:grid;place-items:center;color:var(--dim);font-size:13px">+5 · People</div>
+        </div>
+        <div style="position:relative;height:30px;margin-top:8px"><div class="caps" style="font-size:12.5px;bottom:0;max-width:92%"><b>Sanne</b>from one-eighty to four-twenty</div></div>
+        <div class="bar" style="height:96px;gap:4px;padding-bottom:12px">
+          <div class="key off"><div class="k"><svg class="i"><use href="#micoff"/></svg></div>Unmute</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#cam"/></svg></div>Camera</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#hand"/></svg></div>Hand</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#dots"/></svg><span class="n badge" style="min-width:16px;height:16px;font-size:10px">3</span></div>More</div>
+          <div class="key red" style="width:70px"><div class="k" style="width:56px"><svg class="i"><use href="#end"/></svg></div>Leave</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone app">
+      <div class="status"><span>19:54</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+      <div class="pstage" style="filter:brightness(.45)">
+        <div style="padding:6px 16px 8px"><div style="color:var(--strong);font-weight:600;font-size:15px">Q4 planning</div></div>
+        <div class="vid r1" style="height:520px;margin:0 10px"></div>
+      </div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <div class="grid4">
+          <div class="key"><div class="k"><svg class="i"><use href="#share"/></svg></div>Share</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#smile"/></svg></div>React</div>
+          <div class="key on"><div class="k"><svg class="i"><use href="#cc"/></svg></div>Captions</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#speaker"/></svg></div>Layout</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#users"/></svg><span class="n badge" style="min-width:16px;height:16px;font-size:10px">2</span></div>People</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#chat"/></svg><span class="n badge" style="min-width:16px;height:16px;font-size:10px">1</span></div>Chat</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#notes"/></svg></div>Notes</div>
+          <div class="key"><div class="k"><svg class="i"><use href="#vol"/></svg></div>Speaker</div>
+        </div>
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:6px">
+          <div class="opt" style="padding:8px 4px"><svg class="i s"><use href="#wave"/></svg>Hide background noise<span class="tog on"></span></div>
+          <div class="opt" style="padding:8px 4px"><svg class="i s"><use href="#blur"/></svg>Blur my background<span class="tog"></span></div>
+          <div class="opt" style="padding:8px 4px"><svg class="i s"><use href="#shield"/></svg>Meeting controls<span style="margin-left:auto;color:var(--faint)"><svg class="i s"><use href="#chev"/></svg></span></div>
+          <div class="opt" style="padding:8px 4px"><svg class="i s"><use href="#lock"/></svg>Verify encryption<span style="margin-left:auto;color:var(--faint)"><svg class="i s"><use href="#chev"/></svg></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone app">
+      <div class="status"><span>19:54</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+      <div class="pstage" style="filter:brightness(.45)">
+        <div style="padding:6px 16px 8px"><div style="color:var(--strong);font-weight:600;font-size:15px">Q4 planning</div></div>
+        <div class="vid r2" style="height:200px;margin:0 10px"></div>
+      </div>
+      <div class="sheet" style="top:150px;padding-bottom:20px">
+        <div class="grab"></div>
+        <div style="display:flex;align-items:center;margin-bottom:6px"><h2 style="font-size:19px;color:var(--strong);font-weight:600;flex:1">People · 9</h2><span class="mini"><svg class="i xs"><use href="#userplus"/></svg> Invite</span></div>
+        <div class="lobby">
+          <div class="ph">In the lobby · 2 <span><span class="mini">Admit all</span></span></div>
+          <div class="pp"><div class="av sm h4">W</div><div class="b">Wethouder Bakker<span class="role g">Guest</span></div><span class="mini pri">Admit</span></div>
+          <div class="pp"><div class="av sm h6">A</div><div class="b">anna.devries</div><span class="mini pri">Admit</span></div>
+        </div>
+        <div class="ph">Hands up</div>
+        <div class="pp"><span class="ord">1</span><div class="b">Fatima<small>2 min</small></div><span class="mini pri">Let talk</span></div>
+        <div class="pp"><span class="ord">2</span><div class="b">Daan<small>40 s</small></div><span class="mini">Lower</span></div>
+        <div class="ph">In the meeting</div>
+        <div class="pp"><div class="av sm h3">S</div><div class="b">Sanne<span class="role">Host</span><small>presenting</small></div><div class="ic"><svg class="i s"><use href="#mic"/></svg></div></div>
+        <div class="pp"><div class="av sm h4">J</div><div class="b">You<span class="role">Co-host</span></div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+        <div class="pp"><div class="av sm h5">M</div><div class="b">mei</div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+        <div class="pp"><div class="av sm h2">F</div><div class="b">Fatima</div><div class="ic"><svg class="i s mu"><use href="#micoff"/></svg></div></div>
+        <div style="color:var(--faint);font-size:12px;padding:6px 8px">Long-press a person for host actions</div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h3>The meeting</h3>
+      <ul>
+        <li>A shared screen on top, four tiles under it, captions above the keys. Turning the phone shows the shared screen alone, full screen.</li>
+        <li>Five keys: Mic, Camera, Hand, More, Leave, at today's size and with today's labels <span class="has">TODAY</span>. More carries a count of unread items from the panels behind it.</li>
+      </ul>
+      <h3>More</h3>
+      <ul>
+        <li>The rest of the keys in a grid, and switches under them. Speaker switches between earpiece, loudspeaker and a headset.</li>
+      </ul>
+      <h3>People</h3>
+      <ul>
+        <li>The web panel as a sheet. A long press on a person replaces the web's ⋯, the way a chat row's menu already works on the phone.</li>
+      </ul>
+      <h3>Sharing from a phone</h3>
+      <ul>
+        <li>Android shares the screen through MediaProjection, which needs Java. The APK can carry Java now, so it is possible, but it comes after the desktop and the browser.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 7. where it runs ───────────────────────────── -->
+<section class="sec">
+  <h2><span>7</span>Where each tool runs, and what it costs</h2>
+  <p class="cap">The server forwards sealed frames and keeps the roster (<code>docs/notes/calls.md</code>). Each tool below is either something the server <b>enforces</b> with what it already sees (who is connected, which stream is whose), or something the <b>devices</b> do inside the encryption.</p>
+  <table class="t">
+    <tr><th>Tool</th><th>Runs on</th><th>The server learns</th><th>What it takes</th></tr>
+    <tr><td>Lobby, admit, deny, lock, remove</td><td>Server enforces</td><td>Who is waiting (it already sees who joins)</td><td>A waiting state before <code>CallJoined</code>; it already refuses a blocked person before any media flows. Removing someone also removes them from the chat's encryption group, so the key changes.</td></tr>
+    <tr><td>Host mute, “may not unmute / share”</td><td>Server enforces</td><td>That a stream is held back</td><td>The forwarder drops that person's audio or screen stream. Roles (host, co-host) go in the roster.</td></tr>
+    <tr><td>Screen sharing</td><td>Sharer's device</td><td>That a third stream exists</td><td>A stream kind beyond <code>CallTrack.video: bool</code> (a protocol revision). Browser: <code>getDisplayMedia</code>. Desktop app: a capture library per OS. Encoded at up to 1280×720 but only 1–5 pictures a second, which a software VP9 encoder can manage (640×480 took 102 ms a picture).</td></tr>
+    <tr><td>Big meetings (9+ cameras)</td><td>Server and devices</td><td>Which streams each person watches</td><td>Each sender sends a large and a small picture, and receivers ask only for the tiles they show. Today every picture goes to everyone at full size, and the forwarder does no congestion control yet. <b>This comes before Gallery</b>, or a phone in a nine-person call drowns.</td></tr>
+    <tr><td>Who is talking, layouts, pin</td><td>Each device</td><td>Nothing</td><td>Sound level from audio already decoded; layouts are the web panel's grid code and <code>call_screen</code>'s tiles.</td></tr>
+    <tr><td>Hands, reactions, spotlight, notes, agenda, polls, the record, Going / Maybe</td><td>Devices, as sealed chat messages</td><td>That messages were sent</td><td>New message kinds inside the encrypted chat (<code>cartopolis_chat</code>), so the app and the web page get them together.</td></tr>
+    <tr><td>Hide background noise</td><td>Sender's device</td><td>Nothing</td><td>An RNNoise filter before Opus. A pure-Rust port exists (<code>nnnoiseless</code>); browsers have their own <code>noiseSuppression</code>.</td></tr>
+    <tr><td>Captions and transcript</td><td>Each speaker's own device</td><td>Nothing</td><td>Speech recognition on the device that hears the voice first and clearest, sent as sealed text. Needs a local speech model (Whisper-class, 40–150 MB) and its CPU cost on a phone is unmeasured. Browsers' built-in speech recognition sends the audio to Google or Apple, so it is <b>not used</b>.</td></tr>
+    <tr><td>Blur background</td><td>Sender's device</td><td>Nothing</td><td>A person-segmentation model on every picture before encoding. Costs CPU on the same thread as the encoder; desktop first.</td></tr>
+    <tr><td>Recording</td><td>One person's device</td><td>Nothing, until they share the file</td><td>The recorder's device mixes what it already receives. Browser: <code>MediaRecorder</code>. Allowed only if the meeting allows it, and announced to everyone with a sound and the red chip.</td></tr>
+    <tr><td>Guests by link</td><td>Server and host's device</td><td>A guest session with a name, no account</td><td>The server has no account-less sessions today, and opens a chat only between contacts. The link carries a one-time token; the guest's browser makes a temporary key, and the host's device adds it to the meeting's group on Admit.</td></tr>
+    <tr><td>Breakout rooms</td><td>Server routes, devices key</td><td>Who is in which room</td><td>The forwarder sends each room's streams only within the room. Keys: section 9.</td></tr>
+    <tr><td>Dial in by phone</td><td colspan="3"><b>Not offered.</b> A telephone gateway would have to decrypt the call, which is the one thing the server must never be able to do.</td></tr>
+  </table>
+</section>
+
+<!-- ───────────────────────────── 8. order ───────────────────────────── -->
+<section class="sec">
+  <h2><span>8</span>Order of work</h2>
+  <p class="cap">Three rounds. Each one is usable on its own.</p>
+  <div class="decide" style="grid-template-columns:repeat(3,1fr)">
+    <div><h4>1 · A meeting that holds together</h4><p>Small and large pictures, and receivers asking only for what they show. Then Speaker and Gallery layouts with who-is-talking, screen sharing (browser and desktop), hands and reactions, the call chat tab, hosts with mute, remove, lock and the lobby, and hiding background noise.</p></div>
+    <div><h4>2 · Before and after</h4><p>Planning a meeting and its card in the chat, the reminder and the <code>.ics</code>, the check-before-joining page, guests by link, the agenda with its timer, shared notes, polls, and the meeting record.</p></div>
+    <div><h4>3 · The heavy ones, on the device</h4><p>Captions and the transcript, blurring the background, recording, breakout rooms, and screen sharing from Android. Each one starts by measuring the cost on the phone.</p></div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 9. decide ───────────────────────────── -->
+<section class="sec">
+  <h2><span>9</span>To decide</h2>
+  <div class="decide">
+    <div><h4>Breakout rooms: one key or one per room?</h4><p>Drawn: <b>one key, and the server keeps the rooms apart</b> by forwarding each room's streams only inside it. Cheap and instant, but anyone in the meeting could hear another room if the server sent it. The alternative, a separate encryption group per room, takes a few seconds per room to set up.</p></div>
+    <div><h4>Guests without an account?</h4><p>Drawn: <b>yes</b>, by a link, always through the lobby, with a name only. It is the one tool that needs the server to accept someone it has no account for, and the first thing a work meeting with outsiders needs.</p></div>
+    <div><h4>Recording at all?</h4><p>Drawn: <b>on a device only, off by default, allowed per meeting</b>, and announced. Nobody can stop someone pointing a second phone at the screen, so this is about making it visible and honest, not about preventing it.</p></div>
+    <div><h4>Captions: worth a model download?</h4><p>Drawn: <b>yes, on demand</b>: the model downloads the first time someone turns captions on. Languages: Dutch and English at first. Whether a phone can keep up is the first thing to measure.</p></div>
+    <div><h4>Who hosts in a community?</h4><p>Drawn: whoever planned or started the meeting, plus anyone they make co-host. In a community, should its moderators always be hosts too?</p></div>
+    <div><h4>How much of the world, now?</h4><p>Drawn: <b>what <code>../workspace/</code> already has, and no more.</b> A meeting has the chat's place, Room is one of the four layouts, and walking into the place joins the call. Hearing by distance and Share my view stay in that sheet and are not part of these rounds.</p></div>
+  </div>
+</section>
+
+</body>
+</html>
