@@ -11,7 +11,20 @@
 # targets (sim, atlas, web, wasm, apk), one after another, each waited for.
 #
 # The gate runs on the node this worktree holds, when it holds one — keep it
-# rather than releasing it first; otherwise it queues for a VPS node.
+# rather than releasing it first; otherwise it takes the fastest free node.
+#
+# ## One landing at a time (2026-10-17)
+#
+# Before it rebases, a landing takes **the turn to land** at the midas hub
+# (`midas land take`, first come first served) and keeps it until its push to
+# `main` is done, renewing it every minute. Without it, a landing rebased,
+# waited ~15 minutes for a gate node while the one ahead landed, then gated a
+# base that was already gone and was bounced at the push — at least six green
+# gates were thrown away that way in one week. So a landing in progress is
+# never overtaken by one that asked later; `midas land status` shows the line.
+# Should `main` still move under it — a push that did not come through here —
+# it rebases and gates again *keeping the turn*, up to three times, rather than
+# giving its place up. A midas without `land` lands without a turn, as before.
 #
 # ## Why there is no pull request any more (2026-08-30)
 #
@@ -59,6 +72,7 @@
 
 set -uo pipefail
 
+argv=("$@")
 scope="auto"
 dry_run=""
 verify_only=""
@@ -71,7 +85,7 @@ while [ $# -gt 0 ]; do
         --verify-only)       verify_only=1; shift ;;
         --allow-unverified)  allow_unverified=1; shift ;;
         --deploy)            deploy="$2"; shift 2 ;;
-        -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,72p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -98,12 +112,41 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+# ── The turn to land ─────────────────────────────────────────────────────────
+# Taken here, before the fetch, so that what the gate tests is the `main` this
+# landing pushes onto. A re-run of this script by itself (below, when `main`
+# moved anyway) already holds it, and asking again only renews it.
+# `--verify-only` and `--dry-run` push nothing, so they wait for nobody.
+step() { :; }
+if [ -z "$verify_only$dry_run" ] && command -v midas >/dev/null; then
+    if midas land --help >/dev/null 2>&1; then
+        echo "==> taking the turn to land (midas land status shows the line)"
+        midas land take --purpose "landing $branch"; took=$?
+    fi
+    if [ "${took:-69}" -eq 0 ]; then
+        land_outcome="abandoned"; land_sha=""
+        # Every minute, for as long as this script lives — `kill -0 $$` ends
+        # it when the script is killed outright and no trap runs, so the turn
+        # still lapses on the hub instead of being renewed by an orphan.
+        ( while sleep 60 && kill -0 $$ 2>/dev/null; do midas land renew >/dev/null 2>&1; done ) &
+        renewer=$!
+        disown "$renewer"   # stopped below by pid; no "Terminated" notice when it is
+        trap 'kill "$renewer" 2>/dev/null; midas land release --outcome "$land_outcome" ${land_sha:+--sha "$land_sha"} >/dev/null 2>&1' EXIT
+        step() { midas land renew --step "$1" >/dev/null 2>&1 || true; }
+    elif [ "${took:-69}" -eq 69 ]; then
+        echo "note: no landing queue here (\`midas land\`, at the hub) — landing without a turn" >&2
+    else
+        echo "no turn to land came within two hours — run it again later" >&2; exit 1
+    fi
+fi
+
 # ── Rebase onto whatever main is now ─────────────────────────────────────────
 # `main` moves under a session: it is the whole reason `rebase-before-starting`
 # is a standing note. Rebasing rather than merging also means `main` gains the
 # branch's own commits and no merge bubble, so `git log` reads as the sequence of
 # changes it actually is. A conflict stops here — resolving one is a judgement
 # about two people's work and not something to automate.
+step "rebasing onto main"
 echo "==> fetching origin/main"
 git fetch --quiet origin main || { echo "could not fetch origin" >&2; exit 1; }
 if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
@@ -173,7 +216,9 @@ elif [ -n "$allow_unverified" ]; then
     echo "==> --allow-unverified: landing without running the gate"
 else
     echo "==> running the gate (verify-branch --scope $scope)"
+    step "gating ${sha:0:8}"
     "$here/verify-branch" --scope "$scope" || {
+        land_outcome="failed"
         echo "" >&2
         echo "not landing: the gate is red. Fix it and re-run." >&2
         exit 1; }
@@ -201,12 +246,30 @@ fi
 # rejection, and a rejection here means another session landed between the fetch
 # above and now — the right answer to which is to re-run, not to overwrite them.
 echo "==> fast-forwarding main to ${sha:0:8}"
+step "pushing ${sha:0:8}"
 if ! git push --quiet origin "HEAD:refs/heads/main"; then
     echo "" >&2
+    # With the turn held, only a push that did not come through the queue can
+    # do this. Go round again keeping the turn — `exec` runs no EXIT trap, so
+    # nothing is released, and the renewer is keyed on this same pid.
+    attempt=${CARTO_LAND_ATTEMPT:-1}
+    if [ -n "${renewer:-}" ] && [ "$attempt" -lt 3 ]; then
+        echo "main moved outside the landing queue — rebasing and gating again, keeping the turn" >&2
+        CARTO_LAND_ATTEMPT=$((attempt + 1)) exec "$0" "${argv[@]}"
+    fi
     echo "main was updated while this ran. Re-run — the rebase above will pick it up." >&2
     exit 1
 fi
 echo "    main is now ${sha:0:8}"
+
+# The turn goes back now, not after the deploys below: the next landing's base
+# is this commit, and nothing a deploy does can move it.
+if [ -n "${renewer:-}" ]; then
+    land_outcome="landed"; land_sha="$sha"
+    kill "$renewer" 2>/dev/null
+    midas land release --outcome landed --sha "$sha" >/dev/null 2>&1
+    trap - EXIT
+fi
 
 echo
 echo "done. The gate's receipt is at the midas hub; CI runs on main tonight."

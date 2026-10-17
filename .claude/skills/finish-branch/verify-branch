@@ -154,7 +154,7 @@ $targets && steps="$steps wasm android"
 # starve the box (every session at once on 8 cores) and the container's own
 # cargo refuses them. A midas node (jeroen/midas) is a contained
 # checkout that follows this worktree over ssh — each ssh to it first sends the
-# commits and uncommitted edits it lacks. So the gate takes a VPS node as
+# commits and uncommitted edits it lacks. So the gate takes a node as
 # `gate-<worktree>` (the flush accepts that lease for this worktree), runs this
 # same script there with the merge-base sha as its base, and brings back the
 # exit status and the receipt (checked against this head, and marked with the
@@ -175,10 +175,20 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas
     if [ -n "$gate_node" ]; then
         echo "node     $gate_node — this worktree holds it; running the gate there"
     else
+        # **The fastest free node, not the first VPS one.** Taking only `vps`
+        # put every gate in line for one node, 8-28 minutes each, while two
+        # Macs that gate in half the time sat free (week to 2026-10-17). The
+        # hub ranks the free nodes by this script's own measured run time, by
+        # node or by machine, and puts a GPU node last (`midas take
+        # --fastest-for`). A midas too old to rank still gets a VPS node.
         gate_owner="gate-$(basename "$root")"
-        gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 \
-            --purpose "landing gate for $(git rev-parse --abbrev-ref HEAD)") || {
-            echo "no VPS node came free in an hour; not gating" >&2; exit 3; }
+        gate_purpose="landing gate for $(git rev-parse --abbrev-ref HEAD)"
+        if midas take --help 2>/dev/null | grep -q -- --fastest-for; then
+            gate_node=$(midas take any --fastest-for .claude/skills/finish-branch/verify-branch \
+                --owner "$gate_owner" --wait 3600 --purpose "$gate_purpose")
+        else
+            gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 --purpose "$gate_purpose")
+        fi || { echo "no node came free in an hour; not gating" >&2; exit 3; }
         trap 'midas release --owner "$gate_owner" >/dev/null 2>&1' EXIT
         echo "node     $gate_node — running the gate there"
     fi

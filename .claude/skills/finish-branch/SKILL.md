@@ -39,8 +39,16 @@ skipped and why, and a pass writes a receipt keyed on the head sha.
 ```
 
 **Keep the node you worked on.** The gate runs on the node this worktree holds
-— a VPS node or a Mac — and only queues for a VPS node when it holds none, so
-releasing it first just buys a wait. `--deploy` takes `midas deploy`'s targets
+— a VPS node or a Mac — and takes the fastest free node (by the gate's own
+measured run time, `midas take --fastest-for`) only when it holds none, so
+releasing it first just buys a wait.
+
+**One landing at a time.** Before it rebases, the script takes the turn to land
+at the midas hub (`midas land status` shows who has it and who is next) and
+keeps it until its push to `main` is done, so a landing in progress is never
+overtaken and its gate never tests a base that another landing has already
+moved. Run it in the background: the wait for the turn is part of the run.
+`--deploy` takes `midas deploy`'s targets
 (`sim`, `atlas`, `web`, `wasm`, `apk`, comma-separated) and runs them after the
 landing; a failed deploy leaves the landing in place and names what to re-run.
 

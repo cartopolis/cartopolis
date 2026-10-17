@@ -126,8 +126,11 @@ runs the same commands out of the same workflow file — `cargo fmt --check`,
 `cargo test --locked --workspace --exclude cartopolis_android`, and, when the
 diff can change a frame, the two headless smokes and the wasm and android target
 checks. It scopes itself with `ci.yml`'s own deny-list and **names on stdout
-everything it skipped**. It runs on the midas node the worktree holds, or queues
-for a VPS node; with no midas reachable, `CARTO_GATE_NO_SLOT=1` runs it in place.
+everything it skipped**. It runs on the midas node the worktree holds, or on the
+fastest free one; with no midas reachable, `CARTO_GATE_NO_SLOT=1` runs it in
+place. `merge-to-main` runs it inside **the turn to land** (`midas land`), taken
+before the rebase and held through the push, so landings go one at a time in
+the order they asked and none is bounced by another's push.
 
 Four properties are deliberate:
 
