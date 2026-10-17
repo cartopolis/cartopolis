@@ -1,11 +1,11 @@
 ---
 topic: performance-suite
-triggers: ["cargo perf", perf.toml, "performance suite", "battery", "power", "hot",
+triggers: ["cargo perf", perf.toml, "turn window", material_modified_per_frame, frame_ms_max, "performance suite", "battery", "power", "hot",
   "slow", "profiling", "fragment shader invocations", "overdraw", "gpu time",
   RenderDiagnosticsPlugin, MeshAllocatorDiagnosticPlugin, SystemInformationDiagnosticsPlugin,
   "residency", "resident_kb", quiet, "steady window", "perf feature", "--repeat",
   median, spread]
-updated: 2026-09-27
+updated: 2026-10-16
 ---
 
 # Measuring what the client costs, and what a measurement here is worth
@@ -109,10 +109,36 @@ the process's memory cache and on disk, so repeats 2..N re-stream from warm and
 `load` medians describe a re-teleport, not a cold start. `steady` is unaffected,
 and is what the flag is for.
 
-## The two windows, and why `quiet` exists
+## The three windows, and why `quiet` exists
 
 * **`load`** — teleport to settle verdict: the streaming burst.
 * **`steady`** — frames after the shutter, with the world *meant* to be idle.
+* **`turn`** — the same world while the camera yaws 2° a frame for 90 frames
+  (added 2026-10-16). It turns whichever angle the live mode's mouse would:
+  - Fly turns on the spot.
+  - Earth swings round its focus, which is why the `earth` scenario exists.
+
+  The step is per *frame*, not per second, so two runs sweep the same views at any
+  frame rate. Read `frame_ms_mean` and `frame_ms_max` here, not `frame_time_ms`.
+  The latter is Bevy's smoothed value at the moment the window closes, which is
+  its last few frames, and a turn's cost is in its hitches.
+
+`material_modified_per_frame` is the column the `turn` window was built to read.
+It counts ground, road, globe-tile and standard materials marked modified, each
+one a re-prepare on the render thread. A still window should read ~0, and the
+suite warns when one does not. Four systems that wrote a shared value into every
+instance whenever a key moved cost 12–17 ms of render thread per turning frame
+before it existed (`render-performance-survey.md`).
+
+**A scripted run does not read Settings ▸ Graphics** (since 2026-10-16). It used
+to inherit the person's `user.json`, and an explicit `light_shafts: true` there
+put ~15 ms of per-pixel march into every number taken on that machine. Steer a
+run with flags and `CARTO_*`, which is what makes two people's reports comparable.
+**Two things are still read from it**: the quality preset and the persisted
+`CARTO_*` switches. `run_client` resolves both before it parses the command line,
+because the budget sizes the worker pool, so nothing yet knows the run is
+scripted. Check both in the `render budget in force` line before comparing runs
+from two machines.
 
 **A steady window's whole claim is that nothing is happening, and at ground level
 that claim is often false.** The settle test can pass while the vector-tile

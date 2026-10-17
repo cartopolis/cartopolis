@@ -1,6 +1,6 @@
 ---
 topic: render-performance-survey
-triggers: [macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+triggers: ["rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
 updated: 2026-10-16
 ---
 
@@ -349,6 +349,109 @@ tried and moved nothing: dependency `debug_assertions` off (wgpu's and bevy's
 checks are not the cost) and `CARTO_GPU_PREPROCESS=preprocess` (worse:
 `submit` doubled). `CARTO_GPU_PREPROCESS=off` panics in bevy 0.20 ("Dynamic uniform
 batch sets shouldn't be used here").
+
+**Read the table above with two caveats found the same evening** (next section):
+every scripted run then inherited the measuring person's Settings ▸ Graphics, and
+on that machine those forced the light shafts on; and the Mac it was measured on
+also hosts the midas VMs, whose paravirtualised graphics share its GPU.
+
+## Turning the camera cost what standing still did not (2026-10-16)
+
+Reported as "fine until I rotate the camera, then the frame rate collapses". Every
+window `cargo perf` had was a still view, so it could not see it. It has a `turn`
+window now: the settled scene yawing 2° a frame for 90 frames. It also has an
+`earth` scenario for the pose the app opens on, because there a rotate-drag swings
+the camera round the focus instead of turning it on the spot. Measured on the M5
+Pro at 3134×1952, two flights each, with `sample(1)` for the call stacks.
+
+**Four causes, none of them the GPU.**
+
+1. **Writing a shared value into every material.** `Assets::get_mut` marks the
+   asset changed on any write through it, assigned value or not. A changed
+   material is re-prepared on the render thread: a new uniform buffer and bind
+   group, each one a kernel round trip on Metal. Four systems did this to every
+   instance of a material family whenever a key moved:
+   - `ground_detail::refresh_ground_detail`, keyed on the material count;
+   - `wet_surfaces::apply_wet_surfaces`, keyed on the same count;
+   - `map_stream::refresh_tile_lod_blend`, keyed on the screen-driven desired set;
+   - `street_labels`, which dealt its 160 names to the sign pool in a fresh order
+     on every re-placement.
+
+   All four keys move on every frame of a turn. The first three were found the
+   same day from the other end — a web load, where each landing tile re-prepared
+   the whole clipmap — and fixed on `main` (0cc59b71, `wasm-performance.md`)
+   while this was being measured; the street labels were this investigation's
+   own. `material_modified_per_frame` counts it now, and a still window that
+   reads above zero logs a warning. The before/after numbers are in the table
+   below, and cover all four.
+2. **A lock held across the work.** On a warm-cache globe tile,
+   `decode_globe_tile` ran as an argument to `results.lock()…push(…)`, so the
+   worker held the sink for the whole decode. The main thread's `take_results`
+   slept on that mutex for 6.5–7.4 ms a frame of a fly-mode turn.
+3. **Earth mode streamed round the camera, and a rotate-drag moves the camera.**
+   At the opening pose the camera sits ~1 km off the focus. A turn carried it
+   round a ~2 km circle, and every ring streamer centred on the camera retargeted
+   all the way round: whole 3DBAG cells of 5–7 MB, the surface cells, the
+   half-metre terrain tier. One flight had a **906 ms** frame in mid-turn.
+   `grid::StreamCentre` makes Earth mode stream round the focus instead.
+4. **The globe never settled after a descent.** Below 2 km the quadtree selection
+   does not run, and it was the only thing that cleared the not-yet-started
+   fetch queue. So `busy()` stayed true for good and every Earth-mode capture
+   after a higher one timed out. This cost no frame time; it made the `earth`
+   window unmeasurable until it was fixed.
+
+| window | before | after |
+|---|---|---|
+| city turn, mean / worst frame | 34.5 / 110.6 ms | 27.4 / 29.3 ms |
+| city turn, materials re-prepared per frame | 212 | 1.6 |
+| Earth turn, mean / worst frame | 48.0 / 70.0 ms | 33.0 / 47.8 ms |
+| Earth turn, materials re-prepared per frame | 321 | 8.8 |
+| Earth scenario settled | 0 of 2 | 2 of 2 |
+
+These rows are still GPU-bound at ~27 ms, for the two reasons below. The render
+thread's share is clearer: `prepare_erased_assets<GroundMaterial>` went from
+17–33 ms a frame to nothing. Once the scripted runs stopped inheriting the light
+shafts, the GPU stopped hiding the rest:
+
+- city: 11.9 ms still, 11.3 ms turning;
+- Earth before the stream centre: 14.9 ms still, 24.6 ms turning;
+- Earth after it: 15.7 ms still, **16.1 ms** turning, worst frame 122.6 → 26.7 ms,
+  uploads over the turn 245 → 73 MB;
+- street: 77 → 7.6 materials re-prepared per frame while turning.
+
+**Two traps in the measurement, both standing.**
+
+- **A scripted run used to inherit the measuring person's Settings.** Settings ▸
+  Graphics is per-person, and `run_client` handed it to `--shot`, `--shots` and
+  `--perf` alike. On the machine above it held an explicit `light_shafts: true`.
+  That overrides the 4 MP rule that leaves the shafts off on Automatic, so every
+  run marched them per pixel. Turning shadows off (which starves the march of its
+  shadow map) took city from 27.5 to 12.0 ms. The shadow filter, the cascade count
+  (4 → 1) and the reach (1500 → 600 m) each moved it by under a millisecond.
+  Scripted captures start from `AppPrefs::default()` now, as the layer and sky
+  restores already did. Steer them with flags and `CARTO_*`.
+- **The Mac mini's GPU is shared.** The midas VMs run under
+  `Virtualization.framework` with paravirtualised graphics. With the client not
+  running, `ioreg -r -c IOAccelerator` read 22–61 % "Device Utilization". A
+  GPU-bound number taken while they run describes the box, not the client. Check
+  that reading before believing one.
+
+**Negative, at Retina on the M5 Pro:**
+
+- MSAA makes no difference: `CARTO_MSAA=1|2|4` measured 27.5, 27.5 and 27.8 ms.
+  The switch is new; nothing reached the sample count without moving the whole
+  tier.
+- `CARTO_RENDER_SCALE=0.5` makes no difference in a headless run either (27.3
+  against 27.5 ms), while 1280×720 at full scale is 9.3 ms. **Open:** whether the
+  scale reaches an offscreen target at all.
+
+**How it was profiled, since there is no Xcode here.** `xctrace` needs the full
+Xcode, and `RenderDiagnosticsPlugin` cannot allocate Metal's counter buffer
+(above). What works is `sample(1)`: attach to the PID once the `steady` line is
+logged, demangle with `rustfilt`, and either read the tree or convert it with
+`tools/sample_to_callgrind.py` and open it in KCachegrind (`qcachegrind` on a
+Mac). The perf feature's per-system table says *which* system; the sample says
+*why*. For causes 1 and 2 above, that was a re-prepare loop and a mutex wait.
 
 ## Negative results — do not re-open these first
 
