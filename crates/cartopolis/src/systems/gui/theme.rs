@@ -3673,6 +3673,13 @@ mod tests {
             },
             |ui| {
                 let font = TextStyle::Body.resolve(ui.style());
+                // The width test below must still see a character nothing
+                // draws, or it passes everything.
+                assert_eq!(
+                    ui.ctx().fonts_mut(|f| f.glyph_width(&font, '\u{10FFFD}')),
+                    0.0,
+                    "a character no font has must measure 0 wide"
+                );
                 let mut missing: Vec<(String, usize, char)> = Vec::new();
                 for lit in &literals {
                     if lit.text.chars().count() > MAX_LABEL_CHARS {
@@ -3683,7 +3690,14 @@ mod tests {
                             continue;
                         }
                         let glyph = ch.to_string();
-                        let drawable = ui.ctx().fonts_mut(|f| f.has_glyphs(&font, &glyph));
+                        // `has_glyphs` answers "not the replacement face", and
+                        // the face epaint draws `◻` from is Noto Emoji — so every
+                        // emoji, though Noto Emoji draws it, read as missing. A
+                        // character no face has measures 0 wide; one the
+                        // replacement face really has does not.
+                        let drawable = ui.ctx().fonts_mut(|f| {
+                            f.has_glyphs(&font, &glyph) || f.glyph_width(&font, ch) > 0.0
+                        });
                         if !drawable {
                             missing.push((lit.file.clone(), lit.line, ch));
                         }

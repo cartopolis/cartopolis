@@ -102,6 +102,71 @@ pub enum CallRequest {
     Control(CallAction),
     /// React with this emoji, for everyone in the call.
     React(String),
+    /// A host moves the agenda of the plan with this id to an item, or stops
+    /// it (`None`); sent sealed to everyone, as the web does.
+    Agenda(String, Option<usize>),
+}
+
+/// Where a meeting is on its plan's agenda, as a host's device last said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgendaAt {
+    pub plan: String,
+    pub index: usize,
+    /// When the item started, Unix ms.
+    pub started_ms: u64,
+}
+
+/// A meeting this device should write the record of
+/// (`cartopolis_core::meeting::Record`): handed to `private_chat`, which
+/// holds the chat's lines the record is gathered from.
+#[derive(Debug, Clone)]
+pub struct RecordDue {
+    pub group: Vec<u8>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub people: Vec<String>,
+    pub transcript: Vec<(String, String)>,
+}
+
+/// Tell everybody in the call where the agenda is, sealed like a reaction:
+/// `{"g": item, "p": plan, "t": started}`, or `g: -1` for stopped — the web's
+/// shape (`call.ts`). Only a host's is believed.
+fn send_agenda(
+    calls: &Calls,
+    private: &PrivateChats,
+    online: &OnlineSession,
+    plan: &str,
+    at: Option<&AgendaAt>,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+        if let Some(e) = private.call_epoch(&group) {
+            let text = match at {
+                Some(at) => serde_json::json!({"g": at.index, "p": at.plan, "t": at.started_ms}),
+                None => serde_json::json!({"g": -1, "p": plan, "t": 0}),
+            }
+            .to_string();
+            let sealed = cartopolis_calls::events::seal(&e.base_key, e.epoch, text.as_bytes());
+            online.send(
+                "call agenda",
+                NetMessage::CallReact {
+                    group,
+                    epoch: e.epoch,
+                    sealed,
+                },
+            );
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (calls, private, online, plan, at);
+}
+
+/// Unix milliseconds now.
+fn unix_ms() -> u64 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The rest of a call's meeting state, from its roster (protocol 41).
@@ -148,6 +213,10 @@ struct Active {
     /// what the timer counts from. Not `started`, or a call that rang for
     /// twenty seconds would show 00:20 the moment it was answered.
     answered_at: Option<web_time::Instant>,
+    /// The same moment as Unix milliseconds, for the meeting record.
+    answered_ms: Option<u64>,
+    /// Everybody who was in the call while this device was, for the record.
+    seen_people: HashSet<String>,
     #[cfg(not(target_arch = "wasm32"))]
     mic: Option<AudioInput>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -241,6 +310,13 @@ pub struct Calls {
     pub captions: HashMap<u64, (String, web_time::Instant)>,
     /// Finished lines of captions, (who, what), for the meeting record.
     pub transcript: Vec<(String, String)>,
+    /// Where this device's meeting is on its agenda, if a host started it.
+    pub agenda: Option<AgendaAt>,
+    /// Notes taken in the call screen, to go into the call's chat: drained
+    /// by `private_chat`, which seals and sends them.
+    pub meeting_out: Vec<(Vec<u8>, cartopolis_core::meeting::MeetingObject)>,
+    /// A meeting's record to write, drained by `private_chat`.
+    pub record_due: Option<RecordDue>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
     pub request: Option<CallRequest>,
@@ -426,6 +502,33 @@ impl Calls {
         self.me().is_some_and(|m| m.role.hosts())
     }
 
+    /// The record this device owes when its call ends: a host's, of a call
+    /// somebody answered.
+    fn record_of_ending(&self) -> Option<RecordDue> {
+        if !self.hosting() {
+            return None;
+        }
+        let a = self.active.as_ref()?;
+        Some(RecordDue {
+            group: a.group.clone(),
+            start_ms: a.answered_ms?,
+            end_ms: unix_ms(),
+            people: a.seen_people.iter().cloned().collect(),
+            transcript: self.transcript.clone(),
+        })
+    }
+
+    /// A host posts the record now, as the meeting stands.
+    pub fn post_record_now(&mut self) {
+        self.record_due = self.record_of_ending();
+    }
+
+    /// When this device's call started, Unix ms, once somebody answered.
+    #[must_use]
+    pub fn started_ms(&self) -> Option<u64> {
+        self.active.as_ref().and_then(|a| a.answered_ms)
+    }
+
     /// What the hosts of this device's call allow.
     #[must_use]
     pub fn call_settings(&self) -> CallSettings {
@@ -584,6 +687,7 @@ impl Calls {
                 .checked_sub(std::time::Duration::from_secs(83))
                 .unwrap_or_else(web_time::Instant::now);
             a.answered_at = Some(a.started);
+            a.answered_ms = Some(unix_ms().saturating_sub(83_000));
             // Not the stand-in camera's test card: its bottom third is black by
             // design, which in a capture reads as a picture that stops short of
             // the screen's edge. A portrait frame (what an upright phone sends)
@@ -700,6 +804,10 @@ pub fn drive_calls(
                 let mut held_now = None;
                 if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
                     let here: HashSet<u64> = members.iter().map(|m| m.participant).collect();
+                    if !a.waiting {
+                        a.seen_people
+                            .extend(members.iter().map(|m| m.username.clone()));
+                    }
                     a.pictures
                         .retain(|p, _| *p == SELF_TILE || here.contains(p));
                     // A screen whose sharer stopped goes at once, not when it ages.
@@ -757,7 +865,19 @@ pub fn drive_calls(
                     calls.settings.remove(&group);
                     calls.extras.remove(&group);
                 } else {
+                    // Somebody new hears where the agenda is from a host.
+                    let newcomer = calls.active_group() == Some(group.as_slice())
+                        && calls.rosters.get(&group).is_some_and(|old| {
+                            members
+                                .iter()
+                                .any(|m| !old.iter().any(|o| o.participant == m.participant))
+                        });
                     calls.rosters.insert(group, members);
+                    if newcomer && calls.hosting() {
+                        if let Some(at) = calls.agenda.clone() {
+                            send_agenda(&calls, &private, &online, &at.plan, Some(&at));
+                        }
+                    }
                 }
             }
             NetMessage::CallDeclined { group, username } => {
@@ -885,11 +1005,34 @@ pub fn drive_calls(
                                     .captions
                                     .insert(participant, (text, web_time::Instant::now()));
                             }
+                            // Where the agenda is (`send_agenda`): believed
+                            // only from a host.
+                            #[derive(serde::Deserialize)]
+                            struct Agenda {
+                                g: i64,
+                                p: String,
+                                t: u64,
+                            }
+                            let from_host = calls
+                                .members()
+                                .iter()
+                                .any(|m| m.participant == participant && m.role.hosts());
+                            if let (true, Ok(a)) =
+                                (from_host, serde_json::from_str::<Agenda>(&text))
+                            {
+                                calls.agenda = usize::try_from(a.g).ok().map(|index| AgendaAt {
+                                    plan: a.p,
+                                    index,
+                                    started_ms: a.t,
+                                });
+                            }
                         }
                         Some(emoji) if emoji.chars().count() <= 16 => {
                             calls.reactions.push(Reaction {
                                 participant,
-                                emoji,
+                                // The web sends ❤️ with its emoji-style selector,
+                                // which the reaction font has no glyph for.
+                                emoji: emoji.replace('\u{fe0f}', ""),
                                 at: web_time::Instant::now(),
                             });
                         }
@@ -951,6 +1094,10 @@ pub fn drive_calls(
             calls.dismissed.insert(group);
         }
         Some(CallRequest::Control(action)) => {
+            // Ending it for everybody, the host writes the record.
+            if action == CallAction::EndForAll {
+                calls.record_due = calls.record_of_ending();
+            }
             if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
                 online.send("call control", NetMessage::CallControl { group, action });
             }
@@ -979,6 +1126,15 @@ pub fn drive_calls(
             #[cfg(target_arch = "wasm32")]
             let _ = emoji;
         }
+        Some(CallRequest::Agenda(plan, index)) => {
+            let at = index.map(|index| AgendaAt {
+                plan: plan.clone(),
+                index,
+                started_ms: unix_ms(),
+            });
+            send_agenda(&calls, &private, &online, &plan, at.as_ref());
+            calls.agenda = at;
+        }
         None => {}
     }
     calls
@@ -995,6 +1151,7 @@ pub fn drive_calls(
                 a.others_seen |= others > 0;
                 if others > 0 && a.connected && a.answered_at.is_none() {
                     a.answered_at = Some(web_time::Instant::now());
+                    a.answered_ms = Some(unix_ms());
                 }
                 (a.others_seen, a.started.elapsed())
             }
@@ -1008,8 +1165,13 @@ pub fn drive_calls(
             None
         };
         if let Some(why) = end {
+            // The host left last writes what the meeting came to.
+            if seen {
+                calls.record_due = calls.record_of_ending();
+            }
             online.send("call leave", NetMessage::CallLeave { group });
             calls.active = None;
+            calls.agenda = None;
             calls.notice = Some(why);
         }
     }
@@ -1316,6 +1478,8 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         epoch: None,
         started: web_time::Instant::now(),
         answered_at: None,
+        answered_ms: None,
+        seen_people: HashSet::new(),
         #[cfg(not(target_arch = "wasm32"))]
         mic: None,
         #[cfg(not(target_arch = "wasm32"))]

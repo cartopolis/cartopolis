@@ -441,6 +441,85 @@ pub fn tally_votes<'a>(
         .collect()
 }
 
+/// What a meeting from `start_ms` to `end_ms` came to, from what was said in
+/// its chat as `(who, sent at ms, object)`: the notes and polls posted while it
+/// ran (a minute's grace before), the people, and the transcript. The web's
+/// `buildRecord` does the same. Titled after the plan it belongs to, if any.
+#[must_use]
+pub fn build_record(
+    said: &[(String, u64, &MeetingObject)],
+    start_ms: u64,
+    end_ms: u64,
+    mut people: Vec<String>,
+    mut transcript: Vec<(String, String)>,
+    chat_name: &str,
+) -> Record {
+    let during = |at: u64| at + 60_000 >= start_ms && at <= end_ms;
+    let mut notes = Vec::new();
+    let mut polls = Vec::new();
+    let mut plan: Option<&Plan> = None;
+    for (who, at, o) in said {
+        match o {
+            MeetingObject::Note { kind, text } if during(*at) => notes.push(RecordNote {
+                kind: *kind,
+                text: text.clone(),
+                by: who.clone(),
+            }),
+            MeetingObject::Poll(p) if during(*at) => polls.push(RecordPoll {
+                question: p.question.clone(),
+                results: tally_votes(p, said.iter().map(|(w, _, o)| (w.as_str(), *o)))
+                    .into_iter()
+                    .map(|(o, who)| (o, who.len() as u32))
+                    .collect(),
+            }),
+            // The plan this meeting is: one starting up to 15 minutes after
+            // it began or up to three hours before, the nearest.
+            MeetingObject::Plan(p)
+                if p.start_ms <= start_ms + 15 * 60_000
+                    && start_ms <= p.start_ms + 3 * 3_600_000 =>
+            {
+                if plan
+                    .is_none_or(|q| p.start_ms.abs_diff(start_ms) < q.start_ms.abs_diff(start_ms))
+                {
+                    plan = Some(p);
+                }
+            }
+            _ => {}
+        }
+    }
+    people.sort();
+    people.dedup();
+    let excess = transcript.len().saturating_sub(MAX_TRANSCRIPT);
+    transcript.drain(..excess);
+    Record {
+        title: plan.map_or_else(
+            || {
+                if chat_name.is_empty() {
+                    "Meeting record".to_string()
+                } else {
+                    format!("Call in {chat_name}")
+                }
+            },
+            |p| p.title.clone(),
+        ),
+        start_ms,
+        end_ms,
+        people,
+        notes,
+        polls,
+        transcript,
+    }
+}
+
+impl Record {
+    /// Whether it says anything a chat needs: a meeting that left no note,
+    /// poll or transcript posts no record.
+    #[must_use]
+    pub fn has_content(&self) -> bool {
+        !(self.notes.is_empty() && self.polls.is_empty() && self.transcript.is_empty())
+    }
+}
+
 /// A plan as an iCalendar file, for a person's own calendar. Local times are
 /// the calendar's business: the event is written in UTC.
 #[must_use]
@@ -624,6 +703,59 @@ mod tests {
             t,
             vec![("Fri".into(), vec!["ann".into()]), ("Sat".into(), vec![])]
         );
+    }
+
+    #[test]
+    fn a_record_gathers_what_was_said_while_the_call_ran() {
+        let start = 1_792_000_800_000;
+        let poll = Poll {
+            id: "p".into(),
+            question: "Which day?".into(),
+            options: vec!["Fri".into(), "Sat".into()],
+            multiple: false,
+        };
+        let objects = [
+            MeetingObject::Plan(Plan {
+                start_ms: start + 5 * 60_000,
+                ..plan()
+            }),
+            MeetingObject::Note {
+                kind: NoteKind::Note,
+                text: "said the day before".into(),
+            },
+            MeetingObject::Note {
+                kind: NoteKind::Decision,
+                text: "Gazebos stay".into(),
+            },
+            MeetingObject::Poll(poll),
+            MeetingObject::Vote {
+                poll: "p".into(),
+                choices: vec!["Sat".into()],
+            },
+        ];
+        let said = vec![
+            ("ann".to_string(), start - 3_600_000, &objects[0]),
+            ("ann".to_string(), start - 86_400_000, &objects[1]),
+            ("ann".to_string(), start + 60_000, &objects[2]),
+            ("bob".to_string(), start + 120_000, &objects[3]),
+            ("carol".to_string(), start + 130_000, &objects[4]),
+        ];
+        let r = build_record(
+            &said,
+            start,
+            start + 1_800_000,
+            vec!["bob".into(), "ann".into(), "bob".into()],
+            vec![],
+            "#q4",
+        );
+        assert_eq!(r.title, "Q4 planning");
+        assert_eq!(r.people, vec!["ann".to_string(), "bob".to_string()]);
+        assert_eq!(r.notes.len(), 1, "the day before is not this meeting");
+        assert_eq!(
+            r.polls[0].results,
+            vec![("Fri".into(), 0), ("Sat".into(), 1)]
+        );
+        assert!(r.has_content());
     }
 
     #[test]

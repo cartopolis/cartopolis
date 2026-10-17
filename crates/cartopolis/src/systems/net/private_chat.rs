@@ -342,6 +342,7 @@ pub fn drive_private_chats(
     mut chat: ResMut<crate::systems::chat::ChatState>,
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
     mut communities: ResMut<crate::systems::communities::Communities>,
+    mut calls: ResMut<crate::systems::calls::Calls>,
 ) {
     let (Some(online), Some(username), Some(server_name)) = (
         online,
@@ -590,6 +591,33 @@ pub fn drive_private_chats(
             Err(e) => events.push(Event::Notice(format!("not sent: {e}"))),
         }
         private.dirty = true;
+    }
+    // Notes taken in the call screen, and the record a host owes when the
+    // call ends (`systems::calls`): gathered here, where the chat's lines are.
+    for (group, meeting) in std::mem::take(&mut calls.meeting_out) {
+        chat.private_meetings.push((channel_key(&group), meeting));
+    }
+    if let Some(due) = calls.record_due.take() {
+        let key = channel_key(&due.group);
+        if let Some(c) = chat.channels.iter().find(|c| c.key == key) {
+            let said: Vec<(String, u64, &cartopolis_core::meeting::MeetingObject)> = c
+                .lines
+                .iter()
+                .filter_map(|l| l.meeting.as_ref().map(|m| (l.sender.clone(), l.at_ms, m)))
+                .collect();
+            let record = cartopolis_core::meeting::build_record(
+                &said,
+                due.start_ms,
+                due.end_ms,
+                due.people,
+                due.transcript,
+                &c.label,
+            );
+            if record.has_content() {
+                chat.private_meetings
+                    .push((key, cartopolis_core::meeting::MeetingObject::Record(record)));
+            }
+        }
     }
     for (channel, meeting) in std::mem::take(&mut chat.private_meetings) {
         let Some(group) = group_of(&channel) else {

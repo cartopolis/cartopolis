@@ -178,8 +178,6 @@ icons! {
     HAND = "\u{e764}", "back_hand";
     /// Somebody is sharing a screen in a call.
     SCREEN_SHARE = "\u{e0e2}", "screen_share";
-    /// Everybody in a call (the people sheet).
-    PEOPLE = "\u{ea21}", "group";
     /// Spotlight somebody in a call for everyone.
     STAR = "\u{f09a}", "star";
     /// Take somebody out of a call.

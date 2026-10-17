@@ -71,6 +71,9 @@ pub struct CallScreenState {
     big: Option<u64>,
     /// Who was waiting at the last frame, to say when somebody new knocks.
     waiting_seen: Vec<u64>,
+    /// The note being written in the notes sheet, and what kind it is.
+    note_draft: String,
+    note_kind: Option<cartopolis_core::meeting::NoteKind>,
     /// Calls that were ringing last frame, to unfold the screen for a new one.
     ringing_before: HashSet<Vec<u8>>,
     /// Last touch on the call screen, for hiding the controls over a picture.
@@ -215,6 +218,12 @@ pub fn render_call_screen(
                             st.touched = Some(web_time::Instant::now());
                         }
                         let group = active.clone().unwrap_or_default();
+                        let key = channel_key(&group);
+                        let lines = chat
+                            .channels
+                            .iter()
+                            .find(|c| c.key == key)
+                            .map_or(&[][..], |c| c.lines.as_slice());
                         in_call_screen(
                             ui,
                             full,
@@ -222,6 +231,7 @@ pub fn render_call_screen(
                             &mut st,
                             label_of(&group),
                             &me,
+                            lines,
                             &mut request,
                         );
                     }
@@ -596,6 +606,7 @@ fn in_call_screen(
     st: &mut CallScreenState,
     chat_label: Option<String>,
     me: &str,
+    lines: &[crate::systems::chat::ChatLine],
     request: &mut Option<CallRequest>,
 ) {
     if calls.waiting_to_join() {
@@ -972,6 +983,7 @@ fn in_call_screen(
                             Sheet::More => more_sheet(ui, calls, st, request, &mut close),
                             Sheet::People => people_sheet(ui, calls, st, request),
                             Sheet::Leave => leave_sheet(ui, calls, request, &mut close),
+                            Sheet::Notes => notes_sheet(ui, calls, st, lines, request),
                         },
                     );
                 });
@@ -992,6 +1004,8 @@ enum Sheet {
     People,
     /// A host leaving: leave, or end it for everyone.
     Leave,
+    /// Notes, decisions and actions taken in the call, and the agenda.
+    Notes,
 }
 
 /// The reactions offered, in the order the row shows them.
@@ -1154,7 +1168,7 @@ fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
         d * 0.5,
         egui::Color32::from_white_alpha(if resp.hovered() { 46 } else { 30 }),
     );
-    centred(p, c, icons::PEOPLE, 22.0, theme::CREAM);
+    centred(p, c, icons::GROUP, 22.0, theme::CREAM);
     let hands = calls.members().iter().filter(|m| m.hand.is_some()).count()
         + if calls.hosting() {
             calls.extras().waiting.len()
@@ -1362,8 +1376,11 @@ fn more_sheet(
         }
     });
     theme::section(ui, "In this call");
-    if sheet_row(ui, icons::PEOPLE, "People", None) {
+    if sheet_row(ui, icons::GROUP, "People", None) {
         st.sheet = Some(Sheet::People);
+    }
+    if sheet_row(ui, icons::NOTE, "Notes and agenda", None) {
+        st.sheet = Some(Sheet::Notes);
     }
     if sheet_row(ui, icons::STAR, "Speaker view", Some(st.speaker_view)) {
         st.speaker_view = !st.speaker_view;
@@ -1424,7 +1441,7 @@ fn more_sheet(
     );
     theme::section(ui, "Breakout rooms");
     if calls.extras().rooms.is_some() {
-        if sheet_row(ui, icons::PEOPLE, "Bring everybody back", None) {
+        if sheet_row(ui, icons::GROUP, "Bring everybody back", None) {
             *request = Some(CallRequest::Control(CallAction::CloseRooms));
             *close = true;
         }
@@ -1432,7 +1449,7 @@ fn more_sheet(
         for n in [2u32, 3, 4] {
             if sheet_row(
                 ui,
-                icons::PEOPLE,
+                icons::GROUP,
                 &format!("Split into {n} rooms for 10 minutes"),
                 None,
             ) {
@@ -1615,7 +1632,7 @@ fn people_sheet(
                         .enumerate()
                     {
                         if i as u32 != m.room
-                            && sheet_row(ui, icons::PEOPLE, &format!("Move to {name}"), None)
+                            && sheet_row(ui, icons::GROUP, &format!("Move to {name}"), None)
                         {
                             *request = Some(CallRequest::Control(CallAction::MoveTo {
                                 participant,
@@ -1641,6 +1658,206 @@ fn people_sheet(
 }
 
 /// A host leaving a call others are still in: leave it to them, or end it.
+/// Notes, decisions and actions taken in the call, and where the agenda is:
+/// the web's notes panel (`chat.tsx` `notesPanel`), on a sheet. A note goes
+/// into the call's chat, sealed, so it outlasts the call and is gathered into
+/// the record when a host ends it.
+fn notes_sheet(
+    ui: &mut egui::Ui,
+    calls: &mut Calls,
+    st: &mut CallScreenState,
+    lines: &[crate::systems::chat::ChatLine],
+    request: &mut Option<CallRequest>,
+) {
+    use cartopolis_core::meeting::{MeetingObject, NoteKind, Plan};
+    let since = calls.started_ms().unwrap_or(0).saturating_sub(60_000);
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let hosting = calls.hosting();
+
+    // ── The agenda: the plan this call belongs to, and where it is ────────
+    let start = calls.started_ms().unwrap_or(now);
+    let plan: Option<&Plan> = lines
+        .iter()
+        .filter_map(|l| match &l.meeting {
+            Some(MeetingObject::Plan(p))
+                if p.start_ms <= start + 15 * 60_000 && start <= p.start_ms + 3 * 3_600_000 =>
+            {
+                Some(p)
+            }
+            _ => None,
+        })
+        .min_by_key(|p| p.start_ms.abs_diff(start));
+    theme::section(ui, "Agenda");
+    match plan {
+        None => theme::note(
+            ui,
+            "No agenda. A meeting planned in this chat for about now brings its agenda here.",
+        ),
+        Some(plan) => {
+            let at = calls.agenda.clone().filter(|a| a.plan == plan.id);
+            ui.label(
+                egui::RichText::new(&plan.title)
+                    .size(theme::SIZE_BODY)
+                    .strong()
+                    .color(theme::CREAM),
+            );
+            for (i, item) in plan.agenda.iter().enumerate() {
+                let current = at.as_ref().is_some_and(|a| a.index == i);
+                let done = at.as_ref().is_some_and(|a| i < a.index);
+                let clock = if current {
+                    let spent =
+                        now.saturating_sub(at.as_ref().map_or(now, |a| a.started_ms)) / 1000;
+                    let over = item.minutes > 0 && spent > u64::from(item.minutes) * 60;
+                    let text = if item.minutes > 0 {
+                        format!("{}:{:02} / {}:00", spent / 60, spent % 60, item.minutes)
+                    } else {
+                        format!("{}:{:02}", spent / 60, spent % 60)
+                    };
+                    Some((text, over))
+                } else {
+                    None
+                };
+                ui.horizontal(|ui| {
+                    let colour = if current {
+                        theme::ACCENT
+                    } else if done {
+                        theme::TEXT_DIM
+                    } else {
+                        theme::TEXT
+                    };
+                    let mut name = egui::RichText::new(format!("{}. {}", i + 1, item.name))
+                        .size(14.0)
+                        .color(colour);
+                    if current {
+                        name = name.strong();
+                    }
+                    if done {
+                        name = name.strikethrough();
+                    }
+                    ui.label(name);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match clock {
+                            Some((text, over)) => {
+                                ui.label(egui::RichText::new(text).size(12.5).color(if over {
+                                    theme::WARN
+                                } else {
+                                    theme::ACCENT
+                                }));
+                            }
+                            None if item.minutes > 0 => {
+                                ui.label(
+                                    egui::RichText::new(format!("{} min", item.minutes))
+                                        .size(12.5)
+                                        .color(theme::TEXT_DIM),
+                                );
+                            }
+                            None => {}
+                        }
+                    });
+                });
+            }
+            if hosting && !plan.agenda.is_empty() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let next = at.as_ref().map_or(0, |a| a.index + 1);
+                    if next < plan.agenda.len() {
+                        let label = if at.is_some() {
+                            format!("Next: {}", plan.agenda[next].name)
+                        } else {
+                            "Start the agenda".to_string()
+                        };
+                        if theme::chip(ui, &label, true).clicked() {
+                            *request = Some(CallRequest::Agenda(plan.id.clone(), Some(next)));
+                        }
+                    }
+                    if at.is_some() && theme::chip(ui, "Stop", false).clicked() {
+                        *request = Some(CallRequest::Agenda(plan.id.clone(), None));
+                    }
+                });
+            }
+        }
+    }
+
+    // ── Notes taken while the call runs ─────────────────────────────────────
+    theme::section(ui, "Notes");
+    let mut any = false;
+    for l in lines.iter().filter(|l| l.at_ms >= since) {
+        let Some(MeetingObject::Note { kind, text }) = &l.meeting else {
+            continue;
+        };
+        any = true;
+        ui.horizontal_wrapped(|ui| {
+            let tint = match kind {
+                NoteKind::Decision => theme::ACCENT,
+                NoteKind::Action => theme::WARN,
+                NoteKind::Note => theme::TEXT_DIM,
+            };
+            ui.label(
+                egui::RichText::new(kind.label().to_uppercase())
+                    .size(11.0)
+                    .strong()
+                    .color(tint),
+            );
+            ui.label(
+                egui::RichText::new(format!("{text} · {}", l.sender))
+                    .size(13.5)
+                    .color(theme::TEXT),
+            );
+        });
+    }
+    if !any {
+        theme::note(
+            ui,
+            "Nothing noted yet. What is said, decided and who does what goes here, for everybody.",
+        );
+    }
+    ui.add_space(6.0);
+    let kind = st.note_kind.unwrap_or(NoteKind::Note);
+    ui.horizontal(|ui| {
+        for k in [NoteKind::Note, NoteKind::Decision, NoteKind::Action] {
+            if theme::chip(ui, k.label(), kind == k).clicked() {
+                st.note_kind = Some(k);
+            }
+        }
+    });
+    let edit = ui.add(
+        egui::TextEdit::multiline(&mut st.note_draft)
+            .desired_rows(2)
+            .desired_width(f32::INFINITY)
+            .hint_text(match kind {
+                NoteKind::Action => "Who does what, by when",
+                NoteKind::Decision => "What was decided",
+                NoteKind::Note => "A note for everybody",
+            }),
+    );
+    let enter =
+        edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+    let text = st.note_draft.trim().to_string();
+    if (theme::primary_button_sized(ui, "Add", ui.available_width()).clicked() || enter)
+        && !text.is_empty()
+    {
+        if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+            calls
+                .meeting_out
+                .push((group, MeetingObject::Note { kind, text }));
+        }
+        st.note_draft.clear();
+    }
+    if hosting {
+        ui.add_space(6.0);
+        if sheet_row(ui, icons::RECORD, "Post the record now", None) {
+            calls.post_record_now();
+        }
+    }
+    theme::note(
+        ui,
+        "Posted in the chat, sealed. When the meeting ends a host's device gathers them into its record.",
+    );
+}
+
 fn leave_sheet(
     ui: &mut egui::Ui,
     calls: &Calls,
@@ -2017,7 +2234,7 @@ fn meeting_chips(
         let secs = until.saturating_sub(now) / 1000;
         format!(" · {}:{:02} left", secs / 60, secs % 60)
     });
-    let text = format!("{}  In {name}{}", icons::PEOPLE, left.unwrap_or_default());
+    let text = format!("{}  In {name}{}", icons::GROUP, left.unwrap_or_default());
     let galley = p.layout_no_wrap(
         text,
         egui::FontId::proportional(theme::SIZE_SUB),
