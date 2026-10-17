@@ -44,6 +44,15 @@ async function waitFor(what: string, f: () => Promise<boolean>, ms = 20000): Pro
 
 const procs: {kill(): void}[] = []
 
+/**
+ * A community's page opens on its public posts; its topics are the other tab
+ * of a segmented field (not a button), so the innermost element with the label.
+ */
+function showTopics(b: Browser): Promise<unknown> {
+    return b.eval(`[...document.querySelectorAll('*')].reverse()
+        .find((e) => e.innerText?.trim().startsWith('Topics ·'))?.click()`)
+}
+
 async function bootSim(): Promise<number> {
     const dir = mkdtempSync(path.join(tmpdir(), 'chat-browser-'))
     const db = path.join(dir, 'world.db')
@@ -286,6 +295,23 @@ try {
                 .some((v) => v.videoWidth > 0 && v.currentTime > 0)`), 45000)
     await seesVideo(ann)
     await seesVideo(bob)
+    // And it went as VP9 (`webcall.js`, `sendCodecs`), which is what the
+    // browser's own outgoing statistics say it encoded.
+    const sentCodec = (b: Browser) =>
+        b.eval<string | null>(`(async () => {
+            const c = globalThis.cartopolisCall
+            if (!c) return 'no call on the page'
+            const stats = await c.up.getStats()
+            let codec = null
+            stats.forEach((r) => {
+                if (r.type === 'outbound-rtp' && r.kind === 'video' && r.codecId) codec = stats.get(r.codecId)?.mimeType ?? null
+            })
+            return codec
+        })()`)
+    for (const b of [ann, bob]) {
+        const codec = await sentCodec(b)
+        if (codec !== 'video/VP9') throw new Error(`${b.name} sent ${codec}, not video/VP9`)
+    }
     if (shots) {
         mkdirSync(shots, {recursive: true})
         await ann.shot(path.join(shots, 'call.png'))
@@ -294,7 +320,7 @@ try {
     await waitFor('bob\'s call ended', () => bob.eval('!document.querySelector(".chat-call")'), 20000)
     await Bun.sleep(1000)
     if (await ann.has('Missed call')) throw new Error('the caller was told of a missed call after hanging up')
-    step('a video call in the topic: rang, answered, each saw the other, hung up')
+    step('a video call in the topic: rang, answered, each saw the other in VP9, hung up')
 
     // Bob reloads: the history comes back out of his browser's own storage.
     await bob.send('Page.reload')
@@ -333,7 +359,8 @@ try {
 
     // Bob mutes the topic: it says so, and counts nothing.
     await bob.openCommunity('Atelier Noord')
-    if (!(await bob.click('Mute'))) throw new Error('no Mute')
+    await showTopics(bob)
+    await waitFor('bob\'s Mute key', () => bob.click('Mute'))
     await waitFor('the topic marked muted', () =>
         bob.eval('[...document.querySelectorAll(".chat-item")].some((b) => b.innerText.includes("muted"))'))
     await ann.openTopic('Atelier Noord', 'ebbinge-quarter')
@@ -351,6 +378,7 @@ try {
         await bob.shot(path.join(shots, 'bob.png'))
         // The community's own page, and the directory.
         await ann.openCommunity('Atelier Noord')
+        await showTopics(ann)
         await ann.until('Everyone here is in every topic')
         await ann.shot(path.join(shots, 'community.png'))
         await ann.click('Find a community')
