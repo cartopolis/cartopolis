@@ -82,8 +82,8 @@ cd "$root" || exit 1
 gitdir=$(git rev-parse --git-dir)
 
 # ── Which branch ─────────────────────────────────────────────────────────────
-# The one this worktree has checked out. It is also the key the session's chat
-# digest is published under, so the name outlives the landing.
+# The one this worktree has checked out, which a handover and the next session
+# know the work by.
 branch=$(git rev-parse --abbrev-ref HEAD)
 [ "$branch" != "HEAD" ] || {
     echo "refusing: detached HEAD — check out a branch first (git switch -c <type>/<slug>)" >&2
@@ -183,8 +183,8 @@ fi
 [ -n "$dry_run" ] && { echo "(dry run: would push $branch and fast-forward main to ${sha:0:8})"; exit 0; }
 
 # ── Land it ──────────────────────────────────────────────────────────────────
-# The branch goes up first and keeps existing: it is the key the agent-context
-# digest is stored under (refs/agent-context/<branch>).
+# The branch goes up first and keeps existing, so what landed can still be found
+# by the name the session worked under.
 # Plain first, `--force-with-lease` only as the fallback. A lease needs a
 # remote-tracking ref to compare against and a branch that has never been pushed
 # has none, so leading with it fails on exactly the common case; and the only

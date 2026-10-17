@@ -11,12 +11,16 @@ tickets: no issues, no labels, no kanban board, no issue watcher on the VPS, and
 no `/ticket`. `/handover` survives in another form — from one session to the
 next, with no label to flip. A session is one agent thread in its own worktree on
 its own branch, with the maintainer in the conversation; it lands through
-`finish-branch` and leaves its reasoning in the published digest and its commit
-bodies. [docs/workflow.md](../../workflow.md) describes how that works.
+`finish-branch` and leaves its reasoning in its commit bodies. The chat digests
+were retired the same day ([agent-context-refs.md](agent-context-refs.md)). On
+the VPS the issue watcher's code, state and compose service, the steward that
+filed tickets on a timer, and the autopilot's expiry timer were removed, archived
+in `/data/agent/backups/ai-tickets-retired-20261017/`.
+[docs/workflow.md](../../workflow.md) describes how sessions work.
 
 What follows is the document as it stood when tickets were the unit of work —
-kept for the reasons behind the parts that survived (the local landing gate, the
-published digests, the per-worktree builds) and for what the two lanes learned.
+kept for the reasons behind the parts that survived (the local landing gate and the
+per-worktree builds) and for what the two lanes learned.
 Do not re-propose a ticket lane from it without saying what changed.
 
 # The agent workflow (as of 2026-10-16)

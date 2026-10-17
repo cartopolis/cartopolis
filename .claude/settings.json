@@ -1,4 +1,14 @@
 {
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bun tools/mcp.ts me)",
+      "Bash(bun tools/mcp.ts state)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {

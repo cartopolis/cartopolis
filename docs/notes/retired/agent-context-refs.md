@@ -1,8 +1,32 @@
 ---
-topic: agent-context-refs
-triggers: [agent-context, "refs/agent-context", post-receive, prune, gc, "chat history", handoff, Stop hook, forgejo hooks]
-updated: 2026-07-30
+topic: retired/agent-context-refs
+triggers: [agent-context, "refs/agent-context", cartopolis-agent-context, agent-context-push, branch-context, "chat digest", "session digest", "learn from past conversations"]
+updated: 2026-10-17
 ---
+
+# Retired: chat digests on a git ref
+
+Every turn of a driven session used to publish a digest of its transcript to
+`refs/agent-context/<branch>` in a private repo, `jeroen/cartopolis-agent-context`,
+from a `Stop` hook (`agent-context-push`) installed outside this repository on
+the workstation and in the agent container. The idea was that the next agent —
+on a handover, a takeover by the watcher, or a review before landing — would
+learn from the conversations that built a branch: the alternatives rejected, the
+dead ends, what was left open. The `branch-context` skill read the digests, and
+`finish-branch` and `handover` relied on them.
+
+**Retired on 2026-10-17** at the maintainer's decision: it did not earn its keep.
+The `branch-context` skill was deleted and the other skills stopped relying on
+digests. The reasoning that is worth keeping is the reasoning somebody writes
+down — the commit body (the `commit` skill's four questions), a note, and a
+handover's note for where things stand — and that is where a later session now
+looks. Do not re-propose publishing transcripts.
+
+The hook had a second job: it pushed the branch every turn. Nothing replaces
+that — a session's branch reaches origin when it lands (`merge-to-main`) or is
+handed over (`handover`). On the VPS the hook had in any case done nothing since
+the project's rename, because it only acted for a remote named `viberfox`. What
+the machinery measured is below, as it stood.
 
 # Carrying agent chat context on a git ref
 

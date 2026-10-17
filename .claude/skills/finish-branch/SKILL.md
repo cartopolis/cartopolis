@@ -1,34 +1,23 @@
 ---
 name: finish-branch
-description: Land a finished branch into main after reading the agent chat context that explains it. Use when a branch is done and being merged. The chat digest is kept, not destroyed.
+description: Land a session's finished branch on main — check it does what was asked, run CI's gate, fast-forward main. Use when the user says to merge or land it.
 ---
 
 # finish-branch
 
-Land a branch, having first read the reasoning behind it.
-
-The digest on `refs/agent-context/<branch>` **stays** after the merge. Keeping it
-is the point: "why is this code like this?" outlives the branch by years, while a
-commit body only ever holds what the author thought to write down at the time.
-
-> This skill used to destroy the digest at merge time, from when digests were
-> pushed into the public cartopolis repo where anyone could read them. Moving them
-> to the private `cartopolis-agent-context` repo removed that reason. See
-> [docs/notes/agent-context-refs.md](../../../docs/notes/agent-context-refs.md)
-> for what the destruction machinery was and why it is now only a manual escape
-> hatch.
+Land a branch, having first checked it is what was asked for.
 
 ## Order
 
-**1. Read the context.** Run `branch-context` and confirm the branch actually is
-finished: nothing left stubbed, the open questions answered, the verification the
-session claimed actually run. A digest header saying `uncommitted at stop: 12
-file(s)` means you are not looking at all the work that existed.
+**1. Check what the branch was *for*.** Re-read what the user asked for in this
+session, the commit bodies (`git log origin/main..HEAD`), and — if the branch
+was handed over — the handover note. A branch often drifts across sessions; if
+what you are about to land no longer matches what was asked, this is a
+conversation, not a merge.
 
-**2. Check what the branch was *for*.** A branch often drifts across several
-sessions. The oldest session file usually holds the design decision; the later
-ones only execute it. If what you are about to merge no longer matches that
-intent, this is a conversation, not a merge.
+**2. Confirm it is finished.** Nothing left stubbed, the open questions
+answered, the verification actually run — not merely claimed in a commit
+message. A `wip:` commit is a handover's sweep and is refused (see below).
 
 **3. Verify it here.** The branch is judged on this machine now, not by opening
 a pull request:
@@ -77,32 +66,3 @@ other sessions share always has somebody's work in it.
 Follow the `commit` skill's conventions for any fixup commit along the way.
 `--allow-unverified` skips the gate and exists to be visible in a transcript,
 not to be routine.
-
-**5. Leave the context ref alone.** There is nothing to clean up. The ref stays
-keyed on the branch name, which remains meaningful long after the branch itself
-is deleted.
-
-## Deleting one anyway
-
-If a digest genuinely has to go — a credential slipped past the filter's
-redaction, or something was pasted that should never have been typed — it takes
-both halves, and neither alone is enough:
-
-```bash
-CTX=ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git
-git push "$CTX" --delete refs/agent-context/<branch>   # server prunes on receipt
-git update-ref -d refs/agent-context/<branch>          # then this clone
-git reflog expire --expire-unreachable=now --all
-git gc --prune=now
-```
-
-The server's `post-receive.d/prune-agent-context` hook runs `git gc --prune=now`
-when it sees such a deletion, which is what makes the objects unretrievable
-rather than merely unreachable. Measured: it completes within about 2 s.
-
-**Do not** delete the digest *file* in a new commit and call it removed — the
-content stays fully readable in the ref's history. And do not skip the local
-half: two stores, two prunes.
-
-If the reason is a leaked credential, **rotate it first**. Deleting a digest does
-not un-leak anything that was already fetched.

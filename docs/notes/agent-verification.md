@@ -1,6 +1,6 @@
 ---
 topic: agent-verification
-triggers: [harness, "agent:done", "agent:ci", watcher.ts, ci.yml, "--expect", Stop hook, agent-context-push, verifier, gate, "add a check", "how do we know it works", verify-branch, merge-to-main, "pull request", "merge to main"]
+triggers: [harness, ci.yml, "--expect", .claude/settings.json, verifier, gate, "add a check", "how do we know it works", verify-branch, merge-to-main, "pull request", "merge to main"]
 updated: 2026-10-17
 ---
 
@@ -81,14 +81,18 @@ at* the gate; it may not be the gate.
 ## Corollary 2 — anything CI cannot see needs a runtime self-check
 
 `~/.claude/settings.json` had `hooks.Stop: []` while `agent-context-push` sat
-installed and documented as running every turn. No digest, no branch push, no log
-line. A repository cannot test a file it does not contain, and `git log` will
-never show one going stale.
+installed and documented as running every turn — and on the VPS the same hook,
+still matching the project's old name, did nothing at all for weeks after the
+rename. No push, no log line. A repository cannot test a file it does not
+contain, and `git log` will never show one going stale.
 
-Where an out-of-repo dependency is unavoidable — hook registrations, container
-images, the environment an editor launches agents with — something that *does*
-run must verify it and say so. The `SessionStart` hook is the pattern: it checks that the `Stop` hook is
-registered and reports the real HEAD, rather than asserting either.
+The answer, on 2026-10-17, was to keep what the workflow needs in the
+repository: hooks are registered in its own `.claude/settings.json` and live in
+`.claude/hooks/`, so every checkout carries them and a review sees them change.
+Where an out-of-repo dependency is still unavoidable — container images, the
+environment an editor launches agents with, midas's own session hooks —
+something that *does* run must verify it and say so, reporting the real state
+rather than asserting it, as midas's session hook does for the build farm.
 
 ## What no gate here covers, and must not be faked
 

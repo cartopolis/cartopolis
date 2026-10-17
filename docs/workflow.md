@@ -4,8 +4,8 @@ How work gets from an idea onto `main`: in **sessions**. A session is one agent
 thread — in Zed, in claude.ai/code, or Claude Code in a terminal — working in a
 worktree of its own on a branch of its own, with the maintainer in the
 conversation. There is no ticketing system: no issues, no labels, no board. What
-a session was for is in its conversation, which is published as a digest, and in
-its commit bodies.
+a session was for is in its commit bodies, and in a handover's note when it
+stops before it is done.
 
 Until 2026-10-17 the unit of work was a Forgejo ticket, with `/ticket`,
 `/handover`, a kanban board and an issue watcher on the VPS;
@@ -19,10 +19,12 @@ watch. Four things follow, and every mechanism below is one of them:
 
 1. **Sessions are disposable; what they leave is not.** A session dies, is
    killed, or wanders off. What survives it is git — the branch, its commits and
-   their bodies — and the published digest, never only the conversation.
-2. **Reasoning is published, not reconstructed.** A diff shows what was done, not
-   what was considered and rejected, so the next session redoes the rejected
-   thing. Digests go up every turn — [Reasoning](#reasoning-the-digest).
+   their bodies — never the conversation.
+2. **Reasoning is written down, not reconstructed.** A diff shows what was done,
+   not what was considered and rejected, so the next session redoes the rejected
+   thing. The commit body says why (the `commit` skill's four questions), a
+   handover note says where things stand, and a fact that will still be true in
+   ten commits is a note in `docs/notes/`.
 3. **Nothing may gate on what the agent controls.** The landing gate is a
    checked-in script, not a sentence in a prompt —
    [notes/agent-verification.md](notes/agent-verification.md).
@@ -68,9 +70,8 @@ and sccache refills it — measured at 85.6 % hits — provided nobody exports
 - **Builds, captures and deploys** run on a midas node where the work needs one
   (`CLAUDE.md` has which, and when a GPU matters).
 - **Picking up another session's branch:** open a worktree on it, then read its
-  digest before its diff ([`branch-context`](../.claude/skills/branch-context/SKILL.md)).
-  The earliest session usually holds the design decision; the later ones execute
-  it.
+  commit bodies and any handover note before its diff
+  (`git log origin/main..<branch>`).
 
 ## Handing a session over
 
@@ -82,15 +83,15 @@ for the day — hands it to the next one rather than leaving it in a worktree:
 ```
 
 It sweeps uncommitted work into a `wip:` commit whose message carries the note,
-pushes the branch, confirms the session's digest is published, and detaches the
+pushes the branch, and detaches the
 worktree so the branch is free for the next session's worktree on the same
 machine. The next session switches to the branch in a worktree of its own, reads
-the digest and the note, and **folds the `wip:` commit into real commits before
+the note and the commits, and **folds the `wip:` commit into real commits before
 landing** — `merge-to-main` refuses a branch that still carries one, because
 with no pull request nothing else would stop a sweep reaching `main`.
 
-The note is the part only you can write: steps one to three move bytes, and the
-note is the intent that is not already in the digest.
+The note is the part only you can write: the rest moves bytes, and the note is
+the intent that is not already in the commits.
 [`handover`](../.claude/skills/handover/SKILL.md) has the rest.
 
 It refuses to sweep the repository's main checkout. Several sessions may be
@@ -155,41 +156,17 @@ fixed forward. Publishing is the gate that protects strangers:
 `tools/deploy-main` refuses a commit whose CI never went green, and
 `midas deploy` asks for the landing gate's receipt.
 
-## Reasoning: the digest
-
-A `Stop` hook publishes a mechanical digest of each session — user and
-assistant prose verbatim, one line per tool call, credentials redacted — to the
-**private** `jeroen/cartopolis-agent-context` repository, every turn, keyed on
-the session's branch. Private because cartopolis is public and a transcript is
-never reviewed before it goes up
-([notes/agent-context-refs.md](notes/agent-context-refs.md)). Digests are kept
-after a branch lands; [`branch-context`](../.claude/skills/branch-context/SKILL.md)
-reads them.
-
-**The hook has to key on the branch now.** Under tickets it published only for a
-session bound to one — the marker `.git/cartopolis-ticket` that `/ticket` wrote —
-and treated everything else as exploratory. With no `/ticket` there is no
-marker, so a hook still keyed on it publishes nothing, silently. It has to
-publish for any branch but `main`. The hook is outside this repository, one copy
-per machine ([Setup](#setup)); change it there.
-
 ## Setup
 
-Per machine, outside the repository:
+The workflow needs nothing installed per machine: its hooks and skills are in
+the repository (`.claude/settings.json`, `.claude/hooks/`, `.claude/skills/`), so
+every checkout carries them. What stays per machine is the SSH key that pushes
+to Forgejo, midas's configuration where builds go through nodes, and on the VPS
+a short `~/.claude/CLAUDE.md` about the host. Chat digests were published per
+session by a `Stop` hook installed outside the repository until 2026-10-17, and
+retired ([notes/retired/agent-context-refs.md](notes/retired/agent-context-refs.md)).
 
-| What | Where |
-|---|---|
-| `Stop` hook + jq filter | `~/.claude/hooks/agent-context-push`, `agent-context.jq` |
-| Hook registration | `~/.claude/settings.json` → `hooks.Stop` |
-| Digest destination | `jeroen/cartopolis-agent-context` over SSH; override with `CARTO_AGENT_CONTEXT_REMOTE` |
-| claude.ai/code container | the same hook under `/home/agent/.claude/hooks/` on the `agent_claude` volume |
-
-The copies must stay byte-identical — `md5sum` all of them after editing one.
-They drifted once, and the symptom was silent: sessions published their digest
-but never pushed their branch.
-
-**The Mac (2026-10-17) had neither the hook nor its registration**, and two
-things specific to macOS:
+**The Mac** has two things specific to macOS (2026-10-17):
 
 - **Zed starts agents without `/opt/homebrew/bin` on `PATH`**, so `git-lfs` is
   not found: `git status` in a new worktree fails with `git-lfs filter-process:
@@ -219,7 +196,3 @@ say so in the commit body.
 **The gate cannot reach a node.** The midas hub is down or refusing connections.
 `CARTO_GATE_NO_SLOT=1` runs the same steps in place; the hub then has no receipt
 for the commit, and `midas deploy` will ask for `--unverified`.
-
-**The digest is missing for a branch.** The session was killed before `Stop`
-fired, the hook is not installed on that machine, or it is still keyed on the
-ticket marker. Nothing recovers it; work from the commits.

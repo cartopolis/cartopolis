@@ -12,8 +12,7 @@
 #   1. the work and the note — uncommitted changes are swept into a `wip:`
 #      commit whose message carries the note; a clean tree gets an empty one;
 #   2. the branch, pushed — never forced;
-#   3. this session's chat digest, confirmed present in the context repo;
-#   4. the branch released, so a worktree on this machine can check it out.
+#   3. the branch released, so a worktree on this machine can check it out.
 #
 # The `wip:` commit is not meant to land. The next session folds it into real
 # commits, and `merge-to-main` refuses a branch that still carries one.
@@ -24,7 +23,7 @@ note=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --note) note="$2"; shift 2 ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -44,8 +43,6 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 # so its uncommitted changes are not necessarily this session's.
 linked=true
 [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || linked=false
-
-CONTEXT_REMOTE="${CARTO_AGENT_CONTEXT_REMOTE:-ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git}"
 
 # 1. The work and the note, in one commit. `git add -A` is safe in a session's
 #    own worktree because target/, data/, cache/, dist/ and .claude/worktrees/
@@ -81,31 +78,7 @@ git push -q origin "HEAD:refs/heads/$branch" || {
     exit 1; }
 echo "pushed $branch, $ahead commit(s) ahead of main" >&2
 
-# 3. The reasoning. The Stop hook publishes it per turn, so earlier turns should
-#    be there — but handing over on that assumption is how the next session ends
-#    up with code and no idea why. Both layouts the context repo has used are
-#    checked: a directory per branch, and a ref per branch.
-dir=$(printf '%s' "$branch" | tr '/' '-')
-digest=""
-if git ls-remote --exit-code "$CONTEXT_REMOTE" "refs/agent-context/$branch" >/dev/null 2>&1; then
-    digest="refs/agent-context/$branch"
-else
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-    if git clone -q --depth 1 "$CONTEXT_REMOTE" "$tmp/ctx" 2>/dev/null; then
-        n=$(find "$tmp/ctx/$dir" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
-        [ "$n" -gt 0 ] && digest="$dir/ ($n session file(s))"
-    fi
-fi
-if [ -n "$digest" ]; then
-    echo "digest   $digest in the context repo" >&2
-else
-    echo "WARNING: no chat digest for $branch in the context repo." >&2
-    echo "The next session gets the code and the note, not the reasoning behind them." >&2
-    echo "Check the Stop hook on this machine: docs/workflow.md#setup" >&2
-fi
-
-# 4. Release the branch: git lets one worktree hold a branch at a time, and a
+# 3. Release the branch: git lets one worktree hold a branch at a time, and a
 #    new session's worktree on this machine cannot check it out while this one
 #    does. Detaching keeps every file where it is. Not in the main checkout,
 #    whose HEAD the other sessions there are standing on.
@@ -120,7 +93,7 @@ cat >&2 <<EOF
 handed over: $branch at $sha
 To continue, in a new session's own worktree:
     git fetch origin $branch && git switch $branch
-then read the digest (the branch-context skill) and the note:
+then read the note and the commit bodies:
     git log origin/main..$branch
 EOF
 echo "$branch"

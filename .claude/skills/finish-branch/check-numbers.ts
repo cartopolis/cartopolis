@@ -159,9 +159,9 @@ clashes(
 );
 
 // ── The live database ───────────────────────────────────────────────────────
-// Best-effort: the issue-watcher container has no key to the host on purpose,
-// and a landing must not depend on a host it cannot reach. Silence there is
-// reported, not treated as a pass.
+// Best-effort: not every machine that lands has a key to the host, and a
+// landing must not depend on a host it cannot reach. Silence there is reported,
+// not treated as a pass.
 
 if (!args["no-live"]) {
     const r = spawnSync(

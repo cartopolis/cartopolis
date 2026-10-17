@@ -401,7 +401,7 @@ an image change — nothing in this repo will tell you it is missing. The `cargo
 gate landed against a toolchain installed `--profile minimal`, which omits rustfmt,
 and every run since died on `'cargo-fmt' is not installed for the toolchain`. Rebuild
 `cartopolis-agent:latest` after the CI image: it is `FROM cartopolis-ci:latest`, so the
-autonomous agent otherwise still can't run what CI demands.
+agent container otherwise still can't run what CI demands.
 
 That image carries Mesa **lavapipe** (a CPU Vulkan driver) and `WGPU_BACKEND=vulkan`,
 so `--shot` / `cargo shots` work in a job with no GPU and no `/dev/dri`. What a

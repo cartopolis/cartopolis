@@ -1,6 +1,6 @@
 ---
 name: handover
-description: Hand this session's branch to the next session — sweep leftovers into a wip commit carrying a note on where things stand, push the branch, confirm the chat digest is published, and release the branch for another worktree. Use when a session stops before its work is done.
+description: Hand this session's branch to the next session — sweep leftovers into a wip commit carrying a note on where things stand, push the branch, and release it for another worktree. Use when a session stops before its work is done.
 ---
 
 # handover
@@ -27,19 +27,14 @@ their edits over too (see [docs/workflow.md](../../../docs/workflow.md)).
    session will find it. Uncommitted work does not survive a session.
 2. **Pushes the branch.** Never forced — a rejection means another session moved
    it, and that needs a person.
-3. **Confirms this session's chat digest is in the context repo.** Warns loudly
-   if not: handing over code with no reasoning is how the next session redoes
-   what this one already rejected. A missing digest usually means the `Stop`
-   hook is not installed on this machine, or is still keyed on the retired
-   ticket marker.
-4. **Releases the branch** by detaching this worktree at the same commit, so a
+3. **Releases the branch** by detaching this worktree at the same commit, so a
    new worktree on this machine can check the branch out (git lets one worktree
    hold a branch at a time). Not done in the main checkout.
 
 ## The note is the useful part
 
 Steps 1–3 move bytes; the note is the only part carrying intent that is not
-already in the digest. Write what you would tell a colleague taking over: what
+already in the commits. Write what you would tell a colleague taking over: what
 works, what does not, what you suspect and have not tested, what you decided
 against. Good: *"routing works, the ribbon renders in the wrong place above
 2 km — I suspect `ROUTE_Y`, untested"*. Useless: *"continuing work"*.
@@ -52,9 +47,7 @@ In a new session, in a worktree of its own:
 git fetch origin <branch> && git switch <branch>
 ```
 
-Then read before changing anything: the digest with the
-[`branch-context`](../branch-context/SKILL.md) skill (every session file, oldest
-first — the earliest usually holds the design decision), and the handover note
+Then read before changing anything: the handover note and the commit bodies,
 with `git log origin/main..<branch>`.
 
 **Fold the `wip:` commit before landing.** It is a sweep, not a change anyone
