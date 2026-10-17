@@ -137,6 +137,18 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 0, value_name = "N")]
     pub(crate) frames: u32,
 
+    /// Photograph one cycle of an avatar clip instead of a still: each `--at`
+    /// becomes `--clip-frames` captures with the avatar frozen at evenly spaced
+    /// points of the clip, tiled into `<shot>_sheet.jpg` when the run ends.
+    /// Implies `--shot-mode avatar`. Names: idle, walk, run, sit, wave,
+    /// interact, roll, punch, kick, faint.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) clip: Option<String>,
+
+    /// Captures per `--clip` cycle.
+    #[arg(long, default_value_t = systems::shot_harness::DEFAULT_CLIP_FRAMES, value_name = "N")]
+    pub(crate) clip_frames: u32,
+
     /// Write per-capture metrics (altitude, tier, ramp scalars, mesh tally) as one
     /// CSV row each — the sweep analysis artifact (see `systems::shot_harness`).
     #[arg(long, value_name = "PATH")]
@@ -365,6 +377,8 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
         dump_state: cli.dump_state.clone(),
         expect: &cli.expect,
         flicker: cli.flicker,
+        clip: cli.clip.as_deref(),
+        clip_frames: cli.clip_frames,
     })
     .map(|mut h| {
         h.aerial_reference = cli.aerial_reference;

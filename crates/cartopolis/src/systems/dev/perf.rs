@@ -943,6 +943,8 @@ pub fn build(
         aerial_reference: false,
         live: false,
         windowed: false,
+        clip: None,
+        clip_frames: 0,
     };
     let run = PerfRun {
         names: flights.iter().map(|(_, s)| s.name.clone()).collect(),

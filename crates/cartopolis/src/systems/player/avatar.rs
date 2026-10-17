@@ -1275,6 +1275,108 @@ fn apply_pose(
     }
 }
 
+/// A clip by the name a command line gives it (`--clip walk`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipName {
+    Idle,
+    Walk,
+    Run,
+    Sit,
+    Emote(Emote),
+}
+
+impl ClipName {
+    /// Every name [`ClipName::parse`] accepts, for the error that refuses one.
+    pub const NAMES: [&'static str; 10] = [
+        "idle", "walk", "run", "sit", "wave", "interact", "roll", "punch", "kick", "faint",
+    ];
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "idle" => Self::Idle,
+            "walk" => Self::Walk,
+            "run" => Self::Run,
+            "sit" => Self::Sit,
+            "wave" => Self::Emote(Emote::Wave),
+            "interact" => Self::Emote(Emote::Interact),
+            "roll" => Self::Emote(Emote::Roll),
+            "punch" => Self::Emote(Emote::Punch),
+            "kick" => Self::Emote(Emote::Kick),
+            "faint" => Self::Emote(Emote::Faint),
+            _ => return None,
+        })
+    }
+
+    fn pose_clip(self) -> PoseClip {
+        match self {
+            Self::Idle => PoseClip::Idle,
+            Self::Walk => PoseClip::Walk,
+            Self::Run => PoseClip::Run,
+            Self::Sit => PoseClip::Sit,
+            Self::Emote(e) => PoseClip::Emote(emote_slot(e)),
+        }
+    }
+}
+
+/// A scripted capture's hold on the local avatar's animation (`--clip`): play
+/// `clip`, **frozen** at `phase` of its length, so a run of captures can step
+/// through one cycle a frame at a time (`shot_harness`'s clip contact sheet).
+///
+/// Frozen rather than left playing because the harness's frames are not the
+/// clip's: a capture waits on streaming and on a readback for a number of frames
+/// nobody chooses, so a playing clip would be photographed at arbitrary points.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct PinnedAnimation {
+    pub clip: ClipName,
+    /// Where in the clip, as a fraction of its length.
+    pub phase: f32,
+}
+
+/// Hold the local avatar at [`PinnedAnimation`], when a capture asks for it.
+///
+/// After [`update_avatar_animation`], which has already made the pinned clip the
+/// main one (and set its speed, which this zeroes), and after
+/// [`sync_avatar_animations`], which would otherwise copy the leader's seek
+/// time over a mixed avatar's other holders a frame late.
+pub fn pin_avatar_animation(
+    pinned: Option<Res<PinnedAnimation>>,
+    avatars: Query<(Entity, &AvatarAnimations), With<Avatar>>,
+    children: Query<&Children>,
+    graphs: Res<Assets<AnimationGraph>>,
+    clips: Res<Assets<AnimationClip>>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    let Some(pinned) = pinned else {
+        return;
+    };
+    for (avatar, anim) in &avatars {
+        let node = anim.node(pinned.clip.pose_clip());
+        // Every holder's graph is built from the same table, so the first
+        // holder's clip length is every holder's.
+        let duration = graphs
+            .get(&anim.graph_handle)
+            .and_then(|g| g.get(node))
+            .and_then(|n| match &n.node_type {
+                bevy::animation::graph::AnimationNodeType::Clip(h) => clips.get(h),
+                _ => None,
+            })
+            .map(AnimationClip::duration);
+        let Some(duration) = duration else {
+            continue;
+        };
+        let t = pinned.phase.rem_euclid(1.0) * duration;
+        for child in children.iter_descendants(avatar) {
+            if let Ok(mut player) = players.get_mut(child) {
+                if let Some(active) = player.animation_mut(node) {
+                    active.set_speed(0.0);
+                    active.set_seek_time(t);
+                }
+            }
+        }
+    }
+}
+
 /// Switch the local avatar's animation to match what it is actually doing:
 /// standing, strolling, running (at the speed it is running), flying, or playing
 /// an emote.
@@ -1286,6 +1388,7 @@ pub fn update_avatar_animation(
     animations_to_play: Query<&AvatarAnimations, With<Avatar>>,
     mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
     mut avatar_query: Query<(Entity, Option<&mut EmotePlayback>), With<Avatar>>,
+    pinned: Option<Res<PinnedAnimation>>,
     mut running: Local<bool>,
 ) {
     let dt = time.delta_secs();
@@ -1337,6 +1440,15 @@ pub fn update_avatar_animation(
                 rate: 1.0,
             },
             (false, None) => locomotion_pose(stride, avatar_state.is_flying, *running),
+        };
+        // A capture stepping through one clip outranks everything; the clip is
+        // held still by `pin_avatar_animation`.
+        let pose = match pinned.as_deref() {
+            Some(p) => Pose {
+                clip: p.clip.pose_clip(),
+                rate: 1.0,
+            },
+            None => pose,
         };
         *running = pose.clip == PoseClip::Run;
 

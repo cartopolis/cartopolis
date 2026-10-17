@@ -204,6 +204,7 @@ impl Plugin for ShotHarnessPlugin {
                 Update,
                 (
                     systems::shot_harness::open_scripted_ui.in_set(ClientPhase::Input),
+                    systems::shot_harness::hold_scripted_clip.in_set(ClientPhase::Input),
                     // After the camera is placed, so the demo speaker `--ui chat`
                     // spawns stands where this shot's camera is actually looking.
                     systems::shot_harness::hold_scripted_chat

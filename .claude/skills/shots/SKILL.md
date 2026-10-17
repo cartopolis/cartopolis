@@ -85,6 +85,34 @@ spawns one when the run says it is photographing one (`--shot-mode avatar`,
 frame for the duration of the capture. Use it at scale 1.0 rather than
 giant-scaling an avatar to find it in a free-camera shot.
 
+### Watching an animation: `--clip`
+
+A still cannot show a foot sliding, a knee bending backwards or a pop where a
+loop restarts — those are differences between frames. `--clip NAME` freezes the
+avatar at `--clip-frames` (default 12) evenly spaced points of one cycle, captures
+each, and tiles them into **`<shot>_sheet.jpg`**: one block per `--at`, the cycle
+left to right wrapping at six columns, an orange bar under each tile filled to its
+phase. It implies `--shot-mode avatar`; only the first frame of each viewpoint is
+flown to, the rest are taken in place. Read the sheet, not the frames.
+
+```bash
+# a walk cycle from the side and from the front, the whole body, no HUD
+cargo run -p cartopolis -- --shot /tmp/walk.png --clip walk --hide-ui --size 400x600 \
+    --time 12 --at 53.21855,6.56730,5 --look=0,90 --at 53.21855,6.56730,5 --look=0,0
+```
+
+**Frame it from 5 m with a level camera.** The follow camera aims at the
+avatar's head, so from 4 m or a few degrees up the feet leave a portrait frame —
+and the feet are most of what a walk cycle is about. Stand it on solid ground:
+the Grote Markt above. By a canal (53.2194,6.5665) the avatar drops toward the
+water once the run starts, and every frame after the first shows the quay wall.
+
+Names: `idle walk run sit wave interact roll punch kick faint`. The clip is held
+still (`avatar::PinnedAnimation`), so the frames are the clip's own poses at those
+phases however slowly the renderer goes — but that also means a playback *rate*
+fault (feet sliding because the clip plays too fast for the ground speed) is not
+visible here: the avatar stands on a treadmill.
+
 ## Metrics: one source, three sinks
 
 Every capture measures a `ShotMetrics` — altitude, tier, the altitude-driven

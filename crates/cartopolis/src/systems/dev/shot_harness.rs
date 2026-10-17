@@ -189,6 +189,9 @@ pub struct ShotSpec {
     pub day_of_year: Option<f32>,
     /// `alt` is above the measured ground at (lat, lng), not the anchor's.
     pub on_ground: bool,
+    /// Where in the `--clip` cycle the avatar is held for this capture, as a
+    /// fraction of the clip's length ([`ShotHarness::clip`]).
+    pub clip_phase: Option<f32>,
 }
 
 impl ShotSpec {
@@ -229,6 +232,7 @@ impl ShotSpec {
             fov_y_deg: a.fov_y_deg,
             day_of_year: a.day_of_year,
             on_ground: a.on_ground,
+            clip_phase: a.clip_phase,
         }
     }
 }
@@ -336,6 +340,18 @@ pub struct ShotHarness {
     /// windowless runs (`--shot`, `--shots`, `--perf`, `--mcp-headless`) where
     /// nobody is.
     pub windowed: bool,
+    /// `--clip`: photograph one cycle of this avatar clip instead of a still.
+    ///
+    /// Every viewpoint becomes [`ShotHarness::clip_frames`] captures, the avatar
+    /// frozen at evenly spaced points of the clip
+    /// ([`crate::systems::avatar::PinnedAnimation`]); the first is flown to and
+    /// settled like any shot, the rest are taken in place. When the run ends the
+    /// frames are tiled into one contact sheet beside them
+    /// ([`ShotHarness::clip_sheet_path`]) — the picture to read, because an
+    /// animation fault (a foot sliding, a knee bending backwards, a pop at the
+    /// loop point) is a difference between frames, and no single still shows it.
+    pub clip: Option<crate::systems::avatar::ClipName>,
+    pub clip_frames: u32,
 }
 
 /// How far `--flicker` moves the camera between the two captures of a pair:
@@ -1440,6 +1456,11 @@ pub struct ShotArgs<'a> {
     /// Capture each viewpoint twice, ~5 cm apart, and measure the pixels that
     /// flip — see [`ShotHarness::flicker`].
     pub flicker: bool,
+    /// `--clip NAME`: step through one cycle of an avatar clip — see
+    /// [`ShotHarness::clip`].
+    pub clip: Option<&'a str>,
+    /// Captures per `--clip` cycle.
+    pub clip_frames: u32,
 }
 
 impl Default for ShotArgs<'_> {
@@ -1463,8 +1484,105 @@ impl Default for ShotArgs<'_> {
             dump_state: None,
             expect: &[],
             flicker: false,
+            clip: None,
+            clip_frames: DEFAULT_CLIP_FRAMES,
         }
     }
+}
+
+/// Captures per `--clip` cycle: enough that a stride's contact, passing and
+/// push-off poses each land on a frame, few enough that a software renderer
+/// gets through a cycle in a few minutes.
+pub const DEFAULT_CLIP_FRAMES: u32 = 12;
+
+/// Settle for the in-place frames of a `--clip` cycle (virtual seconds). The
+/// world is already settled by the first frame; this is only long enough for
+/// the new pinned phase to be applied and drawn, a few frames even at the
+/// 0.25 s a frame a software renderer is clamped to.
+const CLIP_STEP_SETTLE: f32 = 0.75;
+const CLIP_STEP_WAIT: f32 = 5.0;
+
+/// Expand every viewpoint into `frames` captures of one clip cycle, at phases
+/// `0, 1/frames, …` — the loop's end is its start, so it is not photographed
+/// twice. Only the first of each viewpoint is flown to.
+fn expand_clip(viewpoints: &[ShotSpec], frames: u32) -> Vec<ShotSpec> {
+    viewpoints
+        .iter()
+        .flat_map(|v| {
+            (0..frames).map(move |k| {
+                let mut s = v.clone();
+                s.clip_phase = Some(k as f32 / frames as f32);
+                if k > 0 {
+                    s.in_place = true;
+                    s.settle = Some(CLIP_STEP_SETTLE);
+                    s.wait = Some(CLIP_STEP_WAIT);
+                }
+                s
+            })
+        })
+        .collect()
+}
+
+/// Tile size in a `--clip` contact sheet: frames are scaled to this width.
+const SHEET_TILE_W: u32 = 240;
+/// Columns before a viewpoint's cycle wraps onto another row.
+const SHEET_COLS: usize = 6;
+const SHEET_GAP: u32 = 4;
+/// Between one viewpoint's cycle and the next.
+const SHEET_BLOCK_GAP: u32 = 16;
+/// The phase bar under each tile: how far through the cycle the frame is.
+const SHEET_BAR_H: u32 = 5;
+
+/// Tile a `--clip` run's frames into one image: one block per viewpoint, its
+/// cycle left to right and wrapping every [`SHEET_COLS`], each tile with a bar
+/// underneath filled to its phase. A frame that never landed is a grey tile, so
+/// the positions of the rest still mean what they say.
+fn clip_sheet(frames: &[Option<image::RgbImage>], per_cycle: usize) -> Option<image::RgbImage> {
+    let first = frames.iter().flatten().next()?;
+    let tile_w = SHEET_TILE_W.min(first.width());
+    let tile_h = (first.height() as f32 * tile_w as f32 / first.width() as f32).round() as u32;
+    let per_cycle = per_cycle.max(1);
+    let cols = per_cycle.min(SHEET_COLS);
+    let rows_per_block = per_cycle.div_ceil(cols);
+    let blocks = frames.len().div_ceil(per_cycle);
+    let cell_h = tile_h + SHEET_BAR_H + SHEET_GAP;
+    let width = cols as u32 * (tile_w + SHEET_GAP) + SHEET_GAP;
+    let block_h = rows_per_block as u32 * cell_h;
+    let height =
+        SHEET_GAP + blocks as u32 * block_h + blocks.saturating_sub(1) as u32 * SHEET_BLOCK_GAP;
+    let mut sheet = image::RgbImage::from_pixel(width, height, image::Rgb([24, 24, 28]));
+    for (i, frame) in frames.iter().enumerate() {
+        let (block, k) = (i / per_cycle, i % per_cycle);
+        let x = SHEET_GAP + (k % cols) as u32 * (tile_w + SHEET_GAP);
+        let y = SHEET_GAP + block as u32 * (block_h + SHEET_BLOCK_GAP) + (k / cols) as u32 * cell_h;
+        match frame {
+            Some(f) => {
+                let tile = image::imageops::resize(
+                    f,
+                    tile_w,
+                    tile_h,
+                    image::imageops::FilterType::Triangle,
+                );
+                image::imageops::replace(&mut sheet, &tile, x.into(), y.into());
+            }
+            None => {
+                let grey = image::RgbImage::from_pixel(tile_w, tile_h, image::Rgb([96, 96, 96]));
+                image::imageops::replace(&mut sheet, &grey, x.into(), y.into());
+            }
+        }
+        let filled = ((k + 1) as f32 / per_cycle as f32 * tile_w as f32).round() as u32;
+        for bx in 0..tile_w {
+            let colour = if bx < filled {
+                image::Rgb([235, 170, 60])
+            } else {
+                image::Rgb([60, 60, 66])
+            };
+            for by in 0..SHEET_BAR_H {
+                sheet.put_pixel(x + bx, y + tile_h + by, colour);
+            }
+        }
+    }
+    Some(sheet)
 }
 
 impl ShotHarness {
@@ -1486,6 +1604,8 @@ impl ShotHarness {
             dump_state,
             expect,
             flicker,
+            clip,
+            clip_frames,
         } = args;
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
             let v: Vec<f64> = s
@@ -1529,6 +1649,39 @@ impl ShotHarness {
             return Err("--frames needs at least two --at waypoints to interpolate between".into());
         }
         let mut shots = densify_path(&shots, frames);
+        let clip = clip
+            .map(|name| {
+                crate::systems::avatar::ClipName::parse(name).ok_or_else(|| {
+                    format!(
+                        "--clip: no clip called {name:?}; one of {}",
+                        crate::systems::avatar::ClipName::NAMES.join(", ")
+                    )
+                })
+            })
+            .transpose()?;
+        // `--clip` photographs the avatar, so it implies the camera that frames
+        // one; `free` is only the flag's default, not a choice to refuse.
+        let mode = match (clip, mode.as_str()) {
+            (Some(_), "free" | "avatar") => "avatar".to_string(),
+            (Some(_), other) => {
+                return Err(format!(
+                    "--clip photographs the avatar; --shot-mode {other} does not frame it"
+                ))
+            }
+            (None, _) => mode,
+        };
+        if clip.is_some() {
+            if flicker {
+                return Err(
+                    "--clip and --flicker do not combine: each would re-pair the other's frames"
+                        .into(),
+                );
+            }
+            if clip_frames < 2 {
+                return Err("--clip-frames wants at least 2 frames for a cycle".into());
+            }
+            shots = expand_clip(&shots, clip_frames);
+        }
         if flicker {
             // Every viewpoint becomes a pair: itself, then itself nudged north.
             // Even index = reference, odd = the nudged twin the observer diffs
@@ -1567,6 +1720,8 @@ impl ShotHarness {
             aerial_reference: false,
             live: false,
             windowed: false,
+            clip,
+            clip_frames,
         })
     }
 
@@ -1600,6 +1755,8 @@ impl ShotHarness {
             aerial_reference: false,
             live: true,
             windowed,
+            clip: None,
+            clip_frames: 0,
         }
     }
 
@@ -1659,6 +1816,7 @@ impl ShotHarness {
                     // `Manifest::load` has already refused a date it cannot read.
                     day_of_year: p.day_of_year().ok().flatten(),
                     on_ground: p.on_ground.unwrap_or(false),
+                    clip_phase: None,
                 }
             })
             .collect();
@@ -1704,6 +1862,8 @@ impl ShotHarness {
             aerial_reference: manifest.aerial_reference.unwrap_or(false),
             live: false,
             windowed: false,
+            clip: None,
+            clip_frames: 0,
         })
     }
 
@@ -1812,6 +1972,46 @@ impl ShotHarness {
                     }
                 },
                 Err(e) => tracing::error!(error = %e, "shot harness: dump serialize failed"),
+            }
+        }
+    }
+
+    /// Where a `--clip` run's contact sheet goes: beside the frames, `<stem>_sheet.jpg`.
+    /// A JPEG, because it is the picture that gets passed around.
+    pub fn clip_sheet_path(&self) -> PathBuf {
+        let stem = self
+            .path
+            .file_stem()
+            .map_or_else(|| "shot".to_string(), |s| s.to_string_lossy().into_owned());
+        self.path.with_file_name(format!("{stem}_sheet.jpg"))
+    }
+
+    /// Tile the frames a `--clip` run wrote into its contact sheet. Read back
+    /// from disk rather than kept in memory: every frame has been saved by the
+    /// time the last capture lands, and a missing one is a grey tile.
+    fn write_clip_sheet(&self) {
+        if self.clip.is_none() {
+            return;
+        }
+        let frames: Vec<Option<image::RgbImage>> = (0..self.shots.len())
+            .map(|i| image::open(self.path_for(i)).ok().map(|f| f.to_rgb8()))
+            .collect();
+        let path = self.clip_sheet_path();
+        let Some(sheet) = clip_sheet(&frames, self.clip_frames as usize) else {
+            tracing::error!("shot harness: no clip frame landed, so there is no sheet");
+            return;
+        };
+        let written = std::fs::File::create(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|f| {
+                image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(f), 85)
+                    .encode_image(&sheet)
+                    .map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => tracing::info!(path = %path.display(), "shot harness: wrote clip sheet"),
+            Err(e) => {
+                tracing::error!(path = %path.display(), error = %e, "shot harness: clip sheet failed")
             }
         }
     }
@@ -3177,6 +3377,27 @@ pub fn place_camera(
     );
 }
 
+/// Hold the avatar at this capture's point in the `--clip` cycle
+/// ([`ShotSpec::clip_phase`]). Compared before it is written, so the frames
+/// between two captures do not re-trigger anything watching the resource.
+pub fn hold_scripted_clip(
+    mut commands: Commands,
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    pinned: Option<Res<crate::systems::avatar::PinnedAnimation>>,
+) {
+    let Some(clip) = harness.clip else {
+        return;
+    };
+    let Some(phase) = harness.shots.get(progress.index).and_then(|s| s.clip_phase) else {
+        return;
+    };
+    let want = crate::systems::avatar::PinnedAnimation { clip, phase };
+    if pinned.as_deref() != Some(&want) {
+        commands.insert_resource(want);
+    }
+}
+
 /// Keep a `--shot-mode avatar` run in Follow, which nothing else will.
 ///
 /// **Follow is not on offer offline** (`free_camera::follow_available` wants a
@@ -3941,6 +4162,7 @@ fn advance_after_capture(harness: &ShotHarness, progress: &mut ShotProgress) {
             return;
         }
         // Every viewpoint captured — flush the metrics before draining to exit.
+        harness.write_clip_sheet();
         harness.write_metrics(&progress.metrics);
         progress.exit_in = Some(2);
     }
@@ -4936,6 +5158,82 @@ mod tests {
             Err(e) => assert!(e.contains("--frames"), "got {e:?}"),
             Ok(_) => panic!("expected --frames with one waypoint to error"),
         }
+    }
+
+    /// A clip run is one cycle per viewpoint, flown to once: only the first
+    /// frame of each moves the camera, and the phases never photograph the
+    /// loop's end, which is its start.
+    #[test]
+    fn a_clip_is_one_cycle_per_viewpoint() {
+        let h = ShotHarness::from_cli(ShotArgs {
+            path: "/tmp/walk.png".into(),
+            at: &["0,0,4".into(), "0,0,6".into()],
+            clip: Some("walk"),
+            clip_frames: 4,
+            ..default()
+        })
+        .expect("a clip run");
+        assert_eq!(h.mode, "avatar", "--clip implies the avatar camera");
+        assert_eq!(h.shots.len(), 8);
+        let phases: Vec<f32> = h.shots.iter().map(|s| s.clip_phase.unwrap()).collect();
+        assert_eq!(phases, [0.0, 0.25, 0.5, 0.75, 0.0, 0.25, 0.5, 0.75]);
+        let flown: Vec<bool> = h.shots.iter().map(|s| !s.in_place).collect();
+        assert_eq!(
+            flown,
+            [true, false, false, false, true, false, false, false]
+        );
+        assert_eq!(h.shots[4].alt, 6.0, "the second viewpoint is its own");
+        assert_eq!(h.clip_sheet_path(), PathBuf::from("/tmp/walk_sheet.jpg"));
+    }
+
+    #[test]
+    fn a_clip_refuses_what_it_cannot_photograph() {
+        let with = |clip, mode: &str, flicker| {
+            ShotHarness::from_cli(ShotArgs {
+                path: "/tmp/c.png".into(),
+                at: &["0,0,4".into()],
+                clip: Some(clip),
+                mode: mode.into(),
+                flicker,
+                ..default()
+            })
+        };
+        assert!(with("moonwalk", "free", false).is_err_and(|e| e.contains("walk, run")));
+        assert!(with("walk", "earth", false).is_err_and(|e| e.contains("--shot-mode")));
+        assert!(with("walk", "avatar", true).is_err_and(|e| e.contains("--flicker")));
+        assert!(
+            with("Wave", "avatar", false).is_ok(),
+            "names are case-blind"
+        );
+    }
+
+    /// The sheet wraps a cycle at six columns, stacks viewpoints, and keeps a
+    /// missing frame's place.
+    #[test]
+    fn the_clip_sheet_keeps_every_frame_in_its_place() {
+        let frame = |v| Some(image::RgbImage::from_pixel(480, 640, image::Rgb([v, v, v])));
+        let mut frames: Vec<_> = (0..16).map(|i| frame(i as u8 * 10)).collect();
+        frames[3] = None;
+        let sheet = clip_sheet(&frames, 8).expect("frames landed");
+        let (tw, th) = (SHEET_TILE_W, 320);
+        assert_eq!(sheet.width(), 6 * (tw + SHEET_GAP) + SHEET_GAP);
+        let block_h = 2 * (th + SHEET_BAR_H + SHEET_GAP);
+        assert_eq!(sheet.height(), SHEET_GAP + 2 * block_h + SHEET_BLOCK_GAP);
+        // Frame 3 is grey, frame 7 (second row of the first block) is its own.
+        let centre = |col: u32, y0: u32| {
+            *sheet.get_pixel(SHEET_GAP + col * (tw + SHEET_GAP) + tw / 2, y0 + th / 2)
+        };
+        assert_eq!(centre(3, SHEET_GAP), image::Rgb([96, 96, 96]));
+        assert_eq!(
+            centre(1, SHEET_GAP + th + SHEET_BAR_H + SHEET_GAP),
+            image::Rgb([70, 70, 70])
+        );
+        // Frame 8 opens the second block.
+        assert_eq!(
+            centre(0, SHEET_GAP + block_h + SHEET_BLOCK_GAP),
+            image::Rgb([80, 80, 80])
+        );
+        assert!(clip_sheet(&[None, None], 2).is_none());
     }
 
     /// A live harness starts with nothing to do, and each viewpoint it is handed

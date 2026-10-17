@@ -192,6 +192,7 @@ impl Plugin for PlayerPlugin {
                 avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
                 avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
                 avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
+                avatar::pin_avatar_animation.after(avatar::sync_avatar_animations),
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::gizmo::render_gizmo_visuals,
                 // The first-person twin of the driver arrow: take the avatar's
