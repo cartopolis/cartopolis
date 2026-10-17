@@ -6,7 +6,7 @@
 #                   [--allow-unverified] [--deploy wasm,apk,…]
 #
 # Rebase onto `origin/main`, run CI's gate locally (`verify-branch`), push the
-# branch, fast-forward `main` to it, and close the ticket. No pull request.
+# branch and fast-forward `main` to it. No pull request.
 # `--deploy` then publishes the landed commit to the named `midas deploy`
 # targets (sim, atlas, web, wasm, apk), one after another, each waited for.
 #
@@ -37,7 +37,10 @@
 #
 # ## What it still refuses
 #
-#   * a dirty worktree — commit first, so what is verified is what lands;
+#   * a dirty worktree — commit first, so what is verified is what lands. A
+#     checkout several sessions share is always dirty with somebody's work:
+#     land from the session's own worktree (docs/workflow.md);
+#   * a detached HEAD — there is no branch name to push it under;
 #   * a migration, protocol revision or message kind number that main (or the
 #     live database) already holds as something else — `check-numbers.ts`;
 #   * a head with no `verify-branch` receipt (`--allow-unverified` is the escape
@@ -47,11 +50,10 @@
 #
 # ## Tokens
 #
-# One, and it is the weaker one. `main` is no longer protected, so the code goes
-# up as an ordinary SSH push under this account; the only API call left closes
-# the ticket, which `forgejo.env`'s `write:issue` token has always been able to
-# do. `forgejo-merge.env`'s repository-write token is no longer used by this
-# path at all.
+# None. `main` is not protected, so the code goes up as an ordinary SSH push
+# under this account, and nothing here calls the Forgejo API. It used to close
+# the branch's Forgejo issue; that went with the tickets on 2026-10-17, when
+# work moved to sessions (docs/workflow.md).
 
 set -uo pipefail
 
@@ -67,7 +69,7 @@ while [ $# -gt 0 ]; do
         --verify-only)       verify_only=1; shift ;;
         --allow-unverified)  allow_unverified=1; shift ;;
         --deploy)            deploy="$2"; shift 2 ;;
-        -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,56p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -77,23 +79,16 @@ root=$(git rev-parse --show-toplevel) || exit 1
 cd "$root" || exit 1
 gitdir=$(git rev-parse --git-dir)
 
-# ── Who this is ──────────────────────────────────────────────────────────────
-# A ticket binding is no longer required. It was, back when the PR body's
-# `Closes #N` was the only thing that moved a card — but a small fix that never
-# earned a ticket had no way to land, and inventing one to satisfy a script is
-# ceremony of the kind this change is removing. With a marker the issue is
-# closed; without one the branch simply lands.
-marker="$gitdir/cartopolis-ticket"
-issue=""; branch=""
-if [ -f "$marker" ]; then
-    issue=$(sed -n 's/^issue=//p' "$marker" | head -1)
-    branch=$(sed -n 's/^branch=//p' "$marker" | head -1)
-fi
-[ -n "$branch" ] || branch=$(git rev-parse --abbrev-ref HEAD)
+# ── Which branch ─────────────────────────────────────────────────────────────
+# The one this worktree has checked out. It is also the key the session's chat
+# digest is published under, so the name outlives the landing.
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" != "HEAD" ] || {
+    echo "refusing: detached HEAD — check out a branch first (git switch -c <type>/<slug>)" >&2
+    exit 1; }
 [ "$branch" != "main" ] || { echo "refusing: this worktree is on main itself" >&2; exit 1; }
 
 echo "branch   $branch"
-[ -n "$issue" ] && echo "ticket   #$issue" || echo "ticket   (none — landing an unticketed branch)"
 
 if [ -n "$(git status --porcelain)" ]; then
     echo "refusing: uncommitted changes — commit them first" >&2
@@ -197,31 +192,6 @@ if ! git push --quiet origin "HEAD:refs/heads/main"; then
     exit 1
 fi
 echo "    main is now ${sha:0:8}"
-
-# ── The board ────────────────────────────────────────────────────────────────
-# Forgejo closes an issue named by a `Closes #N` in a commit message pushed to
-# the default branch, so this is usually already done by the time it is checked —
-# but the card only moves when the issue is *closed*, and a commit body that did
-# not spell it is not a reason to leave a finished ticket open.
-if [ -n "$issue" ]; then
-    set -a; . "$HOME/.config/cartopolis/forgejo.env"; set +a
-    API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
-    REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
-    api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
-    sleep 2
-    st=$(api "$API/repos/$REPO/issues/$issue" | python3 -c "import sys,json;print(json.load(sys.stdin).get('state',''))" 2>/dev/null)
-    if [ "$st" != "closed" ]; then
-        body=$(python3 -c "
-import json,sys
-print(json.dumps({'body': '🤖 **Landed on \`main\`** as \`%s\`.\n\nVerified locally with \`verify-branch\` before the push; CI runs nightly on \`main\`.' % sys.argv[1]}))" "${sha:0:8}")
-        printf '%s' "$body" | api -X POST -d @- "$API/repos/$REPO/issues/$issue/comments" >/dev/null
-        api -X PATCH -d '{"state":"closed"}' "$API/repos/$REPO/issues/$issue" >/dev/null
-        echo "==> closed #$issue"
-    else
-        echo "==> issue #$issue already closed by the commit message"
-    fi
-    echo "    the watcher moves the card to Done within ~30s"
-fi
 
 echo
 echo "done. The gate's receipt is at the midas hub; CI runs on main tonight."

@@ -55,8 +55,8 @@ releasing it first just buys a wait. `--deploy` takes `midas deploy`'s targets
 (`sim`, `atlas`, `web`, `wasm`, `apk`, comma-separated) and runs them after the
 landing; a failed deploy leaves the landing in place and names what to re-run.
 
-It rebases onto `origin/main`, runs the gate, pushes the branch, fast-forwards
-`main` to it and closes the ticket. **No pull request.** `ci.yml` has no push
+It rebases onto `origin/main`, runs the gate, pushes the branch and fast-forwards
+`main` to it. **No pull request.** `ci.yml` has no push
 trigger on branches, so a PR was the only way to start a run — which meant every
 landing paid for two full 15-25 minute runs of one tree on a capacity-3 runner,
 and the last eight merges before this change spent a median of *zero seconds*
@@ -70,8 +70,10 @@ its verdict now arrives **after** the landing. That is a real weakening, it is
 the trade the speed comes from, and a red `main` is fixed forward — see
 [docs/notes/agent-verification.md](../../../docs/notes/agent-verification.md).
 
-Say "merge to main" in the driven lane and this is the step —
-[docs/workflow.md](../../../docs/workflow.md#landing-it-the-driven-lane-verifies-its-own-branch-and-pushes-2026-08-30).
+Say "merge to main" in a session and this is the step —
+[docs/workflow.md](../../../docs/workflow.md#landing-it-say-merge-to-main).
+Run it from the session's own worktree: it refuses a dirty tree, and a checkout
+other sessions share always has somebody's work in it.
 Follow the `commit` skill's conventions for any fixup commit along the way.
 `--allow-unverified` skips the gate and exists to be visible in a transcript,
 not to be routine.
