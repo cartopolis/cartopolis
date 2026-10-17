@@ -774,6 +774,9 @@ struct Actions {
     meetup_cancel: bool,
     /// "I'm going" to a meet-up: (chat key, the meet-up).
     meetup_going: Option<(String, cartopolis_core::point::Point)>,
+    /// An answer to a plan or a vote in a poll, to seal and send: (chat key,
+    /// what).
+    meeting: Option<(String, cartopolis_core::meeting::MeetingObject)>,
     block: Option<String>,
     unblock: Option<String>,
     report: Option<(String, Option<String>)>,
@@ -2139,6 +2142,15 @@ fn chat_screen(
                         last_day = day;
                     }
                 }
+                // What a meeting left is a card; an answer or a vote is counted
+                // on what it answers and drawn nowhere itself.
+                if let Some(meeting) = &line.meeting {
+                    if meeting.is_line() {
+                        meeting_card(ui, chat, key, line, meeting, &lines, now, act);
+                        ui.add_space(4.0);
+                    }
+                    continue;
+                }
                 // A meet-up is its own card, and an answer to one is a small
                 // line under it rather than a second card at the same place.
                 match line.point.as_ref().and_then(|p| p.meetup) {
@@ -2190,6 +2202,388 @@ fn going_chip(ui: &mut egui::Ui, chat: &ChatState, line: &ChatLine) {
                 .color(theme::REAL_LOCATION),
         );
     });
+}
+
+/// What a meeting left in the chat, as a card (`cartopolis_core::meeting`,
+/// the web's `meetingCard`): a plan with its answers, a poll with its votes, a
+/// note, a record. Answers and votes are counted from the thread, per person
+/// the newest.
+#[allow(clippy::too_many_arguments)]
+fn meeting_card(
+    ui: &mut egui::Ui,
+    chat: &ChatState,
+    key: &str,
+    line: &ChatLine,
+    meeting: &cartopolis_core::meeting::MeetingObject,
+    thread: &[ChatLine],
+    now: u64,
+    act: &mut Actions,
+) {
+    use cartopolis_core::meeting::{MeetingObject, NoteKind, Rsvp};
+    // Who said each thing: "You" for this device's own, so a person's newest
+    // answer replaces their earlier one whichever device sent it.
+    let who = |l: &ChatLine| {
+        if is_mine(chat, l) {
+            "You".to_string()
+        } else {
+            l.sender.clone()
+        }
+    };
+    let said: Vec<(String, &MeetingObject)> = thread
+        .iter()
+        .filter_map(|l| l.meeting.as_ref().map(|m| (who(l), m)))
+        .collect();
+    let w = (ui.available_width() * 0.86).clamp(220.0, 360.0);
+    let frame = |live: bool| {
+        egui::Frame::NONE
+            .fill(theme::SURFACE_RAISED)
+            .corner_radius(egui::CornerRadius::same(18))
+            .stroke(egui::Stroke::new(
+                if live { 2.0 } else { 1.0 },
+                if live {
+                    theme::ACCENT
+                } else {
+                    theme::OVERLAY_LINE
+                },
+            ))
+            .inner_margin(egui::Margin::same(12))
+    };
+    let kicker = |ui: &mut egui::Ui, icon: &str, text: &str| {
+        ui.label(
+            egui::RichText::new(format!("{icon}  {}", text.to_uppercase()))
+                .size(11.0)
+                .strong()
+                .color(theme::TEXT_DIM),
+        );
+    };
+    let title = |ui: &mut egui::Ui, text: &str| {
+        ui.label(
+            egui::RichText::new(text)
+                .size(15.5)
+                .strong()
+                .color(theme::CREAM),
+        );
+    };
+    match meeting {
+        MeetingObject::Plan(plan) => {
+            let answers = cartopolis_core::meeting::tally_rsvps(
+                &plan.id,
+                said.iter().map(|(w, m)| (w.as_str(), *m)),
+            );
+            let mine = answers.iter().find(|(w, _)| w == "You").map(|(_, r)| *r);
+            let going: Vec<&str> = answers
+                .iter()
+                .filter(|(_, r)| *r == Rsvp::Going)
+                .map(|(w, _)| w.as_str())
+                .collect();
+            let end = plan.end_ms.unwrap_or(plan.start_ms + 3_600_000);
+            let live = now + 15 * 60_000 >= plan.start_ms && now <= end;
+            frame(live).show(ui, |ui| {
+                ui.set_width(w);
+                let when = crate::systems::meetup::when_label(
+                    plan.start_ms,
+                    now,
+                    local_offset_s(plan.start_ms),
+                );
+                kicker(ui, icons::EVENT, &format!("Meeting · {when}"));
+                title(ui, &plan.title);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}–{}",
+                        clock_time(plan.start_ms),
+                        clock_time(end)
+                    ))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+                );
+                if let Some(text) = &plan.text {
+                    ui.label(egui::RichText::new(text).size(13.0).color(theme::TEXT));
+                }
+                for (i, item) in plan.agenda.iter().enumerate() {
+                    let minutes = if item.minutes > 0 {
+                        format!("  · {} min", item.minutes)
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{}. {}{minutes}", i + 1, item.name))
+                            .size(13.0)
+                            .color(theme::TEXT),
+                    );
+                }
+                if !going.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("{} going", going.join(", ")))
+                            .size(12.5)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+                ui.add_space(8.0);
+                if live && crate::systems::private_chat::group_of(key).is_some() {
+                    if theme::primary_button_sized(
+                        ui,
+                        &format!("{}  Join", icons::VIDEOCAM),
+                        ui.available_width(),
+                    )
+                    .clicked()
+                    {
+                        if let Some(group) = crate::systems::private_chat::group_of(key) {
+                            act.call = Some(crate::systems::calls::CallRequest::Join(group));
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
+                if now <= end {
+                    ui.horizontal(|ui| {
+                        for r in [Rsvp::Going, Rsvp::Maybe, Rsvp::No] {
+                            let n = answers.iter().filter(|(_, a)| *a == r).count();
+                            let label = if n > 0 {
+                                format!("{} {n}", r.words())
+                            } else {
+                                r.words().to_string()
+                            };
+                            if theme::chip(ui, &label, mine == Some(r)).clicked() {
+                                act.meeting = Some((
+                                    key.to_string(),
+                                    MeetingObject::Answer {
+                                        plan: plan.id.clone(),
+                                        rsvp: r,
+                                    },
+                                ));
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        MeetingObject::Poll(poll) => {
+            let counted = cartopolis_core::meeting::tally_votes(
+                poll,
+                said.iter().map(|(w, m)| (w.as_str(), *m)),
+            );
+            let mine: Vec<String> = counted
+                .iter()
+                .filter(|(_, who)| who.iter().any(|w| w == "You"))
+                .map(|(o, _)| o.clone())
+                .collect();
+            let voters = {
+                let mut v: Vec<&String> = counted.iter().flat_map(|(_, w)| w).collect();
+                v.sort();
+                v.dedup();
+                v.len()
+            };
+            frame(false).show(ui, |ui| {
+                ui.set_width(w);
+                kicker(
+                    ui,
+                    icons::POLL,
+                    if poll.multiple {
+                        "Poll · choose any"
+                    } else {
+                        "Poll · choose one"
+                    },
+                );
+                title(ui, &poll.question);
+                ui.add_space(4.0);
+                for (option, who) in &counted {
+                    let picked = mine.contains(option);
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 34.0),
+                        egui::Sense::click(),
+                    );
+                    let p = ui.painter();
+                    p.rect(
+                        rect,
+                        egui::CornerRadius::same(10),
+                        theme::SURFACE,
+                        egui::Stroke::new(
+                            1.0,
+                            if picked {
+                                theme::ACCENT
+                            } else {
+                                theme::OVERLAY_LINE
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    let share = if voters > 0 {
+                        who.len() as f32 / voters as f32
+                    } else {
+                        0.0
+                    };
+                    if share > 0.0 {
+                        let mut bar = rect.shrink(1.0);
+                        bar.set_width(bar.width() * share);
+                        p.rect_filled(
+                            bar,
+                            egui::CornerRadius::same(9),
+                            theme::ACCENT.gamma_multiply(0.22),
+                        );
+                    }
+                    let mark = if picked {
+                        format!("{}  ", icons::CHECK)
+                    } else {
+                        String::new()
+                    };
+                    p.text(
+                        rect.left_center() + egui::vec2(12.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{mark}{option}"),
+                        egui::FontId::proportional(13.5),
+                        theme::TEXT,
+                    );
+                    p.text(
+                        rect.right_center() - egui::vec2(12.0, 0.0),
+                        egui::Align2::RIGHT_CENTER,
+                        who.len().to_string(),
+                        egui::FontId::proportional(13.0),
+                        theme::TEXT_DIM,
+                    );
+                    if response.clicked() {
+                        let choices = if poll.multiple {
+                            let mut c = mine.clone();
+                            if picked {
+                                c.retain(|x| x != option);
+                            } else {
+                                c.push(option.clone());
+                            }
+                            c
+                        } else if picked {
+                            Vec::new()
+                        } else {
+                            vec![option.clone()]
+                        };
+                        act.meeting = Some((
+                            key.to_string(),
+                            MeetingObject::Vote {
+                                poll: poll.id.clone(),
+                                choices,
+                            },
+                        ));
+                    }
+                    ui.add_space(4.0);
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{voters} {} · everybody in the chat sees who chose what",
+                        if voters == 1 { "vote" } else { "votes" }
+                    ))
+                    .size(12.0)
+                    .color(theme::TEXT_DIM),
+                );
+            });
+        }
+        MeetingObject::Note { kind, text } => {
+            ui.horizontal_wrapped(|ui| {
+                ui.set_max_width(w);
+                let tint = match kind {
+                    NoteKind::Decision => theme::ACCENT,
+                    NoteKind::Action => theme::WARN,
+                    NoteKind::Note => theme::TEXT_DIM,
+                };
+                ui.label(
+                    egui::RichText::new(kind.label().to_uppercase())
+                        .size(11.0)
+                        .strong()
+                        .color(tint),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{text} · {}", who(line)))
+                        .size(13.5)
+                        .color(theme::TEXT),
+                );
+            });
+        }
+        MeetingObject::Record(r) => {
+            frame(false).show(ui, |ui| {
+                ui.set_width(w);
+                let mins = (r.end_ms.saturating_sub(r.start_ms) / 60_000).max(1);
+                kicker(ui, icons::RECORD, "Meeting record");
+                title(
+                    ui,
+                    if r.title.is_empty() {
+                        "Meeting record"
+                    } else {
+                        &r.title
+                    },
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}–{} · {mins} min · {}",
+                        clock_time(r.start_ms),
+                        clock_time(r.end_ms),
+                        r.people.join(", ")
+                    ))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+                );
+                for kind in [NoteKind::Decision, NoteKind::Action, NoteKind::Note] {
+                    let notes: Vec<_> = r.notes.iter().filter(|n| n.kind == kind).collect();
+                    if notes.is_empty() {
+                        continue;
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("{}s", kind.label()))
+                            .size(12.5)
+                            .strong()
+                            .color(theme::CREAM),
+                    );
+                    for n in notes {
+                        ui.label(
+                            egui::RichText::new(format!("•  {}", n.text))
+                                .size(13.0)
+                                .color(theme::TEXT),
+                        );
+                    }
+                }
+                for p in &r.polls {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(&p.question)
+                            .size(12.5)
+                            .strong()
+                            .color(theme::CREAM),
+                    );
+                    for (o, n) in &p.results {
+                        ui.label(
+                            egui::RichText::new(format!("{o}: {n}"))
+                                .size(13.0)
+                                .color(theme::TEXT),
+                        );
+                    }
+                }
+                if !r.transcript.is_empty() {
+                    ui.add_space(4.0);
+                    egui::CollapsingHeader::new(format!(
+                        "Transcript · {} lines",
+                        r.transcript.len()
+                    ))
+                    .id_salt(("record", line.at_ms, line.log_seq))
+                    .show(ui, |ui| {
+                        for (who, text) in &r.transcript {
+                            ui.label(
+                                egui::RichText::new(format!("{who}: {text}"))
+                                    .size(12.5)
+                                    .color(theme::TEXT),
+                            );
+                        }
+                    });
+                }
+                ui.add_space(6.0);
+                if theme::secondary_button(ui, icons::COPY, "Copy as text", 0.0).clicked() {
+                    ui.ctx().copy_text(format!(
+                        "{}\n{}",
+                        r.title,
+                        cartopolis_core::meeting::record_text(r)
+                    ));
+                }
+            });
+        }
+        // Counted on what they answer (`is_line`).
+        MeetingObject::Answer { .. } | MeetingObject::Vote { .. } => {}
+    }
 }
 
 /// Who is going to a meet-up and how far each is from it, as the card lists
@@ -3471,6 +3865,9 @@ fn apply(
             chat.private_points.push((key, point));
         }
     }
+    if let Some(said) = act.meeting {
+        chat.private_meetings.push(said);
+    }
     if let Some((key, place)) = act.meetup_going {
         let mut answer = place.clone();
         answer.text = Some("I'm going".into());
@@ -4140,6 +4537,12 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
             chat.world = None;
             RightPanel::Chat
         }
+        "meeting" => {
+            seed_demo_meeting(chat);
+            view.open_chat(DEMO_MEETING_CHAT);
+            chat.world = None;
+            RightPanel::Chat
+        }
         "switch" => {
             view.open = None;
             chat.world = None;
@@ -4166,6 +4569,143 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
             RightPanel::Chat
         }
     }
+}
+
+const DEMO_MEETING_CHAT: &str = "dm:6d656574";
+
+/// A group chat with what a meeting leaves in it, for `--ui chatmeeting`: a
+/// plan with answers, a poll with votes, notes taken in the call, the record.
+fn seed_demo_meeting(chat: &mut ChatState) {
+    use cartopolis_core::meeting::{
+        AgendaItem, MeetingObject, NoteKind, Plan, Poll, Record, RecordNote, RecordPoll, Rsvp,
+    };
+    let key = DEMO_MEETING_CHAT;
+    if chat.channels.iter().any(|c| c.key == key) {
+        return;
+    }
+    chat.open_channel(key, "Street party crew");
+    let now = now_ms();
+    let say = |chat: &mut ChatState, id: u64, who: &str, m: MeetingObject| {
+        chat.receive_meeting(key, id, who.into(), m.caption(), m);
+    };
+    let plan = "urn:uuid:demo-plan";
+    say(
+        chat,
+        0,
+        "Ann",
+        MeetingObject::Plan(Plan {
+            id: plan.into(),
+            title: "Q4 planning".into(),
+            start_ms: now + 5 * 60_000,
+            end_ms: Some(now + 65 * 60_000),
+            text: Some("Bring the numbers from the last party.".into()),
+            agenda: vec![
+                AgendaItem {
+                    name: "Budget".into(),
+                    minutes: 10,
+                },
+                AgendaItem {
+                    name: "Stage and sound".into(),
+                    minutes: 15,
+                },
+                AgendaItem {
+                    name: "Who does what".into(),
+                    minutes: 5,
+                },
+            ],
+        }),
+    );
+    for (who, rsvp) in [
+        ("Bob", Rsvp::Going),
+        ("Carol", Rsvp::Maybe),
+        ("Dave", Rsvp::Going),
+    ] {
+        say(
+            chat,
+            0,
+            who,
+            MeetingObject::Answer {
+                plan: plan.into(),
+                rsvp,
+            },
+        );
+    }
+    let poll = "urn:uuid:demo-poll";
+    say(
+        chat,
+        0,
+        "Bob",
+        MeetingObject::Poll(Poll {
+            id: poll.into(),
+            question: "Which day for the party?".into(),
+            options: vec!["Friday".into(), "Saturday".into()],
+            multiple: false,
+        }),
+    );
+    for (who, id, day) in [
+        ("Carol", 0, "Saturday"),
+        ("Dave", 0, "Saturday"),
+        ("You", 1, "Friday"),
+    ] {
+        say(
+            chat,
+            id,
+            who,
+            MeetingObject::Vote {
+                poll: poll.into(),
+                choices: vec![day.into()],
+            },
+        );
+    }
+    say(
+        chat,
+        0,
+        "Ann",
+        MeetingObject::Note {
+            kind: NoteKind::Decision,
+            text: "The gazebos stay in the budget".into(),
+        },
+    );
+    say(
+        chat,
+        0,
+        "Carol",
+        MeetingObject::Note {
+            kind: NoteKind::Action,
+            text: "Carol books the stage by Friday".into(),
+        },
+    );
+    say(
+        chat,
+        0,
+        "Ann",
+        MeetingObject::Record(Record {
+            title: "Q4 planning".into(),
+            start_ms: now.saturating_sub(40 * 60_000),
+            end_ms: now.saturating_sub(5 * 60_000),
+            people: vec!["ann".into(), "bob".into(), "carol".into(), "dave".into()],
+            notes: vec![
+                RecordNote {
+                    kind: NoteKind::Decision,
+                    text: "The gazebos stay in the budget".into(),
+                    by: "ann".into(),
+                },
+                RecordNote {
+                    kind: NoteKind::Action,
+                    text: "Carol books the stage by Friday".into(),
+                    by: "carol".into(),
+                },
+            ],
+            polls: vec![RecordPoll {
+                question: "Which day for the party?".into(),
+                results: vec![("Friday".into(), 1), ("Saturday".into(), 2)],
+            }],
+            transcript: vec![
+                ("bob".into(), "Shall we start with the budget?".into()),
+                ("ann".into(), "Yes, the gazebos first.".into()),
+            ],
+        }),
+    );
 }
 
 /// Undo [`seed_demo_chats`] for a capture that did not ask for it.

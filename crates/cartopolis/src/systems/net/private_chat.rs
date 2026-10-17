@@ -424,9 +424,13 @@ pub fn drive_private_chats(
                         body: i.body,
                         distance: None,
                         arrived: f64::NEG_INFINITY,
-                        point: i.point.and_then(|p| {
-                            cartopolis_core::point::Point::from_activity_json(&p).ok()
+                        point: i.point.as_deref().and_then(|p| {
+                            cartopolis_core::point::Point::from_activity_json(p).ok()
                         }),
+                        meeting: i
+                            .point
+                            .as_deref()
+                            .and_then(cartopolis_core::meeting::MeetingObject::from_activity_json),
                         picture: i.picture,
                         at_ms: i.sent_at_ms,
                         seq: 0,
@@ -587,6 +591,21 @@ pub fn drive_private_chats(
         }
         private.dirty = true;
     }
+    for (channel, meeting) in std::mem::take(&mut chat.private_meetings) {
+        let Some(group) = group_of(&channel) else {
+            continue;
+        };
+        match engine.send_meeting(&group, &meeting, now_ms(), &mut out) {
+            Ok(request) => {
+                let me = shown(&engine, engine.address());
+                let my_id = chat.my_id.unwrap_or(0);
+                chat.receive_meeting(&channel, my_id, me, meeting.caption(), meeting);
+                chat.set_last_request(&channel, request);
+            }
+            Err(e) => events.push(Event::Notice(format!("not sent: {e}"))),
+        }
+        private.dirty = true;
+    }
     for ev in events {
         match ev {
             Event::Opened { group, peer } => {
@@ -626,6 +645,7 @@ pub fn drive_private_chats(
                 body,
                 point,
                 picture,
+                object,
                 sent_at_ms,
                 ..
             } => {
@@ -634,6 +654,15 @@ pub fn drive_private_chats(
                     .filter
                     .get_or_insert_with(cartopolis_core::Filter::seeded);
                 let (body, _) = filter.mask(&body);
+                if let Some(meeting) = object
+                    .as_deref()
+                    .and_then(cartopolis_core::meeting::MeetingObject::from_activity_json)
+                {
+                    chat.receive_meeting(&channel, 0, shown(&engine, &from), body, meeting);
+                    chat.date_last(&channel, sent_at_ms);
+                    chat.set_last_log_seq(&channel, seq);
+                    continue;
+                }
                 if let Some(picture) = picture {
                     chat.receive_picture(&channel, 0, shown(&engine, &from), body, picture);
                     chat.date_last(&channel, sent_at_ms);
@@ -743,7 +772,13 @@ pub fn drive_private_chats(
                         body: l.body.clone(),
                         sent_at_ms: l.at_ms,
                         parent: None,
-                        point: l.point.as_ref().and_then(|p| p.to_activity_json(None).ok()),
+                        // The one field carries a point or a meeting's object
+                        // (`HistoryItem::point`).
+                        point: l
+                            .point
+                            .as_ref()
+                            .and_then(|p| p.to_activity_json(None).ok())
+                            .or_else(|| l.meeting.as_ref().map(|m| m.to_activity_json())),
                         picture: l.picture.clone(),
                     })
                     .collect();

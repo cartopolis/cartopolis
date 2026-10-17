@@ -186,6 +186,12 @@ icons! {
     PERSON_REMOVE = "\u{ef66}", "person_remove";
     /// A call's host, and a host's controls.
     HOST = "\u{f650}", "shield_person";
+    /// A meeting planned in a chat.
+    EVENT = "\u{e878}", "event";
+    /// A poll.
+    POLL = "\u{e26b}", "bar_chart";
+    /// A meeting's record.
+    RECORD = "\u{e873}", "description";
     /// A script that is running.
     RUNNING = "\u{e1c4}", "play_circle";
     /// A script that is not.

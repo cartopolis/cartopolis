@@ -94,6 +94,9 @@ pub struct ChatState {
     /// Points to seal and send this frame: (channel key, point). Drained by
     /// `systems::private_chat`, like [`Self::private_outbox`].
     pub private_points: Vec<(String, cartopolis_core::point::Point)>,
+    /// Plans, answers, polls, votes, notes and records to seal and send this
+    /// frame (`cartopolis_core::meeting`). Drained by `systems::private_chat`.
+    pub private_meetings: Vec<(String, cartopolis_core::meeting::MeetingObject)>,
     /// Pictures to send into private chats. Drained by
     /// `systems::private_chat`, which hands them to `chat_pictures` to encrypt
     /// and upload before the line goes out.
@@ -224,6 +227,10 @@ pub struct ChatLine {
     /// A picture that came with the line (private chats only): where it is
     /// stored and the key that opens it. `body` is then its caption.
     pub picture: Option<crate::systems::chat_pictures::PictureRef>,
+    /// Something a meeting left (private chats only): a plan, an answer, a
+    /// poll, a vote, a note, a record. `body` is then its caption. Answers
+    /// and votes are counted on what they answer and not drawn as lines.
+    pub meeting: Option<cartopolis_core::meeting::MeetingObject>,
     /// Wall-clock Unix milliseconds this line arrived on this device, for the
     /// time a bubble shows. Only for showing: everything that fades or orders
     /// runs on [`Self::arrived`].
@@ -294,6 +301,7 @@ impl Default for ChatState {
             unsent: Vec::new(),
             private_input: String::new(),
             private_points: Vec::new(),
+            private_meetings: Vec::new(),
             private_pictures: Vec::new(),
             point_draft: None,
             point_text: String::new(),
@@ -510,6 +518,7 @@ impl ChatState {
             arrived,
             point,
             picture: None,
+            meeting: None,
             at_ms: web_time::SystemTime::now()
                 .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -652,6 +661,22 @@ impl ChatState {
         let idx = self.channel_index(channel);
         if let Some(line) = self.channels[idx].lines.last_mut() {
             line.picture = Some(picture);
+        }
+    }
+
+    /// Something a meeting left in a private chat (`cartopolis_core::meeting`).
+    pub fn receive_meeting(
+        &mut self,
+        channel: &str,
+        sender_id: u64,
+        sender: String,
+        caption: String,
+        meeting: cartopolis_core::meeting::MeetingObject,
+    ) {
+        self.receive_point(channel, sender_id, sender, caption, None, None);
+        let idx = self.channel_index(channel);
+        if let Some(line) = self.channels[idx].lines.last_mut() {
+            line.meeting = Some(meeting);
         }
     }
 

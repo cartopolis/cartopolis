@@ -2195,6 +2195,9 @@ const UI_ELEMENTS: &[&str] = &[
     "findcommunity",
     "newchat",
     "chatthread",
+    // A group chat with what a meeting leaves in it: a plan, a poll, notes, a
+    // record (`cartopolis_core::meeting`).
+    "chatmeeting",
     "chatworld",
     "chatswitch",
     // The You page, Settings' pages and the Admin pages
@@ -2394,6 +2397,8 @@ pub fn open_scripted_ui(
         Some("switch")
     } else if want("chatworld") {
         Some("world")
+    } else if want("chatmeeting") {
+        Some("meeting")
     } else if want("chatthread") {
         Some("chat")
     } else if want("community") {
