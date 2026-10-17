@@ -1,6 +1,6 @@
 ---
 topic: cbs-neighbourhood-statistics
-triggers: [CBS, wijkenbuurten, buurten, wijken, gemeenten, "neighbourhood statistics", "population density", aantalInwoners, bevolkingsdichtheid, personenautosPerKm2, percentageOnbewoond, PDOK, place_labels]
+triggers: [CBS, wijkenbuurten, buurten, wijken, gemeenten, "neighbourhood statistics", "population density", aantalInwoners, bevolkingsdichtheid, personenautosPerKm2, percentageOnbewoond, PDOK, place_labels, pipeline/mod.rs, systems/nav/traffic.rs, systems/map/building_windows.rs, parking.rs]
 updated: 2026-08-29
 ---
 

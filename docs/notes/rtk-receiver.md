@@ -1,7 +1,7 @@
 ---
 topic: rtk-receiver
-triggers: [gnss_receiver, cartopolis_gnss, UsbSerial.java, RTK, NTRIP, UM980, RTCM, NMEA, ttyUSB, "external receiver", "serial port", FT230X]
-updated: 2026-10-13
+triggers: [gnss_receiver, cartopolis_gnss, UsbSerial.java, RTK, NTRIP, UM980, RTCM, NMEA, ttyUSB, "external receiver", "serial port", FT230X, crates/gnss]
+updated: 2026-10-17
 ---
 
 # An external RTK receiver as the position
@@ -12,6 +12,10 @@ receiver. `platform::gnss_receiver` runs it; `LocationWatch` asks it before the
 platform's own provider, so the locate button, driver mode, location sharing and
 the high-precision anchor take its fix without knowing it exists. The parsing,
 the caster client and the receiver loop are the Bevy-free `cartopolis_gnss`.
+The crate reads any byte port; the client supplies one per platform — a tty
+through the crate's `serial` feature on the desktop (off by default, and never
+turned on for Android, which gets no tty for a USB adapter) and `UsbSerial.java`
+on Android.
 
 ## The receiver does the RTK
 

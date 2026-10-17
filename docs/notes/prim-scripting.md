@@ -1,7 +1,7 @@
 ---
 topic: prim-scripting
-triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "sandbox", "fuel", "on_touch", set_geo, sensor, particles, send, on_message, play_sound, loop_sound, prim_sound, SoundName]
-updated: 2026-10-04
+triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "sandbox", "fuel", "on_touch", set_geo, sensor, particles, send, on_message, play_sound, loop_sound, prim_sound, SoundName, interact.rs, picking.rs, prim_geo.rs, crates/simulator/content, "PrimDto::scripted", TouchPrim]
+updated: 2026-10-17
 ---
 
 # What the scripting engine is, and what mlua hands you that Luau does not
@@ -205,6 +205,30 @@ sender's `GeoAnchor`, measured the way `sensor` already measures, not a new
 container. `MAX_MESSAGES_PER_TICK` bounds a sender for a different reason than
 `MAX_COMMANDS_PER_TICK` does: a command costs one wire frame, a message costs an
 event queued on every listener.
+
+## Pressing a scripted prim: a click works it, walking up offers to
+
+Until protocol 21 the only way to fire `on_touch` was the right-click menu's
+Touch entry — an edit-flavoured developer path that nobody looking for a button
+finds. Two ways in now, and the order they shipped in is the lesson: the
+proximity prompt came first and was not enough. The beacon on the Grote Markt
+proved it when the person it was built for went looking and could not work it.
+
+- **A plain left-click on a scripted prim touches it** (`picking::prim_picking`)
+  rather than selecting it — Second Life's rule, and what everybody expects: you
+  click a button, you do not select it. Shift-click still selects and the
+  right-click menu still has Edit and Script, so a builder loses nothing.
+- **Walking up offers to press it** (`systems::interact`). The prompt drawn for
+  streamed places also resolves prims, and **a prim wins** where both are in
+  range: a place is scenery the map happens to name, a scripted prim is
+  something somebody *put* there.
+
+Both are gated on `PrimDto::scripted`, the one bit protocol 21 added. The client
+cannot derive it — source is kept out of `WorldSnapshot` (below) — and without
+the gate every crate in the city would offer to be pressed. The prompt matches
+through the prim's **geo anchor**, never its `Transform`: that is a `big_space`
+cell-local offset while the avatar's position is absolute anchored world XZ, and
+comparing the two directly is the frame mistake this whole area keeps making.
 
 ## Sound is a closed library, and the client measures the distance
 

@@ -193,7 +193,7 @@ nothing, which reads as the sky *ending*.
   constants standing in for normalisation we do not do. The *shape* of the
   lighting does not depend on them.
 - **The shell must stay one static mesh.** Per-frame geometry churn is what loses
-  the Intel iGPU (see CLAUDE.md). Everything above is fragment work.
+  the Intel iGPU (see `upload-bursts.md`). Everything above is fragment work.
 
 ## Verifying a change here
 

@@ -1,7 +1,7 @@
 ---
 topic: vector-tile-unused-layers
-triggers: [vector_tiles.rs, street_furniture.rs, data_layers.rs, pois.rs, places.rs, PAINT_ORDER, pois, addresses, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
-updated: 2026-08-26
+triggers: [vector_tiles.rs, street_furniture.rs, data_layers.rs, pois.rs, places.rs, systems::places, world_places.rs, systems::world_places, interact.rs, PAINT_ORDER, pois, addresses, housenumber, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
+updated: 2026-10-17
 ---
 
 # What else is already in the vector tile
@@ -102,10 +102,21 @@ one derived from its class.
 `pois` and `addresses` were both listed above as used for nothing. `systems::places`
 reads them out of the same `TileData` parse `map_geometry` already does, so they
 still cost no request and no extra decode; `world_places::WorldPlaces` holds the
-result per cell and drops it with the cell. See `docs/notes/avatar-game-feel.md`
-for what they feed, plus two traps found in the data: a tile's buffer puts some
-features slightly outside their own cell, and `housenumber` is frequently a
-numeric MVT value rather than a string.
+result per cell and drops it with the cell, exactly as the street labels are.
+They feed the proximity prompt (`systems::interact`, E to act) and the
+house-number readout, and the street furniture from the same `pois` layer also
+becomes collider circles (one radius per form, `world_places::prop_radius`), so a
+bench is solid (`docs/notes/avatar-game-feel.md`). Two traps in the data, both
+silent:
+
+- **A tile carries a buffer**, so a correctly decoded POI can sit a few metres
+  *outside* its own cell (the fixture has one at x = −2.98 m in a 611 m cell).
+  Clamping it is the wrong fix — the coordinate is right; the cell is simply not
+  all the tile holds. `places`' own test bounds positions by the cell *plus* a
+  buffer for that reason.
+- **`housenumber` is frequently a numeric MVT value**, any of `Int` / `SInt` /
+  `UInt` / `Float` / `Double` as well as `String`. Reading only `Value::String`
+  silently drops most of them, and the readout then just has fewer numbers in it.
 
 `public_transport`, `place_labels` and `street_labels_points` are still unread.
 

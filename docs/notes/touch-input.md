@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
-updated: 2026-09-22
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
+updated: 2026-10-17
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -41,6 +41,11 @@ order**, because a press must carry the position it had at its own point in the
 batch (that is the whole of `take_pass_events`, and it predates touch). The
 other two cannot use the stream: a pinch is a relationship between two fingers
 at one instant, which the event stream does not have — only `Touches` does.
+
+The gestures are read per camera mode inside `free_camera::camera_controls`, which
+was already at Bevy's 16-parameter cap, so the touch state came in grouped with
+the rest of the frame's input as one `CameraInput` `SystemParam` rather than as a
+17th parameter.
 
 ## Why the world side emulates a mouse instead of growing a touch API
 
@@ -90,11 +95,16 @@ seen the lift: the gate would report "egui wants it" and swallow the tap,
 intermittently and only on slow frames.
 
 Fixing the root cause (setting `root_ui_available_rect` from `end_egui_frame`)
-is a one-line change and was deliberately **not** made here: it silently alters
-the answer at six call sites that currently work, which is not something to
-bundle into an input feature. Worth doing on its own, with the click behaviour of
-each site checked. **It is also not possible as written**: `pass_state_mut` is
-`pub(crate)` in egui 0.35, so only `Context::run_ui` can set the field.
+looks like a one-line change and was deliberately **not** made here: it silently
+alters the answer at every call site that currently works — six when this was
+written, fifteen by 2026-10-17 (`grep -rn "egui_wants_pointer_input()"`, mostly
+`free_camera.rs`) — which is not something to bundle into an input feature. Worth
+doing on its own, with the click behaviour of each site checked. **It is also not
+possible as written**: `pass_state_mut` is `pub(crate)` in egui 0.35 and still in
+0.36.2 (`context.rs:1080`), and the only writer of the field is `Context::run_ui`
+(`context.rs:817`), so a client that builds its own root `Ui` cannot set it.
+Until that changes, consult the predicate only on a press or mid-drag, and gate a
+new *world click* on `EguiManager::owns_click` (below), not on the predicate.
 
 **The deferred release does not cover a finger's click, and the world gate had to
 change for it (fixed 2026-09-25).** The deferral keeps the *emulated button* from

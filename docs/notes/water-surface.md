@@ -6,8 +6,9 @@ triggers: [water.wesl, water.rs, "water looks", waves, ocean, sea, foam, whiteca
   WaterSeaState, "shadow around the shore", "rim of shadow",
   water_octaves, sky_ibl, "water looks grey", "no environment map", shallows,
   transparency, "ring edge", far_water, water_common, "hole in the water",
-  "painted water", RENDERED_FORMAT]
-updated: 2026-09-29
+  "painted water", RENDERED_FORMAT, water_common.wesl, ground_detail.wesl,
+  vector_tiles/water.rs, map_geometry.rs, water_shore_field, Felzenszwalb, UV0]
+updated: 2026-10-17
 ---
 
 # The water surface: what is measured, and what only looked measured
@@ -15,7 +16,48 @@ updated: 2026-09-29
 `systems::water` + `assets/shaders/water.wesl`. The polygons are flat — earcut
 gives a canal two triangles — so every wave lives in the *normal*, and the
 surface is an `ExtendedMaterial` over `StandardMaterial` so the sun, shadows, fog
-and the atmosphere's environment map reach it for free.
+and the atmosphere's environment map reach it for free. This is the only place a
+wave exists: the globe's ocean is an unrelated shader that shares none of this
+(`globe-ocean-is-a-brdf-split.md`).
+
+Three rules hold the field together. It is evaluated in **UV0, metres from the
+map anchor** (baked per cell by `map_geometry::build_mesh`), never in
+`world_position`: under `big_space` the render origin jumps a whole grid cell as
+the camera moves, which would snap the phase of the entire sea at once. Sea state
+comes from `WeatherState`'s wind (`update_water_waves` → `sea_state`), and
+wavelength, slope, speed and foam must **move together** — a longer wave at a
+lower steepness reads as a flat sheet; a test pins the direction. And whitecaps
+mask on the **product** of the long and the short octave bands, chop riding a big
+crest: a threshold on the summed height paints a continuous ribbon down every
+crest line, foam as a stripe rather than spray.
+
+## The shore field, and why water has a material per cell
+
+Earcut emits only the polygon's own boundary vertices, so a per-vertex distance
+to the bank would be identically zero; the answer has to come from the interior,
+i.e. a raster. `vector_tiles::water_shore_field` rasterises the water layers
+(`SHORE_FIELD_PX` 1024, ~1.5 m a texel at z14, which a 10 m canal needs) and runs
+an exact Felzenszwalb–Huttenlocher distance transform, saturating at
+`SHORE_MAX_DIST_M` (60 m). Unreached texels are seeded with a large **finite**
+distance, never `∞`: the parabola envelope subtracts one sample from another and
+`∞ − ∞` is a NaN that silently poisons a scanline.
+
+Distance is measured against land in the tile **and its MVT buffer**: a
+`SHORE_FIELD_PAD` apron (16 texels, ~23 m) is rasterised from the tile's own
+geometry past its edge and cropped after the transform. Without it a bank two
+metres into the next tile was invisible and the shallow tint stepped in a
+straight line down every z14 cell edge. The apron is the *neighbour's real
+geometry*, not land: padding with land, the obvious trick, draws a shoreline
+down the middle of every river that crosses a tile edge.
+
+That one number buys shelter (`SHELTER_M`, 30 m, down to `SHELTER_FLOOR`: a canal
+never gets the open river's swell, the single most artificial thing flat water
+can do), the shallow tint and the bed, and a foam line that laps the bank. It is
+also why water cannot share one material handle like the other surface groups:
+the field is a per-cell texture. What is shared is `WaterSeaState`, which new
+cells read at spawn so a cell built after the wind changed comes up in the same
+sea as its neighbours — the contract `globe::GlobeSurfaceAlbedo` has for globe
+tiles.
 
 ## Four numbers that come from outside this repo
 

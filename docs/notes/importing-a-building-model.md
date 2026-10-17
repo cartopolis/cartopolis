@@ -1,6 +1,6 @@
 ---
 topic: buildings
-triggers: [ifc_lod3.py, lod3.rs, IFC, BIM, ifcopenshell, LoD3, interior, hollow]
+triggers: [ifc_lod3.py, ifc_demo_building.py, lod3.rs, systems::lod3, IFC, BIM, ifcopenshell, LoD3, interior, hollow]
 updated: 2026-08-30
 ---
 

@@ -1,7 +1,7 @@
 ---
 topic: pipeline
-triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
-updated: 2026-09-26
+triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992, crates/atlas/src/pipeline, crates/geo/src/formats, cartopolis_geo::formats, lod22_cell.rs, rd.rs, ifc_lod3.py, ifc_demo_building.py]
+updated: 2026-10-17
 ---
 
 # The map's Dutch layers are built by atlas
@@ -11,7 +11,10 @@ client streams live in `crates/atlas/src/pipeline/`: `water`, `buildings`,
 `lod22`, `bag`, `dikes`, `bgt` and `brp` (the crop parcels), plus `bv3d` (the Kadaster's 3D
 basisvoorziening, which `water` and `bgt` both read). They write
 `<dataset>/14/{x}/{y}.json` and a `coverage.json` per dataset into
-`/data/3dbag/site`, which Caddy serves as `3dbag.cartopolis.org`.
+`/data/3dbag/site`, which Caddy serves as `3dbag.cartopolis.org`. Those seven were
+the port; the list has grown since (`models`, `roofs`, `sewers`, the underground
+layers, `tall`, `terrain` and more), and `pipeline/mod.rs`'s `DATASETS` is the
+authoritative one — nineteen on 2026-10-17.
 
 They have been ported twice. They started as Python in `tools/`, run by four ssh
 commands per city. In 2026-08 they became TypeScript in a separate repository, behind
@@ -63,18 +66,31 @@ at all: they generate artifacts committed here and run on a workstation.
 
 ## The seam is shorter now, and still there
 
-**The producers and the consumers are in one repository**, but not in one crate
-and not on one type. Atlas writes each format through `serde_json::Value`, and
-`lod22.rs`, `building_facts.rs`, `surveyed.rs`, `osm_buildings.rs`, `dikes.rs`
-and `water_levels.rs` in the client each parse their own. A renamed key still
-compiles on both sides and arrives as a layer that draws nothing. What changed is
-that one commit can now change both sides, and one gate tests both. Moving each
-format onto a shared type in `cartopolis_geo` is the obvious next step, and it
-has been taken once: the LoD2.2 cells' **binary** twin (`lod22/14/x/y.bin`,
-2026-09-26) is written and read through `cartopolis_geo::lod22_cell`, so that
-half of `lod22`'s seam is a compile error rather than an empty layer
-(`atlas.md` has the format and the numbers). The JSON beside it is still
-written through `json!` and parsed by the client's own serde struct.
+**The producers and the consumers are in one repository, and since 2026-09-30 on
+one type per file.** Until then atlas wrote each format through a `json!` /
+`serde_json::Value` and `lod22.rs`, `building_facts.rs`, `surveyed.rs`,
+`osm_buildings.rs`, `dikes.rs` and `water_levels.rs` in the client each parsed
+their own private struct, so a renamed key still compiled on both sides and
+arrived as a layer that drew nothing. `cartopolis_geo::formats` is the seam now:
+one `Serialize + Deserialize` struct per per-cell file (`bag`, `bgt`, `brp`,
+`coverage`, `decks`, `dikes`, `lod22`, `osm_buildings`, `roofs`, `sewers`,
+`underground`, `water`), `Serialize` for atlas and `Deserialize` for the client,
+and each submodule's tests pin both directions against a literal captured from
+the old writer. **A new dataset's file goes there**; any file that is not in
+`formats` still has the old failure mode. The byte-compatibility rules are in the
+module's own doc (`formats/mod.rs`) and are not optional, because the files are
+already on the host and in every installed client's cache: fields declared in
+alphabetical order (the old `Value` map was a `BTreeMap`), serialised with
+`formats::to_vec` and **never through `serde_json::to_value`**, which widens an
+`f32` and prints `3.7` as `3.700000047683716`. `CACHE_ZOOM` (14) lives there too,
+read by both ends.
+
+The LoD2.2 cells' **binary** twin (`lod22/14/x/y.bin`, 2026-09-26) is one
+definition the same way, `cartopolis_geo::lod22_cell`, and the JSON half is now
+built from the same `lod22_cell::Cell` (`formats::lod22`). Atlas must keep
+writing the JSON — every client older than the binary reads only that — and the
+`.bin.gz` sidecar is what gets the binary served compressed (`atlas.md` has the
+format and the numbers).
 
 The TypeScript pipeline pinned the formats with `server/pipeline/format.test.ts` against captures
 of a real run. That test was not ported: it existed because the parsers were in

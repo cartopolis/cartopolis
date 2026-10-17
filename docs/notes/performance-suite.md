@@ -142,11 +142,11 @@ from two machines.
 
 **A steady window's whole claim is that nothing is happening, and at ground level
 that claim is often false.** The settle test can pass while the vector-tile
-streamer is still trickling — `CLAUDE.md` says the same of `cargo shots`. Measured
-on `city`: a "steady" window carrying 6 new meshes and ~10 MB of uploads *per
-frame*. Read as an idle number that is simply wrong, and it is what made Bevy's
-mesh allocator look like a defect when it was doing real work on real arriving
-meshes.
+streamer is still trickling — `docs/notes/headless-shots-software-renderer.md`
+says the same of `cargo shots`. Measured on `city`: a "steady" window carrying 6
+new meshes and ~10 MB of uploads *per frame*. Read as an idle number that is
+simply wrong, and it is what made Bevy's mesh allocator look like a defect when
+it was doing real work on real arriving meshes.
 
 `Window::quiet` therefore tests it — no uploads, no worker jobs, no mesh churn —
 and a steady window that fails it warns. **`orbit` is the scenario that reliably
@@ -164,9 +164,9 @@ while the total is one number. City, 3 km over Groningen, settled:
 | desktop | 954 MB | 410 | 544 | 742 | 969 |
 | phone | 370 MB | 78 | 292 | 392 | 250 |
 
-The totals reproduce the 991 MB → 371 MB that `CLAUDE.md` records from an
-independent measurement a year earlier, which is the best available evidence that
-this instrument measures what it claims.
+The totals reproduce the 991 MB → 371 MB that `docs/notes/upload-bursts.md`
+records from an independent measurement a year earlier, which is the best
+available evidence that this instrument measures what it claims.
 
 **Geometry is the majority, and on the handset rung it is nearly all of it.** The
 guard cuts textures by 81 % (`tile_px` → 256) and geometry by only 46 %

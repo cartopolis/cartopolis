@@ -1,7 +1,7 @@
 ---
 topic: aerial-imagery
-triggers: [aerial.rs, aerial_reference.rs, --aerial-reference, map_stream.rs, tile_source.rs, Luchtfoto, PDOK, ortho25, orthoHR, "aerial", "satellite", "photo basemap", CARTO_AERIAL_LAYER, beeldmateriaal]
-updated: 2026-08-29
+triggers: [aerial.rs, systems::aerial, aerial_reference.rs, --aerial-reference, --aerial, map_stream.rs, tile_source.rs, SourceId, fetch_generation, aerial_tiles, Luchtfoto, PDOK, ortho25, orthoHR, "aerial", "satellite", "photo basemap", CARTO_AERIAL_LAYER, beeldmateriaal]
+updated: 2026-10-17
 ---
 
 # The aerial basemap (PDOK Luchtfoto RGB)
@@ -91,6 +91,32 @@ Mirroring is not affordable either: the Netherlands at z20 is on the order of
 78 million tiles at ~20 KB, i.e. **~1.5 TB**, on a VPS that also hosts nominatim,
 overpass and the tile server. `systems::coverage`'s `CoverageSlot` therefore
 gains no slot.
+
+## How it plugs in, and the two collisions that had to be separated
+
+The template is an ordinary XYZ `.jpeg`, so it drops into the existing plumbing:
+`cartopolis_core::format_osm_tile_url` substitutes it verbatim,
+`tile_source_kind` classifies it raster, and nothing downstream branches. Only
+`map_stream` switches source. `map_geometry`, `globe`, `navigation` and the router
+keep reading `OsmTileUrlTemplate`, because they want MVT geometry, not pixels.
+
+- **Two raster sources at one cache key collide.** The cache identity used to be
+  the tile key and its kind, and two raster sources share a kind — so the drawn
+  map and the photograph shared `tiles/{z}/{x}/{y}.png`, in memory and on disk,
+  and whichever landed first was served to the other (turning the photograph on
+  could paint the drawn map, and off the photograph). `tile_source::SourceId` is
+  the third part of the key; `cache_keys_separate_two_raster_sources` pins both
+  halves.
+- **A source flip retears on `MapStream::fetch_generation`, never
+  `anchor_generation`** (`map_stream::apply_aerial_source`). Sixteen systems answer
+  an anchor bump by rebuilding — every building cell, the terrain field, the
+  interiors, the dikes, a weather fetch — and one checkbox over the ground texture
+  must not cost that mass mesh churn. The fetch generation is what a stale
+  in-flight tile checks to drop itself.
+
+`--aerial` opts a scripted run in (a headless run has no Layers panel), and
+`aerial_tiles` in `--dump-state` is the assertable half — colour is not evidence
+on a software rasteriser, a count of tiles drawn from this source is.
 
 ## The same imagery is the shot harness's reference (2026-09-28)
 

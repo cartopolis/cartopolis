@@ -1,7 +1,7 @@
 ---
 topic: tooling
 triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
-updated: 2026-10-15
+updated: 2026-10-17
 ---
 
 # Driving the client from an editor
@@ -9,8 +9,10 @@ updated: 2026-10-15
 The client serves the Model Context Protocol, so an agent in an editor can fly
 its camera, photograph what it sees and read what the map is doing.
 `systems::dev::mcp` is the code (its listener and tool surface are the Bevy-free
-`cartopolis_mcp` crate, `crates/mcp_server`); this is what the shape costs and what was
-rejected on the way to it.
+`cartopolis_mcp` crate, `crates/mcp_server`, split out so rmcp/axum/tower's generic
+code — 9.7 % of the client's IR — is not compiled inside the client; it may depend on
+neither `bevy` nor `cartopolis`, see `client-build-cost.md`); this is what the shape
+costs and what was rejected on the way to it.
 
 ## On by default, and switched at runtime
 

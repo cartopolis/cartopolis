@@ -1,6 +1,6 @@
 ---
 topic: mvt-capacity-guard
-triggers: [guard_tile_body, MAX_TILE_BYTES, geometry_capacity, mvt-reader, "refusing the tile", "tile decode failed", "with_capacity", low-zoom, z10, tile bomb]
+triggers: [guard_tile_body, MAX_TILE_BYTES, geometry_capacity, mvt-reader, "refusing the tile", "tile decode failed", "with_capacity", low-zoom, z10, tile bomb, vector_tiles/tile.rs, lowzoom_10_526_334.mvt, lowzoom_10_534_336.mvt]
 updated: 2026-08-11
 ---
 

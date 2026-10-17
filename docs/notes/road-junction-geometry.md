@@ -298,13 +298,13 @@ Two standing lessons for the next flicker report:
 - **Measure duplication in the data before tuning depth.** Rasterise the layer
   and count multi-covered area; 79 % of the paved area was covered twice and no
   amount of rung arithmetic could have said so.
-- **`--flicker` is the instrument now** (see CLAUDE.md): two captures ~5 cm
-  apart, solid flipped pixels reported as `flicker_px`, gated in CI at 1,500
-  against a measured ~500 animation floor. Its caveat is the reason the gate is
-  a disaster gate: identical-geometry copies inside one mesh rasterise
-  deterministically, so a coin flip only shows where the copies *differ* — the
-  sensitive views are shallow, grazing, mid-distance ones, exactly where a low
-  camera looks at a street.
+- **`--flicker` is the instrument now** (see `.claude/skills/shots/SKILL.md`):
+  two captures ~5 cm apart, solid flipped pixels reported as `flicker_px`, gated
+  in CI at 1,500 against a measured ~500 animation floor. Its caveat is the
+  reason the gate is a disaster gate: identical-geometry copies inside one mesh
+  rasterise deterministically, so a coin flip only shows where the copies
+  *differ* — the sensitive views are shallow, grazing, mid-distance ones, exactly
+  where a low camera looks at a street.
 
 ## A kerb is not allowed to seal the street that joins it (2026-09-10)
 

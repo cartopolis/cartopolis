@@ -1,7 +1,7 @@
 ---
 topic: user-safety
-triggers: [moderation.rs, chat.rs, "block", "report", "App Store", "guideline 1.2", "account deletion", "5.1.1", blocks, reports, SAFETY_CONTACT]
-updated: 2026-08-16
+triggers: [moderation.rs, chat.rs, "block", "report", "App Store", "guideline 1.2", "account deletion", "5.1.1", blocks, reports, SAFETY_CONTACT, net/moderation.rs, net/chat.rs, crates/simulator/src/chat.rs, crates/core/src/moderation.rs, ChatHub, DeleteAccount, ReportUser, SetBlocked, "/api/admin/reports"]
+updated: 2026-10-17
 ---
 
 # What the stores require of an app with user-generated content, and where each
@@ -18,7 +18,7 @@ Checked against the guidelines as published on 2026-08-16.
 
 | Requirement | Where it lives |
 |---|---|
-| Filter objectionable material | `cartopolis_core::moderation`, applied in `net.rs`'s `ChatSend` arm |
+| Filter objectionable material | `cartopolis_core::moderation`, applied in `net/chat.rs` as a line is sent |
 | Report mechanism, with responses | `NetMessage::ReportUser` → `reports` table → `GET/PATCH /api/admin/reports` |
 | Block abusive users | `NetMessage::SetBlocked` → `blocks` table → `ChatHub` delivery |
 | Published contact information | `settings::SAFETY_CONTACT`, printed in About and in Settings ▸ Account |
@@ -33,8 +33,23 @@ right to. The client's copies exist only for things the server cannot do — the
 blocked list draws the Unblock control and hides lines that *had already
 arrived* when the block was made.
 
-`crates/simulator/tests/moderation.rs` asserts each refusal at the wire for that
-reason.
+`crates/simulator/tests/integration/moderation.rs` asserts each refusal at the
+wire for that reason.
+
+**Which surface each piece is on follows who does it.** Filing a report, setting
+a block and deleting your own account are *player* actions, so they are on the
+wire — `SetBlocked` / `BlockedList` / `ReportUser` / `ReportAck` and
+`DeleteAccount` / `AccountDeleted`, all protocol 16 (handled in
+`net/moderation.rs`). Triaging a report is an *operator* action, so it is HTTP
+(`/api/admin/reports`), off the wire like the rest of account management
+(`hosted-simulator.md`). The refusals live in `ChatHub`'s fan-out
+(`crates/simulator/src/chat.rs`) and in `net/`.
+
+**`DeleteAccount` re-checks the password** although the connection is already
+authenticated: a session token can be a remembered one on a device somebody else
+is holding, and this is the one request that cannot be undone. On success every
+session of the account is revoked and the connection is ended, since it is now
+authenticated as nobody.
 
 ## Things that were decided one way and could plausibly be decided the other
 
@@ -70,8 +85,6 @@ reason.
 - **Nobody is watching the queue.** `/api/health` reports `open_reports` so
   existing monitoring can, and the wire handler logs each report at `warn` — but
   "timely responses to concerns" is a commitment a person makes, not a table.
-- **The admin GUI has no reports screen.** The endpoints exist; the atlas web UI
-  (`crates/atlas/web` — see `hosted-simulator.md`) has not been taught about them.
 - **Voice is blocked but not filtered**, which is unavoidable: the payload is an
   opaque codec frame the sim never decodes. Reports are the only recourse there,
   and that is worth saying out loud if a reviewer asks.

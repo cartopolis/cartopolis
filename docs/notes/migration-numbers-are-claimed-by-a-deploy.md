@@ -1,7 +1,7 @@
 ---
 topic: migration-numbers-are-claimed-by-a-deploy
-triggers: [refinery, migrations, "V1", "add a migration", deploy-sim, "refinery migrate", "divergent", "MissingVersion", world.db, schema]
-updated: 2026-10-07
+triggers: [refinery, migrations, "V1", "add a migration", deploy-sim, "refinery migrate", "divergent", "MissingVersion", world.db, schema, crates/simulator/migrations, deploy-sim.yml, check-numbers.ts, crates/simulator/src/db.rs]
+updated: 2026-10-17
 ---
 
 # A migration number is claimed by a deploy, not by a merge
@@ -25,7 +25,7 @@ sequence is worth reading once because git gives no warning at any step:
 
 Both branches merged clean in git, because the filenames differ and neither
 touched the other's file. It is the same shape as the `PROTOCOL_HISTORY`
-collision the top-level `CLAUDE.md` documents, with one extra twist: the wire
+collision (`wire-protocol-versions.md`), with one extra twist: the wire
 version collides at *merge*, and this one collides at *deploy*.
 
 ## Renumbering afterwards does not fix it

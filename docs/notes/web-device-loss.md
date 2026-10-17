@@ -2,7 +2,8 @@
 topic: web-device-loss
 triggers: [DeviceLost, wasm, webgpu, "blue screen", "device lost", reload, sessionStorage,
            "GPU process", dawn, "gpu_preprocessing", "halt card", render_halt.rs,
-           carto-halt-last, remember_halt]
+           carto-halt-last, remember_halt, render_setup.rs, cartopolis/index.html,
+           halt_action, HALT_RELOAD_MAX]
 updated: 2026-10-17
 ---
 

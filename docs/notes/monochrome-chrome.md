@@ -1,10 +1,18 @@
 ---
 topic: ui
 triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
-updated: 2026-09-10
+updated: 2026-10-17
 ---
 
 # The chrome is monochrome glass, and the logo is not
+
+> **The palette half of this note is history.** The monochrome ramp and pale
+> accent gave way on 2026-10-04 (charcoal and orange) and again on 2026-10-10 to
+> a deep teal with a saturated teal accent — the pale accent read as one more
+> grey on every selected control. `theme.rs`'s module note has the sequence and
+> `ui-vocabulary.md` the current rule. What below still holds: the brand orange
+> scoped to the logo, the monotonic state ladder, the glass and its alpha floor,
+> the two-ring focus, and `index.html`'s loader tones.
 
 Until 2026-09-10 the UI was a slate-blue ramp with an orange accent, taken from
 the logo. It is a graphite ramp with a pale accent now, translucent and blurred

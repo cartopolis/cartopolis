@@ -1,19 +1,46 @@
 ---
 topic: session
-triggers: [session.rs, login_screen.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
-updated: 2026-09-26
+triggers: [session.rs, login_screen.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth, local_avatar.rs, ws_transport.rs, systems::session, can_simulate, ws_url, drive_session, SessionKind, wants_avatar, "--offline"]
+updated: 2026-10-17
 ---
 
 # Two modes, decided at runtime: offline and online
 
-The client is **offline** (no sim: the streamed map and a local avatar) or
+The client is **offline** (no sim: the streamed map under a camera) or
 **online** (a simulator reached over the network), one state machine
 (`systems::session`) driven by a request field, with `systems::login_screen` as
 its only UI. What makes the switch cheap: every online system is
 `Option<Res<OnlineSession>>`-guarded, so *offline is the absence of a resource*
 rather than a separate configuration of the client. The sim is offline plus an
-authority — nothing about the map, the camera or the avatar changes when it
-arrives.
+authority — nothing about the map or the camera changes when it arrives; it
+brings the avatar with it (below).
+
+- **Online** is server-authoritative: the avatar and the prims live in the
+  simulator and are replicated. The client sends `ClientIntent` (a walk-velocity
+  wish plus the fly flags) and applies `WorldSnapshot`s; `--connect host:port`
+  pins a launch to a server.
+- **Offline** (`--offline`, which every scripted run implies) is single user, no
+  auth, no world persistence and no avatar. The one scripted run that signs in is
+  `--mcp-headless --connect`, an account an agent drives (`lib.rs`'s startup).
+
+`SessionState` holds the mode, a status and the `request` that both the sign-in
+card and startup write; `session::drive_session` takes it. Startup is just the
+first request: a flag wins and is never written back, otherwise the remembered
+session in `user.json` decides.
+
+**There is no client-side database.** The old local-SQLite path (`db/`,
+`systems/database.rs`, the `Database` resource) was removed; world persistence
+and authority are the simulator's `data/world.db`. What the client keeps is
+`user.json` and caches, through `platform::storage` (`web-persistence.md`).
+
+**The web build is not viewer-only any more.** `session::can_simulate()` was
+`false` there while the browser had no transport and greyed out the server row;
+it has a WebSocket carrier (`systems::ws_transport`) and the function answers
+`true` everywhere, kept so a future target that cannot reach a sim has one place
+to say so. An empty Server field means **this page's own origin**
+(`network::ws_url`), which is what the deployed viewer at `/viewer/` uses.
+`ws_url` lives in `network.rs`, not the wasm-only `ws_transport.rs`, so it is
+compiled and unit-tested on the native lane — no CI lane runs tests on wasm.
 
 ## Removed: solo mode (2026-08-21)
 
@@ -159,5 +186,5 @@ was opened from*.
 And the backdrop must be an actual widget (`Sense::click_and_drag` over the whole
 viewport), not a painted wash. The world's mouse consumers gate on
 `egui_wants_pointer_input()`, which in this client collapses to "egui claimed this
-press" (see CLAUDE.md on `is_pointer_over_area`) — so a press on a merely painted
+press" (`touch-input.md`, `egui-shared-root-ui.md`) — so a press on a merely painted
 dim layer reaches the camera and spins the world behind the card.

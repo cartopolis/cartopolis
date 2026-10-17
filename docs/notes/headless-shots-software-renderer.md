@@ -1,7 +1,7 @@
 ---
 topic: headless-shots-software-renderer
-triggers: [shot_harness.rs, "--shot", "--expect", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, ci.yml, "scene smoke", "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image"]
-updated: 2026-08-10
+triggers: [shot_harness.rs, "--shot", "--expect", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, ci.yml, "scene smoke", "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image", workers.rs, platform::workers, set_paused]
+updated: 2026-10-17
 ---
 
 # `--shot` on a software renderer
@@ -113,7 +113,8 @@ it worse, not better.
 frames, and `ScreenshotCaptured` never running. The cause is not the renderer at
 all, which is why it looked so much like one:
 
-* `platform::workers::submit` **is** `AsyncComputeTaskPool` on native, and our jobs
+* `platform::workers::submit` **was** `AsyncComputeTaskPool` on native (until
+  2026-08-14 — see below), and our jobs
   are blocking closures — a full MVT rasterise, ~120 ms each
   ([`tile-raster-cost.md`](tile-raster-cost.md)) — so each owns a pool thread
   outright with no yield point.
@@ -132,6 +133,20 @@ after the verdict is invisible in that frame's image anyway. Pausing **parks** j
 rather than dropping them — the streamers de-duplicate on "a fetch is in flight", so
 a discarded decode is never re-queued and the tile would be missing for every later
 shot in a `--shots` run.
+
+**The tile jobs have had their own pool since 2026-08-14** ("carto tile worker",
+`platform::workers`' module header). The same starvation turned out to hit
+everything else on `AsyncComputeTaskPool`, and the worst victim was not the
+shutter: Bevy spawns **pipeline compilation** there on Android
+(`create_pipeline_task`), so after launch and after every teleport each shader
+compile waited behind the rasterise backlog and the geometry that needed it was
+silently skipped by every pass — a half-drawn, stuttering map rather than a stall.
+The general rule is the one that forced the split: **blocking CPU work goes
+through `platform::workers`, never onto `AsyncComputeTaskPool`**, which Bevy uses
+for its own readbacks and compiles. `set_paused` stayed, for a reason the split
+does not touch: the harness has to know our work is *finished*, not merely running
+elsewhere, because a decode landing between the settle verdict and the shutter
+changes the picture.
 
 **`set_paused` is no longer the harness's alone** (2026-08-10). Android's
 `quiesce_while_backgrounded` pauses the pool on `AppLifecycle::WillSuspend` and

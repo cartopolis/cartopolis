@@ -1,6 +1,6 @@
 ---
 topic: streaming-order-and-residency
-triggers: [fetch_gate, cell_source, spawn_geometry_task, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
+triggers: [fetch_gate, cell_source, spawn_geometry_task, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far", fetch_gate.rs, cell_source.rs, platform/stream.rs, platform/work.rs, load_control.rs, coverage.rs, tile_loader.rs, map_geometry.rs, lod22.rs]
 updated: 2026-10-06
 ---
 

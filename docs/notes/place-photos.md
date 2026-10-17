@@ -1,7 +1,7 @@
 ---
 topic: place-photos
-triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour"]
-updated: 2026-08-23
+triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour", platform::photo, utils/photo_store.rs]
+updated: 2026-10-17
 ---
 
 # A saved place can carry a photo
@@ -9,6 +9,10 @@ updated: 2026-08-23
 Places are now `[photo] name` in the panel, with everything the row used to offer
 as buttons moved into a context menu. Three separate constraints shaped this and
 none of them is visible from the feature description.
+
+Capture is one seam, `platform::photo`, with three arms below it: a desktop file
+dialog, a browser `capture="environment"` input, and an Android camera intent
+watched through the MediaStore row it writes into.
 
 ## Android has no activity result, so the camera is watched, not awaited
 

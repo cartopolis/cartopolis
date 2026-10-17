@@ -24,10 +24,9 @@ nothing.
 The obvious implementation is a `Vec<Particle>` stepped each frame into a
 rewritten vertex buffer. That is a per-frame mesh upload per emitter, which is
 exactly the churn that loses the device on the hardware this ships to — the Intel
-iGPU entry in CLAUDE.md, and `upload-bursts.md`, which is about the same failure
-measured in bytes. A hundred fires would be a hundred vertex buffers rewritten
-sixty times a second, and no per-frame cap fixes that because the writes *are*
-the feature.
+iGPU entry in `upload-bursts.md`, which is also about the same failure measured
+in bytes. A hundred fires would be a hundred vertex buffers rewritten sixty times
+a second, and no per-frame cap fixes that because the writes *are* the feature.
 
 The second reason is the wire. A CPU-simulated system that looked the same on two
 screens would have to replicate particle state at the tick rate; a formula

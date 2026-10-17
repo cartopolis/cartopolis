@@ -1,6 +1,6 @@
 ---
 topic: kadaster-parcels
-triggers: [Kadaster, kadastralekaart, Perceel, KadastraleGrens, "parcel boundaries", "plot boundaries", cadastre, PDOK, "garden fence", scheiding_lijn, LineKind]
+triggers: [Kadaster, kadastralekaart, Perceel, KadastraleGrens, "parcel boundaries", "plot boundaries", cadastre, PDOK, "garden fence", scheiding_lijn, LineKind, pipeline/mod.rs, pipeline/gardens.rs, systems::surveyed]
 updated: 2026-08-29
 ---
 
@@ -60,7 +60,8 @@ types were counted, not fetched whole; their counts are in the pointers below.
 
 ## Four paging traps, all verified
 
-Worse than the BAG WFS truncation `CLAUDE.md` records, in two distinct ways.
+Worse than the BAG WFS truncation `building-identity-and-bag.md` records, in two
+distinct ways.
 
 - **`numberMatched` in the GeoJSON body is cumulative, not a total.** It reports
   `startIndex + returned`. Page 0 says `941`; `startIndex=941` says `1919`;

@@ -1,7 +1,7 @@
 ---
 topic: keeping-what-was-expensive
-triggers: [warm.rs, "WarmStore", "WarmSize", warm_bytes, warm_gpu_bytes, warm_ceiling, warm_gpu_ceiling, CARTO_WARM_MB, CARTO_WARM_GPU_MB, take_shed, SHED_AFTER_S, "retained", "warm_tile_hits", "warm_cell_restores", "map reloads slowly", "revisit", "cache the mesh"]
-updated: 2026-09-11
+triggers: [warm.rs, "WarmStore", "WarmSize", warm_bytes, warm_gpu_bytes, warm_ceiling, warm_gpu_ceiling, CARTO_WARM_MB, CARTO_WARM_GPU_MB, take_shed, SHED_AFTER_S, "retained", "warm_tile_hits", "warm_cell_restores", "map reloads slowly", "revisit", "cache the mesh", platform::warm, load_control.rs, map_stream.rs, lod22.rs, quality.rs]
+updated: 2026-10-17
 ---
 
 # Caching the finished thing, not the bytes it was made from
@@ -123,6 +123,9 @@ may be gated with `--expect`:
   re-rasterised, and the system memory that is costing.
 - `warm_cell_restores` / `warm_cell_mb` — building cells re-spawned rather than
   rebuilt, and their **share of** `gpu_resident_kb` (not an addition to it).
+
+`CARTO_WARM_MB` and `CARTO_WARM_GPU_MB` override the two budgets (`0` is off),
+which is the A/B for either store without a rebuild.
 
 A `cargo shots` manifest run is the case these were added for: six viewpoints
 over one city in one launch, where `warm_tile_hits` tells "the second shot

@@ -1,7 +1,7 @@
 ---
 topic: egui-texture-lifetime
 triggers: [egui_manager.rs, egui_pass, free_texture, EguiWgpuRenderer, textures_delta, load_texture, TextureHandle, "has been destroyed", "Validation Error", Queue::submit, photo_viewer, bookmarks.rs, frozen app, halted renderer]
-updated: 2026-08-16
+updated: 2026-10-17
 ---
 
 # A texture egui retires cannot be destroyed in the pass that drew it
@@ -63,8 +63,9 @@ outlive the frame that recorded work against it.
 - Not the same as [`egui-quiet-frame-staleness`](egui-quiet-frame-staleness.md).
   That note is about *geometry* being retained across quiet frames; this one is
   about a *texture* being destroyed too early. They meet only in `egui_pass`.
-- Not a device-loss problem, so `handle_render_error`'s `DeviceLost` recovery
-  never applied: the device was healthy and the command buffer was wrong.
+- Not a device-loss problem (and `handle_render_error`'s `DeviceLost` recovery,
+  removed 2026-08-18, never applied): the device was healthy and the command
+  buffer was wrong.
 - Not visible on the desktop in ordinary use, because nothing there retires a
   texture very often — the font atlas is allocated once and the place thumbnails
   live for the run. The photo viewer is the first thing in this client that

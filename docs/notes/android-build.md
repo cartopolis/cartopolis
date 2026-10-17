@@ -1,7 +1,7 @@
 ---
 topic: android-build
-triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle]
-updated: 2026-08-23
+triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
+updated: 2026-10-17
 ---
 
 # The Android app is a manifest, a `.so`, the assets directory and one Java class
@@ -12,7 +12,14 @@ and the distinction between those two facts is the subject of the dex-lane secti
 below. The whole app is:
 
 - `crates/cartopolis_android` — a `cdylib` that owns the `android_main` symbol and
-  calls `cartopolis::run()`. Fifteen lines.
+  calls `cartopolis::run()`. Fifteen lines. A crate of its own because
+  `crate-type` cannot be target-gated: `cdylib` on `cartopolis`'s own `[lib]`
+  would statically link the whole Bevy graph a second time in every desktop
+  build. Both its dependencies are target-gated instead, so off Android it is
+  empty and a workspace build pays **8.4 s and a 4.3 MB artifact** (measured
+  2026-08-08, warm). Empty is not free and cannot be — a cdylib links std
+  regardless — and it is why `cargo check --workspace` proves nothing about it
+  (the CI gate below).
 - `crates/cartopolis_android/AndroidManifest.xml` — the app definition.
 - `crates/cartopolis_android/java/` — the Java, currently one probe class.
 - `crates/cartopolis_android/build-apk.sh` — `cargo ndk` → `aapt2` → `javac` →
@@ -347,7 +354,18 @@ Wayland, AppKit and Win32 backends and no Android one, so it does not build for
 shape of the trap: this tree's platform seams were built as *native vs wasm*
 (ADR-030/033), and Android is a third thing that answers "native" to every one of
 them. Expect the next such dependency to be found the same way — by the build
-failing, since nothing else distinguishes them.
+failing, since nothing else distinguishes them. A gate for a desktop-only crate is
+therefore `all(not(target_arch = "wasm32"), not(target_os = "android"))`, and
+arboard, the GNSS serial port and `rfd` sit under exactly that.
+
+**A per-OS `cfg` chain needs a catch-all arm.** `data_layers::open_url` was one
+`let result` per arm for linux, macos, windows and wasm — exhaustive by
+coincidence, not by construction. A target that is none of those leaves `result`
+undefined, so the *whole crate* failed to compile for Android on a line about
+opening a browser. The fallback arm (`not(any(…))`, logging and returning `Ok`)
+turns an unhandled platform into a dead button instead of a build break, and
+`open_url_supported` is what keeps that button from looking alive. Write any new
+per-OS chain the same way.
 
 **`AssetPlugin { file_path }` is ignored on Android.**
 `AssetSource::get_default_reader` returns `AndroidAssetReader` for the target, and
@@ -1248,7 +1266,7 @@ numbering, which is why the default is "keep the tier's answer".
 at 1.7 km altitude uploaded ~174 tiles and, in the run before it, spent five
 consecutive seconds at ~1,010 ms per frame with `dequeueBuffer timed out` on every
 one. The recovery being survivable is not the same as the burst being affordable;
-`docs/notes/headless-shots-software-renderer.md` and the churn entry in CLAUDE.md
+`docs/notes/headless-shots-software-renderer.md` and `docs/notes/upload-bursts.md`
 are where that thread continues.
 
 
@@ -1289,7 +1307,7 @@ containing the fix. It was replaced by `abandon_lost_surface`, which leaks
 the sources and for why no wgpu version available to bevy 0.19 fixes it.
 
 Report two ends in `Error in Buffer::get_mapped_range … Buffer is invalid`, which
-CLAUDE.md already names as downstream noise: a readback polled after the device is
+`upload-bursts.md` already names as downstream noise: a readback polled after the device is
 gone. It runs on an `AsyncComputeTaskPool` thread, out of reach of any error
 handler, so it cannot be prevented from here — only outrun, which is one of the
 two reasons Android now leaves at the halt (`exit_on_halt`) instead of holding a

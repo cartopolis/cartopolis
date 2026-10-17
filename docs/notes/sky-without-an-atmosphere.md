@@ -7,7 +7,8 @@ triggers:
   - considering vendoring or patching `bevy_pbr`
   - "why are there two skies"
   - choosing a sky from Settings ▸ Graphics (`AppPrefs::sky`)
-updated: 2026-08-19
+  - files `sky_dome.rs`, `sky_dome.wesl`, `render_features.rs`, `free_camera.rs`, `sky.rs`
+updated: 2026-10-17
 ---
 
 # The sky on a GPU that cannot run bevy's atmosphere
@@ -103,7 +104,9 @@ model, and at that point the honest move is to fix bevy's instead.
 It is also *not* what `CARTO_NO_ATMOSPHERE` selects. That flag still means **no
 sky at all**, because it is a bisecting switch and one that quietly substituted a
 different sky would bisect nothing. `CARTO_SKY_DOME=1` is the other direction: it
-forces the fallback on hardware that could run the real thing.
+forces the fallback on hardware that could run the real thing. Since the render
+toggles left the developer panel, the flag is the *only* way to get
+`SkyMode::None` (`SkyMode`'s own doc comment still names a dev-panel toggle).
 
 **Since 2026-08-19 that direction is also a setting** — Settings ▸ Graphics ▸ Sky
 (Automatic / Full atmosphere / Simple), stored as `AppPrefs::sky` and read once by
@@ -115,6 +118,15 @@ still has to pass `FLOAT32_FILTERABLE`, because the alternative to refusing is t
 bind-group validation failure that takes the whole app down. The tab reports which
 sky the run actually got, and why, for the same reason this file exists: on the
 platform where it matters there is no log to read.
+
+**Since 2026-09-29 the choice is no longer once per launch.**
+`render_features::apply_sky` resolves `SkyMode::resolve(prefs.sky)` every frame —
+the one answer the camera, the planet, the dome and the Graphics tab read — and
+adds or removes the camera's atmosphere components to match, ending in a re-sync
+of the camera's render entity (`the-atmosphere-from-the-street-to-orbit.md` has
+why). `setup_camera` still decides two things for good: the capability answers
+(`quality::init_capabilities`) and `Hdr`, which the atmosphere requires — so a
+run launched without `Hdr` keeps the dome until it restarts, and the tab says so.
 
 ## The absent component is a load-bearing fact about the rest of the scene
 

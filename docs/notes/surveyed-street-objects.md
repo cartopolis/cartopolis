@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [surveyed.rs, paving_edges.rs, kerb, kerbs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
-updated: 2026-10-06
+triggers: [surveyed.rs, paving_edges.rs, kerb, kerbs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak, systems::surveyed, pipeline/bgt.rs, formats/bgt.rs, paving.rs, cartopolis_geo::paving, world_places.rs, road_texture.rs, vector_tiles/roads.rs, SurveyedCover]
+updated: 2026-10-17
 ---
 
 # Streets that were actually surveyed
@@ -109,8 +109,8 @@ construction, and adding them does not double-plant.
 
 More importantly, **the BGT's tree points are optional content** ("IMGeo plus")
 and coverage varies by municipality — including *within* one city. Groningen's
-own centre has none: all 86 tree records in the middle of town are retired, while
-the wider municipality has 2,340 live ones. A design that replaced the scatter
+own centre has none: all 86 tree records in the middle of town were retired in
+2023, while the wider municipality has 2,340 live ones. A design that replaced the scatter
 where surveyed data existed would delete a park's canopy in exchange for a handful
 of limes, and would do it in exactly the cells where the city is densest.
 
@@ -191,13 +191,34 @@ they then describe *different ground*:
 
 The one overlap is the footway and cycle network, which OSM does draw as
 `RoadClass::Path`. Over a covered cell those ribbons are suppressed
-(`tessellate_roads`' `surveyed_paths`) and the polygons stand in their place, so
-no ground is drawn twice. `surveyed_paths_drop_the_path_ribbons_and_nothing_else`
-pins both halves: the paths go, everything else stays.
+(`tessellate_roads_surveyed`'s `SurveyedCover::Paths`, deciding by
+`road_texture::surveyed_paving_supersedes`) and the polygons stand in their place,
+so no ground is drawn twice. The rule names the *kinds* rather than the class,
+because `pedestrian` maps to `RoadClass::Minor` and a class test left every
+pedestrian street drawing a 5 m tarmac ribbon over the paving the survey had
+already laid — the Grote Markt is fourteen `pedestrian` ways, and came out as a
+scatter of tarmac stubs across the square (2026-09-11).
+`surveyed_paving_drops_the_path_ribbons_and_no_whole_class_else` and
+`surveyed_paving_also_drops_the_pedestrian_ribbons` pin the two halves.
+
+**The local streets moved to the survey on 2026-10-01**, so the first bullet above
+now holds only for marked roads. Atlas also extracts `rijbaan lokale weg` and
+`woonerf` (`PavingKind::Street` / `LivingStreet`); over a cell whose paving file
+carries either, `map_geometry` asks for `SurveyedCover::Streets` and the
+`residential`, `living_street`, `service`, `unclassified` and `pedestrian` ribbons
+go too (`surveyed_streets_supersede`). The argument for OSM above survives for
+`tertiary` and up — those carry the lane markings — while a Dutch residential
+street carries none and is as often brick as tarmac. A cell surveyed before atlas
+took the carriageways has no `Street` surface and keeps its ribbons, which is why
+the cover is decided per cell from the file rather than by coverage. `PavingKind::Road`
+(a regional road or motorway carriageway) is extracted too, but only as the strip
+either side of the OSM ribbon, cut out from under it.
 
 Paving takes its own depth rung, above the ground fills and below the road band.
 A surveyed pavement and a nominal-width OSM carriageway do not agree to the
-centimetre about where the kerb is, so they lap over each other here and there.
+centimetre about where the kerb is, so they lap over each other here and there —
+and with the road on the rung above, the overlap reads as tarmac meeting the kerb
+rather than as a z-fight down every street.
 
 **The rung was what held that apart, and it stopped being enough on measured
 ground.** It is 1.0 mm of height, and once the Height layer bends each sheet onto

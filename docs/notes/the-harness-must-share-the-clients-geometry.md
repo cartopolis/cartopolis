@@ -5,6 +5,8 @@ triggers:
   - considering reimplementing a client algorithm in the harness rather than sharing it
   - deciding what belongs in `cartopolis_geo` versus `cartopolis`
   - reading a `--relief` A/B, or a picture the harness produced
+  - cartopolis_viewer
+updated: 2026-10-17
 ---
 
 # The harness must share the client's geometry, or it invents faults
@@ -14,7 +16,10 @@ seconds instead of the six minutes a client capture costs. It deliberately does
 **not** depend on `cartopolis` — that dependency would rebuild it whenever the
 thing under development changed, and a fault in shared rendering code would then
 appear identically in both, which is the one case a harness has to be able to
-tell apart.
+tell apart. On the build side it is a second Bevy binary in every `--workspace`
+build — one more link, not a second compile of Bevy, because
+`bevy.workspace = true` takes the client's exact feature set
+(`crates/viewer/Cargo.toml`).
 
 That independence has a price, and on 2026-09-19 it was paid in a whole session.
 

@@ -2,8 +2,9 @@
 topic: ndw-traffic
 triggers: [NDW, trafficspeed, traveltime, "measurement site table", measurement_current,
   actueel_beeld, DATEX, AlertC, OpenLR, VILD, "vehicle counts", "traffic counts",
-  "ambient traffic", "loop detector", opendata.ndw.nu, mijn.ndw.nu]
-updated: 2026-08-29
+  "ambient traffic", "loop detector", opendata.ndw.nu, mijn.ndw.nu,
+  traffic.rs, nav/traffic.rs, geo/src/traffic.rs, transit_live.rs, pipeline/mod.rs]
+updated: 2026-10-17
 ---
 
 # NDW traffic: checked against the live feeds, and not taken

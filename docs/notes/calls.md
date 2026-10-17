@@ -1,7 +1,7 @@
 ---
 topic: calls
-triggers: [calls, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim"]
-updated: 2026-10-04
+triggers: [calls, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim", calls.rs, call_screen.rs, call_tones.rs, systems::call_screen, platform/camera.rs, hw_video.rs, web_call.rs, webcall.js, call-worker.js, call.ts, call-tones.ts, webcall.d.ts, web_call_test.ts, web-push.ts, crates/atlas/web/src/sw.js, crates/calls, cartopolis_calls]
+updated: 2026-10-17
 ---
 
 # Calls: encrypted voice and video, forwarded by the simulator
@@ -28,6 +28,12 @@ as it is: it is public, like nearby chat.
   server has a public address so every call connects without TURN, nobody
   learns anyone's IP, one path serves one-to-one and groups, and the server can
   refuse a blocked person before media flows. Forwarding only, no transcoding.
+- **`cartopolis_calls` is split by feature the way `e2ee` is split by crate.**
+  `client` (SFrame sealing and opening, the codecs, a device's session) is what
+  the app takes; `sfu` (a forwarder of bytes it cannot open) is what the
+  simulator takes, and it must take `client` only in its dev-dependencies, so
+  the server binary contains no code that could open a frame even if handed a
+  key (`crates/simulator/Cargo.toml`, `encrypted-chat.md`).
 - **Encryption is SFrame (RFC 9605) keyed from the private chat's MLS group**
   (`MLS-Exporter("SFrame 1.0 Base Key", "", …)`, RFC 9605 §5.2), with the `sframe`
   crate's `rust-crypto` backend. A group change is a new epoch and therefore a

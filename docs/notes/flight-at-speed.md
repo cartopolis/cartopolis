@@ -1,7 +1,7 @@
 ---
 topic: flight-at-speed
-triggers: [flight stutters, avatar bobs in flight, terrain lift, flying is jerky, walking is jerky, movement wobble, prediction jitter, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
-updated: 2026-10-08
+triggers: [flight stutters, avatar bobs in flight, terrain lift, flying is jerky, walking is jerky, movement wobble, prediction jitter, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival, systems/player/avatar.rs, systems/player/free_camera.rs, systems/net/network.rs, core/src/motion.rs, cartopolis_core::motion, systems::interiors, systems/nav/geo_nav.rs, systems::diagnostics, simulator/src/lib.rs, NetPredictionHealth, ONLINE_RECONCILE_RATE, ONLINE_MAX_EXTRAPOLATION, online_snap_error, fly_altitude_factor, airborne_lift]
+updated: 2026-10-17
 ---
 
 # Why fast flight juddered, and what the fixes rest on

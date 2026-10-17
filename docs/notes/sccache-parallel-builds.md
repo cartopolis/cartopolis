@@ -1,7 +1,7 @@
 ---
 topic: sccache-parallel-builds
-triggers: [sccache, parallel agents, worktree, CARGO_TARGET_DIR, build cache, cold build, rustc-wrapper]
-updated: 2026-08-06
+triggers: [sccache, parallel agents, worktree, CARGO_TARGET_DIR, build cache, cold build, rustc-wrapper, .cargo/config.toml, CARGO_BUILD_TARGET_DIR, SCCACHE_BASEDIRS]
+updated: 2026-10-17
 ---
 
 > The measurements below were taken against the `dev-bevy` profile, which on

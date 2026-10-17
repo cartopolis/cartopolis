@@ -1,7 +1,7 @@
 ---
 topic: web-task-stale-waiters
-triggers: [web-task, web_task, "closure invoked recursively or after being dropped", waitAsync, "Atomics.waitAsync", LocalRunnable, bevy_tasks, IoTaskPool, wasm, "web build", Closure, "patch.crates-io"]
-updated: 2026-10-12
+triggers: [web-task, web_task, "closure invoked recursively or after being dropped", waitAsync, "Atomics.waitAsync", LocalRunnable, bevy_tasks, IoTaskPool, wasm, "web build", Closure, "patch.crates-io", crates/web_task, multithread.rs, platform/storage.rs, webcall.js, cdp_probe.ts]
+updated: 2026-10-17
 ---
 
 # A cancelled task left the browser holding a freed callback
@@ -42,7 +42,10 @@ but the browser still holds the pending promise. Three things then go wrong:
 The third is the instability; the error message is only its visible half.
 
 **The fix** (`crates/web_task`, patched in by `[patch.crates-io]`, every
-change marked `cartopolis:`):
+change marked `cartopolis:`). That fork is the only reason the crate is in the
+workspace: `web-task` 1.1.3 vendored whole, changed only in
+`src/runtime/multithread.rs`, opted out of the workspace lints so it stays
+diff-comparable with upstream:
 
 - Each wait gets its own continuation from `Closure::once_into_js`, owned by
   JavaScript: the promise keeps it alive until it runs, and it can never be

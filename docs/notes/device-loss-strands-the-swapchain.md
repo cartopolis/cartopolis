@@ -1,7 +1,7 @@
 ---
 topic: device-loss-strands-the-swapchain
-triggers: [DeviceLost, VK_ERROR_DEVICE_LOST, handle_render_error, abandon_lost_surface, exit_on_halt, StopRendering, SwapchainAcquireSemaphore, SurfaceTexture, release_resources, discard_texture, check_is_valid, WindowSurfaces, SIGABRT, tombstone, wgpu upgrade, "still in use by a SurfaceTexture"]
-updated: 2026-08-20
+triggers: [DeviceLost, VK_ERROR_DEVICE_LOST, handle_render_error, abandon_lost_surface, exit_on_halt, StopRendering, SwapchainAcquireSemaphore, SurfaceTexture, release_resources, discard_texture, check_is_valid, WindowSurfaces, SurfaceData, SIGABRT, tombstone, wgpu upgrade, "still in use by a SurfaceTexture", render_halt.rs]
+updated: 2026-10-17
 ---
 
 # After a device loss nobody can release the acquired swapchain image
@@ -35,8 +35,11 @@ the instant the app is backgrounded — `extract_windows` drops the surface when
 Two details close off the obvious escapes. `NativeSwapchain::discard_texture` is
 still `// TODO: Current implementation no-ops`, and the `check_is_valid` gate is
 **still present on wgpu trunk after 30.0.0** — so this is not a version to upgrade
-out of, and `bevy_render 0.19` pins `wgpu = "29.0.3"` anyway. wgpu 30's changelog
-fixes only the sibling case (a `SurfaceTexture` dropped during *panic unwind*).
+out of. `bevy_render 0.19` pinned `wgpu = "29.0.3"`; bevy 0.20 resolves wgpu,
+wgpu-core and wgpu-hal **30.0.1** (`Cargo.lock`), and 30.0.1 still has both the
+gate (`present.rs`, `Surface::discard`) and the `expect` (`native.rs`), checked
+2026-10-17 in the cargo registry. wgpu 30's changelog fixes only the sibling case
+(a `SurfaceTexture` dropped during *panic unwind*).
 
 ## What lost, and why
 
@@ -51,10 +54,13 @@ fixes only the sibling case (a `SurfaceTexture` dropped during *panic unwind*).
   the device aborted with the same message from a build containing it. The holder
   was never ours, and no amount of clearing on our side can reach it.
 
-The surviving move is not to release anything: **leak `WindowSurfaces`** so no
+The surviving move is not to release anything: **leak the window surfaces** so no
 `wgpu::Surface` is ever dropped and `release_resources` is never reached
-(`abandon_lost_surface`). Holding a few Vulkan objects that can no longer be
-destroyed, in a process that is halted and about to end, costs nothing.
+(`abandon_lost_surface`). On bevy 0.19 that was the `WindowSurfaces` resource;
+since 0.20 each window's surface is a `SurfaceData` component on its render-world
+entity, so the function takes each one and `mem::forget`s it. Holding a few
+Vulkan objects that can no longer be destroyed, in a process that is halted and
+about to end, costs nothing.
 
 ## The other way a halted process dies
 
@@ -65,6 +71,14 @@ that no error handler can reach. Two of the four tombstones from the night of
 from here, only outrun — which is why Android now leaves promptly
 (`exit_on_halt`) instead of holding a frozen screen and waiting to see which
 abort arrives first.
+
+It leaves by `std::process::exit(0)`, not an `AppExit`: an orderly shutdown *runs
+the Vulkan teardown*, which is the one thing `abandon_lost_surface` exists to stop,
+and status 0 because the exit is a decision, so ActivityManager files it as an
+ordinary exit rather than `CRASH_NATIVE`. The halt report is already written by
+then, and the next launch shares it. **Desktop keeps the frozen window** — the
+explanation is on the terminal it was started from — and the web reloads the page
+instead ([web-device-loss.md](web-device-loss.md)).
 
 ## The number the guards were not watching
 

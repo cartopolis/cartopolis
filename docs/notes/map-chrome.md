@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud"]
-updated: 2026-09-10
+triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
+updated: 2026-10-17
 ---
 
 # The map chrome
@@ -24,6 +24,16 @@ sizes to its content — inside an `Area` it stretched the card ~230 pt past the
 last button, which reads as a layout bug and isn't one. A card uses a plain
 `ui.horizontal`; `MenuBar`'s other job (a shared config so hovering slides
 between open menus) is worth nothing with a single menu in the row.
+
+That is one case of the general rule: **an anchored, size-to-content `Area` must
+pin its content width.** Anything inside that reaches for the *available* width —
+a `right_to_left` row, `vertical_centered`, a wrapping label — grows the box a
+little each frame, because this frame's size becomes next frame's available width,
+and the feedback stretches it across the screen. The old status HUD fixed it with
+`HUD_WIDTH` and a `hud_box_does_not_grow` test (both went with the readout,
+2026-09-10); driver mode's first bottom bar hit it again and swallowed the lower
+third of the window in a few frames, which is why every box in `driver.rs` sets its
+own width ([navigation-display.md](navigation-display.md)).
 
 ## Rejected: the hover-reveal card
 

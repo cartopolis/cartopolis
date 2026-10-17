@@ -1,7 +1,7 @@
 ---
 topic: camera tracking (visual-inertial odometry)
 triggers: [cartopolis_vio, "crates/vio", vio, odometry.rs, attitude.rs, scale.rs, "image.rs", sim.rs, precise_tracker, Tracker, Anchor, "Lucas-Kanade", "Lucas–Kanade", FAST, "visual-inertial", "gyro bias", "camera tracking", HAND_HEIGHT_M]
-updated: 2026-10-08
+updated: 2026-10-17
 ---
 
 # Camera tracking
@@ -79,6 +79,11 @@ the one phone measured reports it relative to itself.
   (the camera was taken away) re-reads the compass.
 
 ## Measured
+
+The bench is why `cartopolis_vio` is Bevy-free, for the reason `cartopolis_geo`
+is: the tracker is developed and tested off the phone, against synthetic frames
+and motion with a known answer, and none of that should wait on the client's
+link.
 
 **On the bench, 2026-10-08** (`crates/vio/src/sim.rs`): points on a façade 6 m
 ahead, a pavement and a side wall; the phone held upright at 1.4 m, still for a

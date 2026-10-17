@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [street_labels.rs, vector_tiles.rs, "street names", "labels", "place_labels", "text on the map"]
-updated: 2026-07-31
+triggers: [street_labels.rs, vector_tiles.rs, systems::street_labels, "street names", "labels", "place_labels", "text on the map", fontdue, HEIGHT_BANDS, GroundLayer::StreetLabel]
+updated: 2026-10-17
 ---
 
 # Text on the map lies on the ground, and is not baked into the tiles
@@ -36,8 +36,8 @@ building in front of it hides it, and it does not move.
 ## What lying on the ground costs
 
 - **Size has to be banded.** A truly fixed size is unreadable from 600 m and a
-  billboard from 40 m. `HEIGHT_BANDS` steps the texture height (3.4 m → 14 m)
-  across four altitude ranges. It has to be *stepped*: a continuous ramp would
+  billboard from 40 m. `HEIGHT_BANDS` steps the texture height (3.5 m → 28 m)
+  across five altitude ranges. It has to be *stepped*: a continuous ramp would
   re-place every label on every frame of a climb, and the whole point of putting
   the names in the world is that they hold still.
 - **Ground text has a front and a back.** The baseline is laid to read
@@ -55,6 +55,12 @@ building in front of it hides it, and it does not move.
   roof inside one word, and no flat colour survives all four. Textures are cached
   by name and built at most a few per frame — mass texture uploads are the
   documented way to lose the device on a weak iGPU.
+- **It is a rung on the ground ladder, not a decal floating over it.** The quads
+  take their depth bias from `GroundLayer::StreetLabel` (`the-ground-stack.md`),
+  above the route line and its pins and below the driver arrow, so a name lying
+  in the road neither z-fights the tarmac nor paints over a route drawn on it.
+  The layer is the Street names toggle in the Map layers panel
+  (`DataLayers::street_labels`).
 - **The raster needs weight and mips, and neither is optional.** A label is 7–28 m
   of world laid at a shallow angle, so its texture is nearly always *minified*:
   level 0 alone drops half of every stroke, and the first attempt (egui's light

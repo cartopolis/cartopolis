@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
-triggers: [slow build, llvm-lines, cranelift, MaterialPlugin, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld]
-updated: 2026-10-07
+triggers: [slow build, llvm-lines, cranelift, MaterialPlugin, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld, .cargo/config.toml, crates/materials, crates/geo/Cargo.toml, crates/mcp_server/Cargo.toml, crates/cartopolis/Cargo.toml, simd_baseline.rs, cartopolis_materials, cartopolis_geo]
+updated: 2026-10-17
 ---
 
 # Where the client's build time actually goes
@@ -151,6 +151,15 @@ would have compiled and then failed under `cargo test`.
 which took `mvt-reader` and `geo-types` out of the client's manifest — it was
 the last file in `cartopolis` parsing MVT. geo is now 7,945 lines and 74 tests,
 with a ~1 s edit-to-green loop.
+
+It kept growing as the place Bevy-free geodata goes — MVT, routing, terrain
+grading, building designs and `formats`, the per-cell files atlas writes and the
+client reads. On 2026-10-17 it was 50,619 lines and 520 `#[test]`s
+(`wc -l` and `grep -c` over `crates/geo/src`). The rule that keeps it worth
+having is in its manifest: nothing there depends on `bevy`; a type that needs a
+`Component` belongs in the client and the pure part it wraps belongs in geo.
+The price of its size is that every edit to it recompiles ahead of the client,
+atlas and the viewer, all of which depend on it.
 
 A remaining tier (`terrain`, `height`, `route_ahead`, `collision`, `tile_source`
 — ~3.3k lines, ~36 tests) touches Bevy fewer than 15 times each and would likely
@@ -383,8 +392,12 @@ moves the cost — unlike moving plain functions, which was measured above at
   a client edit, a client from-scratch build, or the `cfg(test)` build of the
   client lib, which generates it all a second time. The systems that *use* the
   materials stay where they are; they name the types, not the plugin.
-- **The editor-access server** — `systems/dev/mcp/server.rs`, being moved to a
-  crate of its own (`refactor/mcp-server-crate`) for this reason.
+- **The editor-access server** — `systems/dev/mcp/server.rs`, moved for this
+  reason on 2026-10-07 into `crates/mcp_server` (`cartopolis_mcp`), which
+  depends on neither `bevy` nor `cartopolis`; it reaches the ECS only through
+  its job channel, and the client re-exports it as `mcp::server` and wraps what
+  must be a `Resource` (`mcp::Running`; a foreign type cannot derive one). Not
+  re-measured with llvm-lines after the move.
 
 Function-level, nothing written here is big: the largest are `drive_capture`
 (9.5k lines), one closure of `spawn_geometry_task` (6.7k), `mcp::agent::settle`
@@ -398,8 +411,13 @@ same way on the same day, the client's IR went from **6,858,394 lines (182,009
 functions) to 4,852,439 (129,226)** — 29% less, a bit more than the 24% above
 because main had grown since that count. `cartopolis_materials` on its own is
 2,090,327 lines (56,258 functions) — about the 2.0 million the client lost —
-generated only when that crate changes. It is a path dependency, so the
-workspace's `package."*"` profile builds it at opt-level 3 like Bevy. One trap found on
+generated only when that crate changes. **It is a workspace member, so it builds
+at the dev profile's opt-level 1, not 3**: Cargo applies `profile.dev.package."*"`
+to non-members only (the Cargo book's profiles page). This note said opt-level 3
+until 2026-10-17, and so did CLAUDE.md of `cartopolis_geo` — the same rule puts
+every owned crate at 1. Only types and their material impls live there, and
+nothing there may depend on `cartopolis`; every system that uses a material
+stays in the client. One trap found on
 the way: built alone (`-p cartopolis_materials`), the workspace's Bevy features
 turn on zstd in `bevy_image` with no backend, which is a `compile_error!` — the
 crate has to name `bevy_image` with `zstd_rust` the way the client does.

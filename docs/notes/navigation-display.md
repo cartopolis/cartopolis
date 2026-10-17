@@ -1,14 +1,63 @@
 ---
 topic: navigation
-triggers: [driver.rs, route_ahead.rs, navigation.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown]
-updated: 2026-08-10
+triggers: [driver.rs, route_ahead.rs, navigation.rs, free_camera.rs, gui/data_layers.rs, user_store.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown, apply_minimal_mode, "minimal mode", drive_lookahead, pose_before_drive, sky_prefs, "course over ground", DriverArrow, "--ui driver"]
+updated: 2026-10-17
 ---
 
 # The navigation display
 
 Standing facts about driver mode's chrome and the data behind it. What each
 element *is* lives in `driver.rs` and `route_ahead.rs`; this is the part that
-would otherwise be re-litigated.
+would otherwise be re-litigated. Where the position comes from is
+[device-location.md](device-location.md); the line itself is
+[the-route-line.md](the-route-line.md). `--ui driver` seeds a route and arms the
+mode for a headless capture (`DriverState::arm`, because the solve it waits for
+is a worker round trip).
+
+## Driving strips the map; planning does not
+
+"Minimal mode" (`data_layers::apply_minimal_mode`) used to key off the Route
+*panel* being open, so looking a route up turned off the buildings, the trees and
+the weather — the planner is a form, and a form has no business turning the city
+off — and closing the panel also erased the drawn line. Both are tied to driver
+mode now; the line stays until the route is cleared. What minimal mode keeps is
+the basemap *and its legibility* (vector tiles, road textures, water shading): the
+first cut turned those off too and left a driver on a plain khaki field with a
+line floating over it. It sets only at the two edges and restores a snapshot
+verbatim, so a layer re-enabled mid-drive is not what gets restored.
+
+## The heading is a course over ground, never the avatar's facing
+
+`avatar::handle_avatar_movement` turns the avatar toward its camera-relative
+*wish* direction, so the facing is a smoothed function of the camera and the keys
+held this frame: it lags every turn, holds the last heading when nothing is
+pressed, and does not exist at all for a device fix. Reading it back pins the
+arrow up-screen in every orientation, north-up included — north-up's own
+reflection. The course comes from successive positions, and the fix's own
+(Doppler) course and speed win when the device reports them; before anything has
+moved, the arrow faces along the route's first segment.
+
+## Hiding the avatar takes both levels
+
+The avatar entity is spawned with `Avatar` + `Transform` and no `Visibility`,
+while each model holder under it has one, so a holder is its own propagation root
+and `Hidden` on the parent alone changed nothing. The holders are written too —
+but **only the direct children**: deeper glTF nodes carry a permanent `Hidden`
+from the slot mask (that is how a mixed avatar shows one head and one body), and
+restoring those to `Inherited` on exit un-masks every slot. It is reconciled every
+frame while driving, not on the edge, because holders spawn asynchronously and an
+appearance change respawns them mid-drive.
+
+## Driver mode borrows the camera, and the autosave sees past it
+
+`user_store` autosaves the camera every five seconds, and while driving the live
+`CameraState` is the chase rig. A phone that killed the app mid-drive came back
+next launch in Follow behind an avatar, having forgotten the user was in Earth
+mode when they pressed Start. `DriverState::pose_before_drive` hands the store the
+pose driver mode took over, the same trick `data_layers::sky_prefs` plays for the
+temporary clear sky. Any mode that borrows persisted state owes the store the same
+view past itself, because the exit path that restores it is exactly what a killed
+process never runs.
 
 ## The rail's scale is not linear, and it can't be
 
@@ -143,6 +192,12 @@ neither can produce a cut.
 
 ## Where the marker sits on screen is arithmetic, so it is a test
 
+The camera aims *ahead* of the arrow, not at it (`CameraState::drive_lookahead`,
+read by `free_camera`'s Follow arm): a chase camera that looks at the vehicle
+centres it and spends half the screen on road already driven, where every
+navigation device puts the marker in the lower third. The look target moves, not
+the camera, and by a fraction per orientation.
+
 **Measured 2026-08-08, by projecting the rig the way `free_camera`'s Follow arm
 places it** (`driver::marker_screen_y`, Bevy's default 45° vertical FOV, marker =
 the avatar's ground point, 0 = top of the viewport):
@@ -224,6 +279,11 @@ That takes the **Stop** button with it, which is why Escape leaves driver mode
 too: opening the Places list mid-drive otherwise removed the only way out. It is
 gated on `EguiManager::ui_owns_keyboard`, so typing an address does not end a trip.
 
+**Every box in this chrome pins its own width** (`CARD_WIDTH`, the strip's and the
+pill's `set_width`). The first bottom bar used `vertical_centered` inside a
+size-to-content `Area` and grew to swallow the lower third of the window within a
+few frames — the general egui trap in [map-chrome.md](map-chrome.md).
+
 ## Driver mode owns two platform resources, not just a camera
 
 Both added 2026-08-10, both paired **exactly** with entering and leaving the mode
@@ -240,7 +300,9 @@ invisible until it is missing:
   now, and everything the rest of this note says about course-over-ground applies
   to it unchanged (a device fix has no facing, which is why the heading was never
   the avatar's in the first place). It is **unverified on hardware**;
-  `docs/notes/android-build.md` has the four claims that need a device.
+  `docs/notes/android-build.md` has the four claims that need a device, and
+  [device-location.md](device-location.md) has how the watch is shared with the
+  locate button and how a far fix is applied.
 
 ## Not implemented: lane guidance
 

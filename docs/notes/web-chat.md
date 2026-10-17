@@ -1,7 +1,7 @@
 ---
 topic: web-chat
-triggers: [cartopolis_chat, cartopolis_web_chat, web_chat, address.rs, server_name, federation, MIMI, "full address", group_id, chat-worker.ts, "src/worker", SharedWorker, "Web Lock", "chat in the web UI", embodied, embodied_position, build-chat-core.ts, chat-e2e.ts]
-updated: 2026-10-10
+triggers: [cartopolis_chat, cartopolis_web_chat, web_chat, address.rs, server_name, federation, MIMI, "full address", group_id, chat-worker.ts, "src/worker", SharedWorker, "Web Lock", "chat in the web UI", embodied, embodied_position, build-chat-core.ts, chat-e2e.ts, crates/web_chat, crates/chat]
+updated: 2026-10-17
 ---
 
 # Private chats in the web UI run the app's engine, once per browser
@@ -10,6 +10,14 @@ The web UI (`crates/atlas/web`) chats through the same engine as the app:
 `cartopolis_chat::Engine`, compiled to WebAssembly as `cartopolis_web_chat`
 and driven by a worker. Designs: `docs/mockups/workspace/`. Keys and the wire
 are `encrypted-chat.md`'s; this note is about the browser half.
+
+The engine was split out of the client's `systems::private_chat` for exactly
+this (the client re-exports it), and `cartopolis_web_chat` gives it a
+byte-shaped surface: frames in, frames out, events as JSON, state as one blob.
+It is built by `build-chat-core.ts`, **not threaded** — unlike the viewer — so it
+imports no shared memory and loads in any worker on stable Rust, and the
+`wasm-bindgen` on the PATH must be the exact version `Cargo.lock` pins (a
+mismatch fails at load, not at build).
 
 ## One owner per browser, enforced by a lock
 

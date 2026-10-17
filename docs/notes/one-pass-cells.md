@@ -1,6 +1,6 @@
 ---
 topic: one-pass-cells
-triggers: [CoverageSlot, coverage_revision, fetch_optional, "surface ring retear", "lod22 ring retear", "terrain field bake queued", ROAD_SETTLE_S, WATER_SETTLE_S, terrain_revision, bgt_revision, bag_revision, "rebuilt", "retear", "slow start", "map loads slowly"]
+triggers: [CoverageSlot, coverage_revision, fetch_optional, "surface ring retear", "lod22 ring retear", "terrain field bake queued", ROAD_SETTLE_S, WATER_SETTLE_S, terrain_revision, bgt_revision, bag_revision, "rebuilt", "retear", "slow start", "map loads slowly", coverage.rs, platform/http.rs, terrain.rs, map_geometry.rs, lod22.rs]
 updated: 2026-09-23
 ---
 

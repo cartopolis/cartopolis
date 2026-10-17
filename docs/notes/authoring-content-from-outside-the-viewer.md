@@ -5,7 +5,10 @@ triggers:
   - adding an operator action, and wondering whether it goes on the wire
   - building a world from a file, a fixture or a migration
   - a script needs to reach something the `vf` API cannot
-updated: 2026-08-29
+  - the content packs, `crates/simulator/src/content.rs` and `crates/simulator/content/`
+  - the prim edit gate and its refusal, `crates/simulator/src/prims.rs` and `crates/simulator/src/net/prims.rs`
+  - prim ownership and provenance, `crates/simulator/migrations/V14__prim_origin.sql` and `crates/simulator/migrations/V15__prim_owner.sql`
+updated: 2026-10-17
 ---
 
 # Building the world without a viewer
@@ -178,18 +181,29 @@ worth remembering — a script can move a prim, rename it, set it alight and del
 it, so being allowed to script somebody else's object is the most complete way to
 take it over.
 
+Since roles (V27, 2026-10-06) "owner or admin" is read through permissions:
+`prims::Actor::may_edit` is `PrimEditAny`, or `PrimEditOwn` and the owner, and
+`may_script` is the same rule over `ScriptEditAny` / `ScriptEditOwn`. The admin
+holds every permission and the player role holds the `Own` pair by default, so
+the default reading is the rule above; a role can now be given the `Any` half
+without the admin flag ([permissions.md](permissions.md)). The script gate is
+a parallel permission rather than literally the edit gate, but it is never
+weaker by default, for the reason just given.
+
 **An unowned prim belongs to the server**, so only an admin may change it. That is
 everything built before schema V15 and everything a content pack installs, and it
 is the deliberate side of a trade: treating "no owner" as "anybody's" would leave
 the firebird and the beacon deletable by any passer-by. An operator re-homes a
 genuinely orphaned build with `POST /api/content/transfer`.
 
-The admin flag is read **once, at the handshake**, not per edit. That is the same
-freshness `disabled` already has — `Sessions` is keyed by token with no principal
-index, so revoking either takes effect on the next `ClientHello` — and it keeps
-SQLite off a path that `UpdatePrim` walks at the gizmo's drag rate. The owner map
-is in memory for the same reason (`SimWorld::owners`, loaded at startup and
-maintained beside `scripted`).
+The connection's permissions are read **at the handshake**, not per edit, which
+keeps SQLite off a path that `UpdatePrim` walks at the gizmo's drag rate. Until
+protocol 35 that meant revoking the admin flag took effect only on the next
+`ClientHello`; now every route that changes a grant ends in
+`roles::refresh_grants`, which **pushes** the new set to each live connection of
+the account (`permissions.md` has the mechanism). The owner map is in memory for
+the same reason (`SimWorld::owners`, loaded at startup and maintained beside
+`scripted`).
 
 ### A refusal has to carry the truth
 

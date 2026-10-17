@@ -2,8 +2,9 @@
 topic: cloud-shadows
 triggers: [cloud shadows, "shadows of the clouds", DirectionalLightTexture,
   pbr_light_textures, pbr_clustered_decals, LIGHT_TEXTURES, "light cookie", gobo,
-  "clouds don't shade the ground"]
-updated: 2026-09-29
+  "clouds don't shade the ground", cloud_field.wesl, clouds.wesl, sky.rs,
+  systems::atmosphere_patch, assets/shaders/patched/bevy_pbr_lighting.wesl]
+updated: 2026-10-17
 ---
 
 # Cloud shadows on the ground: not built, and the one route that fits

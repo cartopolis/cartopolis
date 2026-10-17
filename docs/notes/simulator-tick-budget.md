@@ -1,6 +1,6 @@
 ---
 topic: simulator-tick-budget
-triggers: [tick_loop, WorldSnapshot, avatar_snapshot, broadcast, "tick timing", TickMeter, spawn_blocking, "blocking the executor", journal_mode, WAL, flush_dirty, "world write lock", RwLock, "sqlite is slow", "snapshot is large", tokio, "schedule latency", Bytes, "chat fan-out"]
+triggers: [tick_loop, WorldSnapshot, avatar_snapshot, broadcast, "tick timing", TickMeter, spawn_blocking, "blocking the executor", journal_mode, WAL, flush_dirty, "world write lock", RwLock, "sqlite is slow", "snapshot is large", tokio, "schedule latency", Bytes, "chat fan-out", crates/simulator/src/net, crates/simulator/src/db.rs, crates/simulator/src/state.rs, crates/simulator/src/prims.rs, crates/simulator/src/chat.rs, crates/simulator/src/library.rs]
 updated: 2026-09-15
 ---
 

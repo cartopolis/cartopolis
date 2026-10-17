@@ -1,7 +1,7 @@
 ---
 topic: audio-off-platform
-triggers: [audio, soundscape, bevy_audio, cpal, rodio, AAudio, WebAudio, AudioContext, autoplay, "no sound", "silent on Android", "silent in the browser", "--no-default-features", data-cargo-features, "audio feature"]
-updated: 2026-08-15
+triggers: [audio, soundscape, bevy_audio, cpal, rodio, AAudio, WebAudio, AudioContext, autoplay, "no sound", "silent on Android", "silent in the browser", "--no-default-features", data-cargo-features, "audio feature", soundscape.rs, systems::soundscape, platform/audio.rs, crates/cartopolis/index.html, crates/cartopolis_android/Cargo.toml, crates/cartopolis/Cargo.toml, .forgejo/workflows/ci.yml, headroom, to_i16, effects_volume]
+updated: 2026-10-17
 ---
 
 # Audio on the phone and in the browser
@@ -24,15 +24,18 @@ So both shipped for months with the whole soundscape compiled out: no footsteps,
 no landing thud, no wind, and no driver turn cues, which on a phone in a car is
 the one part of navigation you can use without looking at the screen.
 
-Nothing reported it. `systems::player::soundscape` is `#[cfg(feature = "audio")]`
-end to end, so the absence is not a runtime failure — there is simply no system
-registered. The only visible trace was Settings ▸ Audio saying "this build has no
+Nothing reported it. Every system in `systems::player::soundscape` is
+`#[cfg(feature = "audio")]` (the synthesis beside them is not — see below), so the
+absence is not a runtime failure — there is simply no system registered. The only visible trace was Settings ▸ Audio saying "this build has no
 audio support", on a screen nobody opens to find out why it is quiet.
 
 **The rule this leaves behind:** a build lane that passes
 `--no-default-features` must name `audio` back. Three do, and they are listed in
-`crates/cartopolis/Cargo.toml` beside the feature itself. A fourth would be the
-same bug again.
+`crates/cartopolis/Cargo.toml` beside the feature itself: the APK
+(`crates/cartopolis_android/Cargo.toml`, `features = ["audio"]`), the web build
+(`crates/cartopolis/index.html`, `data-cargo-features="audio"`) and CI's wasm
+check (`.forgejo/workflows/ci.yml`, `--features audio`). A fourth that forgets
+would be the same bug again.
 
 Neither platform needs a byte of ALSA, which is what makes the original gate
 irrelevant to them:
@@ -85,6 +88,28 @@ context, so on resume it replays the backlog at once until its clock catches up.
 Seconds of page load are a short burst; it is audible and it is over. Unlocking
 on the earliest gesture is what keeps it short.
 
+## What it plays is made at startup, and a made clip must keep its headroom
+
+Every sound is synthesised into WAV bytes when the soundscape starts
+(`soundscape::synth`) rather than shipped — `avatar-game-feel.md` has why (a
+shipped clip would be an LFS object). The synthesis and the volume/step-rate
+maths are pure functions outside the `audio` cfg, so they compile and are tested
+on a host that cannot build the backend; only the ECS wiring is gated.
+
+**A synthesised clip must leave headroom, and the suite asserts it**
+(`no_synthesised_clip_runs_out_of_headroom`). The wind loop was `lp2 * 6.0`:
+measured, it peaked at exactly 1.000 with **1.08 %** of its samples clamped by
+`to_i16`. Clipping a low-passed rush manufactures precisely the top end the
+filter was there to remove, so it arrived as a wind *tunnel* at any playback
+volume — and no `Volume::Linear` undoes it, because the distortion is in the
+asset. The footstep had the matching fault the other way: one pole at 90 ms,
+measured at a **~2.5 kHz** zero-crossing rate — a bright hiss fired two or three
+times a second, which a phone user reported as wind rather than walking. Both
+were re-cut against measurements on 2026-08-16: the step to two poles (energy
+around 300–400 Hz) and a 70 ms decay, the wind to ~120 Hz with ~3 dB to spare
+(peak ≈ 0.46). Loudness is then the listener's: `AppPrefs::effects_volume` is the
+slider for the half no measurement can judge.
+
 ## What has been verified, and what has not
 
 **Android: the output stream really opens.** Measured 2026-08-15 on the VPS
@@ -114,7 +139,10 @@ untested against a real policy. Still open on both: whether the resume burst is
 objectionable in practice, and whether Android audio survives an app
 pause/resume cycle.
 
-Microphone capture is a separate seam (`platform::audio`) and separate news: the
-web arm is now compiled and `AudioInput::available()` is finally `true` in the
-browser, while **Android capture is still unimplemented** and correctly reports
-so.
+Microphone capture is a separate seam (`platform::audio`), under the same feature.
+The web arm is `getUserMedia`; on Android the desktop cpal arm serves capture
+over AAudio unchanged, behind a runtime `RECORD_AUDIO` ask, so
+`AudioInput::available()` is `true` on both (`voice-chat.md` has the permission
+and what is still unverified). The comment on the `cartopolis` dependency in
+`crates/cartopolis_android/Cargo.toml` that says the capture half "stays off
+here" predates that and is stale.

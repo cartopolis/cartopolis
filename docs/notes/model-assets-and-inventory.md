@@ -1,7 +1,7 @@
 ---
 topic: content
-triggers: [assets.rs, library.rs, model_assets.rs, model_library.rs, "PrimDto::model", glb, glTF, inventory, "shared library", upload, licence, CC0, "CC BY", Quaternius, Kenney, "asset hash", sim://]
-updated: 2026-09-11
+triggers: [assets.rs, library.rs, model_assets.rs, model_library.rs, "PrimDto::model", glb, glTF, inventory, "shared library", upload, licence, CC0, "CC BY", Quaternius, Kenney, "asset hash", sim://, model_limits.rs, crates/atlas/web/src/lib/library.ts, crates/simulator/src/config.rs, crates/simulator/src/main.rs, resolved_api_base_url, api_base_url, derive_api_base]
+updated: 2026-10-17
 ---
 
 # Models a person uploads, and the library they can share them to
@@ -75,9 +75,23 @@ This follows [mvt-capacity-guard.md](mvt-capacity-guard.md), which is the standi
 warning: a guard that predicted a cost from the shape of a file before parsing it
 refused real content and was reverted the same day.
 
+The ceilings are `MAX_ASSET_BYTES` 16 MB, `MAX_TRIANGLES` 250,000, `MAX_NODES`
+4,000 and `MAX_TEXTURE_EDGE` 2048 px, and they live in
+`cartopolis_core::model_limits` because three surfaces *say* them before anybody
+uploads: `assets.rs` enforces them, `model_library::upload_format_hint` builds the
+client's hint from them, and the web UI's `UPLOAD_LIMITS`
+(`crates/atlas/web/src/lib/library.ts`) is a TypeScript copy that a test in
+`model_limits.rs` pins equal. They were three hand-written copies of four numbers
+before that.
+
+**Refusal strings are written to be shown** to the person who tried — they say
+what was measured and what the limit is — so the Models panel prints the
+server's message rather than replacing it with a generic failure.
+
 **Self-contained glTF only, and the store holds one form of it.** What is refused
 is a file that points *outside itself*: fetching whatever an uploader's JSON names
-would make the server issue requests of a stranger's choosing, and storing it
+would make the server issue requests of a stranger's choosing — from inside the
+private network that also holds nominatim, overpass and Forgejo — and storing it
 unfetched would mean a model nothing can draw. So a `Uri` on a buffer or an image
 is a refusal, in either spelling of the format.
 

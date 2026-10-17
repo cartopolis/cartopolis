@@ -1,7 +1,7 @@
 ---
 topic: web-persistence
-triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs]
-updated: 2026-09-10
+triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs, platform::storage, crates/cartopolis/src/lib.rs, std::fs]
+updated: 2026-10-17
 ---
 
 # Everything the client keeps goes through one seam, IndexedDB-backed on the web
@@ -41,9 +41,16 @@ Options considered, and why they lost:
 
 `run()` on wasm pulls the keys that must be readable synchronously into memory
 *before the `App` is constructed*, and starts the client inside the completion:
-`user.json`, and every `photos/*.thumb.jpg` (thumbnails only — a full photo is
-megabytes and only wanted when someone opens it). `read_now` answers out of that
-map. Startup then runs in exactly the order it does natively.
+`user.json`, every `photos/*.thumb.jpg` (thumbnails only — a full photo is
+megabytes and only wanted when someone opens it), and the private-chat state under
+`private_chat::STATE_PREFIX`, read on the frame a session comes up. The list is
+the `storage::preload` calls in `crates/cartopolis/src/lib.rs`. `read_now` answers
+out of that map. Startup then runs in exactly the order it does natively.
+
+The corollary is a rule for new code, not just for this seam: **nothing persists
+through `std::fs`** (it compiles on wasm and every call fails), and a caller that
+must read synchronously is either on the preload list or written to survive
+`Loading`.
 
 This is the same answer Emscripten reached with MEMFS + IDBFS + `FS.syncfs()`,
 and for the same reason. It is not a workaround for something a better API would

@@ -1,7 +1,7 @@
 ---
 topic: ecs
-triggers: [lib.rs, session.rs, tile_loader.rs, network.rs, "Entity despawned", "entity is invalid", try_insert, try_despawn, "set_error_handler", "crashes when minimized", "app closed itself", "generation 1"]
-updated: 2026-08-25
+triggers: [lib.rs, session.rs, tile_loader.rs, network.rs, render_halt.rs, cartopolis_android/Cargo.toml, "Entity despawned", "entity is invalid", try_insert, try_despawn, try_remove, "set_error_handler", warn_once_per_failure, "crashes when minimized", "app closed itself", "generation 1"]
+updated: 2026-10-17
 ---
 
 # A command outlives the entity it names, and on a phone that used to be fatal
@@ -52,7 +52,11 @@ same frame from the other side. Converted 2026-08-25: `tile_loader`,
 loops and two inserts in `network`, and `teardown` itself.
 
 **And release builds do not panic on a command error at all**
-(`lib.rs`'s `App::set_error_handler(bevy::ecs::error::warn)`). This is the same
+(`lib.rs`'s `App::set_error_handler(render_halt::warn_once_per_failure)` — bevy's
+`warn`, rate-limited per distinct failure: the first logs in full, then every
+1,000th says how many there have been, because on the web each line is a
+synchronous `console.error` and a halted renderer once produced 2,140 of them in
+50 s). This is the same
 policy `handle_render_error` follows and for the same reason: an abort on a
 handheld reads as "the app closed itself", with the explanation only in `logcat`
 on a device with no cable attached. Debug builds keep the panic, because that is
@@ -77,8 +81,8 @@ web keep the smaller binary and a terminal.
 ## What this does not license
 
 The handler is a floor, not a licence to stop thinking about ordering. A command
-that fails every frame is still a bug, and it now says so once per frame in the
-log instead of once per install in a crash report. If you see
-`Entity despawned` in a steady stream rather than at a session boundary, find the
+that fails every frame is still a bug, and it now says so in the log (once, then
+a running count every thousandth time) instead of once per install in a crash
+report. If you see `Entity despawned` in a steady stream rather than at a session boundary, find the
 pair of systems and fix the race — the `try_*` call is what makes "gone" an
 outcome; it is not what makes it correct.

@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "tap does nothing on android", "fingers_this_frame", "see through walls", "avatar inside a building", bagviewer]
-updated: 2026-09-22
+triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "tap does nothing on android", "fingers_this_frame", "see through walls", "avatar inside a building", bagviewer, building_windows.wesl, picking.rs, systems::building_select, systems::building_card]
+updated: 2026-10-17
 ---
 
 # Selecting a building, and seeing into one

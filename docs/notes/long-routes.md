@@ -1,7 +1,7 @@
 ---
 topic: routing
-triggers: [plan_corridor, route_staged, LONG_HAUL_ZOOM, Corridor, "long route", "too far", MAX_ROUTE_TILES, MAX_STAGED_KM, coarse_zoom_probe, "cross-country", "zoom hierarchy"]
-updated: 2026-08-08
+triggers: [plan_corridor, route_staged, LONG_HAUL_ZOOM, Corridor, "long route", "too far", MAX_ROUTE_TILES, MAX_STAGED_KM, coarse_zoom_probe, "cross-country", "zoom hierarchy", routing.rs, navigation.rs, CORRIDOR_SPREAD, MAX_ROUTE_KM, TooFar]
+updated: 2026-10-17
 ---
 
 # Routing further than one zoom can reach
@@ -88,6 +88,18 @@ because a route long enough to be staged never comes back within `HANDOVER_M` of
 its own ends.
 
 ## Reach
+
+Range is capped by **tiles** and reported as **distance**: `MAX_ROUTE_TILES` (96)
+is the real gate, and `MAX_ROUTE_KM` / `MAX_STAGED_KM` exist only to phrase the
+refusal, because a tile count is nothing a person can act on.
+
+The corridor is a capsule around the straight line, and its half-width grows with
+**√direct**, not linearly (`CORRIDOR_BASE` + `CORRIDOR_SPREAD`·√direct, clamped at
+`CORRIDOR_MAX_HALF_WIDTH`). With a linear term a long route is both long *and* wide
+and the tile count grows quadratically — an early version had a cross-province
+query asking for ~700 tiles. The detour room a route needs scales with how far a
+sensible diversion strays from the straight line, which grows far slower than the
+route. A short city route costs ~12 tiles, a 20 km one ~90.
 
 Pinned by a test, not derived — the gate counts grid cells, not area. Measured
 2026-08-08: **22 km** direct (matching `MAX_ROUTE_KM`), **360 km** staged

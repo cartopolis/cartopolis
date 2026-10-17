@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target"]
-updated: 2026-08-17
+triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel]
+updated: 2026-10-17
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -14,6 +14,43 @@ three rules whose violations are invisible until someone runs the app.
 All measurements dated 2026-08-14, taken from a ten-lens sweep of the client.
 Method for each is given inline. Where a number is now a unit test, the test is
 named, because the test is the thing that stays true.
+
+## `theme.rs` is the only place a colour, a frame or a header comes from
+
+UI colour, spacing and type live in `systems::theme` and nowhere else. New UI
+takes its colours from the constants, a box over the map from
+`theme::overlay_frame()`, a panel's title bar from `theme::panel_header()` and
+its close from `theme::close_button`. Each of those exists because the
+alternative already happened: the HUD, the stats readout and the bottom bar were
+three hand-rolled overlay frames with two alphas, two radii and three margins;
+six panels hand-rolled `heading` + `button("✕")`, and since `✕` is in none of
+egui's fonts every one of them closed on an empty box (`close_button` paints two
+line segments instead). A fresh `Color32::from_rgb` in a panel is how the chrome
+drifted last time.
+
+A panel's name and glyph are `RightPanel::label()` and `RightPanel::icon()`, so
+the dock disc, the menu entry and the header medallion read one table. (CLAUDE.md
+said `icons()`: that was the glyph preference list the icon font retired.)
+
+**The palette is deep teal, not the logo's slate and orange** — since
+2026-10-10, read off Android's keyboard in its teal dark theme. The logo's orange
+(`theme::BRAND`, `#FD6012`) stays with the mark, the wordmark and the badges.
+`theme.rs`'s module note records the circle it took to get here (slate +
+orange → monochrome on 2026-09-10, `monochrome-chrome.md` → charcoal and ember →
+teal) so nobody walks it again, and the web UI's colours are generated from
+these constants (`atlas-web-ui.md`).
+
+**`theme::install` runs once, from `EguiManager::default`, before the first
+pass.** `set_fonts` only takes effect at the next `begin_pass` and painting with
+an unbound `FontFamily::Name` panics in epaint, so installing at construction is
+what lets the splash paint the brand wordmark on frame one. It sets the style
+for both egui themes: this integration feeds egui no `system_theme`, and a
+light-theme context left on stock style is a latent white flash.
+
+**`RichText::strong()` takes its colour from `widgets.active.fg_stroke`** — the
+pressed-button state. Tune that stroke to suit the pressed fill and every bold
+value in the app changes colour with it. `derived_text_colours_come_from_the_palette`
+pins all three derived colours (plain, weak, strong).
 
 ## egui's bundled fonts have **no pictographic emoji at all**
 

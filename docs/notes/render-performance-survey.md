@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: ["rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
-updated: 2026-10-16
+triggers: [grid.rs, ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+updated: 2026-10-17
 ---
 
 # Where the frames go, and where they do not
@@ -383,7 +383,10 @@ Pro at 3134×1952, two flights each, with `sample(1)` for the call stacks.
    while this was being measured; the street labels were this investigation's
    own. `material_modified_per_frame` counts it now, and a still window that
    reads above zero logs a warning. The before/after numbers are in the table
-   below, and cover all four.
+   below, and cover all four. The rule that follows is general: read with `get`,
+   compare, and take `get_mut` only on the instances whose value differs —
+   anything writing one shared value into a whole family pays this the moment its
+   key starts moving every frame.
 2. **A lock held across the work.** On a warm-cache globe tile,
    `decode_globe_tile` ran as an argument to `results.lock()…push(…)`, so the
    worker held the sink for the whole decode. The main thread's `take_results`
@@ -393,7 +396,11 @@ Pro at 3134×1952, two flights each, with `sample(1)` for the call stacks.
    round a ~2 km circle, and every ring streamer centred on the camera retargeted
    all the way round: whole 3DBAG cells of 5–7 MB, the surface cells, the
    half-metre terrain tier. One flight had a **906 ms** frame in mid-turn.
-   `grid::StreamCentre` makes Earth mode stream round the focus instead.
+   `grid::StreamCentre` makes Earth mode stream round the focus instead: a ring
+   streamer centres on `AnchoredCamera::stream_xz_at`, which is the orbit focus in
+   Earth mode and the camera everywhere else. What is about the camera's *body*
+   rather than the view — the glass over the building it is in, the interiors,
+   the grass — still reads the camera itself.
 4. **The globe never settled after a descent.** Below 2 km the quadtree selection
    does not run, and it was the only thing that cleared the not-yet-started
    fetch queue. So `busy()` stayed true for good and every Earth-mode capture
@@ -488,8 +495,8 @@ for ~10–30×.
 
 ### The building colliders do not need a spatial index
 
-`collision::blocked` is a linear scan over every footprint and CLAUDE.md calls the
-structure a "footprint index", which it is not. Both look like an obvious ~100×.
+`collision::blocked` is a linear scan over every footprint, though the structure
+has been called a "footprint index", which it is not. Both look like an obvious ~100×.
 Do the arithmetic before building one: `blocked` is called **at most ~5 times per
 frame** (`slide` does up to four, `steer_velocity` a couple), each footprint costs
 an AABB test that the first compare usually rejects, and the worst-case patch is
@@ -915,9 +922,10 @@ settle test waits on the tile streams but not on the globe being placed — so t
 shutter fires while `GlobeState` is still empty.
 
 This matters more than it looks, because `--frames` + `--csv` is precisely the
-tool CLAUDE.md documents for catching *a hard cut in a ramp* — the one thing a
-single still cannot show. Until it is fixed, verify a ramp with separate `--shot`
-runs at several altitudes, which does work:
+tool the `shots` skill (`.claude/skills/shots/SKILL.md`) documents for catching
+*a hard cut in a ramp* — the one thing a single still cannot show. Until it is
+fixed, verify a ramp with separate `--shot` runs at several altitudes, which does
+work:
 
     400 km   space_factor 0.039   globe_albedo 0.983
     1500 km  space_factor 0.487   globe_albedo 0.781
@@ -1063,6 +1071,8 @@ This is the one worth carrying forward, because the component's name says nothin
 about it. `bevy_light::check_dir_light_mesh_visibility` tests each caster against
 each cascade frustum — *unless* the entity carries `NoFrustumCulling` or has no
 `Aabb`, in which case it goes into every cascade of every light with no test.
+So **anything that opts out of frustum culling owes a decision about shadows in
+the same breath** — `NotShadowCaster` unless it really casts.
 
 Four things in this tree carried that component and no `NotShadowCaster`, and one
 of them is the whole ground:
@@ -1075,7 +1085,7 @@ of them is the whole ground:
 | particle emitters | the quads are placed in the vertex shader, so the AABB is the wrong volume | nothing coherent — the shadow pass runs bevy's own vertex shader over a lattice whose vertices are all at the origin |
 
 The tiles are the expensive one: the pyramid is a few hundred quads (the 424
-figure in CLAUDE.md's `handset_guarded` table is the count of tile *rasters* held,
+figure in `upload-bursts.md`'s `handset_guarded` table is the count of tile *rasters* held,
 which is the same set), each covering its whole cascade, and *including the ones
 behind the camera*. They now carry
 `NotShadowCaster` from spawn. The comment that used to justify it on the relief

@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key]
-updated: 2026-09-11
+triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key, systems::interiors, building_facts.rs, collision.rs, building_design.rs]
+updated: 2026-10-17
 ---
 
 # Doors, and what is behind them
@@ -296,9 +296,18 @@ shape it gets wrong — and it gets it wrong by **filling the well back in**, so
 the stairs arrive under a lid while the metric, the collider and the geometry all
 still say the hole is there. It is earcut now, which the client already had.
 
+**Superseded in the cut, not in the placement** (building designs, 2026-10):
+`notch_ring` is gone. `BuildingDesign::compile` cuts every well out of the slab
+by polygon difference (`building_design::subtract`, over `i_overlay`), which
+yields polygons *with holes* — and earcut takes holes, so the lid failure above
+cannot come back that way either. That is what lets a flight an owner draws
+stand anywhere in a room. `building_design::generate` still puts the generated
+flight against the longest wall, centred, for the poltergeist reason above.
+
 ## Standing on the first floor
 
-`InteriorFloors` is a **ground level, not a collider**. `BuildingColliders`
+`InteriorFloors` is a **ground level, not a collider** (`InteriorFloors::support`
+answers it, from where the avatar already stands). `BuildingColliders`
 answers "may I move here" in two dimensions; a stack of floors poses the other
 question, "how high is the ground", and answering it with more 2D polygons cannot
 work.

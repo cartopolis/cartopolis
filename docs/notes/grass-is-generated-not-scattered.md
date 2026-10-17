@@ -6,7 +6,8 @@ triggers:
   - reaching for an off-the-shelf Bevy grass crate
   - the lawn is bare, or a seam appears along a patch boundary
   - bumping Bevy, or anything that moves `MeshTag` / `MaterialExtension`
-updated: 2026-09-10
+  - files `grass.rs`, `turf.rs`, `grass.wesl`
+updated: 2026-10-17
 ---
 
 # Grass is generated on the GPU, and the reason is churn
@@ -182,10 +183,14 @@ shaded lawn had been rendering blue-grey, which is most of why the old park read
 as washed out. That is a comparison, not a tone, and it is the only shape of
 colour finding to bring back from this container.
 
-Not run on a phone. The layer is behind `quality::Budget::detail_layers`, so a
-handset starts with it off, and its cost there — tens of thousands of vertex
-invocations per frame against a tiler's binning — is a guess until someone
-measures it on the Adreno 840.
+Its cost on a phone — millions of vertex invocations per frame against a
+tiler's binning — is a guess until someone measures it on the Adreno 840, and
+**a phone does run it**. The layer, its 152-slot near ring and both outer rings
+all key on `quality::Budget::detail_layers`, and Android resolves to
+`Budget::balanced` (`android_budget`), which sets it; `DataLayers` defaults
+`grass_enabled` to the same flag, and `handset_guarded` leaves it alone. This
+note said until 2026-10-17 that a handset starts with grass off; the code says
+otherwise. Battery saver (`Budget::phone`) is the way off.
 
 Two things the data cannot currently express, both worth doing and neither a bug:
 the mask has one coverage channel, so a meadow and a mown verge get the same

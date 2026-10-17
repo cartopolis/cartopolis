@@ -1,7 +1,7 @@
 ---
 topic: sitting-down
-triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, authored clip, AnimationClip at runtime, street furniture, interact prompt, protocol 19, seated on the wire]
-updated: 2026-08-25
+triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, authored clip, AnimationClip at runtime, street furniture, interact prompt, protocol 19, seated on the wire, systems::sit_pose, sit_pose.rs, systems/player/avatar.rs, systems::interact, simulator/src/state.rs, geo/src/furniture.rs, Seated, is_seated, MAX_SEAT_OFFSET_M, SEAT_SLIDE_SECS, "--ui sit"]
+updated: 2026-10-17
 ---
 
 # Sitting is an authored clip and a display offset

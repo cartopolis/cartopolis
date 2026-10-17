@@ -1,7 +1,7 @@
 ---
 topic: container-android-toolchain
-triggers: [aarch64-linux-android, RUSTUP_HOME, ANDROID_NDK_HOME, CC_aarch64_linux_android, blake3_neon, "rustup target add", "cannot check android", "permission denied rustup", "no ndk"]
-updated: 2026-08-10
+triggers: [aarch64-linux-android, RUSTUP_HOME, ANDROID_NDK_HOME, CC_aarch64_linux_android, blake3_neon, "rustup target add", "cannot check android", "permission denied rustup", "no ndk", crates/cartopolis_android, AndroidManifest.xml, simd_baseline.rs, cartopolis_android]
+updated: 2026-10-17
 ---
 
 # The agent container cannot check the Android target out of the box

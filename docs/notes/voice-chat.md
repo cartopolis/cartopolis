@@ -1,7 +1,7 @@
 ---
 topic: voice-chat
-triggers: [voice, VoiceFrame, VoiceData, ADPCM, codec, opus, microphone, RECORD_AUDIO, push-to-talk, jitter, "proximity voice", systems::voice, platform::audio]
-updated: 2026-08-16
+triggers: [voice, VoiceFrame, VoiceData, ADPCM, codec, opus, microphone, RECORD_AUDIO, push-to-talk, jitter, "proximity voice", systems::voice, platform::audio, net/voice.rs, tests/integration/voice.rs, ensure_permission, MIN_VOICE_INTERVAL, MAX_VOICE_BYTES, distance_m, Decodable]
+updated: 2026-10-17
 ---
 
 # Proximity voice: what is decided, and what is still unproven
@@ -46,6 +46,30 @@ fixes; `seq` is on the wire for the datagram transport the protocol anticipates,
 and that is when to revisit this. A reorder buffer written now would be untested
 code guarding a case the transport cannot produce.
 
+## Frames must be paced, because the server drops a burst without a word
+
+The simulator's `net/voice.rs` refuses a frame that arrives less than
+`MIN_VOICE_INTERVAL` (15 ms) after the previous one from the same connection, and
+says nothing when it does — 15 ms admits the expected ~50 frames a second with
+slack for jitter and still bounds a flood. So a client that flushes a capture
+backlog in one burst loses every frame but the first, and that looks exactly like
+a codec bug. The client frames at 20 ms and, after a hitch, drops the oldest
+captured frames past `MAX_PENDING_FRAMES` (4) rather than sending the backlog.
+
+## Playback rides the soundscape's device, and the server sets the distance
+
+Each speaker is a custom `Decodable` asset (`VoiceStream`) played through
+`bevy_audio`'s `AudioPlayer`, i.e. through the output device the soundscape has
+already opened. A second `cpal` output was the alternative and loses twice: on a
+raw ALSA device it fails to open at all, and on the web it would need its own
+`AudioContext` unlock (`audio-off-platform.md`).
+
+Attenuation is the server's `distance_m` — the distance the sim fanned the frame
+out by — and **never a Bevy spatial emitter**. That number is the same whatever
+the listener's camera is doing, so a voice sounds equally far away in free-cam
+and on foot, and a speaker whose avatar entity has not spawned yet is still heard
+at the right level.
+
 ## Android needed no new backend, only a permission
 
 cpal 0.17's Android host is AAudio and implements capture as well as playback, so
@@ -66,8 +90,7 @@ opening a microphone to answer a capability question.
 
 Verified here, 2026-08-16, and reproducible: `systems::voice::loopback` runs a
 real simulator on loopback, sends three encoded frames at the real 20 ms cadence
-(the pacing matters — `net.rs` refuses anything closer than 15 ms and says
-nothing when it does) and asserts the waveform survives resampling, compression
+(the pacing above matters) and asserts the waveform survives resampling, compression
 and the round trip to within 5 % of full scale. The codec, the resampler, the
 gate, the attenuation curve and the jitter bound are unit-tested.
 

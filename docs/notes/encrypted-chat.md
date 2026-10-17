@@ -1,7 +1,7 @@
 ---
 topic: encrypted-chat
-triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql]
-updated: 2026-10-16
+triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql, crates/e2ee, crates/chat, crates/simulator/Cargo.toml]
+updated: 2026-10-17
 ---
 
 # Private chats are end-to-end encrypted, and the server is only a relay
@@ -9,7 +9,11 @@ updated: 2026-10-16
 Direct messages and private groups are sealed with **MLS** (RFC 9420) on the
 devices. The simulator stores and delivers the sealed bytes and cannot open
 them: it does not link `cartopolis_e2ee`, the only crate that could (the
-simulator's *tests* link it, to drive real devices). Design and screens:
+simulator's *tests* link it, to drive real devices). **Keep it that way**: not
+containing the code that could open a message is how the server stays unable
+to. The same holds for `cartopolis_chat` (the engine, which links e2ee; today
+the simulator does not link it even in tests) and for `cartopolis_calls`'
+`client` feature (`calls.md`). Design and screens:
 `docs/mockups/chat-world/`. The web UI runs the same engine in a worker:
 `web-chat.md`.
 

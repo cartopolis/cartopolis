@@ -1,15 +1,39 @@
 ---
 topic: upload-bursts
-triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation]
-updated: 2026-09-26
+triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation, upload_meter.rs, stream_ledger.rs, quality.rs, lod22.rs, osm_buildings.rs, globe.rs, map_stream.rs, map_geometry.rs, DETAIL_FREEZE_ALT, get_mapped_range, CARTO_UPLOAD_KB, report_budget]
+updated: 2026-10-17
 ---
 
 # A per-frame cap on *items* is not a cap on bytes
 
+## The first device it lost: an Intel iGPU
+
+Mass mesh and texture churn hangs the Intel iGPU with `VK_ERROR_DEVICE_LOST`:
+bursts of large uploads and despawns packed into a few frames overrun the
+driver's command-buffer timeout and the device dies. After that every render
+system panics in `Buffer::get_mapped_range` ("Buffer with '' label is invalid") —
+**that panic is downstream noise, not the cause**; look for what was uploaded in
+the frames before it.
+
+Three item guards came out of it: the flat-tile build cap
+(`map_stream::MAX_UPLOADS_PER_FRAME`), `globe::MAX_GLOBE_TILE_BUILDS_PER_FRAME`,
+and the OSM detail patch's altitude freeze plus refetch cooldown
+(`osm_buildings::DETAIL_FREEZE_ALT`, 3 km, and `DETAIL_REFETCH_COOLDOWN`, 2 s). The
+last one has a measurement: a zoom-out dragged the patch's fetch centre sideways
+and fired **13 full patch rebuilds (6,776 → 46 buildings) in 2.4 s**, and the
+device was lost at 4.8 km — far below the space tier, so nothing about altitude
+had protected it.
+
+**The rule for every new streaming path: bound it per frame — in bytes, by asking
+`stream_ledger::admit` before creating the frame's assets, not only in items — and
+gate it on drift and altitude**, so a camera sweep cannot turn into a rebuild per
+frame. The rest of this note is why the bytes half is not optional.
+
+## A count is not the quantity
+
 Every streamer in this client bounds how much it finalises per frame —
 `map_stream::MAX_UPLOADS_PER_FRAME`, `globe::MAX_GLOBE_TILE_BUILDS_PER_FRAME`,
-`lod22::MAX_BUILDS_PER_FRAME`, `osm_buildings::MAX_FAR_BUILDS_PER_FRAME` — and
-CLAUDE.md states the rule that every new streaming path must do the same. All of
+`lod22::MAX_BUILDS_PER_FRAME`, `osm_buildings::MAX_FAR_BUILDS_PER_FRAME`. All of
 those bound a **count**. The quantity that decides whether a mobile driver's
 command buffer survives the frame is bytes, and until 2026-08-18 nothing in this
 process measured or bounded that.
@@ -36,8 +60,7 @@ modified per frame, by the same arithmetic bevy's own upload throttle uses
 The nine LoD2.2 cells of the opening view queued 5.8, 5.5, 17, 17.4, 8.3, 24.7,
 31.7, 14, 25.8 and 63.4 MB — one cell per frame, ~215 MB over about three and a
 half seconds. That is the burst behind the Adreno 840 device loss of 2026-08-17
-(`android-build.md`) and it has the same shape as the Intel iGPU loss CLAUDE.md
-has documented for much longer.
+(`android-build.md`) and it has the same shape as the Intel iGPU loss above.
 
 **Frame times on lavapipe are a property of the container**, not of the change;
 they are quoted because the direction was consistent across paired runs, not as
@@ -92,7 +115,10 @@ certainly this.
 
 The frame budget itself stands: `stream_ledger` asks every streamer before it
 *creates* a frame's assets, so a deferral there is latency in a streamer the
-settle test can see, and cannot desynchronise anything. `RenderAssetBytesPerFrame`
+settle test can see, and cannot desynchronise anything — which is also why a
+scripted capture keeps the ledger **in force** rather than exempting itself, as it
+once exempted itself from bevy's budget: a capture should measure the code path
+the handset runs. `RenderAssetBytesPerFrame`
 is inserted with `max_bytes: None` on every tier; `CARTO_UPLOAD_KB` reaches the
 ledger through `quality::upload_ceiling`. Do not turn bevy's throttle back on
 without a capture showing it draws the same picture as without it.

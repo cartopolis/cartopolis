@@ -8,6 +8,9 @@ triggers:
   - refine_for_terrain, CREASE_SAG_M, MAX_GROUND_EDGE_M, height_enabled
     (the refinement itself moved to `cartopolis_geo::terrain_refine` on 2026-09-19,
     so the harness runs it too — see `the-harness-must-share-the-clients-geometry.md`)
+  - files: systems/map/terrain.rs, terrain_refine.rs, terrain_tiles.rs, terrain_grade.rs,
+    map_stream.rs, systems::ground_detail, ground_detail.wesl, height.rs
+updated: 2026-10-17
 ---
 
 # Terrain relief: what AHN actually holds, and the shape the field takes from it
@@ -89,6 +92,19 @@ A consumer asks for a height thousands of times per mesh build, so the field can
 a cache of per-question patches like `systems::height`'s. One `HeightRequest` per map
 anchor (2049², 12.3 MB, 4.5 s measured) is baked into a regular grid in the anchored
 world-XZ frame; after that every lookup is bilinear arithmetic with no I/O.
+
+That WCS request is now the fallback, not the source. Where atlas's
+`terrain/coverage.json` lists the area, the field is assembled from atlas's z14
+terrain tiles (`terrain_tiles`): **graded on atlas** where the manifest says
+`graded` for every tile under the field, so the client only resamples them, and raw
+tiles graded on the device with the same `cartopolis_geo::terrain_grade` elsewhere —
+one code path, two places it runs. A handset's field is 513² over the same box
+(12.5 m, `quality::handset_guarded`), and over graded ground the field **follows the
+camera** (`terrain::FOLLOW_M`, 1.6 km out, by whole 800 m lattice steps, keeping the
+anchor's datum) and grows to 9.6 km once it has moved. All of that is
+[level-of-detail-tile-tree.md](level-of-detail-tile-tree.md), steps 2–3 and "Atlas
+grades"; a teleport within `geo_nav::SHORT_JUMP_M` (3 km) of the anchor moves the
+camera and keeps the field rather than re-anchoring.
 
 The bake runs on `platform::workers` and lands through `terrain::apply_coarse_terrain`.
 It did not used to: at 25 m the field was 65,536 samples and ran inline. At 3.125 m it
@@ -178,6 +194,15 @@ consumer add the lift unconditionally. The price is that every streamer builds i
 first cells on flat ground and must retear when the real field lands a second or
 two later. `TerrainField::revision` is that signal, and a consumer holds the
 revision it built against beside its cell keys.
+
+The ground and building cells do it **per cell** (`MapSurfaces::built_rev`,
+`Lod22Buildings::built_rev`): a new field rebuilds only a cell whose
+`TerrainField::cell_digest` — the heights under it plus a 50 m margin, and for
+ground cells the water over it — changed. Everything else still retears by ring.
+And over graded ground those two cell streamers do not build flat first at all:
+`TerrainField::holds_builds` holds them until the field lands (they fetch
+meanwhile), because that field needs nothing from the cells and is seconds away.
+Ground graded on the device cannot be waited for — its bake needs the cells' roads.
 
 **The failure is silent and one-sided**, which is why this is written down: the
 consumers that *were* wired sink or rise together and look right, and the one that
@@ -330,7 +355,8 @@ flat ground.
 the ground was measured, displaced, normal-mapped and lit correctly, and was
 indistinguishable from a plane. `terrain_relief_m` could not show it either — it is the
 range over the whole box, and it barely moves between those rows, which is why
-`terrain_sample_m` is now in `--dump-state` beside it.
+`terrain_sample_m` is now in `--dump-state` beside it (with `terrain_ready`). A gate
+on resolution asserts `terrain_sample_m`, never the range.
 
 **What 25 m cost, and what it bought.** It bought one 220 kB request and a 65,536-sample
 bake cheap enough to run inline on the main thread. 3.125 m is 2049² — 12.3 MB on the
@@ -546,6 +572,9 @@ opposite and was believed on 2026-09-20: **the measured ground has no toggle**.
 `update_terrain_field` carries no run condition and reads no layer flag; the only
 gate is `HeightLayer::covers`. Over the Netherlands it bakes, and everywhere else
 it does not, which is the same thing as being off where there is nothing to fetch.
+The `--height` flag that once opted a scripted capture in went with the toggle
+(2026-09-16, `4b1eec6e`): every capture over the Netherlands has relief, and "flat
+(no `--height`)" in the tables above is a measurement from before then.
 
 The aerial basemap *is* opt-in, and for its own reason — it replaces the drawn
 ground rather than adding to it. That reason does not transfer.

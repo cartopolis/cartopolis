@@ -1,6 +1,6 @@
 ---
 topic: level-of-detail-tile-tree
-triggers: [LOAD_RADIUS, COARSE_RADIUS, MIN_ZOOM, CELL_RADIUS, LOD22_RADIUS, FAR_CELL_RADIUS, TERRAIN_HALF_M, GLOBE_SHOW_ALT, REANCHOR_DISTANCE, "screen-space error", "tile tree", "level of detail", "LOD", "Google Earth", "ring retear", "loads slowly", "time to first image"]
+triggers: [LOAD_RADIUS, COARSE_RADIUS, MIN_ZOOM, CELL_RADIUS, LOD22_RADIUS, FAR_CELL_RADIUS, TERRAIN_HALF_M, GLOBE_SHOW_ALT, REANCHOR_DISTANCE, "screen-space error", "tile tree", "level of detail", "LOD", "Google Earth", "ring retear", "loads slowly", "time to first image", map_stream.rs, systems/map/terrain.rs, terrain_tiles.rs, terrain_tile.rs, terrain_grade.rs, crates/atlas/src/terrain.rs, pipeline/terrain.rs, geo_nav.rs, height.rs, systems/map/lod22.rs, systems/map/map_geometry.rs, tile_loader.rs, FOLLOW_M, SHORT_JUMP_M, cell_digest, holds_builds]
 updated: 2026-09-26
 ---
 

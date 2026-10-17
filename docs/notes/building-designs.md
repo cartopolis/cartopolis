@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_design.rs, building_designs.rs, designs.rs, "building design", "floor plan", "floor-plan editor", "/building/", buildings.rs, building_owners, "own a building", interiors.rs, IFC, BIM]
-updated: 2026-10-05
+triggers: [building_design.rs, building_designs.rs, designs.rs, "building design", "floor plan", "floor-plan editor", "/building/", buildings.rs, building_owners, "own a building", interiors.rs, IFC, BIM, lod22_facade.rs, cutaway.rs, crates/atlas/src/designs.rs, crates/atlas/web/src/components/pages/building, DesignToWorld, with_design_doors]
+updated: 2026-10-17
 ---
 
 # Building designs, and who may draw one
@@ -11,10 +11,17 @@ windows, named rooms and straight flights, in metres east and north of an origin
 (`cartopolis_geo::building_design`). Every building has one. A building somebody
 owns and has drawn uses the design they saved; every other building gets the one
 `generate` lays out from the BAG outline, its entrances and the shell's height,
-which is the interior the client used to build by hand. One compiler turns either
-into the mesh, the floors and stair ramps the avatar stands on, and the inner
-walls it is stopped by — so a drawn building cannot behave differently from a
-generated one.
+which is the interior the client used to build by hand. One compiler
+(`BuildingDesign::compile`) turns either into the mesh, the floors and stair
+ramps the avatar stands on, and the inner walls it is stopped by — so a drawn
+building cannot behave differently from a generated one. A flight's well is cut
+out of the slab by polygon difference, so a drawn flight may stand anywhere; the
+generated one still stands against a wall ([doors-and-rooms.md](doors-and-rooms.md)).
+
+**The design's frame is a mirror of the world's.** A design is metres east and
+north; the world runs +z south. `interiors::DesignToWorld` carries a design
+across and, being a reflection, reverses every triangle's winding on the way —
+miss that and every floor is lit from beneath.
 
 ## Where each half lives, and why it is split
 
@@ -56,7 +63,10 @@ stamp is written when the cell is, never derived from the designs in it — deri
 removing the newest design would move it *back* to a stamp a client may have
 cached with that design still inside.
 
-`lod22` bakes a designed building's entrances into its facade and collider, so it
+**A designed building's entrances come from its design**
+(`building_designs::with_design_doors`), not from the register's points, so the
+facade door, the collider opening and the room's doorway move together when an
+owner moves a door. `lod22` bakes them into its facade and collider, so it
 rebuilds only the cells around a changed design (`neighbourhood_revision`), never
 the ring.
 

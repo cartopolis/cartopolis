@@ -1,7 +1,7 @@
 ---
 topic: avatar-game-feel
-triggers: [avatar feels sluggish, camera feels awkward, recentre, auto-rotate camera, camera behind avatar, banking, framing, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle]
-updated: 2026-10-08
+triggers: [avatar feels sluggish, camera feels awkward, recentre, auto-rotate camera, camera behind avatar, banking, framing, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle, systems/player/avatar.rs, systems::locomotion, core/src/motion.rs, cartopolis_core::motion, systems/player/free_camera.rs, systems/net/network.rs, simulator/src/net/avatar.rs, simulator/src/state.rs, systems::interact, systems::soundscape, systems::world_places, EmoteState, EMOTE_REPLICATE_SECS, MIN_INTENT_INTERVAL, keys, key bindings]
+updated: 2026-10-17
 ---
 
 # What made the avatar feel wrong, and what the fix rests on
@@ -64,6 +64,22 @@ are one module now. **Do not re-inline them**: a mismatch between the first two
 is invisible except as rubber-banding, and between the first and third it means
 the same key produces a different world depending on how you launched.
 
+The same reasoning put the *ramp* in one system. `avatar::handle_avatar_movement`
+owns the speed model in every run mode, online included, and
+`send_network_intent` consumes what it produced instead of deriving a velocity
+from the keys a second time — two systems doing that is how the offline and
+online paths came to behave differently. Two properties of that ramp are
+deliberate:
+
+- **Speed ramps at a rate in m/s², not on a normalized ease** (`locomotion::advance_speed`,
+  `GROUND_ACCEL` 18 / `GROUND_DECEL` 26). An ease on the throttle reaches every
+  gait in the same time, so a run start feels exactly as light as a stroll start;
+  a fixed rate gives the fast gaits the longer run-up they should have (1.1 m/s
+  arrives in 0.06 s, 6 m/s in 0.33 s).
+- **The travel direction is held across a key release.** The wish vector is
+  already zero on the frame the key comes up, so a direction taken from it each
+  frame leaves nothing to coast along and the avatar stops dead.
+
 ## Jump could not be client-side, and gravity was not an acceleration
 
 `SimWorld::step` clamps `y >= 0` and falls anything not flying, so a purely
@@ -77,14 +93,31 @@ kerb and falling off a tower began identically.
 useful height only by hanging in the air for over a second, which reads as the
 moon.
 
-## The camera collides in 2D, and only low down
+Jump and emote are **edges**, not levels, and that is why they cost a protocol
+revision rather than a magnitude. Both bypass the client's send-on-change test and
+its keepalive throttle, and the server's `MIN_INTENT_INTERVAL` rate limit
+(`simulator/src/net/avatar.rs`): a dropped movement intent is corrected by the
+next one, a dropped jump simply did not happen. A live emote is then held on the
+wire for `EMOTE_REPLICATE_SECS` (2.5 s) so a client that arrives mid-wave still
+sees it — which means a receiver must diff on `EmoteState::sequence`. Diffing on
+the emote itself restarts the clip with every snapshot, twenty times a second.
 
-The follow boom is swept against `BuildingColliders::segment_fraction`. The
-footprints **carry no height**, so the test is gated on the camera being below
+## The camera collided in 2D, and only low down — until 2026-09-28
+
+The follow boom is swept against `BuildingColliders::segment_fraction`. While the
+footprints **carried no height** the test was gated on the camera being below
 `CAMERA_COLLIDE_MAX_Y` (15 m): above a plausible eaves line a 2D hit means "there
-is a building over there", not "the view is blocked", and acting on it reels the
-camera in every time the avatar walks past a block. If building heights ever
-reach the collider index, that gate is the thing to delete.
+is a building over there", not "the view is blocked", and acting on it reeled the
+camera in every time the avatar walked past a block. Building heights reached the
+collider index on 2026-09-28 and the gate was deleted, as planned: the boom is now
+tested from the head to its end at the height the line passes each footprint
+(`height-aware-collision.md`), so a high view looks over a roof and a low one is
+stopped by the wall at any altitude.
+
+What stayed is the asymmetry: the boom comes **in fast and goes back out slowly**
+(`CAMERA_COLLIDE_IN_RATE` 22/s, `CAMERA_COLLIDE_OUT_RATE` 3.5/s). Coming in is
+urgent, the wall is already in shot; going out at the same rate makes the camera
+lunge every time the avatar passes a doorway.
 
 ## Two tile layers were being decoded and dropped
 

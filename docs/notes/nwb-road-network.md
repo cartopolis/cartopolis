@@ -1,7 +1,7 @@
 ---
 topic: nwb-road-network
-triggers: [NWB, wegvakken, hectopunten, rel_hoogte, WEGGEG, rijstroken, wvk_id, road_width_m, "measured carriageway", "bridge geometry", PDOK, Rijkswaterstaat]
-updated: 2026-08-29
+triggers: [NWB, wegvakken, hectopunten, rel_hoogte, WEGGEG, rijstroken, wvk_id, road_width_m, "measured carriageway", "bridge geometry", PDOK, Rijkswaterstaat, road_texture.rs, paving.rs, road_levels.rs, pipeline/mod.rs]
+updated: 2026-10-17
 ---
 
 # NWB: checked against the live service, and not taken
@@ -72,9 +72,10 @@ already delivers for free.
 Two paging traps, both verified. **The page cap is 1000 features whatever `limit`
 asks for**, and the response carries `numberReturned` but **no `numberMatched`** —
 so the ordinary "a short page means the last page" loop stops at a thousand and
-reports nothing, which is the truncation trap `CLAUDE.md` already records for the
-BAG WFS. And **`offset` is not supported**: it answers `400 unknown query
-parameter(s) found: offset`, so the only way through is the `rel="next"` link.
+reports nothing, which is the truncation trap `building-identity-and-bag.md`
+already records for the BAG WFS. And **`offset` is not supported**: it answers
+`400 unknown query parameter(s) found: offset`, so the only way through is the
+`rel="next"` link.
 
 And it changes only the data behind the picture, not the picture. `geobron_nm`
 shows the geometry is largely BGT-derived and so more accurate than OSM's — but

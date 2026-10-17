@@ -4,6 +4,8 @@ triggers:
   - "why is there a globe visible at 10 km" / "why does the flat map curve"
   - changing GLOBE_SHOW_ALT, GLOBE_DRAW_ALT, the camera far plane, or a sky shell radius
   - adding a layer that has to reach further than a few kilometres from the anchor
+  - the near and far planes in `free_camera.rs` (`camera_controls`)
+updated: 2026-10-17
 ---
 
 # Two tiers, one sphere: what the world looks like between 2 km and 50 km
@@ -141,6 +143,13 @@ The far plane's margin is 1.5×, not a hair over 1.0, because the Earth's
 *silhouette* is drawn by the far edges of the tiles that straddle the horizon —
 z9 tiles ~70 km across at 12 km altitude. At 1.2× the skyline came out as a
 sawtooth: the tile grid, clipped one tile at a time.
+
+Both overrides (this band's, and the space tier's far-limb plane) live in
+`free_camera::camera_controls` **after** the camera-mode match, so they hold in
+every mode; the system resets near/far to the ground defaults (0.1 m, 200 km) at
+the top of every frame. They used to sit in the Orbit arm alone, so climbing in
+Fly or Follow left the far plane at 200 km and clipped the whole planet to a
+black screen.
 
 ## Still open
 

@@ -1,7 +1,8 @@
 ---
 topic: land-cover
-triggers: [landcover, "land cover", WorldCover, landcover_fills, LAND_KINDS, "/tiles/landcover", GLOBE_DEEP_ALBEDO, SPACE_ATMOSPHERE_DENSITY, palette, "globe colour"]
-updated: 2026-09-27
+triggers: [landcover, "land cover", WorldCover, landcover_fills, LAND_KINDS, "/tiles/landcover", GLOBE_DEEP_ALBEDO, SPACE_ATMOSPHERE_DENSITY, palette, "globe colour",
+  landcover.rs, palette.rs, tile_loader.rs, globe.rs, update_globe_albedo, GlobeSurfaceAlbedo]
+updated: 2026-10-17
 ---
 
 # Land cover under the map
@@ -80,3 +81,15 @@ At the old settings, light scattered by the air outweighed the realistic land,
 so the desert came out bluer than it was red. At 0.06 the disc reads as a flat
 map with no air over it. At 0.15 the limb still glows, because its path through
 the 2.5× shell is long.
+
+"Land tint" is `globe::GLOBE_DEEP_ALBEDO`, and the history explains why the knob
+still exists at 1.0. The paper basemap reflected ~0.8 where the real Earth
+averages ~0.3, which put the sunlit hemisphere on the tonemapper's shoulder as a
+flat pale ball; stopping the camera down barely darkens a shoulder (and dims the
+limb and the stars with it), so the darkening went on the imagery instead — 0.55
+against the paper palette, 0.75 for a while, 1.0 since this change. The ramp is
+kept (`update_globe_albedo`, riding `space_factor`, with `GlobeSurfaceAlbedo`
+read at tile spawn) so a brighter basemap source can be damped again. **Whatever
+the deep value, it must be 1.0 at the tier boundary**: the globe replaces the
+flat tiles exactly there, and a fixed tint stepped the map a stop darker the
+instant it did.

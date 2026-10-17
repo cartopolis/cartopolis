@@ -1,6 +1,6 @@
 ---
 topic: quay-walls
-triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK]
+triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
 updated: 2026-09-26
 ---
 

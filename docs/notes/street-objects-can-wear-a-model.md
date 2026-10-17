@@ -1,7 +1,7 @@
 ---
 topic: content
-triggers: [placeholder_models.rs, PLACEHOLDER_KINDS, FurnitureMask, "street objects", lamppost, "placeholder model", DetailWants, "V18__placeholder_models", "/api/library/placeholders"]
-updated: 2026-09-11
+triggers: [placeholder_models.rs, PLACEHOLDER_KINDS, FurnitureMask, "street objects", lamppost, "placeholder model", DetailWants, "V18__placeholder_models", "/api/library/placeholders", placeholders.rs, crates/geo/src/furniture.rs, crates/atlas/web/src/lib/library.ts, systems::placeholder_models]
+updated: 2026-10-17
 ---
 
 # Replacing the boxes a street is made of
@@ -39,8 +39,9 @@ that is the intended shape: it is the same class of act as curating the library.
 
 ## The procedural form is skipped on the worker, not hidden afterwards
 
-The set of replaced forms is a `FurnitureMask` — a `u16`, one bit per
-`FurnitureKind` — and it rides in `map_geometry::DetailWants`, which is compared
+The set of replaced forms is a `FurnitureMask` — a `u32` (it was a `u16` until
+the list outgrew sixteen forms; `PLACEHOLDER_KINDS` held twenty on 2026-10-17),
+one bit per `FurnitureKind` — and it rides in `map_geometry::DetailWants`, which is compared
 every frame and retears every live cell when it changes. Three things follow, and
 each is the reason it is there rather than somewhere more obvious:
 
@@ -85,9 +86,11 @@ is the list, `FurnitureKind::slug` maps onto it, and a test in `cartopolis_geo`
 pins the two equal. The server refuses an unknown slug — the same rule the shot
 manifest and `--expect` follow, and for the same reason: a setting that quietly
 does nothing is worse than one that was refused. The atlas web UI holds a third copy for
-its dropdown — TypeScript in `crates/atlas/web`, so still hand-synced now that
-it is in this repository (it was the **seventh** such seam when the console was
-a separate repository).
+its dropdown — TypeScript, `PLACEHOLDER_KINDS` in `crates/atlas/web/src/lib/library.ts`,
+which cannot import Rust (it was the **seventh** such seam when the console was
+a separate repository). Being in this repository is what let it be pinned: a
+test in `cartopolis_core::placeholders` `include_str!`s that file and fails when
+the lists differ, so adding a form means editing all three.
 
 ## Unverified
 

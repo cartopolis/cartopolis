@@ -1,7 +1,7 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, vapid.key, "/api/push/key", "@webapi", backups, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
-updated: 2026-10-11
+triggers: [deploy-sim.yml, vapid.key, "/api/push/key", "@webapi", backups, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known, network.rs, http_surface.rs, systems::ws_transport, resolve_target, install_crypto_provider, FrameTransport, rustls]
+updated: 2026-10-17
 ---
 
 # The hosted simulator, and the two surfaces in front of it
@@ -13,7 +13,7 @@ and each has a different audience:
 | Address | Who | What |
 |---|---|---|
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
-| `https://cartopolis.org/` | everyone | **the atlas web UI** (`crates/atlas/web`, static files published by `deploy-web.yml`) since 2026-09-24 — Community at `/`, World at `/world` and, for operators, Admin at `/admin` (People, Content, Data), plus the players' `/register`, `/verify` and `/buildings`. Caddy's fallback, with `index.html` for any path that is not a file |
+| `https://cartopolis.org/` | everyone | **the atlas web UI** (`crates/atlas/web`, static files published by `midas deploy web`; `atlas-web-ui.md`) since 2026-09-24 — Community at `/`, World at `/world` and, for operators, Admin at `/admin` (People, Content, Data), plus the players' `/register`, `/verify` and `/buildings`. Caddy's fallback, with `index.html` for any path that is not a file |
 | `https://cartopolis.org/terrain/`, `/height`, `/api/pipeline/` | the client, the web UI | **`cartopolis_atlas`** (`atlas.md`), on `172.17.0.1:4749` |
 | `https://cartopolis.org/viewer/` | players in a browser | the wasm client, published by `deploy-wasm.yml` into `site/viewer/` |
 | `https://cartopolis.org/console/` | nobody | redirects to `/admin`. The operator's pages lived here, beside a front page atlas served itself, until 2026-09-24; before that they were `web.cartopolis.org` and a separate repository, a hostname retired with no redirect |
@@ -39,15 +39,20 @@ hostname into `wss://cartopolis.org/ws`.
 `net::handle_connection` is generic over `net::FrameTransport` — anything that is
 a `Stream` of frames and a `Sink` of them. TCP supplies that through
 `LengthDelimitedCodec`; the browser supplies it through `http::WsFrames` over
-axum's WebSocket. **The frame body is identical**, so a WS carrier is not a
-protocol revision and `PROTOCOL_HISTORY` did not gain a row for it.
+axum's WebSocket (one binary message per frame). On the client the same split is
+`network::Wire` (native: TCP or WebSocket, as `resolve_target` decides, below)
+and `systems::ws_transport` (wasm). **The frame body is identical**, so a WS
+carrier is not a protocol revision and `PROTOCOL_HISTORY` did not gain a row for
+it (`wire-protocol-versions.md`).
 
 The alternative was a second copy of a 700-line select loop carrying its own rate
 limiters, chat replay and avatar teardown. Two loops that must stay identical, and
 nothing that says when they stop being — the transport refactor was cheaper than
 the first divergence would have been.
 
-`tests/http_surface.rs` pins the property that matters: a token minted over
+`crates/simulator/tests/integration/http_surface.rs`
+(`a_websocket_client_completes_the_same_handshake`) pins the property that
+matters: a token minted over
 WebSocket authenticates over TCP. They are one server sharing one session store,
 not two that happen to share a database.
 
@@ -207,8 +212,9 @@ atlas (`/api/pipeline/*`), which was already answering HTTP too.
 The GUI lived in a separate repository until 2026-09, because it
 shared nothing with this one but an HTTP contract. It moved in with atlas, but it
 is still TypeScript beside Rust, so the one seam worth naming is unchanged:
-`crates/atlas/web/src/types.ts` describes what `auth::AccountRow` serialises,
-and nothing but a person keeps the two in step.
+`crates/atlas/web/src/types.ts` describes what `auth::AccountRow` serialises.
+A person kept the two in step until `web_mirror` (the simulator's integration
+suite) began comparing them field by field (`atlas-web-ui.md`).
 
 ## Rejected: CORS on the simulator
 
@@ -269,11 +275,11 @@ Three rules, and the shape of them matters more than the list:
 - `127.0.0.1` / `localhost` / `::1` / `127.*` → plain TCP
 - `tcp://…` or `ws://…` → exactly that, unencrypted, because you said so
 
-Loopback is exempt on purpose. Solo mode's sim is a listener on this machine that
-this process just started; TLS to it would mean a self-signed certificate and a
-verifier turned off to accept it, which is the *appearance* of security over
-traffic that anything able to read could equally read out of this process's own
-memory. Encryption there would make the code harder to audit and no safer.
+Loopback is exempt on purpose. A dev sim there is a listener on this machine;
+TLS to it would mean a self-signed certificate and a verifier turned off to
+accept it, which is the *appearance* of security over traffic that anything
+able to read could equally read out of this process's own memory. Encryption
+there would make the code harder to audit and no safer.
 
 The escape hatches exist because two real cases need them — a private CA
 (`webpki-roots` is a compiled-in Mozilla trust store, so a corporate MITM root is
@@ -287,3 +293,11 @@ a vendored OpenSSL build script would break the gate that exists to catch exactl
 this kind of dependency. `webpki-roots` over `rustls-native-certs` for the
 matching reason: Android has no `/etc/ssl/certs`, and its trust store is a JNI
 call this tree has no seam for.
+
+**rustls 0.23 panics at the first connection, not at build time, unless a
+`CryptoProvider` is settled.** It ships no default and derives one from its
+features, panicking when that is ambiguous (none, or both `ring` and
+`aws-lc-rs`). So the failure is a client that builds, draws a map and dies the
+moment somebody signs in — and feature unification is workspace-wide, so a
+dependency added later can make a clean answer ambiguous. `network::install_crypto_provider`
+installs `ring` explicitly, once, before the first handshake.

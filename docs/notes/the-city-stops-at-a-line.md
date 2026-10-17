@@ -1,6 +1,6 @@
 ---
 topic: the-city-stops-at-a-line
-triggers: [FAR_CELL_RADIUS, far_cell_radius, "building LOD", "buildings stop", "hard edge", "the city ends", osm_buildings far cells, lod22_radius, "fade buildings", prepass_vertex_shader, MaterialExtension specialize]
+triggers: [FAR_CELL_RADIUS, far_cell_radius, "building LOD", "buildings stop", "hard edge", "the city ends", osm_buildings far cells, lod22_radius, "fade buildings", prepass_vertex_shader, MaterialExtension specialize, systems::building_fade, building_fade.wesl, systems/map/osm_buildings.rs, systems/map/lod22.rs]
 updated: 2026-09-21
 ---
 

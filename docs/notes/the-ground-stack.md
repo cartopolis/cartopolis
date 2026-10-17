@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [ground_stack.rs, GroundLayer, depth_bias, depth_rung, y_offset, DEPTH_BIAS_STEP, road_rung_ceiling, "z-fight", "z fight", "bleeds through", "bleeding through", "draws over", "flicker", "shimmer", "layer order", "z-index", "surfaces flicker", "water through the grass", "grass through the road", tessellate_surfaces, road_stitch.rs, "coplanar"]
-updated: 2026-10-01
+triggers: [ground_stack.rs, GroundLayer, depth_bias, depth_rung, y_offset, DEPTH_BIAS_STEP, road_rung_ceiling, "z-fight", "z fight", "bleeds through", "bleeding through", "draws over", "flicker", "shimmer", "layer order", "z-index", "surfaces flicker", "water through the grass", "grass through the road", tessellate_surfaces, road_stitch.rs, "coplanar", cartopolis_geo::ground_stack, systems::road_depth, road_depth.wesl, gap_fill.rs, paving.rs, crops.rs, terrain_refine.rs]
+updated: 2026-10-17
 ---
 
 # The ground stack: one list, and a sheet that does not overlap itself
@@ -29,7 +29,15 @@ denominations are derived from that one position:
 * `y_offset()` — metres in the ten-millimetre window between the map tile's top
   face and the buildings' base, accumulated from each layer's `clearance()`.
 
-Nobody writes a number down. That is the point.
+The two are needed together because each fails where the other holds: a bias in
+ULPs holds at range and the millimetres hold up close. Derived from one position,
+they cannot contradict each other.
+
+Nobody writes a number down. That is the point. **To add a flat thing — a paint
+mark, a line, a label, a sheet — add a variant to `GroundLayer` at the place in the
+order it belongs** (and to `ALL`, which `the_list_is_the_ladder` enforces), then
+take its `depth_bias()` / `y_offset()`. There is no number to pick, and a bare
+constant beside the ladder is how the six below came to be swallowed.
 
 ### What it replaced, and what each of those cost
 
@@ -312,11 +320,12 @@ not a per-cell pass.
 
 ## Instruments
 
-* `--flicker` (see CLAUDE.md) — two captures ~5 cm apart, solid flipped pixels as
-  `flicker_px`. Its caveat is why it is a disaster gate rather than a fine one:
-  identical-geometry copies inside one mesh rasterise deterministically, so a coin
-  flip only shows where the copies *differ*. The sensitive views are shallow,
-  grazing and mid-distance — exactly where a low camera looks at a street.
+* `--flicker` (see `.claude/skills/shots/SKILL.md`) — two captures ~5 cm apart,
+  solid flipped pixels as `flicker_px`. Its caveat is why it is a disaster gate
+  rather than a fine one: identical-geometry copies inside one mesh rasterise
+  deterministically, so a coin flip only shows where the copies *differ*. The
+  sensitive views are shallow, grazing and mid-distance — exactly where a low
+  camera looks at a street.
 * `vector_tiles`'s `no_group_overlaps_itself` / `no_two_groups_share_ground` —
   the measurements above, as tests with ceilings, run against the fixture on every
   suite. They are what would have caught the 2026-08-29 ghost pavements in the

@@ -1,7 +1,7 @@
 ---
 topic: atlas
 triggers: [cartopolis_atlas, crates/atlas, atlas, "terrain tile", "/terrain/", pipeline, "user management", registration, accounts, "ROBUST", OpenSim, "service design"]
-updated: 2026-09-26
+updated: 2026-10-17
 ---
 
 # `cartopolis_atlas`: everything around the world that is not the simulation
@@ -78,10 +78,10 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    (`api.rs`). The admin GUI moved into atlas unchanged except for the log
    cursor (below) and its address, and is now **the atlas web UI**
    (`crates/atlas/web`): static files behind Caddy at the site root of
-   cartopolis.org, published by `deploy-web.yml`. It is the front page (which
+   cartopolis.org, published by `midas deploy web` (`atlas-web-ui.md`). It is the front page (which
    atlas served from a string until 2026-09-24), the operator's pages at
    `/admin` (they were `/console/`, which redirects) and the players' pages
-   (`/register`, `/verify`, `/house`), so the simulator's
+   (`/register`, `/verify`, `/buildings`; `/house` is an alias), so the simulator's
    `CARTO_PUBLIC_BASE_URL` is just `https://cartopolis.org`.
    web.cartopolis.org, its old hostname, was dropped rather than redirected —
    one site, not two.
