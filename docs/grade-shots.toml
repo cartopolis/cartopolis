@@ -4,9 +4,8 @@
 #     cargo shots docs/grade-shots.toml            # everything
 #     cargo shots docs/grade-shots.toml --only tunnels
 #     cargo shots docs/grade-shots.toml --only bridges,crossroads
-#     # …or, with a client that stays up between views:
-#     slot claim deck && slot sync      # a VPS slot when the Deck is held
-#     slot run -- bash /tmp/cap.sh      # --shot-serve, see CLAUDE.md
+#     # …or, with a client that stays up between views, the MCP server's `view`
+#     # (`.claude/skills/shots/SKILL.md`).
 #
 # **Gate the subject, not the shot.** `--expect` is manifest-wide by design, and
 # a group is a set of views of one thing — so the assertions that hold for every

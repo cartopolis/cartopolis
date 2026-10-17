@@ -67,8 +67,8 @@ cargo test -p cartopolis_geo --release print_tile_pipeline_time -- --ignored --n
 
 Verify a visual change **headless** rather than by flying the camera there:
 `cargo shots --only globe` for a README preset, or `--shot` for an arbitrary
-viewpoint, sweep or CSV of the ramp scalars. Full flag list in
-[`CLAUDE.md`](../../CLAUDE.md#scripted-screenshots---shot).
+viewpoint, sweep or CSV of the ramp scalars. Full flag list in the
+[`shots` skill](../../.claude/skills/shots/SKILL.md).
 
 ## Putting things in the world
 
@@ -411,11 +411,12 @@ longer than it says there — is
 
 ## When something is weird
 
-`CLAUDE.md`'s [**Known issues / workarounds**](../../CLAUDE.md#known-issues--workarounds)
-is the accumulated list of traps in this codebase (egui layering, atmosphere in
-space, GPU device loss under mesh churn, avatar heights, routing graph noding). It
-is worth skimming once end to end before your first non-trivial change — most of
-the entries were expensive to find and cheap to read.
+`CLAUDE.md`'s [**Rules that hold everywhere**](../../CLAUDE.md#rules-that-hold-everywhere)
+is the short list of traps that apply to any change (commands outliving entities,
+GPU device loss under mesh churn, egui panel ordering, the ground's depth ladder).
+It is worth reading once before your first non-trivial change. Everything more
+local — the atmosphere in space, the routing graph's noding, avatar heights — is
+a note in [`docs/notes/`](../notes/), found by the file it is about (its
+`triggers:`).
 
-Then: [`docs/notes/`](../notes/) for standing constraints and measurements, and
-[`docs/manual.md`](../manual.md) for what the app does from a user's seat.
+Then [`docs/manual.md`](../manual.md) for what the app does from a user's seat.

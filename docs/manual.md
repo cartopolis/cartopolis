@@ -394,7 +394,7 @@ cargo shots --size 2560x1440     # override the manifest's size
 
 `cargo shots` is an alias for `cargo run -p cartopolis --
 --shots`, so it accepts the rest of the scripted-shot flags too (`--csv`,
-`--dump-state`, `--settle`, … — see [`CLAUDE.md`](../CLAUDE.md)). Because it
+`--dump-state`, `--settle`, … — see the [`shots` skill](../.claude/skills/shots/SKILL.md)). Because it
 needs no display, it is a build step: it works over SSH and in CI.
 
 **Adding or moving a view.** Fly there in the app, set the time and weather you
@@ -505,4 +505,4 @@ bun tools/mcp.ts view --at 53.2194,6.5665,300 --look=-20,180 --out /tmp/a.jpg
 - **Build errors after a toolchain/dependency bump:** `cargo clean` and rebuild.
 
 More runtime knobs and known-issue workarounds are documented in
-[`CLAUDE.md`](../CLAUDE.md) and the architecture notes under [`docs/`](./).
+[`docs/notes/`](notes/) and [`CLAUDE.md`](../CLAUDE.md).

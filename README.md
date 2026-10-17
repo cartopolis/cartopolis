@@ -74,7 +74,7 @@ Needs Rust, a C compiler and a GPU driver; see the [development guide](docs/guid
 - [Changelog](CHANGELOG.md) — what changed, per release.
 - [Development guide](docs/guides/development.md) — prerequisites, dev loop, tests, code map, conventions, CI.
 - [Server guide](docs/guides/server.md) — deploying the sim and the self-hosted geo services.
-- [`docs/notes/`](docs/notes/) — constraints and measurements; [`CLAUDE.md`](CLAUDE.md) *Known issues* is the trap list.
+- [`docs/notes/`](docs/notes/) — constraints, measurements and the traps that fail silently, one topic per file; [`CLAUDE.md`](CLAUDE.md) lists the rules that hold everywhere.
 
 ## Architecture
 
