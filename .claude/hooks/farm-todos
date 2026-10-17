@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# Claude Code SessionStart hook: hand this session the open ends an earlier
+# session left for this machine (`midas todo add --for workstation "…"`), with
+# the instruction to do them first. The build farm's hub keeps them, and the
+# caller key this machine speaks with says which machine it is.
+#
+# Plain curl against the hub's API, not the midas command, so it works on a
+# machine whose midas is older than the open ends (the first one left for a
+# workstation is often "update midas"). FAILS OPEN: no midas configuration, no
+# hub, no curl or jq — nothing happens and nothing waits long.
+set -uo pipefail
+command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
+
+setting() {
+    local v="${!1:-}"
+    [ -z "$v" ] && [ -f "$HOME/.config/midas/hub.env" ] \
+        && v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" "$HOME/.config/midas/hub.env" | tail -1)
+    printf '%s' "$v"
+}
+hub=$(setting MIDAS_HUB)
+key=$(setting MIDAS_HUB_KEY)
+[ -n "$hub" ] && [ -n "$key" ] || exit 0
+
+payload=$(cat 2>/dev/null || true)
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$cwd" ] && [ -d "$cwd" ] && cd "$cwd" || exit 0
+# The session is its worktree, as midas names it.
+owner=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)") || exit 0
+[ -n "$owner" ] || exit 0
+
+answer=$(curl -sf --max-time 4 -X POST "${hub%/}/v1/todos/take" \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+    -d "$(jq -cn --arg o "$owner" '{owner: $o}')" 2>/dev/null) || exit 0
+context=$(printf '%s' "$answer" | jq -r '.context // empty' 2>/dev/null)
+[ -n "$context" ] || exit 0
+jq -cn --arg c "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $c}}'
