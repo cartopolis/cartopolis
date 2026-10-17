@@ -125,8 +125,8 @@ const SAME_NAME_GAP_M: f32 = 260.0;
 const LABEL_Y: f32 = 0.55;
 
 /// Textures built per frame. Mass texture uploads are the documented way to lose
-/// the device on a weak iGPU (see CLAUDE.md), and a fresh ring of cells wants a
-/// few dozen names at once.
+/// the device on a weak iGPU (see `docs/notes/upload-bursts.md`), and a fresh ring
+/// of cells wants a few dozen names at once.
 const MAX_TEXTURE_BUILDS_PER_FRAME: usize = 4;
 
 /// Camera turn that forces a re-place, in radians. Ground text has a front and a
@@ -337,7 +337,7 @@ struct PlacedState {
     /// second or two after the anchor it belongs to and moves again whenever the
     /// layer is switched, so a label placed before it landed is sitting on the old
     /// flat plane — the same contract the surfaces, both building streamers and the
-    /// route line carry (see CLAUDE.md).
+    /// route line carry (see `docs/notes/terrain-relief.md`).
     terrain_revision: u32,
     height_m: f32,
     /// Camera heading the labels were oriented for.

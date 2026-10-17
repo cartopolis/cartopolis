@@ -10,8 +10,8 @@
 //
 // That is the same trade `grass.wgsl` makes, for the same reason: a CPU-simulated
 // system would rewrite its vertex buffer every frame, and mass per-frame uploads
-// are what loses the device on the machines this has to run on (CLAUDE.md's
-// "Mass mesh/texture churn hangs the Intel iGPU", `docs/notes/upload-bursts.md`).
+// are what loses the device on the machines this has to run on
+// (`docs/notes/upload-bursts.md`).
 //
 // The consequence, and it is not hidden: **a particle here is a closed-form
 // function of time**, so nothing collides, nothing is individually addressable,

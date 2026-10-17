@@ -597,7 +597,8 @@ pub fn update_building_shells(
     ] {
         if let Some(old) = entity {
             // `try_despawn`: a re-anchor teardown can retire it first, and a
-            // command outlives the entity it names (CLAUDE.md).
+            // command outlives the entity it names
+            // (`docs/notes/entity-commands-outlive-entities.md`).
             commands.entity(old).try_despawn();
         }
         let Some(id) = id else {

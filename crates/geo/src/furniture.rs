@@ -29,9 +29,10 @@
 //!   [`palette::BUILDING_EDGE`], never the primary colours real playground
 //!   equipment is painted in. A saturated bench at walking distance is the
 //!   loudest thing on screen.
-//! * **Mass mesh churn loses the device** (CLAUDE.md). Furniture is merged into
-//!   *one* mesh per cell, rides `map_geometry`'s existing worker, build cap and
-//!   despawn cap, and is hard-capped per cell by [`MAX_FURNITURE_PER_CELL`].
+//! * **Mass mesh churn loses the device** (`docs/notes/upload-bursts.md`).
+//!   Furniture is merged into *one* mesh per cell, rides `map_geometry`'s existing
+//!   worker, build cap and despawn cap, and is hard-capped per cell by
+//!   [`MAX_FURNITURE_PER_CELL`].
 //!
 //! The part that is genuinely new is orientation. A POI is a bare point: OSM
 //! records that a bench exists, never which way it looks. Scattered at a hashed

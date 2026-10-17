@@ -41,10 +41,10 @@
 //! `CARTO_NO_SPACE_RAYMARCH`, `CARTO_QUALITY` itself — reaches the process
 //! through an environment or a query string, and **Android has neither**: the
 //! zygote's `argv` belongs to `app_process` (which is why `Cli::parse()` must not
-//! run there at all, see CLAUDE.md) and there is no shell to export a variable
-//! from. So on the one platform the phone budget exists for, an env-gated knob is
-//! not a weaker default — it is unreachable. Anything a handset needs turned down
-//! belongs in [`Budget`], where `auto()` can answer for it.
+//! run there at all, see `docs/notes/android-build.md`) and there is no shell to
+//! export a variable from. So on the one platform the phone budget exists for, an
+//! env-gated knob is not a weaker default — it is unreachable. Anything a handset
+//! needs turned down belongs in [`Budget`], where `auto()` can answer for it.
 
 use crate::platform::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -168,8 +168,9 @@ pub struct Budget {
     /// lights, across the ~79% of submitted triangles that cast shadows.
     ///
     /// The count must be the same for the sun and the moon or bevy_light panics
-    /// outright (see CLAUDE.md), which is why one function answers for both and
-    /// why this is not a per-light field.
+    /// outright (see `docs/notes/directional-lights-share-one-cascade-config.md`),
+    /// which is why one function answers for both and why this is not a per-light
+    /// field.
     pub shadow_cascades: usize,
     /// How far the sun's cascades reach, in metres. The moon's is fixed and
     /// shorter; it is only ever a night-time fill light.
@@ -339,14 +340,14 @@ pub struct Budget {
     /// **The bound this codebase was missing.** Every streamer here is already
     /// per-frame-bounded — the flat tiles, the globe tiles, the LoD2.2 cells, the
     /// OSM detail patches all cap how many *items* they finalise per frame, and
-    /// CLAUDE.md states the rule. But the items differ in size by orders of
-    /// magnitude: a 256² tile mip chain is ~350 kB and a LoD2.2 cell is a whole
-    /// z14 triangle soup, so a count of two can be 700 kB or 40 MB. The quantity
-    /// that decides whether a tiler's command buffer survives the frame is the
-    /// byte count, and nothing was bounding it — which is how a cold start could
-    /// hand the driver a burst that lost the device (an Adreno 840, 2026-08-17,
-    /// five seconds into a first run; the same failure mode as the Intel iGPU
-    /// entry in CLAUDE.md).
+    /// `docs/notes/upload-bursts.md` states the rule. But the items differ in size
+    /// by orders of magnitude: a 256² tile mip chain is ~350 kB and a LoD2.2 cell
+    /// is a whole z14 triangle soup, so a count of two can be 700 kB or 40 MB. The
+    /// quantity that decides whether a tiler's command buffer survives the frame is
+    /// the byte count, and nothing was bounding it — which is how a cold start
+    /// could hand the driver a burst that lost the device (an Adreno 840,
+    /// 2026-08-17, five seconds into a first run; the same failure mode as the
+    /// Intel iGPU entry in `docs/notes/upload-bursts.md`).
     ///
     /// It **defers, it does not drop**: bevy re-queues what does not fit and
     /// uploads it next frame, so a low ceiling costs fill *latency* — the map
@@ -660,9 +661,9 @@ impl Budget {
             // Unbounded, like the rung above: an iGPU's uploads cross a bus with
             // an order of magnitude more bandwidth than a handset's, and no
             // desktop or laptop run on record has lost its device to a streaming
-            // burst. (The Intel iGPU loss CLAUDE.md documents was mesh *churn* —
-            // uploads and despawns together — and its guards are the streamers'
-            // own caps.)
+            // burst. (The Intel iGPU loss `docs/notes/upload-bursts.md` documents
+            // was mesh *churn* — uploads and despawns together — and its guards
+            // are the streamers' own caps.)
             upload_bytes_per_frame: None,
             // 700 MB: comfortably above the 567 MB the table in `handset_guarded`
             // measured for this rung with the tile raster capped, and well under
@@ -1454,9 +1455,10 @@ fn with_msaa_override(budget: Budget) -> Budget {
 ///
 /// Clamped to bevy's own 1..=4 rather than passed through: `shadow_cascades` is
 /// shared by the sun and the moon precisely so the two can never disagree (bevy
-/// panics outright if they do — CLAUDE.md), and a flag that could put a 0 or a 9
-/// in there would hand that panic back through the one door left open. 0 is not
-/// how you turn shadows off; `CARTO_NO_SHADOWS` is.
+/// panics outright if they do —
+/// `docs/notes/directional-lights-share-one-cascade-config.md`), and a flag that
+/// could put a 0 or a 9 in there would hand that panic back through the one door
+/// left open. 0 is not how you turn shadows off; `CARTO_NO_SHADOWS` is.
 fn with_shadow_cascade_override(budget: Budget) -> Budget {
     let Some(n) = crate::env_value("CARTO_SHADOW_CASCADES")
         .and_then(|v| v.trim().parse::<usize>().ok())

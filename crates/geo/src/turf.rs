@@ -15,8 +15,8 @@
 //! four orders less ground. Scattered and merged the same way, a 25 m disc of lawn
 //! is ~20,000 blades ≈ 6 MB of vertex buffer that has to be **rebuilt and
 //! re-uploaded as the camera walks**, which is the mass-churn pattern that loses
-//! the device (see CLAUDE.md). There is no per-frame cap that makes continuous
-//! churn free; it only spreads it out.
+//! the device (see `docs/notes/upload-bursts.md`). There is no per-frame cap that
+//! makes continuous churn free; it only spreads it out.
 //!
 //! So no blade is ever stored. What is stored is:
 //!

@@ -41,8 +41,8 @@
 //! **The backdrop is a widget, not a wash.** A full-screen `Sense::click_and_drag`
 //! rectangle is what makes the modal modal: the world's mouse consumers all gate on
 //! `egui_wants_pointer_input()`, which is only true when egui has actually claimed
-//! the pointer (see the note in CLAUDE.md), so a merely *painted* dim layer would
-//! let a drag on it spin the camera behind the card.
+//! the pointer (see `docs/notes/touch-input.md`), so a merely *painted* dim layer
+//! would let a drag on it spin the camera behind the card.
 
 use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;

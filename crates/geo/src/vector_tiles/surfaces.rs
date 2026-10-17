@@ -6,8 +6,8 @@ use super::*;
 /// Which surface a tessellated polygon belongs to. One group = one mesh = one
 /// material per tile, which is the whole reason this enum is coarse: batching by
 /// group is what keeps the geometry path from spraying a mesh per feature at the
-/// GPU (mass mesh churn is what loses the device — see the CLAUDE.md notes on
-/// `VK_ERROR_DEVICE_LOST`).
+/// GPU (mass mesh churn is what loses the device — see
+/// `docs/notes/upload-bursts.md` on `VK_ERROR_DEVICE_LOST`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfaceGroup {
     Water,

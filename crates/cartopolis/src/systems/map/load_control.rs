@@ -64,10 +64,10 @@ use crate::platform::sync::Mutex;
 ///
 /// A cell's detail is baked into its merged meshes on a worker, so changing it
 /// means retearing and rebuilding the cell — which is the mass-churn pattern
-/// CLAUDE.md names as the `VK_ERROR_DEVICE_LOST` cause. Every extra rung is
-/// another boundary the camera can cross, and every crossing is a rebuild. Two
-/// states with one boundary, placed where crossing it is rare, is the most this
-/// can afford.
+/// `docs/notes/upload-bursts.md` names as the `VK_ERROR_DEVICE_LOST` cause. Every
+/// extra rung is another boundary the camera can cross, and every crossing is a
+/// rebuild. Two states with one boundary, placed where crossing it is rare, is the
+/// most this can afford.
 ///
 /// # And why the boundary is where it is
 ///

@@ -431,8 +431,9 @@ pub fn handle_delete_key(
     // `ui_owns_keyboard`, not `egui_wants_keyboard_input()`. The latter is
     // `memory.focused().is_some()`, which stays true after clicking *any* widget —
     // a button, a selectable — so Delete silently did nothing until you clicked
-    // empty space first. CLAUDE.md names this exact predicate as the wrong one and
-    // records that it already swallowed the avatar's movement keys once.
+    // empty space first. `docs/notes/egui-shared-root-ui.md` names this exact
+    // predicate as the wrong one and records that it already swallowed the
+    // avatar's movement keys once.
     if egui_manager.ui_owns_keyboard(false, &keyboard) {
         return;
     }

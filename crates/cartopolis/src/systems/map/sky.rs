@@ -62,8 +62,9 @@ pub(crate) fn setup_sky(
 /// Shadow cascades for the sun *and* the moon.
 ///
 /// One constant rather than two literals because bevy_light panics outright if the
-/// two directional lights disagree (see CLAUDE.md) — a shared value makes that
-/// class of mistake unrepresentable rather than merely avoided.
+/// two directional lights disagree (see
+/// `docs/notes/directional-lights-share-one-cascade-config.md`) — a shared value
+/// makes that class of mistake unrepresentable rather than merely avoided.
 ///
 /// The web gets 1: WebGPU reports a supported cascade limit of 1 here, and Bevy
 /// clamps to it while warning. Asking for 4 anyway does not buy four cascades, it

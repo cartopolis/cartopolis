@@ -2,7 +2,8 @@
 // shell) whose interior fills the frame; the pattern is purely in screen space —
 // derived from the framebuffer coordinate and the viewport size — so the mesh's
 // exact size and orientation don't matter, only that it covers the view. Fixed
-// per-pixel cost, no geometry churn: safe on the iGPU (see CLAUDE.md notes).
+// per-pixel cost, no geometry churn: safe on the iGPU (see
+// `docs/notes/upload-bursts.md`).
 import bevy_pbr::render::forward_io::VertexOutput;
 import bevy_pbr::render::mesh_view_bindings::view;
 

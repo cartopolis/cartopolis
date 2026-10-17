@@ -11,8 +11,9 @@
 //!
 //! **The prompt is world-anchored but drawn in screen space**, so it obeys the
 //! same rule the place pins do: it must cull itself against the map area, because
-//! egui paints floating `Area`s above panels (see the CLAUDE.md entry). It is
-//! ordered with the panel chain for that reason.
+//! egui paints floating `Area`s above panels (see
+//! `docs/notes/egui-shared-root-ui.md`). It is ordered with the panel chain for
+//! that reason.
 
 use crate::systems::egui_manager::{EguiMut, EguiRef};
 use bevy::prelude::*;

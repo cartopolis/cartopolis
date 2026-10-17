@@ -329,7 +329,8 @@ pub fn update_interiors(
     if let Some(old) = interiors.entity.take() {
         // `try_despawn`: the whole set is one entity and this system is the only
         // thing that spawns it, but a re-anchor teardown can retire it first and a
-        // command outlives the entity it names (CLAUDE.md).
+        // command outlives the entity it names
+        // (`docs/notes/entity-commands-outlive-entities.md`).
         commands.entity(old).try_despawn();
     }
     let Some(mesh) = buf.finish() else {

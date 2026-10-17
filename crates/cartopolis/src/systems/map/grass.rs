@@ -23,7 +23,7 @@
 //!
 //! That last point is the whole reason this layer exists in the shape it does.
 //! Every other streamer in this tree is bounded per frame because mass mesh churn
-//! loses the device (CLAUDE.md, `docs/notes/upload-bursts.md`), and grass at a
+//! loses the device (`docs/notes/upload-bursts.md`), and grass at a
 //! legible density is an order of magnitude more churn than anything else here —
 //! *continuous* churn, for as long as the avatar is walking, which no per-frame
 //! cap makes free. A pool that only moves has no churn to bound.

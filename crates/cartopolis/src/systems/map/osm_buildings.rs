@@ -217,9 +217,10 @@ pub(crate) fn tdbag_user_enabled() -> bool {
 /// writes `Visibility::Hidden` — so unticking Buildings hid the meshes and changed
 /// nothing else. The client went on fetching 49 OSM cells and 9 3DBAG cells,
 /// decoding and triangulating them on the *same* `AsyncComputeTaskPool` the vector
-/// tile rasterise runs on (which CLAUDE.md documents as starvable by exactly this
-/// kind of long blocking job), uploading a merged mesh plus four window meshes per
-/// cell, spawning a few hundred entities and publishing their collider polygons.
+/// tile rasterise runs on (which `docs/notes/headless-shots-software-renderer.md`
+/// documents as starvable by exactly this kind of long blocking job), uploading a
+/// merged mesh plus four window meshes per cell, spawning a few hundred entities
+/// and publishing their collider polygons.
 ///
 /// So the most expensive layer in the client was the one whose "off" did the least,
 /// on the device with the least headroom.
@@ -1975,8 +1976,8 @@ fn apply_detail_patch(
         // inline mass-despawn in this module: the outgoing patch is a merged
         // mesh over up to several thousand buildings, and freeing it beside an
         // unbounded upload was the original `VK_ERROR_DEVICE_LOST` shape
-        // CLAUDE.md documents. (The retire goes through the bounded queue; the
-        // upload half is what the ledger now spreads.)
+        // `docs/notes/upload-bursts.md` documents. (The retire goes through the
+        // bounded queue; the upload half is what the ledger now spreads.)
         let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
         osm.far.retire_all(retired);
         osm.buildings = std::mem::take(&mut patch.buildings); // footprints, kept

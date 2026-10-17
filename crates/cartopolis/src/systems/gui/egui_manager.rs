@@ -2092,7 +2092,8 @@ mod tests {
     /// panel beside it. Panels live on the background layer and every `Area`
     /// paints above them, so an overlay that fails to cull itself to the map area
     /// steals the panel's input — the whole reason `place_pins` culls rather than
-    /// clips (see CLAUDE.md). This pins the contract from the panel's side.
+    /// clips (see `docs/notes/egui-shared-root-ui.md`). This pins the contract
+    /// from the panel's side.
     #[test]
     fn a_map_overlay_does_not_eat_panel_clicks() {
         assert!(

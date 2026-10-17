@@ -126,9 +126,10 @@ const DETAIL_MATCH_M: f32 = 10.0;
 /// Counted in *entities*, not cells, because one cell is a merged marker mesh plus
 /// a ground ring per POI — up to `MAX_MARKERS_PER_CELL` + 2 of them. A re-anchor
 /// retires every cell of every enabled layer at once, which is hundreds; freeing
-/// that many in one command buffer is the `VK_ERROR_DEVICE_LOST` burst CLAUDE.md
-/// documents. This is a couple of cells' worth per frame, so a full teardown
-/// clears in well under a second while never packing one giant buffer.
+/// that many in one command buffer is the `VK_ERROR_DEVICE_LOST` burst
+/// `docs/notes/upload-bursts.md` documents. This is a couple of cells' worth per
+/// frame, so a full teardown clears in well under a second while never packing
+/// one giant buffer.
 const MAX_MARKER_DESPAWNS_PER_FRAME: usize = 32;
 /// Density LOD: max markers rendered per cell. A dense shopping district returns
 /// 500+ POIs in one cell, and every pin head renders *always-on-top* and

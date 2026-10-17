@@ -736,8 +736,8 @@ impl OnScreenKeyboard {
         // The trigger. `text_edit_focused()` and not `egui_wants_keyboard_input()`:
         // the latter is `memory.focused().is_some()`, true whenever *any* widget
         // holds focus, which in this client means a keyboard that pops up after
-        // clicking a checkbox (CLAUDE.md, and the same trap that once swallowed
-        // WASD).
+        // clicking a checkbox (`docs/notes/egui-shared-root-ui.md`, and the same
+        // trap that once swallowed WASD).
         let text_focus = ctx.text_edit_focused();
         if text_focus {
             kb.open = true;

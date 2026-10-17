@@ -777,8 +777,8 @@ fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
 ///
 /// Public because collision's snap-out backstop has to reconstruct the same
 /// ground the movement path stands on (`GROUND_HEIGHT + terrain.ground_at(..)`), and a
-/// second copy of the number there is exactly the drift CLAUDE.md's
-/// "standing height comes from THREE places" note is about.
+/// second copy of the number there is exactly the drift the "Standing height"
+/// section of `docs/notes/avatar-composition.md` is about.
 pub const GROUND_HEIGHT: f32 = 0.05;
 
 /// Animation data attached to an avatar (and each of its model "holder" children),

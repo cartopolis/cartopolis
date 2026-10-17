@@ -16,9 +16,10 @@
 //! before `alpha_discard` flattens it.
 //!
 //! Everything ramps on `GlobeState::space_factor`, like the rest of the tier
-//! (see the CLAUDE.md note): the flat map tiles just below the boundary have no
-//! gloss at all, so switching it on at the threshold would put a hard cut in the
-//! middle of a climb — the exact failure the albedo ramp exists to avoid.
+//! (see `docs/notes/the-atmosphere-from-the-street-to-orbit.md`): the flat map
+//! tiles just below the boundary have no gloss at all, so switching it on at the
+//! threshold would put a hard cut in the middle of a climb — the exact failure
+//! the albedo ramp exists to avoid.
 
 use bevy::prelude::*;
 

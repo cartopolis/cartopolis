@@ -62,8 +62,9 @@ mod imp {
     /// than a frame. Adreno compiles run 50–300 ms apiece and nothing prewarms.
     ///
     /// This is the same starvation `set_paused` was added for — Bevy's screenshot
-    /// readback is detached onto that pool too — and CLAUDE.md records the general
-    /// rule that anything spawned there inherits it. A pool of our own is the fix
+    /// readback is detached onto that pool too — and
+    /// `docs/notes/headless-shots-software-renderer.md` records the general rule
+    /// that anything spawned there inherits it. A pool of our own is the fix
     /// for the class rather than for each victim: `set_paused` remains, because it
     /// answers a different question (quiescing *our* work before the shutter), but
     /// it is no longer the only thing standing between a tile burst and every other

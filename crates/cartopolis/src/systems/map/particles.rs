@@ -13,7 +13,7 @@
 //! meet.** The obvious implementation — a `Vec<Particle>` stepped each frame into
 //! a rewritten vertex buffer — is a per-frame mesh upload per emitter, which is
 //! precisely the churn that loses the device on the hardware this ships to
-//! (CLAUDE.md's iGPU entry, `docs/notes/upload-bursts.md`). `systems::grass`
+//! (`docs/notes/upload-bursts.md`'s iGPU entry). `systems::grass`
 //! reached the same conclusion for the same reason and this follows its pattern:
 //! one shared lattice mesh, a small uniform block, and a vertex shader that turns
 //! a *slot* into a thing.

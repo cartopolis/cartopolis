@@ -30,11 +30,11 @@
 //!
 //! # Why a byte bound and not an entry count
 //!
-//! The same rule CLAUDE.md states for the upload budgets, and for the same
-//! reason: the things stored differ in size by orders of magnitude. A z14 ground
-//! tile is a fixed 1,365 kB mip chain, while a tessellated cell over open water
-//! is a few kilobytes and one over a city centre is megabytes. A cap in entries
-//! would be a cap on nothing.
+//! The same rule `docs/notes/upload-bursts.md` states for the upload budgets, and
+//! for the same reason: the things stored differ in size by orders of magnitude.
+//! A z14 ground tile is a fixed 1,365 kB mip chain, while a tessellated cell over
+//! open water is a few kilobytes and one over a city centre is megabytes. A cap in
+//! entries would be a cap on nothing.
 //!
 //! # Why the caller states its own ceiling
 //!

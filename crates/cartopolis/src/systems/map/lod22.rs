@@ -28,7 +28,7 @@
 //! Uploads are capped at one cell mesh per frame: a dense central cell is ~240k
 //! triangles, and bursting several such uploads into a couple of frames is exactly
 //! what trips the Intel iGPU's command-buffer timeout (`VK_ERROR_DEVICE_LOST`, see
-//! CLAUDE.md).
+//! `docs/notes/upload-bursts.md`).
 
 use crate::components::HideInSpace;
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -1003,7 +1003,7 @@ fn spawn_cutaway_prewarm(
                 // submitted every frame or its pipeline is never asked for.
                 bevy::camera::visibility::NoFrustumCulling,
                 // …and `NoFrustumCulling` alone would put it in every shadow
-                // cascade (CLAUDE.md, "NoFrustumCulling also means…").
+                // cascade (`docs/notes/render-performance-survey.md`).
                 bevy::light::NotShadowCaster,
             ))
             .id(),
@@ -1919,7 +1919,8 @@ fn update_shadow_lod(commands: &mut Commands, lod: &mut Lod22Buildings, (ccx, cc
     // Shadow LOD: cells within SHADOW_RADIUS cast shadows, the rest don't. Only act
     // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
     // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
-    // change is the directional lights' `num_cascades` — see CLAUDE.md.
+    // change is the directional lights' `num_cascades` — see
+    // `docs/notes/directional-lights-share-one-cascade-config.md`.
     // Only the cells that *cross* the boundary are collected, and only their keys:
     // `lod.cells` is read and `lod.no_shadow` written in the same pass, so
     // something has to be copied out to end the borrow — but a stationary camera

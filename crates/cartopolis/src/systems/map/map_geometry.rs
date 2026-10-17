@@ -11,7 +11,7 @@
 //! altitude while the geometry path grows layer by layer — roads and routing next.
 //!
 //! Three constraints shape the design, all of them from the same failure mode
-//! (`VK_ERROR_DEVICE_LOST` on a weak iGPU, see CLAUDE.md):
+//! (`VK_ERROR_DEVICE_LOST` on a weak iGPU, see `docs/notes/upload-bursts.md`):
 //!
 //! * **One mesh per surface group per cell**, never one per feature. A z14 tile has
 //!   ~120 water and landuse polygons; batched, that is at most 5 meshes.

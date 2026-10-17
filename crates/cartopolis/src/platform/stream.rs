@@ -11,11 +11,12 @@
 //! Six copies meant six sets of slightly different bugs, and the interesting ones
 //! were the *omissions*: `lod22` freed all 25 of its merged 3DBAG meshes in one
 //! frame on a re-anchor and `data_layers` freed every marker entity of every
-//! enabled layer in one frame, which is the mass-despawn burst CLAUDE.md names as
-//! the `VK_ERROR_DEVICE_LOST` pattern — while the other four had a per-frame cap
-//! for exactly that reason. `map_stream` had no concurrency bound at all, so a
-//! fresh anchor released all 424 of its tile fetches at once. Adopting one type
-//! fixes those as a consequence of using it rather than as three separate patches.
+//! enabled layer in one frame, which is the mass-despawn burst
+//! `docs/notes/upload-bursts.md` names as the `VK_ERROR_DEVICE_LOST` pattern —
+//! while the other four had a per-frame cap for exactly that reason. `map_stream`
+//! had no concurrency bound at all, so a fresh anchor released all 424 of its tile
+//! fetches at once. Adopting one type fixes those as a consequence of using it
+//! rather than as three separate patches.
 //!
 //! [`CellStream`] owns the bookkeeping and nothing else: what a cell *is*, what
 //! fetching it means and what to do with the result stay with the caller. It

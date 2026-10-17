@@ -939,7 +939,8 @@ pub fn read_talk_key(
         voice.talk_held = false;
         return;
     }
-    // `ui_owns_keyboard`, not `egui_wants_keyboard_input` — the CLAUDE.md entry:
+    // `ui_owns_keyboard`, not `egui_wants_keyboard_input` —
+    // `docs/notes/egui-shared-root-ui.md`:
     // the latter is true whenever any widget holds focus, which would make V
     // silently dead after clicking a button.
     if egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard) {

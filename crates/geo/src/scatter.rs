@@ -25,9 +25,10 @@
 //!   tier). Crossed quads collapse to lines seen from directly overhead and
 //!   alpha-tested billboards need a texture pipeline plus a sort order, so canopies
 //!   are small opaque solids: correct from every angle, no alpha, no sorting.
-//! * **Mass mesh churn loses the device** (see CLAUDE.md). Trees are merged into
-//!   *one mesh per cell per group*, ride `map_geometry`'s existing worker, build cap
-//!   and despawn cap, and are hard-capped per cell by [`MAX_TREES_PER_CELL`].
+//! * **Mass mesh churn loses the device** (see `docs/notes/upload-bursts.md`).
+//!   Trees are merged into *one mesh per cell per group*, ride `map_geometry`'s
+//!   existing worker, build cap and despawn cap, and are hard-capped per cell by
+//!   [`MAX_TREES_PER_CELL`].
 //!
 //! The altitude transition is the part that needs care, and it is the reason
 //! nothing here switches on a boolean — see [`update_vegetation_lod`].

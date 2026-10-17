@@ -207,7 +207,7 @@ pub struct MapStream {
     /// world: sixteen other systems watch the anchor generation and answer a bump
     /// by rebuilding — every building cell, the terrain field, the interiors, the
     /// dikes, a fresh weather fetch. Flipping a checkbox over the ground texture
-    /// must not cost the mass mesh churn CLAUDE.md's device-loss entry is about.
+    /// must not cost the mass mesh churn `docs/notes/upload-bursts.md` is about.
     fetch_generation: u32,
     /// A requested re-anchor target, applied by `apply_reanchor` next frame.
     pending_reanchor: Option<(f64, f64)>,
@@ -1071,8 +1071,8 @@ fn relief_divisions(tile_m: f32, sample_m: f32) -> usize {
 const RELIEF_MAX_TILE_M: f32 = 2_500.0;
 
 /// Relief meshes built per frame. A burst of mesh uploads in one command buffer is
-/// the documented device-loss pattern (see CLAUDE.md), and the cost is per *build*
-/// regardless of how big each one is.
+/// the documented device-loss pattern (see `docs/notes/upload-bursts.md`), and the
+/// cost is per *build* regardless of how big each one is.
 const MAX_RELIEF_BUILDS_PER_FRAME: usize = 2;
 
 /// Curvature-only tile meshes built per frame — the cheap half of the same
@@ -2243,10 +2243,10 @@ pub fn apply_stream_textures(
     // content's — so `8` is not "eight tiles' worth", it is *always* 10.9 MB. On
     // 2026-08-19 an Adreno 840 was measured queueing exactly that from a cold start
     // (`frame_kb = 10922`, repeatedly) against a 4 MB frame budget, and the same
-    // figure reproduces here headlessly on `CARTO_QUALITY=android`. CLAUDE.md's
-    // rule — bound it in bytes, not only in items — was written for `lod22` and
-    // applied there; this is the streamer that dominates startup, and it was still
-    // counting items.
+    // figure reproduces here headlessly on `CARTO_QUALITY=android`.
+    // `docs/notes/upload-bursts.md`'s rule — bound it in bytes, not only in
+    // items — was written for `lod22` and applied there; this is the streamer that
+    // dominates startup, and it was still counting items.
     //
     // The backlog is the damage, and it is arithmetic rather than inference: bevy
     // writes ~4 MB of what it is handed and re-queues the rest, so a frame that

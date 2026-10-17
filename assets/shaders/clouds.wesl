@@ -2,8 +2,9 @@
 // above the camera and shaded with a *scattering* model rather than a surface one.
 //
 // The geometry is unchanged — one static shell mesh, no churn, so it stays clear
-// of the iGPU command-buffer budget (see CLAUDE.md) — and each above-the-horizon
-// view ray is still projected onto a cloud plane and sampled for coverage there.
+// of the iGPU command-buffer budget (see `docs/notes/upload-bursts.md`) — and each
+// above-the-horizon view ray is still projected onto a cloud plane and sampled for
+// coverage there.
 // What changed is the lighting, which is the whole reason a projected plane can
 // read as cloud at all while a Lambert-shaded noise field reads as painted
 // geometry (`docs/notes/cloud-lighting.md` has the derivation and the sources):

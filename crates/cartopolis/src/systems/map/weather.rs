@@ -14,7 +14,6 @@
 //!
 //! One async fetch spawned on Bevy's `IoTaskPool` (via `platform::http`), drained
 //! on the main thread — the same fetch seam every other upstream now uses (ADR-033).
-//! See [[../CLAUDE.md]] for the cloud/fog/rain plumbing this feeds.
 
 use std::time::Duration;
 use web_time::Instant;

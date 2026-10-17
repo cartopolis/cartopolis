@@ -2767,11 +2767,11 @@ mod tests {
 
     /// The ⚑ sits *inside* a widget that senses clicks over the whole row, which is
     /// the arrangement that eats a button's press when it goes the other way round
-    /// (see the `dnd_drag_source` entry in CLAUDE.md). It works here because egui
-    /// registers a `UiBuilder::sense` scope's own widget *before* its contents and
-    /// only updates it in place afterwards, so the button is on top of the row
-    /// rather than under it — a fact worth a test rather than a comment, since
-    /// nothing about the code says it and the failure is a dead button.
+    /// (see `dnd_drag_source` in `docs/notes/egui-shared-root-ui.md`). It works here
+    /// because egui registers a `UiBuilder::sense` scope's own widget *before* its
+    /// contents and only updates it in place afterwards, so the button is on top of
+    /// the row rather than under it — a fact worth a test rather than a comment,
+    /// since nothing about the code says it and the failure is a dead button.
     #[test]
     fn the_route_button_is_clickable_inside_the_row() {
         // The button is on the row's first line, hard against the right edge.
