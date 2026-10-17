@@ -29,6 +29,7 @@ import {CallTones} from './call-tones'
 import {CALL_TAG, closeCallNotifications} from './web-push'
 import {CallRecorder} from './call-recorder'
 import {Captioner} from './call-captions'
+import {buildRecord} from './meeting'
 
 /** The call worker's content-hashed name, put in by `build.ts`. */
 declare const __CALL_WORKER_URL__: string | undefined
@@ -157,6 +158,16 @@ interface Active {
     blur: boolean
     /** Whose cameras the forwarder was last told this page draws. */
     watching: string
+    /** Everybody who was in the call while this device was, for the record. */
+    seen: Set<string>
+    /** Where the meeting is on its plan's agenda: the item, since when.
+     *  Kept by a host's device and sent sealed to everybody. */
+    agenda: {index: number; plan: string; startedMs: number} | null
+    /** This device is ending it for everybody: it writes the record. */
+    endingForAll: boolean
+    /** How much the last record posted from here held, so ending does not
+     *  post the same one twice. */
+    recorded: number
 }
 
 /** How long a call placed here rings before giving up, ms. */
@@ -391,6 +402,7 @@ export class Calls {
                 }
                 if (a && a.channel === channel) {
                     a.web.forgetGone()
+                    for (const m of members) if (!a.waiting) a.seen.add(m.username)
                     this.meetingChanges(before, members)
                     const others = this.others(channel)
                     if (others.length && a.connected && a.since === null) a.since = Date.now()
@@ -488,6 +500,8 @@ export class Calls {
         }
         // A hand that went down takes its notice with it.
         this.toasts = this.toasts.filter((t) => t.kind !== 'hand' || now.some((m) => m.participant === t.participant && m.hand !== null))
+        // Somebody new hears where the agenda is from whoever keeps it.
+        if (hosting && a.agenda && now.some((m) => !was.has(m.participant))) this.sendAgenda()
     }
 
     /** Place or join the call in `channel`, with the microphone, camera, blur
@@ -560,6 +574,10 @@ export class Calls {
             recorder: null,
             waiting: false,
             watching: '',
+            seen: new Set(),
+            agenda: null,
+            endingForAll: false,
+            recorded: 0,
             participant: null,
             probe: null,
             sharing: false,
@@ -992,11 +1010,17 @@ export class Calls {
         const plain = await openEvent(keys.key, BigInt(epoch), unhex(sealed))
         if (!plain) return
         const text = new TextDecoder().decode(plain)
-        // A line of captions is JSON; a reaction is the emoji itself.
+        // A line of captions or the agenda is JSON; a reaction is the emoji itself.
         if (text.startsWith('{')) {
             try {
-                const line = JSON.parse(text) as {c?: string; f?: boolean}
-                if (typeof line.c === "string") this.caption(participant, line.c.slice(0, 300), !!line.f)
+                const line = JSON.parse(text) as {c?: string; f?: boolean; g?: number; p?: string; t?: number}
+                if (typeof line.c === 'string') this.caption(participant, line.c.slice(0, 300), !!line.f)
+                // Only a host keeps the agenda.
+                const from = this.members().find((m) => m.participant === participant)
+                if (typeof line.g === 'number' && typeof line.p === 'string' && typeof line.t === 'number' && from && from.role !== 'member') {
+                    a.agenda = line.g < 0 ? null : {index: line.g, plan: line.p, startedMs: line.t}
+                    this.notify()
+                }
             } catch {
                 // Not ours to read.
             }
@@ -1027,6 +1051,55 @@ export class Calls {
         this.notify()
     }
 
+    /** Where the meeting is on its agenda, if a host has started it. */
+    agenda(): {index: number; plan: string; startedMs: number} | null {
+        return this.active?.agenda ?? null
+    }
+
+    /** A host moves the agenda to item `index` of `plan` (or stops it with
+     *  `-1`), and everybody is told, sealed. */
+    setAgenda(plan: string, index: number): void {
+        const a = this.active
+        if (!a) return
+        a.agenda = index < 0 ? null : {index, plan, startedMs: Date.now()}
+        this.sendAgenda(plan)
+        this.notify()
+    }
+
+    private sendAgenda(plan?: string): void {
+        const a = this.active
+        if (!a) return
+        const g = a.agenda
+        void this.sendEvent(JSON.stringify(g ? {g: g.index, p: g.plan, t: g.startedMs} : {g: -1, p: plan ?? '', t: 0}))
+    }
+
+    /** A host ends the call for everybody; this device writes the record. */
+    endForAll(): void {
+        const a = this.active
+        if (!a) return
+        a.endingForAll = true
+        this.control('EndForAll')
+    }
+
+    /**
+     * Post what the meeting came to into its chat: the notes, decisions and
+     * actions taken in it, the polls and how they went, and the transcript if
+     * captions were on here. Nothing is posted for a meeting that left none of
+     * these, unless `always`.
+     */
+    postRecord(always = false): boolean {
+        const a = this.active
+        if (!a || a.since === null) return false
+        const messages = this.client.histories.get(a.channel) ?? []
+        const title = this.client.chats.find((c) => c.channel === a.channel)?.label ?? ''
+        const record = buildRecord(messages, a.since, Date.now(), [...a.seen], this.transcript.filter((l) => l.at >= a.since!), title)
+        const size = record.notes.length + record.polls.length + record.transcript.length
+        if (!always && size <= a.recorded) return false
+        a.recorded = size
+        this.client.sendMeeting(a.channel, {kind: 'record', record})
+        return true
+    }
+
     hangUp(why?: string): void {
         const a = this.active
         if (!a) return
@@ -1038,6 +1111,14 @@ export class Calls {
     private close(why?: string): void {
         const a = this.active
         if (!a) return
+        // The record is written once, by the host who ends it for everybody
+        // or is the last one in it.
+        try {
+            const hosting = this.hosting()
+            if (a.endingForAll || (hosting && !this.others(a.channel).length)) this.postRecord()
+        } catch (e) {
+            console.warn('call: the record', e)
+        }
         this.active = null
         // Left here: neither "ringing" while the others are still in it, nor
         // "missed" when it ends.

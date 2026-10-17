@@ -96,6 +96,41 @@ try {
     for (const b of [bob, carol, dave, ann]) await b.openTopic('Street party crew', 'q4-planning', 60000)
     step('a community with a topic all four are in')
 
+    // Ann plans the meeting for now, with an agenda; Bob says he comes.
+    if (!(await ann.click('Plan a meeting: a call at a time, with an agenda'))) throw new Error('no Plan a meeting key')
+    await ann.until('Post the plan')
+    await ann.type('input[placeholder="Q4 planning"]', 'Q4 planning')
+    await ann.eval(`(() => {
+        const d = new Date(); d.setSeconds(0, 0)
+        const v = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+        const el = document.querySelector('input[type=datetime-local]')
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v)
+        el.dispatchEvent(new Event('input', {bubbles: true}))
+    })()`)
+    await ann.type('textarea[placeholder^="Budget"]', 'Budget 10\nStage and sound 15')
+    if (!(await ann.click('Post the plan'))) throw new Error('no Post the plan')
+    await bob.until('Q4 planning', 30000)
+    await waitFor('the plan card on bob\'s page', () => bob.eval(`!!document.querySelector('.chat-plan')`), 30000)
+    if (!(await bob.click('Going'))) throw new Error('no Going on the plan')
+    await waitFor('bob going, on ann\'s card', () =>
+        ann.eval(`document.querySelector('.chat-plan .chat-card-people')?.innerText.includes('bob') ?? false`), 30000)
+    step('ann planned the meeting with an agenda; bob said he comes, and ann saw it')
+
+    // Bob asks a poll; Carol votes; Ann sees the count.
+    if (!(await bob.click('Ask a poll'))) throw new Error('no poll key')
+    await bob.type('input[placeholder="Which day suits?"]', 'Which day for the party?')
+    await bob.type('textarea[placeholder^="Friday"]', 'Friday\nSaturday')
+    if (!(await bob.click('Ask'))) throw new Error('no Ask')
+    await waitFor('the poll on carol\'s page', () => carol.eval(`!!document.querySelector('.chat-poll')`), 30000)
+    await carol.eval(`[...document.querySelectorAll('.chat-poll-bar')].find((b) => b.innerText.includes('Saturday')).click()`)
+    await waitFor('carol\'s vote on ann\'s page', () =>
+        ann.eval(`[...document.querySelectorAll('.chat-poll-bar')].some((b) => b.innerText.includes('Saturday') && b.querySelector('b')?.textContent === '1')`), 30000)
+    step('bob asked a poll; carol voted, and ann saw the count')
+    if (shots) {
+        mkdirSync(shots, {recursive: true})
+        await ann.shot(path.join(shots, 'plan-poll.png'))
+    }
+
     // Ann calls; both answer with their cameras.
     await ann.eval(STAND_IN_SCREEN)
     if (!(await ann.click('Video call'))) throw new Error('no Video call key')
@@ -220,6 +255,23 @@ try {
         dave.eval(`!document.querySelector('.meet-waiting') && !!document.querySelector('.chat-call-tile:not(.is-self)')`), 30000)
     step('dave waited until ann let him in')
 
+    // Notes: Ann notes a decision; Bob sees it in his notes panel.
+    for (const b of [ann, bob]) await b.click('Notes, polls and the agenda')
+    await ann.click('Decision')
+    await ann.type('textarea[placeholder="What was decided"]', 'The gazebos stay in the budget')
+    await ann.submit('.meet-note-add')
+    await waitFor('the decision on bob\'s panel', () =>
+        bob.eval(`document.querySelector('.meet-notes')?.innerText.includes('The gazebos stay') ?? false`), 30000)
+    step('ann noted a decision; bob saw it')
+
+    // The agenda: Ann starts the first item; Bob sees where the meeting is.
+    for (const b of [ann, bob]) await b.eval(`[...document.querySelectorAll('.meet-tab')].find((t) => t.innerText.startsWith('Agenda')).click()`)
+    if (!(await ann.click('Start "Budget"'))) throw new Error('no Start on the agenda')
+    await waitFor('the agenda on bob\'s panel', () =>
+        bob.eval(`document.querySelector('.meet-agenda li.is-now')?.innerText.includes('Budget') ?? false`), 30000)
+    step('ann started the agenda; bob saw the item and its clock')
+    if (shots) await bob.shot(path.join(shots, 'agenda.png'))
+
     // Ann ends it for everyone.
     await ann.click('Leave the call')
     if (!(await menuRow(ann, 'End for everyone'))) throw new Error('no End for everyone')
@@ -228,6 +280,12 @@ try {
         await b.until('ann ended the call for everyone')
     }
     step('ann ended the call for everyone')
+
+    // Ann's device, hosting, posted what the meeting came to.
+    await waitFor('the record on bob\'s page', () =>
+        bob.eval(`document.querySelector('.chat-record')?.innerText.includes('The gazebos stay') ?? false`), 30000)
+    step('the meeting record arrived in the chat, with the decision in it')
+    if (shots) await bob.shot(path.join(shots, 'record.png'))
     // A page that kept working past an error it did not catch is not a pass.
     const errors = browsers.flatMap((b) => b.logs.filter((l) => /^uncaught|call: closing/.test(l)).map((l) => `${b.name}: ${l}`))
     if (errors.length) throw new Error(`errors in the pages:\n${errors.join('\n')}`)

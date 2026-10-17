@@ -30,6 +30,7 @@ interface Port {
 }
 
 import {Calls} from './call'
+import {type MeetingObject, caption, toJson} from './meeting'
 
 /** Where muted topics are kept: a choice about this browser, told to nobody. */
 const MUTED_KEY = 'cartopolis.chat.muted'
@@ -129,6 +130,11 @@ export class ChatClient {
 
     sendText(channel: string, body: string, parent: number | null = null): void {
         this.send({body, channel, parent, type: 'send_text'})
+    }
+
+    /** Send a plan, an answer, a poll, a vote, a note or a record (`meeting.ts`). */
+    sendMeeting(channel: string, object: MeetingObject): void {
+        this.send({body: caption(object), channel, object: toJson(object), type: 'send_meeting'})
     }
 
     react(channel: string, target: number, emoji: string, remove: boolean): void {

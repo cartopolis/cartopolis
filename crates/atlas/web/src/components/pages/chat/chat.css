@@ -2983,3 +2983,474 @@
         overflow-y: auto;
     }
 }
+
+/* ── What a meeting leaves in the chat: plans, polls, notes, records ─────
+   (`lib/meeting.ts`). Cards in the message column, the same width as text. */
+
+.chat-card {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 4px 0 2px;
+    max-width: 440px;
+    padding: 12px 14px;
+}
+
+.chat-card.is-live {
+    border-color: var(--m-accent);
+    box-shadow: 0 0 0 3px var(--m-accent-soft);
+}
+
+.chat-card-kicker {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.72rem;
+    font-weight: 600;
+    gap: 5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.chat-card-kicker .is-now {
+    color: var(--m-accent-text);
+}
+
+.chat-card-title {
+    color: var(--m-text-strong);
+    font-size: 1rem;
+    line-height: 1.3;
+}
+
+.chat-card-sub {
+    color: var(--m-text-dim);
+    font-size: 0.8rem;
+}
+
+.chat-card-text {
+    font-size: 0.88rem;
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.chat-card-people {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    gap: 3px;
+}
+
+.chat-card-people > span {
+    margin-left: 4px;
+}
+
+.chat-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.chat button.chat-card-btn {
+    align-items: center;
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 999px;
+    color: var(--m-text);
+    display: inline-flex;
+    font-size: 0.8rem;
+    font-weight: 600;
+    gap: 5px;
+    min-height: 30px;
+    padding: 0 12px;
+}
+
+.chat button.chat-card-btn:hover {
+    background: var(--m-hover);
+}
+
+.chat button.chat-card-btn.is-on {
+    background: var(--m-accent-soft);
+    border-color: var(--m-accent);
+    color: var(--m-accent-text);
+}
+
+.chat button.chat-card-btn.is-primary {
+    background: var(--m-accent);
+    border-color: var(--m-accent);
+    color: var(--m-on-accent);
+}
+
+.chat-card-count {
+    background: var(--m-surface-sunken);
+    border-radius: 999px;
+    font-size: 0.7rem;
+    padding: 0 6px;
+}
+
+.chat-plan-agenda {
+    border-left: 2px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    font-size: 0.85rem;
+    gap: 2px;
+    margin: 2px 0;
+    padding: 0 0 0 22px;
+}
+
+.chat-plan-agenda li {
+    padding-left: 2px;
+}
+
+.chat-plan-agenda li small,
+.meet-agenda-time {
+    color: var(--m-text-dim);
+    font-variant-numeric: tabular-nums;
+    margin-left: 6px;
+}
+
+/* A poll's options: a bar behind each, filled to its share of the voters. */
+.chat button.chat-poll-bar,
+.chat-poll-bar.is-static {
+    align-items: center;
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 10px;
+    display: flex;
+    font-size: 0.86rem;
+    gap: 8px;
+    min-height: 36px;
+    overflow: hidden;
+    padding: 0 12px;
+    position: relative;
+    text-align: left;
+    width: 100%;
+}
+
+.chat-poll-bar > i {
+    background: var(--m-accent-soft);
+    inset: 0 auto 0 0;
+    position: absolute;
+    transition: width 0.3s var(--m-ease);
+}
+
+.chat-poll-bar > span,
+.chat-poll-bar > b {
+    position: relative;
+}
+
+.chat-poll-bar > span {
+    align-items: center;
+    display: inline-flex;
+    flex: 1;
+    gap: 4px;
+}
+
+.chat button.chat-poll-bar.is-mine {
+    border-color: var(--m-accent);
+}
+
+.chat-note-kind,
+.meet-note-kind {
+    background: var(--m-surface-sunken);
+    border-radius: 6px;
+    color: var(--m-text-dim);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    text-transform: uppercase;
+}
+
+.chat-note.is-decision .chat-note-kind,
+.meet-note.is-decision .meet-note-kind {
+    background: var(--m-accent-soft);
+    color: var(--m-accent-text);
+}
+
+.chat-note.is-action .chat-note-kind,
+.meet-note.is-action .meet-note-kind {
+    background: var(--m-warning-soft);
+    color: var(--m-text-strong);
+}
+
+.chat-record-part h5 {
+    color: var(--m-text-strong);
+    font-size: 0.8rem;
+    margin: 6px 0 4px;
+}
+
+.chat-record-part ul {
+    font-size: 0.86rem;
+    margin: 0;
+    padding-left: 18px;
+}
+
+.chat-record-part .chat-poll-bar {
+    margin-bottom: 4px;
+}
+
+.chat-record-transcript {
+    font-size: 0.82rem;
+}
+
+.chat-record-transcript summary {
+    color: var(--m-accent-text);
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.chat-record-transcript p {
+    margin: 4px 0;
+}
+
+/* The composer's plan and poll keys, left of the hint. */
+.chat-composer-add {
+    display: inline-flex;
+    gap: 2px;
+}
+
+.chat button.chat-composer-tool {
+    align-items: center;
+    border-radius: 8px;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    height: 28px;
+    justify-content: center;
+    width: 30px;
+}
+
+.chat button.chat-composer-tool:hover {
+    background: var(--m-hover);
+    color: var(--m-text-strong);
+}
+
+.chat-dialog-row {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 1.4fr 1fr;
+}
+
+.chat-field {
+    display: flex;
+    flex-direction: column;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+}
+
+.chat-field > span {
+    color: var(--m-text);
+    font-weight: 600;
+}
+
+.chat-field input {
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text);
+    font: inherit;
+    min-height: 36px;
+    padding: 0 10px;
+}
+
+.chat-reminder {
+    align-items: center;
+    background: var(--m-accent-soft);
+    border: 1px solid var(--m-accent);
+    border-radius: 12px;
+    display: flex;
+    font-size: 0.86rem;
+    gap: 10px;
+    margin: 8px 12px 0;
+    padding: 6px 8px 6px 12px;
+}
+
+.chat-reminder > span {
+    flex: 1;
+}
+
+/* ── The meeting's notes panel ─────────────────────────────────────────── */
+
+.meet-tabs {
+    display: flex;
+    gap: 2px;
+}
+
+.chat button.meet-tab {
+    border-radius: 8px;
+    color: var(--m-text-dim);
+    font-size: 0.86rem;
+    font-weight: 600;
+    padding: 5px 10px;
+}
+
+.chat button.meet-tab.is-on {
+    background: var(--m-surface-raised);
+    color: var(--m-text-strong);
+}
+
+.chat button.meet-tab > span {
+    background: var(--m-accent-soft);
+    border-radius: 999px;
+    color: var(--m-accent-text);
+    font-size: 0.68rem;
+    margin-left: 4px;
+    padding: 0 5px;
+}
+
+.meet-notes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px 6px 10px;
+}
+
+.meet-empty {
+    color: var(--m-text-dim);
+    font-size: 0.84rem;
+    margin: 4px 2px;
+}
+
+.meet-note {
+    background: var(--m-surface-raised);
+    border-radius: 10px;
+    padding: 8px 10px;
+}
+
+.meet-note p {
+    font-size: 0.88rem;
+    margin: 4px 0 2px;
+    white-space: pre-wrap;
+}
+
+.meet-note small {
+    color: var(--m-text-faint);
+    font-size: 0.72rem;
+}
+
+.meet-note-add {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 6px 4px;
+}
+
+.meet-note-add .meet-chips {
+    padding: 0;
+}
+
+.meet-note-add textarea,
+.meet-note-add input:not([type]) {
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-border);
+    border-radius: 10px;
+    color: var(--m-text);
+    font: inherit;
+    font-size: 0.88rem;
+    padding: 7px 10px;
+    resize: vertical;
+}
+
+.meet-check {
+    align-items: center;
+    display: flex;
+    font-size: 0.82rem;
+    gap: 6px;
+}
+
+.meet-panel .meet-note-add > .meet-btn {
+    align-self: flex-end;
+}
+
+.meet-panel button.meet-btn:not(.is-primary):not(.is-icon) {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+}
+
+.meet-panel button.meet-btn:disabled {
+    opacity: 0.5;
+}
+
+.chat button.meet-btn.is-small {
+    font-size: 0.72rem;
+    height: 24px;
+    padding: 0 8px;
+}
+
+.meet-agenda-title {
+    color: var(--m-text-strong);
+    padding: 0 2px;
+}
+
+.meet-agenda {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.meet-agenda li {
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    display: flex;
+    gap: 6px;
+    min-height: 38px;
+    padding: 4px 6px 4px 10px;
+}
+
+.meet-agenda-name {
+    flex: 1;
+    font-size: 0.88rem;
+}
+
+.meet-agenda li.is-now {
+    background: var(--m-accent-soft);
+    border-color: var(--m-accent);
+}
+
+.meet-agenda li.is-now .meet-agenda-name {
+    color: var(--m-text-strong);
+    font-weight: 600;
+}
+
+.meet-agenda li.is-done .meet-agenda-name {
+    color: var(--m-text-faint);
+    text-decoration: line-through;
+}
+
+.meet-agenda li.is-over .meet-agenda-time {
+    color: var(--m-danger);
+    font-weight: 700;
+}
+
+.meet-agenda-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.meet-panel-foot.is-note {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+}
+
+.meet-panel-foot.is-note small {
+    color: var(--m-text-faint);
+    flex: 1;
+    font-size: 0.72rem;
+    line-height: 1.3;
+}
+
+.meet-panel-foot.is-note .meet-btn {
+    flex: none;
+}

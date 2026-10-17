@@ -32,6 +32,7 @@ export interface ChatCoreApi {
     send_delete(channel: string, target: number, nowMs: number): number
     send_edit(channel: string, target: number, body: string, nowMs: number): number
     send_point(channel: string, pointJson: string, nowMs: number): number
+    send_meeting(channel: string, json: string, nowMs: number): number
     send_reaction(channel: string, target: number, emoji: string, remove: boolean, nowMs: number): number
     send_reply(channel: string, parent: number, body: string, nowMs: number): number
     send_text(channel: string, body: string, nowMs: number): number
@@ -175,6 +176,10 @@ export class ChatConnection {
         return this.step((core) => parent === null
             ? core.send_text(channel, body, Date.now())
             : core.send_reply(channel, parent, body, Date.now()))
+    }
+
+    sendMeeting(channel: string, json: string): Promise<number> {
+        return this.step((core) => core.send_meeting(channel, json, Date.now()))
     }
 
     sendPoint(channel: string, pointJson: string): Promise<number> {

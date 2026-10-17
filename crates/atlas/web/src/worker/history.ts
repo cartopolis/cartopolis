@@ -36,7 +36,8 @@ export interface Message {
     deleted: boolean
     /** Emoji → the addresses that reacted with it, in the order they did. */
     reactions: Record<string, string[]>
-    /** An ActivityStreams Note with a Place, when the message is a point. */
+    /** The ActivityStreams object it carried: a Note with a Place when it is a
+     * point, or something a meeting left (`lib/meeting.ts`). */
     point: string | null
     picture: Picture | null
     /** Who took it down, when a moderator deleted it rather than its author. */
@@ -114,6 +115,7 @@ export function pending(
     body: string,
     parent: number | null,
     nowMs: number,
+    point: string | null = null,
 ): Message {
     const m: Message = {
         body,
@@ -123,7 +125,7 @@ export function pending(
         local,
         parent,
         picture: null,
-        point: null,
+        point,
         reactions: {},
         sentAtMs: nowMs,
         seq: null,

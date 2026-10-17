@@ -184,6 +184,7 @@ export type Command =
     | {members: string[]; name: string; type: 'start_group'}
     | {body: string; channel: string; parent: number | null; type: 'send_text'}
     | {channel: string; point: string; type: 'send_point'}
+    | {body: string; channel: string; object: string; type: 'send_meeting'}
     | {channel: string; emoji: string; remove: boolean; target: number; type: 'react'}
     | {body: string; channel: string; target: number; type: 'edit'}
     | {channel: string; target: number; type: 'delete'}

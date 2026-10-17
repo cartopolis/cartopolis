@@ -268,10 +268,10 @@ function onEvent(event: ChatEvent): void {
 }
 
 /** Record this device's own message as it goes out. */
-function sending(channel: string, request: number, body: string, parent: number | null): void {
+function sending(channel: string, request: number, body: string, parent: number | null, object: string | null = null): void {
     if (!me) return
     const c = chat(channel)
-    pending(c, request, me, body, parent, Date.now())
+    pending(c, request, me, body, parent, Date.now(), object)
     const seq = sentEarly.get(request)
     if (seq !== undefined) {
         sentEarly.delete(request)
@@ -371,6 +371,11 @@ async function run(command: Command, from: Port): Promise<void> {
         case 'send_point':
             await c.sendPoint(command.channel, command.point)
             return
+        case 'send_meeting': {
+            const request = await c.sendMeeting(command.channel, command.object)
+            sending(command.channel, request, command.body, null, command.object)
+            return
+        }
         case 'react':
             await c.react(command.channel, command.target, command.emoji, command.remove)
             if (me) reactLocally(chat(command.channel), command.target, command.emoji, me, command.remove)

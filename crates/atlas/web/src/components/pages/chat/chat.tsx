@@ -1,5 +1,5 @@
 import m, {MithrilComponent} from '@garage44/mithril'
-import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSelect, FieldText, ThemeSwitch} from '@garage44/mithril/components'
+import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSelect, FieldText, FieldTextarea, ThemeSwitch} from '@garage44/mithril/components'
 import {required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s, signupApi} from '@/app'
@@ -14,6 +14,23 @@ import {
 } from '@/lib/chat'
 import type {CallMember} from '@/lib/call'
 import {CAPTION_LANGUAGES} from '@/lib/call-captions'
+import {
+    type Meetings,
+    type MeetingObject,
+    type NoteKind,
+    type Plan,
+    type Poll,
+    type Rsvp,
+    NOTE_WORDS,
+    RSVP_WORDS,
+    agendaLine,
+    currentPlan,
+    ics,
+    newId,
+    readMeetings,
+    recordText,
+    tally,
+} from '@/lib/meeting'
 import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
@@ -432,6 +449,50 @@ function day(ms: number): string {
     return d.toLocaleDateString([], {day: 'numeric', month: 'long', weekday: 'long'})
 }
 
+/** When a planned meeting is: "Tue 21 Oct, 14:00–15:00". */
+function when(plan: Plan): string {
+    const d = new Date(plan.startMs)
+    const date = d.toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})
+    return `${date}, ${time(plan.startMs)}${plan.endMs ? `–${time(plan.endMs)}` : ''}`
+}
+
+/** How far off a planned meeting is: "in 2 days", "in 25 min", "now", "ended". */
+function relative(plan: Plan, now = Date.now()): string {
+    const end = plan.endMs ?? plan.startMs + 3600_000
+    if (now > end) return 'Ended'
+    if (now >= plan.startMs) return 'Now'
+    const mins = Math.round((plan.startMs - now) / 60000)
+    if (mins < 60) return `In ${mins} min`
+    const hours = Math.round(mins / 60)
+    if (hours < 24) return `In ${hours} h`
+    const days = Math.round(hours / 24)
+    return days === 1 ? 'Tomorrow' : `In ${days} days`
+}
+
+/** A file for the person to keep, from text made on this page. */
+function download(name: string, type: string, text: string): void {
+    const url = URL.createObjectURL(new Blob([text], {type}))
+    const a = Object.assign(document.createElement('a'), {download: name, href: url})
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** The value a `datetime-local` field wants for a moment: local time, minutes. */
+function localInput(ms: number): string {
+    const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000)
+    return d.toISOString().slice(0, 16)
+}
+
+/** Meeting objects read once per history, not once per line drawn. */
+const meetingsCache = new WeakMap<Message[], {length: number; meetings: Meetings}>()
+function meetingsOf(messages: Message[]): Meetings {
+    const hit = meetingsCache.get(messages)
+    if (hit && hit.length === messages.length) return hit.meetings
+    const meetings = readMeetings(messages)
+    meetingsCache.set(messages, {length: messages.length, meetings})
+    return meetings
+}
+
 const RULE: Record<string, string> = {ask: 'Asks first', invite: 'Invite only', open: 'Open'}
 const ROLE: Record<Role, string> = {member: 'Member', moderator: 'Moderator', owner: 'Owner'}
 
@@ -495,7 +556,7 @@ interface PageState {
     thread: number | null
     draft: Record<string, string>
     editing: {channel: string; seq: number; body: string} | null
-    dialog: null | 'direct' | 'group' | 'members' | 'person' | 'report'
+    dialog: null | 'direct' | 'group' | 'members' | 'person' | 'report' | 'plan' | 'poll'
     field: string
     field2: string
     query: string
@@ -515,7 +576,7 @@ interface PageState {
     /** Speaker (whoever talks is large) or Gallery (everyone equal). */
     callLayout: 'speaker' | 'gallery'
     /** The panel beside the meeting when it is in the middle. */
-    callPanel: 'people' | null
+    callPanel: 'people' | 'notes' | null
     /** The call menu or picker open: `react`, `more`, `leave`, or `person<n>`. */
     callMenu: string | null
     /** This browser's microphones and cameras, and the ones chosen. */
@@ -533,6 +594,14 @@ interface PageState {
     preJoinMuted: boolean
     /** A ringing call folded down to a banner, by channel. */
     ringFolded: string | null
+    /** A meeting being planned, a poll being written (`lib/meeting.ts`). */
+    plan: {agenda: string; length: number; text: string; title: string; when: string}
+    poll: {multiple: boolean; options: string; question: string}
+    /** The meeting's notes panel: which tab, and the note being written. */
+    notesTab: 'notes' | 'polls' | 'agenda'
+    note: {kind: NoteKind; text: string}
+    /** Plans already reminded of on this page, by id. */
+    reminded: Set<string>
 }
 
 function emptyDraft(): Draft {
@@ -596,6 +665,11 @@ export class Chat extends MithrilComponent {
         person: {address: '', channel: null},
         query: '',
         ringFolded: null,
+        plan: {agenda: '', length: 60, text: '', title: '', when: ''},
+        poll: {multiple: false, options: '', question: ''},
+        notesTab: 'notes',
+        note: {kind: 'note', text: ''},
+        reminded: new Set(),
         space: null,
         report: {channel: '', line: '', note: '', reason: 'spam', seq: 0, who: ''},
         thread: null,
@@ -615,6 +689,70 @@ export class Chat extends MithrilComponent {
             history.replaceState(null, '', location.pathname)
             this.openInvite(code)
         }
+        this.reminders = setInterval(() => this.remind(), 30_000)
+    }
+
+    onremove() {
+        clearInterval(this.reminders)
+    }
+
+    reminders: ReturnType<typeof setInterval> | undefined
+
+    /** The meeting about to start that this person said they come to. */
+    upcoming: {channel: string; plan: Plan} | null = null
+
+    /**
+     * Ten minutes before a planned meeting this person answered Going or Maybe
+     * to: a notice on the page, and a notification when the tab is not looked
+     * at. Made here, on this device, from chats this page has open; the server
+     * cannot remind anybody of a meeting it cannot read.
+     */
+    remind() {
+        const c = chat()
+        const me = c.address
+        if (!me) return
+        const now = Date.now()
+        for (const [channel, messages] of c.histories) {
+            const meetings = meetingsOf(messages)
+            for (const o of meetings.objects.values()) {
+                if (o.kind !== 'plan' || this.s.reminded.has(o.id)) continue
+                const until = o.startMs - now
+                if (until <= 0 || until > 10 * 60000) continue
+                const answer = meetings.answers.get(o.id)?.get(me)
+                if (answer !== 'going' && answer !== 'maybe') continue
+                this.s.reminded.add(o.id)
+                this.upcoming = {channel, plan: o}
+                if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                    new Notification(o.title, {body: `Starts in ${Math.round(until / 60000)} min`, tag: `plan-${o.id}`})
+                }
+                m.redraw()
+            }
+        }
+    }
+
+    /** The reminder, until the meeting is joined or waved away. */
+    reminderBanner() {
+        const u = this.upcoming
+        if (!u) return null
+        const c = chat()
+        if (c.calls.active?.channel === u.channel || Date.now() > (u.plan.endMs ?? u.plan.startMs + 3600_000)) {
+            this.upcoming = null
+            return null
+        }
+        return (
+            <div class="chat-reminder" role="status">
+                {Icon('event')}
+                <span>
+                    <b>{u.plan.title}</b> · {relative(u.plan)} · {this.chatTitle(u.channel)}
+                </span>
+                <button class="chat-card-btn is-primary" onclick={() => this.startCall(u.channel, true)} type="button">
+                    Join
+                </button>
+                <button aria-label="Dismiss" class="chat-card-btn" onclick={() => (this.upcoming = null)} title="Dismiss" type="button">
+                    {Icon('close')}
+                </button>
+            </div>
+        )
     }
 
     onupdate() {
@@ -829,13 +967,14 @@ export class Chat extends MithrilComponent {
                     s.space === null ? 'is-spaces' : '',
                     inCall ? 'is-in-call' : '',
                     inCall && s.callFocus ? 'is-call-focus' : '',
-                    inCall && s.callFocus && s.callPanel === 'people' ? 'is-call-people' : '',
+                    inCall && s.callFocus && s.callPanel !== null ? 'is-call-people' : '',
                 ].join(' ')}
             >
                 {this.rail()}
                 {this.sidebar()}
                 <main class="chat-main">
                     {inCall && this.callBar()}
+                    {this.reminderBanner()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
                     {pane.kind === 'community' && this.communityPane(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
@@ -1323,6 +1462,15 @@ export class Chat extends MithrilComponent {
         this.s.field = ''
         this.s.field2 = ''
         closeMenus()
+    }
+
+    /** Plan a meeting in the chat open now: the next whole hour, an hour long. */
+    planMeeting() {
+        const next = new Date()
+        next.setMinutes(0, 0, 0)
+        next.setHours(next.getHours() + 1)
+        this.s.plan = {agenda: '', length: 60, text: '', title: '', when: localInput(next.getTime())}
+        this.dialog('plan')
     }
 
     /** The menu behind a person's name: message, and what this account's roles allow. */
@@ -1830,7 +1978,7 @@ export class Chat extends MithrilComponent {
                           })
                         : row('grid_view', 'Breakout rooms…', () => (s.callMenu = 'rooms')),
                     <hr />,
-                    row('call_end', 'End for everyone', () => calls.control('EndForAll'), {danger: true}),
+                    row('call_end', 'End for everyone', () => calls.endForAll(), {danger: true}),
                 ]}
             </div>
         )
@@ -1904,7 +2052,7 @@ export class Chat extends MithrilComponent {
             <div class="meet-pop is-menu is-leave" role="menu">
                 <div class="meet-menu-label">Leave the call?</div>
                 {row('logout', 'Leave', () => calls.hangUp(), {hint: 'The call goes on'})}
-                {row('call_end', 'End for everyone', () => calls.control('EndForAll'), {danger: true, hint: `${others.length} others leave too`})}
+                {row('call_end', 'End for everyone', () => calls.endForAll(), {danger: true, hint: `${others.length} others leave too`})}
             </div>
         )
         const dock = (
@@ -2098,6 +2246,17 @@ export class Chat extends MithrilComponent {
                         )}
                     </button>
                     <button
+                        class={s.callPanel === 'notes' && s.callFocus ? 'chat-call-swap is-on' : 'chat-call-swap'}
+                        onclick={() => {
+                            s.callFocus = true
+                            s.callPanel = s.callPanel === 'notes' ? null : 'notes'
+                        }}
+                        title="Notes, polls and the agenda"
+                    >
+                        {Icon('edit_note')}
+                        <span>Notes</span>
+                    </button>
+                    <button
                         class="chat-call-swap"
                         onclick={() => this.focusCall(!s.callFocus)}
                         title={s.callFocus ? 'Put the chat back in the middle' : 'Put the call in the middle'}
@@ -2118,7 +2277,211 @@ export class Chat extends MithrilComponent {
                         {menu && <div class="meet-scrim" onclick={() => (s.callMenu = null)} />}
                     </div>
                     {panel}
+                    {s.callFocus && s.callPanel === 'notes' && this.notesPanel(a.channel)}
                 </div>
+            </aside>
+        )
+    }
+
+    /**
+     * Notes, polls and the agenda beside the meeting. Notes and polls are
+     * messages in the call's chat, so they outlast the call and everybody in
+     * the chat sees them; the agenda is the plan's, moved on by a host.
+     */
+    notesPanel(channel: string) {
+        const c = chat()
+        const s = this.s
+        const calls = c.calls
+        const me = c.address
+        const messages = c.histories.get(channel) ?? []
+        const meetings = meetingsOf(messages)
+        const from = (calls.active?.since ?? calls.active?.started ?? Date.now()) - 60_000
+        const during = [...meetings.objects.entries()].filter(([msg]) => msg.sentAtMs >= from || msg.seq === null)
+        const notes = during.filter(([, o]) => o.kind === 'note') as [Message, Extract<MeetingObject, {kind: 'note'}>][]
+        const polls = during.filter(([, o]) => o.kind === 'poll') as [Message, Poll][]
+        const plan = currentPlan(meetings)
+        const hosting = calls.hosting()
+        const tab = s.notesTab
+        const tabButton = (t: PageState['notesTab'], label: string, n: number | null) => (
+            <button class={tab === t ? 'meet-tab is-on' : 'meet-tab'} onclick={() => (s.notesTab = t)} role="tab">
+                {label}
+                {n !== null && n > 0 && <span>{n}</span>}
+            </button>
+        )
+        const addNote = () => {
+            const text = s.note.text.trim()
+            if (!text) return
+            c.sendMeeting(channel, {kind: 'note', note: s.note.kind, text})
+            s.note = {...s.note, text: ''}
+        }
+        let body: m.Children
+        if (tab === 'notes') {
+            body = (
+                <>
+                    <div class="meet-notes">
+                        {notes.length === 0 && <p class="meet-empty">Nothing noted yet. What is said, decided and who does what goes here, for everybody.</p>}
+                        {notes.map(([msg, o]) => (
+                            <div class={`meet-note is-${o.note}`} key={msg.seq ?? `l${msg.local}`}>
+                                <span class="meet-note-kind">{NOTE_WORDS[o.note]}</span>
+                                <p>{o.text}</p>
+                                <small>{shown(msg.from, me)}</small>
+                            </div>
+                        ))}
+                    </div>
+                    <form
+                        class="meet-note-add"
+                        onsubmit={(e: Event) => {
+                            e.preventDefault()
+                            addNote()
+                        }}
+                    >
+                        <div class="meet-chips">
+                            {(['note', 'decision', 'action'] as NoteKind[]).map((k) => (
+                                <button class={s.note.kind === k ? 'meet-chip is-on' : 'meet-chip'} onclick={() => (s.note = {...s.note, kind: k})} type="button">
+                                    {NOTE_WORDS[k]}
+                                </button>
+                            ))}
+                        </div>
+                        <textarea
+                            oninput={(e: Event) => (s.note = {...s.note, text: (e.target as HTMLTextAreaElement).value})}
+                            onkeydown={(e: KeyboardEvent) => {
+                                e.stopPropagation()
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    addNote()
+                                }
+                            }}
+                            placeholder={s.note.kind === 'action' ? 'Who does what, by when' : s.note.kind === 'decision' ? 'What was decided' : 'A note for everybody'}
+                            rows={2}
+                            value={s.note.text}
+                        />
+                        <button class="meet-btn is-primary" disabled={!s.note.text.trim()} type="submit">
+                            Add
+                        </button>
+                    </form>
+                </>
+            )
+        } else if (tab === 'polls') {
+            const options = s.poll.options.split('\n').map((o) => o.trim()).filter(Boolean)
+            body = (
+                <>
+                    <div class="meet-notes">
+                        {polls.length === 0 && <p class="meet-empty">No polls in this meeting yet.</p>}
+                        {polls.map(([, p]) => this.pollCard(channel, p, meetings, me))}
+                    </div>
+                    <form
+                        class="meet-note-add"
+                        onsubmit={(e: Event) => {
+                            e.preventDefault()
+                            if (!s.poll.question.trim() || options.length < 2) return
+                            c.sendMeeting(channel, {id: newId(), kind: 'poll', multiple: s.poll.multiple, options: options.slice(0, 12), question: s.poll.question.trim()})
+                            s.poll = {multiple: false, options: '', question: ''}
+                        }}
+                    >
+                        <input
+                            oninput={(e: Event) => (s.poll.question = (e.target as HTMLInputElement).value)}
+                            onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+                            placeholder="Ask everybody something"
+                            value={s.poll.question}
+                        />
+                        <textarea
+                            oninput={(e: Event) => (s.poll.options = (e.target as HTMLTextAreaElement).value)}
+                            onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+                            placeholder={'Options, one a line'}
+                            rows={3}
+                            value={s.poll.options}
+                        />
+                        <label class="meet-check">
+                            <input checked={s.poll.multiple} onchange={(e: Event) => (s.poll.multiple = (e.target as HTMLInputElement).checked)} type="checkbox" />
+                            More than one may be chosen
+                        </label>
+                        <button class="meet-btn is-primary" disabled={!s.poll.question.trim() || options.length < 2} type="submit">
+                            Ask
+                        </button>
+                    </form>
+                </>
+            )
+        } else {
+            const at = calls.agenda()
+            const current = at && plan && at.plan === plan.id ? at : null
+            body = !plan ? (
+                <div class="meet-notes">
+                    <p class="meet-empty">
+                        No agenda. A meeting planned in this chat for about now brings its agenda here.
+                    </p>
+                    <button
+                        class="meet-btn"
+                        onclick={() => {
+                            this.open(channel)
+                            this.planMeeting()
+                        }}
+                    >
+                        {Icon('event')} Plan a meeting
+                    </button>
+                </div>
+            ) : (
+                <div class="meet-notes">
+                    <b class="meet-agenda-title">{plan.title}</b>
+                    {plan.agenda.length === 0 && <p class="meet-empty">The plan has no agenda.</p>}
+                    <ol class="meet-agenda">
+                        {plan.agenda.map((item, i) => {
+                            const now = current?.index === i
+                            const done = !!current && i < current.index
+                            const spent = now ? Math.floor((Date.now() - current!.startedMs) / 1000) : 0
+                            const over = now && item.minutes > 0 && spent > item.minutes * 60
+                            const clock = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+                            return (
+                                <li class={[now ? 'is-now' : '', done ? 'is-done' : '', over ? 'is-over' : ''].join(' ')} key={i}>
+                                    <span class="meet-agenda-name">{item.name}</span>
+                                    <span class="meet-agenda-time">
+                                        {now ? `${clock(spent)}${item.minutes ? ` / ${item.minutes}:00` : ''}` : item.minutes ? `${item.minutes} min` : ''}
+                                    </span>
+                                    {hosting && !now && (
+                                        <button class="meet-btn is-small" onclick={() => calls.setAgenda(plan.id, i)} title={`Start "${item.name}"`}>
+                                            Start
+                                        </button>
+                                    )}
+                                </li>
+                            )
+                        })}
+                    </ol>
+                    {hosting && current && (
+                        <div class="meet-agenda-keys">
+                            {current.index + 1 < plan.agenda.length && (
+                                <button class="meet-btn is-primary" onclick={() => calls.setAgenda(plan.id, current.index + 1)}>
+                                    Next: {plan.agenda[current.index + 1].name}
+                                </button>
+                            )}
+                            <button class="meet-btn" onclick={() => calls.setAgenda(plan.id, -1)}>
+                                Stop the agenda
+                            </button>
+                        </div>
+                    )}
+                    {!hosting && !current && <p class="meet-empty">A host starts the agenda; everybody sees where it is.</p>}
+                </div>
+            )
+        }
+        return (
+            <aside class="meet-panel is-notes" aria-label="Notes, polls and the agenda">
+                <header class="meet-panel-head">
+                    <div class="meet-tabs" role="tablist">
+                        {tabButton('notes', 'Notes', notes.length)}
+                        {tabButton('polls', 'Polls', polls.length)}
+                        {tabButton('agenda', 'Agenda', plan ? plan.agenda.length : null)}
+                    </div>
+                    <button aria-label="Close" class="meet-btn is-icon" onclick={() => (s.callPanel = null)} title="Close">
+                        {Icon('close')}
+                    </button>
+                </header>
+                <div class="meet-panel-body">{body}</div>
+                <footer class="meet-panel-foot is-note">
+                    <small>Posted in the chat, sealed. When the meeting ends a host's device gathers them into its record.</small>
+                    {hosting && (
+                        <button class="meet-btn" onclick={() => calls.postRecord(true)} title="Post the record now, as it stands">
+                            {Icon('description')} Post the record
+                        </button>
+                    )}
+                </footer>
             </aside>
         )
     }
@@ -2947,7 +3310,11 @@ export class Chat extends MithrilComponent {
         let lastDay = ''
         let prev: Message | null = null
         let toldShared = false
+        const meetings = meetingsOf(chat().histories.get(channel) ?? list)
         for (const msg of list) {
+            // An answer or a vote is counted on what it answers, not a line.
+            const o = meetings.objects.get(msg)
+            if (o && (o.kind === 'answer' || o.kind === 'vote')) continue
             // History from before this device joined is somebody's copy, not
             // the log, and says so once, above the first of it.
             if (msg.sharedBy && !toldShared) {
@@ -2980,6 +3347,7 @@ export class Chat extends MithrilComponent {
         const mod = moderates(topic?.community)
         const key = msg.seq !== null ? `s${msg.seq}` : `l${msg.local}`
         const editing = s.editing && s.editing.channel === channel && s.editing.seq === msg.seq
+        const object = meetingsOf(c.histories.get(channel) ?? []).objects.get(msg) ?? null
         return (
             <div class={['chat-msg', continued ? 'is-continued' : '', msg.seq === null ? 'is-pending' : ''].join(' ')} key={key}>
                 <div class="chat-msg-gutter">
@@ -3025,6 +3393,8 @@ export class Chat extends MithrilComponent {
                             />
                             <span class="chat-hint">Enter to save · Esc to cancel</span>
                         </form>
+                    ) : object ? (
+                        this.meetingCard(channel, msg, object, me)
                     ) : (
                         <p class="chat-msg-text">
                             {msg.picture ? <i>{msg.body || 'Picture'} (open it in the app)</i> : Body(msg.body, me)}
@@ -3085,7 +3455,7 @@ export class Chat extends MithrilComponent {
                         {msg.parent === null && (
                             <button onclick={() => (s.thread = msg.seq)} title="Reply in thread" type="button">💬</button>
                         )}
-                        {mine && (
+                        {mine && !object && (
                             <button
                                 onclick={() => (s.editing = {body: msg.body, channel, seq: msg.seq!})}
                                 title="Edit"
@@ -3125,6 +3495,193 @@ export class Chat extends MithrilComponent {
                         )}
                     </div>
                 )}
+            </div>
+        )
+    }
+
+    /** A plan, a poll, a note or a record, drawn as what it is. */
+    meetingCard(channel: string, msg: Message, o: MeetingObject, me: string | null) {
+        const meetings = meetingsOf(chat().histories.get(channel) ?? [])
+        switch (o.kind) {
+            case 'plan':
+                return this.planCard(channel, o, meetings, me)
+            case 'poll':
+                return this.pollCard(channel, o, meetings, me)
+            case 'note':
+                return (
+                    <p class={`chat-msg-text chat-note is-${o.note}`}>
+                        <span class="chat-note-kind">{NOTE_WORDS[o.note]}</span> {Body(o.text, me)}
+                    </p>
+                )
+            case 'record': {
+                const r = o.record
+                const mins = Math.max(1, Math.round((r.end_ms - r.start_ms) / 60000))
+                const kinds: NoteKind[] = ['decision', 'action', 'note']
+                return (
+                    <div class="chat-card chat-record">
+                        <div class="chat-card-kicker">{Icon('description')} Meeting record</div>
+                        <b class="chat-card-title">{r.title || 'Meeting record'}</b>
+                        <div class="chat-card-sub">
+                            {new Date(r.start_ms).toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})}, {time(r.start_ms)}–{time(r.end_ms)} · {mins} min
+                        </div>
+                        <div class="chat-card-people">
+                            {r.people.slice(0, 8).map((p) => Avatar(p, 22))}
+                            <span>{r.people.join(', ')}</span>
+                        </div>
+                        {kinds
+                            .filter((k) => r.notes.some((n) => n.kind === k))
+                            .map((k) => (
+                                <section class={`chat-record-part is-${k}`}>
+                                    <h5>{NOTE_WORDS[k]}s</h5>
+                                    <ul>
+                                        {r.notes
+                                            .filter((n) => n.kind === k)
+                                            .map((n) => (
+                                                <li>
+                                                    {n.text} <span class="chat-sub">· {n.by}</span>
+                                                </li>
+                                            ))}
+                                    </ul>
+                                </section>
+                            ))}
+                        {r.polls.map((p) => {
+                            const total = p.results.reduce((n, [, c]) => n + c, 0)
+                            return (
+                                <section class="chat-record-part">
+                                    <h5>{p.question}</h5>
+                                    {p.results.map(([option, count]) => (
+                                        <div class="chat-poll-bar is-static">
+                                            <i style={`width:${total ? Math.round((100 * count) / total) : 0}%`} />
+                                            <span>{option}</span>
+                                            <b>{count}</b>
+                                        </div>
+                                    ))}
+                                </section>
+                            )
+                        })}
+                        {r.transcript.length > 0 && (
+                            <details class="chat-record-transcript">
+                                <summary>Transcript · {r.transcript.length} lines, made on a device in the call</summary>
+                                {r.transcript.map(([who, text]) => (
+                                    <p>
+                                        <b>{who}</b> {text}
+                                    </p>
+                                ))}
+                            </details>
+                        )}
+                        <div class="chat-card-actions">
+                            <button
+                                class="chat-card-btn"
+                                onclick={() => void navigator.clipboard?.writeText(`${r.title}\n${recordText(r)}`)}
+                                type="button"
+                            >
+                                {Icon('content_copy')} Copy as text
+                            </button>
+                        </div>
+                    </div>
+                )
+            }
+            default:
+                return <p class="chat-msg-text">{msg.body}</p>
+        }
+    }
+
+    planCard(channel: string, plan: Plan, meetings: Meetings, me: string | null) {
+        const c = chat()
+        const answers = meetings.answers.get(plan.id) ?? new Map<string, Rsvp>()
+        const mine = me ? (answers.get(me) ?? null) : null
+        const who = (r: Rsvp) => [...answers.entries()].filter(([, a]) => a === r).map(([w]) => w)
+        const going = who('going')
+        const now = Date.now()
+        const end = plan.endMs ?? plan.startMs + 3600_000
+        const live = now >= plan.startMs - 15 * 60000 && now <= end
+        const inCall = c.calls.active?.channel === channel
+        const choice = (r: Rsvp, icon: string) => (
+            <button
+                class={mine === r ? 'chat-card-btn is-on' : 'chat-card-btn'}
+                onclick={() => c.sendMeeting(channel, {kind: 'answer', plan: plan.id, rsvp: r})}
+                type="button"
+            >
+                {Icon(icon)} {RSVP_WORDS[r]}
+                {who(r).length > 0 && <span class="chat-card-count">{who(r).length}</span>}
+            </button>
+        )
+        return (
+            <div class={live ? 'chat-card chat-plan is-live' : 'chat-card chat-plan'}>
+                <div class="chat-card-kicker">
+                    {Icon('event')} Meeting · <span class={live ? 'is-now' : ''}>{relative(plan, now)}</span>
+                </div>
+                <b class="chat-card-title">{plan.title}</b>
+                <div class="chat-card-sub">{when(plan)}</div>
+                {plan.text && <p class="chat-card-text">{Body(plan.text, me)}</p>}
+                {plan.agenda.length > 0 && (
+                    <ol class="chat-plan-agenda">
+                        {plan.agenda.map((i) => (
+                            <li>
+                                <span>{i.name}</span>
+                                {i.minutes > 0 && <small>{i.minutes} min</small>}
+                            </li>
+                        ))}
+                    </ol>
+                )}
+                {going.length > 0 && (
+                    <div class="chat-card-people">
+                        {going.slice(0, 8).map((p) => Avatar(p, 22))}
+                        <span>{going.map((p) => shown(p, me)).join(', ')} going</span>
+                    </div>
+                )}
+                <div class="chat-card-actions">
+                    {live && !inCall && (
+                        <button class="chat-card-btn is-primary" onclick={() => this.startCall(channel, true)} type="button">
+                            {Icon('videocam')} Join
+                        </button>
+                    )}
+                    {now <= end && [choice('going', 'check'), choice('maybe', 'help'), choice('no', 'close')]}
+                    <button
+                        class="chat-card-btn"
+                        onclick={() => download(`${plan.title || 'meeting'}.ics`, 'text/calendar', ics(plan, this.chatTitle(channel)))}
+                        title="A calendar file, with a reminder ten minutes before"
+                        type="button"
+                    >
+                        {Icon('calendar_add_on')} Add to calendar
+                    </button>
+                </div>
+            </div>
+        )
+    }
+
+    pollCard(channel: string, poll: Poll, meetings: Meetings, me: string | null) {
+        const c = chat()
+        const votes = meetings.votes.get(poll.id)
+        const counted = tally(poll, votes)
+        const mine = me ? (votes?.get(me) ?? []) : []
+        const voters = votes ? [...votes.values()].filter((v) => v.length).length : 0
+        const choose = (option: string) => {
+            const picked = mine.includes(option)
+            const choices = poll.multiple ? (picked ? mine.filter((x) => x !== option) : [...mine, option]) : picked ? [] : [option]
+            c.sendMeeting(channel, {choices, kind: 'vote', poll: poll.id})
+        }
+        return (
+            <div class="chat-card chat-poll">
+                <div class="chat-card-kicker">{Icon('bar_chart')} Poll · {poll.multiple ? 'choose any' : 'choose one'}</div>
+                <b class="chat-card-title">{poll.question}</b>
+                {counted.map(({option, who}) => (
+                    <button
+                        class={mine.includes(option) ? 'chat-poll-bar is-mine' : 'chat-poll-bar'}
+                        onclick={() => choose(option)}
+                        title={who.map((w) => shown(w, me)).join(', ')}
+                        type="button"
+                    >
+                        <i style={`width:${voters ? Math.round((100 * who.length) / voters) : 0}%`} />
+                        <span>
+                            {mine.includes(option) && Icon('check')} {option}
+                        </span>
+                        <b>{who.length}</b>
+                    </button>
+                ))}
+                <div class="chat-card-sub">
+                    {voters} {voters === 1 ? 'vote' : 'votes'} · everybody in the chat sees who chose what
+                </div>
             </div>
         )
     }
@@ -3183,6 +3740,29 @@ export class Chat extends MithrilComponent {
                     value={s.draft[key] ?? ''}
                 />
                 <div class="chat-composer-tools">
+                    {parent === null && (
+                        <span class="chat-composer-add">
+                            <button
+                                class="chat-composer-tool"
+                                onclick={() => this.planMeeting()}
+                                title="Plan a meeting: a call at a time, with an agenda"
+                                type="button"
+                            >
+                                {Icon('event')}
+                            </button>
+                            <button
+                                class="chat-composer-tool"
+                                onclick={() => {
+                                    s.poll = {multiple: false, options: '', question: ''}
+                                    this.dialog('poll')
+                                }}
+                                title="Ask a poll"
+                                type="button"
+                            >
+                                {Icon('bar_chart')}
+                            </button>
+                        </span>
+                    )}
                     <span class="chat-sub">🔐 end-to-end encrypted · Enter to send, Shift+Enter for a new line</span>
                     <Button disabled={!(s.draft[key] ?? '').trim()} size="sm" type="submit" variant="primary">Send</Button>
                 </div>
@@ -3302,6 +3882,68 @@ export class Chat extends MithrilComponent {
                 )
             case 'person':
                 return this.personDialog(open, close)
+            case 'plan': {
+                const channel = s.pane.kind === 'chat' ? s.pane.channel : null
+                const p = s.plan
+                const start = Date.parse(p.when)
+                return form(
+                    'Plan a meeting',
+                    <>
+                        <p class="chat-hint">A call in this chat at a time. Everybody here can answer whether they come and add it to their calendar.</p>
+                        <FieldText label="What" model={bind(s.plan, 'title')} placeholder="Q4 planning" />
+                        <div class="chat-dialog-row">
+                            <label class="chat-field">
+                                <span>When</span>
+                                <input
+                                    oninput={(e: Event) => (s.plan.when = (e.target as HTMLInputElement).value)}
+                                    type="datetime-local"
+                                    value={p.when}
+                                />
+                            </label>
+                            <FieldSelect
+                                label="How long"
+                                model={bind(s.plan, 'length')}
+                                options={[15, 30, 45, 60, 90, 120].map((v) => ({label: v < 60 ? `${v} min` : `${v / 60} h`, value: v}))}
+                            />
+                        </div>
+                        <FieldTextarea label="Agenda (one item a line; a number at the end is its minutes)" model={bind(s.plan, 'agenda')} placeholder={'Budget 10\nStage and sound 15\nWho does what 5'} />
+                        <FieldTextarea label="Anything else (optional)" model={bind(s.plan, 'text')} />
+                    </>,
+                    'Post the plan',
+                    () => {
+                        if (!channel) return
+                        c.sendMeeting(channel, {
+                            agenda: p.agenda.split('\n').map(agendaLine).filter((x) => x !== null).slice(0, 12),
+                            endMs: start + Number(p.length) * 60000,
+                            id: newId(),
+                            kind: 'plan',
+                            startMs: start,
+                            text: p.text.trim() || null,
+                            title: p.title.trim(),
+                        })
+                    },
+                    !!channel && !!p.title.trim() && Number.isFinite(start),
+                )
+            }
+            case 'poll': {
+                const channel = s.pane.kind === 'chat' ? s.pane.channel : null
+                const options = s.poll.options.split('\n').map((o) => o.trim()).filter(Boolean)
+                return form(
+                    'Ask a poll',
+                    <>
+                        <FieldText label="Question" model={bind(s.poll, 'question')} placeholder="Which day suits?" />
+                        <FieldTextarea label="Options, one a line" model={bind(s.poll, 'options')} placeholder={'Friday\nSaturday'} />
+                        <FieldCheckbox label="People may choose more than one" model={bind(s.poll, 'multiple')} />
+                        <p class="chat-hint">Votes are messages in this chat: everybody in it sees who chose what.</p>
+                    </>,
+                    'Ask',
+                    () => {
+                        if (!channel) return
+                        c.sendMeeting(channel, {id: newId(), kind: 'poll', multiple: s.poll.multiple, options: options.slice(0, 12), question: s.poll.question.trim()})
+                    },
+                    !!channel && !!s.poll.question.trim() && options.length >= 2,
+                )
+            }
         }
         return null
     }
