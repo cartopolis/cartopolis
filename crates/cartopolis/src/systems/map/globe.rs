@@ -1494,8 +1494,15 @@ fn spawn_globe_tile(
                                 crate::systems::tile_loader::decode_rendered(&png, GLOBE_TILE_PX)
                             });
                             if let Some(rgba) = reused {
+                                // Decoded *before* the lock. As a `push` argument it
+                                // ran with the sink held, mip chain and all, and the
+                                // main thread's `take_results` queued behind it: 7 ms a
+                                // frame of `update_globe_tiles` asleep on this mutex
+                                // while the camera turned and cached tiles came back
+                                // (`cargo perf`'s `turn` window, 2026-10-16).
+                                let tile = decode_globe_tile(rgba, true);
                                 if let Ok(mut g) = results.lock() {
-                                    g.push((key, TileFetch::Ok(decode_globe_tile(rgba, true))));
+                                    g.push((key, TileFetch::Ok(tile)));
                                 }
                                 return;
                             }
