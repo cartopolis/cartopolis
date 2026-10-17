@@ -564,6 +564,23 @@ pub fn disabled() -> bool {
 mod tests {
     use super::*;
 
+    /// Held by every test that sets or clears [`BACKDROP_ID`].
+    ///
+    /// The id is process-wide and libtest runs tests on parallel threads, so
+    /// without this one test's `publish` lands between another's `publish` and
+    /// its assertions — the backdrop then names the other test's texture, or
+    /// none, if the other has already called `forget`. Both glass-rectangle
+    /// tests failed that way together in a landing gate on 2026-10-17, after
+    /// passing in the three runs before it.
+    fn backdrop_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // A test that panicked while holding it has still put the id back or
+        // not; the next one sets its own either way, so poisoning is no reason
+        // to fail it too.
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The fills that get a backdrop are exactly the two the chrome calls glass.
     ///
     /// Worth pinning because the test is a *colour comparison*: a palette edit
@@ -592,6 +609,7 @@ mod tests {
     /// stays in.
     #[test]
     fn without_a_backdrop_the_shapes_are_left_alone() {
+        let _held = backdrop_lock();
         forget();
         let mut shapes = vec![egui::epaint::ClippedShape {
             clip_rect: egui::Rect::EVERYTHING,
@@ -617,6 +635,7 @@ mod tests {
     /// not 1.
     #[test]
     fn a_glass_rectangle_gains_a_backdrop_addressing_its_own_position() {
+        let _held = backdrop_lock();
         publish(egui::TextureId::User(7));
         let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(100.0, 100.0));
         let mut shapes = vec![egui::epaint::ClippedShape {
@@ -660,6 +679,7 @@ mod tests {
     /// A glass rectangle nested inside a group is still a glass rectangle.
     #[test]
     fn a_nested_glass_rectangle_is_found() {
+        let _held = backdrop_lock();
         publish(egui::TextureId::User(3));
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0));
         let mut shapes = vec![egui::epaint::ClippedShape {
