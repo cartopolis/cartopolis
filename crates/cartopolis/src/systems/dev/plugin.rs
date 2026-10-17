@@ -302,6 +302,7 @@ impl Plugin for PerfPlugin {
                 Update,
                 (
                     systems::perf::count_mesh_churn,
+                    systems::perf::count_material_churn,
                     // **Before `drive_capture`**, which is load-bearing: the
                     // capture path consumes its `saved` flag with a swap, so a
                     // system that needs to see the capture land has to look first.

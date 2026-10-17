@@ -263,6 +263,7 @@ struct Base {
     stalls: (u64, u64),
     workers: Vec<(&'static str, crate::platform::workers::stats::Totals)>,
     mesh_added: u64,
+    materials_modified: u64,
     frames: u32,
     wall_s: f32,
     /// The longest single frame in the window, seconds.
@@ -298,6 +299,39 @@ pub struct PerfProgress {
 pub struct MeshChurn {
     pub added: u64,
     pub modified: u64,
+    /// See [`count_material_churn`].
+    pub materials_modified: u64,
+}
+
+/// Count `Modified` events on the material families that exist per cell or per
+/// tile — hundreds of instances each — into [`MeshChurn::materials_modified`].
+///
+/// **A modified material is re-prepared on the render thread**: a new uniform
+/// buffer and a new bind group, which on Metal is a kernel round trip apiece. That
+/// is cheap for one material and is a frame for all of them, and "all of them" is
+/// what a system writing a shared value into every instance produces —
+/// `Assets::get_mut` marks the asset changed on the write whether or not the value
+/// moved. Three systems did exactly that on every frame of a camera turn and cost
+/// 12–17 ms of render thread between them (2026-10-16), invisible to every other
+/// column here. A still window should read ~0; a `turn` window a few per frame,
+/// for the tiles that genuinely arrive.
+pub fn count_material_churn(
+    mut ground: MessageReader<AssetEvent<crate::systems::ground_detail::GroundMaterial>>,
+    mut roads: MessageReader<AssetEvent<crate::systems::road_depth::RoadMaterial>>,
+    mut globe: MessageReader<AssetEvent<cartopolis_materials::globe_ocean::GlobeSurfaceMaterial>>,
+    mut standard: MessageReader<AssetEvent<StandardMaterial>>,
+    mut churn: ResMut<MeshChurn>,
+) {
+    fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> u64 {
+        events
+            .read()
+            .filter(|e| matches!(e, AssetEvent::Modified { .. }))
+            .count() as u64
+    }
+    churn.materials_modified += modified(&mut ground)
+        + modified(&mut roads)
+        + modified(&mut globe)
+        + modified(&mut standard);
 }
 
 /// Count mesh asset events.
@@ -479,6 +513,10 @@ pub struct Window {
     /// Mesh assets arriving per frame. On a settled window this should be ~0;
     /// whatever it is, is what the mesh allocator is being paid to process.
     pub mesh_added_per_frame: f64,
+    /// Ground, road, globe-tile and standard materials marked modified per frame,
+    /// each one a re-prepare on the render thread. See [`count_material_churn`].
+    #[serde(default)]
+    pub material_modified_per_frame: f64,
     /// What the streamed content occupies, in kB, split by what it is made of.
     ///
     /// The split is what makes it actionable: `tile_px` moves only the textures,
@@ -619,6 +657,7 @@ pub struct WindowSummary {
     pub stalls: Stat,
     pub stalled_ms: Stat,
     pub mesh_added_per_frame: Stat,
+    pub material_modified_per_frame: Stat,
     pub resident_kb: Stat,
     pub resident_image_kb: Stat,
     pub resident_mesh_kb: Stat,
@@ -725,6 +764,7 @@ fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary 
         stalls: all(|w| w.stalls as f64),
         stalled_ms: all(|w| w.stalled_ms as f64),
         mesh_added_per_frame: all(|w| w.mesh_added_per_frame),
+        material_modified_per_frame: all(|w| w.material_modified_per_frame),
         resident_kb: all(|w| w.resident_kb as f64),
         resident_image_kb: all(|w| w.resident_image_kb as f64),
         resident_mesh_kb: all(|w| w.resident_mesh_kb as f64),
@@ -1061,6 +1101,7 @@ fn take_base(readouts: &PerfReadouts) -> Base {
         stalls: crate::platform::watchdog::stall_totals(),
         workers: crate::platform::workers::stats::snapshot(),
         mesh_added: readouts.churn.added,
+        materials_modified: readouts.churn.materials_modified,
         frames: 0,
         wall_s: 0.0,
         frame_max_s: 0.0,
@@ -1187,6 +1228,11 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         worker_utilisation,
         mesh_added_per_frame: readouts.churn.added.saturating_sub(base.mesh_added) as f64
             / per_frame,
+        material_modified_per_frame: readouts
+            .churn
+            .materials_modified
+            .saturating_sub(base.materials_modified) as f64
+            / per_frame,
         resident_kb: readouts.uploads.resident_kb(),
         resident_image_kb: readouts.uploads.resident_image_kb(),
         resident_mesh_kb: readouts.uploads.resident_mesh_kb(),
@@ -1224,6 +1270,15 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
              read it as a streaming measurement."
         );
     }
+    if phase == "steady" && window.material_modified_per_frame >= 1.0 {
+        tracing::warn!(
+            scenario = %window.scenario,
+            material_modified_per_frame = format!("{:.1}", window.material_modified_per_frame),
+            "perf: materials are being marked modified on a still view — each one is \
+             re-prepared on the render thread every frame. Something is writing through \
+             `Assets::get_mut` without comparing first; see `count_material_churn`."
+        );
+    }
     log_window(&window);
     window
 }
@@ -1258,6 +1313,7 @@ fn log_window(w: &Window) {
         stalls = w.stalls,
         stalled_s = format!("{:.1}", w.stalled_ms as f64 / 1000.0),
         mesh_added_per_frame = format!("{:.1}", w.mesh_added_per_frame),
+        material_modified_per_frame = format!("{:.1}", w.material_modified_per_frame),
         resident_mb = format!(
             "{:.0} ({:.0} tex / {:.0} geo)",
             w.resident_kb as f64 / 1024.0,
