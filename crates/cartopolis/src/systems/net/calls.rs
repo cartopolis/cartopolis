@@ -230,6 +230,11 @@ pub struct Calls {
     /// Reactions in this device's call, newest last; dropped after
     /// [`REACTION_SECS`].
     pub reactions: Vec<Reaction>,
+    /// The newest line of captions per person, and when it came: made on
+    /// each speaker's own device and sent sealed (protocol 41).
+    pub captions: HashMap<u64, (String, web_time::Instant)>,
+    /// Finished lines of captions, (who, what), for the meeting record.
+    pub transcript: Vec<(String, String)>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
     pub request: Option<CallRequest>,
@@ -454,6 +459,20 @@ impl Calls {
             .as_ref()
             .and_then(|a| self.extras.get(&a.group).cloned())
             .unwrap_or_default()
+    }
+
+    /// The captions to show now: whoever spoke last, within five seconds.
+    #[must_use]
+    pub fn caption_now(&self) -> Option<(String, String)> {
+        let (p, (text, _)) = self
+            .captions
+            .iter()
+            .filter(|(_, (_, at))| at.elapsed().as_secs() < 5)
+            .max_by_key(|(_, (_, at))| *at)?;
+        Some((
+            self.name_of(*p).unwrap_or("Somebody").to_string(),
+            text.clone(),
+        ))
     }
 
     /// The reaction showing over a tile now, if any: the newest.
@@ -812,6 +831,7 @@ pub fn drive_calls(
                 if calls.active_group() == Some(group.as_slice()) {
                     calls.active = None;
                     calls.reactions.clear();
+                    calls.captions.clear();
                     calls.notice = Some(match reason {
                         CallEndReason::Removed { by } => format!("{by} removed you from the call"),
                         CallEndReason::Ended { by } => format!("{by} ended the call for everyone"),
@@ -833,12 +853,38 @@ pub fn drive_calls(
                         .filter(|e| e.epoch == epoch)
                         .and_then(|e| cartopolis_calls::events::open(&e.base_key, epoch, &sealed))
                         .and_then(|b| String::from_utf8(b).ok());
-                    if let Some(emoji) = opened.filter(|e| e.chars().count() <= 16) {
-                        calls.reactions.push(Reaction {
-                            participant,
-                            emoji,
-                            at: web_time::Instant::now(),
-                        });
+                    match opened {
+                        // A line of captions (`{"c": text, "f": final}`), made on
+                        // the speaker's own device.
+                        Some(text) if text.starts_with('{') => {
+                            #[derive(serde::Deserialize)]
+                            struct Line {
+                                c: String,
+                                #[serde(default)]
+                                f: bool,
+                            }
+                            if let Ok(line) = serde_json::from_str::<Line>(&text) {
+                                let text: String = line.c.chars().take(300).collect();
+                                if line.f {
+                                    let who = calls
+                                        .name_of(participant)
+                                        .unwrap_or("Somebody")
+                                        .to_string();
+                                    calls.transcript.push((who, text.clone()));
+                                }
+                                calls
+                                    .captions
+                                    .insert(participant, (text, web_time::Instant::now()));
+                            }
+                        }
+                        Some(emoji) if emoji.chars().count() <= 16 => {
+                            calls.reactions.push(Reaction {
+                                participant,
+                                emoji,
+                                at: web_time::Instant::now(),
+                            });
+                        }
+                        _ => {}
                     }
                 }
                 #[cfg(target_arch = "wasm32")]

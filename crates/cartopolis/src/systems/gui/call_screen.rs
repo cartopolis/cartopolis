@@ -888,6 +888,40 @@ fn in_call_screen(
     }
     let _ = me;
 
+    // ── Captions, above the keys, whether or not the keys show ─────────────
+    if let Some((who, text)) = calls.caption_now() {
+        let width = (full.width() - 2.0 * EDGE).min(640.0);
+        let galley = p.layout(
+            text,
+            egui::FontId::proportional(theme::SIZE_BODY + 2.0),
+            theme::CREAM,
+            width - 28.0,
+        );
+        let h = galley.size().y + 30.0;
+        let bottom = if show_controls {
+            full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE - 40.0
+        } else {
+            full.max.y - BOTTOM_EDGE
+        };
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(full.center().x - width * 0.5, bottom - h),
+            egui::vec2(width, h),
+        );
+        p.rect_filled(
+            rect,
+            egui::CornerRadius::same(14),
+            egui::Color32::from_black_alpha(205),
+        );
+        p.text(
+            rect.min + egui::vec2(14.0, 8.0),
+            egui::Align2::LEFT_TOP,
+            who,
+            egui::FontId::proportional(theme::SIZE_TINY),
+            theme::ACCENT_RING,
+        );
+        p.galley(rect.min + egui::vec2(14.0, 24.0), galley, theme::CREAM);
+    }
+
     // ── A sheet over it all ────────────────────────────────────────────────
     if let Some(sheet) = st.sheet {
         let shade = ui.interact(
