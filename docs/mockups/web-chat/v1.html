@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Web chat: Home and groups, v1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5.5h16v10.5H9.5L5 19.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/></symbol>
+    <symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.5a3.3 3.3 0 0 1 0 6.2M17.5 14a6 6 0 0 1 3.5 5.5"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="dots" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/></symbol>
+    <symbol id="phone" viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></symbol>
+    <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="belloff" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 9.5-4.9M18 11v5l1.5 2H8"/><path d="M10 20.5a2 2 0 0 0 4 0M4 4l16 16"/></symbol>
+    <symbol id="exit" viewBox="0 0 24 24"><path d="M14 4h5v16h-5"/><path d="M10 8l-4 4 4 4M6 12h10"/></symbol>
+    <symbol id="trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/></symbol>
+    <symbol id="userplus" viewBox="0 0 24 24"><circle cx="10" cy="8.5" r="3.3"/><path d="M4 19.5a6 6 0 0 1 12 0M18.5 8v6M15.5 11h6"/></symbol>
+    <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></symbol>
+    <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="people2" viewBox="0 0 24 24"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.5 19a5.5 5.5 0 0 1 11 0M10.5 19a5.5 5.5 0 0 1 11 0"/></symbol>
+  </defs>
+</svg>
+
+<h1>Web chat: <b>a Home list you can read, and groups you can leave</b></h1>
+<p class="lede">
+  The Community page's Home sidebar (<code>sideBody</code> in <code>components/pages/chat/chat.tsx</code>)
+  and what can be done to a group once it exists. Today a group can't be left, renamed or deleted
+  by anyone, including an admin. That is how <i>oosterparkwijk</i> got stuck.
+  Drawn in the web UI's own tokens (<code>src/css/theme.css</code>, dark half).
+  Marked <span class="new">NEW</span> where it does not exist today.
+</p>
+
+<!-- ───────────────────────────── 0. today ───────────────────────────── -->
+<section class="sec">
+  <h2><span>0</span>Today</h2>
+  <p class="cap">The screenshot from 2026-10-17: Home, with the group made by accident open.</p>
+  <div class="row">
+    <div class="today">
+      <img src="today.png" alt="today">
+      <div class="pin-n" style="left:340px;top:176px">1</div>
+      <div class="pin-n" style="left:96px;top:212px">2</div>
+      <div class="pin-n" style="left:300px;top:94px">3</div>
+      <div class="pin-n" style="left:620px;top:196px">4</div>
+      <div class="pin-n" style="left:44px;top:430px">5</div>
+    </div>
+    <div class="notes">
+      <ol class="problems">
+        <li><b>One cramped line per chat.</b> A 22 px avatar, 5 px of padding and nothing between rows, in a
+          260 px column. No last message and no time, although the worker already sends both
+          (<code>ChatSummary.preview</code>, <code>lastAtMs</code>) and only the sort uses them.</li>
+        <li><b>A group is a <code>⧉</code> in the border colour.</b> It reads as disabled, and people and
+          groups are mixed in one unlabelled list.</li>
+        <li><b>The header spends 140 px repeating the rail tile</b> (“Home · People and groups”) and has
+          no actions. Starting a chat is the rail's +, at the far bottom left.</li>
+        <li><b>An empty group is a dead end.</b> “Nothing said here yet”. Beyond the header's People
+          button (add somebody), there is no way to rename, mute, leave or delete it, and the header
+          says <i>2 people</i> without saying who.</li>
+        <li><b>A neighbourhood became a group.</b> The + menu describes a group as “A few people you
+          pick. Private.” and a community as “People who share several topics”. The word
+          <i>neighbourhood</i> only appears under Find.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 1. home ───────────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>Home: two lines per chat, people and groups apart</h2>
+  <p class="cap">The same page with the group's menu open. The sidebar is 300 px (from 260), each row is two lines, and the empty group says who is in it and what can be done.</p>
+  <div class="row">
+    <div class="win">
+      <div class="top">
+        <div class="wm"><img src="../../../assets/icon/cartopolis.svg" alt=""><span>carto<i>polis</i></span></div>
+        <div class="seg"><div class="on">Community <span class="badge q" style="background:rgba(15,20,22,.25);color:var(--on-accent)">2</span></div><div><span class="live"></span>World</div><div class="adm">Admin</div></div>
+        <div class="crumbs"><span>Community</span><span class="sep">›</span><span>Home</span><span class="sep">›</span><b>oosterparkwijk</b></div>
+        <div class="sp"></div>
+        <div class="me">J</div>
+      </div>
+      <div class="body">
+        <div class="rail">
+          <div class="tile on"><svg class="i"><use href="#chat"/></svg><span class="badge">2</span></div>
+          <div class="tile h4">G</div>
+          <div class="tile h2">O</div>
+          <div class="tile tool"><svg class="i"><use href="#search"/></svg></div>
+          <div class="tile tool"><svg class="i"><use href="#plus"/></svg></div>
+        </div>
+
+        <div class="side">
+          <div class="shead">
+            <h2>Home</h2>
+            <div class="ib b" title="New chat"><svg class="i s"><use href="#pen"/></svg></div>
+          </div>
+          <div class="filter"><svg class="i s"><use href="#search"/></svg>Find a person or group</div>
+
+          <div class="ssec">
+            <h3>People <span>3</span></h3>
+            <div class="it unread">
+              <div class="av h5">M</div>
+              <div class="b"><div class="l1"><b>mei</b><time>09:12</time></div><div class="l2"><span>see you Saturday at the bridge</span><span class="badge">2</span></div></div>
+            </div>
+            <div class="it">
+              <div class="av h1">S</div>
+              <div class="b"><div class="l1"><b>sanne</b><time>Tue</time></div><div class="l2"><span>You: I'll bring the long tables</span></div></div>
+            </div>
+            <div class="it">
+              <div class="av h6">D</div>
+              <div class="b"><div class="l1"><b>daan</b><time>Mon</time></div><div class="l2"><span><svg class="i xs" style="vertical-align:-1px"><use href="#pin"/></svg> Tables, south side</span></div></div>
+            </div>
+          </div>
+
+          <div class="ssec">
+            <h3>Groups <span>2</span></h3>
+            <div class="it on">
+              <div class="av grp h2">O<span class="gm"><svg class="i xs"><use href="#people2"/></svg></span></div>
+              <div class="b"><div class="l1"><b>oosterparkwijk</b><time>Thu</time></div><div class="l2"><span>You and mei · nothing said yet</span></div></div>
+              <div class="dots"><svg class="i s"><use href="#dots"/></svg></div>
+            </div>
+            <div class="it">
+              <div class="av grp h3">S<span class="gm"><svg class="i xs"><use href="#people2"/></svg></span></div>
+              <div class="b"><div class="l1"><b>Street party crew</b><time>Mon</time></div><div class="l2"><span>daan: I can bring two gazebos</span></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="menu" style="left:356px;top:404px;width:270px">
+          <div><svg class="i s"><use href="#pen"/></svg>Rename… <span class="new">NEW</span></div>
+          <div><svg class="i s"><use href="#userplus"/></svg>Add people…</div>
+          <div><svg class="i s"><use href="#belloff"/></svg>Mute</div>
+          <hr>
+          <div class="dan"><svg class="i s"><use href="#exit"/></svg>Leave group <span class="new">NEW</span></div>
+          <div class="dan h"><svg class="i s"><use href="#trash"/></svg>Delete for everyone… <span class="new">NEW</span></div>
+        </div>
+
+        <div class="main">
+          <div class="mhead">
+            <div class="av grp h2">O</div>
+            <div class="t"><b>oosterparkwijk</b><span><svg class="i xs"><use href="#lock"/></svg>Encrypted · you and mei · made by you on 16 Oct</span></div>
+            <div class="btn"><svg class="i s"><use href="#userplus"/></svg>Add people</div>
+            <div class="ib"><svg class="i"><use href="#phone"/></svg></div>
+            <div class="ib b"><svg class="i"><use href="#dots"/></svg></div>
+          </div>
+          <div class="mbody">
+            <div class="av lg grp h2">O</div>
+            <h4>oosterparkwijk</h4>
+            <p>A private group. Only the people in it can read what is said here.</p>
+            <div class="peeps"><div class="av xs h4">J</div>you <span style="color:var(--faint)">·</span><div class="av xs h5">M</div>mei</div>
+            <div class="acts"><div class="btn"><svg class="i s"><use href="#userplus"/></svg>Add people</div><div class="btn ghost"><svg class="i s"><use href="#pen"/></svg>Rename</div></div>
+            <p class="hintline">For a club, a team or a neighbourhood that others can find and ask to join, <a>start a community</a> instead.</p>
+          </div>
+          <div class="composer"><svg class="i"><use href="#plus"/></svg><span>Message oosterparkwijk</span><svg class="i"><use href="#send"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>The rows</h3>
+      <ul>
+        <li><b>Two lines</b>: name and time, then the last message with the unread count.
+          Both come from the worker's <code>ChatSummary</code>, so this is page-side only.
+          A 38 px avatar, 8 px padding, 2 px between rows. <span class="new">NEW</span></li>
+        <li><b>People, then groups</b>, each newest first, with a count.</li>
+        <li><b>A group is a tile</b>: rounded square in its hue with a small people badge, the
+          shape the rail uses for communities. It replaces <code>⧉</code>.</li>
+        <li>An empty group says who is in it: “You and mei · nothing said yet”.</li>
+        <li>The current row is the accent-soft fill. Hovering a group shows its <b>⋯</b>.</li>
+      </ul>
+      <h3>The header</h3>
+      <ul>
+        <li>“Home” and a <b>new chat</b> button where the list is, which opens the + menu (section 3).
+          The rail's + stays.</li>
+        <li>A <b>filter</b> field over the list, once there are more chats than fit. <span class="new">NEW</span></li>
+      </ul>
+      <h3>An open group</h3>
+      <ul>
+        <li>The header names the people, not only a count, and who made it and when.</li>
+        <li>Empty, it offers <b>Add people</b> and <b>Rename</b>, and one line pointing at communities
+          for what a group is not.</li>
+        <li><b>⋯</b> holds Rename, Add people, Mute, Leave group and Delete for everyone (section 2).
+          Add people is today's People dialog (<code>dialog('members')</code>). Mute exists per chat
+          (<code>setMuted</code>) but is only offered for topics.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 2. leave and delete ───────────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>Leaving and deleting a group, and what an admin can do</h2>
+  <p class="cap">None of this exists. It needs a protocol revision and a server change, modelled on how communities already do it (<code>communities::leave</code>, <code>communities::delete</code>).</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:420px;height:300px;display:grid;place-items:center">
+        <div class="scrim"></div>
+        <div class="dlg">
+          <h4><svg class="i" style="color:var(--danger)"><use href="#trash"/></svg>Delete oosterparkwijk for everyone?</h4>
+          <p>You made this group, so you can delete it. It disappears for <b>mei</b> too, and the
+            server deletes its sealed messages.</p>
+          <p>This can't be undone.</p>
+          <div class="acts"><div class="btn">Cancel</div><div class="btn dan">Delete group</div></div>
+        </div>
+      </div>
+      <p class="fcap" style="max-width:420px"><b>Delete for everyone</b>, offered to the group's maker
+        (<code>e2ee_groups.created_by</code>). Every member's device is told and forgets the
+        group, the way a deleted community's topics are forgotten (<code>e2ee::topics_left</code>,
+        widened from topics to groups).</p>
+    </div>
+    <div>
+      <div class="frame" style="width:420px;height:300px;display:grid;place-items:center">
+        <div class="scrim"></div>
+        <div class="dlg">
+          <h4><svg class="i" style="color:var(--danger)"><use href="#exit"/></svg>Leave Street party crew?</h4>
+          <p>The other <b>3 people</b> keep the group. You stop receiving it, and this browser forgets
+            its keys, so you can't read it again unless somebody adds you back.</p>
+          <div class="acts"><div class="btn">Cancel</div><div class="btn dan">Leave</div></div>
+        </div>
+      </div>
+      <p class="fcap" style="max-width:420px"><b>Leave</b>, for anyone in a group. The server stops delivering to you, and the
+        next member to come online commits your removal from the encrypted group, as removing someone from a topic already
+        does.</p>
+    </div>
+    <div style="flex:1">
+      <div class="frame admin">
+        <div class="ahead"><h4>Groups <span class="new">NEW</span></h4><p>Admin › Content. Private groups on this server. Their names and messages are sealed, so this is what the server knows.</p></div>
+        <table>
+          <tr><th>Group</th><th>Made by</th><th>People</th><th>Made</th><th>Last entry</th><th></th></tr>
+          <tr><td><span class="sealed">sealed</span> · 3f9a…c21</td><td>jeroen</td><td><div class="ppl"><div class="av xs h4">J</div><div class="av xs h5">M</div>2</div></td><td class="d">16 Oct</td><td class="d">16 Oct</td><td><div class="btn">Delete…</div></td></tr>
+          <tr><td><span class="sealed">sealed</span> · 81d0…4ae</td><td>daan</td><td><div class="ppl"><div class="av xs h6">D</div><div class="av xs h1">S</div><div class="av xs h5">M</div>4</div></td><td class="d">2 Oct</td><td class="d">13 Oct</td><td><div class="btn">Delete…</div></td></tr>
+        </table>
+        <div class="goldbar"><svg class="i s"><use href="#shield"/></svg>Deleting needs the reports-triage permission, the same one that may delete a community.</div>
+      </div>
+      <p class="fcap" style="max-width:none"><b>Admin › Content › Groups</b>, for an operator. The server never has a group's name, so the
+        operator finds it by who made it, who is in it and when. Optional: the maker's own
+        Delete covers <i>oosterparkwijk</i>. This is for a group whose maker is gone or abusive.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 3. new menu and phone ───────────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>The + menu says what each thing is for, and the phone list</h2>
+  <p class="cap">The same four choices, reordered and reworded so a neighbourhood lands on a community. On a phone, Home is the same rows at full width.</p>
+  <div class="frames">
+    <div>
+      <div class="frame" style="width:440px;height:300px;background:var(--surface)">
+        <div class="menu" style="position:absolute;left:20px;top:20px;width:400px">
+          <div class="big"><b><svg class="i s"><use href="#chat"/></svg>Message a person</b><span>Just the two of you. Private.</span></div>
+          <div class="big h"><b><svg class="i s"><use href="#people2"/></svg>Start a group</b><span>A private chat for a few people you pick. Nobody else can find it or join.</span></div>
+          <hr>
+          <div class="big"><b><svg class="i s"><use href="#users"/></svg>Start a community</b><span>A club, team or neighbourhood: topics, a place on the map, and people can find it and ask to join.</span></div>
+          <div class="big"><b><svg class="i s"><use href="#search"/></svg>Find a community</b><span>Clubs, teams and neighbourhoods here</span></div>
+        </div>
+      </div>
+      <p class="fcap">Today: “A few people you pick. Private.” against “People who share several topics”.
+        The difference that matters is <b>who can find it</b>, so both lines now say that.
+        Clubs, teams and neighbourhoods get named under Start, not only under Find.</p>
+    </div>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="notch"></span><span>5G ▮▮▮</span></div>
+      <div class="top" style="border:0;background:var(--surface)">
+        <div class="wm"><img src="../../../assets/icon/cartopolis.svg" alt=""></div>
+        <div class="seg"><div class="on">Community</div><div><span class="live"></span>World</div><div class="adm">Admin</div></div>
+      </div>
+      <div class="back">‹ Community</div>
+      <div class="side" style="width:auto;border:0">
+        <div class="shead"><h2>Home</h2><div class="ib b"><svg class="i s"><use href="#pen"/></svg></div></div>
+        <div class="filter"><svg class="i s"><use href="#search"/></svg>Find a person or group</div>
+        <div class="ssec">
+          <h3>People <span>3</span></h3>
+          <div class="it unread"><div class="av h5">M</div><div class="b"><div class="l1"><b>mei</b><time>09:12</time></div><div class="l2"><span>see you Saturday at the bridge</span><span class="badge">2</span></div></div></div>
+          <div class="it"><div class="av h1">S</div><div class="b"><div class="l1"><b>sanne</b><time>Tue</time></div><div class="l2"><span>You: I'll bring the long tables</span></div></div></div>
+          <div class="it"><div class="av h6">D</div><div class="b"><div class="l1"><b>daan</b><time>Mon</time></div><div class="l2"><span>Tables, south side</span></div></div></div>
+        </div>
+        <div class="ssec">
+          <h3>Groups <span>2</span></h3>
+          <div class="it"><div class="av grp h2">O<span class="gm"><svg class="i xs"><use href="#people2"/></svg></span></div><div class="b"><div class="l1"><b>oosterparkwijk</b><time>Thu</time></div><div class="l2"><span>You and mei · nothing said yet</span></div></div></div>
+          <div class="it"><div class="av grp h3">S<span class="gm"><svg class="i xs"><use href="#people2"/></svg></span></div><div class="b"><div class="l1"><b>Street party crew</b><time>Mon</time></div><div class="l2"><span>daan: I can bring two gazebos</span></div></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes" style="padding-top:4px">
+      <h3>On a phone</h3>
+      <ul>
+        <li>The phone layout already shows Home as a full-width list (<code>home.css</code>, under 760 px).
+          It gets the same two-line rows, at 44 px avatars.</li>
+        <li>A group's ⋯ is a long press on the row. The same menu, as a sheet.</li>
+      </ul>
+      <h3>What it takes</h3>
+      <table class="t">
+        <tr><th>Piece</th><th>Where</th></tr>
+        <tr><td>Two-line rows, sections, tiles, header, filter</td><td>page only: <code>chat.tsx</code>, <code>chat.css</code>, <code>home.css</code></td></tr>
+        <tr><td>Group header and empty state</td><td>page only: people come from <code>ChatSummary.people</code></td></tr>
+        <tr><td>+ menu wording</td><td>page only</td></tr>
+        <tr><td>Rename</td><td>engine: a <code>GroupName</code> payload already exists, so this is a send, not a new message</td></tr>
+        <tr><td>Leave, Delete for everyone</td><td>protocol revision + <code>e2ee.rs</code> + <code>cartopolis_chat</code>, so the app gets them too</td></tr>
+        <tr><td>Admin › Content › Groups</td><td><code>/api/admin/groups</code> + an admin page</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 4. decide ───────────────────────────── -->
+<section class="sec">
+  <h2><span>4</span>To decide</h2>
+  <div class="decide">
+    <div><h4>Who may delete a group for everyone?</h4>
+      <p>Drawn: <b>the person who made it</b>, as the owner deletes a community. The alternative is any
+        member, which is simpler and lets one person end a chat the others wanted.</p></div>
+    <div><h4>Does Admin get a Groups page?</h4>
+      <p>Drawn: <b>yes, as metadata only</b>, deleting under the reports-triage permission. Without it, a group whose
+        maker has left the server can never be removed.</p></div>
+    <div><h4>oosterparkwijk, now</h4>
+      <p>Wait for <b>Delete for everyone</b>, then remove it from its menu. Deleting its rows by hand on the server
+        stops delivery but leaves it in every browser's list, because nothing tells a device that a
+        plain group is gone.</p></div>
+    <div><h4>Rename in this round?</h4>
+      <p>Drawn: <b>yes</b>. It is the cheapest fix for a group that was right but badly named, and the payload
+        exists already.</p></div>
+  </div>
+</section>
+
+</body>
+</html>
