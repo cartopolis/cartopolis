@@ -22,7 +22,7 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output as RtcOutput, Rtc};
 
 use crate::media::Codec;
-use crate::media::{ParticipantId, TrackInfo};
+use crate::media::{Kind, ParticipantId, TrackInfo};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -62,9 +62,10 @@ pub enum Output {
         destination: SocketAddr,
         contents: Vec<u8>,
     },
-    /// A sealed frame from another participant.
+    /// A sealed frame from another participant's microphone, camera or screen.
     Media {
         from: ParticipantId,
+        kind: Kind,
         codec: Codec,
         sealed: Vec<u8>,
     },
@@ -92,6 +93,8 @@ pub struct Link {
     pending_up: Option<SdpPendingOffer>,
     audio: Mid,
     video: Option<Mid>,
+    /// A shared screen's track, offered from the start like the camera.
+    screen: Option<Mid>,
     /// Down-connection tracks by mid, as the last offer named them.
     tracks: HashMap<Mid, TrackInfo>,
     connected: bool,
@@ -115,6 +118,7 @@ impl Link {
         up_local: SocketAddr,
         down_local: SocketAddr,
         video: bool,
+        screen: bool,
     ) -> Result<(Self, String), Error> {
         crate::install_crypto();
         let mut up = Rtc::new(now);
@@ -128,6 +132,8 @@ impl Link {
         let audio = change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
         let video = video
             .then(|| change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None));
+        let screen = screen
+            .then(|| change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None));
         let (offer, pending) = change
             .apply()
             .ok_or_else(|| Error::Rtc("empty offer".into()))?;
@@ -140,6 +146,7 @@ impl Link {
                 pending_up: Some(pending),
                 audio,
                 video,
+                screen,
                 tracks: HashMap::new(),
                 connected: false,
                 failed: None,
@@ -192,8 +199,16 @@ impl Link {
         self.connected
     }
 
-    /// Send one sealed frame. `time` is the frame's capture time; RTP
-    /// timestamps are derived from it at the codec's clock rate.
+    /// The media id of the screen track in the join's offer, for
+    /// `CallJoin.screen`, so the forwarder can tell it from the camera.
+    #[must_use]
+    pub fn screen_mid(&self) -> Option<String> {
+        self.screen.map(|m| m.to_string())
+    }
+
+    /// Send one sealed frame of the microphone or the camera. `time` is the
+    /// frame's capture time; RTP timestamps are derived from it at the codec's
+    /// clock rate.
     pub fn send(
         &mut self,
         now: Instant,
@@ -201,10 +216,33 @@ impl Link {
         time: Duration,
         sealed: Vec<u8>,
     ) -> Result<(), Error> {
+        self.send_on(now, codec, false, time, sealed)
+    }
+
+    /// [`Link::send`] for a shared screen's picture.
+    pub fn send_screen(
+        &mut self,
+        now: Instant,
+        codec: Codec,
+        time: Duration,
+        sealed: Vec<u8>,
+    ) -> Result<(), Error> {
+        self.send_on(now, codec, true, time, sealed)
+    }
+
+    fn send_on(
+        &mut self,
+        now: Instant,
+        codec: Codec,
+        screen: bool,
+        time: Duration,
+        sealed: Vec<u8>,
+    ) -> Result<(), Error> {
+        let picture = if screen { self.screen } else { self.video };
         let (mid, want, rate) = match codec {
             Codec::Opus => (self.audio, RtpCodec::Opus, Frequency::FORTY_EIGHT_KHZ),
             Codec::Vp8 | Codec::Vp9 => (
-                self.video.ok_or(Error::NotSending(codec))?,
+                picture.ok_or(Error::NotSending(codec))?,
                 rtp_codec(codec),
                 Frequency::NINETY_KHZ,
             ),
@@ -224,14 +262,14 @@ impl Link {
             .map_err(rtc_err)
     }
 
-    /// Ask `from` for a full picture: its video stopped decoding (a lost
-    /// packet took a reference frame with it). Goes to the forwarder, which
-    /// passes it on, throttled.
-    pub fn request_keyframe(&mut self, from: ParticipantId) {
+    /// Ask `from` for a full picture of its camera or screen (`kind`): it
+    /// stopped decoding (a lost packet took a reference frame with it). Goes to
+    /// the forwarder, which passes it on, throttled.
+    pub fn request_keyframe(&mut self, from: ParticipantId, kind: Kind) {
         let mids: Vec<Mid> = self
             .tracks
             .iter()
-            .filter(|(_, t)| t.from == from && t.kind == crate::media::Kind::Video)
+            .filter(|(_, t)| t.from == from && t.kind == kind)
             .map(|(mid, _)| *mid)
             .collect();
         for mid in mids {
@@ -325,11 +363,14 @@ impl Link {
                                 RtpCodec::Vp9 => Codec::Vp9,
                                 _ => continue,
                             };
-                            let Some(from) = self.tracks.get(&d.mid).map(|t| t.from) else {
+                            let Some((from, kind)) =
+                                self.tracks.get(&d.mid).map(|t| (t.from, t.kind))
+                            else {
                                 continue;
                             };
                             out.push(Output::Media {
                                 from,
+                                kind,
                                 codec,
                                 sealed: d.data.to_vec(),
                             });
@@ -424,9 +465,10 @@ mod tests {
                 up.local_addr().unwrap(),
                 down.local_addr().unwrap(),
                 true,
+                false,
             )
             .unwrap();
-            let (id, answer) = sfu.join(now, room.clone(), &offer).unwrap();
+            let (id, answer) = sfu.join(now, room.clone(), &offer, None).unwrap();
             link.accept_answer(&answer).unwrap();
             Leg2 {
                 link,
@@ -556,9 +598,10 @@ mod tests {
                     up.local_addr().unwrap(),
                     down.local_addr().unwrap(),
                     true,
+                    false,
                 )
                 .unwrap();
-                let (id, answer) = sfu.join(now, g.clone(), &offer).unwrap();
+                let (id, answer) = sfu.join(now, g.clone(), &offer, None).unwrap();
                 link.accept_answer(&answer).unwrap();
                 let e = d.call_epoch(&g, BASE_KEY_LEN).unwrap();
                 let mut keys = CallKeys::new();
@@ -637,6 +680,7 @@ mod tests {
                             from,
                             codec,
                             sealed,
+                            ..
                         } => {
                             let opened = p.keys.open(codec, &sealed).expect("a member opens it");
                             p.heard.push((from, opened.sender, opened.frame));

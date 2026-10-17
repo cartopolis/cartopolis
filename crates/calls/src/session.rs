@@ -32,7 +32,10 @@ use std::time::{Duration, Instant};
 
 use crate::keys::CallKeys;
 use crate::link::{Leg, Link, Output};
-use crate::media::{Codec, ParticipantId, TrackInfo};
+use crate::media::{Codec, Kind, ParticipantId, TrackInfo};
+
+/// Whose pictures, and which of them: a camera or a shared screen.
+pub type Source = (ParticipantId, Kind);
 use crate::opus;
 use crate::video;
 
@@ -119,14 +122,14 @@ pub struct Picture {
 /// Shared between the session and its decoder thread.
 #[derive(Default)]
 struct Shared {
-    /// The newest picture per person; replaced, never queued.
-    pictures: Mutex<HashMap<ParticipantId, Picture>>,
+    /// The newest picture per person and source; replaced, never queued.
+    pictures: Mutex<HashMap<Source, Picture>>,
     /// Whether anybody is looking: while the call screen is folded away
     /// nothing is decoded at all.
     video_wanted: AtomicBool,
     /// Senders whose stream has a hole in it (a frame dropped before it was
     /// decoded): the decoder skips them until their next keyframe.
-    resync: Mutex<HashSet<ParticipantId>>,
+    resync: Mutex<HashSet<Source>>,
     /// The size the encoder sends, landscape, packed `width << 32 | height`:
     /// set by the encoder thread once it knows (hardware sends more), read by
     /// the app to tell the camera ([`Session::send_size`]).
@@ -264,8 +267,9 @@ impl Session {
             .unwrap_or_default()
     }
 
-    /// The newest picture from each person since last asked.
-    pub fn take_pictures(&self) -> Vec<(ParticipantId, Picture)> {
+    /// The newest picture from each person's camera and screen since last
+    /// asked.
+    pub fn take_pictures(&self) -> Vec<(Source, Picture)> {
         self.shared
             .pictures
             .lock()
@@ -415,23 +419,23 @@ impl Drop for VideoEncoder {
 /// frames queued behind it. Converts each picture for display as it goes, so
 /// the app's main thread only uploads.
 struct VideoDecoder {
-    tx: Option<mpsc::SyncSender<(ParticipantId, Codec, Vec<u8>)>>,
-    /// Senders whose stream would not decode: ask them for a keyframe.
-    broken: mpsc::Receiver<ParticipantId>,
+    tx: Option<mpsc::SyncSender<(Source, Codec, Vec<u8>)>>,
+    /// Streams that would not decode: ask their senders for a keyframe.
+    broken: mpsc::Receiver<Source>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl VideoDecoder {
     fn start(shared: Arc<Shared>) -> Self {
-        let (tx, frames) = mpsc::sync_channel::<(ParticipantId, Codec, Vec<u8>)>(DECODE_QUEUE);
+        let (tx, frames) = mpsc::sync_channel::<(Source, Codec, Vec<u8>)>(DECODE_QUEUE);
         let (broken_tx, broken) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("call-video-in".into())
             .spawn(move || {
-                let mut decoders: HashMap<ParticipantId, (video::Decoder, u64)> = HashMap::new();
+                let mut decoders: HashMap<Source, (video::Decoder, u64)> = HashMap::new();
                 // Waiting for a keyframe: a delta refers to a picture this
                 // decoder never saw, and would decode to garbage or fail.
-                let mut waiting: HashSet<ParticipantId> = HashSet::new();
+                let mut waiting: HashSet<Source> = HashSet::new();
                 let mut was_wanted = true;
                 while let Ok((from, codec, frame)) = frames.recv() {
                     let wanted = shared.video_wanted.load(Ordering::Relaxed);
@@ -493,7 +497,7 @@ impl VideoDecoder {
 
     /// Queue a frame for decoding. `false` if the queue was full and it was
     /// dropped: the stream now has a hole, and needs a keyframe.
-    fn offer(&self, from: ParticipantId, codec: Codec, frame: Vec<u8>) -> bool {
+    fn offer(&self, from: Source, codec: Codec, frame: Vec<u8>) -> bool {
         self.tx
             .as_ref()
             .is_some_and(|tx| tx.try_send((from, codec, frame)).is_ok())
@@ -531,6 +535,7 @@ fn run(
         up.local_addr().map_err(|e| e.to_string())?,
         down.local_addr().map_err(|e| e.to_string())?,
         send_video,
+        false,
     )
     .map_err(|e| e.to_string())?;
     events.send(Event::Offer(offer)).map_err(|_| "app gone")?;
@@ -543,7 +548,7 @@ fn run(
     // it, so a picture the busy encoder dropped leaves a gap in time rather
     // than pulling every later picture earlier.
     let mut first_picture: Option<Instant> = None;
-    let mut asked_keyframe: HashMap<ParticipantId, Instant> = HashMap::new();
+    let mut asked_keyframe: HashMap<Source, Instant> = HashMap::new();
 
     let mut keys = CallKeys::new();
     let mut encoder = opus::Encoder::new(rate).map_err(|e| e.to_string())?;
@@ -618,7 +623,7 @@ fn run(
                 .is_none_or(|at| now.duration_since(*at) >= KEYFRAME_ASK_EVERY);
             if due {
                 asked_keyframe.insert(from, now);
-                link.request_keyframe(from);
+                link.request_keyframe(from.0, from.1);
             }
         }
 
@@ -642,6 +647,7 @@ fn run(
                 }
                 Output::Media {
                     from,
+                    kind,
                     codec,
                     sealed,
                 } => {
@@ -651,16 +657,17 @@ fn run(
                         continue;
                     };
                     if codec.is_video() {
-                        if !video_decoder.offer(from, codec, opened.frame) {
+                        let source = (from, kind);
+                        if !video_decoder.offer(source, codec, opened.frame) {
                             if let Ok(mut gaps) = shared.resync.lock() {
-                                gaps.insert(from);
+                                gaps.insert(source);
                             }
                             if asked_keyframe
-                                .get(&from)
+                                .get(&source)
                                 .is_none_or(|at| now.duration_since(*at) >= KEYFRAME_ASK_EVERY)
                             {
-                                asked_keyframe.insert(from, now);
-                                link.request_keyframe(from);
+                                asked_keyframe.insert(source, now);
+                                link.request_keyframe(from, kind);
                             }
                         }
                         continue;
@@ -781,7 +788,7 @@ mod tests {
             let (id, answer) = sfu
                 .lock()
                 .unwrap()
-                .join(Instant::now(), g.clone(), &offer)
+                .join(Instant::now(), g.clone(), &offer, None)
                 .unwrap();
             ids.push(id);
             session.joined(answer);
@@ -826,7 +833,7 @@ mod tests {
                 }
             }
             for (from, picture) in sb.take_pictures() {
-                assert_eq!(from, ids[0]);
+                assert_eq!(from, (ids[0], Kind::Video));
                 assert_eq!(
                     picture.rgba.len(),
                     (picture.width * picture.height * 4) as usize

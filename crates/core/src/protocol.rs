@@ -195,6 +195,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "community pictures, places and invite links — CommunitySettings.picture and .place, CommunityListing.picture, .place and .distance_m, DirectoryOrder::Near with CommunityDirectory.near, and CommunityInviteCreate / CommunityInvite / CommunityInviteLookup / CommunityJoinInvite (docs/notes/communities.md)",
     },
+    ProtocolRevision {
+        version: 41,
+        adr: "",
+        summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted; CallRoster.settings), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, and CallWatch says whose cameras a device draws (docs/notes/calls.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -313,6 +318,11 @@ pub enum MessageKind {
     CommunityInvite = 108,
     CommunityInviteLookup = 109,
     CommunityJoinInvite = 110,
+    CallControl = 111,
+    CallEnded = 112,
+    CallReact = 113,
+    CallReacted = 114,
+    CallWatch = 115,
 }
 
 impl MessageKind {
@@ -420,6 +430,11 @@ impl MessageKind {
             108 => Some(Self::CommunityInvite),
             109 => Some(Self::CommunityInviteLookup),
             110 => Some(Self::CommunityJoinInvite),
+            111 => Some(Self::CallControl),
+            112 => Some(Self::CallEnded),
+            113 => Some(Self::CallReact),
+            114 => Some(Self::CallReacted),
+            115 => Some(Self::CallWatch),
             _ => None,
         }
     }
@@ -1242,6 +1257,10 @@ pub enum NetMessage {
         request_id: u32,
         group: Vec<u8>,
         offer: String,
+        /// The media id in `offer` that carries a shared screen (protocol 41).
+        /// Offered from the start, like the camera, so sharing later needs no
+        /// renegotiation; `None` from a device that cannot share.
+        screen: Option<String>,
     },
     /// Server: in the call, with the forwarder's answer. `participant` is this
     /// device's number in the call, which [`NetMessage::CallRoster`] and
@@ -1269,6 +1288,8 @@ pub enum NetMessage {
     CallRoster {
         group: Vec<u8>,
         members: Vec<CallMember>,
+        /// What the hosts allow (protocol 41).
+        settings: CallSettings,
     },
 
     // ── Contacts and message requests (protocol 27, `docs/notes/contacts.md`) ─
@@ -1616,6 +1637,48 @@ pub enum NetMessage {
         group: Vec<u8>,
         devices: Vec<E2eeNewDevice>,
     },
+
+    // ── Meetings (protocol 41, `docs/notes/calls.md`) ────────────────────────
+    //
+    // What a host does is enforced here, at the server, with what it already
+    // sees: who is connected and which stream is whose. Held sound and a
+    // forbidden screen are dropped at the forwarder, not hidden in the other
+    // apps. What people say to each other (reactions) stays sealed.
+    /// Client: something about this device's own place in the call (a hand, a
+    /// shared screen), or a host's action on the call or on somebody in it.
+    /// A host action from somebody who is not a host is refused with a
+    /// `ServerError` carrying the request base of the call.
+    CallControl { group: Vec<u8>, action: CallAction },
+    /// Server, to a device that is no longer in the call because a host
+    /// removed it or ended the call for everyone. Its media connections are
+    /// already closed.
+    CallEnded {
+        group: Vec<u8>,
+        reason: CallEndReason,
+    },
+    /// Client: a reaction, sealed with a key from the chat's group for
+    /// `epoch` (`cartopolis_calls::keys::seal_event`), relayed to everyone
+    /// else in the call. The server learns that somebody reacted, not how.
+    CallReact {
+        group: Vec<u8>,
+        epoch: u64,
+        sealed: Vec<u8>,
+    },
+    /// Server: somebody in the call reacted. `participant` is stamped by the
+    /// server, so who sent it cannot be forged.
+    CallReacted {
+        group: Vec<u8>,
+        participant: u64,
+        epoch: u64,
+        sealed: Vec<u8>,
+    },
+    /// Client: whose cameras this device draws. `None` is everybody (where a
+    /// call starts); the forwarder sends no camera picture to a device that
+    /// does not draw it. Shared screens are always sent.
+    CallWatch {
+        group: Vec<u8>,
+        cameras: Option<Vec<u64>>,
+    },
 }
 
 /// How long an invite link works, in days.
@@ -1852,7 +1915,16 @@ pub struct CallTrack {
     pub mid: String,
     /// Whose it is, as [`CallMember::participant`] numbers them.
     pub participant: u64,
-    pub video: bool,
+    pub kind: CallTrackKind,
+}
+
+/// What a [`CallTrack`] carries.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CallTrackKind {
+    Audio,
+    Camera,
+    /// A shared screen (protocol 41).
+    Screen,
 }
 
 /// One device in a call ([`NetMessage::CallRoster`]).
@@ -1861,6 +1933,116 @@ pub struct CallMember {
     pub participant: u64,
     pub username: String,
     pub device: Uuid,
+    /// Protocol 41 from here on.
+    pub role: CallRole,
+    /// A raised hand's place in the queue: lower went up first.
+    pub hand: Option<u32>,
+    /// A host muted this device and it may not unmute: the forwarder drops
+    /// its sound until a host lets it talk.
+    pub held: bool,
+    /// Sharing its screen.
+    pub sharing: bool,
+    /// Its microphone is off, as it says itself (a host's hold is `held`).
+    pub muted: bool,
+}
+
+/// Who runs a call. The first person in hosts it; when the last host or
+/// co-host leaves, whoever has been there longest takes over, so a call never
+/// loses its host.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum CallRole {
+    #[default]
+    Member,
+    CoHost,
+    Host,
+}
+
+impl CallRole {
+    /// Whether this role may take host actions.
+    #[must_use]
+    pub fn hosts(self) -> bool {
+        matches!(self, Self::Host | Self::CoHost)
+    }
+}
+
+/// What the hosts allow everyone else in a call ([`NetMessage::CallRoster`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallSettings {
+    /// Nobody new joins; anyone who was in the call may come back.
+    pub locked: bool,
+    /// Members may unmute themselves. Off holds every member's sound until a
+    /// host lets them talk.
+    pub may_unmute: bool,
+    /// Members may share a screen. Off drops a member's screen at the forwarder.
+    pub may_share: bool,
+}
+
+impl Default for CallSettings {
+    fn default() -> Self {
+        Self {
+            locked: false,
+            may_unmute: true,
+            may_share: true,
+        }
+    }
+}
+
+/// The `request_id` of the `ServerError` that refuses a [`NetMessage::CallControl`]:
+/// in the call's request range (`0xCA11_xxxx`), so it reaches the call, but not
+/// the join's, so a refused host action does not read as the call failing.
+pub const CALL_CONTROL_REQUEST: u32 = 0xCA11_0002;
+
+/// [`NetMessage::CallControl`]'s action. The first three are a device's own;
+/// the rest need a host or co-host.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CallAction {
+    /// Raise or lower this device's hand.
+    Hand(bool),
+    /// This device started or stopped sharing its screen.
+    Sharing(bool),
+    /// This device turned its microphone off or on, for the others to see.
+    Muted(bool),
+    /// Hold a participant's sound: muted, and unable to unmute.
+    Mute {
+        participant: u64,
+    },
+    /// Let a participant talk: release a hold and lower its hand. Its
+    /// microphone stays off until it turns it on.
+    AllowTalk {
+        participant: u64,
+    },
+    LowerHand {
+        participant: u64,
+    },
+    /// Stop a participant's shared screen.
+    StopSharing {
+        participant: u64,
+    },
+    /// Hold every member's sound (hosts and co-hosts keep theirs).
+    MuteAll,
+    /// Take a participant out of the call; it may not come back while the
+    /// call lasts.
+    Remove {
+        participant: u64,
+    },
+    /// Make a participant a co-host or a member again, or hand it the call
+    /// (`Host`), which makes the host who did it a co-host.
+    Role {
+        participant: u64,
+        role: CallRole,
+    },
+    Settings(CallSettings),
+    /// End the call for everybody in it.
+    EndForAll,
+}
+
+/// Why [`NetMessage::CallEnded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CallEndReason {
+    /// A host (`by`, a username) took this device out of the call.
+    Removed { by: String },
+    /// A host ended it for everyone.
+    Ended { by: String },
 }
 
 /// Who may send you a message request (`docs/notes/contacts.md`). Anyone with
@@ -2216,6 +2398,11 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::CommunityInvite { .. } => MessageKind::CommunityInvite,
         NetMessage::CommunityInviteLookup { .. } => MessageKind::CommunityInviteLookup,
         NetMessage::CommunityJoinInvite { .. } => MessageKind::CommunityJoinInvite,
+        NetMessage::CallControl { .. } => MessageKind::CallControl,
+        NetMessage::CallEnded { .. } => MessageKind::CallEnded,
+        NetMessage::CallReact { .. } => MessageKind::CallReact,
+        NetMessage::CallReacted { .. } => MessageKind::CallReacted,
+        NetMessage::CallWatch { .. } => MessageKind::CallWatch,
     }
 }
 
@@ -2667,6 +2854,7 @@ mod tests {
                 request_id: 3,
                 group: group.clone(),
                 offer: "v=0\r\n".into(),
+                screen: Some("2".into()),
             },
             NetMessage::CallJoined {
                 request_id: 3,
@@ -2680,7 +2868,7 @@ mod tests {
                 tracks: vec![CallTrack {
                     mid: "0".into(),
                     participant: 11,
-                    video: true,
+                    kind: CallTrackKind::Screen,
                 }],
             },
             NetMessage::CallAnswer {
@@ -2691,12 +2879,44 @@ mod tests {
                 group: group.clone(),
             },
             NetMessage::CallRoster {
-                group,
+                group: group.clone(),
                 members: vec![CallMember {
                     participant: 11,
                     username: "alice".into(),
                     device: Uuid::from_u128(1),
+                    role: CallRole::Host,
+                    hand: Some(2),
+                    held: true,
+                    sharing: false,
+                    muted: true,
                 }],
+                settings: CallSettings::default(),
+            },
+            NetMessage::CallControl {
+                group: group.clone(),
+                action: CallAction::Role {
+                    participant: 4,
+                    role: CallRole::CoHost,
+                },
+            },
+            NetMessage::CallEnded {
+                group: group.clone(),
+                reason: CallEndReason::Removed { by: "bob".into() },
+            },
+            NetMessage::CallReact {
+                group: group.clone(),
+                epoch: 9,
+                sealed: vec![1, 2, 3],
+            },
+            NetMessage::CallReacted {
+                group: group.clone(),
+                participant: 4,
+                epoch: 9,
+                sealed: vec![1, 2, 3],
+            },
+            NetMessage::CallWatch {
+                group: group.clone(),
+                cameras: Some(vec![4, 5]),
             },
         ] {
             let b = encode_app_frame(&m).unwrap();
@@ -2798,7 +3018,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 101] = [
+        const ALL: [MessageKind; 106] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2900,6 +3120,11 @@ mod tests {
             CommunityInvite,
             CommunityInviteLookup,
             CommunityJoinInvite,
+            CallControl,
+            CallEnded,
+            CallReact,
+            CallReacted,
+            CallWatch,
         ];
         for k in ALL {
             assert_eq!(
@@ -2913,7 +3138,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CommunityJoinInvite as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(CallWatch as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

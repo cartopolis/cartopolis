@@ -31,7 +31,9 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
-use cartopolis_core::{CallMember, NetMessage};
+use cartopolis_core::{
+    CallAction, CallEndReason, CallMember, CallSettings, NetMessage, CALL_CONTROL_REQUEST,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::audio::AudioInput;
@@ -75,7 +77,9 @@ impl CallInbox {
             NetMessage::CallJoined { .. }
             | NetMessage::CallOffer { .. }
             | NetMessage::CallRoster { .. }
-            | NetMessage::CallDeclined { .. } => true,
+            | NetMessage::CallDeclined { .. }
+            | NetMessage::CallEnded { .. }
+            | NetMessage::CallReacted { .. } => true,
             NetMessage::ServerError { request_id, .. } => is_call_request(*request_id),
             _ => false,
         }
@@ -91,7 +95,24 @@ pub enum CallRequest {
     Leave,
     /// Stop showing this chat's ringing call.
     Dismiss(Vec<u8>),
+    /// A hand, a shared screen, or a host's action in this device's call
+    /// (protocol 41).
+    Control(CallAction),
+    /// React with this emoji, for everyone in the call.
+    React(String),
 }
+
+/// Somebody's reaction, shown over their tile for [`REACTION_SECS`].
+#[derive(Debug, Clone)]
+pub struct Reaction {
+    /// Who, or [`SELF_TILE`].
+    pub participant: u64,
+    pub emoji: String,
+    pub at: web_time::Instant,
+}
+
+/// How long a reaction floats over its tile.
+pub const REACTION_SECS: f32 = 4.0;
 
 /// The call this device is in.
 struct Active {
@@ -132,6 +153,12 @@ struct Active {
     camera: Option<Camera>,
     /// The newest picture from each person seen, by participant.
     pictures: HashMap<u64, Picture>,
+    /// The newest picture of each shared screen, by participant.
+    screens: HashMap<u64, Picture>,
+    /// Whether this device's sound was held by a host at the last roster.
+    held: bool,
+    /// What the call was last told about this device's microphone.
+    told_muted: Option<bool>,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
     #[cfg(not(target_arch = "wasm32"))]
     fake_mic_sent: u64,
@@ -184,6 +211,11 @@ const NO_ANSWER: std::time::Duration = std::time::Duration::from_secs(60);
 pub struct Calls {
     /// Who is in each chat's call, by group id, as the server last said.
     rosters: HashMap<Vec<u8>, Vec<CallMember>>,
+    /// What each call's hosts allow, from the same rosters.
+    settings: HashMap<Vec<u8>, CallSettings>,
+    /// Reactions in this device's call, newest last; dropped after
+    /// [`REACTION_SECS`].
+    pub reactions: Vec<Reaction>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
     pub request: Option<CallRequest>,
@@ -336,6 +368,74 @@ impl Calls {
             .unwrap_or_default()
     }
 
+    /// Everybody in this device's call, itself included, in join order, as
+    /// the server last said (protocol 41: with their role, hand, hold and
+    /// screen).
+    #[must_use]
+    pub fn members(&self) -> &[CallMember] {
+        self.active
+            .as_ref()
+            .and_then(|a| self.rosters.get(&a.group))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// One person in this device's call.
+    #[must_use]
+    pub fn member(&self, participant: u64) -> Option<&CallMember> {
+        self.members().iter().find(|m| m.participant == participant)
+    }
+
+    /// This device, as its call's roster has it.
+    #[must_use]
+    pub fn me(&self) -> Option<&CallMember> {
+        let me = self.active.as_ref()?.participant?;
+        self.member(me)
+    }
+
+    /// Whether this device may take a host's actions in its call.
+    #[must_use]
+    pub fn hosting(&self) -> bool {
+        self.me().is_some_and(|m| m.role.hosts())
+    }
+
+    /// What the hosts of this device's call allow.
+    #[must_use]
+    pub fn call_settings(&self) -> CallSettings {
+        self.active
+            .as_ref()
+            .and_then(|a| self.settings.get(&a.group).copied())
+            .unwrap_or_default()
+    }
+
+    /// The person whose shared screen is showing, if anybody's is: the most
+    /// recent sharer the roster names whose picture has arrived.
+    #[must_use]
+    pub fn sharer(&self) -> Option<u64> {
+        let a = self.active.as_ref()?;
+        self.members()
+            .iter()
+            .rev()
+            .filter(|m| m.sharing && Some(m.participant) != a.participant)
+            .map(|m| m.participant)
+            .find(|p| a.screens.contains_key(p))
+    }
+
+    /// The newest picture of each shared screen in this device's call.
+    pub fn screens_mut(&mut self) -> impl Iterator<Item = (u64, &mut Picture)> {
+        self.active
+            .iter_mut()
+            .flat_map(|a| a.screens.iter_mut().map(|(k, v)| (*k, v)))
+    }
+
+    /// The reaction showing over a tile now, if any: the newest.
+    #[must_use]
+    pub fn reaction_of(&self, participant: u64) -> Option<&Reaction> {
+        self.reactions
+            .iter()
+            .rev()
+            .find(|r| r.participant == participant && r.at.elapsed().as_secs_f32() < REACTION_SECS)
+    }
+
     // The call tools (`dev::mcp`) name people by it; the call bar uses `others`.
     #[cfg_attr(not(mcp), allow(dead_code))]
     pub fn name_of(&self, participant: u64) -> Option<&str> {
@@ -392,6 +492,15 @@ impl Calls {
             participant,
             username: name.into(),
             device: uuid::Uuid::from_u128(u128::from(participant)),
+            role: if participant == 1 {
+                cartopolis_core::CallRole::Host
+            } else {
+                cartopolis_core::CallRole::Member
+            },
+            hand: (screen == "callgroup" && participant == 3).then_some(1),
+            held: false,
+            sharing: false,
+            muted: false,
         };
         if screen == "callincoming" {
             self.rosters.insert(group, vec![member("Jeroen", 2)]);
@@ -517,15 +626,48 @@ pub fn drive_calls(
     };
     for msg in inbox.0.drain(..) {
         match msg {
-            NetMessage::CallRoster { group, members } => {
+            NetMessage::CallRoster {
+                group,
+                members,
+                settings,
+            } => {
                 // Somebody who left stops being drawn: the forwarder does not
                 // renegotiate the last person's receiving connection down to
                 // nothing (`sfu::negotiate`), so no offer says they went.
+                let mut held_now = None;
                 if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
                     let here: HashSet<u64> = members.iter().map(|m| m.participant).collect();
                     a.pictures
                         .retain(|p, _| *p == SELF_TILE || here.contains(p));
+                    // A screen whose sharer stopped goes at once, not when it ages.
+                    let sharing: HashSet<u64> = members
+                        .iter()
+                        .filter(|m| m.sharing)
+                        .map(|m| m.participant)
+                        .collect();
+                    a.screens.retain(|p, _| sharing.contains(p));
+                    let held = members
+                        .iter()
+                        .any(|m| Some(m.participant) == a.participant && m.held);
+                    if held != a.held {
+                        a.held = held;
+                        held_now = Some(held);
+                    }
                 }
+                // Held by a host: muted here too, and it stays muted when the
+                // hold lifts, until the person unmutes themselves.
+                match held_now {
+                    Some(true) => {
+                        calls.muted = true;
+                        calls.notice =
+                            Some("A host muted you. Raise your hand to ask to talk.".into());
+                    }
+                    Some(false) => {
+                        calls.notice = Some("You may talk now. Unmute when ready.".into())
+                    }
+                    None => {}
+                }
+                calls.settings.insert(group.clone(), settings);
                 if members.is_empty() {
                     // A call that rang here and stopped before anybody here
                     // answered or declined it: a missed call, said once.
@@ -541,6 +683,7 @@ pub fn drive_calls(
                     }
                     calls.dismissed.remove(&group);
                     calls.rosters.remove(&group);
+                    calls.settings.remove(&group);
                 } else {
                     calls.rosters.insert(group, members);
                 }
@@ -586,10 +729,16 @@ pub fn drive_calls(
                         .map(|t| cartopolis_calls::media::TrackInfo {
                             mid: t.mid,
                             from: cartopolis_calls::media::ParticipantId(t.participant),
-                            kind: if t.video {
-                                cartopolis_calls::media::Kind::Video
-                            } else {
-                                cartopolis_calls::media::Kind::Audio
+                            kind: match t.kind {
+                                cartopolis_core::CallTrackKind::Audio => {
+                                    cartopolis_calls::media::Kind::Audio
+                                }
+                                cartopolis_core::CallTrackKind::Camera => {
+                                    cartopolis_calls::media::Kind::Video
+                                }
+                                cartopolis_core::CallTrackKind::Screen => {
+                                    cartopolis_calls::media::Kind::Screen
+                                }
                             },
                         })
                         .collect();
@@ -599,6 +748,48 @@ pub fn drive_calls(
                 if let Some(a) = calls.active.as_ref().filter(|a| a.group == group) {
                     a.web.offered(&sdp, &tracks);
                 }
+            }
+            // A refused host action: said, and the call goes on.
+            NetMessage::ServerError {
+                message,
+                request_id: CALL_CONTROL_REQUEST,
+                ..
+            } => calls.notice = Some(message),
+            NetMessage::CallEnded { group, reason } => {
+                if calls.active_group() == Some(group.as_slice()) {
+                    calls.active = None;
+                    calls.reactions.clear();
+                    calls.notice = Some(match reason {
+                        CallEndReason::Removed { by } => format!("{by} removed you from the call"),
+                        CallEndReason::Ended { by } => format!("{by} ended the call for everyone"),
+                    });
+                }
+            }
+            NetMessage::CallReacted {
+                group,
+                participant,
+                epoch,
+                sealed,
+            } => {
+                // Opened with the chat's key for that epoch; one that does not
+                // open (an epoch this device has moved past) is dropped.
+                #[cfg(not(target_arch = "wasm32"))]
+                if calls.active_group() == Some(group.as_slice()) {
+                    let opened = private
+                        .call_epoch(&group)
+                        .filter(|e| e.epoch == epoch)
+                        .and_then(|e| cartopolis_calls::events::open(&e.base_key, epoch, &sealed))
+                        .and_then(|b| String::from_utf8(b).ok());
+                    if let Some(emoji) = opened.filter(|e| e.chars().count() <= 16) {
+                        calls.reactions.push(Reaction {
+                            participant,
+                            emoji,
+                            at: web_time::Instant::now(),
+                        });
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = (group, participant, epoch, sealed);
             }
             NetMessage::ServerError { message, .. } => {
                 tracing::warn!(%message, "call refused by the server");
@@ -651,8 +842,40 @@ pub fn drive_calls(
             );
             calls.dismissed.insert(group);
         }
+        Some(CallRequest::Control(action)) => {
+            if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+                online.send("call control", NetMessage::CallControl { group, action });
+            }
+        }
+        Some(CallRequest::React(emoji)) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+                if let Some(e) = private.call_epoch(&group) {
+                    let sealed =
+                        cartopolis_calls::events::seal(&e.base_key, e.epoch, emoji.as_bytes());
+                    online.send(
+                        "call react",
+                        NetMessage::CallReact {
+                            group,
+                            epoch: e.epoch,
+                            sealed,
+                        },
+                    );
+                    calls.reactions.push(Reaction {
+                        participant: SELF_TILE,
+                        emoji,
+                        at: web_time::Instant::now(),
+                    });
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = emoji;
+        }
         None => {}
     }
+    calls
+        .reactions
+        .retain(|r| r.at.elapsed().as_secs_f32() < REACTION_SECS);
 
     // The phone rules. A call you placed that nobody answers within
     // [`NO_ANSWER`] ends ("No answer"); and a call ends for you when the last
@@ -702,6 +925,18 @@ pub fn drive_calls(
         return;
     };
 
+    // The others see who is muted (protocol 41): said once in, and on change.
+    if a.participant.is_some() && a.told_muted != Some(*muted) {
+        a.told_muted = Some(*muted);
+        online.send(
+            "call muted",
+            NetMessage::CallControl {
+                group: a.group.clone(),
+                action: CallAction::Muted(*muted),
+            },
+        );
+    }
+
     // The chat's keys, whenever its epoch moves (and once at the start).
     if let Some(e) = private.call_epoch(&a.group) {
         if a.epoch != Some(e.epoch) {
@@ -731,6 +966,7 @@ pub fn drive_calls(
                             request_id: JOIN_REQUEST,
                             group: a.group.clone(),
                             offer,
+                            screen: None,
                         },
                     );
                 }
@@ -801,6 +1037,7 @@ pub fn drive_calls(
                             request_id: JOIN_REQUEST,
                             group: a.group.clone(),
                             offer,
+                            screen: None,
                         },
                     );
                 }
@@ -840,12 +1077,20 @@ pub fn drive_calls(
         }
         a.session.set_video_wanted(looking);
         if looking {
-            for (from, p) in a.session.take_pictures() {
-                a.received.entry(from.0).or_default().1 = p.decoded;
+            for ((from, kind), p) in a.session.take_pictures() {
+                let screen = kind == cartopolis_calls::media::Kind::Screen;
+                if !screen {
+                    a.received.entry(from.0).or_default().1 = p.decoded;
+                }
                 if let Some(n) = p.test_number {
                     tracing::debug!(from = from.0, n, "call picture");
                 }
-                a.pictures.insert(
+                let into = if screen {
+                    &mut a.screens
+                } else {
+                    &mut a.pictures
+                };
+                into.insert(
                     from.0,
                     Picture {
                         width: p.width,
@@ -962,6 +1207,9 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         #[cfg(not(target_arch = "wasm32"))]
         camera: None,
         pictures: HashMap::new(),
+        screens: HashMap::new(),
+        held: false,
+        told_muted: None,
         #[cfg(not(target_arch = "wasm32"))]
         fake_mic_sent: 0,
         received: HashMap::new(),
@@ -1239,6 +1487,11 @@ mod tests {
             participant,
             username: name.into(),
             device: uuid::Uuid::from_u128(u128::from(participant)),
+            role: cartopolis_core::CallRole::Member,
+            hand: None,
+            held: false,
+            sharing: false,
+            muted: false,
         }
     }
 
@@ -1272,7 +1525,8 @@ mod tests {
     fn only_call_traffic_is_taken_from_the_mailbox() {
         assert!(CallInbox::wants(&NetMessage::CallRoster {
             group: vec![],
-            members: vec![]
+            members: vec![],
+            settings: CallSettings::default(),
         }));
         assert!(CallInbox::wants(&NetMessage::ServerError {
             request_id: JOIN_REQUEST,

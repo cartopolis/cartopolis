@@ -38,6 +38,7 @@ use crate::systems::chats::{paint_avatar, ChatKind};
 use crate::systems::icons;
 use crate::systems::private_chat::channel_key;
 use crate::systems::theme::{self, CallTone, CALL_BUTTON_LARGE, CALL_BUTTON_SMALL};
+use cartopolis_core::{CallAction, CallSettings};
 
 /// How long the controls stay up over a picture after the last touch.
 const CONTROLS_HIDE_SECS: f32 = 4.0;
@@ -58,6 +59,12 @@ pub struct CallScreenState {
     /// per person, reused, so a call is one small upload per picture received
     /// rather than a texture allocated per frame (`docs/notes/upload-bursts.md`).
     tiles: HashMap<u64, egui::TextureHandle>,
+    /// Each shared screen's newest picture, the same way.
+    screens: HashMap<u64, egui::TextureHandle>,
+    /// The sheet open over the call screen.
+    sheet: Option<Sheet>,
+    /// The person a host tapped in the people sheet.
+    picked: Option<u64>,
     /// Calls that were ringing last frame, to unfold the screen for a new one.
     ringing_before: HashSet<Vec<u8>>,
     /// Last touch on the call screen, for hiding the controls over a picture.
@@ -75,6 +82,14 @@ struct Person {
     /// Their picture and its width over its height, when their camera is on.
     texture: Option<(egui::TextureId, f32)>,
     speaking: bool,
+    /// A raised hand's place in the queue.
+    hand: Option<u32>,
+    muted: bool,
+    /// A host muted them.
+    held: bool,
+    host: bool,
+    /// The reaction floating over them.
+    reaction: Option<String>,
 }
 
 /// What the screen is showing this frame, for its layout.
@@ -138,7 +153,8 @@ pub fn render_call_screen(
     // Folded to the bar, nothing shows a picture: leave the newest waiting
     // (`fresh`) for when the screen comes back rather than upload it unseen.
     if !calls.minimized {
-        upload_pictures(&ctx, &mut calls, &mut st.tiles);
+        let CallScreenState { tiles, screens, .. } = &mut *st;
+        upload_pictures(&ctx, &mut calls, tiles, screens);
     }
 
     let label_of = |group: &[u8]| {
@@ -286,9 +302,20 @@ fn upload_pictures(
     ctx: &egui::Context,
     calls: &mut Calls,
     tiles: &mut HashMap<u64, egui::TextureHandle>,
+    screens: &mut HashMap<u64, egui::TextureHandle>,
+) {
+    upload(ctx, calls.pictures_mut(), tiles, "call-video");
+    upload(ctx, calls.screens_mut(), screens, "call-screen");
+}
+
+fn upload<'a>(
+    ctx: &egui::Context,
+    pictures: impl Iterator<Item = (u64, &'a mut crate::systems::calls::Picture)>,
+    tiles: &mut HashMap<u64, egui::TextureHandle>,
+    name: &str,
 ) {
     let mut present = HashSet::new();
-    for (id, p) in calls.pictures_mut() {
+    for (id, p) in pictures {
         present.insert(id);
         if !p.fresh {
             continue;
@@ -303,11 +330,8 @@ fn upload_pictures(
         match tiles.get_mut(&id) {
             Some(t) => t.set(image, egui::TextureOptions::LINEAR),
             None => {
-                let t = ctx.load_texture(
-                    format!("call-video-{id}"),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                );
+                let t =
+                    ctx.load_texture(format!("{name}-{id}"), image, egui::TextureOptions::LINEAR);
                 tiles.insert(id, t);
             }
         }
@@ -571,19 +595,18 @@ fn in_call_screen(
     let mut people: Vec<Person> = calls
         .others()
         .into_iter()
-        .map(|(id, name)| Person {
-            id,
-            texture: texture_of(&st.tiles, id),
-            speaking: calls.speaking(id),
-            name,
-        })
+        .map(|(id, name)| person_of(calls, &st.tiles, id, name))
         .collect();
     people.sort_by(|a, b| a.name.cmp(&b.name));
     let own = texture_of(&st.tiles, SELF_TILE);
-    let any_picture =
-        people.iter().any(|p| p.texture.is_some()) || (people.is_empty() && own.is_some());
-    // Over a picture the controls fade after a while; over initials they stay.
-    if !any_picture {
+    let sharer = calls.sharer();
+    let screen = sharer.and_then(|s| texture_of(&st.screens, s));
+    let any_picture = screen.is_some()
+        || people.iter().any(|p| p.texture.is_some())
+        || (people.is_empty() && own.is_some());
+    // Over a picture the controls fade after a while; over initials they stay,
+    // and so do they while a sheet is open.
+    if !any_picture || st.sheet.is_some() {
         st.controls = true;
     } else if st
         .touched
@@ -596,7 +619,7 @@ fn in_call_screen(
     let p = ui.painter().clone();
     let x = full.center().x;
     let status = status_line(calls, people.len());
-    let title = if people.is_empty() {
+    let title = if people.is_empty() || people.len() > 3 {
         chat_label.unwrap_or_else(|| "Calling…".into())
     } else {
         people
@@ -605,78 +628,98 @@ fn in_call_screen(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let mut self_person = person_of(calls, &st.tiles, SELF_TILE, "You".into());
+    self_person.muted = calls.muted;
+    self_person.speaking = calls.speaking(SELF_TILE);
 
     // ── The stage ──────────────────────────────────────────────────────────
+    let top_room = 72.0;
+    let bottom_room = CALL_BUTTON_LARGE + BOTTOM_EDGE + 30.0;
+    let stage = egui::Rect::from_min_max(
+        egui::pos2(full.min.x + 8.0, full.min.y + top_room),
+        egui::pos2(full.max.x - 8.0, full.max.y - bottom_room),
+    );
     let mut pip = own;
     let mut centre_title = false;
-    match people.len() {
-        0 => {
-            // Still ringing them: your own camera is the backdrop, if it is on.
-            if let Some(tex) = own {
-                paint_picture(ui, full, tex, 0, true);
-                p.rect_filled(full, 0.0, egui::Color32::from_black_alpha(70));
-                pip = None;
-            }
-            centre_title = true;
-        }
-        1 => {
-            let person = &people[0];
-            match person.texture {
-                Some(tex) => paint_picture(ui, full, tex, 0, false),
-                None => centre_title = true,
-            }
-        }
-        others => {
-            // You are one of the tiles in a group, last, rather than a window
-            // laid over somebody else's.
-            pip = None;
-            let n = others + 1;
-            let top_room = 72.0;
-            let bottom_room = CALL_BUTTON_LARGE + BOTTOM_EDGE + 24.0;
-            let stage = egui::Rect::from_min_max(
-                egui::pos2(full.min.x + 8.0, full.min.y + top_room),
-                egui::pos2(full.max.x - 8.0, full.max.y - bottom_room),
+    if let (Some(tex), Some(who)) = (screen, sharer) {
+        // A shared screen is the stage: drawn whole, never cropped, with
+        // everybody (you too) in a strip beside it or under it.
+        pip = None;
+        let portrait = stage.height() > stage.width();
+        let mut tiles: Vec<&Person> = people.iter().collect();
+        tiles.push(&self_person);
+        let (screen_rect, strip) = if portrait {
+            let h = (stage.width() / tex.1.max(0.1)).min(stage.height() * 0.55);
+            let screen_rect = egui::Rect::from_min_size(stage.min, egui::vec2(stage.width(), h));
+            let strip = egui::Rect::from_min_max(
+                egui::pos2(stage.min.x, screen_rect.max.y + 8.0),
+                stage.max,
             );
-            let portrait = stage.height() > stage.width();
-            let cols = if portrait {
-                if n <= 3 {
-                    1
-                } else {
-                    2
+            (screen_rect, strip)
+        } else {
+            let w = (stage.width() * 0.78).min(stage.width() - 160.0);
+            let screen_rect = egui::Rect::from_min_size(stage.min, egui::vec2(w, stage.height()));
+            let strip = egui::Rect::from_min_max(
+                egui::pos2(screen_rect.max.x + 8.0, stage.min.y),
+                stage.max,
+            );
+            (screen_rect, strip)
+        };
+        p.rect_filled(screen_rect, 14.0, egui::Color32::from_black_alpha(160));
+        let shown = contain(tex.1, screen_rect);
+        egui::Image::new((tex.0, shown.size()))
+            .corner_radius(egui::CornerRadius::same(10))
+            .paint_at(ui, shown);
+        let name = calls.name_of(who).unwrap_or("Somebody").to_string();
+        let chip_text = format!("{}  {name} is presenting", icons::SCREEN_SHARE);
+        name_chip(
+            &p,
+            egui::pos2(screen_rect.min.x + 8.0, screen_rect.min.y + 8.0),
+            &chip_text,
+            false,
+        );
+        let cols = if portrait { 2 } else { 1 };
+        grid(ui, strip, &tiles, cols);
+    } else {
+        match people.len() {
+            0 => {
+                // Still ringing them: your own camera is the backdrop, if it is on.
+                if let Some(tex) = own {
+                    paint_picture(ui, full, tex, 0, true);
+                    p.rect_filled(full, 0.0, egui::Color32::from_black_alpha(70));
+                    pip = None;
                 }
-            } else {
-                (n as f32).sqrt().ceil() as usize
-            };
-            let rows = n.div_ceil(cols);
-            let gap = 8.0;
-            let cell = egui::vec2(
-                (stage.width() - gap * (cols - 1) as f32) / cols as f32,
-                (stage.height() - gap * (rows - 1) as f32) / rows as f32,
-            );
-            for (i, person) in people.iter().enumerate() {
-                let (r, c) = (i / cols, i % cols);
-                let rect = egui::Rect::from_min_size(
-                    stage.min + egui::vec2(c as f32 * (cell.x + gap), r as f32 * (cell.y + gap)),
-                    cell,
-                );
-                grid_tile(ui, rect, person);
+                centre_title = true;
             }
-            let i = n - 1;
-            let (r, c) = (i / cols, i % cols);
-            let rect = egui::Rect::from_min_size(
-                stage.min + egui::vec2(c as f32 * (cell.x + gap), r as f32 * (cell.y + gap)),
-                cell,
-            );
-            grid_tile(
-                ui,
-                rect,
-                &Person {
-                    id: SELF_TILE,
-                    name: "You".into(),
-                    texture: own,
-                    speaking: calls.speaking(SELF_TILE),
-                },
-            );
+            1 => {
+                let person = &people[0];
+                match person.texture {
+                    Some(tex) => {
+                        paint_picture(ui, full, tex, 0, false);
+                        tile_badges(&p, stage, person);
+                    }
+                    None => centre_title = true,
+                }
+            }
+            _ => {
+                // You are one of the tiles in a group, last, rather than a
+                // window laid over somebody else's.
+                pip = None;
+                let mut tiles: Vec<&Person> = people.iter().collect();
+                tiles.push(&self_person);
+                let n = tiles.len();
+                let portrait = stage.height() > stage.width();
+                let cols = if portrait {
+                    if n <= 3 {
+                        1
+                    } else {
+                        2
+                    }
+                } else {
+                    (n as f32).sqrt().ceil() as usize
+                };
+                grid(ui, stage, &tiles, cols);
+            }
         }
     }
     if centre_title {
@@ -685,9 +728,22 @@ fn in_call_screen(
         let c = egui::pos2(x, full.min.y + full.height() * 0.34);
         let speaking = people.first().is_some_and(|p| p.speaking);
         if speaking {
-            p.circle_stroke(c, disc * 0.5 + 6.0, egui::Stroke::new(3.0, theme::BRAND));
+            p.circle_stroke(
+                c,
+                disc * 0.5 + 6.0,
+                egui::Stroke::new(3.0, theme::ACCENT_RING),
+            );
         }
         paint_avatar(&p, c, &title, ChatKind::Private, disc);
+        if let Some(r) = people.first().and_then(|p| p.reaction.as_deref()) {
+            centred(
+                &p,
+                c + egui::vec2(disc * 0.42, disc * 0.36),
+                r,
+                40.0,
+                theme::CREAM,
+            );
+        }
         centred(
             &p,
             egui::pos2(x, c.y + disc * 0.5 + 40.0),
@@ -727,121 +783,253 @@ fn in_call_screen(
         );
         if calls.muted {
             let badge = egui::pos2(rect.min.x + 16.0, rect.max.y - 16.0);
-            p.circle_filled(badge, 12.0, egui::Color32::from_black_alpha(170));
-            centred(&p, badge, icons::MIC_OFF, 14.0, theme::CREAM);
+            p.circle_filled(badge, 12.0, theme::CREAM);
+            centred(&p, badge, icons::MIC_OFF, 14.0, theme::INK);
+        }
+        if let Some(r) = calls.reaction_of(SELF_TILE) {
+            centred(
+                &p,
+                egui::pos2(rect.max.x - 18.0, rect.max.y - 20.0),
+                &r.emoji,
+                26.0,
+                theme::CREAM,
+            );
         }
     }
 
-    if !show_controls {
-        return;
-    }
-
-    // ── The top: fold, name, timer ─────────────────────────────────────────
-    if any_picture {
-        paint_shade(
-            &p,
-            egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 120.0)),
-            true,
-        );
-        paint_shade(
-            &p,
-            egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - 180.0), full.max),
-            false,
-        );
-    }
-    if fold_button(ui, full) {
-        calls.minimized = true;
-    }
-    if centre_title {
-        encrypted_line(&p, egui::pos2(x, full.min.y + EDGE + 20.0));
-    } else {
-        centred(
-            &p,
-            egui::pos2(x, full.min.y + EDGE + 14.0),
-            &title,
-            theme::SIZE_HEADING,
-            theme::CREAM,
-        );
-        centred(
-            &p,
-            egui::pos2(x, full.min.y + EDGE + 38.0),
-            &format!("{} {status}", icons::LOCK),
-            theme::SIZE_SUB,
-            theme::TEXT,
-        );
+    if show_controls {
+        // ── The top: fold, name, timer, people ─────────────────────────────
+        if any_picture {
+            paint_shade(
+                &p,
+                egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 120.0)),
+                true,
+            );
+            paint_shade(
+                &p,
+                egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - 180.0), full.max),
+                false,
+            );
+        }
+        if fold_button(ui, full) {
+            calls.minimized = true;
+        }
+        if people_button(ui, full, calls) {
+            st.sheet = Some(Sheet::People);
+            st.picked = None;
+        }
+        if centre_title {
+            encrypted_line(&p, egui::pos2(x, full.min.y + EDGE + 20.0));
+        } else {
+            centred(
+                &p,
+                egui::pos2(x, full.min.y + EDGE + 14.0),
+                &title,
+                theme::SIZE_HEADING,
+                theme::CREAM,
+            );
+            centred(
+                &p,
+                egui::pos2(x, full.min.y + EDGE + 38.0),
+                &format!("{} {status}", icons::LOCK),
+                theme::SIZE_SUB,
+                theme::TEXT,
+            );
+        }
+        dock(ui, full, calls, st, request);
     }
     let _ = me;
 
-    // ── The bottom: camera, microphone, hang up ────────────────────────────
-    // Each button carries a word under it: a phone never shows a hover tip,
-    // and an icon alone left "is the crossed-out camera the state or the
-    // action?" to guess.
-    const LABEL_GAP: f32 = 16.0;
-    let y = full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE * 0.5 - LABEL_GAP * 0.5;
-    let step = CALL_BUTTON_LARGE + 24.0;
-    let with_camera = camera_available();
-    let n = if with_camera { 3.0 } else { 2.0 };
-    let mut cx = x - (n - 1.0) * step * 0.5;
-    // A dark rounded tray behind the row, so it reads over any picture.
-    let tray = egui::Rect::from_center_size(
-        egui::pos2(x, y + LABEL_GAP * 0.5),
-        egui::vec2(
-            (n - 1.0) * step + CALL_BUTTON_LARGE + 28.0,
-            CALL_BUTTON_LARGE + 20.0 + LABEL_GAP,
-        ),
-    );
-    p.rect_filled(
-        tray,
-        egui::CornerRadius::same(theme::RADIUS_PILL),
-        egui::Color32::from_black_alpha(110),
-    );
-    let label = |cx: f32, text: &str| {
-        centred(
-            &p,
-            egui::pos2(cx, y + CALL_BUTTON_LARGE * 0.5 + LABEL_GAP * 0.5 + 2.0),
-            text,
-            theme::SIZE_TINY,
-            theme::TEXT,
+    // ── A sheet over it all ────────────────────────────────────────────────
+    if let Some(sheet) = st.sheet {
+        let shade = ui.interact(
+            full,
+            egui::Id::new("call_sheet_shade"),
+            egui::Sense::click(),
         );
-    };
-    let mut touched = false;
-    if with_camera {
-        let (icon, tip, tone) = if calls.camera_on {
-            (icons::VIDEOCAM, "Turn the camera off", CallTone::On)
-        } else {
-            (icons::VIDEOCAM_OFF, "Turn the camera on", CallTone::Off)
-        };
-        if button_at(ui, egui::pos2(cx, y), icon, tip, tone, CALL_BUTTON_LARGE) {
-            calls.camera_on = !calls.camera_on;
-            touched = true;
+        p.rect_filled(full, 0.0, egui::Color32::from_black_alpha(140));
+        let width = full.width().min(520.0);
+        let left = full.center().x - width * 0.5;
+        let max_h = full.height() * 0.8;
+        let mut close = shade.clicked();
+        let _ = left;
+        egui::Area::new(egui::Id::new("call_sheet"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(width);
+                ui.set_max_height(max_h);
+                let frame = egui::Frame::NONE
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+                    .corner_radius(egui::CornerRadius {
+                        nw: 22,
+                        ne: 22,
+                        sw: 0,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 10,
+                        bottom: 28,
+                    });
+                // Pinned to the bottom edge whatever its height.
+                frame.show(ui, |ui| {
+                    ui.set_width(width - 32.0);
+                    let (grab, _) = ui
+                        .allocate_exact_size(egui::vec2(width - 32.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(grab.center(), egui::vec2(38.0, 5.0)),
+                        3.0,
+                        theme::TEXT_DIM,
+                    );
+                    egui::ScrollArea::vertical().max_height(max_h - 60.0).show(
+                        ui,
+                        |ui| match sheet {
+                            Sheet::More => more_sheet(ui, calls, st, request, &mut close),
+                            Sheet::People => people_sheet(ui, calls, st, request),
+                            Sheet::Leave => leave_sheet(ui, calls, request, &mut close),
+                        },
+                    );
+                });
+            });
+        if close {
+            st.sheet = None;
+            st.picked = None;
         }
-        label(cx, "Camera");
-        cx += step;
     }
-    let (icon, tip, tone) = if calls.muted {
-        (icons::MIC_OFF, "Unmute", CallTone::Off)
+}
+
+/// The sheet open over the call screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sheet {
+    /// Reactions, and the rest of the call's actions.
+    More,
+    /// Everybody in the call: hands, and a host's actions on a person.
+    People,
+    /// A host leaving: leave, or end it for everyone.
+    Leave,
+}
+
+/// The reactions offered, in the order the row shows them.
+const REACTIONS: [&str; 6] = ["👍", "👏", "😂", "❤", "🎉", "😮"];
+
+/// Somebody on the call screen, from the call's roster.
+fn person_of(
+    calls: &Calls,
+    tiles: &HashMap<u64, egui::TextureHandle>,
+    id: u64,
+    name: String,
+) -> Person {
+    let member = if id == SELF_TILE {
+        calls.me()
     } else {
-        (icons::MIC, "Mute", CallTone::On)
+        calls.member(id)
     };
-    if button_at(ui, egui::pos2(cx, y), icon, tip, tone, CALL_BUTTON_LARGE) {
-        calls.muted = !calls.muted;
-        touched = true;
+    Person {
+        id,
+        texture: texture_of(tiles, id),
+        speaking: calls.speaking(id),
+        hand: member.and_then(|m| m.hand),
+        muted: member.is_some_and(|m| m.muted),
+        held: member.is_some_and(|m| m.held),
+        host: member.is_some_and(|m| m.role.hosts()),
+        reaction: calls.reaction_of(id).map(|r| r.emoji.clone()),
+        name,
     }
-    label(cx, if calls.muted { "Unmute" } else { "Mute" });
-    cx += step;
-    if button_at(
-        ui,
-        egui::pos2(cx, y),
-        icons::CALL_END,
-        "Hang up",
-        CallTone::HangUp,
-        CALL_BUTTON_LARGE,
-    ) {
-        *request = Some(CallRequest::Leave);
+}
+
+/// Lay `tiles` out in an even grid of `cols` columns over `area`.
+fn grid(ui: &egui::Ui, area: egui::Rect, tiles: &[&Person], cols: usize) {
+    let n = tiles.len().max(1);
+    let cols = cols.clamp(1, n);
+    let rows = n.div_ceil(cols);
+    let gap = 8.0;
+    let cell = egui::vec2(
+        (area.width() - gap * (cols - 1) as f32) / cols as f32,
+        (area.height() - gap * (rows - 1) as f32) / rows as f32,
+    );
+    for (i, person) in tiles.iter().enumerate() {
+        let (r, c) = (i / cols, i % cols);
+        let rect = egui::Rect::from_min_size(
+            area.min + egui::vec2(c as f32 * (cell.x + gap), r as f32 * (cell.y + gap)),
+            cell,
+        );
+        grid_tile(ui, rect, person);
     }
-    label(cx, "End");
-    if touched {
-        st.touched = Some(web_time::Instant::now());
+}
+
+/// A name on a dark chip with its top-left at `at`, as tiles carry it.
+fn name_chip(p: &egui::Painter, at: egui::Pos2, text: &str, bottom: bool) -> egui::Rect {
+    let galley = p.layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(theme::SIZE_SUB),
+        theme::CREAM,
+    );
+    let pad = egui::vec2(8.0, 3.0);
+    let size = galley.size() + 2.0 * pad;
+    let min = if bottom {
+        at - egui::vec2(0.0, size.y)
+    } else {
+        at
+    };
+    let chip = egui::Rect::from_min_size(min, size);
+    p.rect_filled(
+        chip,
+        egui::CornerRadius::same(theme::RADIUS_PILL),
+        egui::Color32::from_black_alpha(160),
+    );
+    p.galley(chip.min + pad, galley, theme::CREAM);
+    chip
+}
+
+/// What a tile says about its person besides the picture: the name with the
+/// microphone's state, a raised hand's place in the queue, a reaction.
+fn tile_badges(p: &egui::Painter, rect: egui::Rect, person: &Person) {
+    let mic = if person.held {
+        format!("{} ", icons::LOCK)
+    } else if person.muted {
+        format!("{} ", icons::MIC_OFF)
+    } else {
+        String::new()
+    };
+    let host = if person.host {
+        format!("  {}", icons::HOST)
+    } else {
+        String::new()
+    };
+    name_chip(
+        p,
+        egui::pos2(rect.min.x + 8.0, rect.max.y - 8.0),
+        &format!("{mic}{}{host}", person.name),
+        true,
+    );
+    if let Some(n) = person.hand {
+        let text = format!("{} {n}", icons::HAND);
+        let galley = p.layout_no_wrap(
+            text,
+            egui::FontId::proportional(theme::SIZE_SUB),
+            theme::INK,
+        );
+        let pad = egui::vec2(8.0, 3.0);
+        let chip =
+            egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), galley.size() + 2.0 * pad);
+        p.rect_filled(
+            chip,
+            egui::CornerRadius::same(theme::RADIUS_PILL),
+            theme::WARN,
+        );
+        p.galley(chip.min + pad, galley, theme::INK);
+    }
+    if let Some(r) = &person.reaction {
+        centred(
+            p,
+            egui::pos2(rect.max.x - 26.0, rect.max.y - 30.0),
+            r,
+            34.0,
+            theme::CREAM,
+        );
     }
 }
 
@@ -853,40 +1041,447 @@ fn grid_tile(ui: &egui::Ui, rect: egui::Rect, person: &Person) {
         Some(tex) => paint_picture(ui, rect, tex, radius, true),
         None => {
             p.rect_filled(rect, radius, theme::SURFACE_RAISED);
-            let d = (rect.width().min(rect.height()) * 0.42).clamp(40.0, 120.0);
+            let d = (rect.width().min(rect.height()) * 0.42).clamp(32.0, 120.0);
             paint_avatar(p, rect.center(), &person.name, ChatKind::Private, d);
         }
     }
-    // The name on a chip over the bottom-left corner, where it reads on any
-    // picture.
-    let galley = p.layout_no_wrap(
-        person.name.clone(),
-        egui::FontId::proportional(theme::SIZE_SUB),
-        theme::CREAM,
-    );
-    let pad = egui::vec2(8.0, 3.0);
-    let chip = egui::Rect::from_min_size(
-        egui::pos2(
-            rect.min.x + 8.0,
-            rect.max.y - 8.0 - galley.size().y - 2.0 * pad.y,
-        ),
-        galley.size() + 2.0 * pad,
-    );
-    p.rect_filled(
-        chip,
-        egui::CornerRadius::same(theme::RADIUS_PILL),
-        egui::Color32::from_black_alpha(160),
-    );
-    p.galley(chip.min + pad, galley, theme::CREAM);
+    tile_badges(p, rect, person);
     if person.speaking {
         p.rect_stroke(
             rect,
             radius,
-            egui::Stroke::new(3.0, theme::BRAND),
+            egui::Stroke::new(3.0, theme::ACCENT_RING),
             egui::StrokeKind::Inside,
         );
     }
     let _ = person.id;
+}
+
+/// The people button, top right: how many are in the call, and a gold count of
+/// raised hands. Answers whether it was pressed.
+fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
+    let d = 40.0;
+    let c = egui::pos2(full.max.x - EDGE - d * 0.5, full.min.y + EDGE + d * 0.5);
+    let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(d));
+    let resp = ui
+        .interact(rect, egui::Id::new("call_people"), egui::Sense::click())
+        .on_hover_text("People in the call");
+    let p = ui.painter();
+    p.circle_filled(
+        c,
+        d * 0.5,
+        egui::Color32::from_white_alpha(if resp.hovered() { 46 } else { 30 }),
+    );
+    centred(p, c, icons::PEOPLE, 22.0, theme::CREAM);
+    let hands = calls.members().iter().filter(|m| m.hand.is_some()).count();
+    let (count, fill, ink) = if hands > 0 {
+        (hands, theme::WARN, theme::INK)
+    } else {
+        (calls.members().len(), theme::SURFACE_RAISED, theme::CREAM)
+    };
+    if count > 0 {
+        let b = c + egui::vec2(d * 0.38, -d * 0.36);
+        p.circle_filled(b, 9.0, fill);
+        centred(p, b, &count.to_string(), theme::SIZE_TINY, ink);
+    }
+    resp.clicked()
+}
+
+/// The keys along the bottom: microphone, camera, hand, more, leave. Each
+/// carries a word under it: a phone never shows a hover tip, and an icon
+/// alone left "is the crossed-out camera the state or the action?" to guess.
+fn dock(
+    ui: &mut egui::Ui,
+    full: egui::Rect,
+    calls: &mut Calls,
+    st: &mut CallScreenState,
+    request: &mut Option<CallRequest>,
+) {
+    const LABEL_GAP: f32 = 16.0;
+    let p = ui.painter().clone();
+    let x = full.center().x;
+    let y = full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE * 0.5 - LABEL_GAP * 0.5;
+    let with_camera = camera_available();
+    let n = if with_camera { 5.0 } else { 4.0 };
+    // Narrow phones fit five keys by tightening the step, not the keys.
+    let step = (CALL_BUTTON_LARGE + 18.0).min((full.width() - 2.0 * EDGE - 16.0) / n);
+    let d = CALL_BUTTON_LARGE.min(step - 8.0);
+    let mut cx = x - (n - 1.0) * step * 0.5;
+    let tray = egui::Rect::from_center_size(
+        egui::pos2(x, y + LABEL_GAP * 0.5),
+        egui::vec2((n - 1.0) * step + d + 24.0, d + 20.0 + LABEL_GAP),
+    );
+    p.rect_filled(
+        tray,
+        egui::CornerRadius::same(theme::RADIUS_PILL),
+        egui::Color32::from_black_alpha(130),
+    );
+    let label = |cx: f32, text: &str| {
+        centred(
+            &p,
+            egui::pos2(cx, y + d * 0.5 + LABEL_GAP * 0.5 + 2.0),
+            text,
+            theme::SIZE_TINY,
+            theme::TEXT,
+        );
+    };
+    let mut touched = false;
+    let held = calls.me().is_some_and(|m| m.held);
+    let (icon, tip, tone) = if held {
+        (icons::LOCK, "A host muted you", CallTone::Off)
+    } else if calls.muted {
+        (icons::MIC_OFF, "Unmute", CallTone::Off)
+    } else {
+        (icons::MIC, "Mute", CallTone::On)
+    };
+    if button_at(ui, egui::pos2(cx, y), icon, tip, tone, d) {
+        if held {
+            calls.notice = Some("A host muted you. Raise your hand to ask to talk.".into());
+        } else {
+            calls.muted = !calls.muted;
+        }
+        touched = true;
+    }
+    label(
+        cx,
+        if held {
+            "Held"
+        } else if calls.muted {
+            "Unmute"
+        } else {
+            "Mute"
+        },
+    );
+    cx += step;
+    if with_camera {
+        let (icon, tip, tone) = if calls.camera_on {
+            (icons::VIDEOCAM, "Turn the camera off", CallTone::On)
+        } else {
+            (icons::VIDEOCAM_OFF, "Turn the camera on", CallTone::Off)
+        };
+        if button_at(ui, egui::pos2(cx, y), icon, tip, tone, d) {
+            calls.camera_on = !calls.camera_on;
+            touched = true;
+        }
+        label(cx, "Camera");
+        cx += step;
+    }
+    let raised = calls.me().is_some_and(|m| m.hand.is_some());
+    if raised {
+        p.circle_stroke(
+            egui::pos2(cx, y),
+            d * 0.5 + 3.0,
+            egui::Stroke::new(3.0, theme::WARN),
+        );
+    }
+    let tip = if raised {
+        "Lower your hand"
+    } else {
+        "Raise your hand"
+    };
+    if button_at(ui, egui::pos2(cx, y), icons::HAND, tip, CallTone::On, d) {
+        *request = Some(CallRequest::Control(CallAction::Hand(!raised)));
+        touched = true;
+    }
+    label(cx, if raised { "Lower" } else { "Hand" });
+    cx += step;
+    if button_at(
+        ui,
+        egui::pos2(cx, y),
+        icons::MORE,
+        "React, and more",
+        CallTone::On,
+        d,
+    ) {
+        st.sheet = Some(Sheet::More);
+        touched = true;
+    }
+    label(cx, "More");
+    cx += step;
+    if button_at(
+        ui,
+        egui::pos2(cx, y),
+        icons::CALL_END,
+        "Leave",
+        CallTone::HangUp,
+        d,
+    ) {
+        // A host with others still in the call is asked: leave, or end it for
+        // everyone. Anybody else just leaves, as on a phone.
+        if calls.hosting() && !calls.others().is_empty() {
+            st.sheet = Some(Sheet::Leave);
+        } else {
+            *request = Some(CallRequest::Leave);
+        }
+    }
+    label(cx, "Leave");
+    if touched {
+        st.touched = Some(web_time::Instant::now());
+    }
+}
+
+/// A full-width row in a sheet: icon, words, an optional switch state.
+fn sheet_row(ui: &mut egui::Ui, icon: &str, text: &str, on: Option<bool>) -> bool {
+    let resp = theme::menu_entry(ui, icon, text);
+    if let Some(on) = on {
+        let r = resp.rect;
+        let track = egui::Rect::from_center_size(
+            egui::pos2(r.max.x - 26.0, r.center().y),
+            egui::vec2(34.0, 20.0),
+        );
+        let p = ui.painter();
+        p.rect_filled(
+            track,
+            10.0,
+            if on {
+                theme::ACCENT
+            } else {
+                theme::SURFACE_RAISED
+            },
+        );
+        let knob = if on {
+            track.max.x - 10.0
+        } else {
+            track.min.x + 10.0
+        };
+        p.circle_filled(
+            egui::pos2(knob, track.center().y),
+            7.0,
+            if on { theme::INK } else { theme::TEXT_DIM },
+        );
+    }
+    resp.clicked()
+}
+
+/// Reactions, and the call's other actions; a host's controls at the end.
+fn more_sheet(
+    ui: &mut egui::Ui,
+    calls: &mut Calls,
+    st: &mut CallScreenState,
+    request: &mut Option<CallRequest>,
+    close: &mut bool,
+) {
+    theme::section(ui, "React");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for r in REACTIONS {
+            let b = egui::Button::new(egui::RichText::new(r).size(26.0))
+                .min_size(egui::vec2(48.0, 48.0))
+                .corner_radius(12);
+            if ui.add(b).clicked() {
+                *request = Some(CallRequest::React(r.to_string()));
+                *close = true;
+            }
+        }
+    });
+    theme::section(ui, "In this call");
+    if sheet_row(ui, icons::PEOPLE, "People", None) {
+        st.sheet = Some(Sheet::People);
+    }
+    if !calls.hosting() {
+        return;
+    }
+    let s = calls.call_settings();
+    theme::section(ui, "Hosting");
+    if sheet_row(ui, icons::MIC_OFF, "Mute everyone", None) {
+        *request = Some(CallRequest::Control(CallAction::MuteAll));
+        *close = true;
+    }
+    let mut set =
+        |ui: &mut egui::Ui, icon: &str, text: &str, on: bool, f: fn(&mut CallSettings, bool)| {
+            if sheet_row(ui, icon, text, Some(on)) {
+                let mut next = s;
+                f(&mut next, !on);
+                *request = Some(CallRequest::Control(CallAction::Settings(next)));
+            }
+        };
+    set(ui, icons::LOCK, "Lock the call", s.locked, |s, v| {
+        s.locked = v
+    });
+    set(ui, icons::MIC, "Others may unmute", s.may_unmute, |s, v| {
+        s.may_unmute = v
+    });
+    set(
+        ui,
+        icons::SCREEN_SHARE,
+        "Others may share a screen",
+        s.may_share,
+        |s, v| {
+            s.may_share = v;
+        },
+    );
+    ui.add_space(6.0);
+    if sheet_row(ui, icons::CALL_END, "End for everyone", None) {
+        *request = Some(CallRequest::Control(CallAction::EndForAll));
+        *close = true;
+    }
+}
+
+/// Everybody in the call: raised hands first, in the order they went up; then
+/// everyone. A host taps a person for what can be done to them.
+fn people_sheet(
+    ui: &mut egui::Ui,
+    calls: &mut Calls,
+    st: &mut CallScreenState,
+    request: &mut Option<CallRequest>,
+) {
+    let hosting = calls.hosting();
+    let me = calls.me().map(|m| m.participant);
+    let members: Vec<cartopolis_core::CallMember> = calls.members().to_vec();
+    ui.label(
+        egui::RichText::new(format!("People · {}", members.len()))
+            .size(theme::SIZE_PANEL_TITLE)
+            .color(theme::CREAM),
+    );
+    let mut hands: Vec<&cartopolis_core::CallMember> =
+        members.iter().filter(|m| m.hand.is_some()).collect();
+    hands.sort_by_key(|m| m.hand);
+    if !hands.is_empty() {
+        theme::section(ui, "Hands up");
+        for (i, m) in hands.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} {}", icons::HAND, i + 1))
+                        .color(theme::WARN)
+                        .size(theme::SIZE_BODY),
+                );
+                ui.label(
+                    egui::RichText::new(&m.username)
+                        .size(theme::SIZE_BODY)
+                        .color(theme::TEXT),
+                );
+                if hosting {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::chip(ui, "Lower", false).clicked() {
+                            *request = Some(CallRequest::Control(CallAction::LowerHand {
+                                participant: m.participant,
+                            }));
+                        }
+                        if theme::chip(ui, "Let talk", true).clicked() {
+                            *request = Some(CallRequest::Control(CallAction::AllowTalk {
+                                participant: m.participant,
+                            }));
+                        }
+                    });
+                } else if Some(m.participant) == me {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::chip(ui, "Lower", false).clicked() {
+                            *request = Some(CallRequest::Control(CallAction::Hand(false)));
+                        }
+                    });
+                }
+            });
+        }
+    }
+    theme::section(ui, "In the call");
+    for m in &members {
+        let you = Some(m.participant) == me;
+        let role = match m.role {
+            cartopolis_core::CallRole::Host => " · host",
+            cartopolis_core::CallRole::CoHost => " · co-host",
+            cartopolis_core::CallRole::Member => "",
+        };
+        let state = if m.held {
+            format!("  {}", icons::LOCK)
+        } else if m.muted {
+            format!("  {}", icons::MIC_OFF)
+        } else {
+            String::new()
+        };
+        let sharing = if m.sharing {
+            format!("  {}", icons::SCREEN_SHARE)
+        } else {
+            String::new()
+        };
+        let name = if you { "You" } else { m.username.as_str() };
+        let text = format!("{name}{role}{state}{sharing}");
+        let picked = st.picked == Some(m.participant);
+        let resp = theme::menu_entry_selected(ui, picked, icons::DOT, &text);
+        if hosting && !you && resp.clicked() {
+            st.picked = if picked { None } else { Some(m.participant) };
+        }
+        if hosting && picked {
+            let participant = m.participant;
+            ui.indent("call_person_actions", |ui| {
+                if m.held {
+                    if sheet_row(ui, icons::MIC, "Let talk", None) {
+                        *request =
+                            Some(CallRequest::Control(CallAction::AllowTalk { participant }));
+                    }
+                } else if sheet_row(ui, icons::MIC_OFF, "Mute", None) {
+                    *request = Some(CallRequest::Control(CallAction::Mute { participant }));
+                }
+                if m.sharing && sheet_row(ui, icons::SCREEN_SHARE, "Stop their screen", None) {
+                    *request = Some(CallRequest::Control(CallAction::StopSharing {
+                        participant,
+                    }));
+                }
+                let (word, role) = match m.role {
+                    cartopolis_core::CallRole::Member => {
+                        ("Make co-host", cartopolis_core::CallRole::CoHost)
+                    }
+                    _ => ("Make a member again", cartopolis_core::CallRole::Member),
+                };
+                if m.role != cartopolis_core::CallRole::Host
+                    && sheet_row(ui, icons::HOST, word, None)
+                {
+                    *request = Some(CallRequest::Control(CallAction::Role { participant, role }));
+                }
+                if calls
+                    .me()
+                    .is_some_and(|me| me.role == cartopolis_core::CallRole::Host)
+                    && sheet_row(ui, icons::STAR, "Hand the call over", None)
+                {
+                    *request = Some(CallRequest::Control(CallAction::Role {
+                        participant,
+                        role: cartopolis_core::CallRole::Host,
+                    }));
+                }
+                if sheet_row(ui, icons::PERSON_REMOVE, "Remove from the call", None) {
+                    *request = Some(CallRequest::Control(CallAction::Remove { participant }));
+                    st.picked = None;
+                }
+            });
+        }
+    }
+    if hosting {
+        ui.label(
+            egui::RichText::new("Tap a person for what a host can do.")
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+    }
+}
+
+/// A host leaving a call others are still in: leave it to them, or end it.
+fn leave_sheet(
+    ui: &mut egui::Ui,
+    calls: &Calls,
+    request: &mut Option<CallRequest>,
+    close: &mut bool,
+) {
+    ui.label(
+        egui::RichText::new("Leave the call?")
+            .size(theme::SIZE_PANEL_TITLE)
+            .color(theme::CREAM),
+    );
+    let others = calls.others().len();
+    if sheet_row(ui, icons::BACK, "Leave — the call goes on", None) {
+        *request = Some(CallRequest::Leave);
+        *close = true;
+    }
+    if sheet_row(
+        ui,
+        icons::CALL_END,
+        &format!("End for everyone ({} others)", others),
+        None,
+    ) {
+        *request = Some(CallRequest::Control(CallAction::EndForAll));
+        *close = true;
+    }
+    if sheet_row(ui, icons::CLEAR, "Cancel", None) {
+        *close = true;
+    }
 }
 
 /// The call folded down to a bar: green, with who and how long, the

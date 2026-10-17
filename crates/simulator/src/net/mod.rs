@@ -83,6 +83,8 @@ const CLAIM_BURST: u32 = 12;
 /// two WebRTC connections on the forwarder, which is the expensive thing a
 /// client could ask for in a loop.
 const MIN_CALL_JOIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Reactions in a call: a few a second at most, each a fan-out to the call.
+const MIN_CALL_REACT_INTERVAL: Duration = Duration::from_millis(250);
 /// Contacts: person lookups refill at one per this interval per connection, up
 /// to [`LOOKUP_BURST`] at once. A lookup says whether a username exists, so an
 /// unthrottled loop would list every account on the server.
@@ -443,6 +445,7 @@ struct RateGates {
     /// The person-lookup bucket ([`take_token`]).
     lookup: Instant,
     last_call_join: Instant,
+    last_call_react: Instant,
     last_where: Instant,
     /// The hand bucket (`hand::on_hand`, [`take_token`]).
     hand: Instant,
@@ -463,6 +466,7 @@ impl RateGates {
             claim: ago(MIN_CLAIM_INTERVAL * CLAIM_BURST),
             lookup: ago(MIN_LOOKUP_INTERVAL * LOOKUP_BURST),
             last_call_join: ago(MIN_CALL_JOIN_INTERVAL),
+            last_call_react: ago(MIN_CALL_REACT_INTERVAL),
             last_where: ago(MIN_WHERE_INTERVAL),
             hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
         }
@@ -1214,7 +1218,21 @@ async fn dispatch<T: FrameTransport>(
             request_id,
             group,
             offer,
-        } => calls::on_join(ctx, request_id, group, offer).await,
+            screen,
+        } => calls::on_join(ctx, request_id, group, offer, screen).await,
+        ClientRequest::CallControl { group, action } => calls::on_control(ctx, group, action).await,
+        ClientRequest::CallReact {
+            group,
+            epoch,
+            sealed,
+        } => {
+            calls::on_react(ctx, group, epoch, sealed);
+            Ok(())
+        }
+        ClientRequest::CallWatch { group, cameras } => {
+            calls::on_watch(ctx, group, cameras);
+            Ok(())
+        }
         ClientRequest::CallAnswer { group, sdp } => {
             calls::on_answer(ctx, group, sdp);
             Ok(())

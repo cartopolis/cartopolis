@@ -2,9 +2,12 @@
 //! renegotiation, leaving. The media itself never passes through here — it goes
 //! to the forwarder (`crate::calls`) over its own UDP socket.
 
-use super::{blocked_lowercase, server_error, ConnCtx, FrameTransport, MIN_CALL_JOIN_INTERVAL};
+use super::{
+    blocked_lowercase, server_error, ConnCtx, FrameTransport, MIN_CALL_JOIN_INTERVAL,
+    MIN_CALL_REACT_INTERVAL,
+};
 use crate::db;
-use cartopolis_core::NetMessage;
+use cartopolis_core::{CallAction, NetMessage, CALL_CONTROL_REQUEST};
 use std::time::Instant;
 
 pub(super) async fn on_join<T: FrameTransport>(
@@ -12,6 +15,7 @@ pub(super) async fn on_join<T: FrameTransport>(
     request_id: u32,
     group: Vec<u8>,
     offer: String,
+    screen: Option<String>,
 ) -> anyhow::Result<()> {
     let Some(device) = ctx.e2ee_device else {
         return Ok(());
@@ -27,7 +31,10 @@ pub(super) async fn on_join<T: FrameTransport>(
             ))
             .await;
     };
-    if offer.len() > crate::calls::MAX_SDP_BYTES || group.len() > crate::e2ee::MAX_GROUP_ID_BYTES {
+    if offer.len() > crate::calls::MAX_SDP_BYTES
+        || group.len() > crate::e2ee::MAX_GROUP_ID_BYTES
+        || screen.as_ref().is_some_and(|m| m.len() > 16)
+    {
         return ctx.send(&server_error(request_id, 413, "too large")).await;
     }
     if ctx.gates.last_call_join.elapsed() < MIN_CALL_JOIN_INTERVAL {
@@ -63,6 +70,7 @@ pub(super) async fn on_join<T: FrameTransport>(
             blocked,
             members,
             offer,
+            screen,
         })
         .await;
     match joined {
@@ -85,6 +93,71 @@ pub(super) fn on_answer<T: FrameTransport>(ctx: &mut ConnCtx<T>, group: Vec<u8>,
     if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
         if seat.group == group && sdp.len() <= crate::calls::MAX_SDP_BYTES {
             handle.answer(seat, sdp);
+        }
+    }
+}
+
+/// A hand, a shared screen or a host's action in the call this connection is
+/// in (protocol 41). A refusal is a `ServerError` under
+/// [`CALL_CONTROL_REQUEST`], which the call shows and does not end on.
+pub(super) async fn on_control<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+    action: CallAction,
+) -> anyhow::Result<()> {
+    let (Some(handle), Some(seat)) = (ctx.calls.clone(), &ctx.call_seat) else {
+        return Ok(());
+    };
+    if seat.group != group {
+        return Ok(());
+    }
+    let participant = seat.participant;
+    match handle.control(participant, action).await {
+        Ok(()) => Ok(()),
+        Err(why) => {
+            ctx.send(&server_error(CALL_CONTROL_REQUEST, 403, why))
+                .await
+        }
+    }
+}
+
+/// A sealed reaction for everyone else in this connection's call.
+pub(super) fn on_react<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+    epoch: u64,
+    sealed: Vec<u8>,
+) {
+    if sealed.len() > crate::calls::MAX_REACTION_BYTES {
+        return;
+    }
+    // At most a few a second: each is a fan-out to the whole call.
+    if ctx.gates.last_call_react.elapsed() < MIN_CALL_REACT_INTERVAL {
+        return;
+    }
+    ctx.gates.last_call_react = Instant::now();
+    if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
+        if seat.group == group {
+            handle.react(seat, epoch, sealed);
+        }
+    }
+}
+
+/// Whose cameras this connection draws.
+pub(super) fn on_watch<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+    cameras: Option<Vec<u64>>,
+) {
+    if cameras
+        .as_ref()
+        .is_some_and(|c| c.len() > cartopolis_calls::sfu::MAX_PARTICIPANTS)
+    {
+        return;
+    }
+    if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
+        if seat.group == group {
+            handle.watch(seat, cameras);
         }
     }
 }

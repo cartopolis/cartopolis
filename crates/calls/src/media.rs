@@ -104,10 +104,22 @@ pub const RECONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(
 pub struct ParticipantId(pub u64);
 
 /// What kind of track a [`TrackInfo`] names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Audio,
+    /// A camera.
     Video,
+    /// A shared screen: video too, on a media id the sender names when it
+    /// joins.
+    Screen,
+}
+
+impl Kind {
+    /// Whether it carries pictures: a camera or a screen.
+    #[must_use]
+    pub fn is_video(self) -> bool {
+        matches!(self, Self::Video | Self::Screen)
+    }
 }
 
 /// Which participant a track on somebody's *down* connection comes from. Sent

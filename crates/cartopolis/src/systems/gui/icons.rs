@@ -174,6 +174,18 @@ icons! {
     CALL_END = "\u{f0bc}", "call_end";
     /// Answer a call.
     CALL = "\u{f0d4}", "call";
+    /// A raised hand in a call: the key that raises it, and the badge on a tile.
+    HAND = "\u{e764}", "back_hand";
+    /// Somebody is sharing a screen in a call.
+    SCREEN_SHARE = "\u{e0e2}", "screen_share";
+    /// Everybody in a call (the people sheet).
+    PEOPLE = "\u{ea21}", "group";
+    /// Spotlight somebody in a call for everyone.
+    STAR = "\u{f09a}", "star";
+    /// Take somebody out of a call.
+    PERSON_REMOVE = "\u{ef66}", "person_remove";
+    /// A call's host, and a host's controls.
+    HOST = "\u{f650}", "shield_person";
     /// A script that is running.
     RUNNING = "\u{e1c4}", "play_circle";
     /// A script that is not.

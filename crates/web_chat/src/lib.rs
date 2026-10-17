@@ -18,9 +18,10 @@ use std::collections::VecDeque;
 use cartopolis_chat::{channel_key, group_of, Engine, Event, HistoryItem, PictureRef};
 use cartopolis_core::point::Point;
 use cartopolis_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, CommunityDto, CommunityListing,
-    CommunityMemberDto, CommunityPlace, CommunityRole, CommunitySettings, DirectoryOrder, JoinRule,
-    ListingState, NetMessage, ReportReason, PROTOCOL_VERSION,
+    decode_app_frame, encode_app_frame, AuthCredential, CallAction, CallEndReason, CallRole,
+    CallTrackKind, CommunityDto, CommunityListing, CommunityMemberDto, CommunityPlace,
+    CommunityRole, CommunitySettings, DirectoryOrder, JoinRule, ListingState, NetMessage,
+    ReportReason, CALL_CONTROL_REQUEST, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -55,6 +56,14 @@ fn js_err(e: impl std::fmt::Display) -> Error {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex_vec(s: &str) -> Option<Vec<u8>> {
+    (s.len() % 2 == 0).then_some(())?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect()
 }
 
 fn unhex<const N: usize>(s: &str) -> Result<[u8; N], Error> {
@@ -319,14 +328,56 @@ impl ChatCore {
             }
             // Calls (protocol 26): signalling only, relayed to the page that owns
             // the call's media (`webcall.js`); the engine has no part in it.
-            NetMessage::CallRoster { group, members } => self.events.push(json!({
+            NetMessage::CallRoster {
+                group,
+                members,
+                settings,
+            } => self.events.push(json!({
                 "kind": "call_roster",
                 "channel": channel_key(&group),
                 "members": members.iter().map(|m| json!({
                     "participant": m.participant,
                     "username": m.username,
                     "device": m.device.to_string(),
+                    "role": match m.role {
+                        CallRole::Host => "host",
+                        CallRole::CoHost => "cohost",
+                        CallRole::Member => "member",
+                    },
+                    "hand": m.hand,
+                    "held": m.held,
+                    "sharing": m.sharing,
+                    "muted": m.muted,
                 })).collect::<Vec<_>>(),
+                "settings": {
+                    "locked": settings.locked,
+                    "may_unmute": settings.may_unmute,
+                    "may_share": settings.may_share,
+                },
+            })),
+            NetMessage::CallEnded { group, reason } => {
+                let (why, by) = match reason {
+                    CallEndReason::Removed { by } => ("removed", by),
+                    CallEndReason::Ended { by } => ("ended", by),
+                };
+                self.events.push(json!({
+                    "kind": "call_ended",
+                    "channel": channel_key(&group),
+                    "reason": why,
+                    "by": by,
+                }));
+            }
+            NetMessage::CallReacted {
+                group,
+                participant,
+                epoch,
+                sealed,
+            } => self.events.push(json!({
+                "kind": "call_reacted",
+                "channel": channel_key(&group),
+                "participant": participant,
+                "epoch": epoch.to_string(),
+                "sealed": hex(&sealed),
             })),
             NetMessage::CallJoined {
                 group,
@@ -346,7 +397,12 @@ impl ChatCore {
                 "tracks": tracks.iter().map(|t| json!({
                     "mid": t.mid,
                     "participant": t.participant,
-                    "video": t.video,
+                    "kind": match t.kind {
+                        CallTrackKind::Audio => "audio",
+                        CallTrackKind::Camera => "camera",
+                        CallTrackKind::Screen => "screen",
+                    },
+                    "video": t.kind != CallTrackKind::Audio,
                 })).collect::<Vec<_>>(),
             })),
             NetMessage::CallDeclined { group, username } => self.events.push(json!({
@@ -362,6 +418,8 @@ impl ChatCore {
                 "kind": "call_refused",
                 "code": code,
                 "message": message,
+                // A refused host action, not the call failing (protocol 41).
+                "control": request_id == CALL_CONTROL_REQUEST,
             })),
             msg if cartopolis_chat::is_private_message(&msg) => {
                 if let Some(engine) = self.engine.as_mut() {
@@ -479,13 +537,47 @@ impl ChatCore {
     // connection, and hands out the chat's call key for the current epoch.
 
     /// Join (or start) the call in `channel` with the page's sending offer.
-    pub fn call_join(&mut self, channel: &str, offer: &str) -> Result<(), Error> {
+    /// `screen` is the offer's media id for a shared screen (empty: none).
+    pub fn call_join(&mut self, channel: &str, offer: &str, screen: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         self.push(&NetMessage::CallJoin {
             request_id: CALL_REQUEST_BASE | 1,
             group,
             offer: offer.to_string(),
+            screen: (!screen.is_empty()).then(|| screen.to_string()),
         })
+    }
+
+    /// A hand, a shared screen or a host's action in `channel`'s call, as
+    /// `CallAction`'s JSON (`{"Hand":true}`, `{"Mute":{"participant":3}}`,
+    /// `"MuteAll"`, …).
+    pub fn call_control(&mut self, channel: &str, action: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let action: CallAction =
+            serde_json::from_str(action).map_err(|e| Error(format!("not a call action: {e}")))?;
+        self.push(&NetMessage::CallControl { group, action })
+    }
+
+    /// A reaction the page sealed (`call-events.js`) for `epoch` (decimal),
+    /// as hex.
+    pub fn call_react(&mut self, channel: &str, epoch: &str, sealed: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let epoch = epoch.parse().map_err(|_| Error("not an epoch".into()))?;
+        let sealed = unhex_vec(sealed).ok_or_else(|| Error("not hex".into()))?;
+        self.push(&NetMessage::CallReact {
+            group,
+            epoch,
+            sealed,
+        })
+    }
+
+    /// Whose cameras the page draws: a JSON list of participants, or `null`
+    /// for everybody.
+    pub fn call_watch(&mut self, channel: &str, cameras: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let cameras: Option<Vec<u64>> =
+            serde_json::from_str(cameras).map_err(|e| Error(format!("not a list: {e}")))?;
+        self.push(&NetMessage::CallWatch { group, cameras })
     }
 
     /// Answer the forwarder's offer for the page's receiving connection.

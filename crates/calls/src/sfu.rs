@@ -83,7 +83,7 @@ impl From<Kind> for MediaKind {
     fn from(k: Kind) -> Self {
         match k {
             Kind::Audio => MediaKind::Audio,
-            Kind::Video => MediaKind::Video,
+            Kind::Video | Kind::Screen => MediaKind::Video,
         }
     }
 }
@@ -158,6 +158,14 @@ struct Participant {
     tracks_out: Vec<TrackOut>,
     /// Senders this participant does not receive ([`Sfu::ignore`]).
     ignores: Vec<ParticipantId>,
+    /// The up media id its shared screen arrives on, named at the join.
+    screen_mid: Option<Mid>,
+    /// Its sound is dropped here, not forwarded ([`Sfu::hold`]).
+    held: bool,
+    /// Its shared screen is dropped here ([`Sfu::hold_screen`]).
+    screen_held: bool,
+    /// Whose cameras it draws; `None` is everybody ([`Sfu::watch`]).
+    watching: Option<Vec<ParticipantId>>,
     pending: Option<SdpPendingOffer>,
     alive: bool,
     /// When either connection last went `Disconnected` without coming back.
@@ -208,6 +216,7 @@ impl Sfu {
         now: Instant,
         room: RoomId,
         offer: &str,
+        screen: Option<&str>,
     ) -> Result<(ParticipantId, String), Error> {
         if self
             .participants
@@ -246,6 +255,10 @@ impl Sfu {
             tracks_in: Vec::new(),
             tracks_out,
             ignores: Vec::new(),
+            screen_mid: screen.map(Mid::from),
+            held: false,
+            screen_held: false,
+            watching: None,
             pending: None,
             alive: true,
             lost_since: None,
@@ -268,7 +281,7 @@ impl Sfu {
             match t.state {
                 OutState::Negotiating(m) => {
                     t.state = OutState::Open(m);
-                    if t.kind == Kind::Video {
+                    if t.kind.is_video() {
                         opened.push((t.from, t.from_mid));
                     }
                 }
@@ -308,6 +321,71 @@ impl Sfu {
                 OutState::ToStop(_) | OutState::Stopping(_) => true,
             }
         });
+    }
+
+    /// Drop (or pass again) everything `who` says, at the forwarder: a host's
+    /// mute that a rewritten app cannot undo.
+    pub fn hold(&mut self, who: ParticipantId, held: bool) {
+        if let Some(p) = self.participant_mut(who) {
+            p.held = held;
+        }
+    }
+
+    /// Drop (or pass again) `who`'s shared screen. Passing it again asks for a
+    /// keyframe, so its receivers get a whole picture at once.
+    pub fn hold_screen(&mut self, now: Instant, who: ParticipantId, held: bool) {
+        let Some(p) = self.participant_mut(who) else {
+            return;
+        };
+        let was = std::mem::replace(&mut p.screen_held, held);
+        let screen = p.screen_mid;
+        if was && !held {
+            if let Some(mid) = screen {
+                self.request_keyframe(who, mid, KeyframeRequestKind::Pli, now);
+            }
+        }
+    }
+
+    /// Whose cameras `receiver` draws (`None`: everybody's). A camera it
+    /// starts drawing gets a keyframe request, since what it skipped is what
+    /// the next picture would build on.
+    pub fn watch(
+        &mut self,
+        now: Instant,
+        receiver: ParticipantId,
+        cameras: Option<Vec<ParticipantId>>,
+    ) {
+        let Some(p) = self.participant_mut(receiver) else {
+            return;
+        };
+        let before = std::mem::replace(&mut p.watching, cameras.clone());
+        let room = p.room.clone();
+        let newly: Vec<ParticipantId> = self
+            .participants
+            .iter()
+            .filter(|s| s.alive && s.room == room && s.id != receiver)
+            .map(|s| s.id)
+            .filter(|s| {
+                let now_in = cameras.as_ref().is_none_or(|w| w.contains(s));
+                let was_in = before.as_ref().is_none_or(|w| w.contains(s));
+                now_in && !was_in
+            })
+            .collect();
+        for s in newly {
+            let mids: Vec<Mid> = self
+                .participant(s)
+                .map(|p| {
+                    p.tracks_in
+                        .iter()
+                        .filter(|t| t.kind == Kind::Video)
+                        .map(|t| t.mid)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for mid in mids {
+                self.request_keyframe(s, mid, KeyframeRequestKind::Pli, now);
+            }
+        }
     }
 
     /// Take a participant out of its call.
@@ -409,14 +487,31 @@ impl Sfu {
                                 break;
                             }
                             Event::MediaAdded(m) if up => {
+                                let kind = if p.screen_mid == Some(m.mid) {
+                                    Kind::Screen
+                                } else {
+                                    m.kind.into()
+                                };
                                 p.tracks_in.push(TrackIn {
                                     mid: m.mid,
-                                    kind: m.kind.into(),
+                                    kind,
                                     last_keyframe_request: None,
                                 });
-                                added.push((p.room.clone(), p.id, m.mid, Kind::from(m.kind)));
+                                added.push((p.room.clone(), p.id, m.mid, kind));
                             }
                             Event::MediaData(data) if up => {
+                                // Held sound and a forbidden screen stop here,
+                                // at the source, for every receiver at once.
+                                let kind = p
+                                    .tracks_in
+                                    .iter()
+                                    .find(|t| t.mid == data.mid)
+                                    .map(|t| t.kind);
+                                if (p.held && kind == Some(Kind::Audio))
+                                    || (p.screen_held && kind == Some(Kind::Screen))
+                                {
+                                    continue;
+                                }
                                 if !data.contiguous && data.params.spec().codec.is_video() {
                                     keyframes.push((p.id, data.mid, KeyframeRequestKind::Fir));
                                 }
@@ -502,7 +597,14 @@ impl Sfu {
     }
 
     fn forward(&mut self, f: &Forward) {
-        let Some(room) = self.participant(f.from).map(|p| p.room.clone()) else {
+        let Some((room, kind)) = self.participant(f.from).map(|p| {
+            let kind = p
+                .tracks_in
+                .iter()
+                .find(|t| t.mid == f.data.mid)
+                .map(|t| t.kind);
+            (p.room.clone(), kind)
+        }) else {
             return;
         };
         for q in self
@@ -510,6 +612,12 @@ impl Sfu {
             .iter_mut()
             .filter(|q| q.alive && q.room == room && q.id != f.from && !q.ignores.contains(&f.from))
         {
+            // A camera nobody here draws is not sent (shared screens always are).
+            if kind == Some(Kind::Video)
+                && q.watching.as_ref().is_some_and(|w| !w.contains(&f.from))
+            {
+                continue;
+            }
             let Some(mid) = q
                 .tracks_out
                 .iter()
@@ -549,7 +657,7 @@ impl Sfu {
         let Some(t) = p.tracks_in.iter_mut().find(|t| t.mid == mid) else {
             return;
         };
-        if t.kind != Kind::Video
+        if !t.kind.is_video()
             || t.last_keyframe_request
                 .is_some_and(|at| now.duration_since(at) < KEYFRAME_THROTTLE)
         {

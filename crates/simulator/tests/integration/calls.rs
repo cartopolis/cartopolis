@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use cartopolis_calls::keys::{CallKeys, BASE_KEY_LEN};
 use cartopolis_calls::link::{Leg, Link, Output};
 use cartopolis_calls::media::{Codec, Kind, ParticipantId, TrackInfo};
-use cartopolis_core::NetMessage;
+use cartopolis_core::{CallTrackKind, NetMessage};
 use cartopolis_e2ee::Device;
 use cartopolis_simulator::{ensure_account, serve, SimConfig, SimHandle};
 use futures_util::StreamExt;
@@ -67,6 +67,7 @@ async fn join(c: &mut Client, dev: &Device, group: &[u8]) -> Result<(Phone, u64)
         up.local_addr().unwrap(),
         down.local_addr().unwrap(),
         false,
+        false,
     )
     .unwrap();
     send(
@@ -75,6 +76,7 @@ async fn join(c: &mut Client, dev: &Device, group: &[u8]) -> Result<(Phone, u64)
             request_id: 40,
             group: group.to_vec(),
             offer,
+            screen: None,
         },
     )
     .await;
@@ -123,6 +125,16 @@ async fn signalling(
     group: &[u8],
     rosters: &mut Vec<Vec<String>>,
 ) {
+    for m in signalling_all(c, phone, group).await {
+        if let NetMessage::CallRoster { members, .. } = m {
+            rosters.push(members.into_iter().map(|m| m.username).collect());
+        }
+    }
+}
+
+/// [`signalling`], returning every other message that arrived.
+async fn signalling_all(c: &mut Client, phone: &mut Phone, group: &[u8]) -> Vec<NetMessage> {
+    let mut rest = Vec::new();
     while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_millis(1), c.next()).await {
         match cartopolis_core::decode_app_frame(&frame).unwrap() {
             NetMessage::CallOffer { sdp, tracks, .. } => {
@@ -131,7 +143,11 @@ async fn signalling(
                     .map(|t| TrackInfo {
                         mid: t.mid,
                         from: ParticipantId(t.participant),
-                        kind: if t.video { Kind::Video } else { Kind::Audio },
+                        kind: match t.kind {
+                            CallTrackKind::Audio => Kind::Audio,
+                            CallTrackKind::Camera => Kind::Video,
+                            CallTrackKind::Screen => Kind::Screen,
+                        },
                     })
                     .collect();
                 let answer = phone
@@ -147,12 +163,10 @@ async fn signalling(
                 )
                 .await;
             }
-            NetMessage::CallRoster { members, .. } => {
-                rosters.push(members.into_iter().map(|m| m.username).collect());
-            }
-            _ => {}
+            other => rest.push(other),
         }
     }
+    rest
 }
 
 fn pump(phone: &mut Phone) {
@@ -182,6 +196,7 @@ fn pump(phone: &mut Phone) {
                 from,
                 codec,
                 sealed,
+                ..
             } => {
                 let opened = phone.keys.open(codec, &sealed).expect("a member opens it");
                 phone.heard.push((from, opened.frame));
@@ -296,7 +311,9 @@ async fn a_device_that_connects_mid_call_is_rung() {
     // And opened again, from the notification.
     let mut b = online(&addr, &mut bob).await;
     let (ring, _) = next_matching(&mut b, PATIENT, |m| match m {
-        NetMessage::CallRoster { group: g, members } if g == group => Some(members),
+        NetMessage::CallRoster {
+            group: g, members, ..
+        } if g == group => Some(members),
         _ => None,
     })
     .await
@@ -304,4 +321,168 @@ async fn a_device_that_connects_mid_call_is_rung() {
     assert_eq!(ring.len(), 1);
     assert_eq!(ring[0].username, "alice");
     assert_eq!(ring[0].participant, alice_id);
+}
+
+/// Talk from `from` to `to` for a while; returns how many frames arrived, and
+/// every non-media message either side was sent meanwhile.
+async fn talk(
+    (fc, from): (&mut Client, &mut Phone),
+    (tc, to): (&mut Client, &mut Phone),
+    group: &[u8],
+    for_ms: u64,
+    sent: &mut u32,
+) -> (usize, Vec<NetMessage>) {
+    let before = to.heard.len();
+    let mut said = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(for_ms);
+    while Instant::now() < deadline {
+        said.extend(signalling_all(fc, from, group).await);
+        said.extend(signalling_all(tc, to, group).await);
+        pump(from);
+        pump(to);
+        if from.link.is_connected() && to.link.is_connected() {
+            let sealed = from.keys.seal(Codec::Opus, b"hello").unwrap();
+            from.link
+                .send(
+                    Instant::now(),
+                    Codec::Opus,
+                    Duration::from_millis(20 * u64::from(*sent)),
+                    sealed,
+                )
+                .unwrap();
+            *sent += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    (to.heard.len() - before, said)
+}
+
+async fn control(c: &mut Client, group: &[u8], action: cartopolis_core::CallAction) {
+    send(
+        c,
+        &NetMessage::CallControl {
+            group: group.to_vec(),
+            action,
+        },
+    )
+    .await;
+}
+
+/// A meeting's host mutes, lets talk and removes at the server (protocol 41):
+/// a held member's sound stops at the forwarder, a member's attempt at a host
+/// action is refused without ending the call, and a removed member is told and
+/// kept out.
+#[tokio::test]
+async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
+    use cartopolis_core::{CallAction, CallEndReason, CallRole, CALL_CONTROL_REQUEST};
+    let (s, _dir) = start(&["alice", "bob"]).await;
+    let addr = s.local_addr.to_string();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
+    let mut a = online(&addr, &mut alice).await;
+    let mut b = online(&addr, &mut bob).await;
+    let group = start_direct(&mut a, &mut alice, "bob").await;
+    let (welcome, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("invitation delivered");
+    bob.join(&welcome).unwrap();
+
+    let (mut pa, _) = join(&mut a, &alice, &group).await.expect("alice joins");
+    let (mut pb, bob_id) = join(&mut b, &bob, &group).await.expect("bob joins");
+    let mut sent = 0;
+
+    // Bob is heard, and the first one in hosts the call.
+    let (heard, said) = talk(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        3000,
+        &mut sent,
+    )
+    .await;
+    assert!(heard > 20, "alice heard {heard} of bob's frames");
+    let roster = said
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            NetMessage::CallRoster { members, .. } if members.len() == 2 => Some(members.clone()),
+            _ => None,
+        })
+        .expect("a roster with both");
+    let host = roster.iter().find(|m| m.role == CallRole::Host).unwrap();
+    assert_eq!(host.username, "alice");
+
+    // Bob is no host: his try is refused, and he is still in the call.
+    control(&mut b, &group, CallAction::MuteAll).await;
+    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
+    assert!(said.iter().any(|m| matches!(
+        m,
+        NetMessage::ServerError { request_id, code: 403, .. } if *request_id == CALL_CONTROL_REQUEST
+    )));
+
+    // Alice mutes him: the roster says so, and his sound stops at the server.
+    control(
+        &mut a,
+        &group,
+        CallAction::Mute {
+            participant: bob_id,
+        },
+    )
+    .await;
+    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
+    assert!(said.iter().any(|m| matches!(
+        m,
+        NetMessage::CallRoster { members, .. }
+            if members.iter().any(|m| m.participant == bob_id && m.held)
+    )));
+    let (heard, _) = talk(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        1500,
+        &mut sent,
+    )
+    .await;
+    assert_eq!(heard, 0, "a held member is not forwarded");
+
+    // Let him talk again.
+    control(
+        &mut a,
+        &group,
+        CallAction::AllowTalk {
+            participant: bob_id,
+        },
+    )
+    .await;
+    let _ = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 300, &mut sent).await;
+    let (heard, _) = talk(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        1500,
+        &mut sent,
+    )
+    .await;
+    assert!(heard > 20, "alice heard {heard} after letting bob talk");
+
+    // Remove him: he is told, and cannot come back while the call lasts.
+    control(
+        &mut a,
+        &group,
+        CallAction::Remove {
+            participant: bob_id,
+        },
+    )
+    .await;
+    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
+    assert!(said.iter().any(|m| matches!(
+        m,
+        NetMessage::CallEnded { reason: CallEndReason::Removed { by }, .. } if by == "alice"
+    )));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let back = join(&mut b, &bob, &group).await;
+    assert!(matches!(back, Err((409, _))), "{:?}", back.err());
 }

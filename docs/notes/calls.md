@@ -499,3 +499,43 @@ not survive the process.
 
 **Not verified on a device**: the emulator cannot run the app, so the back
 gesture, the restore and the call screen on a phone are unwatched.
+
+## A call is a meeting (2026-10-17, protocol 41)
+
+Design: `docs/mockups/meetings/` (v2). Every call has a **host** — the first
+person in; when the last host or co-host leaves, whoever has been there
+longest takes over (`simulator::calls::succeed`), so a call never loses its
+host. Decisions, so they are not undone:
+
+- **What a host decides is carried out at the server, with what it already
+  sees.** A held member's sound and a member's screen while sharing is the
+  hosts' alone are dropped *at the forwarder* (`Sfu::hold`,
+  `Sfu::hold_screen`), not hidden in the other apps, which could be rewritten
+  to ignore it. A removed account is refused a join for as long as the call
+  lasts; a locked call refuses any account that was not in it, but lets back
+  one that was (a dropped connection rejoins). All of it lives in one pure
+  function, `simulator::calls::control`, with its unit tests beside it.
+- **Hands, held, sharing and muted are in the roster, readable by the
+  server.** The mockup drew hands as sealed chat messages; they moved into
+  `CallMember` because the server must act on them (Let talk lowers a hand and
+  lifts a hold in one step) and a late joiner must see the queue. They say no
+  more than who is in the call already does. A device's own *mute* is only
+  reported (`CallAction::Muted`), never enforced; a host's mute is `held`.
+- **Reactions stay sealed** (`CallReact`, `cartopolis_calls::events`,
+  `call-events.js`): HMAC-SHA256 of the call's base key under its own label
+  gives an AES-128-GCM key per epoch, so an event key is never a frame key.
+  The server relays the bytes and stamps the sender. The browser and native
+  sealing are held together by `crates/calls/testdata/event-vectors.json`.
+- **The screen is a third send-only track offered at the join**, like the
+  camera, so sharing needs no renegotiation; `CallJoin.screen` names its media
+  id and the forwarder labels it `Kind::Screen`. It is dropped at the
+  forwarder whenever its sender has not said `Sharing(true)`, so a picture sent
+  before the roster says so goes nowhere. Receivers key decoders and pictures
+  by `(participant, kind)`. The app receives screens; sending one is the
+  browser's for now (`getDisplayMedia`), the desktop app and Android
+  (MediaProjection) to follow.
+- **`CallWatch` lets a receiver say whose cameras it draws**; the forwarder
+  sends no camera nobody looks at. Screens are always sent.
+- **A refused host action does not end the call.** It comes back as a
+  `ServerError` under `CALL_CONTROL_REQUEST`, which both clients show as a
+  notice; any other error in the call's request range still ends it.

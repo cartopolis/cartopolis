@@ -176,6 +176,20 @@ pub enum ClientRequest {
         request_id: u32,
         group: Vec<u8>,
         offer: String,
+        screen: Option<String>,
+    },
+    CallControl {
+        group: Vec<u8>,
+        action: cartopolis_core::CallAction,
+    },
+    CallReact {
+        group: Vec<u8>,
+        epoch: u64,
+        sealed: Vec<u8>,
+    },
+    CallWatch {
+        group: Vec<u8>,
+        cameras: Option<Vec<u64>>,
     },
     CallAnswer {
         group: Vec<u8>,
@@ -462,11 +476,24 @@ impl TryFrom<NetMessage> for ClientRequest {
                 request_id,
                 group,
                 offer,
+                screen,
             } => Self::CallJoin {
                 request_id,
                 group,
                 offer,
+                screen,
             },
+            NetMessage::CallControl { group, action } => Self::CallControl { group, action },
+            NetMessage::CallReact {
+                group,
+                epoch,
+                sealed,
+            } => Self::CallReact {
+                group,
+                epoch,
+                sealed,
+            },
+            NetMessage::CallWatch { group, cameras } => Self::CallWatch { group, cameras },
             NetMessage::CallAnswer { group, sdp } => Self::CallAnswer { group, sdp },
             NetMessage::CallLeave { group } => Self::CallLeave { group },
             NetMessage::CallDecline { group } => Self::CallDecline { group },
@@ -571,6 +598,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallOffer { .. }
             | NetMessage::CallRoster { .. }
             | NetMessage::CallDeclined { .. }
+            | NetMessage::CallEnded { .. }
+            | NetMessage::CallReacted { .. }
             | NetMessage::PrimSound { .. }
             | NetMessage::PrimTone { .. }
             | NetMessage::PrimMotion { .. }

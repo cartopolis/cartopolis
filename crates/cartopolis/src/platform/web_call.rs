@@ -156,7 +156,8 @@ impl WebSession {
             let o = js_sys::Object::new();
             let _ = js_sys::Reflect::set(&o, &"mid".into(), &t.mid.as_str().into());
             let _ = js_sys::Reflect::set(&o, &"participant".into(), &(t.participant as f64).into());
-            let _ = js_sys::Reflect::set(&o, &"video".into(), &t.video.into());
+            let video = t.kind != cartopolis_core::CallTrackKind::Audio;
+            let _ = js_sys::Reflect::set(&o, &"video".into(), &video.into());
             list.push(&o);
         }
         self.with(|c| detach(c.offered(sdp, &list)));
