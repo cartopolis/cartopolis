@@ -2464,6 +2464,7 @@ dependencies = [
  "cartopolis_e2ee",
  "cartopolis_geo",
  "cartopolis_gnss",
+ "cartopolis_human",
  "cartopolis_materials",
  "cartopolis_mcp",
  "cartopolis_simulator",
@@ -2655,6 +2656,18 @@ dependencies = [
  "serialport",
  "tracing",
  "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "cartopolis_human"
+version = "1.0.0"
+dependencies = [
+ "flate2",
+ "glam 0.33.12",
+ "gltf",
+ "postcard",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
