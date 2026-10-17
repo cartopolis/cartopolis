@@ -1025,17 +1025,31 @@ pub(crate) fn update_window_glow(
         let e = 1.2 * glow * bucket.0;
         LinearRgba::rgb(e, 0.72 * e, 0.34 * e)
     };
+    // Compared before written, for the reason every bulk material write here is:
+    // `get_mut` marks the material changed whatever is assigned, a changed material
+    // is re-prepared on the render thread, and `DevPanelState` is changed by far
+    // more than the clock — so "the time of day moved" is not what this gate
+    // actually tests.
     let mut apply = |bucket: &systems::osm_buildings::WindowGlow,
                      mat: &MeshMaterial3d<StandardMaterial>| {
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.emissive = emissive(bucket);
+        let want = emissive(bucket);
+        if materials.get(&mat.0).is_some_and(|m| m.emissive != want) {
+            if let Some(mut m) = materials.get_mut(&mat.0) {
+                m.emissive = want;
+            }
         }
     };
     let mut apply_far =
         |bucket: &systems::osm_buildings::WindowGlow,
          mat: &MeshMaterial3d<crate::systems::building_fade::FarBuildingMaterial>| {
-            if let Some(mut m) = fade_materials.get_mut(&mat.0) {
-                m.base.emissive = emissive(bucket);
+            let want = emissive(bucket);
+            if fade_materials
+                .get(&mat.0)
+                .is_some_and(|m| m.base.emissive != want)
+            {
+                if let Some(mut m) = fade_materials.get_mut(&mat.0) {
+                    m.base.emissive = want;
+                }
             }
         };
     // Only rewrite every window's emissive when the time of day actually changed;
