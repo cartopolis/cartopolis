@@ -58,14 +58,20 @@ const rowAction = (b: Browser, name: string, label: string) =>
         return true
     })()`)
 
-/** Click a menu row by its words. */
-const menuRow = (b: Browser, label: string) =>
-    b.eval<boolean>(`(() => {
-        const r = [...document.querySelectorAll('.meet-menu-row')].find((x) => x.querySelector('span')?.textContent.trim() === ${JSON.stringify(label)})
-        if (!r) return false
-        r.click()
-        return true
-    })()`)
+/** Click a menu row by its words, once the menu has been drawn (up to 5 s). */
+const menuRow = async (b: Browser, label: string) => {
+    for (let i = 0; i < 50; i++) {
+        const done = await b.eval<boolean>(`(() => {
+            const r = [...document.querySelectorAll('.meet-menu-row')].find((x) => x.querySelector('span')?.textContent.trim() === ${JSON.stringify(label)})
+            if (!r) return false
+            r.click()
+            return true
+        })()`)
+        if (done) return true
+        await Bun.sleep(100)
+    }
+    return false
+}
 
 try {
     const simHttp = await bootSim()
@@ -73,26 +79,30 @@ try {
     const url = `http://127.0.0.1:${port}/`
     step(`simulator and web UI up (${url})`)
 
-    const [ann, bob, carol] = ['ann', 'bob', 'carol'].map((n) => new Browser(n))
-    browsers.push(ann, bob, carol)
+    const [ann, bob, carol, dave] = ['ann', 'bob', 'carol', 'dave'].map((n) => new Browser(n))
+    browsers.push(ann, bob, carol, dave)
     for (const b of browsers) await b.launch(url)
     for (const b of browsers) await b.signIn(b.name)
-    step('three signed in')
+    step('four signed in')
 
     await ann.eval('document.querySelector("details.chat-new").open = true')
     if (!(await ann.click('People who share several topics'))) throw new Error('no Start a community')
     await ann.type('input[placeholder="Garage 44"]', 'Street party crew')
     await ann.type('input[placeholder="general, meet-ups"]', 'q4 planning')
-    await ann.type('input[placeholder="Usernames, separated by commas"]', 'bob, carol')
+    await ann.type('input[placeholder="Usernames, separated by commas"]', 'bob, carol, dave')
     await ann.submit('.chat-form')
     await waitFor('the community on the rail', () =>
         ann.eval('[...document.querySelectorAll(".home-tile")].some((b) => b.title === "Street party crew")'), 30000)
-    for (const b of [bob, carol, ann]) await b.openTopic('Street party crew', 'q4-planning', 60000)
-    step('a community with a topic all three are in')
+    for (const b of [bob, carol, dave, ann]) await b.openTopic('Street party crew', 'q4-planning', 60000)
+    step('a community with a topic all four are in')
 
     // Ann calls; both answer with their cameras.
     await ann.eval(STAND_IN_SCREEN)
     if (!(await ann.click('Video call'))) throw new Error('no Video call key')
+    // A topic's call opens the check before joining first.
+    await ann.until('Start a call')
+    if (!(await ann.click('Start'))) throw new Error('no Start in the check before joining')
+    step('the check before joining opened, and ann started from it')
     for (const b of [bob, carol]) {
         await b.until('Incoming call', 30000)
         if (!(await b.click('Video'))) throw new Error(`no Video key on ${b.name}'s ringing call`)
@@ -101,11 +111,11 @@ try {
         waitFor(`${b.name} sees ${n} others' video`, () =>
             b.eval(`[...document.querySelectorAll('.chat-call-tile:not(.is-self) video')]
                 .filter((v) => v.videoWidth > 0 && v.currentTime > 0).length >= ${n}`), 60000)
-    for (const b of browsers) await seesOthers(b, 2)
+    for (const b of [ann, bob, carol]) await seesOthers(b, 2)
     step('a three-way video call, everybody seeing everybody')
 
     // Everybody puts the meeting in the middle; Ann opens the people.
-    for (const b of browsers) await b.click('Put the call in the middle')
+    for (const b of [ann, bob, carol]) await b.click('Put the call in the middle')
     await ann.click('People in the call')
     await waitFor('ann hosts', () =>
         ann.eval(`[...document.querySelectorAll('.meet-row')].some((r) => r.innerText.includes('You') && r.innerText.includes('HOST'))`))
@@ -154,10 +164,66 @@ try {
         await ann.shot(path.join(shots, 'sharing.png'))
     }
 
+    await ann.click('Stop sharing')
+
+    // Ann spotlights Carol: Carol is the big tile on Bob's page.
+    await rowAction(ann, 'carol', 'Host actions')
+    if (!(await menuRow(ann, 'Spotlight for everyone'))) throw new Error('no Spotlight in the host menu')
+    await waitFor('carol large on bob\'s stage', () => bob.eval(`document.querySelector('.meet-big figcaption')?.innerText.includes('carol') ?? false`), 20000)
+    await rowAction(ann, 'carol', 'Host actions')
+    await menuRow(ann, 'Stop the spotlight')
+    step('ann spotlighted carol for everyone, and took it off again')
+
+    // Breakout rooms: Bob and Carol in two rooms, apart; then back together.
+    await ann.click('More')
+    await menuRow(ann, 'Breakout rooms…')
+    if (!(await ann.click('Open 2 rooms'))) throw new Error('no Open 2 rooms')
+    for (const b of [bob, carol]) await b.until('In Room', 20000)
+    // Each sees neither the other nor ann: a room's media stays in it.
+    await waitFor('bob alone in his room', () =>
+        bob.eval(`![...document.querySelectorAll('.chat-call-tile:not(.is-self) figcaption')].some((c) => /carol|ann/.test(c.innerText))`), 20000)
+    if (shots) await bob.shot(path.join(shots, 'room.png'))
+    await ann.click('Bring everybody back')
+    await waitFor('bob back with everybody', () =>
+        bob.eval(`[...document.querySelectorAll('.chat-call-tile:not(.is-self) figcaption')].some((c) => c.innerText.includes('carol'))`), 20000)
+    step('ann split the call into two rooms, kept apart, and brought everybody back')
+
+    // Recording: refused until the hosts allow it, then everybody is told.
+    await ann.click('More')
+    await menuRow(ann, 'Anybody may record')
+    await ann.eval('document.querySelector(".meet-scrim")?.click()')
+    await bob.click('More')
+    await waitFor('bob may record', () => menuRow(bob, 'Record on this device'), 20000)
+    await ann.until('bob is recording', 20000)
+    await carol.until('REC · bob')
+    await bob.click('Stop and save')
+    step('the hosts allowed recording; bob recorded, and everybody was told')
+
+    // Captions are made on the device or not at all: a headless browser has no
+    // on-device speech, so it says so rather than sending the voice away.
+    await bob.click('Captions on (C)')
+    await waitFor('captions answered', () =>
+        bob.eval(`/captions|Captions/.test(document.querySelector('.meet-toasts')?.innerText ?? '') || !!document.querySelector('.meet-key.is-sel[title^="Captions off"]')`), 20000)
+    step('captions: on-device only, and said so where the browser cannot')
+
+    // A waiting room: Dave answers the ringing call and waits; Ann lets him in.
+    await ann.click('More')
+    await menuRow(ann, 'Members wait to be let in')
+    await ann.eval('document.querySelector(".meet-scrim")?.click()')
+    await dave.until('Incoming call', 20000)
+    if (!(await dave.click('Answer'))) throw new Error('no Answer on dave\'s ringing call')
+    await dave.until('Waiting for a host to let you in', 20000)
+    await ann.until('dave is waiting', 20000)
+    if (shots) await ann.shot(path.join(shots, 'knock.png'))
+    if (!(await ann.click('Admit'))) throw new Error('no Admit in the knock notice')
+    await waitFor('dave in the call', () =>
+        dave.eval(`!document.querySelector('.meet-waiting') && !!document.querySelector('.chat-call-tile:not(.is-self)')`), 30000)
+    step('dave waited until ann let him in')
+
     // Ann ends it for everyone.
     await ann.click('Leave the call')
     if (!(await menuRow(ann, 'End for everyone'))) throw new Error('no End for everyone')
-    for (const b of [bob, carol]) {
+    for (const b of [bob, carol, dave]) {
         await waitFor(`${b.name}'s call ended`, () => b.eval('!document.querySelector(".chat-call")'), 20000)
         await b.until('ann ended the call for everyone')
     }

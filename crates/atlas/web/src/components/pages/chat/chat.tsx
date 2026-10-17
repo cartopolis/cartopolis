@@ -13,6 +13,7 @@ import {
     type Role,
 } from '@/lib/chat'
 import type {CallMember} from '@/lib/call'
+import {CAPTION_LANGUAGES} from '@/lib/call-captions'
 import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
@@ -221,7 +222,85 @@ function callTile(calls: ChatClient['calls'], p: CallPerson) {
     )
 }
 
-/** The call's keys on a desktop: M, V and H, and Space held to talk while muted. */
+/** The check before joining's own camera and microphone: opened when it opens,
+ *  stopped before the call opens its own. */
+let preview: {analyser: AnalyserNode; audio: AudioContext; stream: MediaStream} | null = null
+let previewTimer: ReturnType<typeof setInterval> | null = null
+
+async function startPreview(video: string | null, audio: string | null, camera: boolean): Promise<void> {
+    stopPreview()
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: audio ? {deviceId: {exact: audio}} : true,
+            video: camera ? {height: 360, width: 640, ...(video ? {deviceId: {exact: video}} : {})} : false,
+        })
+        const ctx = new AudioContext()
+        const analyser = ctx.createAnalyser()
+        analyser.fftSize = 512
+        ctx.createMediaStreamSource(stream).connect(analyser)
+        preview = {analyser, audio: ctx, stream}
+        // The meter moves without anybody touching the page.
+        previewTimer = setInterval(() => m.redraw(), 120)
+    } catch {
+        preview = null
+    }
+    m.redraw()
+}
+
+function stopPreview(): void {
+    if (previewTimer) clearInterval(previewTimer)
+    previewTimer = null
+    preview?.stream.getTracks().forEach((t) => t.stop())
+    void preview?.audio.close()
+    preview = null
+}
+
+/** The previewed microphone's level now (RMS, full scale 1). */
+function previewLevel(): number {
+    if (!preview) return 0
+    const buf = new Float32Array(512)
+    preview.analyser.getFloatTimeDomainData(buf)
+    let sum = 0
+    for (const v of buf) sum += v * v
+    return Math.sqrt(sum / buf.length)
+}
+
+/** Whether the previewed camera can blur its background itself. */
+function previewBlurs(): boolean {
+    const t = preview?.stream.getVideoTracks()[0]
+    const caps = t?.getCapabilities?.() as {backgroundBlur?: boolean[]} | undefined
+    return !!caps?.backgroundBlur?.includes(true)
+}
+
+/** A short two-note chime, to hear that the speaker works. */
+function playTestTone(): void {
+    const ctx = new AudioContext()
+    for (const [i, f] of [660, 880].entries()) {
+        const o = ctx.createOscillator()
+        const g = ctx.createGain()
+        o.frequency.value = f
+        g.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.18)
+        g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + i * 0.18 + 0.02)
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.18 + 0.3)
+        o.connect(g).connect(ctx.destination)
+        o.start(ctx.currentTime + i * 0.18)
+        o.stop(ctx.currentTime + i * 0.18 + 0.32)
+    }
+    setTimeout(() => void ctx.close(), 1000)
+}
+
+/** A captions language's name, from its code. */
+function captionLabel(code: string): string {
+    return CAPTION_LANGUAGES.find((l) => l.code === code)?.label ?? code
+}
+
+/** How long somebody has waited, as a person says it. */
+function waitedFor(since: number): string {
+    const s = Math.max(0, Math.round((Date.now() - since) / 1000))
+    return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`
+}
+
+/** The call's keys on a desktop: M, V, H and C, and Space held to talk while muted. */
 let callKeysFor: object | null = null
 
 function installCallKeys(calls: ChatClient['calls'], s: {callMenu: string | null}): void {
@@ -245,6 +324,7 @@ function installCallKeys(calls: ChatClient['calls'], s: {callMenu: string | null
         } else if (e.key === 'm' || e.key === 'M') calls.setMuted(!a.muted)
         else if (e.key === 'v' || e.key === 'V') void calls.setCamera(!a.camera)
         else if (e.key === 'h' || e.key === 'H') calls.raiseHand(calls.self()?.hand == null)
+        else if (e.key === 'c' || e.key === 'C') void calls.setCaptions(!calls.captioning())
     })
     document.addEventListener('keyup', (e: KeyboardEvent) => {
         if (e.code === 'Space' && spaceTalk) {
@@ -438,6 +518,19 @@ interface PageState {
     callPanel: 'people' | null
     /** The call menu or picker open: `react`, `more`, `leave`, or `person<n>`. */
     callMenu: string | null
+    /** This browser's microphones and cameras, and the ones chosen. */
+    devices: MediaDeviceInfo[]
+    audioDevice: string | null
+    videoDevice: string | null
+    /** Breakout rooms being set up: how many, for how long, free to move. */
+    roomCount: number
+    roomMinutes: number
+    roomMove: boolean
+    /** The check before joining, while it is open. */
+    preJoin: {camera: boolean; channel: string} | null
+    /** What the check chose to join with. */
+    preJoinBlur: boolean
+    preJoinMuted: boolean
     /** A ringing call folded down to a banner, by channel. */
     ringFolded: string | null
 }
@@ -481,6 +574,15 @@ export class Chat extends MithrilComponent {
         callFocus: false,
         callLayout: 'gallery',
         callMenu: null,
+        audioDevice: null,
+        devices: [],
+        preJoin: null,
+        preJoinBlur: false,
+        preJoinMuted: false,
+        roomCount: 2,
+        roomMinutes: 10,
+        roomMove: true,
+        videoDevice: null,
         callPanel: null,
         community: emptyDraft(),
         dialog: null,
@@ -706,6 +808,7 @@ export class Chat extends MithrilComponent {
                     <div class="chat chat-overlays">
                         {now !== 'community' && chat().calls.active !== null && this.callBar()}
                         {this.ringingView()}
+                        {this.s.preJoin && this.preJoinView()}
                         {this.s.dialog && this.dialogView()}
                     </div>
                 )}
@@ -1300,15 +1403,15 @@ export class Chat extends MithrilComponent {
         const others = calls.others(channel)
         if (others.length) {
             return (
-                <button class="chat-call-pill" onclick={() => this.answer(channel, false)} title="Join the call">
+                <button class="chat-call-pill" onclick={() => this.startCall(channel, false)} title="Join the call">
                     {Icon('call')} Join call · {others.length}
                 </button>
             )
         }
         return (
             <>
-                {CallKey('videocam', 'Video call', 'glass', () => this.answer(channel, true), 'sm')}
-                {CallKey('call', 'Call', 'accept', () => this.answer(channel, false), 'sm')}
+                {CallKey('videocam', 'Video call', 'glass', () => this.startCall(channel, true), 'sm')}
+                {CallKey('call', 'Call', 'accept', () => this.startCall(channel, false), 'sm')}
             </>
         )
     }
@@ -1320,6 +1423,163 @@ export class Chat extends MithrilComponent {
         // A phone has room for one of the two: the call takes the screen.
         this.s.callFocus = matchMedia('(max-width: 760px)').matches
         void chat().calls.join(channel, camera)
+    }
+
+    /**
+     * Start or join the call in `channel` from its header. A one-to-one call
+     * goes straight in, as a phone does; a group's or a topic's opens the check
+     * before joining first (`docs/mockups/meetings/` v2, section 3).
+     */
+    startCall(channel: string, camera: boolean) {
+        const sum = chat().chats.find((c) => c.channel === channel)
+        const direct = sum ? !sum.group && !chat().topicOf(channel) : false
+        if (direct) {
+            this.answer(channel, camera)
+            return
+        }
+        // Joining a meeting already this big, the microphone starts off.
+        this.s.preJoinMuted = chat().calls.others(channel).length >= 5
+        this.s.preJoinBlur = false
+        this.s.preJoin = {camera, channel}
+        void startPreview(this.s.videoDevice, this.s.audioDevice, camera).then(() => this.loadDevices())
+    }
+
+    /** The check before joining: your picture as the others will see it, the
+     *  microphone's level, which devices, blur, and whether to come in muted. */
+    preJoinView() {
+        const s = this.s
+        const p = s.preJoin!
+        const c = chat()
+        const others = c.calls.others(p.channel)
+        const close = () => {
+            stopPreview()
+            s.preJoin = null
+        }
+        const join = () => {
+            stopPreview()
+            s.preJoin = null
+            s.ringFolded = null
+            if (s.pane.kind !== 'chat' || s.pane.channel !== p.channel) this.open(p.channel)
+            s.callFocus = true
+            void c.calls.join(p.channel, p.camera, {
+                audio: s.audioDevice,
+                blur: s.preJoinBlur,
+                muted: s.preJoinMuted,
+                video: s.videoDevice,
+            })
+        }
+        const level = previewLevel()
+        const restart = () => void startPreview(s.videoDevice, s.audioDevice, p.camera)
+        return (
+            <div class="meet-prejoin" role="dialog" aria-label="Check before joining">
+                <section class="meet-prejoin-card">
+                    <div class="meet-prejoin-preview">
+                        {preview?.stream.getVideoTracks().length
+                            ? <div class="chat-call-tile is-self">{Media(preview.stream, 'video', true)}</div>
+                            : <div class="chat-call-tile is-off"><span class="chat-call-face">{Avatar(c.address ?? 'You', 96)}</span></div>}
+                        <div class="meet-prejoin-keys">
+                            <button
+                                class={s.preJoinMuted ? 'meet-key is-off' : 'meet-key'}
+                                onclick={() => (s.preJoinMuted = !s.preJoinMuted)}
+                                title={s.preJoinMuted ? 'Join with the microphone on' : 'Join muted'}
+                            >
+                                {Icon(s.preJoinMuted ? 'mic_off' : 'mic')}
+                            </button>
+                            <button
+                                class={p.camera ? 'meet-key' : 'meet-key is-off'}
+                                onclick={() => {
+                                    p.camera = !p.camera
+                                    restart()
+                                }}
+                                title={p.camera ? 'Join without the camera' : 'Join with the camera'}
+                            >
+                                {Icon(p.camera ? 'videocam' : 'videocam_off')}
+                            </button>
+                            {previewBlurs() && (
+                                <button
+                                    class={s.preJoinBlur ? 'meet-key is-sel' : 'meet-key'}
+                                    onclick={() => {
+                                        s.preJoinBlur = !s.preJoinBlur
+                                        void preview?.stream.getVideoTracks()[0]?.applyConstraints({backgroundBlur: s.preJoinBlur} as MediaTrackConstraints)
+                                    }}
+                                    title="Blur my background"
+                                >
+                                    {Icon('featured_video')}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                    <div class="meet-prejoin-side">
+                        <div class="meet-prejoin-what">{this.chatTitle(p.channel)}</div>
+                        <h2>{others.length ? 'Join the call' : 'Start a call'}</h2>
+                        <p class="chat-sub">
+                            {others.length ? `${others.map((o) => o.username).join(', ')} ${others.length === 1 ? 'is' : 'are'} in` : 'Nobody is in yet: they will hear it ring.'}
+                        </p>
+                        <div class="meet-check">
+                            <span class={level > 0.01 ? 'meet-check-ok' : 'meet-check-wait'}>{Icon(level > 0.01 ? 'check' : 'mic')}</span>
+                            <label>
+                                Microphone
+                                <select
+                                    onchange={(e: Event) => {
+                                        s.audioDevice = (e.target as HTMLSelectElement).value || null
+                                        restart()
+                                    }}
+                                >
+                                    {s.devices.filter((d) => d.kind === 'audioinput').map((d) => (
+                                        <option selected={d.deviceId === s.audioDevice} value={d.deviceId}>
+                                            {d.label || 'Microphone'}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <span class="meet-level">
+                                {[0.01, 0.03, 0.06, 0.1, 0.16].map((t) => (
+                                    <i class={level > t ? 'is-on' : ''} />
+                                ))}
+                            </span>
+                        </div>
+                        <div class="meet-check">
+                            <span class="meet-check-ok">{Icon('check')}</span>
+                            <label>
+                                Speaker
+                                <button class="meet-btn" onclick={() => playTestTone()}>
+                                    Play a test sound
+                                </button>
+                            </label>
+                        </div>
+                        <div class="meet-check">
+                            <span class={p.camera ? 'meet-check-ok' : 'meet-check-wait'}>{Icon(p.camera ? 'check' : 'videocam_off')}</span>
+                            <label>
+                                Camera
+                                <select
+                                    onchange={(e: Event) => {
+                                        s.videoDevice = (e.target as HTMLSelectElement).value || null
+                                        restart()
+                                    }}
+                                >
+                                    {s.devices.filter((d) => d.kind === 'videoinput').map((d) => (
+                                        <option selected={d.deviceId === s.videoDevice} value={d.deviceId}>
+                                            {d.label || 'Camera'}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        </div>
+                        <div class="meet-prejoin-go">
+                            <button class="meet-btn" onclick={close}>
+                                Cancel
+                            </button>
+                            <button class="meet-btn is-primary is-big" onclick={join}>
+                                {others.length ? 'Join now' : 'Start'}
+                            </button>
+                        </div>
+                        <p class="chat-sub">
+                            {s.preJoinMuted ? 'You join muted.' : 'Others hear you as soon as you are in.'} {Icon('lock')} End-to-end encrypted.
+                        </p>
+                    </div>
+                </section>
+            </div>
+        )
     }
 
     focusCall(on: boolean) {
@@ -1346,7 +1606,11 @@ export class Chat extends MithrilComponent {
         if (!a) return null
         const s = this.s
         installCallKeys(calls, s)
-        const others = calls.others(a.channel)
+        // The forwarder sends no camera to a page that does not draw one.
+        calls.watch(null)
+        if (calls.waitingToJoin()) return this.waitingRoom(a.channel)
+        // A breakout room shows only who is in it.
+        const others = calls.roomOthers()
         const me = calls.self()
         const hosting = calls.hosting()
         const settings = calls.settings()
@@ -1357,12 +1621,13 @@ export class Chat extends MithrilComponent {
         })
         // Pictures and sound from somebody the roster has not named yet.
         for (const t of a.tiles.values()) {
-            if (!others.some((o) => o.participant === t.participant)) {
+            if (!calls.members().some((o) => o.participant === t.participant)) {
                 people.push({audio: t.audio, key: `p${t.participant}`, member: null, name: '…', participant: t.participant, video: t.video})
             }
         }
         const self: CallPerson = {audio: null, key: 'self', member: me, name: 'You', participant: -1, video: calls.selfView()}
         const share = calls.sharer()
+        const spotlit = people.find((p) => p.participant === calls.spotlight()) ?? null
         const menu = s.callMenu
         const setMenu = (m: string | null) => (s.callMenu = s.callMenu === m ? null : m)
 
@@ -1380,8 +1645,9 @@ export class Chat extends MithrilComponent {
                     <div class="meet-strip">{[...people, self].map((p) => callTile(calls, p))}</div>
                 </div>
             )
-        } else if (s.callLayout === 'speaker' && people.length >= 2) {
-            const big = people.find((p) => p.participant === calls.speaker()) ?? people[0]
+        } else if (spotlit || (s.callLayout === 'speaker' && people.length >= 2)) {
+            // The hosts' spotlight holds the big tile for everybody.
+            const big = spotlit ?? people.find((p) => p.participant === calls.speaker()) ?? people[0]
             stage = (
                 <div class="meet-stage is-speaker">
                     <div class="meet-big">{callTile(calls, big)}</div>
@@ -1396,8 +1662,16 @@ export class Chat extends MithrilComponent {
                 <div class={pip ? 'meet-stage chat-call-grid is-pair' : 'meet-stage chat-call-grid'} style={`--cols:${cols}`}>
                     {people.length === 0 && (
                         <div class="chat-call-waiting">
-                            {Avatar(name, 96)}
-                            <span>{a.since === null ? 'Ringing…' : 'Waiting for their picture and sound…'}</span>
+                            {Avatar(calls.myRoom() ? calls.rooms()?.names[calls.myRoom() - 1] ?? name : name, 96)}
+                            <span>
+                                {calls.myRoom()
+                                    ? `Nobody else is in ${calls.rooms()?.names[calls.myRoom() - 1] ?? 'this room'} yet`
+                                    : a.since === null
+                                      ? 'Ringing…'
+                                      : others.length
+                                        ? 'Waiting for their picture and sound…'
+                                        : 'Nobody else is in the call yet'}
+                            </span>
                         </div>
                     )}
                     {tiles.map((p) => callTile(calls, p))}
@@ -1411,7 +1685,11 @@ export class Chat extends MithrilComponent {
             <div class="meet-toasts">
                 {calls.toasts.map((t) => (
                     <div class={`meet-toast is-${t.kind}`} key={t.id} role="status">
-                        <span class="meet-toast-icon">{Icon(t.kind === 'hand' ? 'back_hand' : t.kind === 'held' ? 'mic_off' : t.kind === 'free' ? 'mic' : 'chat')}</span>
+                        <span class="meet-toast-icon">
+                            {Icon(
+                                {free: 'mic', hand: 'back_hand', held: 'mic_off', info: 'chat', knock: 'group', rec: 'videocam'}[t.kind],
+                            )}
+                        </span>
                         <span class="meet-toast-text">
                             <b>{t.text}</b>
                             {t.sub && <span>{t.sub}</span>}
@@ -1427,6 +1705,14 @@ export class Chat extends MithrilComponent {
                                 Let talk
                             </button>
                         )}
+                        {t.kind === 'knock' && hosting && t.participant !== undefined && [
+                            <button class="meet-btn" onclick={() => calls.deny(t.participant!)} title="Turn away">
+                                Turn away
+                            </button>,
+                            <button class="meet-btn is-primary" onclick={() => calls.admit(t.participant!)}>
+                                Admit
+                            </button>,
+                        ]}
                         {t.kind === 'held' && !me?.hand && (
                             <button class="meet-btn is-primary" onclick={() => calls.raiseHand(true)}>
                                 {Icon('back_hand')} Raise hand
@@ -1489,8 +1775,17 @@ export class Chat extends MithrilComponent {
                 ))}
             </div>
         )
+        // An action closes its menu; a switch leaves it open, so several can be
+        // set in a row. A row opening a submenu sets `callMenu` after this.
         const row = (icon: string, label: string, onclick: () => void, opts: {danger?: boolean; on?: boolean; hint?: string} = {}) => (
-            <button class={opts.danger ? 'meet-menu-row is-danger' : 'meet-menu-row'} onclick={onclick} role="menuitem">
+            <button
+                class={opts.danger ? 'meet-menu-row is-danger' : 'meet-menu-row'}
+                onclick={() => {
+                    if (opts.on === undefined) s.callMenu = null
+                    onclick()
+                }}
+                role="menuitem"
+            >
                 {Icon(icon)}
                 <span>{label}</span>
                 {opts.hint && <small>{opts.hint}</small>}
@@ -1503,19 +1798,102 @@ export class Chat extends MithrilComponent {
                 <div class="meet-menu-label">Layout</div>
                 {row('featured_video', 'Speaker', () => (s.callLayout = 'speaker'), {on: s.callLayout === 'speaker'})}
                 {row('grid_view', 'Gallery', () => (s.callLayout = 'gallery'), {on: s.callLayout === 'gallery'})}
+                <hr />
+                <div class="meet-menu-label">This device</div>
+                {row('mic', 'Microphone and camera…', () => {
+                    s.callMenu = 'devices'
+                    void this.loadDevices()
+                })}
+                {row('featured_video', 'Blur my background', () => void calls.setBlur(!a.blur), {on: a.blur})}
+                {row('closed_caption', `Captions in ${captionLabel(calls.captionLang)}`, () => (s.callMenu = 'captions'))}
+                {(settings.may_record || calls.recording()) &&
+                    row('videocam', calls.recording() ? 'Stop recording and save' : 'Record on this device', () => {
+                        void calls.setRecording(!calls.recording(), name)
+                        s.callMenu = null
+                    }, {hint: calls.recording() ? undefined : 'Everybody sees it'})}
                 {hosting && [
                     <hr />,
                     <div class="meet-menu-label">Hosting</div>,
                     row('lock', 'Lock the call', () => set({locked: !settings.locked}), {on: settings.locked}),
+                    row('group', 'Members wait to be let in', () => set({members_wait: !settings.members_wait}), {on: settings.members_wait}),
                     row('mic', 'Others may unmute', () => set({may_unmute: !settings.may_unmute}), {on: settings.may_unmute}),
                     row('screen_share', 'Others may share', () => set({may_share: !settings.may_share}), {on: settings.may_share}),
+                    row('videocam', 'Anybody may record', () => set({may_record: !settings.may_record}), {on: settings.may_record}),
                     row('mic_off', 'Mute everyone', () => {
                         calls.control('MuteAll')
                         s.callMenu = null
                     }),
+                    calls.rooms()
+                        ? row('group', 'Bring everybody back', () => {
+                              calls.closeRooms()
+                              s.callMenu = null
+                          })
+                        : row('grid_view', 'Breakout rooms…', () => (s.callMenu = 'rooms')),
                     <hr />,
                     row('call_end', 'End for everyone', () => calls.control('EndForAll'), {danger: true}),
                 ]}
+            </div>
+        )
+        // The panels More opens onto: captions' language, devices, breakout rooms.
+        const captionsMenu = menu === 'captions' && (
+            <div class="meet-pop is-menu" role="menu">
+                <div class="meet-menu-label">Captions of my voice</div>
+                {CAPTION_LANGUAGES.map((l) =>
+                    row('closed_caption', l.label, () => {
+                        void calls.setCaptions(true, l.code)
+                        s.callMenu = null
+                    }, {on: calls.captioning() && calls.captionLang === l.code}),
+                )}
+                {calls.captioning() && row('close', 'Captions off', () => {
+                    void calls.setCaptions(false)
+                    s.callMenu = null
+                })}
+                <small class="meet-menu-note">Made on this device. Your voice goes to no speech service.</small>
+            </div>
+        )
+        const devicesMenu = menu === 'devices' && (
+            <div class="meet-pop is-menu is-devices" role="menu">
+                <div class="meet-menu-label">Microphone</div>
+                {s.devices.filter((d) => d.kind === 'audioinput').map((d) =>
+                    row('mic', d.label || 'Microphone', () => void calls.setDevices({audio: d.deviceId}), {on: s.audioDevice === d.deviceId}),
+                )}
+                <div class="meet-menu-label">Camera</div>
+                {s.devices.filter((d) => d.kind === 'videoinput').map((d) =>
+                    row('videocam', d.label || 'Camera', () => {
+                        s.videoDevice = d.deviceId
+                        void calls.setDevices({video: d.deviceId})
+                    }, {on: s.videoDevice === d.deviceId}),
+                )}
+            </div>
+        )
+        const roomsMenu = menu === 'rooms' && (
+            <div class="meet-pop is-menu is-rooms" role="menu">
+                <div class="meet-menu-label">Breakout rooms</div>
+                <div class="meet-chips">
+                    {[2, 3, 4, 5].map((n) => (
+                        <button class={s.roomCount === n ? 'meet-chip is-on' : 'meet-chip'} onclick={() => (s.roomCount = n)}>
+                            {n} rooms
+                        </button>
+                    ))}
+                </div>
+                <div class="meet-chips">
+                    {[5, 10, 15, 0].map((mins) => (
+                        <button class={s.roomMinutes === mins ? 'meet-chip is-on' : 'meet-chip'} onclick={() => (s.roomMinutes = mins)}>
+                            {mins ? `${mins} min` : 'Until closed'}
+                        </button>
+                    ))}
+                </div>
+                {row('group', 'People may move between rooms', () => (s.roomMove = !s.roomMove), {on: s.roomMove})}
+                <small class="meet-menu-note">Everybody but the hosts is shared out at random; move anybody afterwards from People.</small>
+                <button
+                    class="meet-btn is-primary meet-menu-go"
+                    onclick={() => {
+                        calls.openRooms(Array.from({length: s.roomCount}, (_, i) => `Room ${i + 1}`), s.roomMinutes, s.roomMove)
+                        s.callMenu = null
+                    }}
+                >
+                    Open {s.roomCount} rooms
+                </button>
             </div>
         )
         const leave = () => {
@@ -1540,10 +1918,16 @@ export class Chat extends MithrilComponent {
                     {react}
                 </span>
                 {key('back_hand', raised ? 'Lower your hand (H)' : 'Raise your hand (H)', raised ? 'is-hand' : '', () => calls.raiseHand(!raised))}
+                {key('closed_caption', calls.captioning() ? 'Captions off (C)' : 'Captions on (C)', calls.captioning() ? 'is-sel' : '', () =>
+                    void calls.setCaptions(!calls.captioning()),
+                )}
                 <span class="meet-sep" />
                 <span class="meet-anchor">
-                    {key('more_horiz', 'More', menu === 'more' ? 'is-sel' : '', () => setMenu('more'))}
+                    {key('more_horiz', 'More', ['more', 'captions', 'devices', 'rooms'].includes(menu ?? '') ? 'is-sel' : '', () => setMenu('more'))}
                     {more}
+                    {captionsMenu}
+                    {devicesMenu}
+                    {roomsMenu}
                 </span>
                 <span class="meet-sep" />
                 <span class="meet-anchor">
@@ -1568,6 +1952,36 @@ export class Chat extends MithrilComponent {
                     </button>
                 </header>
                 <div class="meet-panel-body">
+                    {hosting && calls.waiting().length > 0 && (
+                        <section class="meet-knock">
+                            <h4>
+                                Waiting to join · {calls.waiting().length}
+                                {calls.waiting().length > 1 && (
+                                    <button class="meet-btn is-gold" onclick={() => calls.admitAll()}>
+                                        Admit all
+                                    </button>
+                                )}
+                            </h4>
+                            {calls.waiting().map((w) => (
+                                <div class="meet-row" key={`w${w.participant}`}>
+                                    {Avatar(w.username, 30)}
+                                    <span class="meet-row-name">
+                                        <b>
+                                            {w.username}
+                                            {w.guest && <span class="meet-badge is-guest">GUEST</span>}
+                                        </b>
+                                        <small>waiting {waitedFor(w.since_ms)}</small>
+                                    </span>
+                                    <button aria-label="Turn away" class="meet-btn is-icon" onclick={() => calls.deny(w.participant)} title="Turn away">
+                                        {Icon('close')}
+                                    </button>
+                                    <button aria-label="Admit" class="meet-btn is-primary" onclick={() => calls.admit(w.participant)} title="Admit">
+                                        {Icon('check')}
+                                    </button>
+                                </div>
+                            ))}
+                        </section>
+                    )}
                     {hands.length > 0 && (
                         <section>
                             <h4>Hands up <span>in order</span></h4>
@@ -1631,6 +2045,13 @@ export class Chat extends MithrilComponent {
                                                     {mem.role === 'member' && row('shield_person', 'Make co-host', () => calls.control({Role: {participant: mem.participant, role: 'CoHost'}}))}
                                                     {mem.role === 'cohost' && row('shield_person', 'Make a member again', () => calls.control({Role: {participant: mem.participant, role: 'Member'}}))}
                                                     {me?.role === 'host' && mem.role !== 'host' && row('star', 'Hand the call over', () => calls.control({Role: {participant: mem.participant, role: 'Host'}}))}
+                                                    {calls.spotlight() === mem.participant
+                                                        ? row('featured_video', 'Stop the spotlight', () => calls.setSpotlight(null))
+                                                        : row('featured_video', 'Spotlight for everyone', () => calls.setSpotlight(mem.participant))}
+                                                    {calls.rooms() &&
+                                                        ['the main call', ...calls.rooms()!.names].map((room, i) =>
+                                                            i === mem.room ? null : row('group', `Move to ${room}`, () => calls.moveTo(mem.participant, i)),
+                                                        )}
                                                     <hr />
                                                     {row('person_remove', 'Remove from the call', () => calls.control({Remove: {participant: mem.participant}}), {danger: true})}
                                                 </div>
@@ -1671,7 +2092,10 @@ export class Chat extends MithrilComponent {
                     >
                         {Icon('group')}
                         <span>{members.length}</span>
-                        {hands.length > 0 && <span class="meet-hands">{hands.length}</span>}
+                        {/* Raised hands, and for a host who knocks: what wants an answer. */}
+                        {hands.length + (hosting ? calls.waiting().length : 0) > 0 && (
+                            <span class="meet-hands">{hands.length + (hosting ? calls.waiting().length : 0)}</span>
+                        )}
                     </button>
                     <button
                         class="chat-call-swap"
@@ -1685,7 +2109,9 @@ export class Chat extends MithrilComponent {
                 <div class="meet-body">
                     <div class="meet-main">
                         {sharing}
+                        {this.meetingChips(name)}
                         {stage}
+                        {this.captionsOverlay()}
                         {toasts}
                         {nudge}
                         {dock}
@@ -1697,9 +2123,106 @@ export class Chat extends MithrilComponent {
         )
     }
 
+    /** Waiting for a host to let this page in: your own picture, who you wait
+     *  for, and the way out. */
+    waitingRoom(channel: string) {
+        const calls = chat().calls
+        const self = calls.selfView()
+        return (
+            <aside class={this.s.callFocus ? 'chat-call meet is-focus' : 'chat-call meet'}>
+                <div class="meet-waiting">
+                    {self ? <div class="meet-waiting-self">{Media(self, 'video', true)}</div> : Avatar(chat().address ?? 'You', 96)}
+                    <h3>{this.chatTitle(channel)}</h3>
+                    <p class="meet-waiting-state">
+                        <span class="meet-spinner" />
+                        Waiting for a host to let you in
+                    </p>
+                    <p class="chat-sub">
+                        {Icon('lock')} End-to-end encrypted. You will see and hear the call once you are in.
+                    </p>
+                    <button class="meet-leave" onclick={() => calls.hangUp()}>
+                        {Icon('call_end')}
+                        <span>Stop waiting</span>
+                    </button>
+                </div>
+            </aside>
+        )
+    }
+
+    /** What the meeting says about everybody, over the stage: who records,
+     *  and the breakout room this page is in, with its time and the way back. */
+    meetingChips(title: string) {
+        const calls = chat().calls
+        const recorders = calls.members().filter((m) => m.recording)
+        const rooms = calls.rooms()
+        const room = calls.myRoom()
+        const left = rooms?.until_ms ? Math.max(0, Math.round((rooms.until_ms - Date.now()) / 1000)) : null
+        return (
+            <div class="meet-chips-row">
+                {recorders.length > 0 && (
+                    <span class="meet-rec" title="Recording on their own device">
+                        <i /> REC · {recorders.map((m) => (m.participant === calls.self()?.participant ? 'You' : m.username)).join(', ')}
+                        {calls.recording() && (
+                            <button class="meet-btn" onclick={() => void calls.setRecording(false, title)}>
+                                Stop and save
+                            </button>
+                        )}
+                    </span>
+                )}
+                {rooms && room > 0 && (
+                    <span class="meet-room">
+                        {Icon('group')} In {rooms.names[room - 1] ?? 'a breakout room'}
+                        {left !== null && ` · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`}
+                        {rooms.may_move && (
+                            <button class="meet-btn" onclick={() => calls.moveTo(calls.self()!.participant, 0)}>
+                                Back to the call
+                            </button>
+                        )}
+                    </span>
+                )}
+                {rooms && room === 0 && calls.hosting() && (
+                    <span class="meet-room">
+                        {Icon('group')} {rooms.names.length} rooms open
+                        {left !== null && ` · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`}
+                        <button class="meet-btn" onclick={() => calls.closeRooms()}>
+                            Bring everybody back
+                        </button>
+                    </span>
+                )}
+            </div>
+        )
+    }
+
+    /** The newest line of captions, with whose voice it is. */
+    captionsOverlay() {
+        const c = chat().calls.captionNow()
+        if (!c) return null
+        return (
+            <div class="meet-caption" aria-live="polite">
+                {Avatar(c.who === 'You' ? (chat().address ?? 'You') : c.who, 28)}
+                <span>
+                    <b>{c.who}</b>
+                    {c.text}
+                </span>
+            </div>
+        )
+    }
+
+    /** The microphones and cameras this browser has, named once allowed. */
+    async loadDevices() {
+        try {
+            this.s.devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.deviceId)
+        } catch {
+            this.s.devices = []
+        }
+        m.redraw()
+    }
+
     /** On a phone the call takes the screen; folded, it is this green bar at the top. */
     callBar() {
         const calls = chat().calls
+        // Only the bar shows outside Community: no camera is drawn, so none is sent.
+        if (mode() !== 'community') calls.watch([])
         return (
             <button
                 class="chat-call-bar"

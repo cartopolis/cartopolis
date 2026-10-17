@@ -44,7 +44,7 @@ export const procs: {kill(): void}[] = []
 export async function bootSim(): Promise<number> {
     const dir = mkdtempSync(path.join(tmpdir(), 'chat-browser-'))
     const db = path.join(dir, 'world.db')
-    for (const name of ['ann', 'bob', 'carol']) {
+    for (const name of ['ann', 'bob', 'carol', 'dave']) {
         const p = Bun.spawnSync([sim, '--database-path', db, '--create-admin', name], {
             env: {...process.env, CARTO_ADMIN_PASSWORD: 'pw'},
             stderr: 'pipe',

@@ -27,6 +27,8 @@ import {WebCall, webCallSupported} from '../../../../cartopolis/web/webcall.js'
 import type {ChatClient} from './chat'
 import {CallTones} from './call-tones'
 import {CALL_TAG, closeCallNotifications} from './web-push'
+import {CallRecorder} from './call-recorder'
+import {Captioner} from './call-captions'
 
 /** The call worker's content-hashed name, put in by `build.ts`. */
 declare const __CALL_WORKER_URL__: string | undefined
@@ -46,6 +48,27 @@ export interface CallMember {
     role: CallRole
     sharing: boolean
     username: string
+    /** Recording the call on their own device. */
+    recording: boolean
+    /** A guest, let in by an invite link. */
+    guest: boolean
+    /** Their breakout room; 0 is the main call. */
+    room: number
+}
+
+/** Somebody waiting to be let in. */
+export interface CallWaiter {
+    guest: boolean
+    participant: number
+    since_ms: number
+    username: string
+}
+
+/** Open breakout rooms: room `n` is `names[n - 1]`. */
+export interface CallRooms {
+    may_move: boolean
+    names: string[]
+    until_ms: number | null
 }
 
 /** What a call's hosts allow everybody else. */
@@ -53,6 +76,8 @@ export interface CallSettings {
     locked: boolean
     may_share: boolean
     may_unmute: boolean
+    members_wait: boolean
+    may_record: boolean
 }
 
 export interface Tile {
@@ -74,7 +99,7 @@ export interface Reaction {
 export interface Toast {
     at: number
     id: number
-    kind: 'hand' | 'held' | 'info' | 'free'
+    kind: 'hand' | 'held' | 'info' | 'free' | 'knock' | 'rec'
     participant?: number
     sub?: string
     text: string
@@ -123,6 +148,15 @@ interface Active {
     mutedTalk: number | null
     /** Show the "you're muted" nudge. */
     nudge: boolean
+    /** Waiting for a host to let this device in. */
+    waiting: boolean
+    recorder: CallRecorder | null
+    captioner: Captioner | null
+    /** The newest line of captions per person (`-1`: this device). */
+    captions: Map<number, {at: number; final: boolean; text: string}>
+    blur: boolean
+    /** Whose cameras the forwarder was last told this page draws. */
+    watching: string
 }
 
 /** How long a call placed here rings before giving up, ms. */
@@ -158,6 +192,16 @@ export class Calls {
     readonly rosters = new Map<string, CallMember[]>()
     /** What each call's hosts allow, by channel. */
     readonly settingsOf = new Map<string, CallSettings>()
+    /** Who waits to be let in, by channel. */
+    readonly waitingOf = new Map<string, CallWaiter[]>()
+    /** Who the hosts show large for everybody, by channel. */
+    readonly spotlightOf = new Map<string, number | null>()
+    /** The open breakout rooms, by channel. */
+    readonly roomsOf = new Map<string, CallRooms | null>()
+    /** Captions on, and in which language this device speaks. */
+    captionLang = typeof navigator === 'undefined' ? 'en-US' : navigator.language.startsWith('nl') ? 'nl-NL' : 'en-US'
+    /** What was said, finished lines only, for the meeting record. */
+    transcript: {at: number; text: string; who: string}[] = []
     /** Calls this person waved away, so they stop ringing. */
     readonly dismissed = new Set<string>()
     /** Something to tell the person about a call. */
@@ -250,7 +294,15 @@ export class Calls {
 
     /** What the hosts of this page's call allow. */
     settings(): CallSettings {
-        return (this.active && this.settingsOf.get(this.active.channel)) || {locked: false, may_share: true, may_unmute: true}
+        return (
+            (this.active && this.settingsOf.get(this.active.channel)) || {
+                locked: false,
+                may_record: false,
+                may_share: true,
+                may_unmute: true,
+                members_wait: false,
+            }
+        )
     }
 
     /** The person whose shared screen is showing: the latest sharer with a picture. */
@@ -323,6 +375,11 @@ export class Calls {
                 const before = this.rosters.get(channel) ?? []
                 this.rosters.set(channel, members)
                 if (event.settings) this.settingsOf.set(channel, event.settings as CallSettings)
+                const waitingBefore = this.waitingOf.get(channel) ?? []
+                this.waitingOf.set(channel, (event.waiting as CallWaiter[] | undefined) ?? [])
+                this.spotlightOf.set(channel, (event.spotlight as number | null | undefined) ?? null)
+                this.roomsOf.set(channel, (event.rooms as CallRooms | null | undefined) ?? null)
+                if (a && a.channel === channel) this.knocks(waitingBefore, this.waitingOf.get(channel) ?? [])
                 if (!members.length) {
                     // Over. A call that rang here and nobody here touched is missed.
                     if (before.length && !this.dismissed.has(channel) && a?.channel !== channel) {
@@ -345,8 +402,15 @@ export class Calls {
             case 'call_joined':
                 if (a && a.channel === event.channel) {
                     a.participant = event.participant as number
+                    a.waiting = false
                     void a.web.joined(event.answer as string)
                     this.tellMuted()
+                }
+                break
+            case 'call_waiting':
+                if (a && a.channel === event.channel) {
+                    a.participant = event.participant as number
+                    a.waiting = true
                 }
                 break
             case 'call_offer':
@@ -413,6 +477,10 @@ export class Calls {
                 }
                 continue
             }
+            // Somebody starting to record is told to everyone, every time.
+            if (m.recording && !old?.recording) {
+                this.toast({kind: 'rec', participant: m.participant, sub: 'On their own device', text: `${m.username} is recording`})
+            }
             // A hand going up is news to whoever runs the call.
             if (hosting && m.hand !== null && (old?.hand ?? null) === null) {
                 this.toast({kind: 'hand', participant: m.participant, sub: 'In the queue', text: `${m.username} raised a hand`})
@@ -422,8 +490,13 @@ export class Calls {
         this.toasts = this.toasts.filter((t) => t.kind !== 'hand' || now.some((m) => m.participant === t.participant && m.hand !== null))
     }
 
-    /** Place or join the call in `channel`. */
-    async join(channel: string, camera = false): Promise<void> {
+    /** Place or join the call in `channel`, with the microphone, camera, blur
+     *  and mute the check before joining chose. */
+    async join(
+        channel: string,
+        camera = false,
+        prefs: {audio?: string | null; blur?: boolean; muted?: boolean; video?: string | null} = {},
+    ): Promise<void> {
         if (!Calls.supported()) {
             this.notice = 'This browser cannot make an encrypted call. Try a recent Chrome, Edge, Firefox or Safari.'
             this.notify()
@@ -450,6 +523,8 @@ export class Calls {
                 this.notify()
             },
             screen: true,
+            ...(prefs.audio ? {audioDevice: prefs.audio} : {}),
+            ...(prefs.video ? {videoDevice: prefs.video} : {}),
             workerUrl: CALL_WORKER_URL,
         })
         let audio: AudioContext | null = null
@@ -479,6 +554,12 @@ export class Calls {
             muted: false,
             mutedTalk: null,
             nudge: false,
+            blur: false,
+            captioner: null,
+            captions: new Map(),
+            recorder: null,
+            waiting: false,
+            watching: '',
             participant: null,
             probe: null,
             sharing: false,
@@ -492,6 +573,11 @@ export class Calls {
         this.active = a
         this.applyKeys(keys)
         if (camera) void web.setCamera(true)
+        if (prefs.blur) void web.setBlur(true)
+        if (prefs.muted) {
+            a.muted = true
+            web.setMuted(true)
+        }
         void web.start()
         this.notify()
     }
@@ -670,6 +756,219 @@ export class Calls {
         this.notify()
     }
 
+    /** Who waits to be let into this page's call. */
+    waiting(): CallWaiter[] {
+        return this.active ? (this.waitingOf.get(this.active.channel) ?? []) : []
+    }
+
+    /** Whether this page waits for a host to let it in. */
+    waitingToJoin(): boolean {
+        return this.active?.waiting ?? false
+    }
+
+    /** The hosts' spotlight in this page's call. */
+    spotlight(): number | null {
+        return this.active ? (this.spotlightOf.get(this.active.channel) ?? null) : null
+    }
+
+    /** The open breakout rooms in this page's call. */
+    rooms(): CallRooms | null {
+        return this.active ? (this.roomsOf.get(this.active.channel) ?? null) : null
+    }
+
+    /** This device's breakout room; 0 is the main call. */
+    myRoom(): number {
+        return this.self()?.room ?? 0
+    }
+
+    /** Everybody else in this device's room of the call: whom it sees and hears. */
+    roomOthers(): CallMember[] {
+        const a = this.active
+        if (!a) return []
+        const room = this.myRoom()
+        return this.others(a.channel).filter((m) => m.room === room)
+    }
+
+    /** Somebody new waiting is news to whoever runs the call. */
+    private knocks(before: CallWaiter[], now: CallWaiter[]): void {
+        if (!this.hosting()) return
+        for (const w of now) {
+            if (before.some((b) => b.participant === w.participant)) continue
+            this.toast({kind: 'knock', participant: w.participant, sub: w.guest ? 'Guest · invite link' : 'Wants to join', text: `${w.username} is waiting`})
+        }
+        // Somebody let in, turned away or gone takes the notice with them.
+        this.toasts = this.toasts.filter((t) => t.kind !== 'knock' || now.some((w) => w.participant === t.participant))
+    }
+
+    admit(participant: number): void {
+        this.control({Admit: {participant}})
+    }
+
+    deny(participant: number): void {
+        this.control({Deny: {participant}})
+    }
+
+    admitAll(): void {
+        this.control('AdmitAll')
+    }
+
+    setSpotlight(participant: number | null): void {
+        this.control({Spotlight: {participant}})
+    }
+
+    /** Split into `names.length` rooms, the people not hosting shared out in
+     *  turn after a shuffle (a host moves anybody afterwards). */
+    openRooms(names: string[], minutes: number, mayMove: boolean): void {
+        const people = this.members()
+            .filter((m) => m.role === 'member')
+            .map((m) => m.participant)
+            .sort(() => Math.random() - 0.5)
+        const assign = people.map((p, i) => [p, (i % names.length) + 1])
+        this.control({OpenRooms: {assign, may_move: mayMove, minutes, names}})
+    }
+
+    closeRooms(): void {
+        this.control('CloseRooms')
+    }
+
+    moveTo(participant: number, room: number): void {
+        this.control({MoveTo: {participant, room}})
+    }
+
+    /** Whether this page records the call. */
+    recording(): boolean {
+        return !!this.active?.recorder
+    }
+
+    /** Record the call on this device, or stop and save the file. The call is
+     *  told first; it refuses unless the hosts allow recording, and everybody
+     *  sees who records. */
+    async setRecording(on: boolean, title: string): Promise<void> {
+        const a = this.active
+        if (!a) return
+        if (on && !a.recorder) {
+            if (!CallRecorder.supported()) {
+                this.toast({kind: 'info', text: 'This browser cannot record a call'})
+            } else if (!this.settings().may_record) {
+                this.toast({kind: 'info', text: 'The hosts have not allowed recording in this call'})
+            } else {
+                this.control({Recording: true})
+                a.recorder = new CallRecorder(() => this.recorded(), title)
+            }
+        } else if (!on && a.recorder) {
+            const r = a.recorder
+            a.recorder = null
+            this.control({Recording: false})
+            await r.stop()
+        }
+        this.notify()
+    }
+
+    /** What a recording draws and mixes, this frame: this room, as on the stage. */
+    private recorded() {
+        const a = this.active
+        if (!a) return []
+        const people = this.roomOthers().map((m) => {
+            const t = a.tiles.get(m.participant)
+            return {audio: t?.audio ?? null, name: m.username, screen: m.sharing ? (t?.screen ?? null) : null, video: t?.video ?? null}
+        })
+        const mic = a.web.levelTrack()
+        people.push({audio: mic && !a.muted ? new MediaStream([mic]) : null, name: 'You', screen: a.web.screenView(), video: a.web.selfView()})
+        return people
+    }
+
+    /** Whether this device makes captions of its own voice. */
+    captioning(): boolean {
+        return !!this.active?.captioner
+    }
+
+    /** Make captions of this device's voice, on the device, and send them
+     *  sealed; or stop. */
+    async setCaptions(on: boolean, lang = this.captionLang): Promise<void> {
+        const a = this.active
+        if (!a) return
+        a.captioner?.stop()
+        a.captioner = null
+        if (on) {
+            this.captionLang = lang
+            const started = await Captioner.start(lang, (line) => {
+                if (a.muted) return
+                this.caption(-1, line.text, line.final)
+                void this.sendEvent(JSON.stringify({c: line.text, f: line.final}))
+            })
+            if ('why' in started) this.toast({kind: 'info', text: started.why})
+            else if (this.active === a) a.captioner = started.captioner
+        }
+        this.notify()
+    }
+
+    /** A line of somebody's captions, and the transcript when it is done. */
+    private caption(participant: number, text: string, final: boolean): void {
+        const a = this.active
+        if (!a) return
+        a.captions.set(participant, {at: Date.now(), final, text})
+        if (final) {
+            const who = participant === -1 ? 'You' : (this.members().find((m) => m.participant === participant)?.username ?? 'Somebody')
+            this.transcript.push({at: Date.now(), text, who})
+        }
+        this.notify()
+    }
+
+    /** The captions to show: the newest line of whoever spoke last, if recent. */
+    captionNow(): {participant: number; text: string; who: string} | null {
+        const a = this.active
+        if (!a) return null
+        let best: {at: number; participant: number; text: string} | null = null
+        for (const [participant, c] of a.captions) {
+            if (Date.now() - c.at > 5000) continue
+            if (!best || c.at > best.at) best = {at: c.at, participant, text: c.text}
+        }
+        if (!best) return null
+        const who = best.participant === -1 ? 'You' : (this.members().find((m) => m.participant === best.participant)?.username ?? '')
+        return {participant: best.participant, text: best.text, who}
+    }
+
+    /** Whether the camera can blur what is behind the person. */
+    blurSupported(): boolean {
+        return this.active?.web.blurSupported() ?? false
+    }
+
+    async setBlur(on: boolean): Promise<void> {
+        const a = this.active
+        if (!a) return
+        a.blur = await a.web.setBlur(on)
+        if (on && !a.blur) this.toast({kind: 'info', text: 'This camera cannot blur its background here'})
+        this.notify()
+    }
+
+    async setDevices(devices: {audio?: string | null; video?: string | null}): Promise<void> {
+        const a = this.active
+        if (!a) return
+        if (devices.audio !== undefined) await a.web.setAudioDevice(devices.audio)
+        if (devices.video !== undefined) await a.web.setVideoDevice(devices.video)
+        this.notify()
+    }
+
+    /** Tell the forwarder whose cameras this page draws: `null` is everybody's,
+     *  `[]` nobody's (the call folded to its bar). Only on a change. */
+    watch(cameras: number[] | null): void {
+        const a = this.active
+        if (!a || a.participant === null) return
+        const key = JSON.stringify(cameras)
+        if (key === a.watching) return
+        a.watching = key
+        this.client.callSignal({cameras: key, channel: a.channel, type: 'call_watch'})
+    }
+
+    /** Seal and send a call event (a reaction, a line of captions). */
+    private async sendEvent(text: string): Promise<void> {
+        const a = this.active
+        if (!a?.keys) return
+        const keys = a.keys
+        const sealed = await sealEvent(keys.key, BigInt(keys.epoch), new TextEncoder().encode(text))
+        this.client.callSignal({channel: a.channel, epoch: String(keys.epoch), sealed: hex(sealed), type: 'call_react'})
+    }
+
     raiseHand(up: boolean): void {
         this.control({Hand: up})
     }
@@ -692,9 +991,19 @@ export class Calls {
         if (!keys) return
         const plain = await openEvent(keys.key, BigInt(epoch), unhex(sealed))
         if (!plain) return
-        const emoji = new TextDecoder().decode(plain)
-        if ([...emoji].length > 16) return
-        this.reactions.push({at: Date.now(), emoji, id: nextId++, participant})
+        const text = new TextDecoder().decode(plain)
+        // A line of captions is JSON; a reaction is the emoji itself.
+        if (text.startsWith('{')) {
+            try {
+                const line = JSON.parse(text) as {c?: string; f?: boolean}
+                if (typeof line.c === "string") this.caption(participant, line.c.slice(0, 300), !!line.f)
+            } catch {
+                // Not ours to read.
+            }
+            return
+        }
+        if ([...text].length > 16) return
+        this.reactions.push({at: Date.now(), emoji: text, id: nextId++, participant})
         this.notify()
     }
 
@@ -738,6 +1047,9 @@ export class Calls {
         if (why) this.notice = why
         clearInterval(a.keyTimer)
         clearInterval(a.levelTimer)
+        a.captioner?.stop()
+        // A recording in progress is saved, not lost, when the call ends.
+        if (a.recorder) void a.recorder.stop()
         // The media last, and nothing it throws keeps the page from saying why.
         try {
             for (const l of a.listeners.values()) l.source.disconnect()

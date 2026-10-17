@@ -2283,6 +2283,24 @@
     padding: 10px 8px 10px 12px;
 }
 
+/* Two answers do not fit beside the words in a narrow stage: they take a
+   line of their own under them, the dismiss staying top right. */
+.meet-toast.is-knock {
+    flex-wrap: wrap;
+}
+
+.meet-toast.is-knock .meet-toast-text {
+    flex-basis: calc(100% - 96px);
+}
+
+.meet-toast.is-knock > .meet-btn:not(.is-icon) {
+    order: 2;
+}
+
+.meet-toast.is-knock > .meet-btn:not(.is-icon):first-of-type {
+    margin-left: 44px;
+}
+
 @keyframes meet-in {
     from { opacity: 0; transform: translateY(-6px); }
 }
@@ -2595,4 +2613,373 @@
 .chat-call-title .chat-sub .chat-icon {
     height: 13px;
     width: 13px;
+}
+
+/* ── More of the meeting: menus' extras, waiting, rooms, captions, recording ── */
+.meet-menu-note {
+    color: var(--m-text-faint);
+    display: block;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    padding: 4px 10px 8px;
+}
+
+.meet-pop.is-devices,
+.meet-pop.is-rooms {
+    min-width: 300px;
+}
+
+.meet-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 8px 8px;
+}
+
+.chat button.meet-chip {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: 999px;
+    color: var(--m-text);
+    font-size: 0.8rem;
+    padding: 4px 11px;
+}
+
+.chat button.meet-chip.is-on {
+    background: color-mix(in srgb, var(--m-accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--m-accent) 45%, transparent);
+    color: var(--m-accent-text);
+}
+
+.chat button.meet-menu-go {
+    justify-content: center;
+    margin: 4px 8px 6px;
+    width: calc(100% - 16px);
+}
+
+/* Who knocks, in the people island: gold, like a raised hand. */
+.meet-knock {
+    background: linear-gradient(180deg, rgb(240 201 90 / 10%), rgb(240 201 90 / 4%));
+    border: 1px solid rgb(240 201 90 / 24%);
+    border-radius: 14px;
+    margin: 6px 0;
+    padding: 0 4px 6px;
+}
+
+.meet-knock h4 {
+    color: #c9a23a;
+}
+
+.chat button.meet-btn.is-gold {
+    background: rgb(240 201 90 / 18%);
+    color: #a8811e;
+    height: 24px;
+}
+
+.meet-badge.is-guest {
+    background: rgb(134 92 196 / 18%);
+    color: #8c63c9;
+}
+
+/* Waiting to be let in. */
+.meet-waiting {
+    align-items: center;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 12px;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+}
+
+.meet-waiting-self {
+    aspect-ratio: 4 / 3;
+    border-radius: 16px;
+    overflow: hidden;
+    width: min(320px, 80%);
+}
+
+.meet-waiting-self video {
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    width: 100%;
+}
+
+.meet-waiting h3 {
+    color: var(--m-text-strong);
+    font-size: 1.3rem;
+}
+
+.meet-waiting-state {
+    align-items: center;
+    color: var(--m-text);
+    display: flex;
+    gap: 10px;
+}
+
+.meet-spinner {
+    animation: meet-spin 0.9s linear infinite;
+    border: 2.5px solid var(--m-border);
+    border-radius: 50%;
+    border-top-color: var(--m-accent);
+    height: 16px;
+    width: 16px;
+}
+
+@keyframes meet-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Over the stage: who records, and the room you are in. */
+.meet-chips-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    left: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+    top: 10px;
+    z-index: 5;
+}
+
+.meet-chips-row > span {
+    pointer-events: auto;
+}
+
+.meet-rec,
+.meet-room {
+    align-items: center;
+    backdrop-filter: blur(12px);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 0.8rem;
+    gap: 8px;
+    padding: 4px 6px 4px 12px;
+}
+
+.meet-rec {
+    background: color-mix(in srgb, var(--call-red) 20%, rgb(10 14 16 / 70%));
+    border: 1px solid color-mix(in srgb, var(--call-red) 45%, transparent);
+    color: #ffd2cc;
+}
+
+.meet-rec i {
+    animation: meet-blink 1.6s ease-in-out infinite;
+    background: #ff5a4f;
+    border-radius: 50%;
+    height: 8px;
+    width: 8px;
+}
+
+@keyframes meet-blink {
+    50% { opacity: 0.35; }
+}
+
+.meet-room {
+    background: color-mix(in srgb, var(--m-accent) 22%, rgb(10 14 16 / 70%));
+    border: 1px solid color-mix(in srgb, var(--m-accent) 45%, transparent);
+    color: #e9fbf9;
+}
+
+.meet-room .chat-icon {
+    height: 15px;
+    width: 15px;
+}
+
+/* Captions: two lines at most, with whose voice it is. */
+.meet-caption {
+    align-items: flex-start;
+    animation: meet-in 0.15s ease-out;
+    backdrop-filter: blur(14px);
+    background: rgb(5 8 9 / 82%);
+    border-radius: 16px;
+    bottom: 84px;
+    color: #fff;
+    display: flex;
+    font-size: 1.05rem;
+    gap: 10px;
+    left: 50%;
+    line-height: 1.4;
+    max-width: min(720px, 86%);
+    padding: 10px 16px 11px;
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 6;
+}
+
+.meet-caption span {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+}
+
+.meet-caption b {
+    color: var(--m-accent-text);
+    display: block;
+    font-size: 0.75rem;
+}
+
+/* ── The check before joining ─────────────────────────────────────────── */
+.meet-prejoin {
+    align-items: center;
+    animation: meet-in 0.15s ease-out;
+    backdrop-filter: blur(6px);
+    background: rgb(3 5 6 / 62%);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 24px;
+    position: fixed;
+    z-index: 60;
+}
+
+.meet-prejoin-card {
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 22px;
+    box-shadow: 0 30px 70px rgb(0 0 0 / 55%);
+    display: flex;
+    gap: 28px;
+    max-width: 980px;
+    padding: 26px;
+    width: 100%;
+}
+
+.meet-prejoin-preview {
+    display: flex;
+    flex: 1.4;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+.meet-prejoin-preview .chat-call-tile {
+    aspect-ratio: 16 / 9;
+    border-radius: 18px;
+    min-height: 0;
+}
+
+.meet-prejoin-keys {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+.meet-prejoin-keys .meet-key {
+    background: var(--m-surface-raised);
+    color: var(--m-text);
+}
+
+.meet-prejoin-side {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 260px;
+}
+
+.meet-prejoin-what {
+    color: var(--m-accent-text);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.meet-prejoin-side h2 {
+    color: var(--m-text-strong);
+    font-size: 1.6rem;
+    letter-spacing: -0.02em;
+}
+
+.meet-check {
+    align-items: center;
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    gap: 10px;
+    padding: 10px 0;
+}
+
+.meet-check label {
+    color: var(--m-text);
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    font-size: 0.85rem;
+    gap: 4px;
+    min-width: 0;
+}
+
+.meet-check select {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: 9px;
+    color: var(--m-text);
+    font-size: 0.8rem;
+    padding: 4px 8px;
+}
+
+.meet-check-ok,
+.meet-check-wait {
+    align-self: flex-start;
+    display: inline-flex;
+    margin-top: 2px;
+}
+
+.meet-check-ok {
+    color: var(--m-success);
+}
+
+.meet-check-wait {
+    color: var(--m-text-faint);
+}
+
+.meet-level {
+    align-items: flex-end;
+    display: flex;
+    gap: 3px;
+    height: 16px;
+}
+
+.meet-level i {
+    background: var(--m-border);
+    border-radius: 2px;
+    width: 4px;
+}
+
+.meet-level i:nth-child(1) { height: 5px; }
+.meet-level i:nth-child(2) { height: 8px; }
+.meet-level i:nth-child(3) { height: 11px; }
+.meet-level i:nth-child(4) { height: 14px; }
+.meet-level i:nth-child(5) { height: 16px; }
+
+.meet-level i.is-on {
+    background: var(--m-accent);
+}
+
+.meet-prejoin-go {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: auto;
+    padding-top: 8px;
+}
+
+.chat button.meet-btn.is-big {
+    font-size: 0.95rem;
+    height: 42px;
+    padding: 0 22px;
+}
+
+@media (max-width: 760px) {
+    .meet-prejoin-card {
+        flex-direction: column;
+        max-height: 100%;
+        overflow-y: auto;
+    }
 }

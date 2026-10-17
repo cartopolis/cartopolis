@@ -7,6 +7,8 @@ declare module '*/cartopolis/web/webcall.js' {
             options?: {
                 onStream?: (participant: number, kind: 'audio' | 'video' | 'screen', stream: MediaStream | null) => void
                 screen?: boolean
+                audioDevice?: string
+                videoDevice?: string
                 workerUrl?: string
             },
         )
@@ -22,6 +24,10 @@ declare module '*/cartopolis/web/webcall.js' {
         setMuted(muted: boolean): void
         setCamera(on: boolean): Promise<void>
         setScreen(on: boolean, sharp?: boolean): Promise<boolean>
+        setAudioDevice(deviceId: string | null): Promise<void>
+        setVideoDevice(deviceId: string | null): Promise<void>
+        blurSupported(): boolean
+        setBlur(on: boolean): Promise<boolean>
         selfView(): MediaStream | null
         screenView(): MediaStream | null
         levelTrack(): MediaStreamTrack | null

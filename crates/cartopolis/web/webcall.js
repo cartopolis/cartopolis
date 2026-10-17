@@ -98,6 +98,10 @@ export class WebCall {
     this.onEvent = onEvent;
     this.onStream = options.onStream || null;
     this.offerScreen = !!options.screen;
+    // Which microphone and camera, by `deviceId`; the browser's default when unset.
+    this.audioDevice = options.audioDevice || null;
+    this.videoDevice = options.videoDevice || null;
+    this.blur = false;
     this.screenSender = null;
     this.screenMid = null;
     this.screenTrack = null;
@@ -143,7 +147,7 @@ export class WebCall {
   async start() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(this.audioDevice ? { deviceId: { exact: this.audioDevice } } : {}) },
       });
       this.mic = stream.getAudioTracks()[0];
       this.mic.enabled = !this.muted;
@@ -311,9 +315,11 @@ export class WebCall {
     if (on && !this.camera) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 320, height: 240, frameRate: 15, facingMode: "user" },
+          video: { width: 320, height: 240, frameRate: 15, ...(this.videoDevice ? { deviceId: { exact: this.videoDevice } } : { facingMode: "user" }) },
         });
         this.camera = stream.getVideoTracks()[0];
+        // A blur asked for before the camera was on.
+        if (this.blur && this.blurSupported()) await this.camera.applyConstraints({ backgroundBlur: true }).catch(() => undefined);
         await this.videoSender.replaceTrack(this.camera);
       } catch (e) {
         this.onEvent("notice", describe(e, "Camera"));
@@ -377,6 +383,56 @@ export class WebCall {
   /** What this device shares, for its own preview, or null. */
   screenView() {
     return this.screenTrack ? new MediaStream([this.screenTrack]) : null;
+  }
+
+  /** Switch to another microphone mid-call: the new one replaces the old on
+   *  the same sender, so nobody has to renegotiate. */
+  async setAudioDevice(deviceId) {
+    this.audioDevice = deviceId || null;
+    if (!this.mic) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) },
+      });
+      const next = stream.getAudioTracks()[0];
+      next.enabled = !this.muted;
+      const sender = this.up.getSenders().find((s) => s.track === this.mic);
+      await sender?.replaceTrack(next);
+      this.mic.stop();
+      this.probe?.stop();
+      this.mic = next;
+      this.probe = next.clone();
+    } catch (e) {
+      this.onEvent("notice", describe(e, "Microphone"));
+    }
+  }
+
+  /** Switch to another camera mid-call (or the next time it is turned on). */
+  async setVideoDevice(deviceId) {
+    this.videoDevice = deviceId || null;
+    if (!this.camera) return;
+    await this.setCamera(false);
+    await this.setCamera(true);
+  }
+
+  /** Whether this camera can blur what is behind the person itself: the
+   *  browser's and the system's own effect (`backgroundBlur`), done on the
+   *  device before the picture is encoded. */
+  blurSupported() {
+    const caps = this.camera?.getCapabilities?.();
+    return !!caps && Array.isArray(caps.backgroundBlur) && caps.backgroundBlur.includes(true);
+  }
+
+  /** Blur the background, where the camera can; resolves to whether it does. */
+  async setBlur(on) {
+    this.blur = on;
+    if (!this.camera || !this.blurSupported()) return false;
+    try {
+      await this.camera.applyConstraints({ backgroundBlur: on });
+      return on;
+    } catch {
+      return false;
+    }
   }
 
   /** The microphone, never disabled: for hearing talking while muted. */
