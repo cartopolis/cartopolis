@@ -8,7 +8,8 @@ updated: 2026-10-17
 
 **Retired 2026-10-17.** Work is organised as **sessions** now, not as Forgejo
 tickets: no issues, no labels, no kanban board, no issue watcher on the VPS, and
-no `/ticket` or `/handover`. A session is one agent thread in its own worktree on
+no `/ticket`. `/handover` survives in another form — from one session to the
+next, with no label to flip. A session is one agent thread in its own worktree on
 its own branch, with the maintainer in the conversation; it lands through
 `finish-branch` and leaves its reasoning in the published digest and its commit
 bodies. [docs/workflow.md](../../workflow.md) describes how that works.

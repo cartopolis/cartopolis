@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Hand this session's branch to the next session.
+#
+#   ./hand-over --note "where it stands, and what is left"
+#
+# A session stops before its work is done — killed, out of context, or simply
+# finished for the day — and another picks it up: later, on another machine, in
+# Zed or in claude.ai/code. Everything the next one needs has to be on the
+# server, not in this worktree and not in this conversation:
+#
+#   1. the work and the note — uncommitted changes are swept into a `wip:`
+#      commit whose message carries the note; a clean tree gets an empty one;
+#   2. the branch, pushed — never forced;
+#   3. this session's chat digest, confirmed present in the context repo;
+#   4. the branch released, so a worktree on this machine can check it out.
+#
+# The `wip:` commit is not meant to land. The next session folds it into real
+# commits, and `merge-to-main` refuses a branch that still carries one.
+
+set -euo pipefail
+
+note=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --note) note="$2"; shift 2 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[ -n "$note" ] || {
+    echo "a handover needs --note: where it stands, and what is left" >&2; exit 2; }
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" != "HEAD" ] || {
+    echo "refusing: detached HEAD — there is no branch to hand over" >&2; exit 1; }
+[ "$branch" != "main" ] || {
+    echo "refusing: on main — a session's work lives on a branch of its own" >&2; exit 1; }
+
+# The repository's own checkout, as opposed to a linked worktree. Several
+# sessions can be running in it (Zed on macOS put every thread there, 2026-10-17),
+# so its uncommitted changes are not necessarily this session's.
+linked=true
+[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || linked=false
+
+CONTEXT_REMOTE="${CARTO_AGENT_CONTEXT_REMOTE:-ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git}"
+
+# 1. The work and the note, in one commit. `git add -A` is safe in a session's
+#    own worktree because target/, data/, cache/, dist/ and .claude/worktrees/
+#    are gitignored — and not safe in a shared checkout, where it would take the
+#    other sessions' edits with it, so there it refuses instead.
+subject="wip: handover of $branch"
+body="Where it stands: $note
+
+Handed over by a session that stopped here. Fold this into real commits
+before landing; merge-to-main refuses a branch that still carries a wip
+commit."
+if [ -n "$(git status --porcelain)" ]; then
+    if ! $linked; then
+        echo "refusing: uncommitted changes in the repository's main checkout, which other" >&2
+        echo "sessions may be sharing — sweeping it would hand over their work as well." >&2
+        echo "Commit this session's own files, then run this again." >&2
+        git status --short >&2
+        exit 1
+    fi
+    git add -A
+    git commit -q -m "$subject" -m "$body" -m "The uncommitted work the session left was swept into this commit."
+    echo "swept the uncommitted work into a wip commit" >&2
+else
+    git commit -q --allow-empty -m "$subject" -m "$body"
+fi
+
+# 2. Push. Never forced: a rejection means the branch moved on the server — two
+#    sessions on one branch — and that needs a person.
+git fetch -q origin main 2>/dev/null || true
+ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "?")
+git push -q origin "HEAD:refs/heads/$branch" || {
+    echo "push to $branch rejected — it has moved on the server. Resolve by hand." >&2
+    exit 1; }
+echo "pushed $branch, $ahead commit(s) ahead of main" >&2
+
+# 3. The reasoning. The Stop hook publishes it per turn, so earlier turns should
+#    be there — but handing over on that assumption is how the next session ends
+#    up with code and no idea why. Both layouts the context repo has used are
+#    checked: a directory per branch, and a ref per branch.
+dir=$(printf '%s' "$branch" | tr '/' '-')
+digest=""
+if git ls-remote --exit-code "$CONTEXT_REMOTE" "refs/agent-context/$branch" >/dev/null 2>&1; then
+    digest="refs/agent-context/$branch"
+else
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    if git clone -q --depth 1 "$CONTEXT_REMOTE" "$tmp/ctx" 2>/dev/null; then
+        n=$(find "$tmp/ctx/$dir" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+        [ "$n" -gt 0 ] && digest="$dir/ ($n session file(s))"
+    fi
+fi
+if [ -n "$digest" ]; then
+    echo "digest   $digest in the context repo" >&2
+else
+    echo "WARNING: no chat digest for $branch in the context repo." >&2
+    echo "The next session gets the code and the note, not the reasoning behind them." >&2
+    echo "Check the Stop hook on this machine: docs/workflow.md#setup" >&2
+fi
+
+# 4. Release the branch: git lets one worktree hold a branch at a time, and a
+#    new session's worktree on this machine cannot check it out while this one
+#    does. Detaching keeps every file where it is. Not in the main checkout,
+#    whose HEAD the other sessions there are standing on.
+if $linked; then
+    git switch -q --detach
+    echo "released $branch (this worktree is now detached at the same commit)" >&2
+fi
+
+sha=$(git rev-parse --short HEAD)
+cat >&2 <<EOF
+
+handed over: $branch at $sha
+To continue, in a new session's own worktree:
+    git fetch origin $branch && git switch $branch
+then read the digest (the branch-context skill) and the note:
+    git log origin/main..$branch
+EOF
+echo "$branch"

@@ -72,6 +72,30 @@ and sccache refills it — measured at 85.6 % hits — provided nobody exports
   The earliest session usually holds the design decision; the later ones execute
   it.
 
+## Handing a session over
+
+A session that stops before its work is done — out of context, killed, finished
+for the day — hands it to the next one rather than leaving it in a worktree:
+
+```bash
+.claude/skills/handover/hand-over --note "what works, what does not, what you suspect"
+```
+
+It sweeps uncommitted work into a `wip:` commit whose message carries the note,
+pushes the branch, confirms the session's digest is published, and detaches the
+worktree so the branch is free for the next session's worktree on the same
+machine. The next session switches to the branch in a worktree of its own, reads
+the digest and the note, and **folds the `wip:` commit into real commits before
+landing** — `merge-to-main` refuses a branch that still carries one, because
+with no pull request nothing else would stop a sweep reaching `main`.
+
+The note is the part only you can write: steps one to three move bytes, and the
+note is the intent that is not already in the digest.
+[`handover`](../.claude/skills/handover/SKILL.md) has the rest.
+
+It refuses to sweep the repository's main checkout. Several sessions may be
+running in it, and `git add -A` there would hand over their edits as well.
+
 ## Landing it: say "merge to main"
 
 You are in the room, so the review has already happened in the conversation.
@@ -113,10 +137,11 @@ Four properties are deliberate:
   one tree cannot be spent on another.
 - **`main` is a fast-forward, never a force.** A rejection means another session
   landed in between; re-run and let the rebase pick it up. No merge commits.
-- **It lands only a clean tree, on a named branch.** A dirty worktree is refused,
-  because what is verified has to be what lands — which is the other reason a
-  session needs its own worktree. A detached HEAD is refused because there is no
-  branch to push it under.
+- **It lands only a clean tree, on a named branch, with no handover sweeps.** A
+  dirty worktree is refused, because what is verified has to be what lands —
+  which is the other reason a session needs its own worktree. A detached HEAD is
+  refused because there is no branch to push it under, and a `wip:` commit
+  because it is a [handover](#handing-a-session-over)'s sweep, not a change.
 
 ### The verdict is still CI's, and it arrives afterwards
 
@@ -181,6 +206,10 @@ things specific to macOS:
 other sessions share. Land from the session's own worktree; failing that, add a
 clean worktree at the branch tip, gate it there, and push from it — what the
 2026-10-17 landing did.
+
+**`merge-to-main` refuses: wip commits.** The branch was handed over and the
+sweep is still on it. Fold it into real commits — `git reset --soft` to the
+commit before it and commit again — then re-run.
 
 **The rebase conflicts with `main`.** Another session changed the same lines. If
 `main` already landed the same change — it has happened, two sessions fixing one
