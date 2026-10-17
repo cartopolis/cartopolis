@@ -1,7 +1,7 @@
 ---
 topic: agent-verification
 triggers: [harness, "agent:done", "agent:ci", watcher.ts, ci.yml, "--expect", Stop hook, agent-context-push, verifier, gate, "add a check", "how do we know it works", verify-branch, merge-to-main, "pull request", "merge to main"]
-updated: 2026-08-30
+updated: 2026-10-17
 ---
 
 # A gate may not depend on anything the agent controls
@@ -20,21 +20,21 @@ An agent's work is judged at three levels, and they are not interchangeable:
 | `--expect` on a `--shot` run | did a world appear on screen | it chooses the flags |
 | CI's verdict on the pushed head | both of the above, reproducibly | **no** |
 
-In the **autonomous** lane only the third may decide a label, land a branch, or
-end a ticket. `agent:done` therefore means "CI agreed", not "the session said
-so" — the mechanism is in
-[workflow.md](../workflow.md#the-verdict-is-still-cis-and-it-now-arrives-afterwards).
+Where nobody is in the room, only the third may decide that work is done. That
+is why publishing still waits for it: `tools/deploy-main` refuses a commit CI
+never passed — the mechanism is in
+[workflow.md](../workflow.md#the-verdict-is-still-cis-and-it-arrives-afterwards).
 
 The first two are not lesser checks, they are *faster* ones, and their job is to
 fail before CI has to. Treating either as a gate is the mistake: the thing being
 judged picks the invocation.
 
-## The driven lane trades this deliberately (2026-08-30)
+## Landing trades this deliberately (2026-08-30)
 
 The rule above cost two full 15-25 minute CI runs per landing on a capacity-3
 runner — one on the pull-request ref, one on the merge commit — and the first of
-the two was being merged after a median of zero seconds, i.e. not read. The
-driven lane now runs the gate itself
+the two was being merged after a median of zero seconds, i.e. not read. A
+session now runs the gate itself
 ([`verify-branch`](../../.claude/skills/finish-branch/verify-branch)) and pushes
 `main` with no pull request at all.
 
@@ -60,15 +60,12 @@ the gate, and the runner's rustfmt is byte-identical to the container's. The
 honest statement is that `main` is now protected by a script the agent runs, not
 by one it cannot reach.
 
-The autonomous lane keeps the old rule in full: it holds no checkout, so it
-cannot run the local gate, and it still lands nothing that CI has not passed.
-What changed there is only the mechanism. Its pull request is gone — it was
-never a review, it existed to start a build, `ci.yml` having no push trigger on
-branches — and the run is now started directly, by dispatching `ci.yml` on the
-branch ref. That is a *stricter* gate than the request was: a dispatched run
-declines to narrow itself and so includes the scene smokes and both
-cross-target lanes, and a fast-forward landing means the commit that passed is
-the commit that lands, where a merge commit is a commit nobody built.
+The autonomous lane — an issue watcher on the VPS that built tickets unattended
+— kept the old rule in full until it was retired with the tickets on 2026-10-17
+([retired/ticket-workflow.md](retired/ticket-workflow.md)): it held no
+checkout, so it could not run the local gate, and it landed nothing CI had not
+passed, by dispatching `ci.yml` on the branch ref. Anything that ever lands work
+with nobody in the room again owes the same.
 
 ## Corollary 1 — a check written as prompt text is advice, not a gate
 
@@ -88,9 +85,9 @@ installed and documented as running every turn. No digest, no branch push, no lo
 line. A repository cannot test a file it does not contain, and `git log` will
 never show one going stale.
 
-Where an out-of-repo dependency is unavoidable — hook registrations, the watcher
-on the VPS, container images — something that *does* run must verify it and say
-so. The `SessionStart` hook is the pattern: it checks that the `Stop` hook is
+Where an out-of-repo dependency is unavoidable — hook registrations, container
+images, the environment an editor launches agents with — something that *does*
+run must verify it and say so. The `SessionStart` hook is the pattern: it checks that the `Stop` hook is
 registered and reports the real HEAD, rather than asserting either.
 
 ## What no gate here covers, and must not be faked

@@ -5,8 +5,8 @@
 #
 #   tools/deploy-main [--sha SHA] [--only sim|web] [--dry-run] [--timeout-min 40]
 #
-# Used by hand, and by the autonomous lane after it merges a ticket
-# (docs/direction.md). It is a script rather than prompt text for the reason
+# Used by hand after a landing (docs/workflow.md). It is a script rather than
+# prompt text for the reason
 # notes/agent-verification.md gives: a check written as a sentence is advice,
 # and this one decides whether strangers get a broken server.
 #
@@ -14,9 +14,7 @@
 #
 # **A commit CI has not passed.** Every job that ran for the sha must have
 # concluded `success`, and at least one must have run. A merge whose CI never
-# reported is NOT a pass here — that is the difference between this and the
-# watcher's `agent:done`, which lands a branch for review when CI is silent.
-# Landing a branch on no verdict is recoverable; publishing on no verdict is
+# reported is NOT a pass here. Landing a branch on no verdict is recoverable; publishing on no verdict is
 # how a runner outage becomes a public outage.
 #
 # **A `main` that has moved.** `--sha` states which commit the caller believes
