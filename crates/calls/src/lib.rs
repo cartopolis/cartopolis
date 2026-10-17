@@ -10,6 +10,7 @@
 //!   the clear for the forwarder.
 //! - `clip` (`client`, native): a WebM clip played on a prim.
 //! - `keys` (`client`): sealing and opening frames.
+//! - `denoise` (`client`, native): noise suppression for the microphone.
 //! - `events` (`client`, native): sealing a reaction the server relays unread.
 //! - `opus` (`client`): the voice codec.
 //! - `video` (`client`): the video codec, and a stand-in camera for tests.
@@ -23,6 +24,8 @@ pub mod media;
 
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 pub mod clip;
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+pub mod denoise;
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 pub mod events;
 #[cfg(feature = "client")]

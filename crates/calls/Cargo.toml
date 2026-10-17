@@ -28,7 +28,7 @@ doctest = false
 
 [features]
 default = []
-client = ["dep:sframe", "dep:opus-pure", "dep:uuid", "dep:oxideav-vp8", "dep:rusty_vp9", "dep:matroska-demuxer"]
+client = ["dep:sframe", "dep:opus-pure", "dep:uuid", "dep:oxideav-vp8", "dep:rusty_vp9", "dep:matroska-demuxer", "dep:nnnoiseless"]
 sfu = []
 
 [dependencies]
@@ -58,6 +58,10 @@ uuid = { workspace = true, optional = true }
 # connection, not at build time, when no provider is set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 str0m = { version = "0.24", default-features = false }
+# Noise suppression for the app's microphone (`denoise`): RNNoise's network,
+# ported to Rust, no C. Without its defaults, which add a command-line tool.
+# The browser has the platform's own (`noiseSuppression`).
+nnnoiseless = { version = "0.5", default-features = false, optional = true }
 dimpl = { version = "0.7.4", default-features = false, features = ["rust-crypto"] }
 aes = "0.8"
 aes-gcm = "0.10"

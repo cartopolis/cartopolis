@@ -1368,6 +1368,10 @@ fn more_sheet(
     if sheet_row(ui, icons::STAR, "Speaker view", Some(st.speaker_view)) {
         st.speaker_view = !st.speaker_view;
     }
+    // Off for music, or a room where the background is the point.
+    if sheet_row(ui, icons::MIC, "Noise suppression", Some(!calls.keep_noise)) {
+        calls.keep_noise = !calls.keep_noise;
+    }
     if !calls.hosting() {
         return;
     }

@@ -152,6 +152,9 @@ struct Active {
     mic: Option<AudioInput>,
     #[cfg(not(target_arch = "wasm32"))]
     resampler: Resampler,
+    /// Noise suppression on the microphone (`cartopolis_calls::denoise`).
+    #[cfg(not(target_arch = "wasm32"))]
+    denoiser: cartopolis_calls::denoise::Denoiser,
     #[cfg(not(target_arch = "wasm32"))]
     capture: Vec<i16>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -263,6 +266,9 @@ pub struct Calls {
     /// arrow), so the chats and the world can be used during a call. Unfolded
     /// again by a new call ringing or by joining one.
     pub minimized: bool,
+    /// Noise suppression is off for this call: the microphone goes out as it
+    /// hears (music, a choir). On is the default, so this is the exception.
+    pub keep_noise: bool,
     /// Whether the full-screen call was drawn last frame, for the Back/Escape
     /// ladder (`dismiss::Rung::CallScreen`), which cannot work out ringing
     /// without the account name.
@@ -1016,6 +1022,7 @@ pub fn drive_calls(
         camera_on,
         fake_media,
         minimized,
+        keep_noise,
         demo,
         ..
     } = &mut *calls;
@@ -1248,7 +1255,7 @@ pub fn drive_calls(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        capture(a, *muted, *fake_media, &prefs, level, notice);
+        capture(a, *muted, !*keep_noise, *fake_media, &prefs, level, notice);
         send_camera(a, camera_on, *fake_media, looking, notice);
     }
 }
@@ -1313,6 +1320,8 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         mic: None,
         #[cfg(not(target_arch = "wasm32"))]
         resampler: Resampler::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        denoiser: cartopolis_calls::denoise::Denoiser::new(),
         #[cfg(not(target_arch = "wasm32"))]
         capture: Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -1406,6 +1415,7 @@ fn send_camera(
 fn capture(
     a: &mut Active,
     muted: bool,
+    denoise: bool,
     fake_media: bool,
     prefs: &AppPrefs,
     level: &mut f32,
@@ -1440,6 +1450,11 @@ fn capture(
     };
     a.capture.clear();
     mic.drain(&mut a.capture, src_rate as usize);
+    // Before the gain and the resampling: the network wants the microphone's
+    // own 48 kHz, and the level meter then shows what the others hear.
+    if denoise {
+        a.denoiser.process(&mut a.capture, src_rate);
+    }
     voice::apply_gain(&mut a.capture, prefs.capture_gain());
     *level = if muted { 0.0 } else { voice::rms(&a.capture) };
     a.resampler.push(&a.capture, src_rate, &mut a.pending);
