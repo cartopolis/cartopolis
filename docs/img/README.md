@@ -1,25 +1,43 @@
 # docs/img
 
-Images used by the docs and the top-level README.
+`readme.jpg` is the contact sheet the top-level README shows. It is built in two steps,
+and neither involves editing an image by hand:
 
-The named files — `city.png`, `canals.png`, `tunnel.png`, `station.png`, `grote-markt.png`,
-`forum.png`, `building.png`, `skyline.png`, `city-far.png`, `eemshaven.png`,
-`eemshaven-sea.png`, `meet.png`, `globe.png` — are **generated**, one per entry in
-[`docs/shots.toml`](../shots.toml). Regenerate them all with:
+1. **The captures.** `building.png`, `chat.png`, `layers.png`, `route.png`, `globe.png`
+   and `chatworld.png` are the ungrouped shots in [`docs/shots.toml`](../shots.toml):
+   real app screens with the UI open, captured headless.
 
-```bash
-cargo shots
-```
+   ```bash
+   cargo shots
+   ```
 
-Don't edit or replace them by hand: change the camera position in
-`docs/shots.toml` (the dev panel's View tab has a **📋 Copy as preset** button
-that writes the block for you) and re-run.
+2. **The sheet.** [`readme.html`](readme.html) frames them the way `docs/mockups/`
+   frames a screen. Render it at 1600 CSS px and save it as a ~2400 px JPEG:
 
-`extras/` holds the manifest's `extras` group — the dusk view, the route planner, the interface
-over the city (`chrome.png`, the densest settings screen, for checking a palette
-change) and the atmosphere from 120 km. They are not in the README; regenerate
-them with `cargo shots --only extras`.
+   ```bash
+   # Linux (the mockups' renderer)
+   ~/bin/chromium --headless --no-sandbox --disable-gpu --hide-scrollbars \
+     --force-device-scale-factor=1.5 --window-size=1600,970 \
+     --screenshot=/tmp/sheet.png "file://$PWD/docs/img/readme.html"
+   convert /tmp/sheet.png -quality 75 docs/img/readme.jpg
 
-`screenshot-1.png` … `screenshot-3.png` are scratch slots for one-off in-app
-captures (developer panel ▸ View ▸ **📷 Capture slot N**). Nothing links to them.
-See [Taking screenshots](../manual.md#taking-screenshots).
+   # macOS (no Chromium needed)
+   swiftc -O tools/render-html.swift -o /tmp/render-html
+   /tmp/render-html docs/img/readme.html /tmp/sheet.png 1600
+   sips -s format jpeg -s formatOptions 75 -Z 2400 /tmp/sheet.png --out docs/img/readme.jpg
+   ```
+
+To move a view, change its camera in `docs/shots.toml`. The dev panel's View tab has a
+**📋 Copy as preset** button that writes the block for you. To change a caption, edit
+`readme.html`.
+
+The other directories are shot groups, regenerated with `cargo shots --only <group>`
+and not linked from the README:
+
+- `views/` is the scenic set the README used to carry: the city, its landmarks and the port.
+- `extras/` has the dusk view, the interface over the city (`chrome.png`, the densest
+  settings screen, for checking a palette change) and the atmosphere from 120 km.
+
+`screenshot-1.png` … `screenshot-3.png` are scratch slots for one-off in-app captures
+(developer panel ▸ View ▸ **📷 Capture slot N**). Nothing links to them. See
+[Taking screenshots](../manual.md#taking-screenshots).

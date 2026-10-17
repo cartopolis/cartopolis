@@ -144,8 +144,9 @@ metric was self-consistent, and only the photograph showed the path at grade.
 / `on_ground` / `[shot.measured]`).
 
 ```bash
-cargo shots                      # all of them → docs/img/<name>.png
+cargo shots                      # the ungrouped set → docs/img/<name>.png
 cargo shots --only globe,route   # a subset
+cargo shots --only views         # a group → docs/img/views/<name>.png
 ```
 
 `cargo shots` is `cargo run -p cartopolis -- --shots`, so every flag above still
@@ -156,6 +157,13 @@ tile source" (`CARTO_TILE_URL` still overrides). To add a view, fly there and pr
 the dev panel's **📋 Copy as preset**, which puts a `[[shot]]` block on the
 clipboard. Other manifests in `docs/` (`*-shots.toml`, `perf.toml`) use the same
 format; `cargo perf` flies `perf.toml` (`docs/notes/performance-suite.md`).
+
+**The README shows one contact sheet, not the presets themselves.** The six
+ungrouped shots are real screens with the UI open; `docs/img/readme.html` frames
+them mockup-style and is rendered to `docs/img/readme.jpg` — `docs/img/README.md`
+has the Chromium and the macOS (`tools/render-html.swift`) commands. Shot order in
+the manifest matters (a solved route and the demo chats' shared location outlive
+their shot). The scenic set the README used to carry is the `views` group.
 
 **A field check is a preset that came from a phone** (`systems::field_check`,
 `docs/notes/field-check.md`): a photograph beside Cartopolis from the same pose,

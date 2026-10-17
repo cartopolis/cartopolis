@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  The README's contact sheet: the documentation set from docs/shots.toml, framed
+  the way docs/mockups/ frames a screen. Regenerate the captures with
+  `cargo shots`, then render this page (docs/img/README.md has the commands).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis</title>
+<style>
+@font-face { font-family: Jakarta; font-weight: 400; src: url(../../assets/fonts/PlusJakartaSans-Regular.ttf); }
+@font-face { font-family: Jakarta; font-weight: 600; src: url(../../assets/fonts/PlusJakartaSans-SemiBold.ttf); }
+/* The app's own palette (systems::theme), as in docs/mockups/. */
+:root {
+  --ink:#0F1416; --surface:#141A1C; --raised:#1F2829; --line:#63797C;
+  --accent:#5CC6C0; --brand:#FD6012; --cream:#F4F8F8; --text:#E2E9EA; --dim:#AAC2C6;
+  --gline:rgba(255,255,255,.14);
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:#0b1012; color:var(--text); font:15px/1.4 Jakarta, system-ui, sans-serif; width:1600px; padding:30px 36px 34px; }
+header { display:flex; align-items:baseline; gap:18px; margin-bottom:22px; }
+h1 { font-size:30px; font-weight:600; color:var(--cream); letter-spacing:-.4px; }
+h1 b { color:var(--brand); font-weight:inherit; }
+header p { color:var(--dim); font-size:16px; }
+.grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:26px 24px; }
+.win { border-radius:10px; overflow:hidden; background:var(--ink); box-shadow:0 0 0 1px #2b3438, 0 18px 40px rgba(0,0,0,.45); }
+.win .bar { height:24px; background:#232a2d; display:flex; align-items:center; gap:7px; padding:0 10px; font-size:12px; color:#9fb0b3; font-weight:600; }
+.win .bar i { width:10px; height:10px; border-radius:50%; background:#ff5f57; display:block; }
+.win .bar i:nth-child(2) { background:#febc2e; }
+.win .bar i:nth-child(3) { background:#28c840; margin-right:8px; }
+.win img { display:block; width:100%; aspect-ratio:1280/800; }
+figcaption { margin-top:11px; display:flex; gap:10px; }
+figcaption .n { flex:none; width:22px; height:22px; border-radius:50%; background:var(--brand); color:var(--ink); font-weight:600; font-size:13px; display:grid; place-items:center; margin-top:1px; }
+figcaption b { display:block; color:var(--cream); font-weight:600; font-size:15.5px; }
+figcaption span { color:var(--dim); font-size:13.5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>carto<b>polis</b></h1>
+  <p>A shared, walkable 3D copy of the real world, built from open public data. Browser, desktop and Android.</p>
+</header>
+
+<div class="grid">
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Building card · Grote Markt 1</div><img src="building.png" alt=""></div>
+  <figcaption><div class="n">1</div><div><b>Every building has a card</b><span>Year, use, area, height, volume, monument listing and addresses, from BAG and 3DBAG. The selection turns to glass.</span></div></figcaption>
+</figure>
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Local chat · Grote Markt</div><img src="chat.png" alt=""></div>
+  <figcaption><div class="n">2</div><div><b>Talk where you stand</b><span>Local chat scoped by distance, bubbles over the avatar who said it, proximity voice, world chat.</span></div></figcaption>
+</figure>
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Private chat · World view</div><img src="chatworld.png" alt=""></div>
+  <figcaption><div class="n">3</div><div><b>A private chat has a map</b><span>End-to-end encrypted (MLS). The places it is planning around are pinned, and a shared location shows where someone is.</span></div></figcaption>
+</figure>
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Map layers · Diepenring</div><img src="layers.png" alt=""></div>
+  <figcaption><div class="n">4</div><div><b>Built from open registers</b><span>3DBAG, BAG, BGT, AHN relief, PDOK aerial photos and OpenStreetMap, each a layer with its source credited.</span></div></figcaption>
+</figure>
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Route · old town</div><img src="route.png" alt=""></div>
+  <figcaption><div class="n">5</div><div><b>Route by car, bike or on foot</b><span>Solved on the device from the vector tiles. Driver mode follows the phone's GPS.</span></div></figcaption>
+</figure>
+
+<figure>
+  <div class="win"><div class="bar"><i></i><i></i><i></i>Earth · 12,000 km</div><img src="globe.png" alt=""></div>
+  <figcaption><div class="n">6</div><div><b>From a doorway to orbit</b><span>One floating-origin space with real sun and weather. Land cover and live cloud cover from orbit.</span></div></figcaption>
+</figure>
+
+</div>
+</body>
+</html>

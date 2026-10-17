@@ -16,10 +16,12 @@
 # stays reproducible, instead of being re-flown and re-eyeballed every release.
 #
 # **A shot with no `group` is a documentation image**: `cargo shots` regenerates
-# it and the README links the file. A shot *with* one is a subject — tunnels,
-# bridges, doors — reached by `--only <group>`, written into its own directory,
-# and left alone by a bare run. Type the group into the dev panel before copying
-# and the block arrives with the line already in it. See the section below.
+# it, and `docs/img/readme.html` lays the set out as the one contact sheet the
+# README shows (`docs/img/README.md` says how to render it). A shot *with* a group
+# is a subject — tunnels, bridges, doors, or the scenic `views` the README used to
+# carry — reached by `--only <group>`, written into its own directory, and left
+# alone by a bare run. Type the group into the dev panel before copying and the
+# block arrives with the line already in it. See the section below.
 
 # Applies to every [[shot]] below unless it says otherwise.
 #
@@ -28,9 +30,10 @@
 # which the `route` shot has no graph to solve against (ADR-037). `CARTO_TILE_URL`
 # still overrides this, so a local mirror needs no edit to this file.
 tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
-size = "1600x900"
+size = "1280x800"
 out_dir = "img"
-# Documentation images are chrome-free; the two that document the UI opt back in.
+# Chrome-free by default: the subjects below are about geometry. The documentation
+# set opts back in, because what it documents is the app, UI and all.
 hide_ui = true
 mode = "free"
 # Cached tiles settle in about a second; give the detail patches longer than the
@@ -41,115 +44,17 @@ mode = "free"
 settle = 1.5
 wait = 45.0
 
-[[shot]]
-name = "city"
-description = "Groningen city centre, oblique morning view over the 3DBAG roofs"
-at = [53.2194, 6.5665, 420]
-look = [-22.0, 35.0]
-time = 9.5
-fog = 0.10
-clouds = 0.25
-
-[[shot]]
-name = "canals"
-description = "Bird's-eye over the Diepenring: the canal ring, its quays and bridges, and the city packed against them"
-at = [53.2150, 6.5555, 220]
-look_at = [53.2195, 6.5610]
-time = 10.5
-fog = 0.08
-clouds = 0.2
-
-[[shot]]
-name = "tunnel"
-description = "The southern ring beside DUO: the sunken carriageway in its cut and the lid over it, on measured ground"
-at = [53.2043, 6.5738, 95]
-look_at = [53.2062, 6.5782]
-time = 11.5
-fog = 0.06
-clouds = 0.2
-
-[[shot]]
-name = "station"
-description = "Groningen's main station from above: the tracks, the platforms and the rail yard running east"
-at = [53.2078, 6.5595, 260]
-look_at = [53.2107, 6.5680]
-time = 11.0
-fog = 0.08
-clouds = 0.2
-
-# Landmarks. Each `look_at` is the building's centroid from its BAG outline, so
-# the camera is aimed at the register's own idea of where the building is.
-
-[[shot]]
-name = "grote-markt"
-description = "The Grote Markt from its south-west corner, across the square to the Martinitoren (1482)"
-at = [53.2176, 6.5655, 70]
-look_at = [53.2190, 6.5680]
-time = 15.5
-fog = 0.06
-clouds = 0.25
-
-[[shot]]
-name = "forum"
-description = "Forum Groningen (2020), the library and cultural centre on the Nieuwe Markt, from the south-east"
-at = [53.2175, 6.5725, 70]
-look_at = [53.21881, 6.56981]
-time = 11.5
-fog = 0.06
-clouds = 0.2
-
-# From a distance: the city as a whole, and the port on the Wadden Sea.
-
-[[shot]]
-name = "skyline"
-description = "Groningen from 3 km south-west: the whole old town and the Martinitoren above it"
-at = [53.1935, 6.5350, 450]
-look_at = [53.2180, 6.5665]
-time = 16.0
-fog = 0.10
-clouds = 0.3
-
-[[shot]]
-name = "city-far"
-description = "The city from 4 km north-east and 1.2 km up: the ring roads, the canals and the flat land around"
-at = [53.2450, 6.6050, 1200]
-look_at = [53.2150, 6.5650]
-time = 11.0
-fog = 0.0
-clouds = 0.3
-
-[[shot]]
-name = "eemshaven"
-description = "Over Eemshaven's harbour basins towards the sea: quays, the power stations and the wind turbines"
-at = [53.4380, 6.8120, 180]
-look_at = [53.4500, 6.8450]
-time = 12.0
-fog = 0.06
-clouds = 0.3
-
-[[shot]]
-name = "eemshaven-sea"
-description = "Eemshaven from over the Wadden Sea, looking back at the port"
-at = [53.4600, 6.8550, 120]
-look_at = [53.4450, 6.8400]
-time = 15.0
-fog = 0.06
-clouds = 0.3
-
-[[shot]]
-name = "city-dusk"
-group = "extras"
-description = "The same streets at sunset — the day/night curves and warm sun"
-at = [53.2160, 6.5680, 550]
-look = [-22.0, 285.0]
-# 20:30 is already night here; sunset light lives around 18:00–19:00.
-time = 18.6
-fog = 0.18
-clouds = 0.45
+# ─── The documentation set ───────────────────────────────────────────────────
+#
+# Six screens of the app, UI open, framed for the contact sheet. **Order matters:**
+# every scripted run is one process, and two seeds outlive their shot — a solved
+# route stays drawn until it is cleared, and the demo chats' shared location
+# stays pinned on the map. So `route` comes after everything a stray line would
+# spoil, and `chatworld`, which seeds the location, comes last.
 
 [[shot]]
 name = "building"
-description = "The town hall (1813, a national monument) and what the public registers say about it: the BAG card and the glass highlight"
+description = "The town hall (1813, a national monument) and what the public registers say about it: the building card and the glass highlight"
 # `--ui building` selects the building nearest the avatar, so the avatar is the
 # pointer here. Avatar mode: altitude is the follow distance (capped at 25 m by
 # the harness), `look` the orbit elevation and azimuth around the avatar — and
@@ -169,8 +74,8 @@ hide_ui = false
 ui = ["building"]
 
 [[shot]]
-name = "meet"
-description = "Two people meeting in the street and talking — the shared world, with the chat bubbles"
+name = "chat"
+description = "Two people meeting on the Grote Markt: speech bubbles over the avatars, the local transcript and the composer"
 # `--ui chat` seeds an exchange and stands a second speaker beside the avatar;
 # every scripted run is offline, so this is the only way to photograph it.
 mode = "avatar"
@@ -183,18 +88,170 @@ hide_ui = false
 ui = ["chat"]
 
 [[shot]]
+name = "layers"
+description = "The Layers panel over the canal ring: the ground source, the overlays and the data credits"
+at = [53.2150, 6.5555, 220]
+look_at = [53.2195, 6.5610]
+time = 10.5
+fog = 0.08
+clouds = 0.2
+hide_ui = false
+ui = ["layers"]
+
+[[shot]]
 name = "route"
-group = "extras"
-description = "Planned route across town with the navigation panel open (ADR-037)"
-# Centred east of the route's midpoint: the planner panel covers the right third
-# of the frame, so the line has to sit left of centre to stay visible.
-at = [53.2145, 6.5715, 1300]
-look = [-50.0, 0.0]
+description = "A route across the old town, with the planner's car/bike/walk times"
+# South of the route and tilted, so the line sits above the planner sheet
+# rather than under it.
+at = [53.2075, 6.5690, 1500]
+look = [-55.0, 0.0]
 time = 11.0
 fog = 0.10
 clouds = 0.15
 hide_ui = false
 ui = ["route"]
+
+[[shot]]
+name = "globe"
+description = "The space tier: Europe and Africa from orbit, live cloud cover, a saved place pinned on Groningen"
+mode = "earth"
+at = [42.0000, 8.0, 12000000]
+look = [-90.0, 0.0]
+time = 13.0
+clouds = 0.4
+hide_ui = false
+
+[[shot]]
+name = "chatworld"
+description = "A private chat's World view: the points it was planning around pinned on the map, and the other person's shared location"
+at = [53.2060, 6.5600, 700]
+look_at = [53.2170, 6.5700]
+time = 12.0
+fog = 0.08
+clouds = 0.2
+hide_ui = false
+ui = ["chatworld"]
+
+# ─── Views ───────────────────────────────────────────────────────────────────
+#
+# The scenic set the README carried until 2026-10-17: the city, its landmarks
+# and the port, chrome-free. `cargo shots --only views` → `docs/img/views/`.
+
+[[shot]]
+name = "city"
+group = "views"
+description = "Groningen city centre, oblique morning view over the 3DBAG roofs"
+at = [53.2194, 6.5665, 420]
+look = [-22.0, 35.0]
+time = 9.5
+fog = 0.10
+clouds = 0.25
+
+[[shot]]
+name = "canals"
+group = "views"
+description = "Bird's-eye over the Diepenring: the canal ring, its quays and bridges, and the city packed against them"
+at = [53.2150, 6.5555, 220]
+look_at = [53.2195, 6.5610]
+time = 10.5
+fog = 0.08
+clouds = 0.2
+
+[[shot]]
+name = "tunnel"
+group = "views"
+description = "The southern ring beside DUO: the sunken carriageway in its cut and the lid over it, on measured ground"
+at = [53.2043, 6.5738, 95]
+look_at = [53.2062, 6.5782]
+time = 11.5
+fog = 0.06
+clouds = 0.2
+
+[[shot]]
+name = "station"
+group = "views"
+description = "Groningen's main station from above: the tracks, the platforms and the rail yard running east"
+at = [53.2078, 6.5595, 260]
+look_at = [53.2107, 6.5680]
+time = 11.0
+fog = 0.08
+clouds = 0.2
+
+# Landmarks. Each `look_at` is the building's centroid from its BAG outline, so
+# the camera is aimed at the register's own idea of where the building is.
+
+[[shot]]
+name = "grote-markt"
+group = "views"
+description = "The Grote Markt from its south-west corner, across the square to the Martinitoren (1482)"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 15.5
+fog = 0.06
+clouds = 0.25
+
+[[shot]]
+name = "forum"
+group = "views"
+description = "Forum Groningen (2020), the library and cultural centre on the Nieuwe Markt, from the south-east"
+at = [53.2175, 6.5725, 70]
+look_at = [53.21881, 6.56981]
+time = 11.5
+fog = 0.06
+clouds = 0.2
+
+# From a distance: the city as a whole, and the port on the Wadden Sea.
+
+[[shot]]
+name = "skyline"
+group = "views"
+description = "Groningen from 3 km south-west: the whole old town and the Martinitoren above it"
+at = [53.1935, 6.5350, 450]
+look_at = [53.2180, 6.5665]
+time = 16.0
+fog = 0.10
+clouds = 0.3
+
+[[shot]]
+name = "city-far"
+group = "views"
+description = "The city from 4 km north-east and 1.2 km up: the ring roads, the canals and the flat land around"
+at = [53.2450, 6.6050, 1200]
+look_at = [53.2150, 6.5650]
+time = 11.0
+fog = 0.0
+clouds = 0.3
+
+[[shot]]
+name = "eemshaven"
+group = "views"
+description = "Over Eemshaven's harbour basins towards the sea: quays, the power stations and the wind turbines"
+at = [53.4380, 6.8120, 180]
+look_at = [53.4500, 6.8450]
+time = 12.0
+fog = 0.06
+clouds = 0.3
+
+[[shot]]
+name = "eemshaven-sea"
+group = "views"
+description = "Eemshaven from over the Wadden Sea, looking back at the port"
+at = [53.4600, 6.8550, 120]
+look_at = [53.4450, 6.8400]
+time = 15.0
+fog = 0.06
+clouds = 0.3
+
+[[shot]]
+name = "city-dusk"
+group = "extras"
+description = "The same streets at sunset — the day/night curves and warm sun"
+at = [53.2160, 6.5680, 550]
+look = [-22.0, 285.0]
+# 20:30 is already night here; sunset light lives around 18:00–19:00.
+time = 18.6
+fog = 0.18
+clouds = 0.45
 
 [[shot]]
 name = "chrome"
@@ -225,25 +282,16 @@ time = 15.0
 fog = 0.05
 clouds = 0.3
 
-[[shot]]
-name = "globe"
-description = "The space tier: whole Earth from orbit, north-up"
-mode = "earth"
-at = [30.0000, 6.5665, 14000000]
-look = [-90.0, 0.0]
-time = 12.0
-clouds = 0.4
-
 # ─── Inspection views ────────────────────────────────────────────────────────
 #
-# The shots above are the README images, chosen because they look good. The ones
-# below are chosen because they *frame a specific piece of geometry*, and they
-# exist so that a viewpoint found by hand — usually after several that pointed at
-# the inside of a building — is not re-found every time the same subject comes up.
-# Reach for them with `--only`:
+# The shots above are chosen because they look good. The ones below are chosen
+# because they *frame a specific piece of geometry*, and they exist so that a
+# viewpoint found by hand — usually after several that pointed at the inside of a
+# building — is not re-found every time the same subject comes up. Reach for them
+# with `--only` (`quays` is all five):
 #
 #     cargo shots --only quay-wall,quay-bank
-#     cargo shots --only bank-slope
+#     cargo shots --only quays
 #
 # **Look at the image before adding an entry here.** A capture from a bad camera
 # position is not a null result, it is a green one that says the feature is
@@ -257,6 +305,7 @@ clouds = 0.4
 
 [[shot]]
 name = "quay-wall"
+group = "quays"
 description = "A surveyed quay wall from over the water, face-on — does it stand at its measured height, and does the ground meet its foot?"
 at = [53.222583, 6.581870, 1.6]
 look = [-3.0, 0.0]
@@ -266,6 +315,7 @@ rain = 0.0
 
 [[shot]]
 name = "quay-oblique"
+group = "quays"
 description = "The same wall along its length instead of across it. Face-on gives no sense of height; receding, a wall at the wrong height reads at once"
 at = [53.222537, 6.581218, 7.0]
 look = [-5.0, 278.0]
@@ -275,6 +325,7 @@ rain = 0.0
 
 [[shot]]
 name = "quay-bank"
+group = "quays"
 description = "The study quay across the study pond: bank, water level and far side together. A photograph exists from this spot, so it is the view to hold against reality"
 at = [53.223500, 6.581000, 1.8]
 look = [-2.0, 146.0]
@@ -284,6 +335,7 @@ rain = 0.0
 
 [[shot]]
 name = "canal-water-level"
+group = "quays"
 description = "The Oosterhamrikkanaal from the quay above it — is the water below the quay, or level with the pavement?"
 at = [53.222300, 6.582500, 25.0]
 look = [-20.0, 48.0]
@@ -293,6 +345,7 @@ rain = 0.0
 
 [[shot]]
 name = "bank-slope"
+group = "quays"
 description = "Grass banks falling ~1.8 m over 13 m, the most ordinary relief a Dutch city has, and the view that shows whether the elevation layer is reaching the ground at all"
 at = [53.223300, 6.581800, 25.0]
 look = [-18.0, 135.0]
@@ -303,9 +356,9 @@ rain = 0.0
 # ---------------------------------------------------------------------------
 # Grouped shots: subjects, not documentation.
 #
-# Everything above is ungrouped and is the published set — `cargo shots`
-# regenerates exactly those into `docs/img/`, and the README links every file.
-# Everything below names a `group`, which does three things: `cargo shots --only
+# The documentation set at the top is ungrouped and is the published set —
+# `cargo shots` regenerates exactly those into `docs/img/`. Everything else names
+# a `group`, which does three things: `cargo shots --only
 # <group>` captures just that subject, the images land in `docs/img/<group>/`
 # rather than beside the published ones, and a bare `cargo shots` leaves them
 # alone. `cargo shots --only all` is everything.
