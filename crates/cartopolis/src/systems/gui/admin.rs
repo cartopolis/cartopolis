@@ -1,7 +1,9 @@
-//! Admin: the third, gold side of the Community | World | Admin switch, for an
-//! account whose role lets it run something (`docs/mockups/home-and-profile/v2`).
+//! Admin: a row on the You page (behind your disc), for an account whose role
+//! lets it run something (`docs/mockups/home-and-profile/v2`). It was a third,
+//! gold side of the Community | World switch until 2026-10-17, which put a few
+//! people's tool on everybody's main control.
 //!
-//! The web page has had the same switch since 2026-10-11, and this is its
+//! The web page has an Admin area of its own, and this is its
 //! People area in the app: the report queue, the accounts, the roles and the
 //! building claims — what an admin needs away from a desk. Content (building
 //! overrides, the model library) and Data (the pipeline) open the web page
@@ -27,13 +29,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::resources::{AuthIdentity, OnlineSession, RightPanel};
-use crate::systems::chats::{top_bar, ChatsView, Seg};
+use crate::systems::chats::ChatsView;
 use crate::systems::{icons, theme};
 
 /// Admin's colour, everywhere it appears: the web page's gold.
 const GOLD: egui::Color32 = theme::WARN;
 
-/// How often the open-report count behind the switch's badge is refreshed.
+/// How often the open-report count behind the You page's badge is refreshed.
 const REPORT_POLL_SECS: f32 = 120.0;
 
 /// One report about a person (`db::ReportRow` on the server).
@@ -180,7 +182,7 @@ pub struct AdminState {
     pub resolution: String,
     /// The last change's outcome: (text, failed).
     pub notice: Option<(String, bool)>,
-    /// How many reports are open, for the switch's badge.
+    /// How many reports are open, for the You page's badge.
     pub open_reports: usize,
     /// When the open-report count was last asked for.
     polled: Option<web_time::Instant>,
@@ -190,7 +192,7 @@ pub struct AdminState {
 }
 
 /// The permissions that make an account an admin of something, and so give
-/// it the switch's Admin side.
+/// it the You page's Admin row.
 const ADMIN_PERMISSIONS: [Permission; 6] = [
     Permission::ReportsTriage,
     Permission::AccountsManage,
@@ -200,7 +202,7 @@ const ADMIN_PERMISSIONS: [Permission; 6] = [
     Permission::PipelineRun,
 ];
 
-/// Whether this account may run anything the Admin side offers.
+/// Whether this account may run anything the Admin pages offer.
 #[must_use]
 pub fn may_admin(identity: &AuthIdentity) -> bool {
     ADMIN_PERMISSIONS.iter().any(|p| identity.may(*p))
@@ -361,7 +363,6 @@ pub fn render_admin_panel(
     mut admin: ResMut<AdminState>,
     identity: Res<AuthIdentity>,
     mut view: ResMut<ChatsView>,
-    contacts: Res<crate::systems::contacts::Contacts>,
     online: Option<Res<OnlineSession>>,
 ) {
     admin.drain();
@@ -373,7 +374,7 @@ pub fn render_admin_panel(
         }
         return;
     }
-    // Keep the badge behind the switch current, whether or not the panel is up.
+    // Keep the You page's badge current, whether or not the panel is up.
     if identity.may(Permission::ReportsTriage)
         && admin
             .polled
@@ -384,13 +385,9 @@ pub fn render_admin_panel(
     if !right_panel.is(RightPanel::Admin) {
         return;
     }
-    let me = identity.username.clone().unwrap_or_default();
-    let unread = 0;
-    let waiting = !contacts.incoming.is_empty();
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     let mut open = true;
-    let mut go: Option<Seg> = None;
     let mut you = false;
     crate::systems::egui_manager::responsive_right_panel("admin_panel", compact, viewport_w, 360.0)
         .frame(
@@ -399,10 +396,10 @@ pub fn render_admin_panel(
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+            // Home leads back to the You page it was opened from; every
+            // other page draws its own way back to Home.
             if admin.page == Page::Home {
-                let bar = top_bar(ui, Seg::Admin, unread, view.admin, &me, waiting);
-                go = bar.seg;
-                you = bar.you;
+                you = theme::back_title(ui, RightPanel::Admin.label());
             }
             if let Some((text, failed)) = admin.notice.clone() {
                 let dismiss = if failed {
@@ -432,15 +429,6 @@ pub fn render_admin_panel(
         });
     if !open {
         *right_panel = RightPanel::None;
-    }
-    match go {
-        Some(Seg::Community) => {
-            *right_panel = RightPanel::Chat;
-            view.open = None;
-            view.you = false;
-        }
-        Some(Seg::World) => *right_panel = RightPanel::None,
-        _ => {}
     }
     if you {
         *right_panel = RightPanel::Chat;

@@ -2197,9 +2197,10 @@ const UI_ELEMENTS: &[&str] = &[
     "chatthread",
     "chatworld",
     "chatswitch",
-    // The You page, Settings' pages and the switch's Admin side
+    // The You page, Settings' pages and the Admin pages
     // (`docs/mockups/home-and-profile`).
     "you",
+    "youadmin",
     "tokens",
     "safety",
     "admin",
@@ -2410,6 +2411,7 @@ pub fn open_scripted_ui(
     } else if want("chats")
         || want("communities")
         || want("you")
+        || want("youadmin")
         || want("admin")
         || want("adminreports")
         || want("adminreport")
@@ -2463,9 +2465,10 @@ pub fn open_scripted_ui(
             }
         }
     }
-    // The You page, over the demo chats and contacts.
-    cards.chat.chats.you = want("you");
-    // The Admin side: stand-in reports, accounts, roles and claims.
+    // The You page, over the demo chats and contacts; `youadmin` as an admin
+    // sees it, with the Admin row and its waiting reports.
+    cards.chat.chats.you = want("you") || want("youadmin");
+    // The Admin pages: stand-in reports, accounts, roles and claims.
     let admin_screen = ["adminreports", "adminreport", "adminaccount", "admin"]
         .into_iter()
         .find(|k| want(k));
@@ -2474,6 +2477,7 @@ pub fn open_scripted_ui(
             crate::systems::admin::seed_demo(&mut cards.admin, screen);
             *right_panel = crate::resources::RightPanel::Admin;
         }
+        None if want("youadmin") => crate::systems::admin::seed_demo(&mut cards.admin, "admin"),
         None if cards.admin.demo => *cards.admin = default(),
         None => {}
     }
@@ -2533,7 +2537,7 @@ pub fn open_scripted_ui(
         }
     }
     // The You page counts contacts and requests, so it wants them seeded.
-    if want("you") {
+    if want("you") || want("youadmin") {
         crate::systems::contacts::seed_demo(&mut cards.chat.contacts, &mut cards.chat.state);
     }
     if panels.is_empty() {

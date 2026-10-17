@@ -325,7 +325,7 @@ impl Plugin for GuiPlugin {
                     // (`systems::chats`). Its World view and the Chats | World
                     // switch are drawn over the map, after the composer below.
                     systems::chats::render_chats_panel,
-                    // The switch's Admin side (`systems::admin`), in the same
+                    // The Admin pages (`systems::admin`), in the same
                     // right-hand slot as the Community panel.
                     systems::admin::render_admin_panel,
                     systems::script_editor::render_script_panel,

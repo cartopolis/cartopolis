@@ -4,13 +4,13 @@
 //!
 //! # Three screens, one state
 //!
-//!  * **Community | World** at the top of the map (and **Admin**, in gold, for
-//!    an account that may run something: `systems::admin`). *World* is the app
+//!  * **Community | World** at the top of the map. *World* is the app
 //!    as it always was; *Community* is the list, which is the right-hand panel
 //!    (the whole screen on a phone). It was called Chats until 2026-10-16, when
 //!    it took the web page's word, since it holds communities and the public
 //!    chats as well as conversations (`docs/mockups/home-and-profile`). Your
-//!    disc beside the switch opens the You page, and from there Settings.
+//!    disc beside the switch opens the You page, and from there Settings and,
+//!    for an account that may run something, Admin (`systems::admin`).
 //!  * **A chat's Chat view**: its thread, as bubbles, with points drawn as
 //!    numbered cards. Same panel, with the chat open.
 //!  * **A chat's World view**: the map, with the chat's points as numbered pins
@@ -167,8 +167,8 @@ pub struct ChatsView {
     pub settings_from_you: bool,
     /// Sign out was pressed on the You page, for [`apply_sign_out`].
     pub sign_out: bool,
-    /// How many reports wait, for the switch's Admin side; `None` for an
-    /// account that may run nothing, which then has no Admin side at all.
+    /// How many reports wait, for the You page's Admin row; `None` for an
+    /// account that may run nothing, which then has no Admin row at all.
     /// Written by `admin::render_admin_panel`.
     pub admin: Option<usize>,
 }
@@ -376,40 +376,31 @@ fn live_dot(p: &egui::Painter, c: egui::Pos2, on_orange: bool) {
     }
 }
 
-/// The three places the top switch leads: the Community panel (chats,
-/// communities, people), the World (the map), and, for an account that may run
-/// something, Admin.
+/// The two places the top switch leads: the Community panel (chats,
+/// communities, people) and the World (the map). Admin is not a third side: it
+/// is a row on the You page, behind your disc, since it is a few people's tool
+/// and not a place everybody goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Seg {
     Community,
     World,
-    Admin,
 }
 
 /// The design's segmented toggle (`.seg`), "the one control this whole design
-/// is about": a raised pill with a Community side and a World side, and a gold
-/// Admin side for an account that may run something
-/// (`docs/mockups/home-and-profile/v2`, as on the web page). A selected
+/// is about": a raised pill with a Community side and a World side. A selected
 /// Community is the pale accent, a selected World brand orange (World always
-/// carries the live dot), a selected Admin gold. `admin` is `None` for
-/// everybody else, and otherwise how many reports wait. `glass` is the variant
-/// that floats over the map.
+/// carries the live dot). `glass` is the variant that floats over the map.
 pub(crate) fn segmented(
     ui: &mut egui::Ui,
     left: &str,
     width: f32,
     on: Seg,
     unread: usize,
-    admin: Option<usize>,
     glass: bool,
 ) -> Option<Seg> {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::hover());
     let inner = rect.shrink(3.0);
-    let segs: &[Seg] = if admin.is_some() {
-        &[Seg::Community, Seg::World, Seg::Admin]
-    } else {
-        &[Seg::Community, Seg::World]
-    };
+    let segs = [Seg::Community, Seg::World];
     let n = segs.len() as f32;
     let w = (inner.width() - 2.0 * (n - 1.0)) / n;
     let id = ui.id().with("chats_segmented");
@@ -431,8 +422,7 @@ pub(crate) fn segmented(
         egui::StrokeKind::Inside,
     );
     let corner = egui::CornerRadius::same(9);
-    // Three segments leave no room for the Community side's icon.
-    let size = if admin.is_some() { 13.5 } else { 14.0 };
+    let size = 14.0;
     let mut picked = None;
     for (i, &seg) in segs.iter().enumerate() {
         let r = egui::Rect::from_min_size(
@@ -447,30 +437,21 @@ pub(crate) fn segmented(
         let (fill, ink) = match seg {
             Seg::Community => (theme::ACCENT, theme::INK),
             Seg::World => (theme::BRAND, egui::Color32::WHITE),
-            Seg::Admin => (theme::WARN, theme::INK),
         };
         if selected {
             p.rect_filled(r, corner, fill);
         } else if resp.hovered() {
             p.rect_filled(r, corner, theme::SURFACE_HOVER);
         }
-        let rest = if seg == Seg::Admin {
-            theme::WARN
-        } else {
-            theme::TEXT_DIM
-        };
-        let ink = if selected { ink } else { rest };
+        let ink = if selected { ink } else { theme::TEXT_DIM };
         match seg {
             Seg::Community => {
-                let mut parts = Vec::new();
-                if admin.is_none() {
-                    let icon = if left == "Chat" {
-                        icons::CHAT
-                    } else {
-                        icons::GROUP
-                    };
-                    parts.push((icon.to_string(), 16.0, ink));
-                }
+                let icon = if left == "Chat" {
+                    icons::CHAT
+                } else {
+                    icons::GROUP
+                };
+                let mut parts = vec![(icon.to_string(), 16.0, ink)];
                 parts.push((left.to_string(), size, ink));
                 if unread > 0 && !selected {
                     parts.push((format!("{unread}"), 12.0, theme::BRAND));
@@ -488,35 +469,6 @@ pub(crate) fn segmented(
                     ink,
                 );
             }
-            Seg::Admin => {
-                let waiting = admin.unwrap_or(0);
-                let label = p.layout_no_wrap("Admin".into(), egui::FontId::proportional(size), ink);
-                let badge = (waiting > 0).then(|| {
-                    p.layout_no_wrap(
-                        waiting.to_string(),
-                        egui::FontId::proportional(11.0),
-                        egui::Color32::WHITE,
-                    )
-                });
-                let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 10.0 + 5.0);
-                let total = label.size().x + badge_w;
-                let x0 = r.center().x - total / 2.0;
-                let lx = label.size().x;
-                p.galley(
-                    egui::pos2(x0, r.center().y - label.size().y / 2.0),
-                    label,
-                    ink,
-                );
-                if let Some(g) = badge {
-                    let pill = egui::Rect::from_min_size(
-                        egui::pos2(x0 + lx + 5.0, r.center().y - 8.5),
-                        egui::vec2(g.size().x + 10.0, 17.0),
-                    );
-                    p.rect_filled(pill, egui::CornerRadius::same(9), theme::BRAND);
-                    let gs = g.size();
-                    p.galley(pill.center() - gs / 2.0, g, egui::Color32::WHITE);
-                }
-            }
         }
     }
     picked
@@ -530,15 +482,14 @@ pub(crate) struct TopBar {
     pub you: bool,
 }
 
-/// The top of the Community and Admin panels: the switch, and your own disc
-/// beside it (`docs/mockups/home-and-profile/v1`, A). No title above it: the
-/// switch says where you are. `waiting` puts an orange dot on the disc, for a
-/// message request.
+/// The top of the Community panel: the switch, and your own disc beside it
+/// (`docs/mockups/home-and-profile/v1`, A). No title above it: the switch says
+/// where you are. `waiting` puts an orange dot on the disc, for a message
+/// request or a report waiting for an admin — both are on the You page.
 pub(crate) fn top_bar(
     ui: &mut egui::Ui,
     on: Seg,
     unread: usize,
-    admin: Option<usize>,
     me: &str,
     waiting: bool,
 ) -> TopBar {
@@ -547,7 +498,7 @@ pub(crate) fn top_bar(
     ui.horizontal(|ui| {
         let disc = 42.0;
         let w = ui.available_width() - disc - ui.spacing().item_spacing.x;
-        out.seg = segmented(ui, "Community", w, on, unread, admin, false);
+        out.seg = segmented(ui, "Community", w, on, unread, false);
         let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(disc), egui::Sense::click());
         let p = ui.painter();
         p.circle_stroke(
@@ -996,7 +947,9 @@ pub fn render_chats_panel(
                     &me,
                 ),
                 (None, None) if view.you => {
-                    you_screen(ui, &me, &me_full, &contacts, &mut faces, &mut act);
+                    you_screen(
+                        ui, &me, &me_full, &contacts, view.admin, &mut faces, &mut act,
+                    );
                 }
                 (None, None) => list_screen(
                     ui,
@@ -1148,14 +1101,11 @@ fn list_screen(
         ui,
         Seg::Community,
         0,
-        view.admin,
         me,
-        !contacts.incoming.is_empty(),
+        !contacts.incoming.is_empty() || view.admin.is_some_and(|n| n > 0),
     );
-    match bar.seg {
-        Some(Seg::World) => act.to_world = true,
-        Some(Seg::Admin) => act.panel = Some(RightPanel::Admin),
-        _ => {}
+    if bar.seg == Some(Seg::World) {
+        act.to_world = true;
     }
     if bar.you {
         act.you = Some(true);
@@ -1774,14 +1724,16 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
 }
 
 /// The You page, from your disc at the top of the list: who you are, your
-/// link, your avatar, your contacts and requests, and the way to Settings
-/// and out (`docs/mockups/home-and-profile/v1`, C). Everything on it existed
+/// link, your avatar, your contacts and requests, and the way to Settings,
+/// Admin (for an account that may run something; `admin` is how many reports
+/// wait) and out (`docs/mockups/home-and-profile/v1`, C). Everything on it existed
 /// before, in four different places.
 fn you_screen(
     ui: &mut egui::Ui,
     me: &str,
     address: &str,
     contacts: &crate::systems::contacts::Contacts,
+    admin: Option<usize>,
     faces: &mut crate::systems::faces::Faces,
     act: &mut Actions,
 ) {
@@ -1891,6 +1843,20 @@ fn you_screen(
                 {
                     act.panel = Some(RightPanel::Settings);
                     act.settings_from_you = true;
+                }
+                if let Some(waiting) = admin {
+                    if theme::list_row(
+                        ui,
+                        RightPanel::Admin.icon(),
+                        RightPanel::Admin.label(),
+                        None,
+                        theme::RowEnd::Badge(waiting),
+                        theme::WARN,
+                    )
+                    .clicked()
+                    {
+                        act.panel = Some(RightPanel::Admin);
+                    }
                 }
                 if theme::list_row(
                     ui,
@@ -2057,7 +2023,7 @@ fn chat_screen(
     ui.add_space(8.0);
     // A chat's own Chat | World: its thread, or the map with its points.
     let w = ui.available_width();
-    if segmented(ui, "Chat", w, Seg::Community, 0, None, false) == Some(Seg::World) {
+    if segmented(ui, "Chat", w, Seg::Community, 0, false) == Some(Seg::World) {
         act.world_of = Some(key.to_string());
     }
     ui.add_space(10.0);
@@ -3427,11 +3393,6 @@ fn apply(
         view.sign_out = true;
     }
     if let Some(panel) = act.panel {
-        // Admin is a place of its own on the switch, so the You page is not
-        // waiting behind it; Settings and Appearance come back to it.
-        if panel == RightPanel::Admin {
-            view.you = false;
-        }
         view.settings_from_you = act.settings_from_you;
         view.new_chat = false;
         *right_panel = panel;
@@ -3800,14 +3761,14 @@ pub fn render_chats_switch(
         .sum();
     let ctx = egui.ctx_mut().clone();
     let mut picked = None;
-    let width = if view.admin.is_some() { 320.0 } else { 260.0 };
+    let width = 260.0;
     egui::Area::new(egui::Id::new("chats_world_switch"))
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset(&chat)))
         .show(&ctx, |ui| {
             // `.topseg`: the glass segmented pill on its own, no frame around it.
             ui.set_width(width);
-            picked = segmented(ui, "Community", width, Seg::World, unread, view.admin, true);
+            picked = segmented(ui, "Community", width, Seg::World, unread, true);
         });
     match picked {
         Some(Seg::Community) => {
@@ -3815,7 +3776,6 @@ pub fn render_chats_switch(
             view.open = None;
             view.you = false;
         }
-        Some(Seg::Admin) => *right_panel = RightPanel::Admin,
         _ => {}
     }
 }
@@ -3911,7 +3871,7 @@ pub fn render_chat_world(
                 );
                 ui.add_space(8.0);
                 let w = ui.available_width();
-                if segmented(ui, "Chat", w, Seg::World, 0, None, false) == Some(Seg::Community) {
+                if segmented(ui, "Chat", w, Seg::World, 0, false) == Some(Seg::Community) {
                     act.to_world = false;
                     act.open = Some(key.clone());
                 }

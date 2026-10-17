@@ -61,7 +61,7 @@ pub enum RightPanel {
     /// `ui.small()` lines at the foot of the Layers panel.
     About,
     /// The server's admin pages, for an account whose role grants any of them:
-    /// the third, gold segment of Community | World | Admin
+    /// opened from the You page
     /// (`systems::admin`, `docs/mockups/home-and-profile/v2`).
     Admin,
 }
