@@ -19,6 +19,10 @@ import type {ChatClient} from './chat'
 import {CallTones} from './call-tones'
 import {CALL_TAG, closeCallNotifications} from './web-push'
 
+/** The call worker's content-hashed name, put in by `build.ts`. */
+declare const __CALL_WORKER_URL__: string | undefined
+const CALL_WORKER_URL = typeof __CALL_WORKER_URL__ === 'string' ? __CALL_WORKER_URL__ : '/call-worker.js'
+
 /** Somebody in a chat's call. `username` is the bare name, as the server keeps it. */
 export interface CallMember {
     device: string
@@ -220,7 +224,7 @@ export class Calls {
                     else tiles.delete(participant)
                     this.notify()
                 },
-                workerUrl: '/call-worker.js',
+                workerUrl: CALL_WORKER_URL,
             },
         )
         const a: Active = {

@@ -90,6 +90,11 @@ export interface KeyStore {
 
 export interface ConnectionOptions {
     credential: Credential
+    /**
+     * Resolves once `mod` can be used (the wasm module instantiated). The socket
+     * opens without waiting for it: connecting and compiling overlap.
+     */
+    ready?: Promise<unknown>
     /** Called with every event, in order. */
     onEvent: (event: ChatEvent) => void
     /**
@@ -217,30 +222,42 @@ export class ChatConnection {
 
     private connect(): void {
         if (this.stopped) return
-        // A fresh engine per connection: the state lives in the store between
-        // them, and a half-finished handshake must not leak into the next one.
-        this.core?.free()
-        const core = new this.mod.ChatCore()
-        this.core = core
         const socket = new WebSocket(this.opts.url)
         socket.binaryType = 'arraybuffer'
         this.socket = socket
+        // A fresh engine per connection: the state lives in the store between
+        // them, and a half-finished handshake must not leak into the next one.
+        // Made once the module is ready, which the socket does not wait for.
+        const made = (this.opts.ready ?? Promise.resolve()).then(() => {
+            if (this.socket !== socket) return null
+            this.core?.free()
+            this.core = new this.mod.ChatCore()
+            return this.core
+        })
 
         socket.onopen = () => {
-            const c = this.opts.credential
-            // The module hands back copies out of its memory, never a view of a
-            // shared buffer, which is what `send` (TypeScript 7) wants to be told.
-            socket.send(
-                ('token' in c
-                    ? this.mod.ChatCore.hello_token(c.token)
-                    : this.mod.ChatCore.hello_password(c.username, c.password)) as Uint8Array<ArrayBuffer>,
-            )
+            void made.then((core) => {
+                if (!core || this.socket !== socket) return
+                const c = this.opts.credential
+                // The module hands back copies out of its memory, never a view of a
+                // shared buffer, which is what `send` (TypeScript 7) wants to be told.
+                socket.send(
+                    ('token' in c
+                        ? this.mod.ChatCore.hello_token(c.token)
+                        : this.mod.ChatCore.hello_password(c.username, c.password)) as Uint8Array<ArrayBuffer>,
+                )
+            }, (e) => {
+                // The module did not load: no connection can work, so stop.
+                this.stop()
+                this.opts.onEvent({kind: 'error', message: `the chat did not start: ${String(e?.message ?? e)}`})
+            })
         }
         socket.onmessage = (ev: MessageEvent) => {
             if (!(ev.data instanceof ArrayBuffer)) return
             const frame = new Uint8Array(ev.data)
             this.enqueue(async () => {
-                if (this.core !== core) return
+                const core = await made
+                if (!core || this.core !== core) return
                 core.receive(frame)
                 await this.afterStep(core)
             })
@@ -250,7 +267,9 @@ export class ChatConnection {
             this.socket = null
             this.opts.onEvent({kind: 'disconnected'})
             if (this.stopped) return
-            const wait = BACKOFF[Math.min(this.attempts, BACKOFF.length - 1)]
+            // ±25 %, so the tabs a server restart dropped together do not all
+            // knock again on the same second.
+            const wait = BACKOFF[Math.min(this.attempts, BACKOFF.length - 1)] * (0.75 + Math.random() * 0.5)
             this.attempts += 1
             setTimeout(() => this.connect(), wait)
         }

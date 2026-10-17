@@ -129,6 +129,23 @@ loses the keys.
 browser session by the worker, not by every page. Neither size optimisation
 (`opt-level = "z"`, `wasm-opt`) has been tried yet.
 
+**Connecting overlaps loading** (2026-10-17): `ChatConnection` opens its
+socket at once and makes its engine when the module's `ready` resolves,
+sending the hello only then, so the WebSocket's handshake and the module's
+fetch and compile run together instead of one after the other. A second
+`sign_in` for the token already signing in is answered with the state, not a
+second Web Lock request (which read as another tab holding the keys).
+
+**Still on the connect path** (measured from the VPS 2026-10-17, so with no
+real round trips): the engine makes `KEY_PACKAGE_STOCK` (20) fresh key packages
+on *every* connect (`Engine::on_connected`), and openmls keeps every one it
+made in the device's saved state, so that state grows by twenty on every page
+load and is loaded and written again on every step. Only the difference to
+what the server holds is needed (it answers a registration with its count),
+but knowing that across a reload means a new field in `SavedEngine`, which is
+postcard and not self-describing: a format change to the one blob whose loss
+orphans every chat. Not done yet.
+
 `chat-e2e.ts` is the test that the pieces fit: two `ChatConnection`s in Bun,
 the real module, a real simulator over its WebSocket, a direct chat both ways,
 and one side coming back from its saved state to read what it missed.

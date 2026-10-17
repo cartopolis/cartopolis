@@ -15,8 +15,9 @@
  * with realistic data on a machine with no simulator and no atlas — a screenshot,
  * a layout check on a phone. It is not how anything is tested.
  */
-import {existsSync, rmSync} from 'node:fs'
+import {existsSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import path from 'node:path'
+import zlib, {brotliCompressSync, gzipSync} from 'node:zlib'
 
 const root = import.meta.dir
 const dist = path.join(root, 'dist')
@@ -41,14 +42,19 @@ async function build() {
         rmSync(dist, {recursive: true})
     }
 
+    // The workers first: the page names their files, and they are content-hashed.
+    const callWorkerUrl = await buildCallWorker()
+    await buildChatWorker()
+
     const result = await Bun.build({
         entrypoints: [path.join(root, 'src/index.ts')],
-        // Content hashing is pointless here and actively unhelpful: index.html
-        // is written by hand and would have to be templated to name the hash.
-        // The site is ~30 KB and Caddy is told not to cache it.
-        // `[ext]` because the entry imports the stylesheet, which Bun bundles into a
-        // second output beside the script: app.js and app.css, as index.html names them.
-        naming: 'app.[ext]',
+        // Content-hashed, so Caddy can let a browser keep them for good (a deploy
+        // is a new name) instead of asking again on every load: each revalidation
+        // was a round trip before the page could start. `[ext]` because the entry
+        // imports the stylesheet, which Bun bundles into a second output beside
+        // the script; index.html is rewritten below to name both.
+        naming: 'app-[hash].[ext]',
+        define: {__CALL_WORKER_URL__: JSON.stringify(callWorkerUrl)},
         minify: !serve,
         // The client's typeface (`app.css`'s @font-face), copied into
         // `dist/fonts/` below. External so Bun leaves the URL alone: given a
@@ -67,7 +73,17 @@ async function build() {
         throw new Error('build failed')
     }
 
-    await Bun.write(path.join(dist, 'index.html'), Bun.file(path.join(root, 'src/index.html')))
+    const named = (ext: string) => {
+        const out = result.outputs.find((o) => o.path.endsWith(ext))
+        if (!out) throw new Error(`the build made no ${ext}`)
+        return `/${path.basename(out.path)}`
+    }
+    const appJs = named('.js')
+    const html = (await Bun.file(path.join(root, 'src/index.html')).text())
+        .replace('href="/app.css"', `href="${named('.css')}"`)
+        .replace('src="/app.js"', `src="${appJs}"`)
+    if (!html.includes(appJs)) throw new Error('index.html no longer names /app.js; update build.ts')
+    await Bun.write(path.join(dist, 'index.html'), html)
     // The service worker that rings a closed browser for a call
     // (`src/lib/web-push.ts`). Copied as it is, to the root, because a service
     // worker only covers the directory it is served from.
@@ -85,13 +101,23 @@ async function build() {
     // backdrop route (`pipeline::backdrop`) and committed.
     await Bun.write(path.join(dist, 'img/groningen.svg'), Bun.file(path.join(root, 'src/img/groningen.svg')))
 
-    // The call encryption worker the chat page's calls run (`src/lib/call.ts`): the
-    // viewer's own file and its SFrame, so the two seal frames identically.
+    const bytes = (await Bun.file(path.join(dist, appJs)).arrayBuffer()).byteLength
+    console.log(`built dist/ (${appJs.slice(1)} ${Math.round(bytes / 1024)} KB)`)
+
+    if (!serve) precompress()
+}
+
+/**
+ * The call encryption worker the chat page's calls run (`src/lib/call.ts`): the
+ * viewer's own file and its SFrame, so the two seal frames identically. A
+ * dedicated worker, so a hashed name costs nothing. Returns its URL.
+ */
+async function buildCallWorker(): Promise<string> {
     const callWorker = await Bun.build({
         entrypoints: [path.join(root, '../../cartopolis/web/call-worker.js')],
         format: 'esm',
         minify: !serve,
-        naming: 'call-worker.js',
+        naming: 'call-worker-[hash].js',
         outdir: dist,
         target: 'browser',
     })
@@ -99,11 +125,27 @@ async function build() {
         for (const log of callWorker.logs) console.error(log)
         throw new Error('call worker build failed')
     }
+    return `/${path.basename(callWorker.outputs[0].path)}`
+}
 
-    const bytes = (await Bun.file(path.join(dist, 'app.js')).arrayBuffer()).byteLength
-    console.log(`built dist/ (app.js ${Math.round(bytes / 1024)} KB)`)
-
-    await buildChatWorker()
+/**
+ * Brotli and gzip beside every script, stylesheet and module, which Caddy's
+ * `precompressed` serves instead of compressing the 2.9 MB engine again on every
+ * request; brotli at its best setting is also a tenth smaller than Caddy's zstd.
+ */
+function precompress() {
+    for (const name of readdirSync(dist)) {
+        if (!/\.(js|css|wasm)$/.test(name)) continue
+        const file = path.join(dist, name)
+        const raw = readFileSync(file)
+        writeFileSync(`${file}.br`, brotliCompressSync(raw, {
+            params: {
+                [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length,
+            },
+        }))
+        writeFileSync(`${file}.gz`, gzipSync(raw, {level: 9}))
+    }
 }
 
 /**
@@ -122,8 +164,16 @@ async function buildChatWorker() {
         console.warn('no src/worker/pkg/: chat worker not built (bun run build:chat-core)')
         return
     }
+    // The engine under a content-hashed name, which Caddy lets a browser keep;
+    // the worker is told it. The worker itself keeps a fixed name: tabs share
+    // one SharedWorker only while its URL is the same, so a new name per deploy
+    // would leave an old tab and a new one in two workers fighting over the keys.
+    const wasmBytes = readFileSync(wasm)
+    const wasmName = `chat-core-${Bun.hash(wasmBytes).toString(36)}.wasm`
+    await Bun.write(path.join(dist, wasmName), wasmBytes)
     const result = await Bun.build({
         entrypoints: [path.join(root, 'src/worker/chat-worker.ts')],
+        define: {__CHAT_CORE_URL__: JSON.stringify(`/${wasmName}`)},
         format: 'esm',
         minify: !serve,
         naming: 'chat-worker.js',
@@ -137,11 +187,8 @@ async function buildChatWorker() {
         }
         throw new Error('chat worker build failed')
     }
-    // A fixed name the worker asks for (`/chat-core.wasm`), for the same reason
-    // app.js has one.
-    await Bun.write(path.join(dist, 'chat-core.wasm'), Bun.file(wasm))
-    const kb = Math.round(Bun.file(wasm).size / 1024)
-    console.log(`built dist/chat-worker.js and dist/chat-core.wasm (${kb} KB)`)
+    const kb = Math.round(wasmBytes.length / 1024)
+    console.log(`built dist/chat-worker.js and dist/${wasmName} (${kb} KB)`)
 }
 
 /**

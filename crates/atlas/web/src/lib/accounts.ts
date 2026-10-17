@@ -35,8 +35,17 @@ function report(e: unknown, fallback: string) {
  * session store and checks the account's permissions on every admin call, so
  * this only decides what the page *shows*; it grants nothing.
  */
-export async function adoptSession(): Promise<void> {
+export function adoptSession(): Promise<void> {
     const token = $s.signup.token
+    // The page start and the chat page both ask for the same session: one
+    // request answers both.
+    if (adopting?.token !== token) adopting = {promise: adopt(token), token}
+    return adopting.promise
+}
+
+let adopting: {promise: Promise<void>; token: string} | null = null
+
+async function adopt(token: string): Promise<void> {
     if (!token) {
         dropOperator()
         return

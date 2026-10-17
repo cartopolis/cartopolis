@@ -52,6 +52,28 @@ History: it was the *console*, at `/console/` (Caddy still redirects it to
 is down; until then it ran on every push to `main` that touched the web UI.
 Publishing static files restarts nothing.
 
+**File names carry their content's hash** (2026-10-17, `build.ts`):
+`app-<hash>.js`/`.css`, `call-worker-<hash>.js` and `chat-core-<hash>.wasm`,
+with `index.html` rewritten to name them and the URLs put into the scripts by
+`define`. Caddy serves those `immutable` and everything else `no-cache`, and
+serves the `.br`/`.gz` files the build writes beside each script instead of
+compressing the 2.9 MB engine again per request. Before, every file was
+`no-cache`, so even a cached page cost a revalidation round trip per file, one
+after another, before it could connect. Two consequences:
+
+- **`chat-worker.js` keeps a fixed name.** Tabs share a SharedWorker only while
+  its URL is the same; a new name per deploy would leave an old tab and a new
+  one in two workers contending for the keys' Web Lock.
+- **A deploy replaces the directory**, so a tab left open across one cannot
+  load the previous `call-worker-<hash>.js`: a call started from a stale tab
+  fails to start its encryption until the page is reloaded.
+
+**The page does not wait for the API before drawing** (`app.ts`): the chat
+page signs in from its `oncreate`, so `/api/admin/me` and `/api/register` are
+asked together while it draws (`signedIn === null` and `registration ===
+undefined` are their "still asking" states), and `adoptSession` shares one
+request between the page start and the chat page's admin check.
+
 ## The seams to the Rust
 
 - **`src/types.ts` is a hand-written description of what the simulator

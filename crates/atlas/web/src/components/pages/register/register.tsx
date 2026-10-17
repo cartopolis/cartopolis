@@ -54,6 +54,16 @@ export class Register extends MithrilComponent {
         const s = this.s
         const rules = $s.registration
 
+        if (rules === undefined) {
+            return (
+                <div class="auth">
+                    <Card title="Sign up">
+                        <p>Asking the server whether it takes registrations…</p>
+                    </Card>
+                </div>
+            )
+        }
+
         if (!rules) {
             return (
                 <div class="auth">

@@ -48,7 +48,10 @@ type Port = MessagePort | DedicatedWorkerGlobalScope
 
 const ports = new Set<Port>()
 const store = new IndexedDbKeyStore()
-const ready = init({module_or_path: new URL('/chat-core.wasm', self.location.origin)})
+/** The engine's content-hashed name, put in by `build.ts`. */
+declare const __CHAT_CORE_URL__: string | undefined
+const CHAT_CORE_URL = typeof __CHAT_CORE_URL__ === 'string' ? __CHAT_CORE_URL__ : '/chat-core.wasm'
+const ready = init({module_or_path: new URL(CHAT_CORE_URL, self.location.origin)})
 // Typed against the interface `connection.ts` drives, so a change to the
 // module's surface fails the worker typecheck rather than a browser.
 const mod: ChatCoreModule = {ChatCore}
@@ -294,7 +297,10 @@ function signOut(): void {
 
 async function signIn(credential: Credential): Promise<void> {
     const key = 'token' in credential ? credential.token : `${credential.username}:${credential.password}`
-    if (conn && token === key) {
+    // Already signed in, or on the way: a page's first draw can ask twice
+    // before the first answer, and a second lock request would read as another
+    // tab holding the keys.
+    if (token === key && (conn || status !== 'signed_out')) {
         state()
         return
     }
@@ -302,7 +308,8 @@ async function signIn(credential: Credential): Promise<void> {
     token = key
     status = 'connecting'
     state()
-    await ready
+    // Not waiting for the wasm here: the connection opens its socket while the
+    // module compiles, and makes its engine once `ready` has resolved.
     // Held until `release` is called, because the callback's promise is the lock.
     const hold = (resolve: () => void) => () => {
         resolve()
@@ -325,6 +332,7 @@ async function signIn(credential: Credential): Promise<void> {
     const scheme = self.location.protocol === 'https:' ? 'wss:' : 'ws:'
     conn = new ChatConnection(mod, {
         credential,
+        ready,
         onEvent,
         server: self.location.host,
         store,

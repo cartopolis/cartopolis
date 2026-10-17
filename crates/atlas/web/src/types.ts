@@ -349,8 +349,9 @@ export interface AdminState extends Record<string, unknown> {
     myBuildings: OwnedBuilding[]
     /** How many one account may own, from the server; 0 until it has said. */
     buildingLimit: number
-    /** `null` until `/api/register` has answered; the form waits rather than guessing. */
-    registration: RegistrationRules | null
+    /** `undefined` until `/api/register` has answered, `null` if it could not;
+     *  the form waits rather than guessing. */
+    registration: RegistrationRules | null | undefined
     /** `null` until `/api/admin/me` has answered — the app shows a splash. */
     signedIn: boolean | null
     /** The new account's own session, if this browser has just made one. */

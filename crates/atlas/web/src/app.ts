@@ -1,6 +1,8 @@
 
 import type {AdminState, Notification, RegistrationRules} from '@/types'
 
+import m from '@garage44/mithril'
+
 import {Api} from '@/lib/api'
 import {adoptSession} from '@/lib/accounts'
 import {Notifier} from '@/lib/notifier'
@@ -70,25 +72,37 @@ export class App {
         // it may have expired, or the account lost its permissions.
         // `/api/admin/me` answers, and `signedIn` stays null until it does —
         // which is what the "Checking your session" splash is for.
+        const asked: Promise<void>[] = []
         if ($s.signup.token) {
             $s.signedIn = null
-            await adoptSession()
+            asked.push(adoptSession())
         } else {
             $s.signedIn = false
         }
 
         // What the server allows, asked once and read by both sign-up screens. It
         // is unauthenticated and cheap, and the alternative is a form that guesses
-        // the rules and finds out it was wrong on submit.
-        try {
-            $s.registration = await api.get<RegistrationRules>('/api/register')
-        } catch {
-            // A server too old to have the endpoint, or one that is down. The
-            // form says so rather than offering a button that cannot work.
-            $s.registration = null
-        }
+        // the rules and finds out it was wrong on submit. `undefined` while asking.
+        $s.registration = undefined
+        asked.push(
+            api.get<RegistrationRules>('/api/register').then(
+                (rules) => {
+                    $s.registration = rules
+                },
+                () => {
+                    // A server too old to have the endpoint, or one that is down. The
+                    // form says so rather than offering a button that cannot work.
+                    $s.registration = null
+                },
+            ),
+        )
 
+        // Drawn at once, not after the answers: the chat page signs in as it is
+        // created, and its connection was waiting on two round trips it does
+        // not need. Both answers have a state to show meanwhile.
         mount(document.body)
+        await Promise.all(asked)
+        m.redraw()
     }
 }
 
