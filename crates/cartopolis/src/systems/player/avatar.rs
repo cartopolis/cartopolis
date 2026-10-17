@@ -864,13 +864,14 @@ pub fn spawn_avatar(
         if is_local && human_avatar::enabled() && !human.failed() {
             // Not loaded yet: leave the avatar unmarked and come back next frame.
             let Some(pack) = human.pack() else { continue };
-            let look = human_avatar::default_look(appearance.sex);
+            let (look, tints) = human.look(&appearance);
             let spawned = human_avatar::spawn_human(
                 &mut commands,
                 &mut human,
                 &mut clip_assets,
                 &pack,
                 &look,
+                tints,
                 entity,
                 SlotMask::ALL,
             );
@@ -1602,6 +1603,12 @@ pub fn update_avatar_model_pose(
     avatars: Query<Entity, With<Avatar>>,
     mut remotes: Query<&mut RemoteAvatar>,
     mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
+    // The avatar designer is open: turn the model to face the camera, as
+    // someone turns to a mirror. A turn of the model, not the avatar, so
+    // neither the heading the sim holds nor the camera moves.
+    designing: Option<Res<human_avatar::HumanDraft>>,
+    camera: Query<&GlobalTransform, With<crate::components::FreeCamera>>,
+    avatar_at: Query<&GlobalTransform, With<Avatar>>,
     mut lean: Local<f32>,
     // The arrival: how much of it is *left*, and which teleport it belongs to.
     // Both live here because this is the one system that owns the holder
@@ -1702,6 +1709,17 @@ pub fn update_avatar_model_pose(
     }
     let mut local = flight_pose(*lean, bank.0, arrived);
     local.translation += seat_shift;
+    if designing.is_some_and(|d| d.0.is_some()) {
+        // Where the camera is, in the avatar's own frame (the model faces +Z).
+        if let (Ok(cam), Ok(me)) = (camera.single(), avatar_at.single()) {
+            let (_, me_rot, me_at) = me.to_scale_rotation_translation();
+            let to_cam = me_rot.inverse() * (cam.translation() - me_at);
+            if to_cam.x.abs() + to_cam.z.abs() > 1.0e-3 {
+                let yaw = to_cam.x.atan2(to_cam.z);
+                local.rotation = Quat::from_rotation_y(yaw) * local.rotation;
+            }
+        }
+    }
     for (parent, mut tf) in holders.iter_mut() {
         let owner = parent.parent();
         let want = if avatars.contains(owner) {

@@ -356,6 +356,59 @@ pub struct AvatarAppearance {
     /// "Adventurer" for its backpack), or `None`.
     #[serde(default)]
     pub accessory: Option<String>,
+    /// The MakeHuman body, when it has been designed (`systems::human_avatar`);
+    /// `None` is the default body for `sex`.
+    #[serde(default)]
+    pub human: Option<HumanLook>,
+}
+
+/// A MakeHuman avatar as the designer edits it: every slider a whole percent,
+/// every colour three bytes, so a look compares exactly and travels small.
+/// `systems::human_avatar::look_for` turns it into what the body builder takes.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct HumanLook {
+    /// 0 feminine … 100 masculine (MakeHuman's gender, which is continuous).
+    pub body_shape: u8,
+    /// Years, 18–90.
+    pub age: u8,
+    /// 0–100, 50 average, for each of these.
+    pub height: u8,
+    pub weight: u8,
+    pub muscle: u8,
+    pub proportions: u8,
+    pub chest: u8,
+    pub skin_tone: [u8; 3],
+    /// A hair proxy in the pack, or `None` for none.
+    pub hair: Option<String>,
+    pub hair_colour: [u8; 3],
+    /// The outfit proxy in the pack.
+    pub outfit: String,
+    pub outfit_colour: [u8; 3],
+}
+
+impl HumanLook {
+    /// The body a fresh avatar of `sex` starts as.
+    #[must_use]
+    pub fn default_for(sex: AvatarSex) -> Self {
+        let (body_shape, outfit) = match sex {
+            AvatarSex::Man => (100, "male_casualsuit06"),
+            AvatarSex::Woman => (0, "female_casualsuit01"),
+        };
+        Self {
+            body_shape,
+            age: 25,
+            height: 50,
+            weight: 50,
+            muscle: 50,
+            proportions: 50,
+            chest: 50,
+            skin_tone: [255; 3],
+            hair: Some("short02".into()),
+            hair_colour: [255; 3],
+            outfit: outfit.into(),
+            outfit_colour: [255; 3],
+        }
+    }
 }
 
 fn default_style() -> String {
@@ -415,6 +468,7 @@ impl Default for AvatarAppearance {
             legs: default_style(),
             feet: default_style(),
             accessory: None,
+            human: None,
         }
     }
 }

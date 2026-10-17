@@ -2179,8 +2179,8 @@ fn follow_mode(ctx: ModeCtx) {
             FRAMING_RISE * reach * rig.smoothing.boom
         };
         let ahead = Vec3::new(aim.x, rise, aim.y);
-        let look_world =
-            avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
+        let aim_height = camera_state.aim_height.unwrap_or(FOLLOW_EYE_HEIGHT);
+        let look_world = avatar_origin + (avatar_pos + Vec3::Y * aim_height + ahead).as_dvec3();
         camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
     }
 

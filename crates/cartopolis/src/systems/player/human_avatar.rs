@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use cartopolis_human::{HumanModel, HumanPack, Look, PartKind, Phenotype};
 
 use crate::systems::avatar::ClipGait;
-use crate::systems::user_store::AvatarSex;
+use crate::systems::user_store::{AvatarAppearance, HumanLook};
 
 /// Where the pack and its textures live under `assets/`.
 const PACK_DIR: &str = "models/avatar/human";
@@ -90,6 +90,7 @@ pub(crate) const CLIP_ORDER: [&str; 10] = [
 #[derive(SystemParam)]
 pub(crate) struct HumanAssets<'w> {
     handle: Option<Res<'w, HumanPackHandle>>,
+    draft: Res<'w, HumanDraft>,
     packs: Res<'w, Assets<HumanPackAsset>>,
     asset_server: Res<'w, AssetServer>,
     meshes: ResMut<'w, Assets<Mesh>>,
@@ -98,6 +99,11 @@ pub(crate) struct HumanAssets<'w> {
 }
 
 impl HumanAssets<'_> {
+    /// The look the local avatar should be built in now ([`current_look`]).
+    pub(crate) fn look(&self, appearance: &AvatarAppearance) -> (Look, Tints) {
+        look_for(&current_look(appearance, &self.draft))
+    }
+
     /// The pack, once it has loaded.
     pub(crate) fn pack(&self) -> Option<Arc<HumanPack>> {
         let h = self.handle.as_ref()?;
@@ -117,26 +123,107 @@ impl HumanAssets<'_> {
     }
 }
 
-/// The look this client gives a body of `sex`, until there is a chooser.
-pub(crate) fn default_look(sex: AvatarSex) -> Look {
-    let (phenotype, skin, outfit) = match sex {
-        AvatarSex::Man => (Phenotype::male(), "male", "male_casualsuit06"),
-        AvatarSex::Woman => (Phenotype::female(), "female", "female_casualsuit01"),
+/// What the designer is showing, while it is open: the avatar is built from
+/// this draft rather than the saved look, so a slider moves the body as it is
+/// dragged. `None` when the designer is closed.
+#[derive(Resource, Default)]
+pub(crate) struct HumanDraft(pub Option<HumanLook>);
+
+/// The look the local avatar should wear now: the designer's draft if one is
+/// open, else the saved one, else the default for the saved body.
+pub(crate) fn current_look(appearance: &AvatarAppearance, draft: &HumanDraft) -> HumanLook {
+    draft
+        .0
+        .clone()
+        .or_else(|| appearance.human.clone())
+        .unwrap_or_else(|| with_overrides(HumanLook::default_for(appearance.sex)))
+}
+
+/// `CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"`: start an undesigned avatar
+/// with these sliders, so a capture — which cannot drag one — can photograph a
+/// body other than the default. Unknown keys and bad numbers are ignored.
+fn with_overrides(mut look: HumanLook) -> HumanLook {
+    let Some(spec) = crate::debug_switches::env_value("CARTO_HUMAN_LOOK") else {
+        return look;
     };
-    Look {
-        phenotype,
-        skin: skin.into(),
-        proxies: [
-            "high-poly",
-            "eyebrow001",
-            "eyelashes01",
-            "short02",
-            outfit,
-            "shoes06",
-        ]
-        .map(String::from)
-        .to_vec(),
+    for pair in spec.split(',') {
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        let Ok(v) = v.trim().parse::<u8>() else {
+            continue;
+        };
+        match k.trim() {
+            "body_shape" => look.body_shape = v.min(100),
+            "age" => look.age = v.clamp(18, 90),
+            "height" => look.height = v.min(100),
+            "weight" => look.weight = v.min(100),
+            "muscle" => look.muscle = v.min(100),
+            "proportions" => look.proportions = v.min(100),
+            "chest" => look.chest = v.min(100),
+            _ => {}
+        }
     }
+    if look.body_shape < 50 {
+        look.outfit = "female_casualsuit01".into();
+    }
+    look
+}
+
+/// Colours multiplied over the textures: a tone over the one detailed skin, a
+/// tint over the hair and the outfit, so the folds and strands stay.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Tints {
+    pub skin: Color,
+    pub hair: Color,
+    pub outfit: Color,
+}
+
+/// MakeHuman's age slider from years: 0.1875 is 11, 0.5 is 25 and 1.0 is 90,
+/// linear between (`macro.json`'s bands and MakeHuman's own labels).
+fn age_value(years: u8) -> f32 {
+    let y = f32::from(years.clamp(1, 90));
+    if y <= 25.0 {
+        0.1875 + (y - 11.0) / 14.0 * 0.3125
+    } else {
+        0.5 + (y - 25.0) / 65.0 * 0.5
+    }
+}
+
+/// A designed look as the body builder and the materials take it.
+pub(crate) fn look_for(h: &HumanLook) -> (Look, Tints) {
+    let pct = |v: u8| f32::from(v.min(100)) / 100.0;
+    let phenotype = Phenotype {
+        gender: pct(h.body_shape),
+        age: age_value(h.age),
+        muscle: pct(h.muscle),
+        weight: pct(h.weight),
+        height: pct(h.height),
+        proportions: pct(h.proportions),
+        cupsize: pct(h.chest),
+        ..Phenotype::default()
+    };
+    // The pack's two skins differ in more than colour, so the nearer one.
+    let skin = if h.body_shape >= 50 { "male" } else { "female" };
+    let mut proxies: Vec<String> = ["high-poly", "eyebrow001", "eyelashes01"]
+        .map(String::from)
+        .to_vec();
+    proxies.extend(h.hair.clone());
+    proxies.push(h.outfit.clone());
+    proxies.push("shoes06".into());
+    let rgb = |c: [u8; 3]| Color::srgb_u8(c[0], c[1], c[2]);
+    (
+        Look {
+            phenotype,
+            skin: skin.into(),
+            proxies,
+        },
+        Tints {
+            skin: rgb(h.skin_tone),
+            hair: rgb(h.hair_colour),
+            outfit: rgb(h.outfit_colour),
+        },
+    )
 }
 
 /// A spawned person: the holder entity (to be given the player and the
@@ -158,6 +245,7 @@ pub(crate) fn spawn_human(
     clip_assets: &mut Assets<AnimationClip>,
     pack: &HumanPack,
     look: &Look,
+    tints: Tints,
     parent: Entity,
     holder: impl Bundle,
 ) -> SpawnedHuman {
@@ -227,7 +315,7 @@ pub(crate) fn spawn_human(
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, part.weights.clone());
         mesh.insert_indices(Indices::U32(part.indices.clone()));
-        let material = material_for(part, &assets.asset_server);
+        let material = material_for(part, &assets.asset_server, tints);
         commands.spawn((
             Name::new(part.name.clone()),
             Mesh3d(assets.meshes.add(mesh)),
@@ -292,7 +380,12 @@ pub(crate) fn spawn_human(
     }
 }
 
-fn material_for(part: &cartopolis_human::Part, asset_server: &AssetServer) -> StandardMaterial {
+fn material_for(
+    part: &cartopolis_human::Part,
+    asset_server: &AssetServer,
+    tints: Tints,
+) -> StandardMaterial {
+    use cartopolis_human::ProxyKind;
     let texture = part
         .texture
         .as_ref()
@@ -304,7 +397,7 @@ fn material_for(part: &cartopolis_human::Part, asset_server: &AssetServer) -> St
         ..default()
     };
     match part.kind {
-        PartKind::Body => {}
+        PartKind::Body => m.base_color = tints.skin,
         // Eyes are a glossy ball; cut out like the rest of the proxies because
         // their cornea layer is transparent around the iris.
         PartKind::Proxy(kind) => {
@@ -313,8 +406,16 @@ fn material_for(part: &cartopolis_human::Part, asset_server: &AssetServer) -> St
                 m.double_sided = true;
                 m.cull_mode = None;
             }
-            if kind == cartopolis_human::ProxyKind::Eyes {
-                m.perceptual_roughness = 0.2;
+            match kind {
+                ProxyKind::Eyes => m.perceptual_roughness = 0.2,
+                ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes => {
+                    m.base_color = tints.hair;
+                }
+                // The shoes keep their own colour; the outfit takes the tint.
+                ProxyKind::Clothes if !part.name.starts_with("shoes") => {
+                    m.base_color = tints.outfit;
+                }
+                ProxyKind::Clothes => {}
             }
         }
     }
@@ -358,4 +459,62 @@ fn animation_clip(
         }
     }
     out
+}
+
+/// The shortest gap between two rebuilds of the avatar while a look changes.
+/// A rebuild is a few milliseconds of shaping and fitting, then every mesh
+/// uploaded again (about 1.5 MB), so a slider drag rebuilds several times a
+/// second rather than every frame.
+const REBUILD_SECS: f32 = 0.15;
+
+/// Rebuild the local MakeHuman avatar when the look it should wear changes —
+/// a slider moved in the designer, a look saved or abandoned.
+///
+/// The rebuild is `spawn_avatar`'s own: the avatar's model is despawned and its
+/// markers dropped, and the next frame builds it fresh from [`current_look`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebuild_on_look_change(
+    mut commands: Commands,
+    store: Res<crate::systems::user_store::UserStore>,
+    draft: Res<HumanDraft>,
+    time: Res<Time>,
+    children: Query<&Children>,
+    avatars: Query<
+        Entity,
+        (
+            With<crate::components::Avatar>,
+            With<crate::components::AvatarModelLoaded>,
+        ),
+    >,
+    mut last: Local<Option<HumanLook>>,
+    mut since: Local<f32>,
+) {
+    if !enabled() {
+        return;
+    }
+    *since += time.delta_secs();
+    let want = current_look(&store.data.appearance, &draft);
+    if last.as_ref() == Some(&want) {
+        return;
+    }
+    // The first look is the one the avatar was built with.
+    if last.is_none() {
+        *last = Some(want);
+        return;
+    }
+    if *since < REBUILD_SECS {
+        return;
+    }
+    *since = 0.0;
+    *last = Some(want);
+    for entity in &avatars {
+        let model: Vec<Entity> = children.iter_descendants(entity).collect();
+        for e in model {
+            commands.entity(e).try_despawn();
+        }
+        commands.entity(entity).try_remove::<(
+            crate::components::AvatarModelLoaded,
+            super::avatar::AvatarAnimations,
+        )>();
+    }
 }

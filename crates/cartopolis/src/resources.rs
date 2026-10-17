@@ -1726,6 +1726,12 @@ pub struct CameraState {
     /// every orientation of a north-up drive. Driver mode writes the course
     /// direction here instead (`systems::driver::steady_driver_camera`).
     pub drive_lookahead: Vec2,
+    /// Where Follow aims, in metres above the avatar's feet, when something
+    /// needs it other than the chest. The avatar designer on a phone aims near
+    /// the feet, which tilts the view down and lifts the whole body into the top
+    /// half of the screen, clear of its sheet. Only the aim moves, never the
+    /// camera, and it is not saved: closing the designer puts it back.
+    pub aim_height: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1776,6 +1782,7 @@ impl Default for CameraState {
             device_rotation: None,
             drive_locked: false,
             drive_lookahead: Vec2::ZERO,
+            aim_height: None,
         }
     }
 }

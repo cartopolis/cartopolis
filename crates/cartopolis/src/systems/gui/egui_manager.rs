@@ -311,6 +311,41 @@ pub fn right_panel(
     closed
 }
 
+/// [`right_panel`] as a sheet across the bottom of a phone's screen, for a
+/// panel whose subject is in the world above it — the avatar designer, which a
+/// full-screen panel would hide the avatar behind. `share` is the fraction of
+/// the screen's height it takes. Same slot, header and close handling.
+pub fn bottom_sheet(
+    egui: &mut EguiManager,
+    slot: &mut crate::resources::RightPanel,
+    which: crate::resources::RightPanel,
+    id: &'static str,
+    share: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let open_before = slot.is(which);
+    let mut open = open_before;
+    let mut close = false;
+    let height = egui.viewport_pts().y * share;
+    let frame = egui::Frame::NONE
+        .fill(crate::systems::theme::PANEL)
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::OVERLAY_LINE))
+        .inner_margin(egui::Margin::symmetric(14, 10));
+    egui::Panel::bottom(id)
+        .frame(frame)
+        .resizable(false)
+        .exact_size(height)
+        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+            close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
+            body(ui);
+        });
+    let closed = close || (open_before && !open);
+    if closed {
+        *slot = crate::resources::RightPanel::None;
+    }
+    closed
+}
+
 impl Default for EguiManager {
     fn default() -> Self {
         let ctx = egui::Context::default();

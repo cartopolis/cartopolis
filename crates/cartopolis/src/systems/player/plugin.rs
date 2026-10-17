@@ -21,6 +21,7 @@ impl Plugin for PlayerPlugin {
         // its switch is on.
         app.init_asset::<systems::human_avatar::HumanPackAsset>()
             .init_asset_loader::<systems::human_avatar::HumanPackLoader>()
+            .init_resource::<systems::human_avatar::HumanDraft>()
             .add_systems(Startup, systems::human_avatar::load_human_pack);
         app.init_resource::<systems::touch::TouchGestures>()
             // What the camera is riding along with (`systems::camera_attach`).
@@ -198,6 +199,10 @@ impl Plugin for PlayerPlugin {
                 avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
                 avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
                 avatar::pin_avatar_animation.after(avatar::sync_avatar_animations),
+                // Unordered against the spawn: the avatar it drops is rebuilt on
+                // this frame or the next. Ordering it before would contradict the
+                // phase this tuple runs in, which follows the spawn's.
+                systems::human_avatar::rebuild_on_look_change,
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::gizmo::render_gizmo_visuals,
                 // The first-person twin of the driver arrow: take the avatar's

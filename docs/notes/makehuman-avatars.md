@@ -1,6 +1,6 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, systems::human_avatar, human_avatar.rs, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
+triggers: [crates/human, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
 updated: 2026-10-17
 ---
 
@@ -104,6 +104,33 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
   (`rig::ground`), so no capture's floor height matters.
   `the_shipped_clips_play_like_people` is the guard: idle hands hang by the
   sides, and a walking ankle reaches the ground.
+
+## The designer
+
+The Appearance panel draws `systems::avatar_designer` in place of the slot
+chooser when the switch is on (`docs/mockups/avatar-designer`). A look is
+`user_store::HumanLook`: whole percents and RGB bytes, so it compares exactly
+and would travel as about forty bytes; it is saved with the appearance and not
+yet replicated, so other people still see a character. While the panel is open
+the avatar wears the draft (`HumanDraft`) and is rebuilt at most every 0.15 s
+as it changes — each rebuild re-uploads about 1.5 MB of meshes — and closing it
+unsaved puts the saved look back.
+
+Three things it does so the avatar can be seen while it is shaped:
+- **The model turns to the camera** (`update_avatar_model_pose`), which in
+  Follow is behind it. A turn of the model only: the heading the sim holds and
+  the camera stay where they were.
+- **On a phone it is a sheet over the bottom half** (`egui_manager::bottom_sheet`),
+  not the right panel, which on a compact screen is the whole screen.
+- **The camera aims near the feet while the sheet is up**
+  (`CameraState::aim_height`, -0.3 m), tilting the view so the whole body stands
+  above it. 0.25 m put the legs under the sheet. Not saved.
+
+`CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"` starts an undesigned avatar
+with those sliders, for a capture, which cannot drag one. Not yet: a Face tab
+(the face targets are not in the pack), more than one hair and two outfits, a
+tint for the shirt apart from the jeans (each outfit is one mesh and one
+texture), and colours lighter than the textures (a tint can only darken).
 
 ## Rejected: Quaternius's animation library (2026-10-17)
 

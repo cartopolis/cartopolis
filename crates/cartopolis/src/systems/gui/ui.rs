@@ -359,6 +359,11 @@ pub fn render_avatar_chooser(
     mut right_panel: ResMut<RightPanel>,
     session: Res<crate::systems::session::SessionState>,
     mut was_online: Local<bool>,
+    // The MakeHuman designer: the draft the avatar is rebuilt from while it is
+    // open, and its tab.
+    mut human_draft: ResMut<crate::systems::human_avatar::HumanDraft>,
+    mut designer_tab: Local<crate::systems::avatar_designer::DesignerTab>,
+    mut camera: ResMut<crate::resources::CameraState>,
 ) {
     let online = session.is_online();
     if std::mem::replace(&mut was_online, online) && !online {
@@ -373,9 +378,16 @@ pub fn render_avatar_chooser(
     }
     use crate::systems::avatar::{accessory_styles_for, styles_for};
     use crate::systems::user_store::AvatarSex;
+    let designing = crate::systems::human_avatar::enabled();
     // Seed the draft from the saved appearance the first time the panel opens.
     if right_panel.is(RightPanel::Appearance) && !chooser.seeded {
         chooser.draft = store.data.appearance.clone();
+        if designing && chooser.draft.human.is_none() {
+            chooser.draft.human = Some(crate::systems::human_avatar::current_look(
+                &chooser.draft,
+                &crate::systems::human_avatar::HumanDraft::default(),
+            ));
+        }
         chooser.seeded = true;
     }
     // Borrowed, not cloned: this ran five String clones per frame whether the
@@ -383,78 +395,19 @@ pub fn render_avatar_chooser(
     // store write on Apply happens after the closure ends.
     let saved = &store.data.appearance;
     let mut apply = false;
-    let closed = crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        RightPanel::Appearance,
-        "appearance_panel",
-        280.0,
-        |ui| {
-            // Outside the scroll area, so the header and the close button stay put
-            // while the body scrolls under them — and so the body is what is
-            // reachable on a 609 pt viewport, where these rows overrun the screen.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let d = &mut chooser.draft;
-                    ui.label("Body");
-                    ui.horizontal(|ui| {
-                        for sex in AvatarSex::ALL {
-                            if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
-                                d.sex = sex;
-                                fix_styles_for_sex(d, sex);
-                            }
-                        }
-                    });
-                    let sex = d.sex;
-
-                    ui.add_space(6.0);
-                    // Preset: set all four clothing slots at once (quick whole-look pick).
-                    ui.label("Preset");
-                    let preset = d.uniform_style().unwrap_or("Custom").to_string();
-                    egui::ComboBox::from_id_salt("avatar_preset")
-                        .selected_text(preset)
-                        .show_ui(ui, |ui| {
-                            for style in styles_for(sex) {
-                                if ui
-                                    .selectable_label(d.uniform_style() == Some(style), style)
-                                    .clicked()
-                                {
-                                    d.head = style.to_string();
-                                    d.top = style.to_string();
-                                    d.legs = style.to_string();
-                                    d.feet = style.to_string();
-                                }
-                            }
-                        });
-
-                    ui.separator();
-                    ui.label("Customise");
-                    slot_combo(ui, "Head", sex, &mut d.head);
-                    slot_combo(ui, "Top", sex, &mut d.top);
-                    slot_combo(ui, "Legs", sex, &mut d.legs);
-                    slot_combo(ui, "Shoes", sex, &mut d.feet);
-
-                    // Accessory (optional, non-weapon).
-                    egui::ComboBox::from_id_salt("avatar_accessory")
-                        .selected_text(format!(
-                            "Accessory: {}",
-                            d.accessory.as_deref().unwrap_or("None")
-                        ))
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
-                                d.accessory = None;
-                            }
-                            for acc in accessory_styles_for(sex) {
-                                if ui
-                                    .selectable_label(d.accessory.as_deref() == Some(acc), acc)
-                                    .clicked()
-                                {
-                                    d.accessory = Some(acc.to_string());
-                                }
-                            }
-                        });
-
+    // On a phone the designer is a sheet across the bottom half: a panel that
+    // filled the screen would hide the avatar it is shaping.
+    let sheet = designing && egui.compact();
+    let body = |ui: &mut egui::Ui| {
+        // Outside the scroll area, so the header and the close button stay put
+        // while the body scrolls under them — and so the body is what is
+        // reachable on a 609 pt viewport, where these rows overrun the screen.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let d = &mut chooser.draft;
+                if let Some(look) = d.human.as_mut().filter(|_| designing) {
+                    crate::systems::avatar_designer::designer(ui, &mut designer_tab, look);
                     ui.separator();
                     let changed = *d != *saved;
                     ui.horizontal(|ui| {
@@ -468,15 +421,123 @@ pub fn render_avatar_chooser(
                             ui.weak("This is your current avatar.");
                         }
                     });
+                    return;
+                }
+                ui.label("Body");
+                ui.horizontal(|ui| {
+                    for sex in AvatarSex::ALL {
+                        if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
+                            d.sex = sex;
+                            fix_styles_for_sex(d, sex);
+                        }
+                    }
                 });
-        },
-    );
+                let sex = d.sex;
+
+                ui.add_space(6.0);
+                // Preset: set all four clothing slots at once (quick whole-look pick).
+                ui.label("Preset");
+                let preset = d.uniform_style().unwrap_or("Custom").to_string();
+                egui::ComboBox::from_id_salt("avatar_preset")
+                    .selected_text(preset)
+                    .show_ui(ui, |ui| {
+                        for style in styles_for(sex) {
+                            if ui
+                                .selectable_label(d.uniform_style() == Some(style), style)
+                                .clicked()
+                            {
+                                d.head = style.to_string();
+                                d.top = style.to_string();
+                                d.legs = style.to_string();
+                                d.feet = style.to_string();
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.label("Customise");
+                slot_combo(ui, "Head", sex, &mut d.head);
+                slot_combo(ui, "Top", sex, &mut d.top);
+                slot_combo(ui, "Legs", sex, &mut d.legs);
+                slot_combo(ui, "Shoes", sex, &mut d.feet);
+
+                // Accessory (optional, non-weapon).
+                egui::ComboBox::from_id_salt("avatar_accessory")
+                    .selected_text(format!(
+                        "Accessory: {}",
+                        d.accessory.as_deref().unwrap_or("None")
+                    ))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
+                            d.accessory = None;
+                        }
+                        for acc in accessory_styles_for(sex) {
+                            if ui
+                                .selectable_label(d.accessory.as_deref() == Some(acc), acc)
+                                .clicked()
+                            {
+                                d.accessory = Some(acc.to_string());
+                            }
+                        }
+                    });
+
+                ui.separator();
+                let changed = *d != *saved;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(changed, egui::Button::new("Apply"))
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if !changed {
+                        ui.weak("This is your current avatar.");
+                    }
+                });
+            });
+    };
+    let closed = if sheet {
+        crate::systems::egui_manager::bottom_sheet(
+            &mut egui,
+            &mut right_panel,
+            RightPanel::Appearance,
+            "appearance_sheet",
+            0.5,
+            body,
+        )
+    } else {
+        crate::systems::egui_manager::right_panel(
+            &mut egui,
+            &mut right_panel,
+            RightPanel::Appearance,
+            "appearance_panel",
+            280.0,
+            body,
+        )
+    };
     if apply {
         store.data.appearance = chooser.draft.clone();
         store.dirty = true;
     }
     if closed {
         chooser.seeded = false;
+    }
+    // While the designer is open the avatar wears the draft; closing it, saved
+    // or not, puts it back in the saved look. Compared first, so an idle
+    // panel does not mark the resource changed every frame.
+    let showing = (designing && right_panel.is(RightPanel::Appearance) && chooser.seeded)
+        .then(|| chooser.draft.human.clone())
+        .flatten();
+    // On a phone, aim the camera near the feet while the sheet is up, so
+    // the whole body stands in the half of the screen the sheet leaves.
+    // (-0.3 m: at the default follow distance the head clears the top and the
+    // feet the sheet; 0.25 put the legs under it.)
+    let aim = (sheet && showing.is_some()).then_some(-0.3);
+    if camera.aim_height != aim {
+        camera.aim_height = aim;
+    }
+    if human_draft.0 != showing {
+        human_draft.0 = showing;
     }
 }
 

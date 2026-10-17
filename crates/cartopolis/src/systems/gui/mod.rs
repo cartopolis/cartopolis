@@ -8,6 +8,7 @@ pub use plugin::GuiPlugin;
 pub mod access_tokens;
 pub mod action_ring;
 pub mod admin;
+pub mod avatar_designer;
 pub mod bookmarks;
 pub mod building_card;
 pub mod call_screen;
