@@ -1,6 +1,6 @@
 ---
 topic: calls
-triggers: [calls, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim", calls.rs, call_screen.rs, call_tones.rs, systems::call_screen, platform/camera.rs, hw_video.rs, web_call.rs, webcall.js, call-worker.js, call.ts, call-tones.ts, webcall.d.ts, web_call_test.ts, web-push.ts, crates/atlas/web/src/sw.js, crates/calls, cartopolis_calls]
+triggers: [calls, meeting.rs, meeting.ts, "core::meeting", "meeting record", poll, agenda, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim", calls.rs, call_screen.rs, call_tones.rs, systems::call_screen, platform/camera.rs, hw_video.rs, web_call.rs, webcall.js, call-worker.js, call.ts, call-tones.ts, webcall.d.ts, web_call_test.ts, web-push.ts, crates/atlas/web/src/sw.js, crates/calls, cartopolis_calls]
 updated: 2026-10-17
 ---
 
@@ -559,3 +559,46 @@ What it found: **the page's `WebCall.close()` threw** on every hang-up — with
 `onStream` it marked a person's tracks as `true` and `close` then called
 `.remove()` on them — so the page never set "The call ended" or any other
 reason. Older than the meetings; fixed in `webcall.js`.
+
+## What a meeting leaves in the chat (2026-10-17)
+
+Planning a meeting, its answers, polls and votes, notes taken in the call and
+the record afterwards are **sealed chat messages**, not call state: they must
+outlast the call, reach people who were not in it, and the server must read
+none of them. Each is an ActivityStreams object in `Payload::Object`, read and
+written by `cartopolis_core::meeting` (the reference) and the web's
+`src/lib/meeting.ts`, both tested against `crates/core/testdata/meeting-vectors.json`.
+
+- **No new `Payload` variant and no new history format.** `Object` already
+  carries points; an object that is not a point and reads as a meeting comes
+  out of the engine as `Event::Line { object: Some(json), body: caption }`.
+  `HistoryItem::point` carries either kind: a build that reads only points
+  finds no place in a plan and shows its caption. A build older than this shows
+  "(a message this version can't display)", as for any unknown object.
+- **Answers and votes name what they answer by its `id`** (`urn:uuid:`), never
+  by the chat's log position, because the app keeps no log positions for its
+  lines and an id survives a shared history. Per person the newest answer
+  counts, so changing one's mind is sending again. They are not drawn as lines.
+  Votes are not anonymous: everybody in the chat sees who chose what, and the
+  poll says so.
+- **A plan and a meet-up are told apart by `location`**: a meet-up (a place
+  and a time) stays a `Point`; a plan has `cartopolis:call` and no place.
+- **The agenda's position is not a chat message**: a host's device sends it as
+  a sealed call event (`{"g": item, "p": plan id, "t": started ms}`, beside
+  captions' `{"c": …}`), only a host's is believed, and it is sent again when
+  somebody joins. Builds that predate it drop the JSON.
+- **The record is written by one device**: the host who ends the call for
+  everybody, or the host left last; a host can also post it from the notes
+  panel. It gathers the notes and polls posted while the call ran, who was in
+  it, and the transcript if captions were on *on that device*. A meeting that
+  left none of these posts no record.
+- **Reminders are made on the device** (the server cannot read the plan): the
+  page reminds ten minutes before a plan the person answered Going or Maybe to,
+  while it is open, and the calendar file (`ics`) carries its own alarm. The
+  app does neither yet.
+
+**Verified 2026-10-17** by `meeting-browser.ts` (plan, answer, poll, vote,
+a decision in the notes panel, the agenda started by the host and seen by a
+member, and the record arriving after End for everyone). It found that a
+record card mixing keyed sections and empty holes threw on every redraw, which
+froze the page after the call; Mithril refuses that mix.
