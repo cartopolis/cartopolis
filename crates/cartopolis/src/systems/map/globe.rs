@@ -1771,7 +1771,14 @@ pub fn update_globe_tiles(
     let cam = crate::grid::anchored_position_f64(cell, tf.translation);
     let altitude = (cam - earth_c).length() - globe.radius as f64;
     if altitude < QT_MIN_ALT {
-        return; // keep loaded tiles (hidden) for an instant return to space
+        // Keep loaded tiles (hidden) for an instant return to space — but not the
+        // queue. Only the selection below clears it, and the selection does not run
+        // down here, so a descent through `QT_MIN_ALT` left whatever it had queued
+        // on the way waiting for a dispatch that never comes: `busy()` stayed true
+        // for good, and every capture in Earth mode at city height after a higher
+        // one timed out on "globe" (`cargo perf --only city,earth`, 2026-10-16).
+        globe.tiles.clear_queue();
+        return;
     }
     globe.select_timer -= time.delta_secs();
     if globe.select_timer > 0.0 {
