@@ -26,6 +26,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use cartopolis_human::{HumanModel, HumanPack, Look, PartKind, Phenotype};
 
+use crate::systems::avatar::ClipGait;
 use crate::systems::user_store::AvatarSex;
 
 /// Where the pack and its textures live under `assets/`.
@@ -77,21 +78,12 @@ pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetSer
     }
 }
 
-/// The library clips the avatar's table is built from, in its order: idle,
-/// walk, run, the six emotes in `EMOTE_CLIPS` order (wave, interact, roll,
-/// punch, kick, faint), and sitting. The library has no wave and no kick; the
-/// nearest gestures stand in.
+/// The pack's clips the avatar's table is built from, in its order: idle, walk,
+/// run, the six emotes in `EMOTE_CLIPS` order, and sitting. One the pack does
+/// not carry plays the idle instead — an empty clip would drop the body into
+/// its A-shaped rest pose.
 pub(crate) const CLIP_ORDER: [&str; 10] = [
-    "Idle_Loop",
-    "Walk_Loop",
-    "Jog_Fwd_Loop",
-    "Idle_Talking_Loop",
-    "Interact",
-    "Roll",
-    "Punch_Jab",
-    "Punch_Cross",
-    "Death01",
-    "Sitting_Idle_Loop",
+    "idle", "walk", "run", "wave", "interact", "roll", "punch", "kick", "faint", "sit",
 ];
 
 /// What the spawn needs to build a person.
@@ -110,6 +102,18 @@ impl HumanAssets<'_> {
     pub(crate) fn pack(&self) -> Option<Arc<HumanPack>> {
         let h = self.handle.as_ref()?;
         self.packs.get(&h.0).map(|p| p.0.clone())
+    }
+
+    /// The pack will never load (missing, an LFS pointer, an old layout). The
+    /// avatar then falls back to a character file rather than waiting, which
+    /// is what it did until 2026-10-17: invisible for the whole session.
+    pub(crate) fn failed(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| {
+            matches!(
+                self.asset_server.load_state(&h.0),
+                bevy::asset::LoadState::Failed(_)
+            )
+        })
     }
 }
 
@@ -140,6 +144,10 @@ pub(crate) fn default_look(sex: AvatarSex) -> Look {
 pub(crate) struct SpawnedHuman {
     pub holder: Entity,
     pub clips: Vec<Handle<AnimationClip>>,
+    pub walk: ClipGait,
+    pub run: ClipGait,
+    /// Each emote's length, in `CLIP_ORDER`'s emote order.
+    pub emote_secs: Vec<f32>,
 }
 
 /// Build `look` and put it under `parent` as one holder. `holder` bundles what
@@ -234,17 +242,36 @@ pub(crate) fn spawn_human(
         ));
     }
 
+    let find = |name: &str| model.clips.iter().find(|c| c.name == name);
+    let idle = clip_assets.add(
+        find("idle")
+            .map(|c| animation_clip(c, &model, &paths))
+            .unwrap_or_default(),
+    );
     let clips = CLIP_ORDER
         .iter()
-        .map(|name| {
-            let clip = model
-                .clips
-                .iter()
-                .find(|c| c.name == *name)
-                .map(|c| animation_clip(c, &model, &paths))
-                .unwrap_or_default();
-            clip_assets.add(clip)
+        .map(|name| match find(name) {
+            Some(c) if *name != "idle" => clip_assets.add(animation_clip(c, &model, &paths)),
+            _ => idle.clone(),
         })
+        .collect();
+    // A captured cycle's own length and speed; a pack without the clip keeps
+    // the characters' numbers, which only time a clip that is not there.
+    let gait = |name: &str, fallback: ClipGait| {
+        find(name)
+            .filter(|c| c.speed > 0.0)
+            .map_or(fallback, |c| ClipGait {
+                secs: c.duration(),
+                speed: c.speed,
+            })
+    };
+    let walk = gait("walk", ClipGait::CHARACTER_WALK);
+    let run = gait("run", ClipGait::CHARACTER_RUN);
+    // A gesture the pack lacks plays the idle, for as long as the characters'
+    // emotes last.
+    let emote_secs = CLIP_ORDER[3..9]
+        .iter()
+        .map(|n| find(n).map_or(1.6, |c| c.duration()))
         .collect();
 
     tracing::info!(
@@ -256,7 +283,13 @@ pub(crate) fn spawn_human(
         missing_targets = model.missing_targets.len(),
         "avatar: MakeHuman body built"
     );
-    SpawnedHuman { holder, clips }
+    SpawnedHuman {
+        holder,
+        clips,
+        walk,
+        run,
+        emote_secs,
+    }
 }
 
 fn material_for(part: &cartopolis_human::Part, asset_server: &AssetServer) -> StandardMaterial {

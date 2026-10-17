@@ -59,6 +59,10 @@ pub struct Joint {
 pub struct RetargetedClip {
     pub name: String,
     pub fps: f32,
+    /// Ground speed the clip was captured at, metres a second on this body; 0
+    /// for a clip played on the spot.
+    pub speed: f32,
+    pub looped: bool,
     pub rotations: Vec<Vec<[f32; 4]>>,
     pub pelvis: Option<(usize, Vec<[f32; 3]>)>,
 }
@@ -184,7 +188,12 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         ));
     }
 
-    let hip_height = pack.bone("pelvis").map_or(1.0, |p| rest[p].head.y);
+    // The pelvis above the ankles: the unit a clip's hip motion and speed
+    // are stored in (`SourceClip::hips`).
+    let hip_height = pack
+        .bone("pelvis")
+        .zip(pack.bone("foot_l"))
+        .map_or(1.0, |(p, f)| rest[p].head.y - rest[f].head.y);
     let clips = pack
         .clips
         .iter()
@@ -193,6 +202,8 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
             RetargetedClip {
                 name: c.name.clone(),
                 fps: c.fps,
+                speed: c.speed * hip_height,
+                looped: c.looped,
                 rotations: r
                     .local
                     .iter()
@@ -418,7 +429,7 @@ mod tests {
         let Some(pack) = shipped_pack() else { return };
         let m = man(&pack);
         let clip = |name: &str| m.clips.iter().position(|c| c.name == name).unwrap();
-        let idle = m.joint_positions(Some((clip("Idle_Loop"), 0)));
+        let idle = m.joint_positions(Some((clip("idle"), 0)));
         let (hand, shoulder) = (
             idle[m.joint("hand_l").unwrap()],
             idle[m.joint("upperarm_l").unwrap()],
@@ -432,7 +443,7 @@ mod tests {
             "and close to the body, not out to the side: {hand}"
         );
 
-        let walk = clip("Walk_Loop");
+        let walk = clip("walk");
         let frames = m.clips[walk].rotations[0].len();
         let mut lowest = f32::INFINITY;
         let mut pelvis = (f32::INFINITY, f32::NEG_INFINITY);

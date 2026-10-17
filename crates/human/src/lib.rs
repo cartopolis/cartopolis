@@ -4,8 +4,8 @@
 //! (every vertex, the helper geometry included, because the joints and the
 //! clothes are placed from it), the shape targets the macro sliders blend, the
 //! `game_engine` rig, its skin weights, the clothes and hair as fitting rules
-//! rather than meshes, and the Quaternius animation clips as motion relative to
-//! their own T-pose. [`build`] turns a pack and a [`Look`] into a
+//! rather than meshes, and motion-capture clips as motion relative to their
+//! takes' own T-pose (`mocap`). [`build`] turns a pack and a [`Look`] into a
 //! [`HumanModel`]: meshes, a skeleton and clips retargeted onto *this* body.
 //!
 //! Why the fitting rules and not fitted meshes: a garment is stored as, per
@@ -23,6 +23,8 @@ pub mod build;
 pub mod fit;
 pub mod macros;
 #[cfg(feature = "pack")]
+pub mod mocap;
+#[cfg(feature = "pack")]
 pub mod pack;
 pub mod rig;
 
@@ -33,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 1;
+pub const PACK_VERSION: u32 = 3;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -96,8 +98,8 @@ pub struct Bone {
     pub tail: Vec<u32>,
     /// Blender's bone roll, radians.
     pub roll: f32,
-    /// MakeHuman's T-pose for this rig: Blender Euler XYZ, bone space. What the
-    /// animation library's own rest pose is matched against ([`rig::retarget`]).
+    /// MakeHuman's T-pose for this rig: Blender Euler XYZ, bone space. What a
+    /// capture's rest pose is matched against ([`rig::retarget`]).
     pub tpose: [f32; 3],
 }
 
@@ -146,7 +148,7 @@ pub struct Skin {
     pub texture: String,
 }
 
-/// A clip from the animation library, as motion relative to the library's own
+/// A clip of motion capture, as motion relative to the take's own
 /// T-pose, sampled at a fixed rate — independent of any body, so one pack
 /// animates every body the sliders make.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -155,12 +157,30 @@ pub struct SourceClip {
     pub fps: f32,
     pub frames: u32,
     /// Per rig bone (indexing [`HumanPack::bones`]): its world rotation at each
-    /// frame times the inverse of its world rotation in the library's T-pose,
-    /// in our frame (x, y, z, w). `None` for a bone the library does not move.
+    /// frame times the inverse of its world rotation in the take's T-pose, in
+    /// our frame (x, y, z, w). `None` for a bone the take has no joint for.
     pub rotations: Vec<Option<Vec<[f32; 4]>>>,
-    /// The pelvis's world displacement from its rest position at each frame,
-    /// over the library's hip height, so it scales to any body's legs.
+    /// The pelvis's displacement at each frame, in hip heights (the pelvis
+    /// above the ankles at rest), so it scales to any body's legs. Its height is
+    /// only relative: the retarget stands the clip on the ground itself.
     pub hips: Vec<[f32; 3]>,
+    /// How fast the take travelled, in hip heights a second; 0 for a clip
+    /// played on the spot. A locomotion clip plays at ground speed over this.
+    pub speed: f32,
+    /// The last frame is the first, so the clip repeats without a seam.
+    pub looped: bool,
+    /// Per rig bone: which way the take's bone points in its rest pose, in our
+    /// frame — towards the joint of `child` (a rig bone), or towards the
+    /// joint's End Site when `child` is `None`. The retarget turns the body's
+    /// own T-pose bone onto it, so a spine the capture holds dead straight at
+    /// rest is not leant forward twice ([`rig::retarget`]).
+    pub rest_dirs: Vec<Option<RestDir>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct RestDir {
+    pub dir: [f32; 3],
+    pub child: Option<u16>,
 }
 
 impl HumanPack {

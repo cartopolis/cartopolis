@@ -1,6 +1,6 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, systems::human_avatar, human_avatar.rs, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, MakeHuman, MPFB, UAL]
+triggers: [crates/human, systems::human_avatar, human_avatar.rs, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
 updated: 2026-10-17
 ---
 
@@ -40,9 +40,11 @@ mutually exclusive shape keys through glTF.
 writes `assets/models/avatar/human/default.humanpack` (postcard) plus the
 textures beside it. Sources: mpfb2's `src/mpfb/data`, the MakeHuman system
 assets zip (`files2.makehumancommunity.org/asset_packs/makehuman_system_assets/`),
-and Quaternius's Universal Animation Library 1 Standard from OpenGameArt
-(`opengameart.org/sites/default/files/universal_animation_librarystandard.zip`,
-CC0) — its `Godot/AnimationLibrary_Godot_Standard.glb`.
+and motion capture: 100STYLE's Neutral style (`zenodo.org/records/8127870`,
+CC BY 4.0) for walk, run and idle, and the CMU database's cgspeed BVH
+(`github.com/una-dinosauria/cmu-mocap`, free for all uses but not for resale)
+for the gestures and the seat. The cuts — which take, which frames — are
+listed in `human-pack`.
 
 **A pack carries only the targets of the bodies it was built for.** Every macro
 target would be ~350 near-full-mesh files (~80 MB as floats), so the first pack
@@ -51,7 +53,7 @@ encoding or fetching a body's targets on demand; that is the open question for
 the chooser, and `HumanModel::missing_targets` is how a body asked of the wrong
 pack says so.
 
-Measured 2026-10-17 on mac-1: the pack is 3.5 MB, the nine 2048² PNG textures
+Measured 2026-10-17 on mac-1: the pack is 3.1 MB with ten clips, the nine 2048² PNG textures
 19 MB (too big for a phone; downscale and compress before this ships). The
 default man is 1.73 m, 18 700 vertices and 33 000 triangles across body, eyes,
 brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is about
@@ -73,24 +75,44 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
 - **A garment `.obj` is not in its fitted position** (authored on other bodies;
   the eyes are 0.84 m off). Only its faces and UVs are used; positions always
   come from the `.mhclo` fitting.
-- **UAL1's glb uses Rigify names** (`DEF-upper_arm.L`) on the same skeleton as
-  UAL2's Unreal names; `pack::library_bone` maps both onto the rig's. UAL1 is
-  the one with the locomotion (idle, walk, jog, sprint, jump, swim, sit). It has
-  no wave and no kick; `human_avatar::CLIP_ORDER` names what stands in.
-- **The library's rest is a T-pose and MakeHuman's an A-pose**, with different
+- **100STYLE is Xsens, 60 fps, centimetres; CMU's conversion 120 fps in
+  0.056 m units.** Both rest in a T-pose facing +Z with the left at +X, like
+  MakeHuman. Both name `LeftShoulder`, and mean different bones by it (Xsens's
+  upper arm, CMU's clavicle); `mocap::map_bones` tells them apart by whether the
+  skeleton has a `LeftCollar`. **CMU subjects 141 and 143 were captured at
+  60 fps though their files say 120** (a jump in them falls at four times
+  gravity), so their cuts set the rate. Frame 0 of every CMU file is a T-pose
+  the conversion added.
+- **Raw capture is cut, not used**: a loop is the stretch whose ends match best
+  (`mocap::find_loop`), its remaining mismatch spread over it, its travel
+  subtracted and kept as the clip's speed. 100STYLE's neutral walk is slow —
+  about 0.9 m/s on the default man, so the game's 1.8 m/s walk plays it at
+  twice its pace. A faster style (`Rushed`, `BigSteps`) is the obvious next try.
+- - **A capture rests in a T-pose and MakeHuman in an A-pose**, with different
   bone rolls, so clips cannot be copied channel for channel. They are stored as
-  each bone's world rotation relative to the library's T-pose, and replayed
-  relative to MakeHuman's own T-pose (`poses/game_engine_fk/t-pose.json`).
+  each bone's world rotation relative to the take's T-pose, and replayed
+  relative to MakeHuman's own T-pose (`poses/game_engine_fk/t-pose.json`) —
+  **with each of its bones first turned to point the way the take's does**
+  (`rig::aligned_tpose`). A capture skeleton's spine and neck stand dead
+  straight at rest and MakeHuman's lean forward; without the turn the take's
+  own neck lean was added to a neck that had it, and every clip looked at its
+  feet. Each clip is then stood on the ground by its lowest ankle
+  (`rig::ground`), so no capture's floor height matters.
   `the_shipped_clips_play_like_people` is the guard: idle hands hang by the
   sides, and a walking ankle reaches the ground.
 
-## Open: may the Quaternius clips be in the pack?
+## Rejected: Quaternius's animation library (2026-10-17)
 
-`LICENSE-THIRD-PARTY.md` says nothing downloaded from Quaternius after the
-2026-08-28 licence change may be added to `assets/`. The library in this pack
-was downloaded on 2026-10-17, but it is the March 2025 release on OpenGameArt,
-whose zip carries its own CC0 `License.txt` (files dated 2025-03-19..25), and
-the pack holds clip data derived from it, not the glb. Undecided as of
-2026-10-17; the branch is not to land until it is. The alternatives are other
-clips (CMU motion capture is free to use but not CC0) or animation generated in
-code.
+The first retarget used Quaternius's Universal Animation Library. Quaternius
+moved to a licence forbidding redistribution on 2026-08-28, and
+`LICENSE-THIRD-PARTY.md` bars anything downloaded from them since; the March
+2025 CC0 release on OpenGameArt was arguably exempt, but motion capture was the
+better answer anyway — real motion suits a realistic body better than
+hand-keyed clips — and no commit on the branch ever carried a pack made from
+the library. Mixamo (no redistribution), Bandai Namco's set and LAFAN1
+(non-commercial) and SFU's (no commercial products) were ruled out on licence.
+
+Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in CMU
+(a slip-and-fall stands in), 100STYLE has no finger bones (the hands keep their
+relaxed rest pose), and the `--clip` sheet's first tile sometimes catches the
+city before it has loaded.

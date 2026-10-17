@@ -75,6 +75,7 @@ pub fn euler_xyz(e: [f32; 3]) -> Quat {
 #[derive(Clone, Copy, Debug)]
 pub struct RestBone {
     pub head: Vec3,
+    pub tail: Vec3,
     pub rotation: Quat,
 }
 
@@ -94,6 +95,7 @@ pub fn rest_pose(pack: &HumanPack, positions: &[Vec3]) -> Vec<RestBone> {
             let frame = BLENDER_TO_OURS * bone_frame(dir, b.roll);
             RestBone {
                 head,
+                tail,
                 rotation: Quat::from_mat3(&frame).normalize(),
             }
         })
@@ -138,6 +140,7 @@ pub fn retarget(
     hip_height: f32,
 ) -> Retargeted {
     let n = pack.bones.len();
+    let tpose = &aligned_tpose(pack, rest, tpose, clip);
     let pelvis = pack.bone("pelvis");
     let mut local = vec![Vec::with_capacity(clip.frames as usize); n];
     let mut hips = Vec::with_capacity(clip.frames as usize);
@@ -181,9 +184,103 @@ pub fn retarget(
             hips.push(local_at);
         }
     }
+    ground(pack, rest, &local, &mut hips);
     Retargeted {
         local,
         pelvis: hips,
+    }
+}
+
+/// The T-pose with each bone turned to point the way the take's bone points
+/// at rest ([`crate::SourceClip::rest_dirs`]).
+///
+/// Two T-poses agree on the arms and little else. A capture skeleton's spine,
+/// neck and head stand dead straight at rest, while MakeHuman's lean forward as
+/// a real one does; the take's own forward lean of the neck was therefore added
+/// to a neck that already had it, and every first retarget looked at its feet.
+/// CMU's legs splay twenty degrees at rest, which would bow-leg every clip the
+/// same way. Turning by the smallest rotation keeps the body's own twist.
+fn aligned_tpose(
+    pack: &HumanPack,
+    rest: &[RestBone],
+    tpose: &[Quat],
+    clip: &SourceClip,
+) -> Vec<Quat> {
+    let n = pack.bones.len();
+    let mut at = vec![Vec3::ZERO; n];
+    for (i, b) in pack.bones.iter().enumerate() {
+        at[i] = match b.parent {
+            Some(p) => {
+                let p = p as usize;
+                at[p] + tpose[p] * (rest[p].rotation.inverse() * (rest[i].head - rest[p].head))
+            }
+            None => rest[i].head,
+        };
+    }
+    (0..n)
+        .map(|i| {
+            let Some(d) = clip.rest_dirs.get(i).copied().flatten() else {
+                return tpose[i];
+            };
+            let points = match d.child {
+                Some(c) => at[c as usize] - at[i],
+                None => tpose[i] * (rest[i].rotation.inverse() * (rest[i].tail - rest[i].head)),
+            };
+            let want = Vec3::from_array(d.dir);
+            if points.length() < 1.0e-5 || want.length() < 1.0e-5 {
+                return tpose[i];
+            }
+            (Quat::from_rotation_arc(points.normalize(), want.normalize()) * tpose[i]).normalize()
+        })
+        .collect()
+}
+
+/// Stand a clip on the ground: shift the pelvis so the lowest an ankle gets
+/// over the whole clip is where the ankle stands at rest.
+///
+/// A take's floor is wherever its capture put it, and its hips' height is in
+/// its own units; rather than trust either, the clip is placed by its feet. One
+/// shift for the whole clip, so a jump still leaves the ground.
+fn ground(pack: &HumanPack, rest: &[RestBone], local: &[Vec<Quat>], pelvis_at: &mut [Vec3]) {
+    let (Some(pelvis), Some(feet)) = (
+        pack.bone("pelvis"),
+        pack.bone("foot_l").zip(pack.bone("foot_r")),
+    ) else {
+        return;
+    };
+    let frames = pelvis_at.len();
+    let rest_ankle = rest[feet.0].head.y.min(rest[feet.1].head.y);
+    let mut lowest = f32::INFINITY;
+    let mut world: Vec<(Vec3, Quat)> = vec![(Vec3::ZERO, Quat::IDENTITY); pack.bones.len()];
+    for f in 0..frames {
+        for (i, b) in pack.bones.iter().enumerate() {
+            let r = local[i].get(f).copied().unwrap_or(rest[i].rotation);
+            world[i] = match b.parent {
+                Some(p) => {
+                    let p = p as usize;
+                    let t = if i == pelvis {
+                        pelvis_at[f]
+                    } else {
+                        rest[p].rotation.inverse() * (rest[i].head - rest[p].head)
+                    };
+                    (world[p].0 + world[p].1 * t, world[p].1 * r)
+                }
+                None => (rest[i].head, r),
+            };
+        }
+        lowest = lowest.min(world[feet.0].0.y).min(world[feet.1].0.y);
+    }
+    if !lowest.is_finite() {
+        return;
+    }
+    // In the pelvis's parent's frame, which is the root's: turned at most
+    // about the vertical, so a world lift is a lift along its local up.
+    let lift = rest_ankle - lowest;
+    let up = pack.bones[pelvis]
+        .parent
+        .map_or(Vec3::Y, |p| rest[p as usize].rotation.inverse() * Vec3::Y);
+    for at in pelvis_at.iter_mut() {
+        *at += up * lift;
     }
 }
 

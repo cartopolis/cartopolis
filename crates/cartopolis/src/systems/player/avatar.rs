@@ -801,6 +801,13 @@ pub(crate) struct AvatarAnimations {
     /// Base playback speed for this model's clips (`Holder::anim_speed`). The
     /// locomotion clips are scaled on top of this to match ground speed.
     speed: f32,
+    /// The walk and run clips' timing, which differs between models: the
+    /// characters' hand-made cycles and the MakeHuman avatar's captured ones.
+    walk: ClipGait,
+    run: ClipGait,
+    /// How long each emote holds the body, in `EMOTE_CLIPS` order: the clip's
+    /// own length for a captured gesture, [`EMOTE_DURATION`] for the characters.
+    emote_secs: Vec<f32>,
 }
 
 /// A one-shot emote currently playing on an avatar. Present only while it runs;
@@ -854,7 +861,7 @@ pub fn spawn_avatar(
         } else {
             AvatarAppearance::default()
         };
-        if is_local && human_avatar::enabled() {
+        if is_local && human_avatar::enabled() && !human.failed() {
             // Not loaded yet: leave the avatar unmarked and come back next frame.
             let Some(pack) = human.pack() else { continue };
             let look = human_avatar::default_look(appearance.sex);
@@ -877,6 +884,9 @@ pub fn spawn_avatar(
                 emote_indices: indices[3..indices.len() - 1].to_vec(),
                 sit_index: indices[indices.len() - 1],
                 speed: 1.0,
+                walk: spawned.walk,
+                run: spawned.run,
+                emote_secs: spawned.emote_secs,
             };
             let mut player = AnimationPlayer::default();
             let mut transitions = AnimationTransitions::new();
@@ -945,6 +955,9 @@ pub fn spawn_avatar(
                 emote_indices: indices[3..indices.len() - 1].to_vec(),
                 sit_index: indices[indices.len() - 1],
                 speed: h.anim_speed,
+                walk: ClipGait::CHARACTER_WALK,
+                run: ClipGait::CHARACTER_RUN,
+                emote_secs: vec![EMOTE_DURATION; EMOTE_CLIPS.len()],
             };
             if entity_anims.is_none() {
                 entity_anims = Some(anims.clone());
@@ -1193,9 +1206,30 @@ enum PoseClip {
     Emote(usize),
 }
 
+/// One locomotion clip's timing: its cycle (two footfalls) and the ground
+/// speed it was made at, which the playback rate is scaled against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClipGait {
+    pub secs: f32,
+    pub speed: f32,
+}
+
+impl ClipGait {
+    /// The Quaternius characters' `Walk` and `Run`.
+    pub(crate) const CHARACTER_WALK: Self = Self {
+        secs: locomotion::WALK_CLIP_SECS,
+        speed: locomotion::WALK_CLIP_SPEED,
+    };
+    pub(crate) const CHARACTER_RUN: Self = Self {
+        secs: locomotion::RUN_CLIP_SECS,
+        speed: locomotion::RUN_CLIP_SPEED,
+    };
+}
+
 /// Choose the locomotion pose for a ground speed. `running` is the previous
-/// answer, for the hysteresis in `locomotion::wants_run_clip`.
-fn locomotion_pose(speed: f32, flying: bool, running: bool) -> Pose {
+/// answer, for the hysteresis in `locomotion::wants_run_clip`; `gaits` are the
+/// model's walk and run.
+fn locomotion_pose(speed: f32, flying: bool, running: bool, gaits: (ClipGait, ClipGait)) -> Pose {
     if flying {
         return Pose {
             clip: PoseClip::Fly,
@@ -1211,12 +1245,12 @@ fn locomotion_pose(speed: f32, flying: bool, running: bool) -> Pose {
     if locomotion::wants_run_clip(speed, running) {
         Pose {
             clip: PoseClip::Run,
-            rate: locomotion::clip_speed_for(speed, locomotion::RUN_CLIP_SPEED),
+            rate: locomotion::clip_speed_for(speed, gaits.1.speed),
         }
     } else {
         Pose {
             clip: PoseClip::Walk,
-            rate: locomotion::clip_speed_for(speed, locomotion::WALK_CLIP_SPEED),
+            rate: locomotion::clip_speed_for(speed, gaits.0.speed),
         }
     }
 }
@@ -1227,12 +1261,19 @@ impl AvatarAnimations {
     /// everything else — idle, flight and the emotes have no stride to carry.
     fn cycle_secs(&self, node: AnimationNodeIndex) -> Option<f32> {
         if node == self.walk_index {
-            Some(locomotion::WALK_CLIP_SECS)
+            Some(self.walk.secs)
         } else if node == self.run_index {
-            Some(locomotion::RUN_CLIP_SECS)
+            Some(self.run.secs)
         } else {
             None
         }
+    }
+
+    fn emote_secs(&self, emote: Emote) -> f32 {
+        self.emote_secs
+            .get(emote_slot(emote))
+            .copied()
+            .unwrap_or(EMOTE_DURATION)
     }
 
     fn node(&self, clip: PoseClip) -> AnimationNodeIndex {
@@ -1442,6 +1483,11 @@ pub fn update_avatar_animation(
     let started = avatar_state.pending_emote.take();
 
     for (avatar_entity, emote_playback) in avatar_query.iter_mut() {
+        let emote_secs = |e: Emote| {
+            animations_to_play
+                .get(avatar_entity)
+                .map_or(EMOTE_DURATION, |a| a.emote_secs(e))
+        };
         // An emote owns the body until it finishes — or until the avatar moves,
         // which cancels it. Standing still to wave is a rule players already know,
         // and it avoids a wave sliding across the pavement.
@@ -1449,13 +1495,13 @@ pub fn update_avatar_animation(
         match (started, emote_playback) {
             (Some(e), Some(mut playback)) => {
                 playback.emote = e;
-                playback.remaining = EMOTE_DURATION;
+                playback.remaining = emote_secs(e);
                 active_emote = Some(e);
             }
             (Some(e), None) => {
                 commands.entity(avatar_entity).insert(EmotePlayback {
                     emote: e,
-                    remaining: EMOTE_DURATION,
+                    remaining: emote_secs(e),
                 });
                 active_emote = Some(e);
             }
@@ -1482,7 +1528,16 @@ pub fn update_avatar_animation(
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
-            (false, None) => locomotion_pose(stride, avatar_state.is_flying, *running),
+            (false, None) => locomotion_pose(
+                stride,
+                avatar_state.is_flying,
+                *running,
+                animations_to_play
+                    .get(avatar_entity)
+                    .map_or((ClipGait::CHARACTER_WALK, ClipGait::CHARACTER_RUN), |a| {
+                        (a.walk, a.run)
+                    }),
+            ),
         };
         // A capture stepping through one clip outranks everything; the clip is
         // held still by `pin_avatar_animation`.
@@ -1950,13 +2005,13 @@ pub fn update_remote_avatar_animation(
         match (remote.pending_emote, emote_playback) {
             (Some(e), Some(mut playback)) => {
                 playback.emote = e;
-                playback.remaining = EMOTE_DURATION;
+                playback.remaining = anim.emote_secs(e);
                 active_emote = Some(e);
             }
             (Some(e), None) => {
                 commands.entity(avatar_entity).insert(EmotePlayback {
                     emote: e,
-                    remaining: EMOTE_DURATION,
+                    remaining: anim.emote_secs(e),
                 });
                 active_emote = Some(e);
             }
@@ -1984,7 +2039,12 @@ pub fn update_remote_avatar_animation(
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
-            (false, None) => locomotion_pose(if moving { speed } else { 0.0 }, false, was_running),
+            (false, None) => locomotion_pose(
+                if moving { speed } else { 0.0 },
+                false,
+                was_running,
+                (anim.walk, anim.run),
+            ),
         };
         running.insert(avatar_entity, pose.clip == PoseClip::Run);
 

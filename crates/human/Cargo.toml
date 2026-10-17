@@ -1,6 +1,6 @@
 # Realistic people built at runtime from MakeHuman's CC0 data: a body shaped by
-# the macro sliders, clothes fitted to it, a skeleton placed in it, and the
-# Quaternius animation library (CC0) retargeted onto that skeleton
+# the macro sliders, clothes fitted to it, a skeleton placed in it, and
+# motion capture (100STYLE, CMU) retargeted onto that skeleton
 # (docs/notes/makehuman-avatars.md).
 #
 # Bevy-free for the reason cartopolis_geo is: the shaping, fitting and
@@ -24,18 +24,15 @@ required-features = ["pack"]
 test = false
 
 [features]
-# Reading the MakeHuman and glTF sources to write a pack. Only the pack tool
+# Reading the MakeHuman and motion-capture sources to write a pack. Only the pack tool
 # needs it; the client reads the pack and nothing else.
-pack = ["dep:flate2", "dep:gltf", "dep:serde_json"]
+pack = ["dep:flate2", "dep:serde_json"]
 
 [dependencies]
 glam.workspace = true
 serde.workspace = true
 postcard.workspace = true
 flate2 = { version = "1.1", optional = true }
-# `default-features = false`: the default `import` feature decodes images,
-# which a skeleton and its clips do not have. The version `bevy_gltf` locks.
-gltf = { version = "1.4", default-features = false, features = ["names", "utils"], optional = true }
 serde_json = { workspace = true, optional = true }
 
 [lints]

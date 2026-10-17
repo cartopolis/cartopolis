@@ -1,5 +1,5 @@
 //! Writing a [`HumanPack`] from the sources: MPFB's `data/` directory, the
-//! MakeHuman system assets, and a Quaternius Universal Animation Library glb.
+//! MakeHuman system assets, and motion-capture takes cut into clips (`mocap`).
 //!
 //! The formats are MakeHuman's (`docs/fileformats/` in the mpfb2 repository)
 //! and are parsed here from their descriptions, not from MPFB's code, which is
@@ -9,11 +9,10 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use glam::{Quat, Vec3};
 use serde_json::Value;
 
 use crate::{
-    macros, Bone, Face, HumanPack, Phenotype, Proxy, ProxyKind, ProxyRef, Skin, SourceClip, Target,
+    macros, Bone, Face, HumanPack, Phenotype, Proxy, ProxyKind, ProxyRef, Skin, Target,
     BODY_VERTICES, PACK_VERSION,
 };
 
@@ -405,257 +404,6 @@ pub struct ProxySource {
     pub material: Option<PathBuf>,
 }
 
-// ── Animation ────────────────────────────────────────────────────────────────
-
-/// The library's name for a rig bone, or `None`. Both of Quaternius's
-/// spellings: UAL1's glb uses Rigify's (`DEF-upper_arm.L`), UAL2's the Unreal
-/// mannequin's (`upperarm_l`), which is the rig's own.
-#[must_use]
-pub fn library_bone(name: &str) -> Option<String> {
-    let lower = name.to_ascii_lowercase();
-    if lower == "root" {
-        return Some("Root".into());
-    }
-    let Some(rest) = name.strip_prefix("DEF-") else {
-        // Already the rig's naming, bar the case of `Head`.
-        return Some(if lower == "head" {
-            "head".into()
-        } else {
-            name.to_string()
-        });
-    };
-    let (stem, side) = match rest.rsplit_once('.') {
-        Some((s, "L")) => (s, Some("l")),
-        Some((s, "R")) => (s, Some("r")),
-        _ => (rest, None),
-    };
-    let base = match stem {
-        "hips" => "pelvis".to_string(),
-        "spine.001" => "spine_01".into(),
-        "spine.002" => "spine_02".into(),
-        "spine.003" => "spine_03".into(),
-        "neck" => "neck_01".into(),
-        "head" => "head".into(),
-        "shoulder" => "clavicle".into(),
-        "upper_arm" => "upperarm".into(),
-        "forearm" => "lowerarm".into(),
-        "hand" => "hand".into(),
-        "thigh" => "thigh".into(),
-        "shin" => "calf".into(),
-        "foot" => "foot".into(),
-        "toe" => "ball".into(),
-        other => {
-            // f_index.01 → index_01, thumb.02 → thumb_02
-            let other = other.strip_prefix("f_").unwrap_or(other);
-            let (finger, joint) = other.split_once('.')?;
-            format!("{finger}_{joint}")
-        }
-    };
-    Some(match side {
-        Some(s) => format!("{base}_{s}"),
-        None => base,
-    })
-}
-
-struct Node {
-    parent: Option<usize>,
-    t: Vec3,
-    r: Quat,
-    s: Vec3,
-}
-
-#[derive(Clone)]
-enum Channel {
-    Rotation(Vec<f32>, Vec<Quat>, bool),
-    Translation(Vec<f32>, Vec<Vec3>, bool),
-}
-
-fn segment(times: &[f32], t: f32) -> (usize, usize, f32) {
-    if times.is_empty() || t <= times[0] {
-        return (0, 0, 0.0);
-    }
-    let last = times.len() - 1;
-    if t >= times[last] {
-        return (last, last, 0.0);
-    }
-    let i = times.partition_point(|&x| x <= t) - 1;
-    let span = times[i + 1] - times[i];
-    (
-        i,
-        i + 1,
-        if span > 0.0 {
-            (t - times[i]) / span
-        } else {
-            0.0
-        },
-    )
-}
-
-/// Read every clip of a library glb, sampled at `fps`, as motion relative to
-/// the library's rest pose (its T-pose), mapped onto `bones`.
-pub fn read_library(glb: &Path, bones: &[Bone], fps: f32) -> Result<Vec<SourceClip>> {
-    let bytes = read(glb)?;
-    let gltf = gltf::Gltf::from_slice(&bytes).map_err(|e| format!("{}: {e}", glb.display()))?;
-    let blob = gltf
-        .blob
-        .as_deref()
-        .ok_or("library: a .glb with no binary chunk")?;
-    let doc = &gltf.document;
-
-    let mut nodes: Vec<Node> = doc
-        .nodes()
-        .map(|n| {
-            let (t, r, s) = n.transform().decomposed();
-            Node {
-                parent: None,
-                t: Vec3::from_array(t),
-                r: Quat::from_array(r),
-                s: Vec3::from_array(s),
-            }
-        })
-        .collect();
-    for n in doc.nodes() {
-        for c in n.children() {
-            nodes[c.index()].parent = Some(n.index());
-        }
-    }
-    // Rig bone → library node.
-    let mut map: Vec<Option<usize>> = vec![None; bones.len()];
-    for n in doc.nodes() {
-        let Some(name) = n.name().and_then(library_bone) else {
-            continue;
-        };
-        if let Some(b) = bones.iter().position(|b| b.name == name) {
-            map[b].get_or_insert(n.index());
-        }
-    }
-    let pelvis = bones.iter().position(|b| b.name == "pelvis");
-    if pelvis.and_then(|p| map[p]).is_none() {
-        return Err("library: no pelvis (DEF-hips / pelvis) among its nodes".into());
-    }
-
-    let world = |pose: &dyn Fn(usize) -> (Vec3, Quat)| -> Vec<(Vec3, Quat)> {
-        let mut out: Vec<Option<(Vec3, Quat)>> = vec![None; nodes.len()];
-        fn resolve(
-            i: usize,
-            nodes: &[Node],
-            pose: &dyn Fn(usize) -> (Vec3, Quat),
-            out: &mut Vec<Option<(Vec3, Quat)>>,
-        ) -> (Vec3, Quat) {
-            if let Some(w) = out[i] {
-                return w;
-            }
-            let (t, r) = pose(i);
-            let w = match nodes[i].parent {
-                Some(p) => {
-                    let (pt, pr) = resolve(p, nodes, pose, out);
-                    let ps = nodes[p].s;
-                    (pt + pr * (ps * t), (pr * r).normalize())
-                }
-                None => (t, r),
-            };
-            out[i] = Some(w);
-            w
-        }
-        (0..nodes.len())
-            .map(|i| resolve(i, &nodes, pose, &mut out))
-            .collect()
-    };
-    let rest = world(&|i| (nodes[i].t, nodes[i].r));
-
-    // Which way the library's character faces: toes ahead of the ankle.
-    let at = |name: &str| {
-        bones
-            .iter()
-            .position(|b| b.name == name)
-            .and_then(|b| map[b])
-    };
-    let facing_back = match (at("foot_l"), at("ball_l")) {
-        (Some(f), Some(t)) => rest[t].0.z < rest[f].0.z,
-        _ => false,
-    };
-    let turn = if facing_back {
-        Quat::from_rotation_y(std::f32::consts::PI)
-    } else {
-        Quat::IDENTITY
-    };
-    let p_node = map[pelvis.expect("checked above")].expect("checked above");
-    let hip_height = rest[p_node].0.y.max(1.0e-3);
-
-    let mut clips = Vec::new();
-    for anim in doc.animations() {
-        let mut channels: HashMap<usize, Vec<Channel>> = HashMap::new();
-        let mut duration: f32 = 0.0;
-        for ch in anim.channels() {
-            let node = ch.target().node().index();
-            let linear = ch.sampler().interpolation() != gltf::animation::Interpolation::Step;
-            let reader = ch.reader(|_| Some(blob));
-            let Some(times) = reader.read_inputs().map(|i| i.collect::<Vec<f32>>()) else {
-                continue;
-            };
-            duration = duration.max(times.last().copied().unwrap_or(0.0));
-            match reader.read_outputs() {
-                Some(gltf::animation::util::ReadOutputs::Rotations(r)) => {
-                    let q = r.into_f32().map(Quat::from_array).collect();
-                    channels
-                        .entry(node)
-                        .or_default()
-                        .push(Channel::Rotation(times, q, linear));
-                }
-                Some(gltf::animation::util::ReadOutputs::Translations(t)) => {
-                    let v = t.map(Vec3::from_array).collect();
-                    channels
-                        .entry(node)
-                        .or_default()
-                        .push(Channel::Translation(times, v, linear));
-                }
-                _ => {}
-            }
-        }
-        let frames = (duration * fps).round() as u32 + 1;
-        let mut rotations: Vec<Option<Vec<[f32; 4]>>> = map
-            .iter()
-            .map(|m| m.map(|_| Vec::with_capacity(frames as usize)))
-            .collect();
-        let mut hips = Vec::with_capacity(frames as usize);
-        for f in 0..frames {
-            let t = (f as f32 / fps).min(duration);
-            let posed = world(&|i| {
-                let (mut tr, mut rot) = (nodes[i].t, nodes[i].r);
-                for c in channels.get(&i).into_iter().flatten() {
-                    match c {
-                        Channel::Rotation(times, q, linear) => {
-                            let (a, b, s) = segment(times, t);
-                            rot = if *linear { q[a].slerp(q[b], s) } else { q[a] };
-                        }
-                        Channel::Translation(times, v, linear) => {
-                            let (a, b, s) = segment(times, t);
-                            tr = if *linear { v[a].lerp(v[b], s) } else { v[a] };
-                        }
-                    }
-                }
-                (tr, rot)
-            });
-            for (b, m) in map.iter().enumerate() {
-                if let (Some(n), Some(track)) = (m, rotations[b].as_mut()) {
-                    let delta = posed[*n].1 * rest[*n].1.inverse();
-                    track.push((turn * delta * turn.inverse()).normalize().to_array());
-                }
-            }
-            let offset = (posed[p_node].0 - rest[p_node].0) / hip_height;
-            hips.push((turn * offset).to_array());
-        }
-        clips.push(SourceClip {
-            name: anim.name().unwrap_or("").to_string(),
-            fps,
-            frames,
-            rotations: std::mem::take(&mut rotations),
-            hips,
-        });
-    }
-    Ok(clips)
-}
-
 // ── The pack ─────────────────────────────────────────────────────────────────
 
 /// Everything a pack is built from.
@@ -664,9 +412,8 @@ pub struct Sources {
     pub mpfb_data: PathBuf,
     pub skins: Vec<(String, PathBuf)>,
     pub proxies: Vec<ProxySource>,
-    pub library: PathBuf,
-    /// Clip names to keep (all when empty).
-    pub clips: Vec<String>,
+    /// The clips, each cut from a take.
+    pub cuts: Vec<crate::mocap::Cut>,
     /// The bodies the pack must be able to make: every target their sliders
     /// need is carried, and no other.
     pub bodies: Vec<Phenotype>,
@@ -815,9 +562,22 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let mut clips = read_library(&src.library, &bones, 30.0)?;
-    if !src.clips.is_empty() {
-        clips.retain(|c| src.clips.contains(&c.name));
+    // Each take is parsed once, however many clips are cut from it.
+    let mut takes: HashMap<PathBuf, crate::mocap::Motion> = HashMap::new();
+    let mut clips = Vec::with_capacity(src.cuts.len());
+    for cut in &src.cuts {
+        if !takes.contains_key(&cut.file) {
+            takes.insert(
+                cut.file.clone(),
+                crate::mocap::parse_bvh(&read_text(&cut.file)?)?,
+            );
+        }
+        clips.push(crate::mocap::clip_from_motion(
+            &takes[&cut.file],
+            cut,
+            &bones,
+            30.0,
+        )?);
     }
 
     Ok(HumanPack {
@@ -837,24 +597,6 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn library_names_map_onto_the_rig() {
-        for (lib, rig) in [
-            ("root", "Root"),
-            ("DEF-hips", "pelvis"),
-            ("DEF-spine.003", "spine_03"),
-            ("DEF-upper_arm.L", "upperarm_l"),
-            ("DEF-shin.R", "calf_r"),
-            ("DEF-toe.L", "ball_l"),
-            ("DEF-f_index.02.L", "index_02_l"),
-            ("DEF-thumb.01.R", "thumb_01_r"),
-            ("Head", "head"),
-            ("upperarm_l", "upperarm_l"),
-        ] {
-            assert_eq!(library_bone(lib).as_deref(), Some(rig), "{lib}");
-        }
-    }
 
     #[test]
     fn a_delete_list_reads_ranges_across_lines() {
