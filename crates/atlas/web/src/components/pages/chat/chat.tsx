@@ -12,6 +12,7 @@ import {
     type Message,
     type Role,
 } from '@/lib/chat'
+import type {CallMember} from '@/lib/call'
 import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
@@ -166,6 +167,91 @@ function callStatus(calls: ChatClient['calls']): string {
 export function gridColumns(n: number, wide: boolean): number {
     if (!wide) return n <= 2 ? 1 : 2
     return Math.max(1, Math.ceil(Math.sqrt(n)))
+}
+
+
+/** The reactions a call offers, in the order the picker shows them. */
+const CALL_REACTIONS = ['👍', '👏', '😂', '❤️', '🎉', '😮']
+
+/** Somebody on the call's stage; `participant` -1 is this device. */
+interface CallPerson {
+    audio: MediaStream | null
+    key: string
+    member: CallMember | null
+    name: string
+    participant: number
+    video: MediaStream | null
+}
+
+/**
+ * One person on the stage: their picture or their initial, what they say
+ * (their sound plays from here), and what the call knows about them — talking
+ * (a teal edge), muted or held by a host, a raised hand's place in the queue,
+ * a host's badge, a reaction floating up.
+ */
+function callTile(calls: ChatClient['calls'], p: CallPerson) {
+    const isSelf = p.participant === -1
+    const talking = calls.speaking(p.participant)
+    const reaction = calls.reactionOf(p.participant)
+    const who = p.member
+    const muted = isSelf ? calls.active?.muted : who?.muted
+    return (
+        <figure class={['chat-call-tile', isSelf ? 'is-self' : '', talking ? 'is-talking' : ''].join(' ')} key={p.key}>
+            {p.video ? Media(p.video, 'video', true) : <span class="chat-call-face">{Avatar(isSelf ? (chat().address ?? 'You') : p.name, 72)}</span>}
+            {p.audio && Media(p.audio, 'audio', false)}
+            {who?.hand != null && (
+                <span class="meet-tile-hand" title="Hand raised">
+                    {Icon('back_hand')} {calls.members().filter((x) => x.hand !== null && x.hand <= (who.hand ?? 0)).length}
+                </span>
+            )}
+            {/* Keyed by the reaction, in a fragment of its own, so a new one restarts the rise. */}
+            {[
+                reaction && (
+                    <span class="meet-tile-react" key={reaction.id}>
+                        {reaction.emoji}
+                    </span>
+                ),
+            ]}
+            <figcaption>
+                {who?.held ? <span class="meet-mic is-held">{Icon('lock')}</span> : muted ? <span class="meet-mic is-off">{Icon('mic_off')}</span> : null}
+                {p.name}
+                {who && who.role !== 'member' && <span class="meet-tile-host" title={who.role === 'host' ? 'Host' : 'Co-host'}>{Icon('shield_person')}</span>}
+            </figcaption>
+        </figure>
+    )
+}
+
+/** The call's keys on a desktop: M, V and H, and Space held to talk while muted. */
+let callKeysFor: object | null = null
+
+function installCallKeys(calls: ChatClient['calls'], s: {callMenu: string | null}): void {
+    if (callKeysFor === calls) return
+    callKeysFor = calls
+    let spaceTalk = false
+    const typing = (e: KeyboardEvent) => {
+        const t = e.target as HTMLElement | null
+        return !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
+    }
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+        const a = calls.active
+        if (!a || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return
+        if (e.key === 'Escape' && s.callMenu) {
+            s.callMenu = null
+            m.redraw()
+        } else if (e.code === 'Space' && a.muted && !e.repeat && !calls.self()?.held) {
+            spaceTalk = true
+            calls.setMuted(false)
+            e.preventDefault()
+        } else if (e.key === 'm' || e.key === 'M') calls.setMuted(!a.muted)
+        else if (e.key === 'v' || e.key === 'V') void calls.setCamera(!a.camera)
+        else if (e.key === 'h' || e.key === 'H') calls.raiseHand(calls.self()?.hand == null)
+    })
+    document.addEventListener('keyup', (e: KeyboardEvent) => {
+        if (e.code === 'Space' && spaceTalk) {
+            spaceTalk = false
+            calls.setMuted(true)
+        }
+    })
 }
 
 /** Pictures — a community's, a person's — as object URLs, by hash: fetched once, with the session. */
@@ -346,6 +432,12 @@ interface PageState {
     busy: boolean
     /** The call is the wide view in the middle and the chat sits beside it. */
     callFocus: boolean
+    /** Speaker (whoever talks is large) or Gallery (everyone equal). */
+    callLayout: 'speaker' | 'gallery'
+    /** The panel beside the meeting when it is in the middle. */
+    callPanel: 'people' | null
+    /** The call menu or picker open: `react`, `more`, `leave`, or `person<n>`. */
+    callMenu: string | null
     /** A ringing call folded down to a banner, by channel. */
     ringFolded: string | null
 }
@@ -387,6 +479,9 @@ export class Chat extends MithrilComponent {
         adminChecked: false,
         busy: false,
         callFocus: false,
+        callLayout: 'gallery',
+        callMenu: null,
+        callPanel: null,
         community: emptyDraft(),
         dialog: null,
         draft: {},
@@ -631,6 +726,7 @@ export class Chat extends MithrilComponent {
                     s.space === null ? 'is-spaces' : '',
                     inCall ? 'is-in-call' : '',
                     inCall && s.callFocus ? 'is-call-focus' : '',
+                    inCall && s.callFocus && s.callPanel === 'people' ? 'is-call-people' : '',
                 ].join(' ')}
             >
                 {this.rail()}
@@ -1231,14 +1327,17 @@ export class Chat extends MithrilComponent {
     }
 
     /**
-     * The call this page is in, as a panel beside the chat — or as the wide view
-     * in the middle with the chat beside it (`callFocus`), swapped by one button.
+     * The call this page is in (`docs/mockups/meetings/` v2): a panel beside the
+     * chat, or, swapped (`callFocus`), the meeting in the middle with the chat or
+     * the people beside it.
      *
-     * Its people are a balanced grid, not a masonry: every picture is a camera
-     * frame of the same shape, so the layout's job is to pick a column count
-     * that keeps them as large as the space allows (`gridColumns`), as Meet and
-     * Jitsi do. One other person fills the panel and this device's own picture
-     * is a small window in its corner, as on the app's call screen.
+     * The stage gets the space. A shared screen takes it whole, with everybody in
+     * a strip beside it; otherwise Speaker puts whoever is talking large, and
+     * Gallery is a balanced grid (`gridColumns`) — every picture a camera frame of
+     * one shape, so the layout's only job is a column count, as Meet and Jitsi
+     * do. Controls are one dock: microphone, camera, share, react, hand, more,
+     * and Leave in red with a word on it. Interruptions are notices with their
+     * button in them; a host admits nothing from a panel it has to open.
      */
     callStage() {
         const c = chat()
@@ -1246,38 +1345,333 @@ export class Chat extends MithrilComponent {
         const a = calls.active
         if (!a) return null
         const s = this.s
+        installCallKeys(calls, s)
         const others = calls.others(a.channel)
-        const self = calls.selfView()
-        const me = c.address ?? 'You'
+        const me = calls.self()
+        const hosting = calls.hosting()
+        const settings = calls.settings()
         const name = this.chatTitle(a.channel)
-        const people = others.map((o) => {
-            const t = [...a.tiles.values()].find((x) => x.participant === o.participant)
-            return {audio: t?.audio ?? null, key: `p${o.participant}`, name: o.username, video: t?.video ?? null}
+        const people: CallPerson[] = others.map((o) => {
+            const t = a.tiles.get(o.participant)
+            return {audio: t?.audio ?? null, key: `p${o.participant}`, member: o, name: o.username, participant: o.participant, video: t?.video ?? null}
         })
         // Pictures and sound from somebody the roster has not named yet.
         for (const t of a.tiles.values()) {
             if (!others.some((o) => o.participant === t.participant)) {
-                people.push({audio: t.audio, key: `p${t.participant}`, name: '…', video: t.video})
+                people.push({audio: t.audio, key: `p${t.participant}`, member: null, name: '…', participant: t.participant, video: t.video})
             }
         }
-        const pip = people.length <= 1
-        const tiles = pip ? people : [...people, {audio: null, key: 'self', name: 'You', video: self}]
-        const cols = gridColumns(Math.max(tiles.length, 1), s.callFocus)
-        const tile = (p: {audio: MediaStream | null; key: string; name: string; video: MediaStream | null}, isSelf: boolean) => (
-            <figure class={isSelf ? 'chat-call-tile is-self' : 'chat-call-tile'} key={p.key}>
-                {p.video
-                    ? Media(p.video, 'video', true)
-                    : <span class="chat-call-face">{Avatar(isSelf ? me : p.name, 72)}</span>}
-                {p.audio && Media(p.audio, 'audio', false)}
-                <figcaption>{p.name}</figcaption>
-            </figure>
+        const self: CallPerson = {audio: null, key: 'self', member: me, name: 'You', participant: -1, video: calls.selfView()}
+        const share = calls.sharer()
+        const menu = s.callMenu
+        const setMenu = (m: string | null) => (s.callMenu = s.callMenu === m ? null : m)
+
+        // ── The stage ─────────────────────────────────────────────────────
+        let stage: m.Children
+        if (share) {
+            stage = (
+                <div class="meet-stage is-share">
+                    <div class="meet-screen">
+                        {Media(share.stream, 'video', true)}
+                        <span class="meet-presenter">
+                            {Icon('screen_share')} {share.member.username} is presenting
+                        </span>
+                    </div>
+                    <div class="meet-strip">{[...people, self].map((p) => callTile(calls, p))}</div>
+                </div>
+            )
+        } else if (s.callLayout === 'speaker' && people.length >= 2) {
+            const big = people.find((p) => p.participant === calls.speaker()) ?? people[0]
+            stage = (
+                <div class="meet-stage is-speaker">
+                    <div class="meet-big">{callTile(calls, big)}</div>
+                    <div class="meet-strip is-row">{[...people.filter((p) => p !== big), self].map((p) => callTile(calls, p))}</div>
+                </div>
+            )
+        } else {
+            const pip = people.length <= 1
+            const tiles = pip ? people : [...people, self]
+            const cols = gridColumns(Math.max(tiles.length, 1), s.callFocus)
+            stage = (
+                <div class={pip ? 'meet-stage chat-call-grid is-pair' : 'meet-stage chat-call-grid'} style={`--cols:${cols}`}>
+                    {people.length === 0 && (
+                        <div class="chat-call-waiting">
+                            {Avatar(name, 96)}
+                            <span>{a.since === null ? 'Ringing…' : 'Waiting for their picture and sound…'}</span>
+                        </div>
+                    )}
+                    {tiles.map((p) => callTile(calls, p))}
+                    {pip && self.video && <div class="chat-call-pip">{callTile(calls, self)}</div>}
+                </div>
+            )
+        }
+
+        // ── Notices, each with its own button ────────────────────────────
+        const toasts = (
+            <div class="meet-toasts">
+                {calls.toasts.map((t) => (
+                    <div class={`meet-toast is-${t.kind}`} key={t.id} role="status">
+                        <span class="meet-toast-icon">{Icon(t.kind === 'hand' ? 'back_hand' : t.kind === 'held' ? 'mic_off' : t.kind === 'free' ? 'mic' : 'chat')}</span>
+                        <span class="meet-toast-text">
+                            <b>{t.text}</b>
+                            {t.sub && <span>{t.sub}</span>}
+                        </span>
+                        {t.kind === 'hand' && hosting && t.participant !== undefined && (
+                            <button
+                                class="meet-btn is-primary"
+                                onclick={() => {
+                                    calls.control({AllowTalk: {participant: t.participant}})
+                                    calls.dismissToast(t.id)
+                                }}
+                            >
+                                Let talk
+                            </button>
+                        )}
+                        {t.kind === 'held' && !me?.hand && (
+                            <button class="meet-btn is-primary" onclick={() => calls.raiseHand(true)}>
+                                {Icon('back_hand')} Raise hand
+                            </button>
+                        )}
+                        <button aria-label="Dismiss" class="meet-btn is-icon" onclick={() => calls.dismissToast(t.id)} title="Dismiss">
+                            {Icon('close')}
+                        </button>
+                    </div>
+                ))}
+            </div>
         )
+        const nudge = calls.nudging() && (
+            <div class="meet-nudge" role="status">
+                <span class="meet-toast-icon is-cream">{Icon('mic_off')}</span>
+                <span class="meet-toast-text">
+                    <b>You're muted</b>
+                    <span>
+                        You've been talking. Hold <kbd>Space</kbd> to talk.
+                    </span>
+                </span>
+                <button class="meet-btn is-primary" onclick={() => calls.setMuted(false)}>
+                    Unmute
+                </button>
+            </div>
+        )
+        const sharing = a.sharing && (
+            <div class="meet-sharing" role="status">
+                <i />
+                <b>You're sharing your screen</b>
+                <span>{others.length} watching</span>
+                <button class="meet-btn is-danger" onclick={() => void calls.setScreen(false)}>
+                    {Icon('stop_screen_share')} Stop
+                </button>
+            </div>
+        )
+
+        // ── The dock ─────────────────────────────────────────────────────
+        const held = !!me?.held
+        const raised = me?.hand != null
+        const key = (icon: string, label: string, tone: string, onclick: () => void, extra: m.Children = null) => (
+            <button aria-label={label} class={`meet-key ${tone}`} onclick={onclick} title={label}>
+                {Icon(icon)}
+                {extra}
+            </button>
+        )
+        const react = menu === 'react' && (
+            <div class="meet-pop is-react" role="menu">
+                {CALL_REACTIONS.map((e) => (
+                    <button
+                        class="meet-emoji"
+                        onclick={() => {
+                            void calls.react(e)
+                            s.callMenu = null
+                        }}
+                        title={`React ${e}`}
+                    >
+                        {e}
+                    </button>
+                ))}
+            </div>
+        )
+        const row = (icon: string, label: string, onclick: () => void, opts: {danger?: boolean; on?: boolean; hint?: string} = {}) => (
+            <button class={opts.danger ? 'meet-menu-row is-danger' : 'meet-menu-row'} onclick={onclick} role="menuitem">
+                {Icon(icon)}
+                <span>{label}</span>
+                {opts.hint && <small>{opts.hint}</small>}
+                {opts.on !== undefined && <span class={opts.on ? 'meet-switch is-on' : 'meet-switch'} />}
+            </button>
+        )
+        const set = (patch: Partial<typeof settings>) => calls.control({Settings: {...settings, ...patch}})
+        const more = menu === 'more' && (
+            <div class="meet-pop is-menu" role="menu">
+                <div class="meet-menu-label">Layout</div>
+                {row('featured_video', 'Speaker', () => (s.callLayout = 'speaker'), {on: s.callLayout === 'speaker'})}
+                {row('grid_view', 'Gallery', () => (s.callLayout = 'gallery'), {on: s.callLayout === 'gallery'})}
+                {hosting && [
+                    <hr />,
+                    <div class="meet-menu-label">Hosting</div>,
+                    row('lock', 'Lock the call', () => set({locked: !settings.locked}), {on: settings.locked}),
+                    row('mic', 'Others may unmute', () => set({may_unmute: !settings.may_unmute}), {on: settings.may_unmute}),
+                    row('screen_share', 'Others may share', () => set({may_share: !settings.may_share}), {on: settings.may_share}),
+                    row('mic_off', 'Mute everyone', () => {
+                        calls.control('MuteAll')
+                        s.callMenu = null
+                    }),
+                    <hr />,
+                    row('call_end', 'End for everyone', () => calls.control('EndForAll'), {danger: true}),
+                ]}
+            </div>
+        )
+        const leave = () => {
+            if (hosting && others.length) setMenu('leave')
+            else calls.hangUp()
+        }
+        const leaveMenu = menu === 'leave' && (
+            <div class="meet-pop is-menu is-leave" role="menu">
+                <div class="meet-menu-label">Leave the call?</div>
+                {row('logout', 'Leave', () => calls.hangUp(), {hint: 'The call goes on'})}
+                {row('call_end', 'End for everyone', () => calls.control('EndForAll'), {danger: true, hint: `${others.length} others leave too`})}
+            </div>
+        )
+        const dock = (
+            <footer class="meet-dock">
+                {key(held ? 'lock' : a.muted ? 'mic_off' : 'mic', held ? 'A host muted you' : a.muted ? 'Unmute (M)' : 'Mute (M)', a.muted || held ? 'is-off' : '', () => calls.setMuted(!a.muted))}
+                {key(a.camera ? 'videocam' : 'videocam_off', a.camera ? 'Camera off (V)' : 'Camera on (V)', a.camera ? '' : 'is-off', () => void calls.setCamera(!a.camera))}
+                <span class="meet-sep" />
+                {key(a.sharing ? 'stop_screen_share' : 'screen_share', a.sharing ? 'Stop sharing' : 'Share your screen', a.sharing ? 'is-on' : '', () => void calls.setScreen(!a.sharing))}
+                <span class="meet-anchor">
+                    {key('add_reaction', 'React', menu === 'react' ? 'is-sel' : '', () => setMenu('react'))}
+                    {react}
+                </span>
+                {key('back_hand', raised ? 'Lower your hand (H)' : 'Raise your hand (H)', raised ? 'is-hand' : '', () => calls.raiseHand(!raised))}
+                <span class="meet-sep" />
+                <span class="meet-anchor">
+                    {key('more_horiz', 'More', menu === 'more' ? 'is-sel' : '', () => setMenu('more'))}
+                    {more}
+                </span>
+                <span class="meet-sep" />
+                <span class="meet-anchor">
+                    <button class="meet-leave" onclick={leave} title="Leave the call">
+                        {Icon('call_end')}
+                        <span>Leave</span>
+                    </button>
+                    {leaveMenu}
+                </span>
+            </footer>
+        )
+
+        // ── People ───────────────────────────────────────────────────────
+        const members = calls.members()
+        const hands = members.filter((m) => m.hand !== null).sort((x, y) => (x.hand ?? 0) - (y.hand ?? 0))
+        const panel = s.callFocus && s.callPanel === 'people' && (
+            <aside class="meet-panel" aria-label="People in the call">
+                <header class="meet-panel-head">
+                    <b>People · {members.length}</b>
+                    <button aria-label="Close" class="meet-btn is-icon" onclick={() => (s.callPanel = null)} title="Close">
+                        {Icon('close')}
+                    </button>
+                </header>
+                <div class="meet-panel-body">
+                    {hands.length > 0 && (
+                        <section>
+                            <h4>Hands up <span>in order</span></h4>
+                            {hands.map((mem, i) => (
+                                <div class="meet-row" key={`h${mem.participant}`}>
+                                    <span class="meet-q">{i + 1}</span>
+                                    <span class="meet-row-name">
+                                        <b>{mem.participant === a.participant ? 'You' : mem.username}</b>
+                                    </span>
+                                    {hosting && (
+                                        <button class="meet-btn is-primary" onclick={() => calls.control({AllowTalk: {participant: mem.participant}})}>
+                                            Let talk
+                                        </button>
+                                    )}
+                                    {(hosting || mem.participant === a.participant) && (
+                                        <button
+                                            aria-label="Lower"
+                                            class="meet-btn is-icon"
+                                            onclick={() =>
+                                                mem.participant === a.participant ? calls.raiseHand(false) : calls.control({LowerHand: {participant: mem.participant}})
+                                            }
+                                            title="Lower the hand"
+                                        >
+                                            {Icon('close')}
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                        </section>
+                    )}
+                    <section>
+                        <h4>In the call <span>{members.length}</span></h4>
+                        {members.map((mem) => {
+                            const isMe = mem.participant === a.participant
+                            const id = `person${mem.participant}`
+                            return (
+                                <div class={calls.speaking(isMe ? -1 : mem.participant) ? 'meet-row is-talking' : 'meet-row'} key={`m${mem.participant}`}>
+                                    {Avatar(mem.username, 30)}
+                                    <span class="meet-row-name">
+                                        <b>
+                                            {isMe ? 'You' : mem.username}
+                                            {mem.role !== 'member' && <span class="meet-badge">{mem.role === 'host' ? 'HOST' : 'CO-HOST'}</span>}
+                                        </b>
+                                        {mem.sharing && <small>presenting</small>}
+                                    </span>
+                                    <span class="meet-row-state">
+                                        {mem.sharing && Icon('screen_share')}
+                                        {mem.held ? Icon('lock') : mem.muted ? <span class="is-muted">{Icon('mic_off')}</span> : Icon('mic')}
+                                    </span>
+                                    {hosting && !isMe && (
+                                        <span class="meet-anchor">
+                                            <button aria-label="Host actions" class="meet-btn is-icon" onclick={() => setMenu(id)} title="Host actions">
+                                                {Icon('more_horiz')}
+                                            </button>
+                                            {menu === id && (
+                                                <div class="meet-pop is-menu is-person" role="menu">
+                                                    {mem.held
+                                                        ? row('mic', 'Let talk', () => calls.control({AllowTalk: {participant: mem.participant}}))
+                                                        : row('mic_off', 'Mute', () => calls.control({Mute: {participant: mem.participant}}))}
+                                                    {mem.sharing && row('stop_screen_share', 'Stop their screen', () => calls.control({StopSharing: {participant: mem.participant}}))}
+                                                    {mem.role === 'member' && row('shield_person', 'Make co-host', () => calls.control({Role: {participant: mem.participant, role: 'CoHost'}}))}
+                                                    {mem.role === 'cohost' && row('shield_person', 'Make a member again', () => calls.control({Role: {participant: mem.participant, role: 'Member'}}))}
+                                                    {me?.role === 'host' && mem.role !== 'host' && row('star', 'Hand the call over', () => calls.control({Role: {participant: mem.participant, role: 'Host'}}))}
+                                                    <hr />
+                                                    {row('person_remove', 'Remove from the call', () => calls.control({Remove: {participant: mem.participant}}), {danger: true})}
+                                                </div>
+                                            )}
+                                        </span>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </section>
+                </div>
+                {hosting && (
+                    <footer class="meet-panel-foot">
+                        <button class="meet-btn" onclick={() => calls.control('MuteAll')}>
+                            {Icon('mic_off')} Mute everyone
+                        </button>
+                    </footer>
+                )}
+            </aside>
+        )
+
         return (
-            <aside class="chat-call">
+            <aside class={s.callFocus ? 'chat-call meet is-focus' : 'chat-call meet'}>
                 <header class="chat-call-head">
                     <button class="chat-call-title" onclick={() => this.open(a.channel)} title="Open this chat">
                         <b>{name}</b>
-                        <span class="chat-sub">🔐 {callStatus(calls)}</span>
+                        <span class="chat-sub">
+                            {Icon('lock')} Encrypted · {callStatus(calls)}
+                        </span>
+                    </button>
+                    <button
+                        class={s.callPanel === 'people' && s.callFocus ? 'chat-call-swap is-on' : 'chat-call-swap'}
+                        onclick={() => {
+                            s.callFocus = true
+                            s.callPanel = s.callPanel === 'people' ? null : 'people'
+                        }}
+                        title="People in the call"
+                    >
+                        {Icon('group')}
+                        <span>{members.length}</span>
+                        {hands.length > 0 && <span class="meet-hands">{hands.length}</span>}
                     </button>
                     <button
                         class="chat-call-swap"
@@ -1288,21 +1682,17 @@ export class Chat extends MithrilComponent {
                         <span>{s.callFocus ? 'Chat' : 'Swap'}</span>
                     </button>
                 </header>
-                <div class={pip ? 'chat-call-grid is-pair' : 'chat-call-grid'} style={`--cols:${cols}`}>
-                    {people.length === 0 && (
-                        <div class="chat-call-waiting">
-                            {Avatar(name, 96)}
-                            <span>{a.since === null ? 'Ringing…' : 'Waiting for their picture and sound…'}</span>
-                        </div>
-                    )}
-                    {tiles.map((p) => tile(p, p.key === 'self'))}
-                    {pip && self && <div class="chat-call-pip">{tile({audio: null, key: 'self', name: 'You', video: self}, true)}</div>}
+                <div class="meet-body">
+                    <div class="meet-main">
+                        {sharing}
+                        {stage}
+                        {toasts}
+                        {nudge}
+                        {dock}
+                        {menu && <div class="meet-scrim" onclick={() => (s.callMenu = null)} />}
+                    </div>
+                    {panel}
                 </div>
-                <footer class="chat-call-controls">
-                    {CallKey(a.camera ? 'videocam' : 'videocam_off', a.camera ? 'Camera' : 'Camera off', a.camera ? 'glass' : 'off', () => void calls.setCamera(!a.camera))}
-                    {CallKey(a.muted ? 'mic_off' : 'mic', a.muted ? 'Unmute' : 'Mute', a.muted ? 'off' : 'glass', () => calls.setMuted(!a.muted))}
-                    {CallKey('call_end', 'End', 'hangup', () => calls.hangUp())}
-                </footer>
             </aside>
         )
     }

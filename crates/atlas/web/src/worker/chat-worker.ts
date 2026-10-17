@@ -441,7 +441,13 @@ async function run(command: Command, from: Port): Promise<void> {
                 ),
             )
         case 'call_join':
-            return c.community((core) => core.call_join(command.channel, command.offer))
+            return c.community((core) => core.call_join(command.channel, command.offer, command.screen))
+        case 'call_control':
+            return c.community((core) => core.call_control(command.channel, command.action))
+        case 'call_react':
+            return c.community((core) => core.call_react(command.channel, command.epoch, command.sealed))
+        case 'call_watch':
+            return c.community((core) => core.call_watch(command.channel, command.cameras))
         case 'call_answer':
             return c.community((core) => core.call_answer(command.channel, command.sdp))
         case 'call_leave':

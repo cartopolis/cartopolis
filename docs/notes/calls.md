@@ -539,3 +539,23 @@ host. Decisions, so they are not undone:
 - **A refused host action does not end the call.** It comes back as a
   `ServerError` under `CALL_CONTROL_REQUEST`, which both clients show as a
   notice; any other error in the call's request range still ends it.
+
+**On the chat page** (`src/lib/call.ts`, `chat.tsx`'s `callStage`): the stage,
+a floating dock, notices with their own button, a people island, Speaker and
+Gallery, M / V / H and Space held to talk. Who is talking, and talking into a
+muted microphone, are measured on the page from the sound it already plays
+(Web Audio analysers; `webcall.js` keeps an unmuted clone of the microphone
+for the second), so the server learns nothing from either. **Verified
+2026-10-17** by `crates/atlas/web/meeting-browser.ts`: three Chrome for
+Testing profiles on mac-2 against a real simulator — host role, a raised hand
+and its notice, a sealed reaction opened by another browser, a host's mute
+that the held browser cannot undo, Let talk, a shared screen as the stage, end
+for everyone. A canvas stands in for `getDisplayMedia`, which a headless
+browser has no screen for. Running it took the node: the VPS node has no
+browser and its glibc is newer than this container's, so its binaries do not
+run here.
+
+What it found: **the page's `WebCall.close()` threw** on every hang-up — with
+`onStream` it marked a person's tracks as `true` and `close` then called
+`.remove()` on them — so the page never set "The call ended" or any other
+reason. Older than the meetings; fixed in `webcall.js`.

@@ -39,7 +39,10 @@ export interface ChatCoreApi {
     call_answer(channel: string, sdp: string): void
     call_decline(channel: string): void
     set_push_endpoint(endpoint: string): void
-    call_join(channel: string, offer: string): void
+    call_join(channel: string, offer: string, screen: string): void
+    call_control(channel: string, action: string): void
+    call_react(channel: string, epoch: string, sealed: string): void
+    call_watch(channel: string, cameras: string): void
     call_keys(channel: string): string
     call_leave(channel: string): void
     start_direct(username: string): void

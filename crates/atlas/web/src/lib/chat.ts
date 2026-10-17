@@ -241,7 +241,10 @@ export class ChatClient {
 
     /** Call signalling, carried by the worker's connection. */
     callSignal(
-        command: Extract<Command, {type: 'call_answer' | 'call_decline' | 'call_join' | 'call_leave'}>,
+        command: Extract<
+            Command,
+            {type: 'call_answer' | 'call_control' | 'call_decline' | 'call_join' | 'call_leave' | 'call_react' | 'call_watch'}
+        >,
     ): void {
         this.send(command)
     }

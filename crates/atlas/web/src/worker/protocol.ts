@@ -122,11 +122,32 @@ export type ChatEvent =
     | {by: string; channel: string; kind: 'redacted'; seq: number}
     | {by: string; channel: string; community: string; kind: 'left'}
     | {channel: string; kind: 'history_wanted'}
-    | {channel: string; kind: 'call_roster'; members: {device: string; participant: number; username: string}[]}
+    | {
+          channel: string
+          kind: 'call_roster'
+          members: {
+              device: string
+              hand: number | null
+              held: boolean
+              muted: boolean
+              participant: number
+              role: 'host' | 'cohost' | 'member'
+              sharing: boolean
+              username: string
+          }[]
+          settings: {locked: boolean; may_share: boolean; may_unmute: boolean}
+      }
     | {answer: string; channel: string; kind: 'call_joined'; participant: number}
-    | {channel: string; kind: 'call_offer'; sdp: string; tracks: {mid: string; participant: number; video: boolean}[]}
+    | {
+          channel: string
+          kind: 'call_offer'
+          sdp: string
+          tracks: {kind: 'audio' | 'camera' | 'screen'; mid: string; participant: number; video: boolean}[]
+      }
     | {channel: string; kind: 'call_declined'; username: string}
-    | {code: number; kind: 'call_refused'; message: string}
+    | {code: number; control: boolean; kind: 'call_refused'; message: string}
+    | {by: string; channel: string; kind: 'call_ended'; reason: 'removed' | 'ended'}
+    | {channel: string; epoch: string; kind: 'call_reacted'; participant: number; sealed: string}
     | {
         channel: string
         count: number
@@ -191,7 +212,13 @@ export type Command =
     | {channel: string; line: string; note: string; reason: string; target: number; type: 'report_to_moderators'; who: string}
     | {id: string; report: number; type: 'resolve_report'}
     | {channel: string; type: 'add_to_chat'; who: string}
-    | {channel: string; offer: string; type: 'call_join'}
+    | {channel: string; offer: string; screen: string; type: 'call_join'}
+    /** A hand, a shared screen or a host's action, as `CallAction`'s JSON. */
+    | {action: string; channel: string; type: 'call_control'}
+    /** A reaction sealed by `call-events.js`, hex, for `epoch` (decimal). */
+    | {channel: string; epoch: string; sealed: string; type: 'call_react'}
+    /** Whose cameras this page draws: a JSON list of participants, or `null`. */
+    | {cameras: string; channel: string; type: 'call_watch'}
     | {channel: string; sdp: string; type: 'call_answer'}
     | {channel: string; type: 'call_leave'}
     | {channel: string; type: 'call_decline'}

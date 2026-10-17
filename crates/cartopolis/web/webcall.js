@@ -89,12 +89,19 @@ const WORKER_URL = new URL("../../../web/call-worker.js", import.meta.url);
 
 export class WebCall {
   // `options` is for a page that draws the call itself (the web chat page):
-  // `workerUrl` where its build put `call-worker.js`, and `onStream(participant,
-  // kind, stream)` to hand it each person's audio and video (`stream` null when
-  // they leave) instead of the hidden elements the viewer reads pixels from.
+  // `workerUrl` where its build put `call-worker.js`, `onStream(participant,
+  // kind, stream)` to hand it each person's audio, video and shared screen
+  // (`stream` null when they leave) instead of the hidden elements the viewer
+  // reads pixels from, and `screen` to offer a third track a screen can be
+  // shared on (protocol 41; its media id is `screenMid` once offered).
   constructor(onEvent, options = {}) {
     this.onEvent = onEvent;
     this.onStream = options.onStream || null;
+    this.offerScreen = !!options.screen;
+    this.screenSender = null;
+    this.screenMid = null;
+    this.screenTrack = null;
+    this.probe = null;
     this.worker = new Worker(options.workerUrl || WORKER_URL, { type: "module" });
     this.worker.onmessage = (e) => {
       if (e.data.kind === "dropped") console.debug("call: frames dropped", e.data);
@@ -103,7 +110,7 @@ export class WebCall {
     this.config = transform === "streams" ? { encodedInsertableStreams: true } : {};
     this.up = new RTCPeerConnection(this.config);
     this.down = null;
-    this.tracks = new Map(); // mid → { participant, video }
+    this.tracks = new Map(); // mid → { participant, video, kind }
     this.people = new Map(); // participant → { audio, video, canvas, fresh }
     this.mic = null;
     this.camera = null;
@@ -140,6 +147,9 @@ export class WebCall {
       });
       this.mic = stream.getAudioTracks()[0];
       this.mic.enabled = !this.muted;
+      // A copy that is never disabled, for the page to hear talking while
+      // muted (`levelTrack`). Nothing is sent from it.
+      this.probe = this.mic.clone();
     } catch (e) {
       this.onEvent("failed", describe(e, "Microphone"));
       return;
@@ -149,12 +159,18 @@ export class WebCall {
     // on its own, and the forwarder would join a picture's spatial layers into
     // one frame no receiver can open. A browser that rejects the option sends
     // its default, which for VP8 is one layer anyway.
-    let video;
-    try {
-      video = this.up.addTransceiver("video", { direction: "sendonly", sendEncodings: [{ scalabilityMode: "L1T1" }] });
-    } catch {
-      video = this.up.addTransceiver("video", { direction: "sendonly" });
-    }
+    const sendOnly = () => {
+      try {
+        return this.up.addTransceiver("video", { direction: "sendonly", sendEncodings: [{ scalabilityMode: "L1T1" }] });
+      } catch {
+        return this.up.addTransceiver("video", { direction: "sendonly" });
+      }
+    };
+    const video = sendOnly();
+    // A screen is offered from the start too, so sharing later needs no
+    // renegotiation either. The forwarder learns which media id it is from
+    // `CallJoin.screen` and drops it until the server says this device shares.
+    const screen = this.offerScreen ? sendOnly() : null;
     // VP9 profile 0 to send where the browser encodes it, as the app does
     // (protocol 32 made every receiver decode it), else VP8. Offering one
     // codec makes the answer name one, so the worker knows what every frame
@@ -166,6 +182,7 @@ export class WebCall {
       try {
         if (pick.prefs.length) {
           video.setCodecPreferences(pick.prefs);
+          screen?.setCodecPreferences(pick.prefs);
           codec = pick.codec;
         }
       } catch {}
@@ -173,7 +190,12 @@ export class WebCall {
     this.videoSender = video.sender;
     this.attach(audio.sender, "send", "opus");
     this.attach(video.sender, "send", codec);
+    if (screen) {
+      this.screenSender = screen.sender;
+      this.attach(screen.sender, "send", codec);
+    }
     await this.up.setLocalDescription(await this.up.createOffer());
+    this.screenMid = screen ? screen.mid : null;
     this.onEvent("offer", await settled(this.up));
     if (this.wantCamera) await this.setCamera(true);
   }
@@ -227,12 +249,18 @@ export class WebCall {
     const who = this.people.get(info.participant) || {};
     this.people.set(info.participant, who);
     const stream = new MediaStream([e.track]);
+    const kind = info.kind === "screen" ? "screen" : e.track.kind;
     if (this.onStream) {
-      who[e.track.kind] = true;
-      this.onStream(info.participant, e.track.kind, stream);
-      e.track.onended = () => this.onStream?.(info.participant, e.track.kind, null);
+      // Only noted: the page holds the streams. Not `who[kind] = true`, which
+      // `close` then took for an element and threw on, leaving the page
+      // without its "The call ended".
+      (who.kinds ??= new Set()).add(kind);
+      this.onStream(info.participant, kind, stream);
+      e.track.onended = () => this.onStream?.(info.participant, kind, null);
       return;
     }
+    // The viewer draws cameras only.
+    if (kind === "screen") return;
     if (e.track.kind === "audio") {
       who.audio?.remove();
       who.audio = Object.assign(document.createElement("audio"), { autoplay: true, srcObject: stream });
@@ -298,6 +326,64 @@ export class WebCall {
     }
   }
 
+  /** Share a screen, a window or a tab on the screen track (the browser asks
+   *  which), or stop. `sharp` asks the encoder for legible text over motion.
+   *  Resolves to whether something is being shared; the person ending it from
+   *  the browser's own bar is a "screen-off" event. */
+  async setScreen(on, sharp = true) {
+    if (!this.screenSender) return false;
+    if (on && !this.screenTrack) {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: sharp ? 5 : 15, max: 15 }, width: { max: 1920 }, height: { max: 1080 } },
+          audio: false,
+          selfBrowserSurface: "exclude",
+          surfaceSwitching: "include",
+        });
+      } catch (e) {
+        // Cancelling the browser's picker is not worth a notice.
+        if (e && e.name !== "NotAllowedError") this.onEvent("notice", describe(e, "Screen"));
+        return false;
+      }
+      const track = stream.getVideoTracks()[0];
+      if ("contentHint" in track) track.contentHint = sharp ? "detail" : "motion";
+      this.screenTrack = track;
+      track.onended = () => {
+        if (this.screenTrack !== track) return;
+        void this.setScreen(false);
+        this.onEvent("screen-off", "");
+      };
+      await this.screenSender.replaceTrack(track);
+      try {
+        const p = this.screenSender.getParameters();
+        p.degradationPreference = sharp ? "maintain-resolution" : "maintain-framerate";
+        if (p.encodings && p.encodings[0]) p.encodings[0].maxBitrate = 1_200_000;
+        await this.screenSender.setParameters(p);
+      } catch {
+        // A browser that will not take the hint still shares.
+      }
+      return true;
+    }
+    if (!on && this.screenTrack) {
+      const track = this.screenTrack;
+      this.screenTrack = null;
+      await this.screenSender.replaceTrack(null);
+      track.stop();
+    }
+    return !!this.screenTrack;
+  }
+
+  /** What this device shares, for its own preview, or null. */
+  screenView() {
+    return this.screenTrack ? new MediaStream([this.screenTrack]) : null;
+  }
+
+  /** The microphone, never disabled: for hearing talking while muted. */
+  levelTrack() {
+    return this.probe;
+  }
+
   /** This device's own camera, for a self-view, or null. */
   selfView() {
     return this.camera ? new MediaStream([this.camera]) : null;
@@ -312,6 +398,7 @@ export class WebCall {
         this.people.delete(participant);
         this.onStream?.(participant, "audio", null);
         this.onStream?.(participant, "video", null);
+        this.onStream?.(participant, "screen", null);
       }
     }
   }
@@ -356,7 +443,9 @@ export class WebCall {
     this.onEvent = () => {};
     this.onStream = null;
     this.mic?.stop();
+    this.probe?.stop();
     this.camera?.stop();
+    this.screenTrack?.stop();
     this.up.close();
     this.down?.close();
     this.worker.terminate();

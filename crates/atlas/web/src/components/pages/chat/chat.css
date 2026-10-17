@@ -1793,3 +1793,806 @@
     border-color: var(--m-border-strong);
     color: var(--m-text-strong);
 }
+
+/* ── The meeting (`docs/mockups/meetings/` v2) ────────────────────────────
+ *
+ * The stage gets the space; the controls float on glass over its foot; the
+ * people are an island beside it. Notices bring their own button. Keys are
+ * the app's tones: frosted glass for a switch that is on, the cream plate for
+ * one that is off (the state worth noticing), red with a word for Leave.
+ */
+.chat-call.meet {
+    --meet-glass: rgb(16 22 24 / 72%);
+    --meet-line: rgb(255 255 255 / 9%);
+    --meet-gold: #f0c95a;
+}
+
+.meet-body {
+    display: flex;
+    flex: 1;
+    gap: 12px;
+    min-height: 0;
+}
+
+.meet-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+}
+
+/* Room under the stage for the dock that floats over its foot. */
+.meet-stage {
+    flex: 1;
+    margin-bottom: 72px;
+    min-height: 0;
+}
+
+/* Whoever talks: a teal edge, as the app draws it. */
+.chat-call-tile.is-talking {
+    box-shadow: inset 0 0 0 2.5px var(--m-accent), 0 0 18px -4px var(--m-accent);
+}
+
+.chat-call-tile figcaption {
+    align-items: center;
+    backdrop-filter: blur(8px);
+    border-radius: 10px;
+    display: inline-flex;
+    font-weight: 600;
+    gap: 5px;
+    padding: 2px 8px 2px 6px;
+}
+
+.meet-mic {
+    align-items: center;
+    border-radius: 50%;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+}
+
+.meet-mic .chat-icon {
+    height: 11px;
+    width: 11px;
+}
+
+.meet-mic.is-off,
+.meet-mic.is-held {
+    background: var(--call-cream);
+    color: #0f1416;
+}
+
+.meet-tile-host .chat-icon {
+    color: var(--m-accent-text);
+    height: 13px;
+    width: 13px;
+}
+
+.meet-tile-hand {
+    align-items: center;
+    background: var(--meet-gold, #f0c95a);
+    border-radius: 10px;
+    box-shadow: 0 4px 14px -4px rgb(240 201 90 / 60%);
+    color: #2a2006;
+    display: inline-flex;
+    font-size: 0.75rem;
+    font-weight: 700;
+    gap: 3px;
+    left: 8px;
+    padding: 2px 8px 2px 6px;
+    position: absolute;
+    top: 8px;
+}
+
+.meet-tile-hand .chat-icon {
+    height: 13px;
+    width: 13px;
+}
+
+/* A reaction rises from the tile and fades, as long as `REACTION_MS`. */
+.meet-tile-react {
+    animation: meet-rise 4s ease-out forwards;
+    bottom: 10px;
+    filter: drop-shadow(0 4px 8px rgb(0 0 0 / 40%));
+    font-size: 2rem;
+    pointer-events: none;
+    position: absolute;
+    right: 12px;
+}
+
+@keyframes meet-rise {
+    0% { opacity: 0; transform: translateY(12px) scale(0.6); }
+    10% { opacity: 1; transform: translateY(0) scale(1.1); }
+    20% { transform: translateY(-4px) scale(1); }
+    80% { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-60px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .meet-tile-react { animation: none; }
+}
+
+/* A shared screen is the stage: whole, never cropped, people beside it. */
+.meet-stage.is-share,
+.meet-stage.is-speaker {
+    display: flex;
+    gap: 10px;
+}
+
+.meet-stage.is-share {
+    flex-direction: column;
+}
+
+.chat-call.is-focus .meet-stage.is-share {
+    flex-direction: row;
+}
+
+.meet-screen {
+    align-items: center;
+    background: #050708;
+    border-radius: 14px;
+    display: flex;
+    flex: 1;
+    justify-content: center;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+.meet-screen video {
+    height: 100%;
+    object-fit: contain;
+    width: 100%;
+}
+
+.meet-presenter {
+    align-items: center;
+    backdrop-filter: blur(10px);
+    background: rgb(5 8 9 / 70%);
+    border: 1px solid var(--meet-line);
+    border-radius: 999px;
+    color: #fff;
+    display: inline-flex;
+    font-size: 0.8rem;
+    gap: 6px;
+    left: 10px;
+    padding: 4px 12px 4px 8px;
+    position: absolute;
+    top: 10px;
+}
+
+.meet-strip {
+    display: grid;
+    flex: none;
+    gap: 8px;
+    grid-auto-rows: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    max-height: 30%;
+    overflow-y: auto;
+}
+
+.chat-call.is-focus .meet-stage.is-share .meet-strip {
+    grid-auto-rows: 112px;
+    grid-template-columns: 1fr;
+    max-height: none;
+    width: 200px;
+}
+
+.meet-strip .chat-call-tile {
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+}
+
+/* Speaker: whoever talks is large, everybody else in a row under them. */
+.meet-stage.is-speaker {
+    flex-direction: column;
+}
+
+.meet-big {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.meet-big .chat-call-tile {
+    flex: 1;
+}
+
+.meet-strip.is-row {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(110px, 160px);
+    grid-template-columns: none;
+    height: 90px;
+    overflow-x: auto;
+}
+
+/* ── The dock ─────────────────────────────────────────────────────────── */
+.meet-dock {
+    align-items: center;
+    backdrop-filter: blur(20px) saturate(1.3);
+    background: var(--meet-glass);
+    border: 1px solid var(--meet-line);
+    border-radius: 20px;
+    bottom: 8px;
+    box-shadow: 0 18px 40px -10px rgb(0 0 0 / 55%);
+    display: flex;
+    gap: 6px;
+    left: 50%;
+    padding: 8px;
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 8;
+}
+
+.meet-sep {
+    background: var(--meet-line);
+    height: 26px;
+    margin: 0 3px;
+    width: 1px;
+}
+
+.meet-anchor {
+    display: inline-flex;
+    position: relative;
+}
+
+.chat button.meet-key {
+    align-items: center;
+    background: rgb(255 255 255 / 8%);
+    border-radius: 14px;
+    color: #eef3f3;
+    display: inline-flex;
+    height: 44px;
+    justify-content: center;
+    width: 44px;
+}
+
+.chat button.meet-key:hover {
+    background: rgb(255 255 255 / 15%);
+}
+
+.chat button.meet-key .chat-icon {
+    height: 21px;
+    width: 21px;
+}
+
+.chat button.meet-key.is-off {
+    background: var(--call-cream);
+    color: #0f1416;
+}
+
+.chat button.meet-key.is-on {
+    background: var(--m-accent);
+    color: var(--m-on-accent);
+}
+
+.chat button.meet-key.is-sel {
+    background: color-mix(in srgb, var(--m-accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--m-accent) 45%, transparent);
+    color: var(--m-accent-text);
+}
+
+.chat button.meet-key.is-hand {
+    background: var(--meet-gold, #f0c95a);
+    color: #2a2006;
+}
+
+.chat button.meet-leave {
+    align-items: center;
+    background: var(--call-red);
+    border-radius: 14px;
+    color: #fff;
+    display: inline-flex;
+    font-weight: 600;
+    gap: 7px;
+    height: 44px;
+    padding: 0 16px;
+}
+
+.chat button.meet-leave:hover {
+    filter: brightness(1.1);
+}
+
+/* Narrow beside the chat: the same dock, smaller. */
+.chat-call.meet:not(.is-focus) .meet-dock {
+    gap: 3px;
+    padding: 6px;
+}
+
+.chat-call.meet:not(.is-focus) button.meet-key {
+    height: 36px;
+    width: 36px;
+}
+
+.chat-call.meet:not(.is-focus) button.meet-leave {
+    height: 36px;
+    padding: 0 10px;
+}
+
+.chat-call.meet:not(.is-focus) .meet-leave span,
+.chat-call.meet:not(.is-focus) .meet-sep {
+    display: none;
+}
+
+.chat-call.meet:not(.is-focus) .meet-stage {
+    margin-bottom: 58px;
+}
+
+/* ── Popovers: reactions, More, Leave, a person's host actions ─────────── */
+.meet-scrim {
+    inset: 0;
+    position: absolute;
+    z-index: 7;
+}
+
+.meet-pop {
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 16px;
+    bottom: calc(100% + 12px);
+    box-shadow: 0 24px 50px -12px rgb(0 0 0 / 60%);
+    left: 50%;
+    padding: 6px;
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 9;
+}
+
+.meet-pop.is-react {
+    display: flex;
+    gap: 2px;
+}
+
+.chat button.meet-emoji {
+    border-radius: 10px;
+    font-size: 1.6rem;
+    height: 46px;
+    width: 46px;
+}
+
+.chat button.meet-emoji:hover {
+    background: var(--m-hover);
+    transform: scale(1.12);
+}
+
+.meet-pop.is-menu {
+    display: flex;
+    flex-direction: column;
+    min-width: 250px;
+}
+
+.meet-pop.is-leave {
+    left: auto;
+    right: 0;
+    transform: none;
+}
+
+.meet-pop.is-person {
+    bottom: auto;
+    left: auto;
+    right: 0;
+    top: calc(100% + 6px);
+    transform: none;
+}
+
+.meet-pop hr {
+    border: 0;
+    border-top: 1px solid var(--m-border);
+    margin: 5px 4px;
+}
+
+.meet-menu-label {
+    color: var(--m-text-faint);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 8px 10px 4px;
+    text-transform: uppercase;
+}
+
+.chat button.meet-menu-row {
+    align-items: center;
+    border-radius: 10px;
+    color: var(--m-text);
+    display: flex;
+    font-size: 0.875rem;
+    gap: 11px;
+    padding: 8px 10px;
+    text-align: left;
+    width: 100%;
+}
+
+.chat button.meet-menu-row:hover {
+    background: var(--m-hover);
+}
+
+.chat button.meet-menu-row .chat-icon {
+    color: var(--m-text-dim);
+}
+
+.chat button.meet-menu-row span {
+    flex: 1;
+}
+
+.chat button.meet-menu-row small {
+    color: var(--m-text-faint);
+    font-size: 0.75rem;
+}
+
+.chat button.meet-menu-row.is-danger,
+.chat button.meet-menu-row.is-danger .chat-icon {
+    color: var(--m-danger);
+}
+
+.meet-switch {
+    background: var(--m-border);
+    border-radius: 10px;
+    flex: none !important;
+    height: 20px;
+    position: relative;
+    width: 34px;
+}
+
+.meet-switch::after {
+    background: var(--m-text-dim);
+    border-radius: 50%;
+    content: '';
+    height: 14px;
+    left: 3px;
+    position: absolute;
+    top: 3px;
+    width: 14px;
+}
+
+.meet-switch.is-on {
+    background: var(--m-accent);
+}
+
+.meet-switch.is-on::after {
+    background: var(--m-on-accent);
+    left: 17px;
+}
+
+/* ── Notices, the muted nudge, and sharing ─────────────────────────────── */
+.meet-toasts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    width: min(340px, calc(100% - 20px));
+    z-index: 6;
+}
+
+.meet-toast,
+.meet-nudge {
+    align-items: center;
+    animation: meet-in 0.18s ease-out;
+    backdrop-filter: blur(20px) saturate(1.3);
+    background: var(--meet-glass);
+    border: 1px solid var(--meet-line);
+    border-radius: 16px;
+    box-shadow: 0 18px 40px -12px rgb(0 0 0 / 55%);
+    color: #eef3f3;
+    display: flex;
+    gap: 10px;
+    padding: 10px 8px 10px 12px;
+}
+
+@keyframes meet-in {
+    from { opacity: 0; transform: translateY(-6px); }
+}
+
+.meet-toast-icon {
+    align-items: center;
+    background: color-mix(in srgb, var(--m-accent) 16%, transparent);
+    border-radius: 11px;
+    color: var(--m-accent-text);
+    display: inline-flex;
+    flex: none;
+    height: 34px;
+    justify-content: center;
+    width: 34px;
+}
+
+.meet-toast.is-hand .meet-toast-icon {
+    background: rgb(240 201 90 / 16%);
+    color: var(--meet-gold, #f0c95a);
+}
+
+.meet-toast.is-held .meet-toast-icon,
+.meet-toast-icon.is-cream {
+    background: var(--call-cream);
+    color: #0f1416;
+}
+
+.meet-toast-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    font-size: 0.85rem;
+    line-height: 1.3;
+    min-width: 0;
+}
+
+.meet-toast-text b {
+    font-weight: 600;
+}
+
+.meet-toast-text span {
+    color: rgb(238 243 243 / 70%);
+    font-size: 0.78rem;
+}
+
+.meet-toast-text kbd {
+    background: rgb(255 255 255 / 12%);
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 0.72rem;
+    padding: 0 5px;
+}
+
+.meet-nudge {
+    bottom: 76px;
+    left: 50%;
+    position: absolute;
+    transform: translateX(-50%);
+    width: min(380px, calc(100% - 20px));
+    z-index: 6;
+}
+
+.meet-sharing {
+    align-items: center;
+    align-self: center;
+    background: color-mix(in srgb, var(--call-red) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--call-red) 40%, transparent);
+    border-radius: 999px;
+    color: #ffd2cc;
+    display: flex;
+    font-size: 0.85rem;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 4px 4px 4px 14px;
+}
+
+.meet-sharing i {
+    background: #ff5a4f;
+    border-radius: 50%;
+    box-shadow: 0 0 0 4px rgb(255 90 79 / 20%);
+    height: 8px;
+    width: 8px;
+}
+
+.meet-sharing span {
+    color: rgb(255 210 204 / 70%);
+}
+
+.chat button.meet-btn {
+    align-items: center;
+    background: rgb(255 255 255 / 8%);
+    border-radius: 10px;
+    color: inherit;
+    display: inline-flex;
+    flex: none;
+    font-size: 0.8rem;
+    font-weight: 600;
+    gap: 5px;
+    height: 30px;
+    padding: 0 11px;
+    white-space: nowrap;
+}
+
+.chat button.meet-btn:hover {
+    filter: brightness(1.15);
+}
+
+.chat button.meet-btn.is-primary {
+    background: var(--m-accent);
+    color: var(--m-on-accent);
+}
+
+.chat button.meet-btn.is-danger {
+    background: var(--call-red);
+    color: #fff;
+}
+
+.chat button.meet-btn.is-icon {
+    background: transparent;
+    justify-content: center;
+    padding: 0;
+    width: 28px;
+}
+
+.chat button.meet-btn.is-icon:hover {
+    background: rgb(255 255 255 / 8%);
+}
+
+/* The header's people count, with raised hands in gold. */
+.chat button.chat-call-swap.is-on {
+    background: color-mix(in srgb, var(--m-accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--m-accent) 45%, transparent);
+    color: var(--m-accent-text);
+}
+
+.meet-hands {
+    background: var(--meet-gold, #f0c95a);
+    border-radius: 9px;
+    color: #2a2006;
+    font-size: 0.7rem;
+    font-weight: 700;
+    min-width: 18px;
+    padding: 0 5px;
+    text-align: center;
+}
+
+/* ── The people island ─────────────────────────────────────────────────── */
+.meet-panel {
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 18px;
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    min-height: 0;
+    width: 320px;
+}
+
+.meet-panel-head {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 10px 6px 16px;
+}
+
+.meet-panel-head b {
+    color: var(--m-text-strong);
+    font-size: 1rem;
+}
+
+.meet-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 8px 8px;
+}
+
+.meet-panel-body h4 {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.7rem;
+    font-weight: 700;
+    justify-content: space-between;
+    letter-spacing: 0.08em;
+    margin: 12px 8px 6px;
+    text-transform: uppercase;
+}
+
+.meet-panel-body h4 span {
+    color: var(--m-text-faint);
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.meet-row {
+    align-items: center;
+    border-radius: 11px;
+    display: flex;
+    gap: 10px;
+    padding: 6px 8px;
+}
+
+.meet-row:hover {
+    background: var(--m-hover);
+}
+
+.meet-row.is-talking .chat-avatar {
+    box-shadow: 0 0 0 2px var(--m-surface), 0 0 0 4px var(--m-accent);
+}
+
+.meet-row-name {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.meet-row-name b {
+    align-items: center;
+    color: var(--m-text);
+    display: flex;
+    font-size: 0.875rem;
+    font-weight: 600;
+    gap: 6px;
+}
+
+.meet-row-name small {
+    color: var(--m-text-faint);
+    font-size: 0.75rem;
+}
+
+.meet-row-state {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    gap: 6px;
+}
+
+.meet-row-state .is-muted {
+    color: var(--m-danger);
+    display: inline-flex;
+}
+
+.meet-badge {
+    background: var(--m-surface-raised);
+    border-radius: 6px;
+    color: var(--m-text-dim);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+}
+
+.meet-q {
+    align-items: center;
+    background: var(--meet-gold, #f0c95a);
+    border-radius: 50%;
+    color: #2a2006;
+    display: inline-flex;
+    flex: none;
+    font-size: 0.72rem;
+    font-weight: 700;
+    height: 22px;
+    justify-content: center;
+    width: 22px;
+}
+
+.meet-panel-foot {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px 12px;
+}
+
+.meet-panel-foot .meet-btn {
+    flex: 1;
+    justify-content: center;
+}
+
+/* The people beside a meeting in the middle: the chat steps aside for them. */
+.chat.is-call-people .chat-main {
+    display: none;
+}
+
+@media (max-width: 760px) {
+    .meet-panel {
+        bottom: 0;
+        border-radius: 22px 22px 0 0;
+        left: 0;
+        max-height: 75%;
+        position: absolute;
+        right: 0;
+        width: auto;
+        z-index: 10;
+    }
+
+    .meet-dock {
+        bottom: 14px;
+    }
+}
+
+/* The lock beside "Encrypted", on the line it belongs to. */
+.chat-call-title .chat-sub {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+}
+
+.chat-call-title .chat-sub .chat-icon {
+    height: 13px;
+    width: 13px;
+}
