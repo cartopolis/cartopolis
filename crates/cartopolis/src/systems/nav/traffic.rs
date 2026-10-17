@@ -859,6 +859,7 @@ pub fn drive_traffic(
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
+    globe: Res<crate::systems::globe::GlobeState>,
     camera: AnchoredCamera,
     grids: Query<&Grid, With<BigSpace>>,
     mut cars: Query<
@@ -881,7 +882,7 @@ pub fn drive_traffic(
     let show_people = layers.people_visible();
     if (!show_cars && !show_people) || net.is_empty() {
         for (.., mut vis) in &mut cars {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
         }
         return;
     }
@@ -894,10 +895,13 @@ pub fn drive_traffic(
     };
     // The camera's absolute world XZ, which is the frame the network is in.
     let cam = anchored_xz(cam_cell, cam_tf.translation);
-    let too_high = cam_tf.translation.y > TRAFFIC_HIDE_ALT;
+    // The altitude, not `cam_tf.translation.y`: that is the height inside the
+    // camera's 10 km grid cell, which wraps, so above the first cell the layer
+    // came back on — and stayed on to the space tier, simulated and drawn.
+    let too_high = globe.altitude_m(cam_cell, cam_tf) as f32 > TRAFFIC_HIDE_ALT;
     if too_high {
         for (.., mut vis) in &mut cars {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
         }
         return;
     }
