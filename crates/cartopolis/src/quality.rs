@@ -1391,9 +1391,29 @@ fn on_this_machine(budget: Budget) -> Budget {
     } else {
         budget
     };
-    with_shadow_distance_override(with_shadow_cascade_override(with_shadow_filter_override(
-        budget,
+    with_msaa_override(with_shadow_distance_override(with_shadow_cascade_override(
+        with_shadow_filter_override(budget),
     )))
+}
+
+/// Apply `CARTO_MSAA` (`1`, `2`, `4` or `8` samples), if it is set.
+///
+/// The multisample count is the one per-pixel knob a tier sets that no other switch
+/// reached: the Settings toggle is a persisted preference a scripted run never
+/// reads, and `CARTO_QUALITY` moves a dozen other things with it. On a tile-based
+/// GPU — every Apple one, every phone — it is also the knob whose cost depends least
+/// on the scene, because wgpu stores the multisampled attachments to memory between
+/// passes rather than resolving them in tile memory, so its bandwidth scales with
+/// the screen. `1` is off. Anything else falls through to the rung.
+fn with_msaa_override(budget: Budget) -> Budget {
+    let msaa = match crate::env_value("CARTO_MSAA").as_deref().map(str::trim) {
+        Some("1" | "0" | "off") => Msaa::Off,
+        Some("2") => Msaa::Sample2,
+        Some("4") => Msaa::Sample4,
+        Some("8") => Msaa::Sample8,
+        _ => return budget,
+    };
+    Budget { msaa, ..budget }
 }
 
 /// Apply `CARTO_SHADOW_CASCADES`, if it is set.
