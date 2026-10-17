@@ -1053,6 +1053,37 @@ const FLAT_GROUND_ON_M: f32 = 250.0;
 const COVERAGE_WAIT_S: f32 = 3.0;
 const FLAT_GROUND_OFF_M: f32 = 500.0;
 
+/// Street furniture is built only below this camera altitude, which is where its
+/// fade (`street_furniture::update_furniture_lod`) has fully hidden it, so a
+/// descent rebuilds it before a single piece can show.
+///
+/// **The largest thing the client streamed, and none of it was visible.** Over
+/// Groningen at the 1.5 km start view the furniture group (lampposts, bins,
+/// benches, the surveyed garden boundaries, parked cars, crossings, road marks)
+/// was **531 MB in 166 meshes** of the ~1 GB resident, measured 2026-10-17 on the
+/// browser rung — every byte of it uploaded for a layer hidden from 450 m.
+const FURNITURE_BUILD_ON_M: f32 = crate::systems::furniture::FURNITURE_FADE_END;
+/// Above this the furniture is dropped. The flat ground's own edge on purpose: a
+/// climb then retears the ring once for both rather than twice.
+const FURNITURE_BUILD_OFF_M: f32 = FLAT_GROUND_OFF_M;
+
+/// Trees are built only below the altitude their fade
+/// (`vegetation::update_vegetation_lod`) has hidden them by, and dropped a quarter
+/// higher. 70 MB over Groningen, hidden and resident from 2 km to orbit.
+const TREES_BUILD_ON_M: f32 = crate::systems::scatter::TREE_FADE_END;
+const TREES_BUILD_OFF_M: f32 = TREES_BUILD_ON_M * 1.25;
+
+/// Whether a layer that only exists near the ground should be built at `alt`,
+/// with the gap a camera hovering at one edge needs: once built it is kept up to
+/// `off_m`, once dropped it waits for `on_m`. `None` — nothing decided yet — takes
+/// the generous edge, since there is nothing to thrash against.
+fn near_ground(was: Option<bool>, alt: f32, on_m: f32, off_m: f32) -> bool {
+    match was {
+        Some(false) => alt < on_m,
+        Some(true) | None => alt < off_m,
+    }
+}
+
 impl DetailWants {
     /// Everything on — what a desktop tier asks for, and what the tessellation
     /// tests expect.
@@ -2636,15 +2667,32 @@ pub fn update_map_surfaces(
     // The flat ground as meshes near the ground, as the basemap image above it
     // (`FLAT_GROUND_ON_M`), with the gap between the two thresholds so a camera
     // hovering at one does not retear the ring every few frames.
+    //
+    // Trees and street furniture follow the same rule on their own bands: each
+    // is built only below the altitude its fade has already hidden it by.
     let alt = globe.altitude_m(cell, tf) as f32;
-    let flat_ground = match surfaces.detail_wants {
-        Some(w) if w.flat_ground => alt < FLAT_GROUND_OFF_M,
-        Some(_) => alt < FLAT_GROUND_ON_M,
-        None => alt < FLAT_GROUND_OFF_M,
-    };
+    let was = surfaces.detail_wants;
+    let flat_ground = near_ground(
+        was.map(|w| w.flat_ground),
+        alt,
+        FLAT_GROUND_ON_M,
+        FLAT_GROUND_OFF_M,
+    );
     let wants = DetailWants {
-        trees: veg_lod.enabled,
-        furniture: furniture_lod.enabled,
+        trees: veg_lod.enabled
+            && near_ground(
+                was.map(|w| w.trees),
+                alt,
+                TREES_BUILD_ON_M,
+                TREES_BUILD_OFF_M,
+            ),
+        furniture: furniture_lod.enabled
+            && near_ground(
+                was.map(|w| w.furniture),
+                alt,
+                FURNITURE_BUILD_ON_M,
+                FURNITURE_BUILD_OFF_M,
+            ),
         shore: sea_state.shading,
         grass: stores.grass.enabled,
         modelled: stores.placeholders.mask(),
@@ -5116,6 +5164,43 @@ fn veg_seed(cell: Cell) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A near-ground layer is never dropped where it can still be seen, and
+    /// never rebuilt where it cannot: its build band starts at or above the
+    /// altitude its fade hides it by, and the gap between the edges is real.
+    #[test]
+    fn near_ground_layers_are_built_only_where_they_can_show() {
+        use crate::systems::furniture::FURNITURE_FADE_END;
+        use crate::systems::scatter::TREE_FADE_END;
+        for (on, off, fade_end) in [
+            (
+                FURNITURE_BUILD_ON_M,
+                FURNITURE_BUILD_OFF_M,
+                FURNITURE_FADE_END,
+            ),
+            (TREES_BUILD_ON_M, TREES_BUILD_OFF_M, TREE_FADE_END),
+        ] {
+            assert!(
+                on >= fade_end,
+                "rebuilt below its fade end: {on} < {fade_end}"
+            );
+            assert!(off > on, "no hysteresis: off {off} <= on {on}");
+        }
+        assert!(FLAT_GROUND_OFF_M > FLAT_GROUND_ON_M);
+    }
+
+    /// The band holds a built layer up to its upper edge and makes a dropped one
+    /// wait for its lower edge; the first decision takes the upper.
+    #[test]
+    fn near_ground_has_hysteresis() {
+        let (on, off) = (450.0, 500.0);
+        assert!(near_ground(Some(true), 480.0, on, off));
+        assert!(!near_ground(Some(true), 520.0, on, off));
+        assert!(!near_ground(Some(false), 480.0, on, off));
+        assert!(near_ground(Some(false), 440.0, on, off));
+        assert!(near_ground(None, 480.0, on, off));
+        assert!(!near_ground(None, 520.0, on, off));
+    }
 
     /// A surface far over the mesh cap reaches the spawn loop as several meshes,
     /// every one under the cap, drawing all the triangles it had — and one under
