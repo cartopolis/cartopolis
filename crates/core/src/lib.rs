@@ -5,6 +5,7 @@ pub mod error;
 pub mod field_check;
 pub mod geo;
 pub mod lens;
+pub mod meeting;
 pub mod model_limits;
 pub mod moderation;
 pub mod motion;

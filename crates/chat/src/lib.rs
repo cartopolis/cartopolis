@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use cartopolis_core::address;
+use cartopolis_core::meeting::MeetingObject;
 use cartopolis_core::point::Point;
 use cartopolis_core::{E2eeCursor, E2eeWelcome, NetMessage};
 use cartopolis_e2ee::{Device, OwnCommit, Payload, Received};
@@ -126,6 +127,12 @@ pub enum Event {
         point: Option<Point>,
         /// Set when what they sent was a picture; `body` is then its caption.
         picture: Option<PictureRef>,
+        /// Set when what they sent was something a meeting leaves in a chat (a
+        /// plan, an answer, a poll, a vote, a note, a record): its
+        /// ActivityStreams JSON, which reads as a
+        /// [`cartopolis_core::meeting::MeetingObject`]. `body` is then its
+        /// caption.
+        object: Option<String>,
         /// Set when the line is in the thread under the message with this id.
         parent: Option<u64>,
         sent_at_ms: u64,
@@ -218,15 +225,18 @@ pub enum Event {
 /// Anything this build cannot read becomes a line saying so rather than an
 /// error: the entry has been applied either way (the ratchet moved on), and a
 /// chat that silently skips a message reads as a friend who never answered.
-type ReadLine = (String, Option<Point>, Option<PictureRef>);
+type ReadLine = (String, Option<Point>, Option<PictureRef>, Option<String>);
 
 fn read_payload(bytes: &[u8]) -> ReadLine {
     const UNREADABLE: &str = "(a message this version can't display)";
     match Payload::decode(bytes) {
-        Ok(Payload::Text { body, .. }) => (body, None, None),
+        Ok(Payload::Text { body, .. }) => (body, None, None, None),
         Ok(Payload::Object { json, .. }) => match Point::from_activity_json(&json) {
-            Ok(point) => (point_caption(&point), Some(point), None),
-            Err(_) => (UNREADABLE.into(), None, None),
+            Ok(point) => (point_caption(&point), Some(point), None, None),
+            Err(_) => match MeetingObject::from_activity_json(&json) {
+                Some(o) => (o.caption(), None, None, Some(json)),
+                None => (UNREADABLE.into(), None, None, None),
+            },
         },
         Ok(Payload::Picture {
             hash,
@@ -246,9 +256,10 @@ fn read_payload(bytes: &[u8]) -> ReadLine {
                 width,
                 height,
             }),
+            None,
         ),
         // A reply is a line, with its parent beside it (`on_deliver`).
-        Ok(Payload::Reply { body, .. }) => (body, None, None),
+        Ok(Payload::Reply { body, .. }) => (body, None, None, None),
         // None of these is a line; `on_deliver` handles them before this.
         Ok(
             Payload::Location { .. }
@@ -259,7 +270,7 @@ fn read_payload(bytes: &[u8]) -> ReadLine {
             | Payload::Delete { .. }
             | Payload::History { .. },
         )
-        | Err(_) => (UNREADABLE.into(), None, None),
+        | Err(_) => (UNREADABLE.into(), None, None, None),
     }
 }
 
@@ -275,7 +286,11 @@ pub struct HistoryItem {
     pub body: String,
     pub sent_at_ms: u64,
     pub parent: Option<u64>,
-    /// A point, as the ActivityStreams JSON it travelled as.
+    /// The object it carried, as the ActivityStreams JSON it travelled as: a
+    /// point, or something a meeting left (`cartopolis_core::meeting`). The
+    /// one field holds both so that adding meetings did not need a new
+    /// [`HISTORY_FORMAT`]: a build that reads only points finds no place in a
+    /// plan and shows its `body`, the caption.
     pub point: Option<String>,
     pub picture: Option<PictureRef>,
 }
@@ -1704,6 +1719,26 @@ impl Engine {
         )
     }
 
+    /// Seal and send something a meeting leaves in a chat
+    /// (`cartopolis_core::meeting`): a plan, an answer, a poll, a vote, a
+    /// note or a record.
+    pub fn send_meeting(
+        &mut self,
+        group: &[u8],
+        object: &MeetingObject,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<u32, String> {
+        self.send_payload(
+            group,
+            &Payload::Object {
+                json: object.to_activity_json(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
     /// Seal and send a picture that is already in the picture store: its hash
     /// and the key that opens it (`chat_pictures`).
     pub fn send_picture(
@@ -2581,7 +2616,7 @@ impl Engine {
                         Ok(Payload::Reply { parent, .. }) => Some(*parent),
                         _ => None,
                     };
-                    let (body, point, picture) = read_payload(&bytes);
+                    let (body, point, picture, object) = read_payload(&bytes);
                     events.push(Event::Line {
                         group,
                         seq,
@@ -2589,6 +2624,7 @@ impl Engine {
                         body,
                         point,
                         picture,
+                        object,
                         parent,
                         sent_at_ms,
                     });

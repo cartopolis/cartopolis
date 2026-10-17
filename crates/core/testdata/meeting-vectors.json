@@ -1,0 +1,10 @@
+[
+    {"kind": "plan", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "Event", "id": "urn:uuid:7d1c2f8e-1111-4a2b-9c3d-000000000001", "name": "Q4 planning", "startTime": "2026-10-14T18:00:00Z", "endTime": "2026-10-14T19:00:00Z", "content": "Bring the numbers", "cartopolis:call": true, "cartopolis:agenda": [{"name": "Budget", "minutes": 10}, {"name": "Stage and sound", "minutes": 15}]}},
+    {"kind": "answer", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "TentativeAccept", "object": "urn:uuid:7d1c2f8e-1111-4a2b-9c3d-000000000001"}},
+    {"kind": "poll", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "Question", "id": "urn:uuid:7d1c2f8e-1111-4a2b-9c3d-000000000002", "name": "Which day for the party?", "anyOf": [{"type": "Note", "name": "Friday"}, {"type": "Note", "name": "Saturday"}]}},
+    {"kind": "vote", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "Note", "inReplyTo": "urn:uuid:7d1c2f8e-1111-4a2b-9c3d-000000000002", "cartopolis:choices": ["Saturday"]}},
+    {"kind": "note", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "Note", "content": "Ann books the stage", "cartopolis:meeting": "action"}},
+    {"kind": "record", "json": {"@context": "https://www.w3.org/ns/activitystreams", "type": "Article", "name": "Q4 planning", "startTime": "2026-10-14T18:00:00Z", "endTime": "2026-10-14T18:30:00Z", "content": "30 min with ann, bob\n", "cartopolis:record": {"title": "Q4 planning", "start_ms": 1792000800000, "end_ms": 1792002600000, "people": ["ann", "bob"], "notes": [{"kind": "decision", "text": "Gazebos stay", "by": "ann"}], "polls": [{"question": "Which day?", "results": [["Saturday", 2]]}], "transcript": [["bob", "hello"]]}}},
+    {"kind": null, "json": {"type": "Note", "content": "a place", "location": {"type": "Place", "latitude": 53.2, "longitude": 6.56}}},
+    {"kind": null, "json": {"type": "Event", "id": "urn:uuid:x", "name": "no call, no place", "startTime": "2026-10-14T18:00:00Z"}}
+]

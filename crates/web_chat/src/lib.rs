@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 
 use cartopolis_chat::{channel_key, group_of, Engine, Event, HistoryItem, PictureRef};
+use cartopolis_core::meeting::MeetingObject;
 use cartopolis_core::point::Point;
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, CallAction, CallEndReason, CallRole,
@@ -693,6 +694,18 @@ impl ChatCore {
         })
     }
 
+    /// Send something a meeting leaves in a chat — a plan, an answer, a poll,
+    /// a vote, a note, a record — as its ActivityStreams JSON
+    /// (`cartopolis_core::meeting`). Read and written again here, so what goes
+    /// out is what every reader accepts.
+    pub fn send_meeting(&mut self, channel: &str, json: &str, now_ms: f64) -> Result<u32, Error> {
+        let object = MeetingObject::from_activity_json(json)
+            .ok_or_else(|| js_err("not something a meeting leaves in a chat"))?;
+        self.send(channel, |e, g, out| {
+            e.send_meeting(g, &object, now_ms as u64, out)
+        })
+    }
+
     /// Say `body` in the thread under the message `parent`.
     pub fn send_reply(
         &mut self,
@@ -1127,6 +1140,7 @@ fn event_json(event: Event) -> Value {
             body,
             point,
             picture,
+            object,
             sent_at_ms,
             parent,
         } => json!({
@@ -1134,7 +1148,8 @@ fn event_json(event: Event) -> Value {
             "channel": channel_key(&group),
             "from": from,
             "body": body,
-            "point": point.and_then(|p| p.to_activity_json(None).ok()),
+            // The object it carried, point or meeting (`HistoryItem::point`).
+            "point": point.and_then(|p| p.to_activity_json(None).ok()).or(object),
             "picture": picture.map(|p| json!({
                 "hash": p.hash,
                 "key": hex(&p.key),
