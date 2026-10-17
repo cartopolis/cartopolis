@@ -52,11 +52,10 @@ as it is: it is public, like nearby chat.
   measured faster than the VP8 encoder already in use, at well under half the
   bitrate (below). Every receiver decodes both — the app through `video::Decoder`,
   which follows a sender's codec frame by frame, a browser through its own
-  WebRTC — so senders differ within one call: the app sends VP9, a browser still
-  sends VP8 (`webcall.js`), because its encoded-transform worker must know each
-  frame's codec to seal it and the frame's `mimeType` metadata is not in every
-  browser. A browser *receiving* reads `mimeType` where it has it and otherwise
-  tries both clear prefixes, which is safe because the prefix is authenticated.
+  WebRTC. A browser sends VP9 profile 0 too since 2026-10-17, VP8 only where it
+  has no VP9 encoder (`webcall.js`, `sendCodecs`); no protocol bump, since
+  protocol 32 already made every receiver decode VP9. See "Browsers sending
+  VP9" below for how its worker knows each frame's codec.
   Hardware VP9 *encoding* is still rare on phones (Qualcomm has historically
   shipped a VP9 decoder only); it does not matter at 320×240, where the CPU
   keeps up.
@@ -244,7 +243,7 @@ permission prompt, the orientation and the picture itself are unverified.
 
 ## Calls in the browser (2026-09-30)
 
-The browser's own WebRTC, microphone, camera, Opus and VP8 (`web/webcall.js`,
+The browser's own WebRTC, microphone, camera, Opus and VP9 (`web/webcall.js`,
 driven from `platform::web_call`), in the same shape as the native link: one
 connection up, one down, both to the forwarder. Every encoded frame passes
 through an encoded-transform worker (`web/call-worker.js`) that seals it on the
@@ -270,6 +269,33 @@ browser exactly as from the app. Decisions:
 - **The address switches of the call harness (`?call=`, `?answer`) only work
   on a page served from this machine.** On the public site a link carrying
   `?answer` would open a visitor's microphone to whoever rang.
+
+### Browsers sending VP9 (2026-10-17)
+
+The worker seals with a clear prefix whose length depends on the codec (VP8 10
+or 3 bytes, VP9 10 or 1), so it must know every outgoing frame's codec, and a
+frame sealed with the wrong prefix opens for nobody.
+
+- **Never by reading the frame's bytes.** A VP8 inter frame's first byte holds
+  partition-size bits, and about a quarter of them start `0b10`, VP9's frame
+  marker (`0x91` even parses as a VP9 profile-2 keyframe). Trying both readings
+  is safe only when receiving, where the AES-GCM tag decides.
+- **Offer one video codec.** `setCodecPreferences` with only VP9 profile 0 (or
+  only VP8), so the answer names one codec before any frame is encoded.
+- **Per frame, in order** (`sframe.js`, `frameCodec`): the frame's
+  `getMetadata().mimeType` (Chrome 127+, Safari 26; not Firefox), then its
+  `payloadType` through the payload-type table the page posts after applying
+  each SDP (Chrome 127+, Firefox 145+, Safari 26), then the codec the up
+  answer's first video format names, then the codec given at attach.
+- **`scalabilityMode: "L1T1"`.** Chrome sends VP9 with temporal layers by
+  default (L1T3), and a spatial layer is a separately sealed frame that str0m
+  would join to its picture's others: two ciphertexts in one frame, which
+  nobody can open. str0m's VP9 depacketizer reads the descriptor's keyframe bit
+  (which Chrome writes from the encoder, so sealing does not hide it), and its
+  packetizer reads the clear first byte, as for the app's VP9.
+- Tests: `webcall.test.ts` (codec choice, SDP tables, `frameCodec`), run with
+  `sframe.test.ts` by `deploy-web` since 2026-10-17 — before that nothing ran
+  them.
 
 **Verified 2026-09-30**, `tools/web_call_test.ts`: the web client in headless
 Chrome 154 (its fake camera and microphone) and the native client (stand-in

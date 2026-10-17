@@ -1,8 +1,8 @@
 //! Video for calls: VP9 through `rusty_vp9` and VP8 through `oxideav-vp8`,
 //! both pure Rust, on every target.
 //!
-//! The app sends VP9 and decodes both; a browser sends VP8 and decodes both
-//! (`docs/notes/calls.md`). Pure Rust rather than libvpx
+//! The app sends VP9 and decodes both; a browser sends VP9 too where it can
+//! encode it, else VP8, and decodes both (`docs/notes/calls.md`). Pure Rust rather than libvpx
 //! because it has no C: the same encoder and decoder run on the desktop, the
 //! phone and in wasm. Measured before each was taken (the note has the
 //! numbers): `oxideav-vp8` decodes a libvpx realtime stream bit-identically to

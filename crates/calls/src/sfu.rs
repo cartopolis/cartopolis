@@ -25,8 +25,10 @@
 //!   sender spend its whole bitrate on keyframes.
 //!
 //! Nothing here can open a frame: frames are SFrame-sealed by their sender, and
-//! only a VP8 payload header is readable (`crate::media`), which is what str0m
-//! reads to tell a keyframe.
+//! only the start of a VP8 or VP9 payload is readable (`crate::media`), which is
+//! what str0m reads to tell a keyframe. A browser sends VP9 with one spatial
+//! layer (`webcall.js`): str0m would join a picture's spatial layers into one
+//! frame, and each is sealed on its own.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;

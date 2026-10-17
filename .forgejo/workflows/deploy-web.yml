@@ -63,6 +63,11 @@ jobs:
       - name: Test
         run: bun test
 
+      # The call files this page imports (`src/lib/call.ts`): the browser's
+      # SFrame against the native vectors, and its codec choice.
+      - name: Test the call files
+        run: bun test ../../cartopolis/web
+
       - name: Build
         run: bun run build.ts --require-chat
 

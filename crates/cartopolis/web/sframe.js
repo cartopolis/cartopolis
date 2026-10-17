@@ -30,6 +30,24 @@ const NONCE_LEN = 12;
 const EPOCHS_KEPT = 2;
 const enc = new TextEncoder();
 
+/** The codec of one encoded video frame, and whether that is known or a guess.
+ *  The frame's own `mimeType` first (Chrome, Safari 26), then its `payloadType`
+ *  through the negotiated table (Firefox 145 has only that), then the codec the
+ *  connection negotiated. Never by reading the bytes: a VP8 inter frame's first
+ *  byte can carry VP9's frame marker, and a frame sealed with the wrong clear
+ *  prefix opens for nobody. `negotiated` is `{ pts: {pt: codec}, codec }`. */
+export function frameCodec(meta, negotiated, fallback) {
+  const mime = meta?.mimeType;
+  if (typeof mime === "string") {
+    if (/vp9/i.test(mime)) return { codec: "vp9", known: true };
+    if (/vp8/i.test(mime)) return { codec: "vp8", known: true };
+  }
+  const byPt = negotiated?.pts?.[meta?.payloadType];
+  if (byPt) return { codec: byPt, known: true };
+  if (negotiated?.codec) return { codec: negotiated.codec, known: false };
+  return { codec: fallback, known: false };
+}
+
 /** How many bytes of a frame stay readable. */
 export function clearPrefix(codec, frame) {
   let n = 0;

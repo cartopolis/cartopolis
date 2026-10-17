@@ -3,7 +3,7 @@
 //! `systems::calls` drives both through the same few calls.
 //!
 //! Everything media is the browser's own — `RTCPeerConnection`, the microphone
-//! and camera, Opus and VP8 — and the frames are sealed and opened by
+//! and camera, Opus and VP9 (VP8 where it has no VP9 encoder) — and the frames are sealed and opened by
 //! `web/call-worker.js` with the chat's keys, byte for byte as the native
 //! client does (`web/sframe.js`, held to `cartopolis_calls::keys` by shared
 //! test vectors). This module only carries signalling and keys in and events

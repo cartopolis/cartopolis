@@ -15,7 +15,7 @@ pub enum Codec {
     /// Voice, 48 kHz mono.
     Opus,
     /// The video baseline: every Android device has a software encoder for it,
-    /// and every browser sends it.
+    /// and a browser without a VP9 encoder sends it.
     Vp8,
     /// What this app's own encoder sends (`video`): at the same picture
     /// quality about half VP8's bitrate, and the pure-Rust encoder is faster

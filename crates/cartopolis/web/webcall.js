@@ -1,7 +1,7 @@
 // A call in the browser: the page half of `platform::web_call` (docs/notes/calls.md).
 //
 // The native client runs WebRTC itself (str0m) and encodes with pure-Rust Opus
-// and VP8. The browser already has all of that, so here it is the browser's:
+// and VP9. The browser already has all of that, so here it is the browser's:
 // its `RTCPeerConnection`, its microphone and camera, its codecs. What is ours
 // is the shape — one connection *up* that this device sends on and one *down*
 // that the forwarder sends everybody else on, exactly as `cartopolis_calls::link`
@@ -40,6 +40,36 @@ async function settled(pc) {
     });
   }
   return pc.localDescription.sdp;
+}
+
+/** The send codec and the preferences that ask for it, from
+ *  `RTCRtpSender.getCapabilities("video").codecs`: VP9 profile 0 (8-bit 4:2:0,
+ *  what every receiver decodes) where the browser has it, else VP8. A VP9 entry
+ *  without a profile-id (Firefox) is profile 0. */
+export function sendCodecs(codecs) {
+  const profile0 = (c) => !/profile-id=(?!0(?:;|$))/.test(c.sdpFmtpLine ?? "");
+  const vp9 = codecs.filter((c) => /^video\/vp9$/i.test(c.mimeType) && profile0(c));
+  if (vp9.length) return { codec: "vp9", prefs: vp9 };
+  return { codec: "vp8", prefs: codecs.filter((c) => /^video\/vp8$/i.test(c.mimeType)) };
+}
+
+/** The video payload types an SDP names, as `{ pts: {pt: "vp8"|"vp9"}, first }`
+ *  where `first` is the codec of the first video m-line's first format (what a
+ *  sender sends), or null. */
+export function videoPayloadTypes(sdp) {
+  const pts = {};
+  let firstPt = null;
+  let video = false;
+  for (const line of sdp.split(/\r?\n/)) {
+    if (line.startsWith("m=")) {
+      video = line.startsWith("m=video ");
+      if (video && firstPt === null) firstPt = line.split(" ")[3] ?? null;
+    } else if (video) {
+      const m = /^a=rtpmap:(\d+) (VP8|VP9)\//i.exec(line);
+      if (m) pts[m[1]] = m[2].toLowerCase();
+    }
+  }
+  return { pts, first: firstPt === null ? null : (pts[firstPt] ?? null) };
 }
 
 function describe(e, what) {
@@ -115,17 +145,34 @@ export class WebCall {
       return;
     }
     const audio = this.up.addTransceiver(this.mic, { direction: "sendonly" });
-    const video = this.up.addTransceiver("video", { direction: "sendonly" });
-    // VP8 to send: every device in the call decodes it (`cartopolis_calls::video`)
-    // and the forwarder reads its first bytes. Received video may be VP8 or VP9
-    // (the app sends VP9); `call-worker.js` tells them apart per frame.
+    // One spatial and one temporal layer: the worker seals each layer's frame
+    // on its own, and the forwarder would join a picture's spatial layers into
+    // one frame no receiver can open. A browser that rejects the option sends
+    // its default, which for VP8 is one layer anyway.
+    let video;
+    try {
+      video = this.up.addTransceiver("video", { direction: "sendonly", sendEncodings: [{ scalabilityMode: "L1T1" }] });
+    } catch {
+      video = this.up.addTransceiver("video", { direction: "sendonly" });
+    }
+    // VP9 profile 0 to send where the browser encodes it, as the app does
+    // (protocol 32 made every receiver decode it), else VP8. Offering one
+    // codec makes the answer name one, so the worker knows what every frame
+    // is before the first is encoded. Received video may be either;
+    // `call-worker.js` tells them apart per frame.
+    let codec = "vp8";
     if (video.setCodecPreferences && RTCRtpSender.getCapabilities) {
-      const vp8 = RTCRtpSender.getCapabilities("video").codecs.filter((c) => /vp8/i.test(c.mimeType));
-      if (vp8.length) video.setCodecPreferences(vp8);
+      const pick = sendCodecs(RTCRtpSender.getCapabilities("video")?.codecs ?? []);
+      try {
+        if (pick.prefs.length) {
+          video.setCodecPreferences(pick.prefs);
+          codec = pick.codec;
+        }
+      } catch {}
     }
     this.videoSender = video.sender;
     this.attach(audio.sender, "send", "opus");
-    this.attach(video.sender, "send", "vp8");
+    this.attach(video.sender, "send", codec);
     await this.up.setLocalDescription(await this.up.createOffer());
     this.onEvent("offer", await settled(this.up));
     if (this.wantCamera) await this.setCamera(true);
@@ -134,6 +181,10 @@ export class WebCall {
   async joined(answer) {
     try {
       await this.up.setRemoteDescription({ type: "answer", sdp: answer });
+      // What the sender will really send: the answer's first video format.
+      // Without `setCodecPreferences` that is the browser's choice, not ours.
+      const t = videoPayloadTypes(answer);
+      this.worker.postMessage({ kind: "codecs", side: "send", pts: t.pts, codec: t.first });
     } catch (e) {
       this.onEvent("failed", `the call's answer was not understood (${e})`);
     }
@@ -154,10 +205,13 @@ export class WebCall {
     }
     try {
       await this.down.setRemoteDescription({ type: "offer", sdp });
+      // The forwarder's payload types are what received RTP carries; a browser
+      // without `mimeType` (Firefox) knows each frame's codec from them.
+      this.worker.postMessage({ kind: "codecs", side: "receive", pts: videoPayloadTypes(sdp).pts, codec: null });
       for (const t of this.down.getTransceivers()) {
         if (!t.receiver.__attached) {
           t.receiver.__attached = true;
-          this.attach(t.receiver, "receive", t.receiver.track.kind === "video" ? "vp8" : "opus");
+          this.attach(t.receiver, "receive", t.receiver.track.kind === "video" ? "video" : "opus");
         }
       }
       await this.down.setLocalDescription(await this.down.createAnswer());
