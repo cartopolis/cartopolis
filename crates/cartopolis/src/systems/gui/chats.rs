@@ -972,6 +972,9 @@ pub fn render_chats_panel(
                 if let Some(point) = out.go_to {
                     act.go_to = Some(point);
                 }
+                // The ✕: what World does from the list. The page stays where
+                // it was, so opening Community again comes back to it.
+                act.close |= out.close;
                 return;
             }
             match (view.sub.clone(), view.open.clone()) {

@@ -489,6 +489,8 @@ pub struct Out {
     pub message: Option<String>,
     /// Open this place on the map: a public post's view.
     pub go_to: Option<cartopolis_core::point::Point>,
+    /// Close the panel and go back to the map, as World does.
+    pub close: bool,
 }
 
 fn role_word(r: CommunityRole) -> &'static str {
@@ -528,8 +530,15 @@ fn people(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// The back chevron and a title, as every sub-screen of the panel has.
-fn title_row(ui: &mut egui::Ui, title: &str) -> bool {
+/// The back chevron, a title and the ✕, as every sub-screen of the panel has.
+/// Answers whether back was pressed; the ✕ goes into `out`.
+///
+/// The ✕ is not a second back. Each of these screens replaces the whole panel,
+/// the Community | World switch included, so without it a community page had
+/// one way to the map: back to the list, then World. A page opened from a
+/// post's pin on the map is the case that showed it, because the person is
+/// looking at the map and has no reason to think of the list at all.
+fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
     let mut back = false;
     ui.horizontal(|ui| {
         back = ui
@@ -552,6 +561,11 @@ fn title_row(ui: &mut egui::Ui, title: &str) -> bool {
                 ))
                 .color(theme::CREAM),
         );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::close_button(ui).clicked() {
+                out.close = true;
+            }
+        });
     });
     ui.add_space(8.0);
     back
@@ -765,20 +779,20 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| match screen {
-            Screen::Find => find_screen(ui, communities),
+            Screen::Find => find_screen(ui, communities, &mut out),
             Screen::Preview(id) => preview_screen(ui, communities, id, &mut out),
-            Screen::Create => create_screen(ui, communities),
+            Screen::Create => create_screen(ui, communities, &mut out),
             Screen::Community(id) => community_screen(ui, communities, id, me, &mut out),
-            Screen::Edit(id) => edit_screen(ui, communities, id),
+            Screen::Edit(id) => edit_screen(ui, communities, id, &mut out),
             Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
-            Screen::Invite(code) => invite_screen(ui, communities, &code),
+            Screen::Invite(code) => invite_screen(ui, communities, &code, &mut out),
             Screen::PostTo => crate::systems::community_posts::pick_community(ui, communities),
         });
     out
 }
 
-fn find_screen(ui: &mut egui::Ui, cs: &mut Communities) {
-    if title_row(ui, "Find a community") {
+fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
+    if title_row(ui, "Find a community", out) {
         cs.screen = None;
         return;
     }
@@ -930,8 +944,8 @@ fn place_words(p: &CommunityPlace) -> String {
 }
 
 /// Somebody opened an invite link: the community it names, and Join.
-fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str) {
-    if title_row(ui, "Invitation") {
+fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str, out: &mut Out) {
+    if title_row(ui, "Invitation", out) {
         cs.screen = None;
         return;
     }
@@ -961,7 +975,7 @@ fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str) {
 }
 
 fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
-    if title_row(ui, "Community") {
+    if title_row(ui, "Community", out) {
         cs.screen = Some(Screen::Find);
         return;
     }
@@ -1175,8 +1189,8 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
     }
 }
 
-fn create_screen(ui: &mut egui::Ui, cs: &mut Communities) {
-    if title_row(ui, "New community") {
+fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
+    if title_row(ui, "New community", out) {
         cs.screen = None;
         return;
     }
@@ -1227,7 +1241,7 @@ fn create_screen(ui: &mut egui::Ui, cs: &mut Communities) {
 
 #[allow(clippy::too_many_lines)]
 fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
-    if title_row(ui, "") {
+    if title_row(ui, "", out) {
         cs.screen = None;
         return;
     }
@@ -1551,8 +1565,8 @@ fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &
     );
 }
 
-fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
-    if title_row(ui, "Edit community") {
+fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
+    if title_row(ui, "Edit community", out) {
         cs.show(id);
         return;
     }
@@ -1609,7 +1623,7 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
 }
 
 fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
-    if title_row(ui, "People") {
+    if title_row(ui, "People", out) {
         cs.show(id);
         return;
     }
@@ -1988,5 +2002,59 @@ pub fn seed_demo(
 pub fn clear_demo(cs: &mut Communities) {
     if cs.demo {
         *cs = Communities::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::egui_manager::UnpaintedPasses as _;
+
+    /// Run one frame of `title_row` with `events`, answering where its row
+    /// landed, whether back was pressed and what went into `out`.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (egui::Rect, bool, bool) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 200.0));
+        let mut row = egui::Rect::NOTHING;
+        let mut back = false;
+        let mut out = Out::default();
+        let _ = ctx.run_ui_unpainted(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let r = ui.scope(|ui| title_row(ui, "People", &mut out));
+                back = r.inner;
+                row = r.response.rect;
+            },
+        );
+        (row, back, out.close)
+    }
+
+    /// Every community screen replaces the whole panel, the Community | World
+    /// switch with it, so its title row is the only way back to the map. A
+    /// page opened from a post's pin had a back chevron and nothing else.
+    #[test]
+    fn the_title_row_closes_the_panel_without_going_back() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let (row, _, _) = frame(&ctx, Vec::new());
+        // The ✕ is the last thing on the row, against its right edge; the
+        // 8 pt under the row is spacing, not row.
+        let at = egui::pos2(
+            row.right() - theme::close_button_size() / 2.0,
+            (row.top() + row.bottom() - 8.0) / 2.0,
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(&ctx, vec![egui::Event::PointerMoved(at), button(true)]);
+        let (_, back, close) = frame(&ctx, vec![button(false)]);
+        assert!(close, "the ✕ did not ask the panel to close");
+        assert!(!back, "the ✕ also went back");
     }
 }
