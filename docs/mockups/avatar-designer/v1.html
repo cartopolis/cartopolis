@@ -1,0 +1,166 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Avatar designer v1</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="undo" viewBox="0 0 24 24"><path d="M9 7L4 12l5 5M4 12h11a5 5 0 010 10h-2"/></symbol>
+  <symbol id="redo" viewBox="0 0 24 24"><path d="M15 7l5 5-5 5M20 12H9a5 5 0 000 10h2"/></symbol>
+  <symbol id="dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2"/><circle cx="15" cy="15" r="1.2"/><circle cx="15" cy="9" r="1.2"/><circle cx="9" cy="15" r="1.2"/></symbol>
+  <symbol id="spin" viewBox="0 0 24 24"><path d="M4 12a8 4 0 0016 0M20 12a8 4 0 00-12-3.5M8 6l-1 3 3 .5"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="shirt" viewBox="0 0 24 24"><path d="M8 4l-5 3 2 4 2-1v10h10V10l2 1 2-4-5-3c-.5 1.5-2 2.5-4 2.5S8.5 5.5 8 4z"/></symbol>
+  <symbol id="hood" viewBox="0 0 24 24"><path d="M8 5c1-1.5 7-1.5 8 0l4 3-2 4-2-1v9H8v-9l-2 1-2-4zM9.5 5.5c.5 2 4.5 2 5 0M10 13h4"/></symbol>
+  <symbol id="coat" viewBox="0 0 24 24"><path d="M8 3l-4 3 1 15h6V9M16 3l4 3-1 15h-6V9M8 3l4 6 4-6"/></symbol>
+  <symbol id="dress" viewBox="0 0 24 24"><path d="M9 3h6l-1 6 5 12H5l5-12z"/></symbol>
+  <symbol id="blouse" viewBox="0 0 24 24"><path d="M8 4l-4 4 2 3 2-1v10h8V10l2 1 2-3-4-4-4 3z"/></symbol>
+  <symbol id="tank" viewBox="0 0 24 24"><path d="M9 3v4c0 1 6 1 6 0V3M9 7L7 10v11h10V10l-2-3"/></symbol>
+  <symbol id="hair1" viewBox="0 0 24 24"><path d="M6 12c0-5 3-7 6-7s6 2 6 7M6 12c1-3 3-4 6-4s5 1 6 4"/><circle cx="12" cy="13" r="5"/></symbol>
+  <symbol id="hair2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M7 11c.5-3 2.5-4.5 5-4.5s4.5 1.5 5 4.5"/></symbol>
+  <symbol id="hair3" viewBox="0 0 24 24"><circle cx="12" cy="11" r="5"/><path d="M6 11c0-5 3-7 6-7s6 2 6 7v6c-1 1-2 1-3 0M6 11v6c1 1 2 1 3 0"/></symbol>
+  <symbol id="hair4" viewBox="0 0 24 24"><circle cx="12" cy="11" r="5"/><path d="M6 10c0-5 3-7 6-7s6 2 6 7v10M6 10v10"/></symbol>
+  <symbol id="hair5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M5 12c-1-2 0-4 1-5 0-2 2-3 3-3 1-1 5-1 6 0 1 0 3 1 3 3 1 1 2 3 1 5"/></symbol>
+  <symbol id="hair6" viewBox="0 0 24 24"><circle cx="11" cy="12" r="5"/><path d="M6 11c0-4.5 2.5-6.5 5-6.5S16 6 16.5 9l3 1-1 6"/></symbol>
+  <symbol id="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M7 17L17 7"/></symbol>
+  <symbol id="jeans" viewBox="0 0 24 24"><path d="M7 3h10l1 18h-4l-2-11-2 11H6z"/></symbol>
+  <symbol id="shorts" viewBox="0 0 24 24"><path d="M7 5h10l1 10h-4l-2-5-2 5H6z"/></symbol>
+  <symbol id="skirt" viewBox="0 0 24 24"><path d="M8 5h8l3 13H5z"/></symbol>
+  <symbol id="shoe" viewBox="0 0 24 24"><path d="M3 15c0-2 1-6 3-6l2 2c2 1 5 1 7 1 3 0 6 1 6 3v2H3z"/></symbol>
+  <symbol id="boot" viewBox="0 0 24 24"><path d="M7 3h5v10c2 1 7 1 8 4v2H5V3z"/></symbol>
+  <symbol id="glasses" viewBox="0 0 24 24"><circle cx="7" cy="13" r="3.5"/><circle cx="17" cy="13" r="3.5"/><path d="M10.5 13h3M3.5 13L2 10M20.5 13L22 10"/></symbol>
+  <symbol id="cap" viewBox="0 0 24 24"><path d="M4 15c0-5 3.5-8 8-8s8 3 8 8zM12 15h10"/></symbol>
+</svg>
+
+<h1>Avatar designer <b>v1</b></h1>
+<p class="lede">Opened from <b style="color:var(--cream);font-weight:inherit">You › Avatar</b> (home-and-profile v1). The top of the screen is your own avatar, drawn live by the client and turned with a finger. The sheet below holds the controls, in four tabs. Every slider is a MakeHuman control, so the body is the one MakeHuman would make from the same values, and anything worn re-fits to it. The whole look travels as a few dozen numbers, and everyone's phone builds the same person from them. Everything on this sheet is <span class="newtag">new</span>; the slot-by-slot chooser in World's ☰ ▸ Appearance goes.</p>
+
+<div class="row">
+
+<!-- A. BODY -->
+<div class="shot">
+<div class="phone">
+  <div class="stage" style="background-image:url(body.jpg)"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dtop"><svg class="i"><use href="#back"/></svg><span class="t">Your avatar</span><span class="done">Done</span></div>
+  <div class="views"><div class="on">Body</div><div>Face</div></div>
+  <div class="tools"><div><svg class="i s"><use href="#undo"/></svg></div><div class="off"><svg class="i s"><use href="#redo"/></svg></div><div><svg class="i s"><use href="#dice"/></svg></div></div>
+  <div class="turn"><svg class="i s"><use href="#spin"/></svg>Drag to turn · pinch to zoom</div>
+  <div class="dsheet">
+    <div class="handle"></div>
+    <div class="dtabs"><div class="on">Body</div><div>Face</div><div>Skin &amp; hair</div><div>Clothes</div></div>
+    <div class="sl hot"><div class="h"><b>Body shape</b><span>more masculine</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:88%"></div><div class="knob" style="left:88%"></div></div><div class="ends"><span>Feminine</span><span>Masculine</span></div></div>
+    <div class="sl"><div class="h"><b>Age</b><span>31</span></div><div class="track"><div class="fill" style="width:30%"></div><div class="knob" style="left:30%"></div></div><div class="ends"><span>18</span><span>90</span></div></div>
+    <div class="sl"><div class="h"><b>Height</b><span>1.78 m</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:58%"></div><div class="knob" style="left:58%"></div></div></div>
+    <div class="sl"><div class="h"><b>Weight</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div><div class="ends"><span>Slim</span><span>Heavy</span></div></div>
+    <div class="sl"><div class="h"><b>Muscle</b><span>a little toned</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:62%"></div><div class="knob" style="left:62%"></div></div><div class="ends"><span>Soft</span><span>Muscular</span></div></div>
+    <div class="sl"><div class="h"><b>Proportions</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div></div>
+    <div class="sl off"><div class="h"><b>Chest</b><span>on the feminine side</span></div><div class="track"><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div></div>
+  </div>
+</div>
+<h2><span>A</span>Body</h2>
+<ul>
+  <li><b>MakeHuman's macro sliders</b>, renamed into plain words. Each one blends the targets <code>crates/human</code> already blends (<code>macros.rs</code>).</li>
+  <li><b>Body shape is a slider, not a choice of two.</b> MakeHuman's gender is continuous, so anyone can sit anywhere on it. The label under the value is a word, never a number.</li>
+  <li>The ticks mark the average. Height shows metres, measured from the body as built.</li>
+  <li>Chest only does something toward the feminine end (MakeHuman has no masculine counterpart), so it dims rather than hides.</li>
+  <li>Undo/redo go back through every drag; the dice make a random plausible person.</li>
+</ul>
+</div>
+
+<!-- B. FACE -->
+<div class="shot">
+<div class="phone">
+  <div class="stage" style="background-image:url(face.jpg);background-position:center 30%"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dtop"><svg class="i"><use href="#back"/></svg><span class="t">Your avatar</span><span class="done">Done</span></div>
+  <div class="views"><div>Body</div><div class="on">Face</div></div>
+  <div class="tools"><div><svg class="i s"><use href="#undo"/></svg></div><div><svg class="i s"><use href="#redo"/></svg></div><div><svg class="i s"><use href="#dice"/></svg></div></div>
+  <div class="turn"><svg class="i s"><use href="#spin"/></svg>Drag to turn</div>
+  <div class="dsheet">
+    <div class="handle"></div>
+    <div class="dtabs"><div>Body</div><div class="on">Face</div><div>Skin &amp; hair</div><div>Clothes</div></div>
+    <div class="chips"><div class="on">Head</div><div>Eyes</div><div>Nose</div><div>Mouth</div><div>Ears</div></div>
+    <div class="sl"><div class="h"><b>Face shape</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:46%"></div><div class="knob" style="left:46%"></div></div><div class="ends"><span>Round</span><span>Long</span></div></div>
+    <div class="sl hot"><div class="h"><b>Jaw</b><span>wider</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:68%"></div><div class="knob" style="left:68%"></div></div><div class="ends"><span>Narrow</span><span>Wide</span></div></div>
+    <div class="sl"><div class="h"><b>Chin</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div><div class="ends"><span>Receding</span><span>Prominent</span></div></div>
+    <div class="sl"><div class="h"><b>Cheekbones</b><span>a little higher</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:57%"></div><div class="knob" style="left:57%"></div></div><div class="ends"><span>Low</span><span>High</span></div></div>
+    <div class="sl"><div class="h"><b>Forehead</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div><div class="ends"><span>Short</span><span>Tall</span></div></div>
+    <div class="sl"><div class="h"><b>Head size</b><span>average</span></div><div class="track"><div class="mid"></div><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div></div>
+  </div>
+</div>
+<h2><span>B</span>Face</h2>
+<ul>
+  <li>The camera <b>moves in to the face</b> when this tab opens (the Body | Face switch on the left does it by hand).</li>
+  <li>MakeHuman has about 100 face controls (head, eyes, nose, mouth, ears, chin, cheeks). This proposes about 25, five or six per part. The chips pick the part, so the sheet never scrolls far.</li>
+  <li>These targets are not in the pack yet. Each body needs only the few it uses, so they could be fetched on demand (question 2).</li>
+</ul>
+</div>
+
+<!-- C. SKIN & HAIR -->
+<div class="shot">
+<div class="phone">
+  <div class="stage" style="background-image:url(face.jpg);background-position:center 30%"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dtop"><svg class="i"><use href="#back"/></svg><span class="t">Your avatar</span><span class="done">Done</span></div>
+  <div class="views"><div>Body</div><div class="on">Face</div></div>
+  <div class="tools"><div><svg class="i s"><use href="#undo"/></svg></div><div class="off"><svg class="i s"><use href="#redo"/></svg></div><div><svg class="i s"><use href="#dice"/></svg></div></div>
+  <div class="dsheet">
+    <div class="handle"></div>
+    <div class="dtabs"><div>Body</div><div>Face</div><div class="on">Skin &amp; hair</div><div>Clothes</div></div>
+    <div class="grp-t">Skin</div>
+    <div class="swatches"><div style="background:#f3d6c4"></div><div class="on" style="background:#e6b99a"></div><div style="background:#cf9b78"></div><div style="background:#b07a55"></div><div style="background:#8d5a3b"></div><div style="background:#6a4029"></div><div style="background:#4a2c1d"></div><div style="background:#33201a"></div></div>
+    <div class="grp-t">Hair</div>
+    <div class="grid four"><div class="on"><svg class="i"><use href="#hair1"/></svg>Short</div><div><svg class="i"><use href="#hair2"/></svg>Buzz</div><div><svg class="i"><use href="#hair3"/></svg>Bob</div><div><svg class="i"><use href="#hair4"/></svg>Long</div><div><svg class="i"><use href="#hair5"/></svg>Curls</div><div><svg class="i"><use href="#hair6"/></svg>Ponytail</div><div><svg class="i"><use href="#none"/></svg>None</div><div><svg class="i"><use href="#plus"/></svg>More</div></div>
+    <div class="swatches"><div style="background:#1d1612"></div><div class="on" style="background:#4a3424"></div><div style="background:#7b5536"></div><div style="background:#b48a57"></div><div style="background:#d9c08a"></div><div style="background:#a23f22"></div><div style="background:#9a9a9a"></div><div class="plus">+</div></div>
+    <div class="grp-t">Eyes</div>
+    <div class="swatches"><div class="on" style="background:#5a3a22"></div><div style="background:#8a6a3a"></div><div style="background:#5d7a3e"></div><div style="background:#4f7aa8"></div><div style="background:#7d8a92"></div></div>
+  </div>
+</div>
+<h2><span>C</span>Skin &amp; hair</h2>
+<ul>
+  <li><b>Skin tone</b> is a colour over one detailed skin texture, not one texture per tone. That keeps the download to a few textures, and any tone is possible (the swatches are presets; a long press opens a fine picker).</li>
+  <li><b>Hair styles</b> are MakeHuman's hair, fitted to the head like clothes. The colour tints the strands. "More" opens the full list.</li>
+  <li>Eyebrows and lashes follow the hair colour unless changed (under "More").</li>
+</ul>
+</div>
+
+<!-- D. CLOTHES -->
+<div class="shot">
+<div class="phone">
+  <div class="stage" style="background-image:url(side.jpg)"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="dtop"><svg class="i"><use href="#back"/></svg><span class="t">Your avatar</span><span class="done">Done</span></div>
+  <div class="views"><div class="on">Body</div><div>Face</div></div>
+  <div class="tools"><div><svg class="i s"><use href="#undo"/></svg></div><div class="off"><svg class="i s"><use href="#redo"/></svg></div><div><svg class="i s"><use href="#dice"/></svg></div></div>
+  <div class="turn"><svg class="i s"><use href="#spin"/></svg>Walks a few steps to show the fit</div>
+  <div class="dsheet">
+    <div class="handle"></div>
+    <div class="dtabs"><div>Body</div><div>Face</div><div>Skin &amp; hair</div><div class="on">Clothes</div></div>
+    <div class="chips"><div class="on">Tops</div><div>Bottoms</div><div>Shoes</div><div>Extras</div></div>
+    <div class="grid"><div class="on"><svg class="i"><use href="#shirt"/></svg>T-shirt</div><div><svg class="i"><use href="#hood"/></svg>Hoodie</div><div><svg class="i"><use href="#coat"/></svg>Coat</div><div><svg class="i"><use href="#blouse"/></svg>Blouse</div><div><svg class="i"><use href="#tank"/></svg>Vest top</div><div><svg class="i"><use href="#dress"/></svg>Dress</div></div>
+    <div class="grp-t">Colour</div>
+    <div class="swatches"><div class="on" style="background:#e9e6df"></div><div style="background:#1e1f22"></div><div style="background:#2f4a6e"></div><div style="background:#7a2a2a"></div><div style="background:#4f6b3a"></div><div style="background:#d8b24a"></div><div style="background:#d97aa0"></div><div class="plus">+</div></div>
+    <p class="dnote">Each garment stretches with the body: change the sliders and it still fits.</p>
+  </div>
+</div>
+<h2><span>D</span>Clothes</h2>
+<ul>
+  <li>One item per slot: a top, bottoms, shoes, and any extras (glasses, a cap). A dress fills top and bottoms.</li>
+  <li>Garments are MakeHuman clothes, fitted to whatever body the sliders make (<code>fit.rs</code>), so no garment needs a size. Skin under a garment is removed so it cannot poke through.</li>
+  <li>The colour tints the garment's own texture, so the folds and seams stay.</li>
+  <li>While this tab is open the preview walks on the spot, because how clothes fit shows best in motion.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="sec">
+<h2>How it works, and what is open</h2>
+<ul>
+  <li><b>What is saved:</b> about forty numbers (the sliders, a skin tone, a hair style and colour, and up to six garments with a colour each). They are stored with the account, sent once to whoever can see you, and every phone builds the same person from them, in about 10 ms (measured on a Mac, 2026-10-17).</li>
+  <li><b>Others see a change</b> when you tap Done, not while you drag.</li>
+  <li><b>Question 1, the catalogue:</b> MakeHuman's CC0 system pack has 10 hair styles, 20 garments and 23 skins. Its community library has hundreds more, under mixed licences and of uneven quality. What ships is a choice of taste and of licence, best made from renders of each.</li>
+  <li><b>Question 2, the download:</b> every body and face target together is about 80 MB raw, too much for the app. The proposal: ship the body sliders in a compact encoding (its size still to be measured), and fetch face targets and garments on demand, each once, then keep them.</li>
+  <li><b>Question 3, children's bodies:</b> MakeHuman goes down to babies. This sheet starts the age slider at 18, because the world is for adults (an open question for communities that are not).</li>
+</ul>
+</div>
+</body></html>

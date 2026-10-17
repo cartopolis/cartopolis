@@ -1,0 +1,61 @@
+/* Builds on home-and-profile's sheet (and through it communities' and
+   chat-world's phone frame, palette and chips); adds only the designer. */
+@import url(../home-and-profile/style.css);
+
+/* the preview: your avatar, drawn by the client, filling the top of the screen */
+.stage { position:absolute; left:0; right:0; top:0; height:430px; background-size:cover; background-position:center bottom; }
+.stage::after { content:""; position:absolute; inset:0; background:linear-gradient(180deg, rgba(10,14,16,.7) 0, transparent 26%, transparent 78%, rgba(10,14,16,.55) 100%); }
+.dtop { position:absolute; top:44px; left:0; right:0; z-index:4; display:flex; align-items:center; gap:10px; padding:4px 14px; color:var(--cream); }
+.dtop .t { flex:1; font-size:18px; }
+.dtop .done { background:var(--brand); color:#fff; border-radius:12px; padding:7px 14px; font-size:14px; }
+.tools { position:absolute; right:12px; top:100px; z-index:4; display:flex; flex-direction:column; gap:8px; }
+.tools div { width:40px; height:40px; border-radius:12px; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--cream); backdrop-filter:blur(10px); }
+.tools .off { color:var(--line); }
+.turn { position:absolute; left:50%; bottom:22px; transform:translateX(-50%); z-index:4; display:flex; gap:6px; align-items:center; font-size:12px; color:var(--cream); background:rgba(10,14,16,.6); padding:4px 10px; border-radius:10px; white-space:nowrap; }
+.views { position:absolute; left:12px; top:100px; z-index:4; display:flex; flex-direction:column; gap:6px; }
+.views div { font-size:11.5px; color:var(--cream); background:var(--glass); border:1px solid var(--gline); border-radius:10px; padding:4px 9px; }
+.views .on { background:var(--accent); color:var(--ink); }
+
+/* the sheet of controls */
+.dsheet { position:absolute; left:0; right:0; bottom:0; top:400px; z-index:5; background:var(--surface); border-top-left-radius:24px; border-top-right-radius:24px; border-top:1px solid var(--gline); overflow:hidden; }
+.dsheet .handle { margin:8px auto 10px; }
+.dtabs { display:flex; gap:4px; margin:0 14px 10px; background:var(--raised); border:1px solid var(--gline); border-radius:12px; padding:3px; }
+.dtabs div { flex:1; text-align:center; padding:7px 4px; border-radius:9px; color:var(--dim); font-size:13px; white-space:nowrap; }
+.dtabs .on { background:var(--accent); color:var(--ink); }
+.dsheet .chips { padding:0 14px 8px; }
+.dsheet .chips div { font-size:12px; padding:4px 10px; }
+
+.sl { padding:5px 18px 7px; }
+.sl .h { display:flex; justify-content:space-between; font-size:13.5px; color:var(--text); }
+.sl .h b { color:var(--cream); font-weight:inherit; }
+.sl .h span { color:var(--dim); font-size:12.5px; }
+.track { position:relative; height:22px; margin-top:2px; }
+.track::before { content:""; position:absolute; left:0; right:0; top:9px; height:4px; border-radius:2px; background:var(--raised); }
+.track .fill { position:absolute; left:0; top:9px; height:4px; border-radius:2px; background:var(--accent); }
+.track .mid { position:absolute; left:50%; top:6px; width:2px; height:10px; margin-left:-1px; background:var(--line); border-radius:1px; }
+.track .knob { position:absolute; top:2px; width:18px; height:18px; margin-left:-9px; border-radius:50%; background:var(--cream); box-shadow:0 1px 4px rgba(0,0,0,.5); }
+.sl .ends { display:flex; justify-content:space-between; font-size:11px; color:var(--line); margin-top:-2px; }
+.sl.off .h, .sl.off .h b { color:var(--line); }
+.sl.off .knob { background:var(--muted); }
+.sl.off .fill { background:var(--muted); }
+.sl.hot .knob { box-shadow:0 0 0 6px rgba(199,211,216,.18), 0 1px 4px rgba(0,0,0,.5); }
+.grp-t { padding:8px 18px 2px; color:var(--dim); font-size:11.5px; letter-spacing:.6px; text-transform:uppercase; }
+
+/* swatches and choice grids */
+.swatches { display:flex; gap:9px; padding:4px 18px 8px; flex-wrap:wrap; }
+.swatches div { width:32px; height:32px; border-radius:50%; box-shadow:0 0 0 1px var(--gline); }
+.swatches .on { box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.swatches .plus { display:grid; place-items:center; color:var(--dim); background:var(--raised); }
+.grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; padding:4px 18px 8px; }
+.grid div { background:var(--raised); border:1px solid var(--gline); border-radius:14px; height:84px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; font-size:11.5px; color:var(--dim); position:relative; }
+.grid div svg { width:40px; height:40px; color:var(--accent); stroke-width:1.4; }
+.grid .on { border-color:var(--accent); color:var(--cream); background:var(--hover); }
+.grid .on::after { content:"✓"; position:absolute; right:7px; top:5px; font-size:11px; color:var(--accent); }
+.grid.four { grid-template-columns:repeat(4, 1fr); }
+.grid.four div { height:64px; }
+.grid.four div svg { width:30px; height:30px; }
+.dnote { margin:4px 18px 0; color:var(--dim); font-size:12px; line-height:1.4; }
+
+.sec ul { color:var(--dim); font-size:14px; padding-left:20px; max-width:1500px; margin-top:8px; }
+.sec li { margin-bottom:5px; }
+.sec li b { color:var(--cream); font-weight:inherit; }
