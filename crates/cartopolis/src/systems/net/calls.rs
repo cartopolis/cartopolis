@@ -169,6 +169,9 @@ struct Active {
     held: bool,
     /// What the call was last told about this device's microphone.
     told_muted: Option<bool>,
+    /// Whether the forwarder was last told this device draws cameras: none
+    /// while the call is folded to its bar (`CallWatch`).
+    told_looking: Option<bool>,
     /// Waiting for a host to let it in (`CallWaiting`).
     waiting: bool,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
@@ -1035,6 +1038,18 @@ pub fn drive_calls(
             },
         );
     }
+    // Folded, nothing draws a camera: the forwarder stops sending them, and
+    // sends them all again when the screen comes back. Screens always come.
+    if a.participant.is_some() && !a.waiting && a.told_looking != Some(looking) {
+        a.told_looking = Some(looking);
+        online.send(
+            "call watch",
+            NetMessage::CallWatch {
+                group: a.group.clone(),
+                cameras: if looking { None } else { Some(Vec::new()) },
+            },
+        );
+    }
 
     // The chat's keys, whenever its epoch moves (and once at the start).
     if let Some(e) = private.call_epoch(&a.group) {
@@ -1309,6 +1324,7 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         screens: HashMap::new(),
         held: false,
         told_muted: None,
+        told_looking: None,
         waiting: false,
         #[cfg(not(target_arch = "wasm32"))]
         fake_mic_sent: 0,
