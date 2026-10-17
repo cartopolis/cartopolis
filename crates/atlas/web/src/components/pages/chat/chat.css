@@ -2987,7 +2987,7 @@
 /* ── What a meeting leaves in the chat: plans, polls, notes, records ─────
    (`lib/meeting.ts`). Cards in the message column, the same width as text. */
 
-.chat-card {
+.chat-mcard {
     background: var(--m-surface-raised);
     border: 1px solid var(--m-border);
     border-radius: 14px;
@@ -2999,12 +2999,12 @@
     padding: 12px 14px;
 }
 
-.chat-card.is-live {
+.chat-mcard.is-live {
     border-color: var(--m-accent);
     box-shadow: 0 0 0 3px var(--m-accent-soft);
 }
 
-.chat-card-kicker {
+.chat-mcard-kicker {
     align-items: center;
     color: var(--m-text-dim);
     display: flex;
@@ -3015,28 +3015,28 @@
     text-transform: uppercase;
 }
 
-.chat-card-kicker .is-now {
+.chat-mcard-kicker .is-now {
     color: var(--m-accent-text);
 }
 
-.chat-card-title {
+.chat-mcard-title {
     color: var(--m-text-strong);
     font-size: 1rem;
     line-height: 1.3;
 }
 
-.chat-card-sub {
+.chat-mcard-sub {
     color: var(--m-text-dim);
     font-size: 0.8rem;
 }
 
-.chat-card-text {
+.chat-mcard-text {
     font-size: 0.88rem;
     margin: 0;
     white-space: pre-wrap;
 }
 
-.chat-card-people {
+.chat-mcard-people {
     align-items: center;
     color: var(--m-text-dim);
     display: flex;
@@ -3045,18 +3045,18 @@
     gap: 3px;
 }
 
-.chat-card-people > span {
+.chat-mcard-people > span {
     margin-left: 4px;
 }
 
-.chat-card-actions {
+.chat-mcard-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-top: 4px;
 }
 
-.chat button.chat-card-btn {
+.chat button.chat-mcard-btn {
     align-items: center;
     background: var(--m-surface);
     border: 1px solid var(--m-border);
@@ -3070,23 +3070,23 @@
     padding: 0 12px;
 }
 
-.chat button.chat-card-btn:hover {
+.chat button.chat-mcard-btn:hover {
     background: var(--m-hover);
 }
 
-.chat button.chat-card-btn.is-on {
+.chat button.chat-mcard-btn.is-on {
     background: var(--m-accent-soft);
     border-color: var(--m-accent);
     color: var(--m-accent-text);
 }
 
-.chat button.chat-card-btn.is-primary {
+.chat button.chat-mcard-btn.is-primary {
     background: var(--m-accent);
     border-color: var(--m-accent);
     color: var(--m-on-accent);
 }
 
-.chat-card-count {
+.chat-mcard-count {
     background: var(--m-surface-sunken);
     border-radius: 999px;
     font-size: 0.7rem;

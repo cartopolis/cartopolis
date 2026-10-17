@@ -745,10 +745,10 @@ export class Chat extends MithrilComponent {
                 <span>
                     <b>{u.plan.title}</b> · {relative(u.plan)} · {this.chatTitle(u.channel)}
                 </span>
-                <button class="chat-card-btn is-primary" onclick={() => this.startCall(u.channel, true)} type="button">
+                <button class="chat-mcard-btn is-primary" onclick={() => this.startCall(u.channel, true)} type="button">
                     Join
                 </button>
-                <button aria-label="Dismiss" class="chat-card-btn" onclick={() => (this.upcoming = null)} title="Dismiss" type="button">
+                <button aria-label="Dismiss" class="chat-mcard-btn" onclick={() => (this.upcoming = null)} title="Dismiss" type="button">
                     {Icon('close')}
                 </button>
             </div>
@@ -3518,13 +3518,13 @@ export class Chat extends MithrilComponent {
                 const mins = Math.max(1, Math.round((r.end_ms - r.start_ms) / 60000))
                 const kinds: NoteKind[] = ['decision', 'action', 'note']
                 return (
-                    <div class="chat-card chat-record">
-                        <div class="chat-card-kicker">{Icon('description')} Meeting record</div>
-                        <b class="chat-card-title">{r.title || 'Meeting record'}</b>
-                        <div class="chat-card-sub">
+                    <div class="chat-mcard chat-record">
+                        <div class="chat-mcard-kicker">{Icon('description')} Meeting record</div>
+                        <b class="chat-mcard-title">{r.title || 'Meeting record'}</b>
+                        <div class="chat-mcard-sub">
                             {new Date(r.start_ms).toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})}, {time(r.start_ms)}–{time(r.end_ms)} · {mins} min
                         </div>
-                        <div class="chat-card-people">
+                        <div class="chat-mcard-people">
                             {r.people.slice(0, 8).map((p) => Avatar(p, 22))}
                             <span>{r.people.join(', ')}</span>
                         </div>
@@ -3569,9 +3569,9 @@ export class Chat extends MithrilComponent {
                                 ))}
                             </details>
                         )}
-                        <div class="chat-card-actions">
+                        <div class="chat-mcard-actions">
                             <button
-                                class="chat-card-btn"
+                                class="chat-mcard-btn"
                                 onclick={() => void navigator.clipboard?.writeText(`${r.title}\n${recordText(r)}`)}
                                 type="button"
                             >
@@ -3598,22 +3598,22 @@ export class Chat extends MithrilComponent {
         const inCall = c.calls.active?.channel === channel
         const choice = (r: Rsvp, icon: string) => (
             <button
-                class={mine === r ? 'chat-card-btn is-on' : 'chat-card-btn'}
+                class={mine === r ? 'chat-mcard-btn is-on' : 'chat-mcard-btn'}
                 onclick={() => c.sendMeeting(channel, {kind: 'answer', plan: plan.id, rsvp: r})}
                 type="button"
             >
                 {Icon(icon)} {RSVP_WORDS[r]}
-                {who(r).length > 0 && <span class="chat-card-count">{who(r).length}</span>}
+                {who(r).length > 0 && <span class="chat-mcard-count">{who(r).length}</span>}
             </button>
         )
         return (
-            <div class={live ? 'chat-card chat-plan is-live' : 'chat-card chat-plan'}>
-                <div class="chat-card-kicker">
+            <div class={live ? 'chat-mcard chat-plan is-live' : 'chat-mcard chat-plan'}>
+                <div class="chat-mcard-kicker">
                     {Icon('event')} Meeting · <span class={live ? 'is-now' : ''}>{relative(plan, now)}</span>
                 </div>
-                <b class="chat-card-title">{plan.title}</b>
-                <div class="chat-card-sub">{when(plan)}</div>
-                {plan.text && <p class="chat-card-text">{Body(plan.text, me)}</p>}
+                <b class="chat-mcard-title">{plan.title}</b>
+                <div class="chat-mcard-sub">{when(plan)}</div>
+                {plan.text && <p class="chat-mcard-text">{Body(plan.text, me)}</p>}
                 {plan.agenda.length > 0 && (
                     <ol class="chat-plan-agenda">
                         {plan.agenda.map((i) => (
@@ -3625,20 +3625,20 @@ export class Chat extends MithrilComponent {
                     </ol>
                 )}
                 {going.length > 0 && (
-                    <div class="chat-card-people">
+                    <div class="chat-mcard-people">
                         {going.slice(0, 8).map((p) => Avatar(p, 22))}
                         <span>{going.map((p) => shown(p, me)).join(', ')} going</span>
                     </div>
                 )}
-                <div class="chat-card-actions">
+                <div class="chat-mcard-actions">
                     {live && !inCall && (
-                        <button class="chat-card-btn is-primary" onclick={() => this.startCall(channel, true)} type="button">
+                        <button class="chat-mcard-btn is-primary" onclick={() => this.startCall(channel, true)} type="button">
                             {Icon('videocam')} Join
                         </button>
                     )}
                     {now <= end && [choice('going', 'check'), choice('maybe', 'help'), choice('no', 'close')]}
                     <button
-                        class="chat-card-btn"
+                        class="chat-mcard-btn"
                         onclick={() => download(`${plan.title || 'meeting'}.ics`, 'text/calendar', ics(plan, this.chatTitle(channel)))}
                         title="A calendar file, with a reminder ten minutes before"
                         type="button"
@@ -3662,9 +3662,9 @@ export class Chat extends MithrilComponent {
             c.sendMeeting(channel, {choices, kind: 'vote', poll: poll.id})
         }
         return (
-            <div class="chat-card chat-poll">
-                <div class="chat-card-kicker">{Icon('bar_chart')} Poll · {poll.multiple ? 'choose any' : 'choose one'}</div>
-                <b class="chat-card-title">{poll.question}</b>
+            <div class="chat-mcard chat-poll">
+                <div class="chat-mcard-kicker">{Icon('bar_chart')} Poll · {poll.multiple ? 'choose any' : 'choose one'}</div>
+                <b class="chat-mcard-title">{poll.question}</b>
                 {counted.map(({option, who}) => (
                     <button
                         class={mine.includes(option) ? 'chat-poll-bar is-mine' : 'chat-poll-bar'}
@@ -3679,7 +3679,7 @@ export class Chat extends MithrilComponent {
                         <b>{who.length}</b>
                     </button>
                 ))}
-                <div class="chat-card-sub">
+                <div class="chat-mcard-sub">
                     {voters} {voters === 1 ? 'vote' : 'votes'} · everybody in the chat sees who chose what
                 </div>
             </div>

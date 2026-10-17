@@ -8,7 +8,7 @@ describe('meeting objects', () => {
     test('the vectors the app is tested against read as their kind here too', () => {
         for (const v of vectors as {json: unknown; kind: string | null}[]) {
             const o = parse(JSON.stringify(v.json))
-            expect(o?.kind ?? null).toBe(v.kind)
+            expect<string | null>(o?.kind ?? null).toBe(v.kind)
             // What this side writes reads back the same.
             if (o) expect(parse(toJson(o))).toEqual(o)
         }

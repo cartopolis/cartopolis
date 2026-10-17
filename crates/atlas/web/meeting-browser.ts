@@ -113,7 +113,7 @@ try {
     await waitFor('the plan card on bob\'s page', () => bob.eval(`!!document.querySelector('.chat-plan')`), 30000)
     if (!(await bob.click('Going'))) throw new Error('no Going on the plan')
     await waitFor('bob going, on ann\'s card', () =>
-        ann.eval(`document.querySelector('.chat-plan .chat-card-people')?.innerText.includes('bob') ?? false`), 30000)
+        ann.eval(`document.querySelector('.chat-plan .chat-mcard-people')?.innerText.includes('bob') ?? false`), 30000)
     step('ann planned the meeting with an agenda; bob said he comes, and ann saw it')
 
     // Bob asks a poll; Carol votes; Ann sees the count.
