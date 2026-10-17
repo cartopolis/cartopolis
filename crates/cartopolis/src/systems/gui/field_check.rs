@@ -791,7 +791,7 @@ mod native {
                         pip.center() - egui::vec2(0.0, 10.0),
                         egui::Align2::CENTER_CENTER,
                         icons::LAYERS,
-                        egui::FontId::new(26.0, egui::FontFamily::Name(icons::FONT_NAME.into())),
+                        egui::FontId::proportional(26.0),
                         theme::CREAM,
                     );
                     painter.text(
@@ -987,7 +987,7 @@ mod native {
             rect.center(),
             egui::Align2::CENTER_CENTER,
             icon,
-            egui::FontId::new(22.0, egui::FontFamily::Name(icons::FONT_NAME.into())),
+            egui::FontId::proportional(22.0),
             if on { theme::INK } else { egui::Color32::WHITE },
         );
         resp

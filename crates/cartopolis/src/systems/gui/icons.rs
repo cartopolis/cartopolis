@@ -48,6 +48,10 @@ pub const FONT: &[u8] = include_bytes!(concat!(
 
 /// The name `theme::fonts` registers [`FONT`] under, and the name it appends to
 /// every family's fallback list.
+///
+/// It names font *data*, not a family: `FontFamily::Name(FONT_NAME)` is unbound
+/// and panics in epaint the first frame it is drawn. Draw an icon with
+/// `FontId::proportional`, where the fallback list finds it.
 pub const FONT_NAME: &str = "MaterialSymbols";
 
 /// One row of the table, for the test that checks the shipped font against it.
