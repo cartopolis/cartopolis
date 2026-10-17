@@ -131,7 +131,9 @@ pub fn update_building_fade(
     if materials.is_empty() {
         return;
     }
-    let Some(centre) = camera.world_xz() else {
+    // The far ring's own centre (`grid::StreamCentre`), or the fade would sit on a
+    // different circle from the buildings it fades.
+    let Some(centre) = camera.stream_xz() else {
         return;
     };
     let Some((clat, _, _)) = stream.geo_anchor() else {

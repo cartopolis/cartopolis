@@ -1068,7 +1068,7 @@ pub fn update_data_layers(
 
     // Camera's LAYER_ZOOM cell from its base-zoom tile coords.
     let (ccx, ccy) = crate::systems::cell_ring::coarsen(
-        crate::systems::cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        crate::systems::cell_ring::tile_at((ax, ay), tile_m, camera.stream_xz_at(cell, tf)),
         z,
         LAYER_ZOOM,
     );

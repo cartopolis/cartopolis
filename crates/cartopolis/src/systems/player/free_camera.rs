@@ -1417,6 +1417,18 @@ pub struct FollowRig<'w, 's> {
     smoothing: Local<'s, RigSmoothing>,
 }
 
+/// Publish where the ring streamers should centre (`grid::StreamCentre`): the
+/// orbit focus while Earth mode is on the ground tier, the camera otherwise.
+///
+/// Written only when it moves, so a still view leaves it unchanged.
+pub fn track_stream_centre(state: Res<CameraState>, mut centre: ResMut<crate::grid::StreamCentre>) {
+    let want = (state.mode == CameraMode::Orbit && !state.orbit_space && state.orbit_initialized)
+        .then(|| Vec2::new(state.orbit_focus.x as f32, state.orbit_focus.z as f32));
+    if centre.0 != want {
+        centre.0 = want;
+    }
+}
+
 pub fn camera_controls(
     input: CameraInput,
     mut rig: FollowRig,
@@ -3832,5 +3844,44 @@ mod tests {
         assert!(slow < 1.0, "closer must shrink the distance");
         assert!(osd_zoom_factor(-1.0, 1.0 / 60.0) > 1.0);
         assert_eq!(osd_zoom_factor(0.0, 1.0 / 60.0), 1.0);
+    }
+
+    /// Earth mode on the ground streams round what it orbits, so a rotate-drag —
+    /// which carries the camera round the focus — moves no ring; every other mode,
+    /// and Earth mode from space, streams round the camera.
+    #[test]
+    fn earth_mode_streams_round_its_focus_and_nothing_else_does() {
+        use bevy::ecs::system::RunSystemOnce;
+        let centre = |edit: &dyn Fn(&mut CameraState)| {
+            let mut state = CameraState {
+                mode: CameraMode::Orbit,
+                orbit_initialized: true,
+                orbit_space: false,
+                orbit_focus: bevy::math::DVec3::new(120.0, 0.0, -340.0),
+                ..default()
+            };
+            edit(&mut state);
+            let mut world = World::new();
+            world.insert_resource(state);
+            world.init_resource::<crate::grid::StreamCentre>();
+            world
+                .run_system_once(track_stream_centre)
+                .expect("the system runs");
+            world.resource::<crate::grid::StreamCentre>().0
+        };
+        let focus = Some(Vec2::new(120.0, -340.0));
+        assert_eq!(centre(&|_| {}), focus);
+        // Turning changes the camera's pose and not the focus, so not the centre.
+        assert_eq!(centre(&|s| s.orbit_yaw += 2.0), focus);
+        // Not yet seeded: the focus is whatever the last pose left, not this view.
+        assert_eq!(centre(&|s| s.orbit_initialized = false), None);
+        assert_eq!(centre(&|s| s.orbit_space = true), None);
+        for mode in [CameraMode::Free, CameraMode::Avatar] {
+            assert_eq!(
+                centre(&|s| s.mode = mode),
+                None,
+                "{mode:?} streams round the camera"
+            );
+        }
     }
 }

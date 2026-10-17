@@ -679,7 +679,7 @@ pub fn update_tall_structures(
         return;
     }
     let (ccx, ccy) = cell_ring::coarsen(
-        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        cell_ring::tile_at((ax, ay), tile_m, camera.stream_xz_at(cell, tf)),
         z,
         TALL_ZOOM,
     );

@@ -15,24 +15,24 @@
 //! fractional anchor tile with `floor` rather than from the rounded base-zoom
 //! tile, and `map_stream` / `globe` are LOD pyramids rather than square rings.
 
-use bevy::prelude::{Transform, Vec2};
-use big_space::prelude::GridCell;
+use bevy::prelude::Vec2;
 
-use crate::grid::anchored_xz;
 use crate::platform::fetch_gate;
 use crate::platform::stream::CellStream;
 
-/// The base-zoom tile the camera is over: the anchor tile `(ax, ay)` plus the
-/// camera's anchored world position in whole tiles of `tile_m` metres, rounded.
+/// The base-zoom tile over anchored world point `at`: the anchor tile `(ax, ay)`
+/// plus `at` in whole tiles of `tile_m` metres, rounded.
+///
+/// `at` is a ring's centre, which is [`AnchoredCamera::stream_xz_at`] — the camera
+/// everywhere but Earth mode (`grid::StreamCentre`). This was `camera_tile` and
+/// took the camera itself, which is how a rotate-drag came to restream the map.
+///
+/// [`AnchoredCamera::stream_xz_at`]: crate::grid::AnchoredCamera::stream_xz_at
 #[must_use]
-pub fn camera_tile(anchor: (i64, i64), tile_m: f32, cell: &GridCell, tf: &Transform) -> (i64, i64) {
-    let Vec2 {
-        x: world_x,
-        y: world_z,
-    } = anchored_xz(cell, tf.translation);
+pub fn tile_at(anchor: (i64, i64), tile_m: f32, at: Vec2) -> (i64, i64) {
     (
-        anchor.0 + (world_x / tile_m).round() as i64,
-        anchor.1 + (world_z / tile_m).round() as i64,
+        anchor.0 + (at.x / tile_m).round() as i64,
+        anchor.1 + (at.y / tile_m).round() as i64,
     )
 }
 

@@ -24,7 +24,7 @@
 
 use crate::components::MapSurface;
 use crate::components::{FurnitureSurface, VegetationSurface};
-use crate::grid::{anchored_xz, CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 
@@ -2670,10 +2670,11 @@ pub fn update_map_surfaces(
 
     let tile_m = tile_to_meters(GEOMETRY_ZOOM, clat) as f32;
     let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, GEOMETRY_ZOOM);
+    // The ring's centre, not necessarily the camera — see `grid::StreamCentre`.
     let Vec2 {
         x: world_x,
         y: world_z,
-    } = anchored_xz(cell, tf.translation);
+    } = view.camera.stream_xz_at(cell, tf);
     let ccx = (f64::from(world_x) / f64::from(tile_m) + fcx).floor() as i64;
     let ccy = (f64::from(world_z) / f64::from(tile_m) + fcy).floor() as i64;
 

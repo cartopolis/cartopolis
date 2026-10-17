@@ -568,8 +568,11 @@ pub fn update_underground(
         if high {
             continue;
         }
-        let (ccx, ccy) =
-            cell_ring::coarsen(cell_ring::camera_tile((ax, ay), tile_m, cell, tf), z, ZOOM);
+        let (ccx, ccy) = cell_ring::coarsen(
+            cell_ring::tile_at((ax, ay), tile_m, camera.stream_xz_at(cell, tf)),
+            z,
+            ZOOM,
+        );
         cell_ring::request_ring(&mut layer.cells, (ccx, ccy), def.radius, now, |c, _| {
             coverage.covers(c.0, c.1)
         });

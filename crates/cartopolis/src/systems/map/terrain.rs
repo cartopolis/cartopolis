@@ -52,7 +52,7 @@
 
 use bevy::prelude::*;
 
-use crate::grid::{anchored_xz, AnchoredCamera};
+use crate::grid::AnchoredCamera;
 use crate::platform::sync::{Arc, Mutex};
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
@@ -385,9 +385,10 @@ pub struct FieldClock<'w, 's> {
 }
 
 impl FieldClock<'_, '_> {
-    /// The camera in the anchored world-XZ frame.
+    /// Where the field centres in the anchored world-XZ frame: the camera, or the
+    /// orbit focus in Earth mode (`grid::StreamCentre`).
     fn camera_xz(&self) -> Option<Vec2> {
-        self.camera.world_xz()
+        self.camera.stream_xz()
     }
 }
 
@@ -2692,7 +2693,15 @@ pub fn apply_fine_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStream
     );
 }
 
-/// Keep the half-metre tier under the camera.
+/// Keep the half-metre tier under the camera — or, in Earth mode, under what it is
+/// looking at.
+///
+/// **Earth mode centres on the orbit focus** (`grid::StreamCentre`). The camera
+/// there sits on a sphere round the focus, up to kilometres out, and a rotate-drag
+/// carries it round that sphere while the ground on screen stays put: centring under
+/// the camera re-baked the tier all the way round a turn, for a box that was mostly
+/// off screen behind it. The focus is both where the detail is looked at and the
+/// one point a rotation does not move.
 ///
 /// Gated on the coarse field being ready, because the tier borrows that field's datum
 /// and fades into its answer — without it there is nothing to be relative *to*.
@@ -2729,7 +2738,7 @@ pub fn update_fine_terrain(
     if altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
-    let cam = anchored_xz(cell, tf.translation);
+    let cam = camera.stream_xz_at(cell, tf);
     // A re-anchor moves the origin these metres are counted from, so the tier describes
     // the wrong ground the instant it happens.
     //

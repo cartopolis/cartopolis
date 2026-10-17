@@ -399,7 +399,7 @@ pub fn update_dikes(
     }
 
     let centre = cell_ring::coarsen(
-        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        cell_ring::tile_at((ax, ay), tile_m, camera.stream_xz_at(cell, tf)),
         z,
         DIKE_ZOOM,
     );

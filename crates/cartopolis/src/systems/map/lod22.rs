@@ -1330,7 +1330,7 @@ pub fn update_lod22(
 
     // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
     let (ccx, ccy) = cell_ring::coarsen(
-        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        cell_ring::tile_at((ax, ay), tile_m, camera.stream_xz_at(cell, tf)),
         z,
         LOD22_ZOOM,
     );

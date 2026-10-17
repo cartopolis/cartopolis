@@ -29,7 +29,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<systems::gizmo::GizmoState>()
             .init_resource::<systems::picking::PrimClick>()
             .init_resource::<systems::collision::BuildingColliders>()
-            .init_resource::<systems::interact::InteractState>();
+            .init_resource::<systems::interact::InteractState>()
+            .init_resource::<crate::grid::StreamCentre>();
 
         app.add_systems(Startup, systems::free_camera::setup_camera);
 
@@ -155,8 +156,11 @@ impl Plugin for PlayerPlugin {
         )
         .add_systems(
             Update,
-            systems::free_camera::camera_controls
-                .after(avatar::smooth_online_avatar_display)
+            (
+                systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
+                systems::free_camera::track_stream_centre
+                    .after(systems::free_camera::camera_controls),
+            )
                 .in_set(ClientPhase::Camera),
         )
         .add_systems(

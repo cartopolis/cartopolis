@@ -20,7 +20,7 @@
 //! scale until the real-metre frame (ADR-019) lands.
 
 use crate::components::OsmBuildingMesh;
-use crate::grid::{anchored_xz, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use crate::platform::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::collections::{HashMap, HashSet};
@@ -1248,10 +1248,11 @@ pub fn update_buildings(
     if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
+    // The ring's centre, not necessarily the camera — see `grid::StreamCentre`.
     let Vec2 {
         x: world_x,
         y: world_z,
-    } = anchored_xz(cell, tf.translation);
+    } = camera.stream_xz_at(cell, tf);
     let center = (
         ax + (world_x / tile_m).round() as i64,
         ay + (world_z / tile_m).round() as i64,

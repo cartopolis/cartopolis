@@ -14,7 +14,7 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::math::{DVec3, Vec2, Vec3};
-use bevy::prelude::{Entity, Query, Transform, With};
+use bevy::prelude::{Entity, Query, Res, Resource, Transform, With};
 use big_space::prelude::{BigSpace, GridCell};
 
 use crate::components::FreeCamera;
@@ -79,7 +79,32 @@ pub fn anchored_position_f64(cell: &GridCell, translation: Vec3) -> DVec3 {
 #[derive(SystemParam)]
 pub struct AnchoredCamera<'w, 's> {
     pub query: Query<'w, 's, (&'static GridCell, &'static Transform), With<FreeCamera>>,
+    /// See [`StreamCentre`]. Optional so an app that never registered it — a test
+    /// harness — reads the camera, which is what the centre is when it is unset.
+    pub centre: Option<Res<'w, StreamCentre>>,
 }
+
+/// Where the ring streamers centre what they load, in the anchored world XZ frame:
+/// `None` is the camera, `Some` is the ground point Earth mode orbits.
+///
+/// **A rotate-drag in Earth mode moves the camera, and must not move the map.** The
+/// orbit camera sits on a sphere round its focus, ~1 km out at the view the app
+/// opens on, so turning the view carries it round a circle a couple of kilometres
+/// across while the ground on screen stays where it is. Every streamer centred on
+/// the camera — the LoD2.2 cells, the surface cells, the BAG facts, the street
+/// detail, the coarse terrain field's follow — retargeted all the way round:
+/// whole 3DBAG cells of 5–7 MB rebuilt and uploaded mid-gesture, and a 0.9 s frame
+/// in the middle of one turn (`cargo perf`'s `earth` scenario, 2026-10-16). The
+/// focus is also the better centre on its own merits: at that pose the visible
+/// ground runs from ~0.7 km before it to ~1.3 km past it, while the camera's own
+/// ground point is near the bottom edge of the screen or off it.
+///
+/// Fly and Follow keep the camera, which is where their view starts; and so does
+/// anything that is about the camera's *body* rather than the view — the glass
+/// over the building it is inside, the interiors around it, the grass at its feet.
+/// Those read the camera itself ([`AnchoredCamera::get`] and [`anchored_xz`]).
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct StreamCentre(pub Option<Vec2>);
 
 impl AnchoredCamera<'_, '_> {
     /// The camera's cell and transform, or `None` unless exactly one exists.
@@ -87,10 +112,19 @@ impl AnchoredCamera<'_, '_> {
         self.query.single().ok()
     }
 
-    /// The camera's anchored world X and Z ([`anchored_xz`]).
-    pub fn world_xz(&self) -> Option<Vec2> {
-        self.get()
-            .map(|(cell, tf)| anchored_xz(cell, tf.translation))
+    /// Where a ring streamer centres: the [`StreamCentre`] when one is set, else the
+    /// camera.
+    pub fn stream_xz(&self) -> Option<Vec2> {
+        self.get().map(|(cell, tf)| self.stream_xz_at(cell, tf))
+    }
+
+    /// [`Self::stream_xz`] for a caller already holding the camera's cell and
+    /// transform.
+    pub fn stream_xz_at(&self, cell: &GridCell, tf: &Transform) -> Vec2 {
+        self.centre
+            .as_ref()
+            .and_then(|c| c.0)
+            .unwrap_or_else(|| anchored_xz(cell, tf.translation))
     }
 
     /// The camera in the anchored world frame, in `f64`
