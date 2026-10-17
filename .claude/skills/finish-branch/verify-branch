@@ -371,3 +371,12 @@ receipt="$(git rev-parse --git-dir)/cartopolis-verified"
     echo "base=$(git rev-parse "$mb")"
 } > "$receipt"
 echo "green — receipt written for ${head:0:8}"
+# And at the hub, when the gate ran here rather than on a node (whose caller
+# records it, with the node's name): a scope that compiles nothing (skills,
+# scripts, prose) runs in place, and its landings carried no receipt at the
+# hub — so `midas deploy` refused main after a docs-only landing on top of a
+# verified one (99bf1cd8, 2026-10-16). Best effort, as on the node path.
+if [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas >/dev/null; then
+    midas verified --sha "$head" --scope "$scope" --node "in place" --steps "$(echo $passed)" >/dev/null 2>&1 \
+        || echo "note: the hub did not take the receipt; \`midas deploy\` will ask for --unverified" >&2
+fi
