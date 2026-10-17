@@ -895,6 +895,14 @@ into shadow cascades at 7191 km**, where no shadow can be resolved. Cheap in
 absolute terms — 8k triangles — but it is three passes over invisible geometry
 and nothing gates cascade submission on the tier.
 
+**2026-10-17, and some of that spent again, on sight.** The shell's clouds
+were soft blobs drawn from the 1° weather grid itself. The density now runs
+**eight octaves** (two more, to ~28 km), the four finest folded into puffs; the
+cover picks the field's quantile with a crisp edge; and a sun-ward **relief
+sample** of six octaves shades cloud tops near the terminator, replacing the
+three-octave wisp. Net: 27 → 32 `vnoise3` per fragment, ~19 % more noise work.
+Not re-measured on the Deck; the M5 Pro node is no evidence for it.
+
 ### No frame-rate governor on the clouds (decided 2026-09-28)
 
 From 2026-09-09 `systems::adaptive_quality` hid both cloud shells when the frame

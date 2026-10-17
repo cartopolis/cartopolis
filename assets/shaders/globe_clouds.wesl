@@ -106,7 +106,7 @@ const M3: mat3x3<f32> = mat3x3<f32>(
 // their output is multiplied by 2.2 and added to a sample coordinate, so their
 // high octaves move the sample by a fraction of a noise cell — a displacement of a
 // displacement, invisible in the result. The three that shape what you actually
-// see — the density, the ridge crests and the opacity wisp — keep their detail.
+// see — the density, the ridge crests and the relief sample — keep their detail.
 //
 // `WARP_OCTAVES` at 2 rather than 6 removes 4 octaves from 6 of the 9 fields:
 // 54 `vnoise3` calls per fragment become 27, a 50% cut in the noise work that
@@ -126,10 +126,17 @@ const M3: mat3x3<f32> = mat3x3<f32>(
 // trade, and it is why this stops at 2.
 const DENSITY_OCTAVES: i32 = 6;
 const WARP_OCTAVES: i32 = 2;
-/// The wisp is documented below as "gentle, LARGE-scale opacity variation… low
-/// frequency and shallow", so its top octaves are contributing detail the effect
-/// explicitly does not want.
-const WISP_OCTAVES: i32 = 3;
+// Octaves past `DENSITY_OCTAVES` that only the visible density reads
+// (`fbm3_detail`).
+const DETAIL_OCTAVES: i32 = 2;
+// Half-width of a cloud's edge, in density units: crisp, as satellite cloud is.
+const EDGE: f32 = 0.025;
+// The most of a grid cell the data may cover, so the cloudiest regions keep
+// broken gaps.
+const COVER_CAP: f32 = 0.9;
+// The first octave of `fbm3_detail` folded into puffs (~220 km cells, down to
+// ~28 km). The coarser ones stay plain: they are weather systems, not cells.
+const PUFF_FROM: i32 = 4;
 
 fn fbm3_n(p: vec3<f32>, octaves: i32) -> f32 {
     var v = 0.0;
@@ -147,6 +154,48 @@ fn fbm3_n(p: vec3<f32>, octaves: i32) -> f32 {
 
 fn fbm3(p: vec3<f32>) -> f32 {
     return fbm3_n(p, DENSITY_OCTAVES);
+}
+
+// The density field to `octaves`: y is its value, x its value at
+// `DENSITY_OCTAVES` when it runs past them. Six octaves at `GLOBE_CLOUD_FREQ`
+// stop at ~110 km — 18 px from 4,000 km up at 960 px across, which is why the
+// clouds read as soft blobs; two more reach ~28 km. Only the density is read
+// this fine (two noise samples more per fragment); the relief compares its
+// six-octave value against a six-octave sample.
+fn fbm3_detail(p: vec3<f32>, octaves: i32) -> vec2<f32> {
+    var v = 0.0;
+    var amp = 0.5;
+    var norm = 0.0;
+    var q = p;
+    var coarse = 0.0;
+    for (var i = 0; i < octaves; i = i + 1) {
+        if i == DENSITY_OCTAVES {
+            coarse = v / norm;
+        }
+        let raw = vnoise3(q);
+        // From `PUFF_FROM` on, folded into puffs — round cells with creases
+        // between, the popcorn of a convective cloud field seen from orbit.
+        v += amp * select(raw, abs(2.0 * raw - 1.0), i >= PUFF_FROM);
+        norm += amp;
+        q = M3 * q * 2.0;
+        amp *= 0.5;
+    }
+    return vec2<f32>(select(v / norm, coarse, octaves > DENSITY_OCTAVES), v / norm);
+}
+
+// The density above which a fraction `cover` of the sphere is cloud, at covers
+// 0, 0.05, … 1: the field's quantiles, from a TypeScript mirror of
+// `fbm3_detail` (puffs and all) and the ridge mix over 300,000 points
+// (2026-10-17). The warp
+// moves the field but not its distribution.
+fn cover_threshold(cover: f32) -> f32 {
+    var t = array<f32, 21>(
+        1.000, 0.763, 0.718, 0.686, 0.660, 0.638, 0.617, 0.597, 0.579, 0.561, 0.544,
+        0.526, 0.508, 0.490, 0.471, 0.451, 0.429, 0.404, 0.373, 0.330, 0.000,
+    );
+    let x = clamp(cover, 0.0, 1.0) * 20.0;
+    let i = min(i32(x), 19);
+    return mix(t[i], t[i + 1], x - f32(i));
 }
 
 // Rotate `v` about a unit `axis` by `ang` radians (Rodrigues).
@@ -181,6 +230,17 @@ const EVO_RATE: f32 = 0.020;
 // north, clockwise in the south, none on the equator. Latitude-signed but NOT
 // time-growing, so it's bounded and alias-free.
 const SWIRL_STRENGTH: f32 = 1.10;
+
+// Relief shading (see the fragment): how far toward the sun the field is read
+// again, in noise units (at `GLOBE_CLOUD_FREQ` 1.8 one unit is ~3,500 km, so
+// this is ~50 km — a cloud tower's shadow at a low sun), how strongly a
+// height difference shades, and the clamp on the result.
+const RELIEF_STEP: f32 = 0.015;
+const RELIEF_GAIN: f32 = 2.5;
+const RELIEF_MIN: f32 = 0.35;
+const RELIEF_MAX: f32 = 1.3;
+// Zenith Rayleigh optical depth per channel — `utils::sun::RAYLEIGH`.
+const RAYLEIGH_DEPTH: vec3<f32> = vec3<f32>(0.041, 0.100, 0.250);
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -240,7 +300,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         fbm3_n(base + evo + 2.2 * qw + vec3<f32>(3.8, 5.5, 1.2), WARP_OCTAVES),
     ) - 0.5;
     let rw = rotate_about(r, radial, coriolis * SWIRL_STRENGTH * 0.6);
-    let base_density = fbm3(base + 2.2 * rw);
+    // Eight octaves for what is seen, the first six of them for the relief
+    // (`fbm3_detail`).
+    let densities = fbm3_detail(base + 2.2 * rw, DENSITY_OCTAVES + DETAIL_OCTAVES);
+    let base_density = densities.y;
 
     // Ridged high-frequency detail carves fronts and fibrous filaments into the
     // cloud edges (sharp crests) instead of leaving soft, round halos.
@@ -272,36 +335,73 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = vec2<f32>(fract(lng / (2.0 * PI)), 0.5 - lat / PI) + vec2<f32>(rw.x, rw.z) * 0.02;
     let tcdc = textureSampleLevel(cloud_field, cloud_samp, uv, 0.0).r;
 
-    // Coverage envelope from real TCDC (or the procedural fallback). Held back from
-    // saturation (0.72, not 0.95) so even the cloudiest regions keep broken gaps —
-    // the surface should read *through* the weather, not vanish under a solid sheet.
+    // Coverage envelope from real TCDC (or the procedural fallback). It is the
+    // fraction of a grid cell under cloud, so it picks the field's quantile
+    // (`cover_threshold`) and the edge there is crisp: the field breaks a 100 km
+    // cell into the cloud it says, with structure down to the finest octave.
+    // It used to be `1 − 0.72 × cover` with an edge a quarter of the field wide,
+    // which drew the coarse grid itself as soft blobs. Held back from saturation
+    // (`COVER_CAP`) so even the cloudiest regions keep broken gaps.
     let cover = clamp(mix(proc_cover, tcdc, frame_ref.w), 0.0, 1.0);
-    let thresh = 1.0 - 0.72 * cover;
+    let thresh = cover_threshold(cover * COVER_CAP);
 
     // Opacity varies with cloud THICKNESS instead of snapping to one flat value:
-    //   * `presence` is a soft, wide-edged mask (gentle borders, not a hard cut);
-    //   * `thickness` keeps ramping past the edge, and is squared so most cloud
-    //     stays a translucent veil the surface reads through, with only the densest
-    //     cores going bright/opaque — the opacity spread of real satellite cloud;
-    //   * `wisp` breaks each cloud into filaments/cells in OPACITY only (finer,
-    //     warped noise), adding texture without enlarging the cloud's footprint.
-    let presence = smoothstep(thresh, thresh + 0.28, density);
-    let thickness = smoothstep(thresh, thresh + 0.60, density);
-    // Gentle, LARGE-scale opacity variation (thin veils vs solid cores). Low
-    // frequency and shallow, so it grades the cloud rather than shattering it into
-    // cells — the earlier fine, deep wisp is what fragmented the masses.
-    let wisp = 0.72 + 0.36 * fbm3_n(base * 1.3 + 3.0 * rw, WISP_OCTAVES);
-    let opacity = mix(0.16, 1.0, thickness) * wisp;
+    //   * `presence` is the cloud's edge. It used to be 0.28 of the field wide,
+    //     which blurred every system into a soft veil; satellite cloud has edges
+    //     you can draw a line along, so it is narrow now;
+    //   * `thickness` keeps ramping past the edge, so most cloud stays a
+    //     translucent veil the surface reads through, with only the densest cores
+    //     going bright/opaque — the opacity spread of real satellite cloud.
+    let presence = smoothstep(thresh - EDGE, thresh + EDGE, density);
+    let thickness = smoothstep(thresh, thresh + 0.12, density);
+    let opacity = mix(0.3, 1.0, thickness);
     var a = presence * clamp(opacity, 0.0, 1.0) * lit_color.a * params.y;
     if a <= 0.003 {
         discard;
     }
 
-    // Day/night terminator: clouds on the lit hemisphere are bright, the night
-    // side falls to a dim blue. Use the un-rotated normal so lighting is fixed.
+    // ---- light --------------------------------------------------------------
+    // Use the un-rotated normal so the lighting is fixed to the sun, not the
+    // drifting field.
     let ndl = dot(normal, sun_dir.xyz);
-    let day = smoothstep(-0.18, 0.22, ndl);
-    let col = mix(shadow_color.rgb, lit_color.rgb, day);
+
+    // Relief: the field read as cloud-top height, compared with the same field
+    // a step toward the sun. Where the cloud rises toward the sun this point is
+    // in its shadow; where it falls away, this is a sunlit face. The step and
+    // the field are in noise space, so the sun's along-surface direction is spun
+    // with the bulk drift as the field was. It is what a satellite image near the
+    // terminator is made of — long shadows behind every tower — and at noon,
+    // with the sun overhead, it fades to nothing, as it does there. It replaced a
+    // 3-octave "wisp" opacity sample, so the shader got one sample of 6 octaves
+    // and lost one of 3.
+    let sun_along = sun_dir.xyz - normal * ndl;
+    let sun_drift = rotate_about(sun_along, axis, params.z * BULK_DRIFT);
+    let sun_step = normalize(sun_drift + vec3<f32>(1e-6)) * RELIEF_STEP;
+    let toward_sun = fbm3_detail(base + 2.2 * rw + sun_step, DENSITY_OCTAVES).y;
+    // Weighted by the shadow's length, tan of the sun's zenith angle: none
+    // under an overhead sun, long near the terminator.
+    let shadow_len = length(sun_along) / max(ndl, 0.12);
+    let relief = clamp(
+        1.0 + (densities.x - toward_sun) * RELIEF_GAIN * shadow_len,
+        RELIEF_MIN,
+        RELIEF_MAX,
+    );
+
+    // The sun's colour at this cloud, not at the map anchor: reddened by the
+    // air it crosses, which grows as it nears the terminator. Kasten–Young's
+    // air mass, roughly, through a quarter of the column (the tops sit high, and
+// half of it tinted every mid-latitude noon cream), on the
+    // same Rayleigh depths `utils::sun` uses. This is the pink and gold band
+    // along the terminator.
+    let air_mass = min(1.0 / (max(ndl, -0.06) + 0.12), 14.0);
+    let sun_tint = exp(-RAYLEIGH_DEPTH * 0.25 * air_mass);
+    // Clouds are lit across the terminator a little (their tops are high), and
+    // dim toward it as the sun lowers rather than holding full white to the
+    // edge.
+    let day = smoothstep(-0.10, 0.12, ndl);
+    let lum = 0.35 + 0.65 * sqrt(clamp(ndl, 0.0, 1.0));
+    let lit = lit_color.rgb * sun_tint * lum * relief;
+    let col = mix(shadow_color.rgb, lit, day);
 
     return vec4<f32>(col, clamp(a, 0.0, 1.0));
 }
