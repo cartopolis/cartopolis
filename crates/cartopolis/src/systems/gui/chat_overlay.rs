@@ -273,6 +273,8 @@ pub fn render_chat_bubbles(
     remotes: Query<(&RemoteAvatar, &Transform), Without<FreeCamera>>,
     local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
+    // Redrawn on the frames the speakers or the camera move, as the pins are.
+    let mut anchored = crate::systems::egui_manager::WorldAnchored::new(egui.ctx(), "chat_bubbles");
     let compact = egui.compact();
     if suppressed(
         online.is_some() || overlay.demo,
@@ -366,6 +368,7 @@ pub fn render_chat_bubbles(
         }
         let speaker = lines.last().map(|l| l.sender.clone()).unwrap_or_default();
         let bodies: Vec<String> = lines.iter().map(|l| l.body.clone()).collect();
+        anchored.at(head);
         bubble(&ctx, map_rect, id, head, alpha, &speaker, &bodies);
     }
 }

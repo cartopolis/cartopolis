@@ -385,6 +385,69 @@ fn geometry_still_current(repaint_delay: std::time::Duration, since_write: f32) 
 /// bound on staleness*, not a frame rate: any real input repaints immediately.
 const ANIMATING_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// The screen positions a world-anchored overlay painted this pass, so egui is
+/// asked to draw it again on exactly the frames the world moved under it.
+///
+/// **A pin is a function of the camera, and the camera is not input.** The skip
+/// in [`end_egui_frame`] re-presents last frame's geometry whenever egui saw no
+/// events, and walking with a finger held still on the stick, the follow camera
+/// catching up, a glide after a fling or a GPS fix are all frames with no
+/// events. On those the map moved and the pins did not: they were painted at
+/// their new spot and the paint was dropped, so they stood still for a few
+/// frames and then jumped to catch up. [`EguiManager::animating`] is no answer —
+/// a quarter-second redraw is a stutter against a map drawn at sixty.
+///
+/// Comparing positions rather than repainting whenever a pin is up keeps the
+/// skip where it is worth most: a still map with a dozen pins on it. Dropping
+/// this compares what was recorded against the previous pass under the same
+/// `id` (kept in egui's own memory, so it costs a system no parameter) and
+/// requests a repaint when anything moved, appeared or went. An early return
+/// records nothing, which reads as "everything went", so a system may bail out
+/// anywhere once this exists.
+pub struct WorldAnchored {
+    ctx: egui::Context,
+    id: egui::Id,
+    at: Vec<egui::Pos2>,
+}
+
+/// How far, in points, a painted position may move before it is a new picture.
+/// Painting is sub-pixel (`place_pins` says why), so this is far under a pixel.
+const ANCHORED_MOVE_PTS: f32 = 0.01;
+
+impl WorldAnchored {
+    pub fn new(ctx: &egui::Context, id: &'static str) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            id: egui::Id::new(("world_anchored", id)),
+            at: Vec::new(),
+        }
+    }
+
+    /// Record one point the overlay painted at, in egui points.
+    pub fn at(&mut self, p: egui::Pos2) {
+        self.at.push(p);
+    }
+}
+
+impl Drop for WorldAnchored {
+    fn drop(&mut self) {
+        let now = std::mem::take(&mut self.at);
+        let moved = self.ctx.data_mut(|d| {
+            let last = d.get_temp_mut_or_default::<Vec<egui::Pos2>>(self.id);
+            let moved = last.len() != now.len()
+                || last
+                    .iter()
+                    .zip(&now)
+                    .any(|(a, b)| a.distance_sq(*b) > ANCHORED_MOVE_PTS * ANCHORED_MOVE_PTS);
+            *last = now;
+            moved
+        });
+        if moved {
+            self.ctx.request_repaint();
+        }
+    }
+}
+
 impl EguiManager {
     /// Borrow the egui context mutably. Only valid between `begin_egui_frame`
     /// and `end_egui_frame` (i.e. during the Update schedule). Use for floating
@@ -1617,6 +1680,50 @@ mod tests {
         assert!(geometry_still_current(ANIMATING_REDRAW, 0.0));
         assert!(geometry_still_current(ANIMATING_REDRAW, 0.2));
         assert!(!geometry_still_current(ANIMATING_REDRAW, 0.3));
+    }
+
+    /// Pins that stood still on the frames nobody touched the screen.
+    ///
+    /// A world-anchored overlay has to defeat the skip on the frames it moved and
+    /// on no others: the first is the bug, the second would tessellate the whole
+    /// UI sixty times a second for as long as one pin is on a still map.
+    #[test]
+    fn an_overlay_on_the_world_is_redrawn_when_the_world_moves_under_it() {
+        let ctx = egui::Context::default();
+        let pass = |at: Option<egui::Pos2>| {
+            ctx.begin_pass(egui::RawInput::default());
+            let mut anchored = WorldAnchored::new(&ctx, "test");
+            if let Some(p) = at {
+                anchored.at(p);
+            }
+            drop(anchored);
+            ctx.end_pass_unpainted()
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(std::time::Duration::MAX, |v| v.repaint_delay)
+        };
+        let still = |at| {
+            for _ in 0..4 {
+                pass(at);
+            }
+            pass(at)
+        };
+        let here = egui::pos2(100.0, 100.0);
+
+        assert_eq!(
+            still(Some(here)),
+            std::time::Duration::MAX,
+            "a still map keeps the skip"
+        );
+        assert!(
+            !geometry_still_current(pass(Some(here + egui::vec2(0.5, 0.0))), 0.0),
+            "half a point of camera movement is a new picture"
+        );
+        assert_eq!(still(Some(here)), std::time::Duration::MAX);
+        assert!(
+            !geometry_still_current(pass(None), 0.0),
+            "a pin that went has to be drawn gone"
+        );
     }
 
     use bevy::input::InputPlugin;

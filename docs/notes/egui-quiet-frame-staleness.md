@@ -1,7 +1,7 @@
 ---
 topic: egui-quiet-frame-staleness
-triggers: [egui_manager.rs, end_egui_frame, EguiRenderOutput, force_next_write, keep_egui_fresh, repaint_delay, request_repaint, shot_harness.rs, "--shot", "cargo shots", "stale UI", "frozen HUD", "compass does not move", quiet frame, tessellate]
-updated: 2026-08-15
+triggers: [egui_manager.rs, end_egui_frame, WorldAnchored, place_pins.rs, EguiRenderOutput, force_next_write, keep_egui_fresh, repaint_delay, request_repaint, shot_harness.rs, "--shot", "cargo shots", "stale UI", "frozen HUD", "compass does not move", quiet frame, tessellate]
+updated: 2026-10-17
 ---
 
 # egui's repaint signal does not know about the ECS
@@ -51,8 +51,8 @@ earlier frame.
 free. Anything read off the world and drawn into the overlay can freeze on a
 quiet frame — the HUD clock, the coordinate readout, the altitude, the compass
 needle while the camera glides or a movement key is *held* (a held key produces
-no repeated winit events, so egui sees no input at all). Three options, none
-taken yet:
+no repeated winit events, so egui sees no input at all). Three options; the
+second is taken for the map overlays (below):
 
 - **Tessellate and compare.** Correct and general, and it pays the cost the skip
   exists to avoid.
@@ -61,6 +61,19 @@ taken yet:
   remember, and forgetting it fails silently in this same way.
 - **Drop the skip.** Measure first: it was added against a real profile.
 
-Not yet observed as a complaint, which is itself worth knowing — the map streams,
-`Area`s fade in and tooltips animate, so a session in motion may rarely be quiet
-enough to notice.
+## The map pins (2026-10-17)
+
+The first complaint: "when moving around, the pins are not kept in place on all
+rendered frames." Walking with a finger held still on the stick, the follow camera
+catching up and a GPS glide are all frames with no events, so the pins stood still
+on them and jumped on the next frame that carried a touch.
+
+The targeted option is taken for the world-anchored overlays: `place_pins`
+(saved places, chat points, posts, people), `chat_overlay::render_chat_bubbles` and
+`locate::render_locate_arrow` record every screen position they paint in an
+`egui_manager::WorldAnchored`, which requests a repaint on the frames one moved,
+appeared or went, and on no others. A still map with pins on it keeps the skip.
+**A new overlay painted at a projected world point needs one too**; the POI card
+(`data_layers::render_poi_popup`) and the gizmo still have none. `animating()` is
+not a substitute: a quarter-second redraw is a stutter against a map drawn at
+sixty. The HUD readouts listed above are still open.

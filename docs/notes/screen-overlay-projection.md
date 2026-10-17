@@ -1,14 +1,14 @@
 ---
 topic: rendering
 triggers: [world_to_viewport, GlobalTransform, place_pins.rs, street_labels.rs, gizmo.rs, data_layers.rs, "overlay wobble", "pin jitter"]
-updated: 2026-07-31
+updated: 2026-10-17
 ---
 
 # Projecting world points to the screen from `Update`
 
 Anything that paints an egui overlay onto a world position — saved-place pins, the
 POI card, the gizmo handles — reads the camera and calls `Camera::world_to_viewport`.
-Two things about that are non-obvious, and both show up as the same symptom: the
+Three things about that are non-obvious; the first two show up as the same symptom: the
 overlay **wobbles or swims while the camera moves**, then sits perfectly still the
 moment it stops.
 
@@ -55,6 +55,17 @@ exact projected position**, not from the rect the `Area` allocated. The rounded 
 still senses the click; half a pixel between the hit area and the drawn shape is not
 something a pointer can resolve.
 
-Both problems are avoided outright by anything that can be world geometry instead:
+## 3. A frame with no input re-shows last frame's overlay
+
+Different symptom — the pins stand still for a few frames and then jump — and not
+a projection error at all: `end_egui_frame` keeps last frame's drawing when egui
+saw no input, and a held joystick or a following camera is no input. Every
+projected position goes into an `egui_manager::WorldAnchored`, which asks for the
+redraw when one moved (`docs/notes/egui-quiet-frame-staleness.md`). Anything that
+moves the thing pinned (`avatar::smooth_remote_avatars` for the people markers and
+chat balloons) is ordered before the overlay, or it trails on the frames the
+scheduler runs it second.
+
+The first two are avoided outright by anything that can be world geometry instead:
 the street names went that way (`docs/notes/map-labels.md`) and neither the stale
 basis nor the pixel rounding applies to them, because nothing projects them.

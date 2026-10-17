@@ -573,6 +573,8 @@ pub fn render_locate_arrow(
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<DriverState>,
 ) {
+    // Redrawn on the frames the map moves under it, as the pins are.
+    let mut anchored = crate::systems::egui_manager::WorldAnchored::new(egui.ctx(), "locate_arrow");
     // Driver mode draws its own arrow, in the world, and owns the screen besides.
     // Two "you are here" markers is one too many.
     if !tracking.active || driver.active {
@@ -627,6 +629,7 @@ pub fn render_locate_arrow(
     if !map_rect.contains(here) {
         return;
     }
+    anchored.at(here);
 
     // The compass first and the GNSS course second. The compass is where the
     // phone is *pointing*, which is what a "you are here" arrow means and what
@@ -664,6 +667,15 @@ pub fn render_locate_arrow(
         let (lat, lng) = step_along_bearing(here_lat, here_lng, 90.0, f64::from(m));
         Some((project(lat, lng)? - here).length())
     });
+    // The arrow turns and the halo grows where the marker stands still — a
+    // camera orbiting the avatar it follows does both — so those are part of the
+    // picture too. The facing is scaled out so the move threshold stays a hair.
+    if let Some(f) = facing {
+        anchored.at(here + f * 100.0);
+    }
+    if let Some(r) = accuracy_px {
+        anchored.at(egui::pos2(r, -1.0));
+    }
     let painter = ctx
         .layer_painter(egui::LayerId::new(
             egui::Order::Middle,

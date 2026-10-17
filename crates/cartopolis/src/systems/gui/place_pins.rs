@@ -25,6 +25,9 @@
 //! whole physical pixel. Both are handled below — the camera basis is rebuilt from
 //! this frame's `Transform`, and the silhouette is painted at the exact sub-pixel
 //! tip rather than at the rounded rect. See `docs/notes/screen-overlay-projection.md`.
+//! A third made them stand still and jump: on a frame with no input egui keeps
+//! last frame's drawing, so every tip is recorded in a `WorldAnchored`, which asks
+//! for the redraw when one moved.
 //!
 //! Below the space tier a place is placed through the anchored Mercator frame
 //! (`geo_nav::lat_lng_to_world`) — the same frame the tiles are laid in, so the
@@ -35,7 +38,7 @@
 use crate::components::{Avatar, FreeCamera, RemoteAvatar};
 use crate::resources::MapAnchor;
 use crate::systems::chat_people;
-use crate::systems::egui_manager::EguiMut;
+use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -160,6 +163,10 @@ pub fn render_place_pins(
     // parameter, which is Bevy's cap: the next one needs a `SystemParam`.
     identity: Option<Res<crate::resources::AuthIdentity>>,
 ) {
+    // Where every marker went this frame, so egui redraws on the frames the map
+    // moved under them and on no others (`WorldAnchored`). First, so each early
+    // return below reads as the markers going.
+    let mut anchored = WorldAnchored::new(egui.ctx(), "place_pins");
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
     // is the one thing this feature must never be.
@@ -264,6 +271,7 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
+        anchored.at(tip);
         if pin(
             &ctx,
             map_rect,
@@ -310,6 +318,7 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
+        anchored.at(tip);
         // `world_points` numbers each label "<n>  <name>", matching the card.
         let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
         if point_pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, number, name) {
@@ -345,6 +354,7 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
+        anchored.at(tip);
         if pin(
             &ctx,
             map_rect,
@@ -386,6 +396,7 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
+        anchored.at(tip);
         if chat_people::marker(&ctx, map_rect, tip, &l.from, chat_people::MarkerKind::Phone) {
             jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
         }
@@ -427,6 +438,7 @@ pub fn render_place_pins(
                 continue;
             }
             drawn += 1;
+            anchored.at(tip);
             if chat_people::marker(
                 &ctx,
                 map_rect,
@@ -463,6 +475,7 @@ pub fn render_place_pins(
                 .filter(|tip| map_rect.contains(*tip));
             if let Some(tip) = tip {
                 drawn += 1;
+                anchored.at(tip);
                 if chat_people::marker(&ctx, map_rect, tip, name, chat_people::MarkerKind::Avatar) {
                     jump = Some((Teleport::geo(lat, lng, None), name.clone()));
                 }
