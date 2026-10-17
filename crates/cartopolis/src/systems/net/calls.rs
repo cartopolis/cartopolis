@@ -32,7 +32,8 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use cartopolis_core::{
-    CallAction, CallEndReason, CallMember, CallSettings, NetMessage, CALL_CONTROL_REQUEST,
+    CallAction, CallEndReason, CallMember, CallRooms, CallSettings, CallWaiter, NetMessage,
+    CALL_CONTROL_REQUEST,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -79,7 +80,8 @@ impl CallInbox {
             | NetMessage::CallRoster { .. }
             | NetMessage::CallDeclined { .. }
             | NetMessage::CallEnded { .. }
-            | NetMessage::CallReacted { .. } => true,
+            | NetMessage::CallReacted { .. }
+            | NetMessage::CallWaiting { .. } => true,
             NetMessage::ServerError { request_id, .. } => is_call_request(*request_id),
             _ => false,
         }
@@ -100,6 +102,14 @@ pub enum CallRequest {
     Control(CallAction),
     /// React with this emoji, for everyone in the call.
     React(String),
+}
+
+/// The rest of a call's meeting state, from its roster (protocol 41).
+#[derive(Debug, Clone, Default)]
+pub struct MeetingExtras {
+    pub waiting: Vec<CallWaiter>,
+    pub spotlight: Option<u64>,
+    pub rooms: Option<CallRooms>,
 }
 
 /// Somebody's reaction, shown over their tile for [`REACTION_SECS`].
@@ -159,6 +169,8 @@ struct Active {
     held: bool,
     /// What the call was last told about this device's microphone.
     told_muted: Option<bool>,
+    /// Waiting for a host to let it in (`CallWaiting`).
+    waiting: bool,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
     #[cfg(not(target_arch = "wasm32"))]
     fake_mic_sent: u64,
@@ -213,6 +225,8 @@ pub struct Calls {
     rosters: HashMap<Vec<u8>, Vec<CallMember>>,
     /// What each call's hosts allow, from the same rosters.
     settings: HashMap<Vec<u8>, CallSettings>,
+    /// Who waits, who is in the spotlight and which rooms are open, the same way.
+    extras: HashMap<Vec<u8>, MeetingExtras>,
     /// Reactions in this device's call, newest last; dropped after
     /// [`REACTION_SECS`].
     pub reactions: Vec<Reaction>,
@@ -427,6 +441,21 @@ impl Calls {
             .flat_map(|a| a.screens.iter_mut().map(|(k, v)| (*k, v)))
     }
 
+    /// Whether this device waits for a host to let it into its call.
+    #[must_use]
+    pub fn waiting_to_join(&self) -> bool {
+        self.active.as_ref().is_some_and(|a| a.waiting)
+    }
+
+    /// Who waits, the spotlight and the open rooms of this device's call.
+    #[must_use]
+    pub fn extras(&self) -> MeetingExtras {
+        self.active
+            .as_ref()
+            .and_then(|a| self.extras.get(&a.group).cloned())
+            .unwrap_or_default()
+    }
+
     /// The reaction showing over a tile now, if any: the newest.
     #[must_use]
     pub fn reaction_of(&self, participant: u64) -> Option<&Reaction> {
@@ -501,6 +530,9 @@ impl Calls {
             held: false,
             sharing: false,
             muted: false,
+            recording: false,
+            guest: false,
+            room: 0,
         };
         if screen == "callincoming" {
             self.rosters.insert(group, vec![member("Jeroen", 2)]);
@@ -630,6 +662,9 @@ pub fn drive_calls(
                 group,
                 members,
                 settings,
+                waiting,
+                spotlight,
+                rooms,
             } => {
                 // Somebody who left stops being drawn: the forwarder does not
                 // renegotiate the last person's receiving connection down to
@@ -668,6 +703,14 @@ pub fn drive_calls(
                     None => {}
                 }
                 calls.settings.insert(group.clone(), settings);
+                calls.extras.insert(
+                    group.clone(),
+                    MeetingExtras {
+                        waiting,
+                        spotlight,
+                        rooms,
+                    },
+                );
                 if members.is_empty() {
                     // A call that rang here and stopped before anybody here
                     // answered or declined it: a missed call, said once.
@@ -684,6 +727,7 @@ pub fn drive_calls(
                     calls.dismissed.remove(&group);
                     calls.rosters.remove(&group);
                     calls.settings.remove(&group);
+                    calls.extras.remove(&group);
                 } else {
                     calls.rosters.insert(group, members);
                 }
@@ -715,6 +759,7 @@ pub fn drive_calls(
             } => {
                 if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
                     a.participant = Some(participant);
+                    a.waiting = false;
                     #[cfg(not(target_arch = "wasm32"))]
                     a.session.joined(answer);
                     #[cfg(target_arch = "wasm32")]
@@ -747,6 +792,14 @@ pub fn drive_calls(
                 #[cfg(target_arch = "wasm32")]
                 if let Some(a) = calls.active.as_ref().filter(|a| a.group == group) {
                     a.web.offered(&sdp, &tracks);
+                }
+            }
+            NetMessage::CallWaiting {
+                group, participant, ..
+            } => {
+                if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
+                    a.participant = Some(participant);
+                    a.waiting = true;
                 }
             }
             // A refused host action: said, and the call goes on.
@@ -1210,6 +1263,7 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         screens: HashMap::new(),
         held: false,
         told_muted: None,
+        waiting: false,
         #[cfg(not(target_arch = "wasm32"))]
         fake_mic_sent: 0,
         received: HashMap::new(),
@@ -1492,6 +1546,9 @@ mod tests {
             held: false,
             sharing: false,
             muted: false,
+            recording: false,
+            guest: false,
+            room: 0,
         }
     }
 
@@ -1527,6 +1584,9 @@ mod tests {
             group: vec![],
             members: vec![],
             settings: CallSettings::default(),
+            waiting: vec![],
+            spotlight: None,
+            rooms: None,
         }));
         assert!(CallInbox::wants(&NetMessage::ServerError {
             request_id: JOIN_REQUEST,

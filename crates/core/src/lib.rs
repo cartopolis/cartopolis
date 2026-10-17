@@ -37,15 +37,16 @@ pub use permissions::{Permission, PermissionSet};
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, topic_name, AuthCredential, AvatarStateDto, CallAction, CallEndReason,
-    CallMember, CallRole, CallSettings, CallTrack, CallTrackKind, ChatScope, CommunityDto,
-    CommunityListing, CommunityMemberDto, CommunityPlace, CommunityReportDto, CommunityRole,
-    CommunitySettings, ContactDto, ContactRequestDto, ContactSettings, DirectoryOrder, E2eeCursor,
-    E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, Emote, EmoteState, GeoAnchor, JoinRequestDto,
-    JoinRule, ListingState, MessageKind, MetDto, NearbyPersonDto, NetMessage, PersonDto,
-    PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo, ProtocolRevision,
-    Relation, ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry, TopicDto,
-    CALL_CONTROL_REQUEST, COMMUNITY_INVITE_DAYS, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
-    MAX_REPORT_NOTE_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    CallMember, CallRole, CallRooms, CallSettings, CallTrack, CallTrackKind, CallWaiter, ChatScope,
+    CommunityDto, CommunityListing, CommunityMemberDto, CommunityPlace, CommunityReportDto,
+    CommunityRole, CommunitySettings, ContactDto, ContactRequestDto, ContactSettings,
+    DirectoryOrder, E2eeCursor, E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, Emote, EmoteState,
+    GeoAnchor, JoinRequestDto, JoinRule, ListingState, MessageKind, MetDto, NearbyPersonDto,
+    NetMessage, PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo,
+    ProtocolRevision, Relation, ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry,
+    TopicDto, CALL_CONTROL_REQUEST, COMMUNITY_INVITE_DAYS, EMOTE_REPLICATE_SECS,
+    MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY,
+    PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use shot_env::ShotEnv;

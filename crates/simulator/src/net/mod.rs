@@ -170,6 +170,12 @@ fn server_error(request_id: u32, code: u32, message: impl Into<String>) -> NetMe
     }
 }
 
+/// A call refused or ended for a reason a person reads, under the join's
+/// request id (`crate::calls`: a waiting device turned away).
+pub(crate) fn call_error(request_id: u32, message: impl Into<String>) -> NetMessage {
+    server_error(request_id, 403, message)
+}
+
 /// Resolve a hello credential to `(principal, username)` (ADR-016). `None` = reject.
 ///
 /// The database is touched for exactly as long as it takes to read one row, on a
@@ -498,6 +504,9 @@ struct ConnCtx<T> {
     principal_key: String,
     /// The account's username, which is also its name in chat.
     display_name: String,
+    /// A meeting guest's account, let in by an invite link: its calls wait
+    /// to be let in (`crate::calls`).
+    guest: bool,
     avatar_id: u64,
     /// Built once per connection rather than once per message: a few dozen short
     /// strings into a `HashSet`, against a `ChatSend` path that would otherwise
@@ -756,6 +765,7 @@ pub async fn handle_connection<T: FrameTransport>(
         principal,
         principal_key,
         display_name,
+        guest: false,
         avatar_id,
         filter,
         gates: RateGates::open(),

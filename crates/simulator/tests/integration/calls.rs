@@ -486,3 +486,80 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
     let back = join(&mut b, &bob, &group).await;
     assert!(matches!(back, Err((409, _))), "{:?}", back.err());
 }
+
+/// A waiting room (protocol 41): with members waiting, a member's join is
+/// answered `CallWaiting` and the hosts see who waits; the host's `Admit` is
+/// what sends the `CallJoined`, under the join's own request id, and media
+/// then flows as for any join.
+#[tokio::test]
+async fn a_member_waits_until_a_host_lets_them_in() {
+    use cartopolis_core::{CallAction, CallSettings};
+    let (s, _dir) = start(&["alice", "bob"]).await;
+    let addr = s.local_addr.to_string();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
+    let mut a = online(&addr, &mut alice).await;
+    let mut b = online(&addr, &mut bob).await;
+    let group = start_direct(&mut a, &mut alice, "bob").await;
+    let (welcome, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("invitation delivered");
+    bob.join(&welcome).unwrap();
+
+    let (mut pa, _) = join(&mut a, &alice, &group).await.expect("alice joins");
+    let waiting_room = CallSettings {
+        members_wait: true,
+        ..CallSettings::default()
+    };
+    control(&mut a, &group, CallAction::Settings(waiting_room)).await;
+    next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::CallRoster { settings, .. } if settings.members_wait => Some(()),
+        _ => None,
+    })
+    .await
+    .expect("the waiting room is on");
+
+    // Bob asks; Alice sees him waiting and lets him in; only then is he joined.
+    let bob_joins = join(&mut b, &bob, &group);
+    let alice_admits = async {
+        let (waiter, _) = next_matching(&mut a, PATIENT, |m| match m {
+            NetMessage::CallRoster { waiting, .. } if !waiting.is_empty() => {
+                Some(waiting[0].clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("bob waits where alice can see him");
+        assert_eq!(waiter.username, "bob");
+        assert!(!waiter.guest);
+        control(
+            &mut a,
+            &group,
+            CallAction::Admit {
+                participant: waiter.participant,
+            },
+        )
+        .await;
+        waiter.participant
+    };
+    let (joined, waited_as) = tokio::join!(bob_joins, alice_admits);
+    let (mut pb, bob_id) = joined.expect("bob is let in");
+    assert_eq!(bob_id, waited_as, "he keeps the number he waited under");
+
+    let mut sent = 0;
+    let (heard, _) = talk(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        3000,
+        &mut sent,
+    )
+    .await;
+    assert!(
+        heard > 20,
+        "alice heard {heard} of bob's frames after letting him in"
+    );
+}

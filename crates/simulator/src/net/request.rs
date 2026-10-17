@@ -600,6 +600,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallDeclined { .. }
             | NetMessage::CallEnded { .. }
             | NetMessage::CallReacted { .. }
+            | NetMessage::CallWaiting { .. }
             | NetMessage::PrimSound { .. }
             | NetMessage::PrimTone { .. }
             | NetMessage::PrimMotion { .. }

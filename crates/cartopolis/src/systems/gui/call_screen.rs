@@ -65,6 +65,12 @@ pub struct CallScreenState {
     sheet: Option<Sheet>,
     /// The person a host tapped in the people sheet.
     picked: Option<u64>,
+    /// Speaker view: whoever talks is large. Off is the even grid.
+    speaker_view: bool,
+    /// Who is large in Speaker view, kept until somebody else talks.
+    big: Option<u64>,
+    /// Who was waiting at the last frame, to say when somebody new knocks.
+    waiting_seen: Vec<u64>,
     /// Calls that were ringing last frame, to unfold the screen for a new one.
     ringing_before: HashSet<Vec<u8>>,
     /// Last touch on the call screen, for hiding the controls over a picture.
@@ -592,11 +598,32 @@ fn in_call_screen(
     me: &str,
     request: &mut Option<CallRequest>,
 ) {
+    if calls.waiting_to_join() {
+        waiting_screen(ui, full, calls, st, chat_label.as_deref(), request);
+        return;
+    }
+    // Somebody new knocking is news to a host, wherever the people sheet is.
+    let waiting = calls.extras().waiting;
+    if calls.hosting() {
+        if let Some(w) = waiting
+            .iter()
+            .find(|w| !st.waiting_seen.contains(&w.participant))
+        {
+            calls.notice = Some(format!(
+                "{} is waiting to join. Admit them under People.",
+                w.username
+            ));
+        }
+    }
+    st.waiting_seen = waiting.iter().map(|w| w.participant).collect();
     let mut people: Vec<Person> = calls
         .others()
         .into_iter()
         .map(|(id, name)| person_of(calls, &st.tiles, id, name))
         .collect();
+    // A breakout room shows only who is in it.
+    let my_room = calls.me().map_or(0, |m| m.room);
+    people.retain(|p| calls.member(p.id).map_or(0, |m| m.room) == my_room);
     people.sort_by(|a, b| a.name.cmp(&b.name));
     let own = texture_of(&st.tiles, SELF_TILE);
     let sharer = calls.sharer();
@@ -680,6 +707,26 @@ fn in_call_screen(
         );
         let cols = if portrait { 2 } else { 1 };
         grid(ui, strip, &tiles, cols);
+    } else if let Some(big) = speaker_of(calls, st, &people) {
+        // One person large (the spotlight, or whoever talks), everybody else
+        // in a row under them.
+        pip = None;
+        let strip_h = (stage.height() * 0.22).clamp(70.0, 150.0);
+        let big_rect = egui::Rect::from_min_max(
+            stage.min,
+            egui::pos2(stage.max.x, stage.max.y - strip_h - 8.0),
+        );
+        let strip =
+            egui::Rect::from_min_max(egui::pos2(stage.min.x, stage.max.y - strip_h), stage.max);
+        let big_person = people
+            .iter()
+            .find(|p| p.id == big)
+            .expect("chosen from people");
+        grid(ui, big_rect, &[big_person], 1);
+        let mut rest: Vec<&Person> = people.iter().filter(|p| p.id != big).collect();
+        rest.push(&self_person);
+        let cols = rest.len();
+        grid(ui, strip, &rest, cols);
     } else {
         match people.len() {
             0 => {
@@ -837,6 +884,7 @@ fn in_call_screen(
             );
         }
         dock(ui, full, calls, st, request);
+        meeting_chips(ui, full, calls, request);
     }
     let _ = me;
 
@@ -1073,7 +1121,12 @@ fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
         egui::Color32::from_white_alpha(if resp.hovered() { 46 } else { 30 }),
     );
     centred(p, c, icons::PEOPLE, 22.0, theme::CREAM);
-    let hands = calls.members().iter().filter(|m| m.hand.is_some()).count();
+    let hands = calls.members().iter().filter(|m| m.hand.is_some()).count()
+        + if calls.hosting() {
+            calls.extras().waiting.len()
+        } else {
+            0
+        };
     let (count, fill, ink) = if hands > 0 {
         (hands, theme::WARN, theme::INK)
     } else {
@@ -1278,6 +1331,9 @@ fn more_sheet(
     if sheet_row(ui, icons::PEOPLE, "People", None) {
         st.sheet = Some(Sheet::People);
     }
+    if sheet_row(ui, icons::STAR, "Speaker view", Some(st.speaker_view)) {
+        st.speaker_view = !st.speaker_view;
+    }
     if !calls.hosting() {
         return;
     }
@@ -1310,6 +1366,43 @@ fn more_sheet(
             s.may_share = v;
         },
     );
+    set(
+        ui,
+        icons::HOST,
+        "Members wait to be let in",
+        s.members_wait,
+        |s, v| {
+            s.members_wait = v;
+        },
+    );
+    set(
+        ui,
+        icons::DOT,
+        "Anybody may record",
+        s.may_record,
+        |s, v| {
+            s.may_record = v;
+        },
+    );
+    theme::section(ui, "Breakout rooms");
+    if calls.extras().rooms.is_some() {
+        if sheet_row(ui, icons::PEOPLE, "Bring everybody back", None) {
+            *request = Some(CallRequest::Control(CallAction::CloseRooms));
+            *close = true;
+        }
+    } else {
+        for n in [2u32, 3, 4] {
+            if sheet_row(
+                ui,
+                icons::PEOPLE,
+                &format!("Split into {n} rooms for 10 minutes"),
+                None,
+            ) {
+                *request = Some(CallRequest::Control(split_into_rooms(calls, n)));
+                *close = true;
+            }
+        }
+    }
     ui.add_space(6.0);
     if sheet_row(ui, icons::CALL_END, "End for everyone", None) {
         *request = Some(CallRequest::Control(CallAction::EndForAll));
@@ -1333,6 +1426,35 @@ fn people_sheet(
             .size(theme::SIZE_PANEL_TITLE)
             .color(theme::CREAM),
     );
+    let waiting = calls.extras().waiting;
+    if hosting && !waiting.is_empty() {
+        theme::section(ui, &format!("Waiting to join · {}", waiting.len()));
+        for w in &waiting {
+            ui.horizontal(|ui| {
+                let guest = if w.guest { " · guest" } else { "" };
+                ui.label(
+                    egui::RichText::new(format!("{}{guest}", w.username))
+                        .size(theme::SIZE_BODY)
+                        .color(theme::TEXT),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::chip(ui, "Turn away", false).clicked() {
+                        *request = Some(CallRequest::Control(CallAction::Deny {
+                            participant: w.participant,
+                        }));
+                    }
+                    if theme::chip(ui, "Admit", true).clicked() {
+                        *request = Some(CallRequest::Control(CallAction::Admit {
+                            participant: w.participant,
+                        }));
+                    }
+                });
+            });
+        }
+        if waiting.len() > 1 && theme::chip(ui, "Admit everyone", false).clicked() {
+            *request = Some(CallRequest::Control(CallAction::AdmitAll));
+        }
+    }
     let mut hands: Vec<&cartopolis_core::CallMember> =
         members.iter().filter(|m| m.hand.is_some()).collect();
     hands.sort_by_key(|m| m.hand);
@@ -1436,6 +1558,33 @@ fn people_sheet(
                         participant,
                         role: cartopolis_core::CallRole::Host,
                     }));
+                }
+                let extras = calls.extras();
+                let spotlit = extras.spotlight == Some(participant);
+                let (word, target) = if spotlit {
+                    ("Stop the spotlight", None)
+                } else {
+                    ("Spotlight for everyone", Some(participant))
+                };
+                if sheet_row(ui, icons::STAR, word, None) {
+                    *request = Some(CallRequest::Control(CallAction::Spotlight {
+                        participant: target,
+                    }));
+                }
+                if let Some(rooms) = &extras.rooms {
+                    for (i, name) in std::iter::once("the main call")
+                        .chain(rooms.names.iter().map(String::as_str))
+                        .enumerate()
+                    {
+                        if i as u32 != m.room
+                            && sheet_row(ui, icons::PEOPLE, &format!("Move to {name}"), None)
+                        {
+                            *request = Some(CallRequest::Control(CallAction::MoveTo {
+                                participant,
+                                room: i as u32,
+                            }));
+                        }
+                    }
                 }
                 if sheet_row(ui, icons::PERSON_REMOVE, "Remove from the call", None) {
                     *request = Some(CallRequest::Control(CallAction::Remove { participant }));
@@ -1683,5 +1832,219 @@ mod tests {
         assert!((r.height() - 900.0).abs() < 1e-3);
         assert!((r.width() / r.height() - 0.75).abs() < 1e-4);
         assert!((r.center().x - 800.0).abs() < 1e-3);
+    }
+}
+
+/// Who is large in Speaker view, if it is on: the hosts' spotlight first,
+/// then whoever is talking, kept until somebody else talks. Needs two others,
+/// or the one other person fills the screen anyway.
+fn speaker_of(calls: &Calls, st: &mut CallScreenState, people: &[Person]) -> Option<u64> {
+    if let Some(s) = calls.extras().spotlight {
+        if people.iter().any(|p| p.id == s) {
+            return Some(s);
+        }
+    }
+    if !st.speaker_view || people.len() < 2 {
+        return None;
+    }
+    if let Some(talking) = people.iter().find(|p| p.speaking) {
+        st.big = Some(talking.id);
+    }
+    match st.big {
+        Some(b) if people.iter().any(|p| p.id == b) => Some(b),
+        _ => people.first().map(|p| p.id),
+    }
+}
+
+/// Waiting for a host to let this device in: your own picture, if any, behind
+/// who you wait for, and Leave.
+fn waiting_screen(
+    ui: &mut egui::Ui,
+    full: egui::Rect,
+    calls: &mut Calls,
+    st: &mut CallScreenState,
+    chat_label: Option<&str>,
+    request: &mut Option<CallRequest>,
+) {
+    let p = ui.painter().clone();
+    if let Some(tex) = texture_of(&st.tiles, SELF_TILE) {
+        paint_picture(ui, full, tex, 0, true);
+        p.rect_filled(full, 0.0, egui::Color32::from_black_alpha(150));
+    }
+    let x = full.center().x;
+    let y = full.min.y + full.height() * 0.38;
+    let spin = (ui.input(|i| i.time) * 4.0) as f32;
+    let r = 18.0;
+    p.circle_stroke(
+        egui::pos2(x, y),
+        r,
+        egui::Stroke::new(3.0, egui::Color32::from_white_alpha(40)),
+    );
+    let arc: Vec<egui::Pos2> = (0..=12)
+        .map(|i| {
+            let a = spin + i as f32 * 0.12;
+            egui::pos2(x + r * a.cos(), y + r * a.sin())
+        })
+        .collect();
+    p.add(egui::Shape::line(arc, egui::Stroke::new(3.0, theme::WARN)));
+    centred(
+        &p,
+        egui::pos2(x, y + 54.0),
+        chat_label.unwrap_or("The call"),
+        26.0,
+        theme::CREAM,
+    );
+    centred(
+        &p,
+        egui::pos2(x, y + 88.0),
+        "Waiting for a host to let you in",
+        theme::SIZE_BODY,
+        theme::TEXT,
+    );
+    encrypted_line(&p, egui::pos2(x, full.min.y + EDGE + 20.0));
+    if fold_button(ui, full) {
+        calls.minimized = true;
+    }
+    let c = egui::pos2(x, full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE * 0.5 - 8.0);
+    if button_at(
+        ui,
+        c,
+        icons::CALL_END,
+        "Stop waiting",
+        CallTone::HangUp,
+        CALL_BUTTON_LARGE,
+    ) {
+        *request = Some(CallRequest::Leave);
+    }
+    centred(
+        &p,
+        c + egui::vec2(0.0, CALL_BUTTON_LARGE * 0.5 + 12.0),
+        "Leave",
+        theme::SIZE_TINY,
+        theme::TEXT,
+    );
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(40));
+}
+
+/// What the meeting says about everybody, under the title: somebody records,
+/// this device is in a breakout room (with its time left, and the way back
+/// when the rooms allow it).
+fn meeting_chips(
+    ui: &mut egui::Ui,
+    full: egui::Rect,
+    calls: &Calls,
+    request: &mut Option<CallRequest>,
+) {
+    let p = ui.painter().clone();
+    let mut y = full.min.y + EDGE + 60.0;
+    let recorders: Vec<&str> = calls
+        .members()
+        .iter()
+        .filter(|m| m.recording)
+        .map(|m| m.username.as_str())
+        .collect();
+    if !recorders.is_empty() {
+        let text = format!("●  Recording · {}", recorders.join(", "));
+        let galley = p.layout_no_wrap(
+            text,
+            egui::FontId::proportional(theme::SIZE_SUB),
+            theme::CREAM,
+        );
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(full.center().x, y),
+            galley.size() + egui::vec2(20.0, 8.0),
+        );
+        p.rect_filled(
+            rect,
+            egui::CornerRadius::same(theme::RADIUS_PILL),
+            theme::CALL_END_RED.gamma_multiply(0.8),
+        );
+        p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::CREAM);
+        y += 30.0;
+    }
+    let extras = calls.extras();
+    let my_room = calls.me().map_or(0, |m| m.room);
+    let (Some(rooms), true) = (extras.rooms.as_ref(), my_room > 0) else {
+        return;
+    };
+    let name = rooms
+        .names
+        .get(my_room as usize - 1)
+        .map_or("a breakout room", String::as_str);
+    let left = rooms.until_ms.map(|until| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let secs = until.saturating_sub(now) / 1000;
+        format!(" · {}:{:02} left", secs / 60, secs % 60)
+    });
+    let text = format!("{}  In {name}{}", icons::PEOPLE, left.unwrap_or_default());
+    let galley = p.layout_no_wrap(
+        text,
+        egui::FontId::proportional(theme::SIZE_SUB),
+        theme::INK,
+    );
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(full.center().x, y),
+        galley.size() + egui::vec2(20.0, 8.0),
+    );
+    p.rect_filled(
+        rect,
+        egui::CornerRadius::same(theme::RADIUS_PILL),
+        theme::ACCENT,
+    );
+    p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::INK);
+    if rooms.may_move {
+        let back = egui::Rect::from_min_size(
+            egui::pos2(rect.max.x + 6.0, rect.min.y),
+            egui::vec2(110.0, rect.height()),
+        );
+        let resp = ui.interact(back, egui::Id::new("call_room_back"), egui::Sense::click());
+        p.rect_filled(
+            back,
+            egui::CornerRadius::same(theme::RADIUS_PILL),
+            egui::Color32::from_white_alpha(if resp.hovered() { 46 } else { 30 }),
+        );
+        centred(
+            &p,
+            back.center(),
+            "Back to the call",
+            theme::SIZE_SUB,
+            theme::CREAM,
+        );
+        if resp.clicked() {
+            if let Some(me) = calls.me() {
+                *request = Some(CallRequest::Control(CallAction::MoveTo {
+                    participant: me.participant,
+                    room: 0,
+                }));
+            }
+        }
+    }
+}
+
+/// Split everybody but the hosts into `n` rooms, in turn, after shuffling by
+/// participant number and the clock (a host can move anybody after).
+fn split_into_rooms(calls: &Calls, n: u32) -> CallAction {
+    let mut people: Vec<u64> = calls
+        .members()
+        .iter()
+        .filter(|m| !m.role.hosts())
+        .map(|m| m.participant)
+        .collect();
+    let seed = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    people.sort_by_key(|p| p.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ seed);
+    CallAction::OpenRooms {
+        names: (1..=n).map(|i| format!("Room {i}")).collect(),
+        assign: people
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (*p, i as u32 % n + 1))
+            .collect(),
+        minutes: 10,
+        may_move: true,
     }
 }

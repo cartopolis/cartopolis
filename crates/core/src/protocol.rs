@@ -198,7 +198,7 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
     ProtocolRevision {
         version: 41,
         adr: "",
-        summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted; CallRoster.settings), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, and CallWatch says whose cameras a device draws (docs/notes/calls.md)",
+        summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted, .recording, .guest, .room; CallRoster.settings, .waiting, .spotlight, .rooms), a waiting room (CallWaiting, Admit / Deny), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, and CallWatch says whose cameras a device draws (docs/notes/calls.md)",
     },
 ];
 
@@ -323,6 +323,7 @@ pub enum MessageKind {
     CallReact = 113,
     CallReacted = 114,
     CallWatch = 115,
+    CallWaiting = 116,
 }
 
 impl MessageKind {
@@ -435,6 +436,7 @@ impl MessageKind {
             113 => Some(Self::CallReact),
             114 => Some(Self::CallReacted),
             115 => Some(Self::CallWatch),
+            116 => Some(Self::CallWaiting),
             _ => None,
         }
     }
@@ -1290,6 +1292,12 @@ pub enum NetMessage {
         members: Vec<CallMember>,
         /// What the hosts allow (protocol 41).
         settings: CallSettings,
+        /// Devices waiting to be let in (protocol 41).
+        waiting: Vec<CallWaiter>,
+        /// Who the hosts show large for everybody.
+        spotlight: Option<u64>,
+        /// The open breakout rooms, if any.
+        rooms: Option<CallRooms>,
     },
 
     // ── Contacts and message requests (protocol 27, `docs/notes/contacts.md`) ─
@@ -1679,6 +1687,15 @@ pub enum NetMessage {
         group: Vec<u8>,
         cameras: Option<Vec<u64>>,
     },
+    /// Server: the join under `request_id` waits for a host to let this
+    /// device in (`CallSettings::members_wait`, or a guest). `participant` is
+    /// its number from now on; a host's `Admit` answers it with the
+    /// `CallJoined` it was waiting for, a `Deny` with a `ServerError`.
+    CallWaiting {
+        request_id: u32,
+        group: Vec<u8>,
+        participant: u64,
+    },
 }
 
 /// How long an invite link works, in days.
@@ -1944,6 +1961,12 @@ pub struct CallMember {
     pub sharing: bool,
     /// Its microphone is off, as it says itself (a host's hold is `held`).
     pub muted: bool,
+    /// Recording the call on its own device.
+    pub recording: bool,
+    /// A guest, let in by an invite link, not a member of the chat.
+    pub guest: bool,
+    /// The breakout room it is in; 0 is the main call.
+    pub room: u32,
 }
 
 /// Who runs a call. The first person in hosts it; when the last host or
@@ -1965,6 +1988,28 @@ impl CallRole {
     }
 }
 
+/// A device waiting to be let into a call ([`NetMessage::CallRoster`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallWaiter {
+    /// The number it will have in the call, for `Admit` and `Deny`.
+    pub participant: u64,
+    pub username: String,
+    pub guest: bool,
+    /// When it started waiting, unix ms.
+    pub since_ms: u64,
+}
+
+/// A call's breakout rooms while they are open ([`NetMessage::CallRoster`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallRooms {
+    /// Room `n`'s name is `names[n - 1]`.
+    pub names: Vec<String>,
+    /// When everybody is brought back, unix ms; `None` until a host closes them.
+    pub until_ms: Option<u64>,
+    /// Members may move between rooms themselves.
+    pub may_move: bool,
+}
+
 /// What the hosts allow everyone else in a call ([`NetMessage::CallRoster`]).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallSettings {
@@ -1975,6 +2020,11 @@ pub struct CallSettings {
     pub may_unmute: bool,
     /// Members may share a screen. Off drops a member's screen at the forwarder.
     pub may_share: bool,
+    /// Members wait to be let in, as guests always do.
+    pub members_wait: bool,
+    /// Anybody may record the call on their own device. Off, a device that
+    /// says it records is refused, and everybody sees it asked.
+    pub may_record: bool,
 }
 
 impl Default for CallSettings {
@@ -1983,6 +2033,8 @@ impl Default for CallSettings {
             locked: false,
             may_unmute: true,
             may_share: true,
+            members_wait: false,
+            may_record: false,
         }
     }
 }
@@ -2034,6 +2086,39 @@ pub enum CallAction {
     Settings(CallSettings),
     /// End the call for everybody in it.
     EndForAll,
+    /// Let a waiting device in, or turn it away.
+    Admit {
+        participant: u64,
+    },
+    Deny {
+        participant: u64,
+    },
+    /// Let everybody waiting in.
+    AdmitAll,
+    /// This device started or stopped recording the call on itself. Refused
+    /// unless the hosts allow recording; announced to everyone either way.
+    Recording(bool),
+    /// Show this person large for everybody, or nobody (`None`).
+    Spotlight {
+        participant: Option<u64>,
+    },
+    /// Split the call into breakout rooms named `names` (room `n` is
+    /// `names[n - 1]`; room 0 is the main call), with `assign` saying who
+    /// goes where. After `minutes` everybody comes back (0: until closed).
+    OpenRooms {
+        names: Vec<String>,
+        assign: Vec<(u64, u32)>,
+        minutes: u32,
+        may_move: bool,
+    },
+    /// Move a participant to a room (0: the main call). A member may move
+    /// themselves when the rooms allow it.
+    MoveTo {
+        participant: u64,
+        room: u32,
+    },
+    /// Bring everybody back to the main call.
+    CloseRooms,
 }
 
 /// Why [`NetMessage::CallEnded`].
@@ -2403,6 +2488,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::CallReact { .. } => MessageKind::CallReact,
         NetMessage::CallReacted { .. } => MessageKind::CallReacted,
         NetMessage::CallWatch { .. } => MessageKind::CallWatch,
+        NetMessage::CallWaiting { .. } => MessageKind::CallWaiting,
     }
 }
 
@@ -2474,6 +2560,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::CommunityInvite { request_id, .. } => *request_id,
         NetMessage::CommunityInviteLookup { request_id, .. } => *request_id,
         NetMessage::CommunityJoinInvite { request_id, .. } => *request_id,
+        NetMessage::CallWaiting { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -2889,8 +2976,23 @@ mod tests {
                     held: true,
                     sharing: false,
                     muted: true,
+                    recording: false,
+                    guest: true,
+                    room: 2,
                 }],
                 settings: CallSettings::default(),
+                waiting: vec![CallWaiter {
+                    participant: 13,
+                    username: "guest".into(),
+                    guest: true,
+                    since_ms: 5,
+                }],
+                spotlight: Some(11),
+                rooms: Some(CallRooms {
+                    names: vec!["Stage".into()],
+                    until_ms: Some(9),
+                    may_move: true,
+                }),
             },
             NetMessage::CallControl {
                 group: group.clone(),
@@ -2917,6 +3019,20 @@ mod tests {
             NetMessage::CallWatch {
                 group: group.clone(),
                 cameras: Some(vec![4, 5]),
+            },
+            NetMessage::CallWaiting {
+                request_id: 3,
+                group: group.clone(),
+                participant: 13,
+            },
+            NetMessage::CallControl {
+                group: group.clone(),
+                action: CallAction::OpenRooms {
+                    names: vec!["A".into()],
+                    assign: vec![(4, 1)],
+                    minutes: 10,
+                    may_move: false,
+                },
             },
         ] {
             let b = encode_app_frame(&m).unwrap();
@@ -3018,7 +3134,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 106] = [
+        const ALL: [MessageKind; 107] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3125,6 +3241,7 @@ mod tests {
             CallReact,
             CallReacted,
             CallWatch,
+            CallWaiting,
         ];
         for k in ALL {
             assert_eq!(
@@ -3138,7 +3255,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CallWatch as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(CallWaiting as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

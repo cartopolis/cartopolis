@@ -332,6 +332,9 @@ impl ChatCore {
                 group,
                 members,
                 settings,
+                waiting,
+                spotlight,
+                rooms,
             } => self.events.push(json!({
                 "kind": "call_roster",
                 "channel": channel_key(&group),
@@ -348,12 +351,36 @@ impl ChatCore {
                     "held": m.held,
                     "sharing": m.sharing,
                     "muted": m.muted,
+                    "recording": m.recording,
+                    "guest": m.guest,
+                    "room": m.room,
                 })).collect::<Vec<_>>(),
                 "settings": {
                     "locked": settings.locked,
                     "may_unmute": settings.may_unmute,
                     "may_share": settings.may_share,
+                    "members_wait": settings.members_wait,
+                    "may_record": settings.may_record,
                 },
+                "waiting": waiting.iter().map(|w| json!({
+                    "participant": w.participant,
+                    "username": w.username,
+                    "guest": w.guest,
+                    "since_ms": w.since_ms,
+                })).collect::<Vec<_>>(),
+                "spotlight": spotlight,
+                "rooms": rooms.as_ref().map(|r| json!({
+                    "names": r.names,
+                    "until_ms": r.until_ms,
+                    "may_move": r.may_move,
+                })),
+            })),
+            NetMessage::CallWaiting {
+                group, participant, ..
+            } => self.events.push(json!({
+                "kind": "call_waiting",
+                "channel": channel_key(&group),
+                "participant": participant,
             })),
             NetMessage::CallEnded { group, reason } => {
                 let (why, by) = match reason {

@@ -166,6 +166,9 @@ struct Participant {
     screen_held: bool,
     /// Whose cameras it draws; `None` is everybody ([`Sfu::watch`]).
     watching: Option<Vec<ParticipantId>>,
+    /// The breakout room it is in (0: the main call). Media passes only
+    /// between participants in the same one ([`Sfu::set_breakout`]).
+    breakout: u32,
     pending: Option<SdpPendingOffer>,
     alive: bool,
     /// When either connection last went `Disconnected` without coming back.
@@ -218,6 +221,28 @@ impl Sfu {
         offer: &str,
         screen: Option<&str>,
     ) -> Result<(ParticipantId, String), Error> {
+        let id = self.reserve();
+        let answer = self.join_as(now, id, room, offer, screen)?;
+        Ok((id, answer))
+    }
+
+    /// A participant number nobody has, for a device that waits to be let in:
+    /// it is told its number at once and joins under it later ([`Sfu::join_as`]).
+    pub fn reserve(&mut self) -> ParticipantId {
+        let id = ParticipantId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// [`Sfu::join`] under a number from [`Sfu::reserve`].
+    pub fn join_as(
+        &mut self,
+        now: Instant,
+        id: ParticipantId,
+        room: RoomId,
+        offer: &str,
+        screen: Option<&str>,
+    ) -> Result<String, Error> {
         if self
             .participants
             .iter()
@@ -231,8 +256,6 @@ impl Sfu {
         let mut up = self.rtc(now)?;
         let answer = up.sdp_api().accept_offer(offer).map_err(rtc_err)?;
         let down = self.rtc(now)?;
-        let id = ParticipantId(self.next_id);
-        self.next_id += 1;
 
         let tracks_out = self
             .participants
@@ -258,13 +281,14 @@ impl Sfu {
             screen_mid: screen.map(Mid::from),
             held: false,
             screen_held: false,
+            breakout: 0,
             watching: None,
             pending: None,
             alive: true,
             lost_since: None,
             down_started: false,
         });
-        Ok((id, answer.to_sdp_string()))
+        Ok(answer.to_sdp_string())
     }
 
     /// A participant's answer to the last [`Signal::Offer`] it was sent.
@@ -385,6 +409,33 @@ impl Sfu {
             for mid in mids {
                 self.request_keyframe(s, mid, KeyframeRequestKind::Pli, now);
             }
+        }
+    }
+
+    /// Put a participant in breakout room `breakout` (0: the main call). Its
+    /// media now reaches, and it now receives, only that room's; every
+    /// picture it newly sees, and every one newly seeing it, is asked for a
+    /// keyframe so nobody waits for the next scheduled one.
+    pub fn set_breakout(&mut self, now: Instant, who: ParticipantId, breakout: u32) {
+        let Some(p) = self.participant_mut(who) else {
+            return;
+        };
+        if std::mem::replace(&mut p.breakout, breakout) == breakout {
+            return;
+        }
+        let room = p.room.clone();
+        let mut asks: Vec<(ParticipantId, Mid)> = Vec::new();
+        for q in self
+            .participants
+            .iter()
+            .filter(|q| q.alive && q.room == room && q.breakout == breakout)
+        {
+            for t in q.tracks_in.iter().filter(|t| t.kind.is_video()) {
+                asks.push((q.id, t.mid));
+            }
+        }
+        for (from, mid) in asks {
+            self.request_keyframe(from, mid, KeyframeRequestKind::Pli, now);
         }
     }
 
@@ -597,13 +648,13 @@ impl Sfu {
     }
 
     fn forward(&mut self, f: &Forward) {
-        let Some((room, kind)) = self.participant(f.from).map(|p| {
+        let Some((room, kind, from_breakout)) = self.participant(f.from).map(|p| {
             let kind = p
                 .tracks_in
                 .iter()
                 .find(|t| t.mid == f.data.mid)
                 .map(|t| t.kind);
-            (p.room.clone(), kind)
+            (p.room.clone(), kind, p.breakout)
         }) else {
             return;
         };
@@ -612,6 +663,10 @@ impl Sfu {
             .iter_mut()
             .filter(|q| q.alive && q.room == room && q.id != f.from && !q.ignores.contains(&f.from))
         {
+            // Breakout rooms keep their media to themselves.
+            if q.breakout != from_breakout {
+                continue;
+            }
             // A camera nobody here draws is not sent (shared screens always are).
             if kind == Some(Kind::Video)
                 && q.watching.as_ref().is_some_and(|w| !w.contains(&f.from))

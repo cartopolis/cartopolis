@@ -71,10 +71,12 @@ pub(super) async fn on_join<T: FrameTransport>(
             members,
             offer,
             screen,
+            request_id,
+            guest: ctx.guest,
         })
         .await;
     match joined {
-        Ok((seat, answer)) => {
+        Ok(crate::calls::Joined::In(seat, answer)) => {
             let participant = seat.participant;
             ctx.call_seat = Some(seat);
             ctx.send(&NetMessage::CallJoined {
@@ -82,6 +84,18 @@ pub(super) async fn on_join<T: FrameTransport>(
                 group,
                 participant,
                 answer,
+            })
+            .await
+        }
+        // A host lets it in, or not: the `CallJoined` or the refusal comes
+        // later, from the calls task (`crate::calls::State::control`).
+        Ok(crate::calls::Joined::Waiting(seat)) => {
+            let participant = seat.participant;
+            ctx.call_seat = Some(seat);
+            ctx.send(&NetMessage::CallWaiting {
+                request_id,
+                group,
+                participant,
             })
             .await
         }
