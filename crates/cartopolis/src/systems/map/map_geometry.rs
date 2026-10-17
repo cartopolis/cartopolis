@@ -26,7 +26,7 @@ use crate::components::MapSurface;
 use crate::components::{FurnitureSurface, VegetationSurface};
 use crate::grid::{CameraAndRoot, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::sync::{Arc, Mutex};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use cartopolis_geo::deck_profile::DeckMeasure;
 
@@ -800,6 +800,21 @@ pub struct MapSurfaces {
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
     /// off the ground once its answer lands.
     pending_decks: HashMap<Cell, PendingDecks>,
+    /// Meshes of landed cells not yet handed to the GPU, oldest first. Each one's
+    /// entity is already spawned, on a reserved handle; the data goes in as the
+    /// frame's upload ledger admits it ([`MapSurfaces::upload_pending`]).
+    ///
+    /// **A cell is too big to be one admission.** At street level a cell is the
+    /// flat ground refined against the terrain plus its furniture and trees —
+    /// ~170 MB over Groningen on the browser rung (2026-10-17) — and the ledger
+    /// always passes a frame's first item whole, so pricing the cell meant a
+    /// 16 MB ceiling still let 170 MB frames through. Pricing each piece (none
+    /// over `lod22::max_cell_mesh_bytes`) is what lets the ceiling hold.
+    pending_meshes: VecDeque<(Cell, Handle<Mesh>, Mesh)>,
+    /// Landed cells whose flat ground will be complete once their queued meshes
+    /// are in — promoted to [`Self::complete`] by the last one, so the basemap
+    /// under a cell is not hidden while its ground is still arriving.
+    awaiting_complete: HashSet<Cell>,
     /// Which optional detail the live cells were built with, so flipping a layer
     /// retears them ([`DetailWants`]). `None` until the first pass, which is what
     /// makes the very first frame a build rather than a rebuild.
@@ -837,6 +852,8 @@ impl Default for MapSurfaces {
             terrain_revision: 0,
             bgt_revision: (0, 0),
             pending_decks: HashMap::new(),
+            pending_meshes: VecDeque::new(),
+            awaiting_complete: HashSet::new(),
             detail_wants: None,
             ground_finish: None,
             coverage_wait: None,
@@ -2362,7 +2379,7 @@ impl MapSurfaces {
     /// capture taken on the imagery alone shows a city with no buildings in it.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.stream.busy() || !self.pending_decks.is_empty()
+        self.stream.busy() || !self.pending_decks.is_empty() || !self.pending_meshes.is_empty()
     }
 
     /// The shared material for a surface group, once some cell has created it.
@@ -2460,6 +2477,30 @@ impl MapSurfaces {
         }
     }
 
+    /// Hand queued meshes to the GPU, oldest first, for as long as the frame's
+    /// upload ledger admits them ([`Self::pending_meshes`]). With no ceiling that
+    /// is all of them, in the frame their cell landed — what this did before
+    /// the queue existed.
+    fn upload_pending(&mut self, meshes: &mut Assets<Mesh>) {
+        while let Some((_, _, mesh)) = self.pending_meshes.front() {
+            if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh))
+            {
+                break;
+            }
+            let Some((cell, handle, mesh)) = self.pending_meshes.pop_front() else {
+                break;
+            };
+            // A reserved handle cannot be stale: nothing else inserts into it.
+            let _ = meshes.insert(&handle, mesh);
+            if self.awaiting_complete.contains(&cell)
+                && !self.pending_meshes.iter().any(|(c, ..)| *c == cell)
+            {
+                self.awaiting_complete.remove(&cell);
+                self.complete.insert(cell);
+            }
+        }
+    }
+
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
@@ -2470,6 +2511,8 @@ impl MapSurfaces {
         self.built_digest.clear();
         self.complete.clear();
         self.pending_decks.clear();
+        self.pending_meshes.clear();
+        self.awaiting_complete.clear();
         // Drops the requested/failed bookkeeping and orphans the results sink, so
         // in-flight tasks cannot deliver a cell placed in the old origin's frame.
         self.stream.reset();
@@ -2486,6 +2529,8 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     surfaces.built_digest.remove(&c);
     surfaces.complete.remove(&c);
     surfaces.pending_decks.remove(&c);
+    surfaces.pending_meshes.retain(|(cell, ..)| *cell != c);
+    surfaces.awaiting_complete.remove(&c);
     surfaces.stream.forget(&c);
     stores.labels.remove_cell(&c);
     stores.places.remove_cell(&c);
@@ -2516,6 +2561,9 @@ pub fn update_map_surfaces(
     // Always drain the despawn queue, even on the early returns below — a source
     // switch or a climb into space must still clear steadily rather than stall.
     surfaces.stream.drain_despawns(&mut commands);
+    // …and the upload queue, for the same reason: a cell that landed just below
+    // the space tier still finishes arriving.
+    surfaces.upload_pending(&mut meshes);
     // The surfaces stream has no backoff and no cooldown (`max_attempts: 1`), so
     // it never consults the clock — and `update_map_surfaces` is already at Bevy's
     // system-parameter ceiling, so adding a `Res<Time>` for a value nothing reads
@@ -2758,6 +2806,8 @@ pub fn update_map_surfaces(
         root,
         now,
     );
+    // In the frame the cell landed, as far as the ledger allows.
+    surfaces.upload_pending(&mut meshes);
 }
 
 /// Step 1 of a frame of surface streaming: the ring of cells the camera wants,
@@ -2890,28 +2940,19 @@ fn upload_finished_cells(
     root: Entity,
     now: f64,
 ) {
-    // 3. Upload finished tessellations, capped per frame and byte-bounded by the
-    // shared `stream_ledger` (a planted cell's canopy meshes are the second
-    // largest thing on the startup frame after a LoD2.2 cell); the rest go back
-    // into the sink (still holding their concurrency slots, so the bound keeps
-    // bounding memory as well as work). Priced by the same `VERTEX_BYTES`
-    // arithmetic `build_mesh` below makes true — every gap the tessellator left
-    // is filled to that layout before the GPU sees it.
-    let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
-    let ready =
-        crate::systems::stream_ledger::take_admitted(&mut surfaces.stream, cap, |(outcome, ..)| {
-            outcome.as_ref().map_or(0, |surface_meshes| {
-                surface_meshes
-                    .iter()
-                    .map(|sm| {
-                        crate::systems::vector_tiles::mesh_upload_bytes(
-                            sm.positions.len(),
-                            sm.indices.len(),
-                        )
-                    })
-                    .sum()
-            })
-        });
+    // 3. Land finished tessellations, capped per frame; the rest go back into the
+    // sink (still holding their concurrency slots, so the bound keeps bounding
+    // memory as well as work). A landed cell's meshes are *queued*, not added, and
+    // reach the GPU piece by piece as the shared `stream_ledger` admits them
+    // (`MapSurfaces::upload_pending`) — so a cell is priced at nothing here, and
+    // the next one lands only once the last one's meshes are all in, which keeps
+    // the queue to one cell's worth of system memory.
+    let cap = if surfaces.pending_meshes.is_empty() {
+        crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME)
+    } else {
+        0
+    };
+    let ready = crate::systems::stream_ledger::take_admitted(&mut surfaces.stream, cap, |_| 0);
     for (
         c,
         (
@@ -3091,7 +3132,8 @@ fn upload_finished_cells(
             // out of the refinement several times its measured size, and is cut
             // back to the cap (`build_meshes_owned`).
             for piece in build_meshes_owned(sm, wx, wz, stand) {
-                let mesh = meshes.add(piece);
+                let mesh = meshes.reserve_handle();
+                surfaces.pending_meshes.push_back((c, mesh.clone(), piece));
                 let world = Vec3::new(wx, group.y_offset(), wz);
                 let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                     .translation_to_grid(world.as_dvec3());
@@ -3213,10 +3255,12 @@ fn upload_finished_cells(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        // Complete once its ground is in, not when it lands (`awaiting_complete`).
+        surfaces.complete.remove(&c);
         if complete {
-            surfaces.complete.insert(c);
+            surfaces.awaiting_complete.insert(c);
         } else {
-            surfaces.complete.remove(&c);
+            surfaces.awaiting_complete.remove(&c);
         }
         if !decks.is_empty() {
             // Measured by atlas while it graded this ground: nothing to ask PDOK.
