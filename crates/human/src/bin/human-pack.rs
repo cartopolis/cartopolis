@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use cartopolis_human::mocap::{Cut, CutKind};
-use cartopolis_human::pack::{build_pack, ProxySource, Sources};
-use cartopolis_human::{Phenotype, ProxyKind};
+use cartopolis_human::pack::{build_pack, ProxySource, Sources, TargetSet};
+use cartopolis_human::ProxyKind;
 
 /// Walking and standing, from 100STYLE. The frame ranges are the
 /// dataset's own `Frame_Cuts.csv`, which trims the calibration T-poses at
@@ -273,7 +273,11 @@ fn main() {
             .into_iter()
             .chain(cmu_cuts(&cmu))
             .collect(),
-        bodies: vec![Phenotype::male(), Phenotype::female()],
+        // Every body the sliders can make from 18 up: MakeHuman blends its
+        // "child" targets in below 25, so only the baby ones are left out.
+        targets: TargetSet::Macros {
+            skip: vec!["baby".into()],
+        },
         textures_out: out.join("textures"),
     };
     let pack = match build_pack(&sources) {

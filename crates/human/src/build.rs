@@ -99,8 +99,8 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
     for (name, w) in macros::macro_targets(&look.phenotype) {
         match by_name.get(name.as_str()) {
             Some(t) => {
-                for (&i, d) in t.indices.iter().zip(&t.deltas) {
-                    base[i as usize] += w * Vec3::from_array(*d);
+                for (i, d) in t.offsets() {
+                    base[i] += w * d;
                 }
             }
             None => missing_targets.push(name),

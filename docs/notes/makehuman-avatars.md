@@ -46,14 +46,12 @@ CC BY 4.0) for walk, run and idle, and the CMU database's cgspeed BVH
 for the gestures and the seat. The cuts — which take, which frames — are
 listed in `human-pack`.
 
-**A pack carries only the targets of the bodies it was built for.** Every macro
-target would be ~350 near-full-mesh files (~80 MB as floats), so the first pack
-carries the default man's and woman's eight. Sliders need either a smaller
-encoding or fetching a body's targets on demand; that is the open question for
-the chooser, and `HumanModel::missing_targets` is how a body asked of the wrong
-pack says so.
+**The pack carries every macro target** (`TargetSet::Macros`), so the sliders
+can make any adult. That is most of its 11 MB; one body needs about 30 of the
+516, so fetching a body's targets on demand is how this gets small again.
+`HumanModel::missing_targets` is how a body asked of a pack without them says so.
 
-Measured 2026-10-17 on mac-1: the pack is 3.1 MB with ten clips, the nine 2048² PNG textures
+Measured 2026-10-17 on mac-1: the pack is 11.1 MB — ten clips and all 516 macro targets from age 18 up (the "child" ones blend in below 25; only the baby ones are left out), stored as half-millimetre steps and deflated, where floats were 70 MB —, the nine 2048² PNG textures
 19 MB (too big for a phone; downscale and compress before this ships). The
 default man is 1.73 m, 18 700 vertices and 33 000 triangles across body, eyes,
 brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is about

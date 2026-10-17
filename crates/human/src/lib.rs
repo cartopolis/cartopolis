@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 3;
+pub const PACK_VERSION: u32 = 4;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -79,13 +79,75 @@ impl Face {
 }
 
 /// A shape target: sparse offsets, OBJ frame, added at the slider's weight.
+///
+/// Stored small, because the sliders need hundreds of them (348 for adult
+/// bodies, 2.9 million offsets): vertex numbers as gaps from the previous one,
+/// mostly 1 and so a byte each, and offsets as whole steps of half a millimetre,
+/// which postcard writes in one or two bytes and deflate shrinks further
+/// ([`TARGET_STEP`]). (A step scaled to each target's largest offset was tried first:
+/// every value then filled its 16 bits, and the adult and teenage targets
+/// came to 18.7 MB.)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Target {
     /// Path under MakeHuman's `targets/`, without `.target`, e.g.
     /// `macrodetails/universal-male-young-averagemuscle-averageweight`.
     pub name: String,
-    pub indices: Vec<u32>,
-    pub deltas: Vec<[f32; 3]>,
+    pub gaps: Vec<u16>,
+    pub deltas: Vec<[i16; 3]>,
+    /// Decimetres per unit of `deltas`.
+    pub step: f32,
+}
+
+/// A target offset's resolution, decimetres: half a millimetre, below anything
+/// visible on a body two metres from the camera, and coarse enough that most
+/// offsets fit a single byte.
+pub const TARGET_STEP: f32 = 0.005;
+
+impl Target {
+    /// Pack `(vertex, offset)` pairs; their order does not matter.
+    #[must_use]
+    pub fn new(name: &str, mut offsets: Vec<(u32, [f32; 3])>) -> Self {
+        offsets.sort_by_key(|(v, _)| *v);
+        offsets.dedup_by_key(|(v, _)| *v);
+        let largest = offsets
+            .iter()
+            .flat_map(|(_, d)| d.iter().map(|x| x.abs()))
+            .fold(0.0f32, f32::max);
+        // 0.5 mm, unless a target moves a vertex more than 16 m (none does;
+        // the largest, a baby's, is 1.07 m).
+        let step = (largest / 32767.0).max(TARGET_STEP);
+        let mut prev = 0u32;
+        let mut gaps = Vec::with_capacity(offsets.len());
+        let mut deltas = Vec::with_capacity(offsets.len());
+        for (v, d) in offsets {
+            let q = d.map(|x| (x / step).round().clamp(-32767.0, 32767.0) as i16);
+            // Rounds to nothing: not worth its bytes.
+            if q == [0; 3] {
+                continue;
+            }
+            gaps.push((v - prev) as u16);
+            prev = v;
+            deltas.push(q);
+        }
+        Self {
+            name: name.to_string(),
+            gaps,
+            deltas,
+            step,
+        }
+    }
+
+    /// Every `(vertex, offset)` the target moves, in decimetres.
+    pub fn offsets(&self) -> impl Iterator<Item = (usize, glam::Vec3)> + '_ {
+        let mut v = 0usize;
+        self.gaps.iter().zip(&self.deltas).map(move |(&g, d)| {
+            v += g as usize;
+            (
+                v,
+                glam::Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32) * self.step,
+            )
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -185,8 +247,14 @@ pub struct RestDir {
 
 impl HumanPack {
     /// Decode a pack, refusing one written for another layout.
+    /// A pack is postcard, deflated.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let pack: Self = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+        use std::io::Read;
+        let mut raw = Vec::new();
+        flate2::read::DeflateDecoder::new(bytes)
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("not a human pack: {e}"))?;
+        let pack: Self = postcard::from_bytes(&raw).map_err(|e| e.to_string())?;
         if pack.version != PACK_VERSION {
             return Err(format!(
                 "pack version {} is not {PACK_VERSION}; rebuild it with human-pack",
@@ -197,7 +265,11 @@ impl HumanPack {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        postcard::to_allocvec(self).map_err(|e| e.to_string())
+        use std::io::Write;
+        let raw = postcard::to_allocvec(self).map_err(|e| e.to_string())?;
+        let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(&raw).map_err(|e| e.to_string())?;
+        z.finish().map_err(|e| e.to_string())
     }
 
     pub fn bone(&self, name: &str) -> Option<usize> {

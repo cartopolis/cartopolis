@@ -112,11 +112,7 @@ impl MapTo for Vec<(u32, u32)> {
 /// A `.target` file: lines of `index dx dy dz`; blank lines and `#` comments
 /// skipped.
 pub fn parse_target(name: &str, text: &str) -> Result<Target> {
-    let mut t = Target {
-        name: name.to_string(),
-        indices: Vec::new(),
-        deltas: Vec::new(),
-    };
+    let mut offsets = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('"') {
@@ -130,13 +126,12 @@ pub fn parse_target(name: &str, text: &str) -> Result<Target> {
             s.parse::<f32>()
                 .map_err(|e| format!("{name}: {e} in {line:?}"))
         };
-        t.indices.push(
-            f[0].parse()
-                .map_err(|e| format!("{name}: {e} in {line:?}"))?,
-        );
-        t.deltas.push([num(f[1])?, num(f[2])?, num(f[3])?]);
+        let v: u32 = f[0]
+            .parse()
+            .map_err(|e| format!("{name}: {e} in {line:?}"))?;
+        offsets.push((v, [num(f[1])?, num(f[2])?, num(f[3])?]));
     }
-    Ok(t)
+    Ok(Target::new(name, offsets))
 }
 
 fn read_target(targets_dir: &Path, name: &str) -> Result<Target> {
@@ -406,6 +401,40 @@ pub struct ProxySource {
 
 // ── The pack ─────────────────────────────────────────────────────────────────
 
+/// The shape targets a pack carries.
+pub enum TargetSet {
+    /// Only what these bodies need: a pack for fixed looks.
+    Bodies(Vec<Phenotype>),
+    /// Every macro target (`macrodetails/`, `breast/`) whose name contains
+    /// none of `skip` — what the sliders need to make any body.
+    Macros { skip: Vec<String> },
+}
+
+/// Every macro target under `targets/`, by name (`macrodetails/height/…`).
+fn macro_target_names(targets: &Path) -> Result<Vec<String>> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<()> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let path = e.path();
+            if path.is_dir() {
+                walk(&path, &format!("{rel}{name}/"), out)?;
+            } else if let Some(stem) = name
+                .strip_suffix(".target.gz")
+                .or(name.strip_suffix(".target"))
+            {
+                out.push(format!("{rel}{stem}"));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for top in ["macrodetails", "breast"] {
+        walk(&targets.join(top), &format!("{top}/"), &mut out)?;
+    }
+    Ok(out)
+}
+
 /// Everything a pack is built from.
 pub struct Sources {
     /// MPFB's `src/mpfb/data`.
@@ -414,9 +443,8 @@ pub struct Sources {
     pub proxies: Vec<ProxySource>,
     /// The clips, each cut from a take.
     pub cuts: Vec<crate::mocap::Cut>,
-    /// The bodies the pack must be able to make: every target their sliders
-    /// need is carried, and no other.
-    pub bodies: Vec<Phenotype>,
+    /// Which shape targets to carry.
+    pub targets: TargetSet,
     /// Where to copy the textures; the pack names them relative to it.
     pub textures_out: PathBuf,
 }
@@ -471,12 +499,17 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         base.vertices.len(),
     )?;
 
-    let mut wanted: Vec<String> = src
-        .bodies
-        .iter()
-        .flat_map(macros::macro_targets)
-        .map(|(n, _)| n)
-        .collect();
+    let mut wanted: Vec<String> = match &src.targets {
+        TargetSet::Bodies(bodies) => bodies
+            .iter()
+            .flat_map(macros::macro_targets)
+            .map(|(n, _)| n)
+            .collect(),
+        TargetSet::Macros { skip } => macro_target_names(&data.join("targets"))?
+            .into_iter()
+            .filter(|n| !skip.iter().any(|s| n.contains(s.as_str())))
+            .collect(),
+    };
     wanted.sort();
     wanted.dedup();
     let targets = wanted

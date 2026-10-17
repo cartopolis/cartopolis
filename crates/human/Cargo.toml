@@ -26,13 +26,15 @@ test = false
 [features]
 # Reading the MakeHuman and motion-capture sources to write a pack. Only the pack tool
 # needs it; the client reads the pack and nothing else.
-pack = ["dep:flate2", "dep:serde_json"]
+pack = ["dep:serde_json"]
 
 [dependencies]
 glam.workspace = true
 serde.workspace = true
 postcard.workspace = true
-flate2 = { version = "1.1", optional = true }
+# The pack is deflated (`HumanPack::encode`). miniz_oxide underneath, pure Rust,
+# so it builds for the phone and the web as it does here.
+flate2 = "1.1"
 serde_json = { workspace = true, optional = true }
 
 [lints]
