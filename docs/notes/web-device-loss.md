@@ -1,8 +1,9 @@
 ---
 topic: web-device-loss
 triggers: [DeviceLost, wasm, webgpu, "blue screen", "device lost", reload, sessionStorage,
-           "GPU process", dawn, "gpu_preprocessing", "halt card"]
-updated: 2026-08-23
+           "GPU process", dawn, "gpu_preprocessing", "halt card", render_halt.rs,
+           carto-halt-last, remember_halt]
+updated: 2026-10-17
 ---
 
 # On the web a lost device is weather, and the client reloads instead of halting
@@ -73,3 +74,19 @@ presents to a canvas, twenty-line clear-and-submit pages included
 ([checking-the-web-build.md](checking-the-web-build.md)). What it *can* verify
 is this policy's plumbing: its guaranteed loss exercises the reload → counter →
 card path end to end.
+
+## The card names its cause (2026-10-17)
+
+The card used to say "lost its graphics device" for **every** halt — a
+validation failure or an out-of-memory refusal as much as a real
+`device.lost` — and the browser's own text was in a console two reloads had
+already cleared. So a report of the card was one bit. `remember_halt` keeps
+`"{kind}: {description}"` in sessionStorage (`carto-halt-last`) across the
+reloads, the card prints it, and `index.html`'s recovery line repeats it.
+**Ask for that line before reasoning about a reported loss.**
+
+The report that prompted it — a Mac, "crashes when flying higher", the card
+after both reloads — came before the line existed, so its cause is not known.
+What the climb was holding is in
+[near-ground-layers-at-altitude.md](near-ground-layers-at-altitude.md).
+

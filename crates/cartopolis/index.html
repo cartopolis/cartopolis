@@ -122,7 +122,9 @@
         // loader that mysteriously runs twice.
         try {
           var reloads = sessionStorage.getItem("carto-halt-reloads");
-          if (reloads) push("warn", "recovering from a lost graphics device (reload " + reloads + ")");
+          var last = sessionStorage.getItem("carto-halt-last");
+          if (reloads) push("warn", "recovering from a lost graphics device (reload " + reloads + ")" +
+            (last ? " — it said: " + last : ""));
         } catch (e) {
           // Storage can be unavailable (privacy modes); the Rust side then
           // never reloads, so there is nothing to report either.

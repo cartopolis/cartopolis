@@ -97,6 +97,8 @@ pub(crate) fn handle_render_error(
         tracing::error!("{}", gpu_memory_census(main_world, render_world));
         record_render_halt(error, main_world, render_world);
         abandon_lost_surface(render_world);
+        #[cfg(target_arch = "wasm32")]
+        remember_halt(&format!("{:?}: {}", error.ty, error.description));
         exit_on_halt();
     }
     bevy::render::error_handler::RenderErrorPolicy::StopRendering
@@ -209,6 +211,28 @@ fn exit_on_halt() {}
 /// `sessionStorage` key counting reloads in the current halt streak.
 #[cfg(target_arch = "wasm32")]
 const HALT_RELOAD_KEY: &str = "carto-halt-reloads";
+/// `sessionStorage` key holding what the last halt said, for [`halt_card`] and
+/// for `index.html`'s recovery line.
+#[cfg(target_arch = "wasm32")]
+const HALT_LAST_KEY: &str = "carto-halt-last";
+
+/// Keep the halt's own words across the reload it is about to cause.
+///
+/// The card used to say "lost its graphics device" whatever the error was, and
+/// every halt reaches it — a validation failure or an out-of-memory refusal as
+/// much as a real `device.lost` — while the browser's actual message was in a
+/// console that two reloads had already cleared. A report of "it showed the
+/// card" was therefore one bit, which is the problem `gpu_memory_census` exists
+/// to solve on the native side. This is the web's share of the same fix.
+#[cfg(target_arch = "wasm32")]
+fn remember_halt(detail: &str) {
+    let Some(storage) = web_sys::window().and_then(|w| w.session_storage().ok().flatten()) else {
+        return;
+    };
+    // Bounded: the description is the browser's and can carry a whole shader.
+    let detail: String = detail.chars().take(600).collect();
+    let _ = storage.set_item(HALT_LAST_KEY, &detail);
+}
 /// How many automatic reloads a streak of losses may spend before the card.
 // `cfg!`-style visibility rather than `#[cfg]`: the decision these constants
 // feed is tested natively (see `halt_action_tests`), for the reason
@@ -271,7 +295,7 @@ fn halt_card() {
     card.set_inner_html(
         "<div style=\"position:fixed;inset:0;z-index:9999;display:flex;align-items:center;\
          justify-content:center;background:#13191b;font:15px/1.6 system-ui,sans-serif\">\
-         <div style=\"max-width:34rem;margin:0 1.5rem;padding:1.2rem 1.4rem;background:#0a0e10;\
+         <div id=\"carto-halt-panel\" style=\"max-width:34rem;margin:0 1.5rem;padding:1.2rem 1.4rem;background:#0a0e10;\
          border:1px solid #69757a;border-radius:8px;color:#dbe2e5\">\
          <h1 style=\"font-size:1.3rem;font-weight:600;color:#f3f7f9;margin:0 0 .5rem\">\
          Cartopolis lost its graphics device</h1>\
@@ -281,6 +305,27 @@ fn halt_card() {
          <p style=\"margin:.4rem 0\"><a href=\"\" style=\"color:#ffffff\">Try again</a></p>\
          </div></div>",
     );
+    // What the renderer was actually told, as text rather than markup — it is the
+    // browser's string — so a report of this card names the failure.
+    let detail = web_sys::window()
+        .and_then(|w| w.session_storage().ok().flatten())
+        .and_then(|s| s.get_item(HALT_LAST_KEY).ok().flatten());
+    if let (Some(detail), Ok(Some(panel)), Ok(line)) = (
+        detail,
+        card.query_selector("#carto-halt-panel"),
+        document.create_element("p"),
+    ) {
+        line.set_text_content(Some(&detail));
+        let _ = line.set_attribute(
+            "style",
+            "margin:.6rem 0 .2rem;font:12px/1.5 ui-monospace,monospace;color:#9aa6ab;\
+             overflow-wrap:anywhere",
+        );
+        let _ = panel.insert_before(
+            &line,
+            panel.last_element_child().as_ref().map(|e| e.as_ref()),
+        );
+    }
     if let Some(body) = document.body() {
         let _ = body.append_child(&card);
     }
