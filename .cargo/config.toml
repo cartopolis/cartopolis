@@ -81,7 +81,7 @@ rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 shots = ["run", "-p", "cartopolis", "--", "--shots"]
 
 # Run the performance suite from `docs/perf.toml` — every scenario flown, settled,
-# captured and then measured twice. Extra flags pass through to the *binary*:
+# captured and then measured still and turning. Extra flags pass through to the *binary*:
 #   cargo perf --only orbit
 #   cargo perf --repeat 3 --only orbit   # median and range, not one sample
 #

@@ -30,10 +30,10 @@
 //! to `Functionality` priority, under which `initialize_renderer` already enables
 //! every feature the adapter reports — so adding them cannot fail device creation.
 //!
-//! ## The two windows
+//! ## The three windows
 //!
 //! Each scenario is flown, settled and captured by the existing `--shot` harness,
-//! then measured twice over spans that harness already delimits:
+//! then measured over spans that harness already delimits — two still, one turning:
 //!
 //! * **`load`** — teleport to settle verdict. The streaming burst: fetches,
 //!   decodes, mesh builds, uploads. What a teleport or a cold start costs.
@@ -43,8 +43,17 @@
 //!   trickling, and a window that was still building the city is a streaming
 //!   measurement wearing the wrong label.
 //!
-//! Neither window drives the camera. A motion window would have to fight
-//! `place_camera` for the transform to measure what `load` already measures.
+//! * **`turn`** — the same settled world while the camera yaws on the spot,
+//!   [`TURN_DEG_PER_FRAME`] every frame for [`TURN_FRAMES`] frames. Nothing moves
+//!   but the view direction, so whatever this window costs over `steady` is what
+//!   turning costs: the frustum sweeping new entities into view, the shadow
+//!   cascades refitting, and anything the client keys on the heading. A person
+//!   reported the frame rate collapsing the moment they turned the camera while
+//!   every still view measured well — `steady` cannot see that by construction.
+//!
+//! The yaw advances by a fixed angle per *frame*, not per second, so two runs
+//! sweep the same views whatever their frame rate. `load` and `steady` leave the
+//! camera where the harness put it.
 //!
 //! ## Running it
 //!
@@ -88,6 +97,14 @@ pub const DEFAULT_MANIFEST: &str = "docs/perf.toml";
 /// scenario on a CPU rasteriser does not spend minutes producing a number whose
 /// spread is already wider than anything it could detect.
 pub const DEFAULT_STEADY_FRAMES: u32 = 60;
+
+/// Frames in the `turn` window.
+pub const TURN_FRAMES: u32 = 90;
+
+/// How far the `turn` window yaws the camera each frame: 180° over the window.
+/// About what a middle-drag across a third of the screen does in a frame, and
+/// wide enough that the sweep brings ground into view that `steady` never saw.
+pub const TURN_DEG_PER_FRAME: f32 = 2.0;
 
 // ---------------------------------------------------------------------------
 // The manifest
@@ -234,6 +251,8 @@ enum Phase {
     /// cost.
     Quiescing,
     Steady,
+    /// The camera yawing on the spot; see the module doc.
+    Turn,
 }
 
 /// Counters a window is measured against, taken at its start.
@@ -246,6 +265,8 @@ struct Base {
     mesh_added: u64,
     frames: u32,
     wall_s: f32,
+    /// The longest single frame in the window, seconds.
+    frame_max_s: f32,
     /// Per-system CPU totals at the window's start, so the window's own cost is a
     /// subtraction. Exactly the same shape as `workers` above and read the same
     /// way — see `systems::dev::system_timings` for why this is counted in process
@@ -351,7 +372,7 @@ pub struct GpuPass {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Window {
     pub scenario: String,
-    /// `load` or `steady`.
+    /// `load`, `steady` or `turn`.
     pub phase: String,
     pub frames: u32,
     pub wall_s: f32,
@@ -361,6 +382,14 @@ pub struct Window {
     /// a property of a shared eight-core box with a software rasteriser.
     pub fps: Option<f64>,
     pub frame_time_ms: Option<f64>,
+    /// The window's own mean and worst frame, from its wall clock and frame
+    /// count. `frame_time_ms` above is Bevy's exponentially smoothed reading at
+    /// the moment the window closed, which is dominated by its last few frames —
+    /// fine for a still view and wrong for a `turn`, whose cost is in the hitches.
+    #[serde(default)]
+    pub frame_ms_mean: f64,
+    #[serde(default)]
+    pub frame_ms_max: f64,
     /// `SystemInformationDiagnosticsPlugin`. **Both are percentages** — CPU of
     /// one core, memory of total system memory. Bevy's plugin documents them that
     /// way and an earlier draft here labelled the second one `rss_mb`, which read
@@ -575,6 +604,8 @@ pub struct WindowSummary {
     pub wall_s: Stat,
     pub fps: Option<Stat>,
     pub frame_time_ms: Option<Stat>,
+    pub frame_ms_mean: Stat,
+    pub frame_ms_max: Stat,
     pub process_cpu_percent: Option<Stat>,
     pub process_mem_percent: Option<Stat>,
     pub entity_count: Option<Stat>,
@@ -679,6 +710,8 @@ fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary 
         wall_s: all(|w| f64::from(w.wall_s)),
         fps: some(|w| w.fps),
         frame_time_ms: some(|w| w.frame_time_ms),
+        frame_ms_mean: all(|w| w.frame_ms_mean),
+        frame_ms_max: all(|w| w.frame_ms_max),
         process_cpu_percent: some(|w| w.process_cpu_percent),
         process_mem_percent: some(|w| w.process_mem_percent),
         entity_count: some(|w| w.entity_count),
@@ -913,6 +946,7 @@ pub fn drive_perf_window(
     mut progress: ResMut<ShotProgress>,
     mut perf: ResMut<PerfProgress>,
     readouts: PerfReadouts,
+    mut camera: ResMut<crate::resources::CameraState>,
 ) {
     // The report is out and the capture path is draining to exit. `placed` is not
     // cleared on the final viewpoint, so without this the `load` arm below opens a
@@ -929,9 +963,10 @@ pub fn drive_perf_window(
         return;
     }
 
-    if matches!(perf.phase, Phase::Load | Phase::Steady) {
+    if matches!(perf.phase, Phase::Load | Phase::Steady | Phase::Turn) {
         perf.base.frames += 1;
         perf.base.wall_s += readouts.real.delta_secs();
+        perf.base.frame_max_s = perf.base.frame_max_s.max(readouts.real.delta_secs());
         // Sample the fill counters every frame, not once at the end — a point
         // reading is not reproducible. See `GpuPass::frag_min`.
         for pass in gpu_passes(&readouts.diagnostics) {
@@ -981,6 +1016,20 @@ pub fn drive_perf_window(
         }
         let window = close(&mut perf, "steady", &run, &readouts);
         perf.samples.push(window);
+        perf.left = TURN_FRAMES;
+        perf.phase = Phase::Turn;
+        perf.base = take_base(&readouts);
+        return;
+    }
+
+    if perf.phase == Phase::Turn {
+        turn_camera(&mut camera, TURN_DEG_PER_FRAME.to_radians());
+        perf.left = perf.left.saturating_sub(1);
+        if perf.left > 0 {
+            return;
+        }
+        let window = close(&mut perf, "turn", &run, &readouts);
+        perf.samples.push(window);
         perf.phase = Phase::Between;
         // The last scenario's steady window is the end of the measurement, and the
         // only place the report can be written from: `drive_capture` drains two
@@ -993,6 +1042,19 @@ pub fn drive_perf_window(
     }
 }
 
+/// Yaw the view by `step` radians in whichever camera mode is live, through the
+/// same angle the mouse writes — so `camera_controls` places the camera exactly as
+/// it would for a person turning it.
+fn turn_camera(camera: &mut crate::resources::CameraState, step: f32) {
+    use crate::resources::CameraMode;
+    match camera.mode {
+        CameraMode::Free => camera.free_camera_rotation.y += step,
+        CameraMode::Orbit if camera.orbit_space => camera.orbit_heading += step,
+        CameraMode::Orbit => camera.orbit_yaw += step,
+        CameraMode::Avatar => camera.azimuth += step,
+    }
+}
+
 fn take_base(readouts: &PerfReadouts) -> Base {
     Base {
         upload_bytes: readouts.uploads.total_bytes,
@@ -1001,6 +1063,7 @@ fn take_base(readouts: &PerfReadouts) -> Base {
         mesh_added: readouts.churn.added,
         frames: 0,
         wall_s: 0.0,
+        frame_max_s: 0.0,
         #[cfg(feature = "perf")]
         systems: super::system_timings::snapshot(),
     }
@@ -1094,6 +1157,8 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         wall_s: base.wall_s,
         fps: diag(store, "fps"),
         frame_time_ms: diag(store, "frame_time"),
+        frame_ms_mean: f64::from(base.wall_s) * 1000.0 / per_frame,
+        frame_ms_max: f64::from(base.frame_max_s) * 1000.0,
         process_cpu_percent: diag(store, "process/cpu_usage"),
         process_mem_percent: diag(store, "process/mem_usage"),
         entity_count: diag(store, "entity_count"),
@@ -1178,6 +1243,8 @@ fn log_window(w: &Window) {
         wall_s = format!("{:.1}", w.wall_s),
         fps = opt(w.fps, 1),
         frame_ms = opt(w.frame_time_ms, 1),
+        frame_ms_mean = format!("{:.1}", w.frame_ms_mean),
+        frame_ms_max = format!("{:.1}", w.frame_ms_max),
         cpu_percent = opt(w.process_cpu_percent, 0),
         mem_percent = opt(w.process_mem_percent, 1),
         entities = opt(w.entity_count, 0),
@@ -1248,6 +1315,8 @@ fn log_summary(w: &WindowSummary) {
         quiet_runs = w.quiet_runs,
         settled_runs = w.settled_runs,
         frame_ms = range(w.frame_time_ms, 1),
+        frame_ms_mean = range(Some(w.frame_ms_mean), 1),
+        frame_ms_max = range(Some(w.frame_ms_max), 1),
         fps = range(w.fps, 1),
         draws = range(Some(w.draws), 0),
         "perf summary"

@@ -21,7 +21,7 @@
 # differently from its neighbours, and a scenario measuring the same thing as the
 # one above it should be deleted rather than kept for coverage.
 #
-# Two windows are measured per scenario:
+# Three windows are measured per scenario:
 #
 #   load    teleport → settle verdict. The streaming burst — fetches, decodes, mesh
 #           builds, uploads. What a teleport or a cold start costs.
@@ -29,6 +29,8 @@
 #           `quiet` in the report before reading it as an idle number: at city
 #           altitude the settle test passes while the vector tile streamer is still
 #           trickling, and the harness warns when that happens.
+#   turn    the same world while the camera yaws 2° a frame for 90 frames. What a
+#           person turning the view pays over `steady`.
 #
 # Read `docs/notes/performance-suite.md` before adding a row, and before believing
 # a timing column: this container rasterises on a CPU, so frame times and GPU
@@ -98,6 +100,25 @@ rain = 0.0
 steady_frames = 30
 
 [[scenario]]
+name = "earth"
+description = """
+The view the app opens on: Earth mode, ~1.8 km out from a focus over Groningen at \
+55° — the pose `free_camera::seed_start_view` lands on. Separate from `city` for \
+its `turn` window, not its still one: a turn in Earth mode is a rotate-drag, which \
+*swings the camera round the focus* on a circle about a kilometre across rather \
+than turning it on the spot, so everything streamed around the camera's position \
+retargets too. That is the gesture a person reported the frame rate collapsing \
+under (2026-10-16), and `city`'s fly camera cannot reproduce it."""
+mode = "earth"
+at = [53.2194, 6.5665, 1500]
+look = [-55.0, 0.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+steady_frames = 30
+
+[[scenario]]
 name = "street"
 description = """
 Ground level in the centre of Groningen — every streamer at once, and the only \
@@ -123,7 +144,7 @@ clouds = 0.2
 rain = 0.0
 steady_frames = 30
 
-# Four scenarios, and all four have been run. A route view is still missing and an
+# Five scenarios, and all five have been run. A route view is still missing and an
 # entry here is a claim that the viewpoint has been measured, so it stays out until
 # somebody measures it.
 #
