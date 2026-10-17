@@ -511,20 +511,53 @@ pub fn update_street_labels(
 
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
     let pool = signs.pool.clone();
+    let shown: Vec<Option<AssetId<Image>>> = pool
+        .iter()
+        .map(|entity| {
+            let (_, _, _, material) = placed_query.get(*entity).ok()?;
+            materials
+                .get(&material.0)?
+                .base_color_texture
+                .as_ref()
+                .map(Handle::id)
+        })
+        .collect();
+    let dealt = deal_slots(
+        &shown,
+        chosen
+            .iter()
+            .map(|p| signs.signs.get(p.name).map(Handle::id)),
+    );
     for (slot, entity) in pool.iter().enumerate() {
         let Ok((mut tf, mut cell, mut vis, material)) = placed_query.get_mut(*entity) else {
             continue;
         };
-        let Some(p) = chosen.get(slot) else {
-            *vis = Visibility::Hidden;
+        // **Every write below is compared first.** A placement re-runs whenever the
+        // view turns past `YAW_REPLACE` or its ground focus slides past
+        // `MOVE_REPLACE_M`, which at street level is every few frames of a turn,
+        // and a pool sign that keeps its name is the common case. Writing the
+        // texture through `get_mut` regardless marked every one of the 160 sign
+        // materials changed — each re-prepared on the render thread — on every
+        // placement: ~150 a frame through a turn (`cargo perf`'s `street`
+        // scenario, 2026-10-16). Which is also why the names are dealt to the signs
+        // by [`deal_slots`] rather than in order: dealt in order, a re-placement put
+        // most names on a different sign than last time, and the compare found
+        // nearly every texture changed.
+        let Some(p) = dealt[slot].and_then(|i| chosen.get(i)) else {
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         };
         let Some(texture) = signs.signs.get(p.name) else {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         };
-        if let Some(mut m) = materials.get_mut(&material.0) {
-            m.base_color_texture = Some(texture.clone());
+        if materials
+            .get(&material.0)
+            .is_some_and(|m| m.base_color_texture.as_ref() != Some(texture))
+        {
+            if let Some(mut m) = materials.get_mut(&material.0) {
+                m.base_color_texture = Some(texture.clone());
+            }
         }
         // Stand on the measured ground, which the road under the label is standing
         // on too. One height for the whole quad — a label is a flat plate, and the
@@ -544,14 +577,16 @@ pub fn update_street_labels(
         });
         let world = Vec3::new(p.centre.x, ground + LABEL_Y, p.centre.y);
         let (grid_cell, local) = grid.translation_to_grid(world.as_dvec3());
-        *cell = grid_cell;
+        cell.set_if_neq(grid_cell);
         // `dir` is where the baseline runs in world XZ; a yaw rotation sends the
         // quad's +X there. The sign on the Z term is the usual one: a yaw turns
         // +X towards −Z.
-        tf.translation = local;
-        tf.rotation = Quat::from_rotation_y((-p.dir.y).atan2(p.dir.x));
-        tf.scale = Vec3::new(p.width_m, 1.0, height_m);
-        *vis = Visibility::Visible;
+        tf.set_if_neq(Transform {
+            translation: local,
+            rotation: Quat::from_rotation_y((-p.dir.y).atan2(p.dir.x)),
+            scale: Vec3::new(p.width_m, 1.0, height_m),
+        });
+        vis.set_if_neq(Visibility::Visible);
     }
 
     tracing::debug!(
@@ -938,9 +973,83 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
     (px, w, h)
 }
 
+/// Which chosen label each pool slot shows: `Some(index into chosen)` per slot.
+///
+/// `shown` is the texture each slot carries now and `wanted` the texture of each
+/// chosen label, in priority order (`None` where it has none yet). A label whose
+/// texture a slot is already showing keeps that slot; the rest take the free ones
+/// in order. Only as many labels as there are slots are dealt, the first ones —
+/// what dealing them in order did, minus the reshuffle that re-textured most of
+/// the pool on every placement.
+fn deal_slots(
+    shown: &[Option<AssetId<Image>>],
+    wanted: impl Iterator<Item = Option<AssetId<Image>>>,
+) -> Vec<Option<usize>> {
+    let mut on: HashMap<AssetId<Image>, Vec<usize>> = HashMap::new();
+    for (slot, id) in shown.iter().enumerate().rev() {
+        if let Some(id) = id {
+            on.entry(*id).or_default().push(slot);
+        }
+    }
+    let mut dealt = vec![None; shown.len()];
+    let mut waiting = Vec::new();
+    for (i, id) in wanted.take(shown.len()).enumerate() {
+        match id.and_then(|id| on.get_mut(&id)?.pop()) {
+            Some(slot) => dealt[slot] = Some(i),
+            None => waiting.push(i),
+        }
+    }
+    let mut free = (0..shown.len())
+        .filter(|s| dealt[*s].is_none())
+        .collect::<Vec<_>>()
+        .into_iter();
+    for i in waiting {
+        if let Some(slot) = free.next() {
+            dealt[slot] = Some(i);
+        }
+    }
+    dealt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tex(n: u128) -> AssetId<Image> {
+        AssetId::Uuid {
+            uuid: bevy::asset::uuid::Uuid::from_u128(n),
+        }
+    }
+
+    /// A re-placement that chooses the same names in another order leaves every
+    /// sign showing what it showed, so no material is rewritten; a name that is new
+    /// takes the slot the departed one left, and nothing past the pool is dealt.
+    #[test]
+    fn a_name_that_stays_chosen_keeps_its_sign() {
+        let shown = [Some(tex(1)), Some(tex(2)), Some(tex(3)), None];
+        let dealt = deal_slots(
+            &shown,
+            [Some(tex(3)), Some(tex(1)), Some(tex(2))].into_iter(),
+        );
+        assert_eq!(dealt, vec![Some(1), Some(2), Some(0), None]);
+
+        // 2 left, 9 arrived: 9 goes where 2 was, not wherever its rank falls.
+        let dealt = deal_slots(
+            &shown,
+            [Some(tex(9)), Some(tex(3)), Some(tex(1))].into_iter(),
+        );
+        assert_eq!(dealt, vec![Some(2), Some(0), Some(1), None]);
+
+        // One name drawn twice (a long street) takes two signs, keeping the one it had.
+        let dealt = deal_slots(&shown, [Some(tex(1)), Some(tex(1))].into_iter());
+        assert_eq!(dealt, vec![Some(0), Some(1), None, None]);
+
+        // More chosen than signs: only the first four are dealt, as before.
+        let many = (1..=6).map(|n| Some(tex(n)));
+        let dealt = deal_slots(&shown, many);
+        assert_eq!(dealt.iter().flatten().count(), 4);
+        assert!(dealt.iter().flatten().all(|i| *i < 4));
+    }
 
     fn font() -> fontdue::Font {
         load_font().expect("egui ships an embedded font")
