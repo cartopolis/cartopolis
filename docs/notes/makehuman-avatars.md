@@ -159,9 +159,8 @@ model is built rebuilds it; the same look again (it is re-sent on every
 connection) does not. **At most one MakeHuman body is built a frame**, so a
 crowd coming into view is built over a few frames rather than in one hitch.
 
-Protocol 42 and migration V38 were reserved through `midas reserve` on
-2026-10-18; 41 and V37 belong to the meetings branch, and until its 41 lands on
-`main` this branch's `protocol_history_is_contiguous_and_current` reports the gap.
+Protocol 42, message kinds 121 and 122 and migration V38 were reserved through
+`midas reserve` on 2026-10-18, after the meetings work took 41, 111–120 and V37.
 
 ## The wardrobe, the skins and the face (2026-10-18)
 
