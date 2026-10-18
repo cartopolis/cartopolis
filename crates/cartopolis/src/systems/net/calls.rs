@@ -127,6 +127,7 @@ pub fn guest_link(code: &str, secret: &[u8]) -> String {
 /// A guest link's code and secret, from a link or a chat line that holds one
 /// (the web's `readGuestLink`).
 #[must_use]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn read_guest_link(text: &str) -> Option<(String, Vec<u8>)> {
     let at = text.find("meet=")? + 5;
     let code: String = text[at..].chars().take(10).collect();
@@ -163,6 +164,7 @@ fn b64url(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn unb64url(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let (mut acc, mut bits) = (0u32, 0u32);
@@ -406,6 +408,7 @@ pub struct Calls {
     pub guest_links: HashMap<Vec<u8>, Vec<u8>>,
     /// Hosting: the epoch each guest in the call was last handed, by
     /// participant. Cleared with the call.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub keys_dropped: HashMap<u64, u64>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
@@ -1476,7 +1479,7 @@ pub fn drive_calls(
             a.web.set_camera(*camera_on);
         }
         *level = 0.0;
-        let _ = (fake_media, &prefs);
+        let _ = (fake_media, &prefs, keep_noise);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
