@@ -337,7 +337,9 @@ function notify(client: ChatClient, event: Extract<ChatEvent, {kind: 'line'}>): 
     const chat = client.chats.find((c) => c.channel === event.channel)
     const who = event.from.split('@')[0]
     const where = chat && chat.group ? `${who} in ${chat.label}` : who
-    const n = new Notification(where, {body: event.body.slice(0, 200), tag: event.channel})
+    // By code point: `slice` counts UTF-16 units and can cut an emoji in half.
+    const body = Array.from(event.body).slice(0, 200).join('')
+    const n = new Notification(where, {body, tag: event.channel})
     n.onclick = () => {
         window.focus()
         client.open(event.channel)

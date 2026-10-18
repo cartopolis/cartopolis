@@ -29,3 +29,12 @@ an APK. Add an icon by adding a row to the table and re-running the script;
 
 Apache-2.0 requires the licence and attribution travel with the font: keep this
 notice, and note the file is a modified (subset) copy.
+
+**Noto Emoji** (`NotoEmoji-Regular.ttf`) — SIL Open Font License 1.1, by Google.
+<https://fonts.google.com/noto/specimen/Noto+Emoji>
+
+The one-colour emoji face at the end of every egui stack (`theme::EMOJI_TTF`),
+so chat emoji draw instead of `◻`: egui's bundled Noto Emoji stops at U+1F6C5.
+Google Fonts ships it as a variable font (`NotoEmoji[wght].ttf`, google/fonts
+`ofl/notoemoji`); this file is that instanced at `wght` 400 with fontTools
+(`fonttools varLib.instancer NotoEmoji[wght].ttf wght=400`), 0.9 MB.

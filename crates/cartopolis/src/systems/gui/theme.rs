@@ -375,6 +375,17 @@ const BODY_TTF: &[u8] = include_bytes!(concat!(
 ));
 const BODY_FAMILY: &str = "cartopolis-body";
 
+/// Noto Emoji, one-colour, Unicode 15, at the **end** of every stack. egui's
+/// own `NotoEmoji-Regular` is an old subset that stops at U+1F6C5, so the
+/// emoji people actually type in chat (🙂 🕺 🤖 🛒) drew as `◻` — on the phone
+/// too. Last, so every glyph something earlier in the stack already drew
+/// keeps its look; colour emoji cannot be drawn by epaint at all.
+const EMOJI_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/NotoEmoji-Regular.ttf"
+));
+const EMOJI_FAMILY: &str = "cartopolis-emoji";
+
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a
 /// glyph it lacks (emoji, arrows, the box-drawing the panels use) still resolves
 /// instead of rendering as tofu. Used for headings and the splash wordmark —
@@ -410,8 +421,13 @@ fn fonts() -> egui::FontDefinitions {
             }),
         ),
     );
+    fonts.font_data.insert(
+        EMOJI_FAMILY.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(EMOJI_TTF)),
+    );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         if let Some(stack) = fonts.families.get_mut(&family) {
+            stack.push(EMOJI_FAMILY.to_owned());
             stack.push(icons::FONT_NAME.to_owned());
         }
     }
@@ -3622,6 +3638,29 @@ mod tests {
         assert!(
             rule.to_ascii_lowercase().contains(&css),
             "index.html paints the wordmark tail {rule:?}, but the app paints it {css}"
+        );
+    }
+
+    #[test]
+    fn the_emoji_people_type_in_chat_are_drawn() {
+        // Chat text is whatever people type, so no ladder can stand in for a
+        // missing glyph there. 🙂 and 🕺 drew as `◻` on the phone until the
+        // current Noto Emoji joined the stack (`EMOJI_TTF`).
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let _ = ctx.run_ui_unpainted(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                let font = TextStyle::Body.resolve(ui.style());
+                for ch in ['🙂', '🕺', '🤖', '🛒', '👍', '🥳', '🫠'] {
+                    let width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, ch));
+                    assert!(width > 0.0, "{ch} (U+{:X}) draws as a box", ch as u32);
+                }
+            },
         );
     }
 

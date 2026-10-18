@@ -54,6 +54,14 @@ pins all three derived colours (plain, weak, strong).
 
 ## egui's bundled fonts have **no pictographic emoji at all**
 
+> **Since 2026-10-18 the stack ends in a current one-colour Noto Emoji**
+> (`theme::EMOJI_TTF`), because chat is free text and 🙂 or 🕺 from a bot or a
+> person drew as `◻` on the phone. So the emoji below now draw, though in
+> outline and one colour; the lists stay as the history of why the UI's own
+> glyphs come from the icon font (`icon-font.md`) and not from emoji. The probe
+> they came from was also wrong in part: `has_glyphs` reports every Noto Emoji
+> glyph as missing (`theme::tests::no_painted_glyph_is_tofu` measures width).
+
 Measured by probing `Fonts::has_glyphs` against the stack egui 0.35 installs for
 `FontFamily::Proportional`, which is `["Ubuntu-Light", "NotoEmoji-Regular",
 "emoji-icon-font"]`. Between them those cover the BMP symbol blocks and
