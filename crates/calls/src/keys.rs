@@ -32,6 +32,10 @@ use sframe::CipherSuite;
 
 use crate::media::Codec;
 
+/// Where a guest's sender indices start: `events::GUEST_INDEX_BASE`, here as
+/// well because `events` is native-only and these keys are not.
+const GUEST_INDEX_BASE: u32 = 0x8000;
+
 /// AES-128-GCM with a 16-byte tag, matching the chat's own MLS suite.
 pub const SUITE: CipherSuite = CipherSuite::AesGcm128Sha256;
 
@@ -249,8 +253,12 @@ impl KeyStore<Aead, Kdf> for Receivers<'_> {
             .ok_or(Refused::Epoch)?;
         let index = u32::try_from(kid.member_index()).map_err(|_| Refused::NotMember)?;
         // Our own index never arrives: the forwarder does not echo a stream to
-        // its sender, so a frame claiming it is somebody replaying ours.
-        if index == epoch.own_index || !epoch.members.contains(&index) {
+        // its sender, so a frame claiming it is somebody replaying ours. A
+        // guest sends above every member's index (`events::GUEST_INDEX_BASE`)
+        // with the key a host handed it; the base key is what admits a frame,
+        // as for members, and the index only names the sender.
+        let guest = index >= GUEST_INDEX_BASE;
+        if index == epoch.own_index || !(guest || epoch.members.contains(&index)) {
             return Err(Refused::NotMember);
         }
         DecryptionKey::derive_from_mls(SUITE, &Exported(&epoch.base_key), kid)
@@ -299,6 +307,35 @@ mod tests {
             e.own_index,
             e.members.iter().map(|m| m.0).collect(),
         );
+    }
+
+    /// A guest holds the epoch's key a host handed it, under an index above
+    /// every member's: members open its frames, it opens theirs, and a sender
+    /// index in the members' range that is no member's stays refused.
+    #[test]
+    fn a_guest_with_the_handed_key_is_heard_and_hears() {
+        let (devs, g) = chat();
+        let mut alice = keys_for(&devs[0], &g);
+        let e = devs[0].call_epoch(&g, BASE_KEY_LEN).unwrap();
+        let members: Vec<u32> = e.members.iter().map(|m| m.0).collect();
+        let mut guest = CallKeys::new();
+        guest.set_epoch(
+            e.epoch,
+            e.base_key.clone(),
+            GUEST_INDEX_BASE + 7,
+            members.clone(),
+        );
+
+        let sealed = guest.seal(Codec::Opus, b"hello from a guest").unwrap();
+        let opened = alice.open(Codec::Opus, &sealed).unwrap();
+        assert_eq!(opened.sender, GUEST_INDEX_BASE + 7);
+        let sealed = alice.seal(Codec::Opus, b"welcome").unwrap();
+        assert_eq!(guest.open(Codec::Opus, &sealed).unwrap().frame, b"welcome");
+
+        let mut stranger = CallKeys::new();
+        stranger.set_epoch(e.epoch, e.base_key, 40, members);
+        let sealed = stranger.seal(Codec::Opus, b"x").unwrap();
+        assert!(alice.open(Codec::Opus, &sealed).is_err());
     }
 
     #[test]
