@@ -18,6 +18,12 @@ pub struct Look {
     pub phenotype: Phenotype,
     pub skin: String,
     pub proxies: Vec<String>,
+    /// An eye colour from [`HumanPack::eye_colours`], over the eyes' own.
+    #[serde(default)]
+    pub eyes: Option<String>,
+    /// Face controls (`HumanPack::modifiers`) by name, each -1 … 1.
+    #[serde(default)]
+    pub modifiers: Vec<(String, f32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +46,11 @@ pub struct Part {
     pub weights: Vec<[f32; 4]>,
     pub texture: Option<String>,
     pub alpha: bool,
+    /// Which of the proxy's tint regions this is (an outfit's top 0, bottom 1).
+    pub region: u8,
+    /// The colour that shows a neutral texture as authored; `None` when the
+    /// texture is the original and takes no tint.
+    pub default_tint: Option<[u8; 3]>,
 }
 
 /// One bone, as an engine wants it: rest transform relative to its parent, and
@@ -96,7 +107,21 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
     let mut missing_targets = Vec::new();
     let by_name: HashMap<&str, &crate::Target> =
         pack.targets.iter().map(|t| (t.name.as_str(), t)).collect();
-    for (name, w) in macros::macro_targets(&look.phenotype) {
+    // The face controls on top of the body: each picks its negative or its
+    // positive targets by sign, at the slider's size.
+    let mut wanted = macros::macro_targets(&look.phenotype);
+    for (name, v) in &look.modifiers {
+        let Some(m) = pack.modifiers.iter().find(|m| &m.name == name) else {
+            missing_targets.push(name.clone());
+            continue;
+        };
+        let side = if *v < 0.0 { &m.negative } else { &m.positive };
+        let w = v.abs().min(1.0);
+        if w > 0.0 {
+            wanted.extend(side.iter().map(|t| (t.clone(), w)));
+        }
+    }
+    for (name, w) in wanted {
         match by_name.get(name.as_str()) {
             Some(t) => {
                 for (i, d) in t.offsets() {
@@ -174,18 +199,48 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         skin.map(|s| s.texture.clone()),
         false,
     )];
+    let eye_texture = look
+        .eyes
+        .as_ref()
+        .and_then(|e| pack.eye_colours.iter().find(|c| &c.name == e))
+        .map(|c| c.texture.clone());
     for (proxy, fitted) in proxies.iter().zip(&fitted) {
         let at: Vec<Vec3> = fitted.iter().map(|&v| to_metres(v)).collect();
-        parts.push(mesh_part(
-            PartKind::Proxy(proxy.kind),
-            &proxy.name,
-            &at,
-            &proxy.uvs,
-            &proxy.faces,
-            |v| fit::blend_weights(&proxy.refs[v], &pack.weights),
-            proxy.texture.clone(),
-            proxy.alpha,
-        ));
+        let texture = match proxy.kind {
+            ProxyKind::Eyes => eye_texture.clone().or_else(|| proxy.texture.clone()),
+            _ => proxy.texture.clone(),
+        };
+        // One mesh per tint region, so each takes its own colour.
+        let regions = proxy.region_colours.len().max(1) as u8;
+        for region in 0..regions {
+            let faces: Vec<Face> = if proxy.face_regions.is_empty() {
+                proxy.faces.clone()
+            } else {
+                proxy
+                    .faces
+                    .iter()
+                    .zip(&proxy.face_regions)
+                    .filter(|(_, r)| **r == region)
+                    .map(|(f, _)| *f)
+                    .collect()
+            };
+            if faces.is_empty() {
+                continue;
+            }
+            let mut part = mesh_part(
+                PartKind::Proxy(proxy.kind),
+                &proxy.name,
+                &at,
+                &proxy.uvs,
+                &faces,
+                |v| fit::blend_weights(&proxy.refs[v], &pack.weights),
+                texture.clone(),
+                proxy.alpha,
+            );
+            part.region = region;
+            part.default_tint = proxy.region_colours.get(region as usize).copied();
+            parts.push(part);
+        }
     }
 
     // The pelvis above the ankles: the unit a clip's hip motion and speed
@@ -302,6 +357,8 @@ fn mesh_part(
         weights: Vec::new(),
         texture,
         alpha,
+        region: 0,
+        default_tint: None,
     };
     for f in faces {
         for t in f.triangles() {
@@ -385,17 +442,19 @@ mod tests {
             pack,
             &Look {
                 phenotype: Phenotype::male(),
-                skin: "male".into(),
+                skin: "young_caucasian_male".into(),
                 proxies: [
                     "high-poly",
                     "eyebrow001",
                     "eyelashes01",
                     "short02",
-                    "male_casualsuit06",
+                    "male_casualsuit01",
                     "shoes06",
                 ]
                 .map(String::from)
                 .to_vec(),
+                eyes: None,
+                modifiers: vec![],
             },
         )
     }
@@ -408,7 +467,12 @@ mod tests {
         let m = man(&pack);
         assert!(m.missing_targets.is_empty(), "{:?}", m.missing_targets);
         assert!((1.6..1.95).contains(&m.height), "height {}", m.height);
-        assert_eq!(m.parts.len(), 7, "the body and six proxies");
+        // The outfit is two meshes, its top and its bottom, tinted apart.
+        assert_eq!(
+            m.parts.len(),
+            8,
+            "the body, five proxies and the outfit's two halves"
+        );
         let rest = m.joint_positions(None);
         let y = |n: &str| rest[m.joint(n).unwrap()].y;
         assert!(y("head") > y("pelvis") && y("pelvis") > y("calf_l") && y("calf_l") > y("ball_l"));
@@ -419,6 +483,49 @@ mod tests {
         );
         // Left is +x for a body facing +z.
         assert!(rest[m.joint("hand_l").unwrap()].x > 0.2);
+    }
+
+    /// A face control moves the face, and only it: a wider nose changes the
+    /// skin by millimetres around the nose and leaves the feet where they were.
+    #[test]
+    fn a_face_control_moves_the_face() {
+        let Some(pack) = shipped_pack() else { return };
+        let plain = man(&pack);
+        let mut look = Look {
+            phenotype: Phenotype::male(),
+            skin: "young_caucasian_male".into(),
+            proxies: vec![],
+            eyes: None,
+            modifiers: vec![("nose/nose-scale-horiz-decr-incr".into(), 1.0)],
+        };
+        let wide = build(&pack, &look);
+        assert!(
+            wide.missing_targets.is_empty(),
+            "{:?}",
+            wide.missing_targets
+        );
+        look.modifiers.clear();
+        let base = build(&pack, &look);
+        let (a, b) = (&base.parts[0].positions, &wide.parts[0].positions);
+        let moved: Vec<f32> = a
+            .iter()
+            .zip(b)
+            .map(|(p, q)| (Vec3::from_array(*p) - Vec3::from_array(*q)).length())
+            .collect();
+        let most = moved.iter().copied().fold(0.0, f32::max);
+        assert!(most > 0.002, "the nose widens by millimetres, got {most}");
+        let lowest = |m: &HumanModel| {
+            m.parts[0]
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(
+            (lowest(&base) - lowest(&wide)).abs() < 1.0e-4,
+            "the feet stay on the ground"
+        );
+        let _ = plain;
     }
 
     /// Retargeting through the T-pose leaves the arms where the library put

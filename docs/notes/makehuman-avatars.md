@@ -51,7 +51,7 @@ can make any adult. That is most of its 11 MB; one body needs about 30 of the
 516, so fetching a body's targets on demand is how this gets small again.
 `HumanModel::missing_targets` is how a body asked of a pack without them says so.
 
-Measured 2026-10-17 on mac-1: the pack is 11.1 MB — ten clips and all 516 macro targets from age 18 up (the "child" ones blend in below 25; only the baby ones are left out), stored as half-millimetre steps and deflated, where floats were 70 MB —, the nine 2048² PNG textures
+Measured 2026-10-17 on mac-1: the pack was 11.1 MB (13.6 MB from 2026-10-18 with the wardrobe and the face, plus 9.9 MB of textures) — ten clips and all 516 macro targets from age 18 up (the "child" ones blend in below 25; only the baby ones are left out), stored as half-millimetre steps and deflated, where floats were 70 MB —, the nine 2048² PNG textures
 19 MB (too big for a phone; downscale and compress before this ships). The
 default man is 1.73 m, 18 700 vertices and 33 000 triangles across body, eyes,
 brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is about
@@ -127,10 +127,40 @@ Three things it does so the avatar can be seen while it is shaped:
   above it. 0.25 m put the legs under the sheet. Not saved.
 
 `CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"` starts an undesigned avatar
-with those sliders, for a capture, which cannot drag one. Not yet: a Face tab
-(the face targets are not in the pack), more than one hair and two outfits, a
-tint for the shirt apart from the jeans (each outfit is one mesh and one
-texture), and colours lighter than the textures (a tint can only darken).
+with those sliders, for a capture, which cannot drag one. It takes the wardrobe
+and face too (`hair=afro01,top=150.40.40,face:nose/…=80`).
+
+## The wardrobe, the skins and the face (2026-10-18)
+
+From MakeHuman's CC0 system assets: 10 hair styles, 5 brows, 7 outfits, 5
+shoes, a hat, 6 eye colours, and all 18 skins (African, Asian and Caucasian,
+young, middle-aged and old, female and male — a look picks the family, its age
+and body shape pick the skin). **Left out on purpose: every outfit printed with
+MakeHuman's logo** (female_casualsuit01/02, male_casualsuit02/04/06, the T-shirt
+the first trial wore): the assets are free, the trademark is not ours to put
+on everyone's shirt.
+
+**Recolouring needs neutral textures** (`human::textures`): a tint multiplies,
+so over an authored texture it can only darken. Hair, brows, lashes and outfits
+are stored as their luminance over the texture's bright end, in grey, with the
+colour that gives the authored look back recorded per region; any colour,
+lighter ones included, is then a tint. **An outfit is split into a top and a
+bottom** by texture island — a suit is one mesh, but its shirt and trousers are
+separate islands — and an island whose middle is below the hip joint is the
+bottom. Splitting by skin weight first put a pair of overalls, bib and all, on top.
+
+**Textures went from 19 MB to 9.9 MB while tripling the wardrobe**: 1024 px for
+skins and garments, 512 for hair and brows, 256 for eyes, JPEG unless the alpha
+really cuts something out. MakeHuman marks most garments transparent whether or
+not they are, which made every outfit a 1.5 MB PNG; the pack now looks at the
+alpha. The client needed Bevy's `jpeg` feature, whose decoder the `image` crate
+already built.
+
+**The face is MakeHuman's modifiers**, carried whole (about 110 controls, 270
+targets, 0.1 MB of the pack); the designer offers about thirty. A modifier is a
+pair of target sets by sign, a left-and-right one moving both sides; a
+one-sided one (`head-oval`) goes 0 to 1. Face values are stored as a sparse
+list, so an untouched face costs nothing.
 
 ## Rejected: Quaternius's animation library (2026-10-17)
 

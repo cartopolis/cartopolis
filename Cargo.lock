@@ -2664,6 +2664,7 @@ version = "1.0.0"
 dependencies = [
  "flate2",
  "glam 0.33.12",
+ "image",
  "postcard",
  "serde",
  "serde_json",

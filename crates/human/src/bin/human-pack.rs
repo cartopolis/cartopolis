@@ -6,16 +6,15 @@
 //!     --style <100STYLE> --cmu <cmu-mocap BVH dir> --out assets/models/avatar/human
 //! ```
 //!
-//! The selection — two skins, one outfit each, the clips the avatar plays and
-//! where in which take each is cut, and the two bodies whose targets are
-//! carried — is fixed here while the avatar has no chooser;
-//! `docs/notes/makehuman-avatars.md` says where it goes next.
+//! The selection — the wardrobe, the skins, the eye colours, which clips are cut
+//! from which takes — is fixed here; `docs/notes/makehuman-avatars.md` says why
+//! each was chosen. `--assets` is the unzipped MakeHuman system assets pack.
 
 use std::path::{Path, PathBuf};
 
 use cartopolis_human::mocap::{Cut, CutKind};
-use cartopolis_human::pack::{build_pack, ProxySource, Sources, TargetSet};
-use cartopolis_human::ProxyKind;
+use cartopolis_human::pack::{build_pack, ProxySource, SkinSource, Sources, TargetSet};
+use cartopolis_human::{ProxyKind, SkinAge};
 
 /// Walking and standing, from 100STYLE. The frame ranges are the
 /// dataset's own `Frame_Cuts.csv`, which trims the calibration T-poses at
@@ -99,6 +98,99 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
             ..once("sit", "13_04", 4083, 4533, None)
         },
     ]
+}
+
+/// The wardrobe, from MakeHuman's CC0 system assets. Left out: the outfits
+/// printed with MakeHuman's own logo (female_casualsuit01/02,
+/// male_casualsuit02/04/06) — the assets are free, the trademark is not ours to
+/// put on everyone's shirt — and shoes04, shoes01's mesh again.
+const OUTFITS: &[&str] = &[
+    "male_casualsuit01",
+    "male_casualsuit03",
+    "male_casualsuit05",
+    "male_elegantsuit01",
+    "male_worksuit01",
+    "female_elegantsuit01",
+    "female_sportsuit01",
+];
+const SHOES: &[&str] = &["shoes01", "shoes02", "shoes03", "shoes05", "shoes06"];
+const HATS: &[&str] = &["fedora01"];
+const HAIR: &[&str] = &[
+    "short01",
+    "short02",
+    "short03",
+    "short04",
+    "bob01",
+    "bob02",
+    "long01",
+    "ponytail01",
+    "braid01",
+    "afro01",
+];
+const EYEBROWS: &[&str] = &[
+    "eyebrow001",
+    "eyebrow002",
+    "eyebrow004",
+    "eyebrow006",
+    "eyebrow009",
+];
+const EYE_COLOURS: &[&str] = &[
+    "brown",
+    "brownlight",
+    "blue",
+    "bluegreen",
+    "green",
+    "lightblue",
+];
+
+fn catalogue(assets: &Path) -> Vec<ProxySource> {
+    let one = |kind, dir: &str, name: &str| ProxySource {
+        kind,
+        mhclo: assets.join(format!("{dir}/{name}/{name}.mhclo")),
+        material: None,
+    };
+    let mut out = vec![
+        ProxySource {
+            material: Some(assets.join("eyes/materials/brown.mhmat")),
+            ..one(ProxyKind::Eyes, "eyes", "high-poly")
+        },
+        one(ProxyKind::Eyelashes, "eyelashes", "eyelashes01"),
+    ];
+    out.extend(
+        EYEBROWS
+            .iter()
+            .map(|n| one(ProxyKind::Eyebrows, "eyebrows", n)),
+    );
+    out.extend(HAIR.iter().map(|n| one(ProxyKind::Hair, "hair", n)));
+    out.extend(OUTFITS.iter().map(|n| one(ProxyKind::Outfit, "clothes", n)));
+    out.extend(SHOES.iter().map(|n| one(ProxyKind::Shoes, "clothes", n)));
+    out.extend(HATS.iter().map(|n| one(ProxyKind::Hat, "clothes", n)));
+    out
+}
+
+/// MakeHuman's eighteen skins: three families, young, middle-aged and old,
+/// female and male (`young_caucasian_male2` and the like are variants left out).
+fn skins(assets: &Path) -> Vec<SkinSource> {
+    let mut out = Vec::new();
+    for (age, a) in [
+        ("young", SkinAge::Young),
+        ("middleage", SkinAge::Middle),
+        ("old", SkinAge::Old),
+    ] {
+        for family in ["african", "asian", "caucasian"] {
+            for (sex, female) in [("female", true), ("male", false)] {
+                let name = format!("{age}_{family}_{sex}");
+                out.push(SkinSource {
+                    mhmat: assets.join(format!("skins/{name}/{name}.mhmat")),
+                    name,
+                    family: family.into(),
+                    female,
+                    age: a,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// `--probe STYLE_DIR`: cut a walk and a run loop from every style in a
@@ -231,44 +323,19 @@ fn main() {
         eprintln!("usage: human-pack --mpfb DIR --assets DIR --style DIR --cmu DIR --out DIR");
         std::process::exit(2);
     };
-    let proxy = |kind, rel: &str| ProxySource {
-        kind,
-        mhclo: assets.join(rel),
-        material: None,
-    };
     let sources = Sources {
         mpfb_data: mpfb,
-        skins: vec![
-            (
-                "male".into(),
-                assets.join("skins/young_caucasian_male/young_caucasian_male.mhmat"),
-            ),
-            (
-                "female".into(),
-                assets.join("skins/young_caucasian_female/young_caucasian_female.mhmat"),
-            ),
-        ],
-        proxies: vec![
-            ProxySource {
-                material: Some(assets.join("eyes/materials/brown.mhmat")),
-                ..proxy(ProxyKind::Eyes, "eyes/high-poly/high-poly.mhclo")
-            },
-            proxy(ProxyKind::Eyebrows, "eyebrows/eyebrow001/eyebrow001.mhclo"),
-            proxy(
-                ProxyKind::Eyelashes,
-                "eyelashes/eyelashes01/eyelashes01.mhclo",
-            ),
-            proxy(ProxyKind::Hair, "hair/short02/short02.mhclo"),
-            proxy(
-                ProxyKind::Clothes,
-                "clothes/male_casualsuit06/male_casualsuit06.mhclo",
-            ),
-            proxy(
-                ProxyKind::Clothes,
-                "clothes/female_casualsuit01/female_casualsuit01.mhclo",
-            ),
-            proxy(ProxyKind::Clothes, "clothes/shoes06/shoes06.mhclo"),
-        ],
+        skins: skins(&assets),
+        eyes: EYE_COLOURS
+            .iter()
+            .map(|c| {
+                (
+                    c.to_string(),
+                    assets.join(format!("eyes/materials/{c}.mhmat")),
+                )
+            })
+            .collect(),
+        proxies: catalogue(&assets),
         cuts: style_cuts(&style)
             .into_iter()
             .chain(cmu_cuts(&cmu))
@@ -278,6 +345,12 @@ fn main() {
         targets: TargetSet::Macros {
             skip: vec!["baby".into()],
         },
+        // Every face control MakeHuman has; the designer offers a choice of them.
+        modifier_groups: [
+            "head", "forehead", "eyebrows", "eyes", "nose", "mouth", "cheek", "chin", "ears",
+        ]
+        .map(String::from)
+        .to_vec(),
         textures_out: out.join("textures"),
     };
     let pack = match build_pack(&sources) {

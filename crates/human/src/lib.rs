@@ -27,6 +27,8 @@ pub mod mocap;
 #[cfg(feature = "pack")]
 pub mod pack;
 pub mod rig;
+#[cfg(feature = "pack")]
+pub mod textures;
 
 pub use build::{build, HumanModel, Joint, Look, Part, PartKind, RetargetedClip};
 pub use macros::Phenotype;
@@ -35,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 4;
+pub const PACK_VERSION: u32 = 6;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -57,6 +59,9 @@ pub struct HumanPack {
     pub weights: Vec<Vec<(u16, f32)>>,
     pub proxies: Vec<Proxy>,
     pub skins: Vec<Skin>,
+    pub eye_colours: Vec<EyeColour>,
+    /// MakeHuman's face controls, each a pair of target sets.
+    pub modifiers: Vec<Modifier>,
     pub clips: Vec<SourceClip>,
 }
 
@@ -171,7 +176,11 @@ pub enum ProxyKind {
     Eyebrows,
     Eyelashes,
     Hair,
-    Clothes,
+    /// A whole outfit: MakeHuman's garments are suits, top and bottom in one
+    /// mesh, which the pack splits into tint regions ([`Proxy::face_regions`]).
+    Outfit,
+    Shoes,
+    Hat,
 }
 
 /// Something worn: eyes, brows, lashes, hair, a garment.
@@ -194,6 +203,14 @@ pub struct Proxy {
     pub texture: Option<String>,
     /// Cut out by alpha (hair, brows, lashes) rather than opaque.
     pub alpha: bool,
+    /// Per face, its tint region: an outfit's top (0) and bottom (1). Empty
+    /// for one region.
+    pub face_regions: Vec<u8>,
+    /// Per region, the colour that gives the garment back as it was authored.
+    /// Non-empty means the texture is a *neutral* one — its colour taken out
+    /// and its light kept — so a tint can make it any colour, lighter ones
+    /// included. Empty means the texture is the original, shown as it is.
+    pub region_colours: Vec<[u8; 3]>,
 }
 
 /// One proxy vertex: `Σ w·B[v] + offset·scale`, over the morphed base mesh B.
@@ -204,8 +221,40 @@ pub struct ProxyRef {
     pub offset: [f32; 3],
 }
 
+/// A skin texture, and whom MakeHuman painted it for: a look picks its skin
+/// by `family`, and the body's age and shape pick among the family's six.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Skin {
+    pub name: String,
+    pub texture: String,
+    /// MakeHuman's `african`, `asian`, `caucasian`.
+    pub family: String,
+    pub female: bool,
+    pub age: SkinAge,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkinAge {
+    Young,
+    Middle,
+    Old,
+}
+
+/// A MakeHuman modifier: a slider from -1 to 1 that blends `negative` below
+/// zero and `positive` above, each at the slider's size. A one-sided control
+/// (`head/head-oval`) has no negative; a left-and-right one lists a target
+/// per side, moved together.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Modifier {
+    /// `group/name`, e.g. `nose/nose-scale-horiz-decr-incr`.
+    pub name: String,
+    pub negative: Vec<String>,
+    pub positive: Vec<String>,
+}
+
+/// An iris texture for the eyes.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EyeColour {
     pub name: String,
     pub texture: String,
 }

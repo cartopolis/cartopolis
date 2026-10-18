@@ -100,7 +100,7 @@ mod tests {
     fn proxy(refs: Vec<ProxyRef>, scale: [Option<(u32, u32, f32)>; 3]) -> Proxy {
         Proxy {
             name: "t".into(),
-            kind: ProxyKind::Clothes,
+            kind: ProxyKind::Outfit,
             refs,
             scale,
             uvs: vec![],
@@ -108,6 +108,8 @@ mod tests {
             delete_verts: vec![],
             texture: None,
             alpha: false,
+            face_regions: vec![],
+            region_colours: vec![],
         }
     }
 

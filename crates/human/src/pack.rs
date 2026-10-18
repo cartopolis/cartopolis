@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::{
-    macros, Bone, Face, HumanPack, Phenotype, Proxy, ProxyKind, ProxyRef, Skin, Target,
-    BODY_VERTICES, PACK_VERSION,
+    macros, Bone, EyeColour, Face, HumanPack, Phenotype, Proxy, ProxyKind, ProxyRef, Skin, SkinAge,
+    Target, BODY_VERTICES, PACK_VERSION,
 };
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -435,34 +435,130 @@ fn macro_target_names(targets: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// A skin texture to carry, and whom it was painted for.
+pub struct SkinSource {
+    pub name: String,
+    pub mhmat: PathBuf,
+    pub family: String,
+    pub female: bool,
+    pub age: SkinAge,
+}
+
+/// Split an outfit into its top (0) and bottom (1) by texture island: a
+/// MakeHuman suit is one mesh, but its shirt and its trousers are separate
+/// islands in UV space, and an island whose middle is below the hips is the
+/// bottom. (By skin weight first — mostly hanging from the legs — which put a
+/// pair of overalls, bib and all, on top.)
+fn outfit_regions(faces: &[Face], refs: &[ProxyRef], base: &[[f32; 3]], hips_y: f32) -> Vec<u8> {
+    // Union the UV corners of each face: what is joined in UV space is one island.
+    let n_uv = faces
+        .iter()
+        .flat_map(|f| f.uv.iter().filter(|&&u| u != Face::NONE))
+        .map(|&u| u as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let mut parent: Vec<usize> = (0..n_uv).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for f in faces {
+        let uv: Vec<usize> =
+            f.uv.iter()
+                .filter(|&&u| u != Face::NONE)
+                .map(|&u| u as usize)
+                .collect();
+        for w in uv.windows(2) {
+            let (a, b) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
+            parent[a] = b;
+        }
+    }
+    // Per island: the mean height of the base vertices its corners hang on.
+    let island_of: Vec<usize> = faces
+        .iter()
+        .map(|f| find(&mut parent, f.uv[0] as usize))
+        .collect();
+    let mut height: HashMap<usize, (f32, f32)> = HashMap::new();
+    for (f, &island) in faces.iter().zip(&island_of) {
+        let entry = height.entry(island).or_default();
+        for &v in f.v.iter().filter(|&&v| v != Face::NONE) {
+            let r = &refs[v as usize];
+            for k in 0..3 {
+                entry.0 += r.w[k] * base[r.v[k] as usize][1];
+                entry.1 += r.w[k];
+            }
+        }
+    }
+    island_of
+        .iter()
+        .map(|i| {
+            let (sum, n) = height[i];
+            u8::from(n > 0.0 && sum / n < hips_y)
+        })
+        .collect()
+}
+
+/// The face controls of `groups` from MakeHuman's `target.json`: per control its
+/// negative and positive targets, both sides of a left-and-right one together.
+pub fn read_modifiers(target_json: &Path, groups: &[String]) -> Result<Vec<crate::Modifier>> {
+    let json = read_json(target_json)?;
+    let mut out = Vec::new();
+    for g in groups {
+        let cats = json[g.as_str()]["categories"]
+            .as_array()
+            .ok_or_else(|| format!("target.json: no group {g}"))?;
+        for c in cats {
+            let name = c["name"].as_str().unwrap_or_default();
+            let full = |t: &str| format!("{g}/{t}");
+            let pick = |keys: &[&str]| -> Vec<String> {
+                keys.iter()
+                    .filter_map(|k| c["opposites"][*k].as_str())
+                    .filter(|t| !t.is_empty())
+                    .map(full)
+                    .collect()
+            };
+            let (negative, positive) = if c.get("opposites").is_some() {
+                (
+                    pick(&["negative-unsided", "negative-left", "negative-right"]),
+                    pick(&["positive-unsided", "positive-left", "positive-right"]),
+                )
+            } else {
+                let all = c["targets"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|t| t.as_str()).map(full).collect())
+                    .unwrap_or_default();
+                (Vec::new(), all)
+            };
+            out.push(crate::Modifier {
+                name: full(name),
+                negative,
+                positive,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Everything a pack is built from.
 pub struct Sources {
     /// MPFB's `src/mpfb/data`.
     pub mpfb_data: PathBuf,
-    pub skins: Vec<(String, PathBuf)>,
+    pub skins: Vec<SkinSource>,
+    /// Eye colours: a name and the `.mhmat` with its iris texture.
+    pub eyes: Vec<(String, PathBuf)>,
     pub proxies: Vec<ProxySource>,
     /// The clips, each cut from a take.
     pub cuts: Vec<crate::mocap::Cut>,
     /// Which shape targets to carry.
     pub targets: TargetSet,
+    /// The face groups whose controls to carry (`head`, `nose`, …), from
+    /// `targets/target.json`.
+    pub modifier_groups: Vec<String>,
     /// Where to copy the textures; the pack names them relative to it.
     pub textures_out: PathBuf,
-}
-
-fn copy_texture(src: &Path, out_dir: &Path, prefix: &str) -> Result<String> {
-    let file = src
-        .file_name()
-        .ok_or_else(|| format!("{}: no file name", src.display()))?
-        .to_string_lossy()
-        .into_owned();
-    let name = if file.starts_with(prefix) {
-        file
-    } else {
-        format!("{prefix}_{file}")
-    };
-    std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-    std::fs::copy(src, out_dir.join(&name)).map_err(|e| format!("{}: {e}", src.display()))?;
-    Ok(name)
 }
 
 pub fn build_pack(src: &Sources) -> Result<HumanPack> {
@@ -510,6 +606,12 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             .filter(|n| !skip.iter().any(|s| n.contains(s.as_str())))
             .collect(),
     };
+    let modifiers = read_modifiers(&data.join("targets/target.json"), &src.modifier_groups)?;
+    wanted.extend(
+        modifiers
+            .iter()
+            .flat_map(|m| m.negative.iter().chain(&m.positive).cloned()),
+    );
     wanted.sort();
     wanted.dedup();
     let targets = wanted
@@ -527,6 +629,15 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         .copied()
         .collect();
 
+    // The hip joint's height on the unshaped body: an outfit's islands below it
+    // are its bottom half.
+    let hips_y = bones.iter().find(|b| b.name == "pelvis").map_or(0.0, |b| {
+        b.head
+            .iter()
+            .map(|&v| base.vertices[v as usize][1])
+            .sum::<f32>()
+            / b.head.len().max(1) as f32
+    });
     let mut proxies = Vec::new();
     for p in &src.proxies {
         let dir = p.mhclo.parent().unwrap_or(Path::new("."));
@@ -548,28 +659,64 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             .material
             .clone()
             .or_else(|| clo.material.as_ref().map(|m| dir.join(m)));
-        let (texture, alpha) = match &material {
+        let name = p
+            .mhclo
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (diffuse, alpha) = match &material {
             Some(m) => {
                 let (tex, alpha) = parse_mhmat(&read_text(m)?);
                 let mdir = m.parent().unwrap_or(Path::new("."));
-                let name = p
-                    .mhclo
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let tex = tex
-                    .map(|t| copy_texture(&mdir.join(t), &src.textures_out, &name))
-                    .transpose()?;
-                (tex, alpha)
+                (tex.map(|t| mdir.join(t)), alpha)
             }
             None => (None, false),
         };
+        // An outfit's top and bottom are tinted apart; everything recoloured
+        // gets a neutral texture and the tints that give its colour back.
+        let face_regions = if p.kind == ProxyKind::Outfit {
+            outfit_regions(&obj.faces, &clo.refs, &base.vertices, hips_y)
+        } else {
+            Vec::new()
+        };
+        let recoloured = matches!(
+            p.kind,
+            ProxyKind::Outfit | ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes
+        );
+        let side = match p.kind {
+            ProxyKind::Eyes => crate::textures::EYE_SIDE,
+            ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes => {
+                crate::textures::HAIR_SIDE
+            }
+            _ => crate::textures::MAX_SIDE,
+        };
+        let (texture, alpha, region_colours) = match &diffuse {
+            Some(src_tex) if recoloured => {
+                let regions = if face_regions.is_empty() { 1 } else { 2 };
+                let uvs: Vec<Vec<[f32; 2]>> = (0..regions)
+                    .map(|r| {
+                        obj.faces
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| face_regions.get(*i).is_none_or(|fr| *fr == r as u8))
+                            .flat_map(|(_, f)| f.uv.iter().filter(|&&u| u != Face::NONE).copied())
+                            .filter_map(|u| obj.uvs.get(u as usize).copied())
+                            .collect()
+                    })
+                    .collect();
+                let (t, a, c) =
+                    crate::textures::neutral(src_tex, &src.textures_out, &name, alpha, &uvs, side)?;
+                (Some(t), a, c)
+            }
+            Some(src_tex) => {
+                let (t, a) =
+                    crate::textures::plain(src_tex, &src.textures_out, &name, alpha, side)?;
+                (Some(t), a, Vec::new())
+            }
+            None => (None, false, Vec::new()),
+        };
         proxies.push(Proxy {
-            name: p
-                .mhclo
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            name,
             kind: p.kind,
             refs: clo.refs,
             scale: clo.scale,
@@ -578,19 +725,51 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             delete_verts: clo.delete_verts,
             texture,
             alpha,
+            face_regions,
+            region_colours,
         });
     }
 
     let skins = src
         .skins
         .iter()
+        .map(|s| {
+            let (tex, _) = parse_mhmat(&read_text(&s.mhmat)?);
+            let tex = tex.ok_or_else(|| format!("{}: no diffuseTexture", s.mhmat.display()))?;
+            let dir = s.mhmat.parent().unwrap_or(Path::new("."));
+            Ok(Skin {
+                name: s.name.clone(),
+                texture: crate::textures::plain(
+                    &dir.join(tex),
+                    &src.textures_out,
+                    &s.name,
+                    false,
+                    crate::textures::MAX_SIDE,
+                )?
+                .0,
+                family: s.family.clone(),
+                female: s.female,
+                age: s.age,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let eye_colours = src
+        .eyes
+        .iter()
         .map(|(name, mhmat)| {
             let (tex, _) = parse_mhmat(&read_text(mhmat)?);
             let tex = tex.ok_or_else(|| format!("{}: no diffuseTexture", mhmat.display()))?;
             let dir = mhmat.parent().unwrap_or(Path::new("."));
-            Ok(Skin {
+            Ok(EyeColour {
                 name: name.clone(),
-                texture: copy_texture(&dir.join(tex), &src.textures_out, name)?,
+                texture: crate::textures::plain(
+                    &dir.join(tex),
+                    &src.textures_out,
+                    &format!("eye_{name}"),
+                    true,
+                    crate::textures::EYE_SIDE,
+                )?
+                .0,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -623,6 +802,8 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         weights,
         proxies,
         skins,
+        eye_colours,
+        modifiers,
         clips,
     })
 }

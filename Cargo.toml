@@ -138,6 +138,10 @@ bevy = { version = "0.20", default-features = false, features = [
     "bevy_window",
     "bevy_winit",
     "multi_threaded",
+    # The avatar pack's skins and garments are JPEG (`crates/human`): a 1024-pixel
+    # skin is about 250 KB as JPEG and over a megabyte as PNG, times eighteen
+    # skins. The decoder is the `image` crate's, already in the build.
+    "jpeg",
     "png",
     "std",
     # Keeps TonyMcMapface's LUT, which the camera's tonemapper needs. Note it is
