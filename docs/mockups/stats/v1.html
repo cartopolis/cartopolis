@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cartopolis stats — v1</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+<symbol id="hash" viewBox="0 0 24 24"><path d="M5 9h14M4 15h14M10 3 8 21M16 3l-2 18"/></symbol>
+<symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+<symbol id="head" viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></symbol>
+<symbol id="video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></symbol>
+<symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+<symbol id="screen" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+<symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+<symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+<symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-4 7.5"/></symbol>
+<symbol id="smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01"/></symbol>
+<symbol id="thread" viewBox="0 0 24 24"><path d="M5 4h14v9H11l-4 3v-3H5z"/><path d="M9 20h6l3 2v-2"/></symbol>
+<symbol id="build" viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13M9 21v-6h6v6M3 21h18"/></symbol>
+<symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></symbol>
+<symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/></symbol>
+<symbol id="cube" viewBox="0 0 24 24"><path d="M12 3 4 7.5v9L12 21l8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/></symbol>
+<symbol id="walk" viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="2"/><path d="M10 21l2-6-3-3 1-5 4 3 3 1M12 15l3 2 1 4M10 7l-3 2-1 3"/></symbol>
+<symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+<symbol id="door" viewBox="0 0 24 24"><path d="M5 21V3h11v18M3 21h16M13 12h.01"/></symbol>
+<symbol id="grid" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></symbol>
+<symbol id="note" viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></symbol>
+<symbol id="hand" viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4.5a1.5 1.5 0 0 1 3 0V12M14 11.5V6a1.5 1.5 0 0 1 3 0v8c0 4-2.5 7-6.5 7S5 18 4 15l-1.5-3.5a1.5 1.5 0 0 1 2.6-1.4L8 13"/></symbol>
+<symbol id="moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4 6.5 6.5 0 0 0 20 14.5z"/></symbol>
+<symbol id="cal" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>
+<symbol id="shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.5 3 7.7 7 9 4-1.3 7-4.5 7-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="back" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+<symbol id="home" viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/></symbol>
+<symbol id="data" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></symbol>
+<symbol id="bot" viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9 16h6"/></symbol>
+<symbol id="key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/></symbol>
+<symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4h11l-2 4 2 4H5"/></symbol>
+<symbol id="layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+<symbol id="bars" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+<symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+<symbol id="down" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+<symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+</svg>
+
+<h1><span class="wm">carto<i>polis</i></span> stats: <em>how the world is used, and who visits the site</em></h1>
+<p class="lede">A fourth admin area, <b>Stats</b>, beside People, Content and Data. It counts two things the server can already see — people in the world, and visits to cartopolis.org — and keeps <b>counts, not people</b>: no cookies, no IP addresses, no third-party script, no exact positions. Everything on this sheet is <b>new</b>; the figures are invented.</p>
+
+<div class="flow">
+  <div class="box"><div class="k">1 · Where it comes from</div><h3><svg class="i s"><use href="#data"/></svg>Three sources</h3><ul>
+    <li><b>The simulator</b>: each sign-in, refused handshake and session end (app, version, length), what it relays (a count per kind, never the content), and which 250 m square each avatar is in, once a minute.</li>
+    <li><b>The web pages</b>: one small request per page shown — cartopolis.org, about.cartopolis.org, the viewer — with the page, where the visitor came from and the screen size.</li>
+    <li><b>Caddy</b>, only for the APK: a download has no page to send a request from.</li></ul></div>
+  <div class="arr"><svg class="i"><use href="#arrow"/></svg></div>
+  <div class="box"><div class="k">2 · Counting</div><h3><svg class="i s"><use href="#bars"/></svg>In the simulator, in memory</h3><ul>
+    <li>A <b>visitor</b> is a hash of the day's secret, the IP address, the browser and the site. The secret is made at midnight, never written down, and thrown away the next midnight — so today's visit cannot be linked to yesterday's, and the IP goes no further than the hash.</li>
+    <li>Bots fall out on their own: they do not run the page's script. Requests from known crawlers are counted as "bots filtered" and nothing else.</li></ul></div>
+  <div class="arr"><svg class="i"><use href="#arrow"/></svg></div>
+  <div class="box"><div class="k">3 · Keeping</div><h3><svg class="i s"><use href="#clock"/></svg>stats.db, beside world.db</h3><ul>
+    <li><b>Its own file</b>, not tables in the world: stats grow every minute, need no backup with the world, and can be wiped without touching anything else.</li>
+    <li><b>Sessions</b> (account, app, start, end) are kept <b>90 days</b>, then folded into daily totals — that is what "came back" and "active this week" need.</li>
+    <li><b>Web</b>: only daily totals per page, source, country and device. No single visit is ever stored. Totals are kept for good.</li></ul></div>
+  <div class="arr"><svg class="i"><use href="#arrow"/></svg></div>
+  <div class="box"><div class="k">4 · Showing</div><h3><svg class="i s"><use href="#shield"/></svg>Admin › Stats</h3><ul>
+    <li>Four pages: <b>Overview</b>, <b>World</b>, <b>Web</b> and <b>Places</b>, on <code>/api/admin/stats/*</code>, behind a new <b>stats</b> permission, so a role can see the numbers without managing accounts.</li>
+    <li>Every table downloads as CSV.</li></ul></div>
+</div>
+<div class="box never"><h3>What it never keeps</h3><ul>
+  <li><b>IP addresses</b> — used for the hash and the country at the moment of the request, then dropped.</li>
+  <li><b>Cookies or ids in the browser</b> — so the site needs no consent banner.</li>
+  <li><b>Message content</b> — it is encrypted; the server counts what it relays and cannot read it.</li>
+  <li><b>Where a person was</b> — positions are rounded to a 250 m square on the server and only the square's total is kept; a square appears only once 5 different people have been in it.</li>
+  <li><b>Which person read which page</b> — a signed-in visitor is counted the same as anyone else.</li>
+  <li><b>Anything from a third party</b> — no Google Analytics, no hosted Plausible; nothing leaves the VPS.</li>
+</ul></div>
+
+<!-- ───────────────────────── A: overview ───────────────────────── -->
+<h2 class="sheet"><span>A</span>Overview: both halves on one page</h2>
+<div class="screen">
+<div class="browser">
+  <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org<b>/admin/stats</b></div></div>
+  <div class="app">
+    <div class="top">
+      <div class="wm"><img src="../../../assets/icon/cartopolis.svg"><span>carto<i>polis</i></span></div>
+      <div class="mid"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Community</div><div><span class="live"></span>World</div><div class="adm on"><svg class="i s"><use href="#shield"/></svg>Admin</div></div></div>
+      <div class="crumbs"><span>Admin</span><span class="sep">›</span><span>Stats</span><span class="sep">›</span><b>Overview</b></div>
+      <div class="sp"></div>
+      <div class="av c7" style="width:32px;height:32px">J</div>
+    </div>
+    <div class="appbody">
+    <div class="rail" data-rail="0"></div>
+    <div class="side adm" data-side="0"></div>
+    <div class="main wide">
+      <div class="chh"><div class="t"><b>Overview</b><span>19 Sep – 18 Oct · compared with the 30 days before</span></div><div class="btn ghost"><svg class="i s"><use href="#down"/></svg>CSV</div></div>
+      <div class="body">
+        <div class="filters"><div class="seg"><div>Today</div><div>7 days</div><div class="on">30 days</div><div>90 days</div><div>12 months</div></div><div class="opt"><span class="box"></span>Compare with the period before</div><div class="sp"></div><div class="opt">Times in Europe/Amsterdam</div></div>
+        <div class="tiles t5">
+          <div class="tile"><div class="k"><span class="live"></span>In the world now</div><div class="v">7</div><div class="d">peak today <b>12</b> at 14:20</div><svg class="spark" data-spark="online"></svg></div>
+          <div class="tile"><div class="k">Active today</div><div class="v">18</div><div class="d">so far · Sunday</div><svg class="spark" data-spark="daily"></svg></div>
+          <div class="tile"><div class="k">Active in 30 days</div><div class="v">74</div><div class="d"><span class="up"><b>18%</b></span> · 52% of all accounts</div><svg class="spark" data-spark="weekly"></svg></div>
+          <div class="tile"><div class="k">New accounts</div><div class="v">64</div><div class="d"><span class="up"><b>255%</b></span> · 18 before</div><svg class="spark" data-spark="signups"></svg></div>
+          <div class="tile"><div class="k">Web visitors</div><div class="v">4,948</div><div class="d"><span class="up"><b>61%</b></span> 3,071 before</div><svg class="spark" data-spark="visitors"></svg></div>
+        </div>
+        <div class="card2"><h5>People in the world each day<span class="sub">different accounts signed in, by the app they used</span></h5>
+          <div class="legend"><span><i style="background:var(--s1)"></i>Android app</span><span><i style="background:var(--s2)"></i>Web viewer</span><span><i style="background:var(--s3)"></i>Desktop</span></div>
+          <svg class="chart" id="daily" viewBox="0 0 900 170" height="170"></svg></div>
+        <div class="cards k3">
+          <div class="card2"><h5>Visitors to the sites<span class="sub">per day</span></h5><svg class="chart" id="vis-small" viewBox="0 0 280 150" height="150"></svg></div>
+          <div class="card2"><h5>From a visit to a regular<span class="sub">30 days</span></h5><svg class="chart" id="funnel" viewBox="0 0 280 150" height="150"></svg></div>
+          <div class="card2"><h5>Busiest places<span class="sub">hours spent</span></h5>
+            <div class="rank"><div class="r"><i class="bar" style="width:100%"></i><span>Grote Markt</span><span>112 h</span></div><div class="r"><i class="bar" style="width:63%"></i><span>Oosterpoort</span><span>71 h</span></div><div class="r"><i class="bar" style="width:48%"></i><span>Noorderplantsoen</span><span>54 h</span></div><div class="r"><i class="bar" style="width:39%"></i><span>Hoofdstation</span><span>44 h</span></div><div class="r"><i class="bar" style="width:22%"></i><span>Zernike</span><span>25 h</span></div></div></div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <h2><span>A</span>Overview</h2>
+  <ul>
+    <li><b>Stats is a fourth area on the admin rail</b> <span class="new">new</span>, beside People, Content and Data, and shows to accounts with the new <b>stats</b> permission.</li>
+    <li><b>One filter row</b> drives every number on the page: a period, and whether to compare it with the period before. The tiles say the change; the charts do not draw a second line.</li>
+    <li><b>"Active"</b> means signed in to the world, on any app. Being signed in only to the web chat counts too: Community is part of the world, not a separate product.</li>
+    <li><b>From a visit to a regular</b> joins the two halves: visits → opened World → made an account → signed in to the world → came back within a week. The first two steps are counted visitors, the last three accounts.</li>
+    <li>Every number links to the page that explains it: a tile to World or Web, a place to the map.</li>
+  </ul>
+</div>
+</div>
+
+<!-- ───────────────────────── B: world ───────────────────────── -->
+<h2 class="sheet"><span>B</span>World: when people come, what they do, and whether they come back</h2>
+<div class="screen">
+<div class="browser">
+  <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org<b>/admin/stats/world</b></div></div>
+  <div class="app" style="height:990px">
+    <div class="top">
+      <div class="wm"><img src="../../../assets/icon/cartopolis.svg"><span>carto<i>polis</i></span></div>
+      <div class="mid"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Community</div><div><span class="live"></span>World</div><div class="adm on"><svg class="i s"><use href="#shield"/></svg>Admin</div></div></div>
+      <div class="crumbs"><span>Admin</span><span class="sep">›</span><span>Stats</span><span class="sep">›</span><b>World</b></div>
+      <div class="sp"></div>
+      <div class="av c7" style="width:32px;height:32px">J</div>
+    </div>
+    <div class="appbody">
+    <div class="rail" data-rail="0"></div>
+    <div class="side adm" data-side="1"></div>
+    <div class="main wide">
+      <div class="chh"><div class="t"><b>World</b><span>19 Sep – 18 Oct · counted by the simulator</span></div><div class="btn ghost"><svg class="i s"><use href="#down"/></svg>CSV</div></div>
+      <div class="body">
+        <div class="filters"><div class="seg"><div>Today</div><div>7 days</div><div class="on">30 days</div><div>90 days</div><div>12 months</div></div><div class="seg"><div class="on">All apps</div><div>Android</div><div>Web</div><div>Desktop</div></div><div class="sp"></div><div class="opt"><span class="box"></span>Compare</div></div>
+        <div class="tiles t5">
+          <div class="tile"><div class="k">Sessions</div><div class="v">1,206</div><div class="d"><span class="up"><b>22%</b></span></div></div>
+          <div class="tile"><div class="k">Typical session</div><div class="v">21 min</div><div class="d">median · longest 4 h 10</div></div>
+          <div class="tile"><div class="k">Most at once</div><div class="v">14</div><div class="d">Sat 17 Oct, 20:40</div></div>
+          <div class="tile"><div class="k">Messages relayed</div><div class="v">9,830</div><div class="d"><span class="up"><b>23%</b></span> · all sealed</div></div>
+          <div class="tile"><div class="k">Call minutes</div><div class="v">1,140</div><div class="d">212 calls · 3.1 people each</div></div>
+        </div>
+        <div class="cards k2">
+          <div class="card2"><h5>When people are in the world<span class="sub">average number online</span></h5><svg class="chart" id="heat" viewBox="0 0 430 190" height="190"></svg></div>
+          <div class="card2"><h5>Who comes back<span class="sub">share of each week's new accounts seen again</span></h5><svg class="chart" id="cohort" viewBox="0 0 430 190" height="190"></svg></div>
+        </div>
+        <div class="cards k21" style="grid-template-columns:1.25fr 1fr">
+          <div class="card2"><h5>What people did</h5>
+            <div class="mt" id="did"></div></div>
+          <div class="card2"><h5>Apps in use<span class="sub">people, last 7 days</span></h5>
+            <div class="mt apps">
+              <div class="row h"><span>App</span><span>Version</span><span class="n">People</span><span></span></div>
+              <div class="row"><span><svg class="i s" style="vertical-align:-3px;color:var(--dim)"><use href="#phone"/></svg> Android</span><span>0.42.1</span><span class="n">38</span><span><span class="tag a">current</span></span></div>
+              <div class="row"><span><svg class="i s" style="vertical-align:-3px;color:var(--dim)"><use href="#phone"/></svg> Android</span><span>0.41.3</span><span class="n">9</span><span><span class="tag w">update ready</span></span></div>
+              <div class="row"><span><svg class="i s" style="vertical-align:-3px;color:var(--dim)"><use href="#globe"/></svg> Web viewer</span><span>18 Oct build</span><span class="n">21</span><span><span class="tag a">current</span></span></div>
+              <div class="row"><span><svg class="i s" style="vertical-align:-3px;color:var(--dim)"><use href="#screen"/></svg> Desktop</span><span>0.42.0</span><span class="n">6</span><span><span class="tag">Linux 4 · Windows 2</span></span></div>
+              <div class="row" style="background:rgba(242,162,150,.06)"><span style="color:var(--danger)">Turned away</span><span>0.39.x</span><span class="n">3</span><span style="color:var(--dim);font-size:11.5px">6 sign-ins refused: protocol older than the server</span></div>
+            </div>
+            <div class="note" style="margin-top:10px"><svg class="i s"><use href="#info"/></svg><span>Turned-away sign-ins are counted by device, before any account is known — the only way to see who cannot get in.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <h2><span>B</span>World</h2>
+  <ul>
+    <li><b>Sessions</b> are the server's own record: a session starts when the handshake is accepted and ends when the connection closes. The app and its version come from the handshake, which carries neither today <span class="new">new</span>.</li>
+    <li><b>When people are in the world</b>: the number signed in, sampled every minute and averaged per weekday and hour. It answers "when should an event be", and when a deploy hurts least.</li>
+    <li><b>Who comes back</b> needs to know that the account seen in week 3 is the one that joined in week 1 — the reason sessions are kept per account for 90 days. After that only these percentages remain.</li>
+    <li><b>What people did</b> counts what passes through the server, by kind. Private messages are counted as "a sealed message was relayed"; the server has no way to count more.</li>
+    <li><b>Apps in use</b> makes a stale client visible before a person reports it — and refused handshakes show a server older than the app, which today looks like "connection reset".</li>
+  </ul>
+</div>
+</div>
+
+<!-- ───────────────────────── C: web ───────────────────────── -->
+<h2 class="sheet"><span>C</span>Web: visitors to cartopolis.org, the about site and the viewer</h2>
+<div class="screen">
+<div class="browser">
+  <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org<b>/admin/stats/web</b></div></div>
+  <div class="app" style="height:880px">
+    <div class="top">
+      <div class="wm"><img src="../../../assets/icon/cartopolis.svg"><span>carto<i>polis</i></span></div>
+      <div class="mid"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Community</div><div><span class="live"></span>World</div><div class="adm on"><svg class="i s"><use href="#shield"/></svg>Admin</div></div></div>
+      <div class="crumbs"><span>Admin</span><span class="sep">›</span><span>Stats</span><span class="sep">›</span><b>Web</b></div>
+      <div class="sp"></div>
+      <div class="av c7" style="width:32px;height:32px">J</div>
+    </div>
+    <div class="appbody">
+    <div class="rail" data-rail="0"></div>
+    <div class="side adm" data-side="2"></div>
+    <div class="main wide">
+      <div class="chh"><div class="t"><b>Web</b><span>19 Sep – 18 Oct · counted from the pages themselves</span></div><div class="btn ghost"><svg class="i s"><use href="#down"/></svg>CSV</div></div>
+      <div class="body">
+        <div class="filters"><div class="seg"><div>Today</div><div>7 days</div><div class="on">30 days</div><div>90 days</div><div>12 months</div></div><div class="seg"><div class="on">All sites</div><div>cartopolis.org</div><div>about.cartopolis.org</div><div>Viewer</div></div><div class="sp"></div><div class="opt"><span class="box"></span>Compare</div></div>
+        <div class="tiles t5">
+          <div class="tile"><div class="k">Visitors</div><div class="v">4,948</div><div class="d"><span class="up"><b>61%</b></span></div></div>
+          <div class="tile"><div class="k">Pages shown</div><div class="v">14,230</div><div class="d">2.9 per visitor</div></div>
+          <div class="tile"><div class="k">Opened World</div><div class="v">1,410</div><div class="d">29% of visitors</div></div>
+          <div class="tile"><div class="k">APK downloads</div><div class="v">162</div><div class="d"><span class="up"><b>40%</b></span></div></div>
+          <div class="tile"><div class="k">Made an account</div><div class="v">64</div><div class="d">1.3% of visitors</div></div>
+        </div>
+        <div class="cards k21">
+          <div class="card2"><h5>Visitors per day<span class="sub">a visitor is counted once per site per day</span></h5><svg class="chart" id="vis" viewBox="0 0 590 200" height="200"></svg></div>
+          <div class="card2"><h5>Devices</h5><svg class="chart" id="dev" viewBox="0 0 280 74" height="74"></svg>
+            <h5 style="margin-top:12px">Languages</h5>
+            <div class="rank"><div class="r"><i class="bar" style="width:100%"></i><span>Dutch</span><span>62%</span></div><div class="r"><i class="bar" style="width:39%"></i><span>English</span><span>24%</span></div><div class="r"><i class="bar" style="width:15%"></i><span>German</span><span>9%</span></div></div>
+            <div class="note" style="margin-top:10px"><svg class="i s"><use href="#shield"/></svg><span><b>31,400</b> requests from crawlers and scripts filtered out, never counted.</span></div></div>
+        </div>
+        <div class="cards k3">
+          <div class="card2"><h5>Pages</h5><div class="rank"><div class="hd"><span>Page</span><span>Visitors</span></div>
+            <div class="r"><i class="bar" style="width:100%"></i><span>/ <span style="color:var(--dim)">sign-in, Community</span></span><span>2,960</span></div>
+            <div class="r"><i class="bar" style="width:48%"></i><span>/world</span><span>1,410</span></div>
+            <div class="r"><i class="bar" style="width:35%"></i><span>about · /</span><span>1,050</span></div>
+            <div class="r"><i class="bar" style="width:13%"></i><span>/register</span><span>380</span></div>
+            <div class="r"><i class="bar" style="width:8%"></i><span>/c/oosterpoort</span><span>240</span></div>
+            <div class="r"><i class="bar" style="width:6%"></i><span>/buildings</span><span>190</span></div></div></div>
+          <div class="card2"><h5>Where they came from</h5><div class="rank"><div class="hd"><span>Source</span><span>Visitors</span></div>
+            <div class="r"><i class="bar" style="width:100%"></i><span>Typed or bookmarked</span><span>2,410</span></div>
+            <div class="r"><i class="bar" style="width:34%"></i><span>mastodon.social</span><span>820</span></div>
+            <div class="r"><i class="bar" style="width:25%"></i><span>about.cartopolis.org</span><span>610</span></div>
+            <div class="r"><i class="bar" style="width:17%"></i><span>Search engines</span><span>518</span></div>
+            <div class="r"><i class="bar" style="width:8%"></i><span>garage44.eu</span><span>190</span></div>
+            <div class="r"><i class="bar" style="width:7%"></i><span>lemmy.world</span><span>160</span></div></div></div>
+          <div class="card2"><h5>Countries</h5><div class="rank"><div class="hd"><span>Country</span><span>Visitors</span></div>
+            <div class="r"><i class="bar" style="width:100%"></i><span>Netherlands</span><span>3,120</span></div>
+            <div class="r"><i class="bar" style="width:20%"></i><span>Germany</span><span>610</span></div>
+            <div class="r"><i class="bar" style="width:9%"></i><span>Belgium</span><span>280</span></div>
+            <div class="r"><i class="bar" style="width:8%"></i><span>United Kingdom</span><span>240</span></div>
+            <div class="r"><i class="bar" style="width:7%"></i><span>United States</span><span>230</span></div>
+            <div class="r"><i class="bar" style="width:15%"></i><span>17 others</span><span>468</span></div></div></div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <h2><span>C</span>Web</h2>
+  <ul>
+    <li><b>Counted by the page, not by Caddy</b> <span class="new">new</span>. The site is one page that changes its address as you move around it, so Caddy only ever sees the first load; the page itself sends <code>POST /api/stats/hit</code> on every change of address, from all three sites.</li>
+    <li><b>A visitor</b> is one browser on one site on one day. Two days are two visitors: nothing can join them, which is the point. Hence no "returning visitors" here — the world page has that, for people with an account.</li>
+    <li><b>Where they came from</b> is the previous page's site, never its full address. Search engines are grouped; fediverse servers are kept by name because they say which post worked.</li>
+    <li><b>Country</b> comes from the IP address at the moment of the request, through a database kept on the VPS (DB-IP Lite, free, no account); the address is then dropped.</li>
+    <li><b>APK downloads</b> come from Caddy, the one place counted from the log: a download of <code>/apk/cartopolis.apk</code> has no page that could report it.</li>
+  </ul>
+</div>
+</div>
+
+<!-- ───────────────────────── D: places ───────────────────────── -->
+<h2 class="sheet"><span>D</span>Places: where time is spent in the world</h2>
+<div class="screen">
+<div class="browser">
+  <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org<b>/admin/stats/places</b></div></div>
+  <div class="app" style="height:780px">
+    <div class="top">
+      <div class="wm"><img src="../../../assets/icon/cartopolis.svg"><span>carto<i>polis</i></span></div>
+      <div class="mid"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Community</div><div><span class="live"></span>World</div><div class="adm on"><svg class="i s"><use href="#shield"/></svg>Admin</div></div></div>
+      <div class="crumbs"><span>Admin</span><span class="sep">›</span><span>Stats</span><span class="sep">›</span><b>Places</b><span class="sep">›</span><span>Grote Markt</span></div>
+      <div class="sp"></div>
+      <div class="av c7" style="width:32px;height:32px">J</div>
+    </div>
+    <div class="appbody">
+    <div class="rail" data-rail="0"></div>
+    <div class="side adm" data-side="3"></div>
+    <div class="main wide">
+      <div class="mapwrap"><svg id="map" viewBox="400 60 640 680" preserveAspectRatio="xMidYMid slice"></svg></div>
+      <div class="maptop"><div class="seg glass" style="padding:3px"><div class="on" style="background:var(--raised);color:var(--cream)">Time spent</div><div>People</div><div>Places shared</div></div><div class="seg glass" style="padding:3px"><div>7 days</div><div class="on" style="background:var(--raised);color:var(--cream)">30 days</div><div>12 months</div></div></div>
+      <div class="maplegend glass"><b>Hours spent in each 250 m square</b><div class="ramp"><i style="background:var(--q1)"></i><i style="background:var(--q2)"></i><i style="background:var(--q3)"></i><i style="background:var(--q4)"></i><i style="background:var(--q5)"></i><i style="background:var(--q6)"></i></div><div class="ends"><span>1 h</span><span>110 h +</span></div><div style="color:var(--dim);font-size:11.5px;margin-top:6px">Squares where fewer than 5 different people have been are left blank.</div></div>
+    </div>
+    <div class="pane">
+      <div class="ph">Grote Markt <svg class="i s" style="color:var(--dim)"><use href="#x"/></svg></div>
+      <div style="padding:12px 16px;display:flex;flex-direction:column;gap:12px">
+        <div style="color:var(--dim);font-size:12.5px">250 m square around 53.2185, 6.5674 · 30 days</div>
+        <div class="tiles" style="grid-template-columns:1fr 1fr;gap:10px">
+          <div class="tile"><div class="k">Hours spent</div><div class="v" style="font-size:22px">112 h</div></div>
+          <div class="tile"><div class="k">People</div><div class="v" style="font-size:22px">41</div></div>
+          <div class="tile"><div class="k">Places shared</div><div class="v" style="font-size:22px">58</div></div>
+          <div class="tile"><div class="k">Public posts</div><div class="v" style="font-size:22px">12</div></div>
+        </div>
+        <div class="card2" style="padding:10px 12px"><h5>By hour of the day</h5><svg class="chart" id="cellhours" viewBox="0 0 280 90" height="90"></svg></div>
+        <div class="btn ghost" style="justify-content:center"><svg class="i s"><use href="#globe"/></svg>Open in World</div>
+      </div>
+    </div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <h2><span>D</span>Places</h2>
+  <ul>
+    <li><b>Once a minute</b> the simulator adds a minute to the 250 m square each avatar stands in, and the person to that square's set for the day. The set is reduced to a count at midnight; no point and no track is ever written.</li>
+    <li><b>Five people or the square stays blank</b>, so a square cannot point at the one person who lives there. The same rule holds for the hour chart in the side pane.</li>
+    <li>Only avatars in the world count. A <b>GPS share</b> is a message between people and is never added here.</li>
+    <li><b>Places shared</b> and <b>public posts</b> count the points people send to each other and post — useful for seeing where a community lives, not only where people walk.</li>
+    <li>Drawn on the PDOK grey base map; the page would use the map tiles the site already serves.</li>
+  </ul>
+</div>
+</div>
+
+<!-- ───────────────────────── decisions ───────────────────────── -->
+<div class="grid g2" style="margin-top:8px">
+  <div class="box"><h3><span>?</span>Open questions</h3><ul class="q">
+    <li><b>Should a community's moderators see its own numbers?</b> Members active this month, messages per topic, joins and leaves — a Stats tab in the community's settings, counting nothing new.</li>
+    <li><b>A public "in numbers" block on about.cartopolis.org?</b> Accounts, people active this month, communities, hours in the world. Off until someone turns it on.</li>
+    <li><b>Can a person see their own activity?</b> Their sessions and devices for the last 90 days, under their account. The law already lets them ask for it; a page saves the email.</li>
+    <li><b>Per-account sessions for 90 days, or none at all?</b> Without them the counts above still work, but "who comes back", "active in 30 days" and the funnel's last two steps go.</li>
+    <li><b>Honour Global Privacy Control?</b> Nothing counted can identify anyone, so it is not required; not counting browsers that send it costs a few percent of the visitors.</li>
+  </ul></div>
+  <div class="box"><h3><span>×</span>Considered and not proposed</h3><ul class="q">
+    <li><b>Self-hosted Plausible or Umami.</b> The same cookie-free counting, but another service and database on a VPS that is already near full, for a few thousand visits a month — and it cannot see the world, which is half of what we want to know.</li>
+    <li><b>Matomo or Google Analytics.</b> Cookies and a consent banner, and in Google's case every visit leaves for a third party.</li>
+    <li><b>Reading Caddy's access log for page views.</b> The site changes page without asking Caddy, so the log sees one load per visit and none of the pages after it; and a log puts every IP address on disk.</li>
+    <li><b>Counting inside the game with a telemetry crate.</b> The client would report on itself; the server already sees every session and relay, and an app cannot lie to it.</li>
+  </ul></div>
+</div>
+<p class="credit">Base map: BRT Achtergrondkaart grijs, Kadaster / PDOK, CC BY 4.0, recoloured. All figures invented.</p>
+
+<script>
+const $ = s => document.querySelector(s);
+const NS = 'http://www.w3.org/2000/svg';
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const days = []; { const d0 = new Date(Date.UTC(2026, 8, 19)); for (let i = 0; i < 30; i++) days.push(new Date(d0.getTime() + i * 864e5)); }
+const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmt = d => d.getUTCDate() + ' ' + mon[d.getUTCMonth()];
+
+const android = [14,15,9,10,11,10,12,16,15,10,11,9,12,13,17,16,11,12,10,13,14,18,17,12,13,15,14,13,19,12];
+const web =     [6,7,3,4,4,5,4,7,8,4,3,5,4,5,8,7,4,5,5,6,5,9,8,9,8,7,6,6,9,5];
+const desk =    [2,2,1,1,2,1,1,3,2,1,2,1,1,2,3,2,1,2,1,1,2,3,2,2,2,2,1,2,3,1];
+const visitors = [132,141,98,104,112,109,118,150,146,101,97,110,114,121,158,149,103,111,107,119,126,171,164,152,620,388,262,214,233,118];
+
+function grid(svg, x0, x1, y0, y1, max, ticks) {
+  let s = '';
+  for (const t of ticks) { const y = y1 - (t / max) * (y1 - y0);
+    s += `<line x1="${x0}" x2="${x1}" y1="${y}" y2="${y}" stroke="${t ? css('--grid') : css('--gline')}" />`;
+    s += `<text x="${x0 - 6}" y="${y + 3.5}" text-anchor="end">${t.toLocaleString('en')}</text>`; }
+  return s;
+}
+
+// A: stacked daily people
+(() => { const svg = $('#daily'); const x0 = 28, x1 = 900, y0 = 8, y1 = 148, max = 30;
+  let s = grid(svg, x0, x1, y0, y1, max, [0, 10, 20, 30]);
+  const bw = (x1 - x0) / 30;
+  for (let i = 0; i < 30; i++) { let y = y1; const segs = [[android[i], '--s1'], [web[i], '--s2'], [desk[i], '--s3']];
+    segs.forEach(([v, c], k) => { const h = v / max * (y1 - y0); const top = k === 2;
+      const x = x0 + i * bw + 3, w = bw - 6, yy = y - h + (k ? 0 : 0);
+      s += `<rect x="${x}" y="${yy + (k ? 0 : 0)}" width="${w}" height="${Math.max(h - 2, 1)}" rx="${top ? 3 : 1}" fill="${css(c)}" ${i === 29 ? 'opacity=".45"' : ''}/>`;
+      y -= h; });
+    if (i % 7 === 2 || i === 29) s += `<text x="${x0 + i * bw + bw / 2}" y="${y1 + 15}" text-anchor="middle">${i === 29 ? 'today' : fmt(days[i])}</text>`;
+    if (i === 28) s += `<text class="v" x="${x0 + i * bw + bw / 2}" y="${y - 5}" text-anchor="middle">31</text>`;
+  }
+  s += `<text class="lab" x="${x0 + 29 * bw + bw / 2}" y="${y1 - (18 / max) * (y1 - y0) - 5}" text-anchor="middle">18</text>`;
+  svg.innerHTML = s; })();
+
+function lineChart(svg, vals, x0, x1, y0, y1, max, ticks, annot, labelEvery) {
+  let s = grid(svg, x0, x1, y0, y1, max, ticks);
+  const dx = (x1 - x0) / (vals.length - 1);
+  const pts = vals.map((v, i) => [x0 + i * dx, y1 - v / max * (y1 - y0)]);
+  s += `<path d="M${pts.map(p => p.join(',')).join('L')}L${x1},${y1}L${x0},${y1}Z" fill="${css('--s1')}" opacity=".14"/>`;
+  s += `<path d="M${pts.slice(0, -1).map(p => p.join(',')).join('L')}" fill="none" stroke="${css('--s1')}" stroke-width="2" stroke-linejoin="round"/>`;
+  s += `<path d="M${pts.slice(-2).map(p => p.join(',')).join('L')}" fill="none" stroke="${css('--s1')}" stroke-width="2" stroke-dasharray="3 3"/>`;
+  if (annot) { const [i, txt] = annot; const [x, y] = pts[i];
+    s += `<circle cx="${x}" cy="${y}" r="4.5" fill="${css('--s1')}" stroke="${css('--surface')}" stroke-width="2"/>`;
+    s += `<text class="v" x="${x + 9}" y="${y + 4}">${vals[i]}</text>`;
+    if (txt) s += `<text x="${x - 9}" y="${y + 4}" text-anchor="end">${txt}</text>`; }
+  for (let i = 0; i < vals.length; i++) if (i % labelEvery === 2 || i === vals.length - 1)
+    s += `<text x="${pts[i][0]}" y="${y1 + 15}" text-anchor="${i === vals.length - 1 ? 'end' : 'middle'}">${i === vals.length - 1 ? 'today' : fmt(days[i])}</text>`;
+  svg.innerHTML = s;
+}
+lineChart($('#vis-small'), visitors, 30, 280, 10, 128, 700, [0, 350, 700], [24, ''], 14);
+lineChart($('#vis'), visitors, 34, 580, 12, 176, 700, [0, 200, 400, 600], [24, '13 Oct · public posts start to federate'], 7);
+
+// funnel
+(() => { const svg = $('#funnel'); const steps = [['Visited a site', 4948], ['Opened World', 1410], ['Made an account', 64], ['Signed in to the world', 49], ['Back within a week', 27]];
+  let s = ''; steps.forEach(([l, v], i) => { const y = 4 + i * 29; const w = Math.max(4, v / 4948 * 110);
+    s += `<text class="lab" x="0" y="${y + 13}">${l}</text>`;
+    s += `<rect x="128" y="${y + 3}" width="${w}" height="14" rx="3" fill="${css('--s1')}"/>`;
+    s += `<text class="v" x="${128 + w + 6}" y="${y + 14}">${v.toLocaleString('en')}</text>`;
+    if (i) s += `<text x="280" y="${y + 14}" text-anchor="end">${(v / steps[i - 1][1] * 100).toFixed(v / steps[i - 1][1] < .1 ? 1 : 0)}%</text>`; });
+  svg.innerHTML = s; })();
+
+// sparklines
+const sparks = { online: [2,1,1,0,0,0,0,1,2,4,5,7,9,11,12,10,8,7,9,8,7,7,7,7], daily: android.map((v, i) => v + web[i] + desk[i]), weekly: [31,33,30,36,38,41,40,44,47,52,58,61], signups: [3,2,4,3,5,4,4,6,9,14,21,20], visitors };
+document.querySelectorAll('[data-spark]').forEach(svg => { const v = sparks[svg.dataset.spark]; const max = Math.max(...v), min = Math.min(...v);
+  svg.setAttribute('viewBox', '0 0 86 30'); const dx = 84 / (v.length - 1);
+  const p = v.map((y, i) => `${1 + i * dx},${28 - (y - min) / (max - min || 1) * 25}`);
+  svg.innerHTML = `<path d="M${p.join('L')}" fill="none" stroke="${css('--s1')}" stroke-width="1.6" stroke-linejoin="round"/><circle cx="${p.at(-1).split(',')[0]}" cy="${p.at(-1).split(',')[1]}" r="2.5" fill="${css('--s1')}"/>`; });
+
+// sequential ramp
+const ramp = ['--q1', '--q2', '--q3', '--q4', '--q5', '--q6'].map(css);
+const step = (v, max) => ramp[Math.min(5, Math.floor(v / max * 6))];
+
+// heat: weekday × hour
+(() => { const svg = $('#heat'); const dn = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']; let s = '';
+  const cw = 16, ch = 20, x0 = 34, y0 = 4;
+  for (let d = 0; d < 7; d++) { s += `<text x="${x0 - 6}" y="${y0 + d * ch + 14}" text-anchor="end">${dn[d]}</text>`;
+    for (let h = 0; h < 24; h++) { const we = d >= 5;
+      let v = Math.max(0, Math.sin((h - 6) / 24 * Math.PI * 1.15)) * 5 + (h >= 19 && h <= 22 ? 4 : 0) + (we && h >= 11 && h <= 17 ? 4 : 0) + (h < 7 ? -3 : 0) + (d === 5 && h === 20 ? 4 : 0);
+      v = Math.max(0, v + ((d * 7 + h * 3) % 5) * .3);
+      s += `<rect x="${x0 + h * cw}" y="${y0 + d * ch}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v < .6 ? css('--raised') : step(v, 16)}"/>`; } }
+  [0, 6, 12, 18, 23].forEach(h => s += `<text x="${x0 + h * cw + 7}" y="${y0 + 7 * ch + 13}" text-anchor="middle">${String(h).padStart(2, '0')}</text>`);
+  s += `<text x="${x0}" y="${y0 + 7 * ch + 34}">fewer</text>`; ramp.forEach((c, i) => s += `<rect x="${x0 + 40 + i * 18}" y="${y0 + 7 * ch + 25}" width="16" height="10" rx="2" fill="${c}"/>`);
+  s += `<text x="${x0 + 40 + 6 * 18 + 6}" y="${y0 + 7 * ch + 34}">more · busiest Sat 20:00–21:00, 11 on average</text>`;
+  svg.innerHTML = s; })();
+
+// cohort
+(() => { const svg = $('#cohort'); const rows = [['7 Sep', 4, [100, 75, 50, 50, 50, 25]], ['14 Sep', 5, [100, 60, 60, 40, 40, 40]], ['21 Sep', 3, [100, 67, 33, 33, 33]], ['28 Sep', 6, [100, 50, 50, 33]], ['5 Oct', 14, [100, 57, 43]], ['12 Oct', 29, [100, 41]]];
+  const x0 = 96, cw = 54, ch = 22, y0 = 18; let s = `<text x="0" y="12">joined in week of</text>`;
+  for (let c = 0; c < 6; c++) s += `<text x="${x0 + c * cw + cw / 2 - 1}" y="12" text-anchor="middle">${c ? 'wk ' + c : 'joined'}</text>`;
+  rows.forEach(([w, n, p], r) => { const y = y0 + r * ch; s += `<text class="lab" x="0" y="${y + 15}">${w}</text><text x="${x0 - 8}" y="${y + 15}" text-anchor="end">${n}</text>`;
+    p.forEach((v, c) => { if (!c) { s += `<rect x="${x0}" y="${y}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${css('--raised')}"/><text x="${x0 + cw / 2 - 1}" y="${y + 14}" text-anchor="middle">${n} new</text>`; return; }
+      s += `<rect x="${x0 + c * cw}" y="${y}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${step(v, 101)}"/><text class="v" x="${x0 + c * cw + cw / 2 - 1}" y="${y + 14}" text-anchor="middle" style="fill:${v > 60 ? css('--ink') : css('--cream')}">${v}%</text>`; }); });
+  s += `<text x="0" y="${y0 + 6 * ch + 22}">Weeks with fewer than 5 new accounts are greyed in the app; shown here to fill the grid.</text>`;
+  svg.innerHTML = s; })();
+
+// what people did
+(() => { const rows = [['Private messages', 'chats and groups, sealed', 6410, 5120], ['Community messages', 'topics, sealed', 2870, 2210], ['Here messages', 'to people nearby', 550, 610], ['Calls', '1,140 minutes', 212, 168], ['Public posts', '96 federated', 96, 41], ['Places shared', '', 410, 365], ['Prims built or edited', '', 341, 290], ['Floor plans edited', '', 23, 18]];
+  let h = '<div class="row h"><span>What</span><span class="n">30 days</span><span class="n">Before</span><span class="n">Change</span><span></span></div>';
+  rows.forEach(([w, m, a, b], i) => { const ch = Math.round((a / b - 1) * 100);
+    const sp = Array.from({ length: 12 }, (_, k) => b / 6 + (a / 6 - b / 6) * k / 11 + ((k * 7 + i * 3) % 5 - 2) * a / 80);
+    const mx = Math.max(...sp), mn = Math.min(...sp); const p = sp.map((v, k) => `${k * 7.6},${18 - (v - mn) / (mx - mn) * 15}`).join('L');
+    h += `<div class="row"><span>${w}${m ? `<span class="m">${m}</span>` : ''}</span><span class="n">${a.toLocaleString('en')}</span><span class="n" style="color:var(--dim)">${b.toLocaleString('en')}</span><span class="n ${ch >= 0 ? 'up' : 'dn'}">${ch >= 0 ? '+' : ''}${ch}%</span><svg viewBox="0 0 86 20" style="width:86px;height:20px"><path d="M${p}" fill="none" stroke="${css('--s1')}" stroke-width="1.5"/></svg></div>`; });
+  $('#did').innerHTML = h; })();
+
+// devices: one 100% bar
+(() => { const svg = $('#dev'); const parts = [['Phone', 58, '--s1'], ['Desktop', 39, '--s2'], ['Tablet', 3, '--s3']]; let x = 0, s = '';
+  parts.forEach(([l, v, c]) => { const w = v / 100 * 280; s += `<rect x="${x}" y="6" width="${w - 2}" height="18" rx="3" fill="${css(c)}"/>`; x += w; });
+  x = 0; parts.forEach(([l, v, c], i) => { s += `<rect x="${x}" y="40" width="10" height="10" rx="3" fill="${css(c)}"/><text class="lab" x="${x + 15}" y="49">${l} ${v}%</text>`; x += i ? 96 : 104; });
+  svg.innerHTML = s; })();
+
+// cell by hour
+(() => { const svg = $('#cellhours'); const v = [0,0,0,0,0,0,0,1,2,3,5,7,8,9,10,11,10,8,6,7,6,4,2,1]; let s = '';
+  v.forEach((h, i) => { const hh = h / 11 * 66; s += `<rect x="${i * 11.6}" y="${70 - hh}" width="9.6" height="${Math.max(hh, h ? 2 : 0)}" rx="2" fill="${css('--s1')}"/>`; });
+  [0, 6, 12, 18].forEach(h => s += `<text x="${h * 11.6 + 5}" y="86" text-anchor="middle">${String(h).padStart(2, '0')}</text>`);
+  s += `<text class="v" x="${15 * 11.6 + 5}" y="${70 - 66 - 3}" text-anchor="middle">15:00</text>`;
+  svg.innerHTML = s; })();
+
+// map cells: hotspots in base-map pixels (z14, 5.7 m/px, so 250 m ≈ 44 px)
+(() => { const svg = $('#map'); const spots = [[700, 372, 104, 46], [742, 410, 36, 40], [853, 530, 58, 44], [560, 250, 48, 46], [703, 530, 44, 34], [610, 620, 16, 44], [880, 300, 14, 44], [930, 470, 10, 40], [620, 420, 12, 40]];
+  const cs = 44; let s = `<image href="groningen-dark.jpg" x="0" y="0" width="1280" height="768"/>`;
+  for (let y = 0; y < 768; y += cs) for (let x = 0; x < 1280; x += cs) { const cx = x + cs / 2, cy = y + cs / 2;
+    let v = 0; for (const [sx, sy, a, r] of spots) v += a * Math.exp(-((cx - sx) ** 2 + (cy - sy) ** 2) / (2 * r * r));
+    v += ((x * 13 + y * 7) % 11) / 11 * 3 - 1.5;
+    if (v < 5) continue;
+    s += `<rect x="${x + 1}" y="${y + 1}" width="${cs - 2}" height="${cs - 2}" rx="3" fill="${step(v, 96)}" opacity=".8"/>`; }
+  const gx = Math.floor(700 / cs) * cs, gy = Math.floor(372 / cs) * cs;
+  s += `<rect x="${gx}" y="${gy}" width="${cs}" height="${cs}" rx="4" fill="none" stroke="#fff" stroke-width="2.5"/>`;
+  svg.innerHTML = s; })();
+
+// rails and sidebars, shared by every screen
+const railHtml = `<div class="ws home"><svg class="i"><use href="#users"/></svg></div><div class="tip">People</div><div class="ws home"><svg class="i"><use href="#build"/></svg></div><div class="tip">Content</div><div class="ws home"><svg class="i"><use href="#data"/></svg></div><div class="tip">Data</div><div class="ws on" style="background:rgba(216,192,122,.16);color:var(--warn);box-shadow:0 0 0 2px var(--ink),0 0 0 4px var(--warn)"><svg class="i"><use href="#bars"/></svg></div><div class="tip">Stats</div><div class="sp"></div>`;
+const pages = [['bars', 'Overview', ''], ['globe', 'World', '7 online'], ['link', 'Web', ''], ['pin', 'Places', '']];
+document.querySelectorAll('[data-rail]').forEach(r => r.innerHTML = railHtml);
+document.querySelectorAll('[data-side]').forEach(sd => { const on = +sd.dataset.side;
+  sd.innerHTML = `<div class="ahd"><h3>Stats <span class="new">new</span></h3><p>How the world is used, and who visits the sites</p></div><div class="sec">` +
+    pages.map(([ic, n, pl], i) => `<div class="it${i === on ? ' on' : ''}"><span class="hash"><svg class="i s"><use href="#${ic}"/></svg></span><span class="n">${n}</span>${pl ? `<span class="pl"><span class="live" style="width:6px;height:6px"></span>${pl}</span>` : ''}</div>`).join('') +
+    `</div><div class="sec"><h4>Kept</h4><div class="it"><span class="hash"><svg class="i s"><use href="#clock"/></svg></span><span class="n">Sessions</span><span class="pl">90 days</span></div><div class="it"><span class="hash"><svg class="i s"><use href="#bars"/></svg></span><span class="n">Daily totals</span><span class="pl">for good</span></div><div class="it"><span class="hash"><svg class="i s"><use href="#eye"/></svg></span><span class="n">IP addresses</span><span class="pl">never</span></div></div>` +
+    `<div class="sec"><h4>Share</h4><div class="it"><span class="hash"><svg class="i s"><use href="#down"/></svg></span><span class="n">Download all, CSV</span></div><div class="it"><span class="hash"><svg class="i s"><use href="#globe"/></svg></span><span class="n">Public numbers</span><span class="role" style="color:var(--dim);border-color:var(--gline)">off</span></div></div>`; });
+</script>
+</body></html>

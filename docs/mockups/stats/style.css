@@ -1,0 +1,97 @@
+/* Builds on the web-navigation sheet (top bar, admin rail and sidebar, tables,
+   tags), so Stats reads as a fourth admin area in the same window. Chart
+   colours: the dataviz reference palette's first three dark-mode slots
+   (blue, orange, aqua), validated all-pairs against #141a1c; magnitude is the
+   one-hue blue ramp. Text never wears a series colour. */
+@import url(../web-navigation/style.css);
+
+:root {
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70;
+  --q1:#184f95; --q2:#1c5cab; --q3:#256abf; --q4:#3987e5; --q5:#5598e7; --q6:#86b6ef;
+  --grid:#232c2e;
+}
+
+.main.wide { overflow:hidden; }
+.body { padding:14px 18px 18px; display:flex; flex-direction:column; gap:14px; overflow:hidden; flex:1; }
+
+/* the one filter row above every chart */
+.filters { display:flex; align-items:center; gap:10px; }
+.filters .seg div { padding:5px 11px; font-size:12.5px; }
+.filters .seg .on { background:var(--raised); color:var(--cream); box-shadow:inset 0 0 0 1px var(--line); }
+.filters .sp { flex:1; }
+.filters .opt { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:12.5px; }
+.filters .opt .box { width:14px; height:14px; border-radius:3px; border:1px solid var(--line); padding:0; display:grid; place-items:center; background:var(--accent); border-color:var(--accent); }
+.filters .opt .box::after { content:""; width:6px; height:3px; border-left:2px solid var(--ink); border-bottom:2px solid var(--ink); transform:rotate(-45deg) translate(1px,-1px); }
+
+/* stat tiles */
+.tiles { display:grid; gap:12px; }
+.tiles.t5 { grid-template-columns:repeat(5,1fr); }
+.tile { background:var(--surface); border:1px solid var(--gline); border-radius:var(--r-lg); padding:12px 14px 10px; position:relative; }
+.tile .k { color:var(--dim); font-size:12px; display:flex; align-items:center; gap:6px; }
+.tile .v { color:var(--cream); font-size:27px; font-weight:600; letter-spacing:-.5px; line-height:1.15; margin-top:3px; }
+.tile .d { font-size:12px; color:var(--dim); white-space:nowrap; }
+.tile .d b { color:var(--text); font-weight:600; }
+.tile .d .up::before { content:"▲ "; font-size:9px; color:var(--accent); }
+.tile .d .dn::before { content:"▼ "; font-size:9px; color:var(--danger); }
+.tile svg.spark { position:absolute; right:12px; top:12px; width:64px; height:24px; }
+.tile .live { display:inline-block; }
+
+/* chart cards */
+.cards { display:grid; gap:12px; }
+.k2 { grid-template-columns:1fr 1fr; } .k3 { grid-template-columns:repeat(3,1fr); } .k21 { grid-template-columns:2fr 1fr; }
+.card2 { background:var(--surface); border:1px solid var(--gline); border-radius:var(--r-lg); padding:12px 14px; min-width:0; }
+.card2 h5 { color:var(--cream); font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
+.card2 h5 .sub { color:var(--dim); font-weight:400; font-size:12px; margin-left:auto; }
+.card2 .cap2 { color:var(--dim); font-size:12px; margin-top:1px; }
+.legend { display:flex; gap:14px; font-size:12px; color:var(--dim); margin-top:6px; }
+.legend span { display:flex; align-items:center; gap:6px; }
+.legend i { width:10px; height:10px; border-radius:3px; display:block; }
+svg.chart { display:block; width:100%; overflow:visible; }
+svg.chart text { font:400 11px Jakarta, system-ui, sans-serif; fill:var(--dim); }
+svg.chart text.v { fill:var(--text); font-weight:600; }
+svg.chart text.lab { fill:var(--text); }
+
+/* small ranked lists (top pages, referrers…) */
+.rank { margin-top:8px; display:flex; flex-direction:column; gap:3px; }
+.rank .r { position:relative; display:flex; justify-content:space-between; font-size:12.5px; color:var(--text); padding:4px 8px; border-radius:6px; }
+.rank .r .bar { position:absolute; left:0; top:0; bottom:0; background:rgba(57,135,229,.22); border-radius:6px; }
+.rank .r span { position:relative; }
+.rank .r span:last-child { color:var(--dim); font-variant-numeric:tabular-nums; }
+.rank .hd { display:flex; justify-content:space-between; color:var(--line); font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:0 8px 2px; }
+
+/* table of counts */
+.mt { margin-top:8px; }
+.mt .row { display:grid; grid-template-columns:1.7fr .8fr .8fr .7fr 90px; gap:8px; align-items:center; padding:6px 4px; border-top:1px solid var(--gline); font-size:12.5px; color:var(--text); }
+.mt .row.h { border-top:0; color:var(--line); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+.mt .row span.n { text-align:right; font-variant-numeric:tabular-nums; }
+.mt .row .m { color:var(--dim); font-size:11.5px; display:block; }
+.mt .row .up { color:var(--accent-text); } .mt .row .dn { color:var(--danger); }
+.mt.apps .row { grid-template-columns:1.1fr 1fr .6fr 1.4fr; }
+
+.note { display:flex; gap:8px; align-items:flex-start; color:var(--dim); font-size:12px; background:var(--ink); border:1px dashed var(--gline); border-radius:var(--r); padding:8px 10px; }
+.note svg { color:var(--accent); margin-top:1px; }
+.note b { color:var(--text); }
+
+/* the map of time spent */
+.mapwrap { position:absolute; inset:0; background:#121a1c; }
+.mapwrap svg { position:absolute; inset:0; width:100%; height:100%; }
+.maplegend { position:absolute; left:16px; bottom:16px; padding:10px 12px; width:250px; z-index:4; }
+.maplegend .ramp { display:flex; height:10px; border-radius:3px; overflow:hidden; margin:6px 0 3px; gap:2px; }
+.maplegend .ramp i { flex:1; display:block; }
+.maplegend .ends { display:flex; justify-content:space-between; font-size:11px; color:var(--dim); }
+.maplegend b { color:var(--cream); font-size:12.5px; }
+.maptop { position:absolute; left:16px; top:14px; z-index:4; display:flex; gap:8px; }
+
+/* the how-it-works strip */
+.flow { display:grid; grid-template-columns:1fr 26px 1fr 26px 1fr 26px 1fr; align-items:stretch; margin-bottom:18px; }
+.flow .arr { display:grid; place-items:center; color:var(--line); }
+.flow .box h3 { display:flex; align-items:center; gap:8px; }
+.flow .box .k { color:var(--accent); font-size:11.5px; text-transform:uppercase; letter-spacing:.6px; }
+.never { margin-bottom:44px; border-color:rgba(216,192,122,.35); }
+.never h3 { color:var(--warn) !important; }
+.never ul { columns:2; column-gap:40px; }
+h2.sheet { color:var(--cream); font-size:22px; margin:0 0 6px; }
+h2.sheet span { color:var(--accent); margin-right:8px; }
+.q { margin-top:10px; }
+.q li { margin-bottom:8px; }
+.credit { color:var(--line); font-size:12px; margin-top:24px; }
