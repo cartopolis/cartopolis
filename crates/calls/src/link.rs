@@ -78,8 +78,9 @@ pub enum Output {
     /// Every connection that was lost is answering again.
     Restored,
     /// Somebody cannot decode this device's video and wants a full picture:
-    /// the next video frame should be a keyframe.
-    KeyframeWanted,
+    /// the next frame of the camera, or of the shared screen when `screen`,
+    /// should be a keyframe.
+    KeyframeWanted { screen: bool },
     /// Either connection failed, and why. The call is over for this device;
     /// to carry on, join again (with fresh [`crate::keys::CallKeys`]).
     Failed(String),
@@ -332,8 +333,9 @@ impl Link {
                         break;
                     }
                     Ok(RtcOutput::Event(e)) => match e {
-                        Event::KeyframeRequest(_) if leg == Leg::Up => {
-                            out.push(Output::KeyframeWanted);
+                        Event::KeyframeRequest(r) if leg == Leg::Up => {
+                            let screen = self.screen == Some(r.mid);
+                            out.push(Output::KeyframeWanted { screen });
                         }
                         Event::Connected if leg == Leg::Up => {
                             self.connected = true;
@@ -687,7 +689,7 @@ mod tests {
                         }
                         Output::Failed(why) => panic!("a link failed: {why}"),
                         Output::Connected
-                        | Output::KeyframeWanted
+                        | Output::KeyframeWanted { .. }
                         | Output::Lost
                         | Output::Restored => {}
                     }

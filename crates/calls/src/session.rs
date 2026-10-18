@@ -72,6 +72,8 @@ enum Cmd {
     Pcm(Vec<f32>),
     /// A camera picture and when it was taken.
     Picture(video::I420, Instant),
+    /// A shared screen's picture and when it was taken.
+    Screen(video::I420, Instant),
     /// End the call. Said, not implied by the channel closing: a camera
     /// thread's [`PictureSink`] holds a sender of its own, so the channel stays
     /// open for as long as the camera does.
@@ -134,6 +136,9 @@ struct Shared {
     /// set by the encoder thread once it knows (hardware sends more), read by
     /// the app to tell the camera ([`Session::send_size`]).
     send_size: AtomicU64,
+    /// The media id of the screen track this device offers, for
+    /// `CallJoin.screen` ([`Session::screen_mid`]); set before the offer is.
+    screen_mid: Mutex<Option<String>>,
 }
 
 fn pack(size: (u32, u32)) -> u64 {
@@ -251,6 +256,21 @@ impl Session {
         self.send(Cmd::Picture(frame, Instant::now()));
     }
 
+    /// One picture of the screen this device shares, any size (sent at up to
+    /// 1280×720, [`video::screen_size`]). A few a second is plenty; one that
+    /// arrives while the screen's encoder is busy is dropped. The forwarder
+    /// passes them on only while the roster says this device is sharing.
+    pub fn send_screen(&self, frame: video::I420) {
+        self.send(Cmd::Screen(frame, Instant::now()));
+    }
+
+    /// The media id of this device's screen track, for `CallJoin.screen`:
+    /// set by the time [`Event::Offer`] arrives.
+    #[must_use]
+    pub fn screen_mid(&self) -> Option<String> {
+        self.shared.screen_mid.lock().ok().and_then(|m| m.clone())
+    }
+
     /// A handle a camera thread can send pictures through directly, so video
     /// runs at the camera's pace rather than the app's frame rate — which on a
     /// slow frame (or a software renderer) would be the video's frame rate.
@@ -358,7 +378,9 @@ struct VideoEncoder {
 }
 
 impl VideoEncoder {
-    fn start(make: EncoderFactory, shared: Arc<Shared>) -> Self {
+    /// `report_size`: this encoder is the camera's, whose size the app
+    /// reads to tell the camera ([`Session::send_size`]); a screen's is not.
+    fn start(make: EncoderFactory, shared: Arc<Shared>, report_size: bool) -> Self {
         let (tx, frames) = mpsc::sync_channel::<(video::I420, Instant, bool)>(1);
         let (out, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -369,9 +391,11 @@ impl VideoEncoder {
                 // first picture late, not the call.
                 let mut enc = make();
                 let say_size = |enc: &dyn video::VideoEncode| {
-                    shared
-                        .send_size
-                        .store(pack(enc.picture_size()), Ordering::Relaxed);
+                    if report_size {
+                        shared
+                            .send_size
+                            .store(pack(enc.picture_size()), Ordering::Relaxed);
+                    }
                 };
                 say_size(enc.as_ref());
                 while let Ok((frame, taken, key)) = frames.recv() {
@@ -535,12 +559,23 @@ fn run(
         up.local_addr().map_err(|e| e.to_string())?,
         down.local_addr().map_err(|e| e.to_string())?,
         send_video,
-        false,
+        // A screen track always: offered at the join so sharing needs no
+        // renegotiation, and silent (dropped at the forwarder) until shared.
+        true,
     )
     .map_err(|e| e.to_string())?;
+    if let Ok(mut m) = shared.screen_mid.lock() {
+        *m = link.screen_mid();
+    }
     events.send(Event::Offer(offer)).map_err(|_| "app gone")?;
 
-    let video_encoder = send_video.then(|| VideoEncoder::start(make_encoder, Arc::clone(shared)));
+    let video_encoder =
+        send_video.then(|| VideoEncoder::start(make_encoder, Arc::clone(shared), true));
+    // The shared screen's own encoder, made with its first picture: software
+    // VP9 at up to 1280×720, a few pictures a second.
+    let mut screen_encoder: Option<VideoEncoder> = None;
+    let mut screen_key_wanted = true;
+    let mut first_screen: Option<Instant> = None;
     let video_decoder = VideoDecoder::start(Arc::clone(shared));
     // A receiver asked for a full picture; the next one sent is a keyframe.
     let mut keyframe_wanted = false;
@@ -598,6 +633,21 @@ fn run(
                         }
                     }
                 }
+                Ok(Cmd::Screen(frame, taken)) => {
+                    if !link.is_connected() {
+                        continue;
+                    }
+                    let enc = screen_encoder.get_or_insert_with(|| {
+                        VideoEncoder::start(
+                            Box::new(|| Box::new(video::Encoder::for_screen())),
+                            Arc::clone(shared),
+                            false,
+                        )
+                    });
+                    if enc.offer(frame, taken, screen_key_wanted) {
+                        screen_key_wanted = false;
+                    }
+                }
                 Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                 Err(mpsc::TryRecvError::Empty) => break,
             }
@@ -612,6 +662,16 @@ fn run(
                 let first = *first_picture.get_or_insert(taken);
                 let time = taken.saturating_duration_since(first);
                 let _ = link.send(now, codec, time, sealed);
+            }
+        }
+        if let Some(enc) = &screen_encoder {
+            for (codec, taken, bytes) in enc.rx.try_iter() {
+                let Ok(sealed) = keys.seal(codec, &bytes) else {
+                    continue;
+                };
+                let first = *first_screen.get_or_insert(taken);
+                let time = taken.saturating_duration_since(first);
+                let _ = link.send_screen(now, codec, time, sealed);
             }
         }
 
@@ -695,7 +755,8 @@ fn run(
                 Output::Restored => {
                     let _ = events.send(Event::Reconnected);
                 }
-                Output::KeyframeWanted => keyframe_wanted = true,
+                Output::KeyframeWanted { screen: false } => keyframe_wanted = true,
+                Output::KeyframeWanted { screen: true } => screen_key_wanted = true,
                 Output::Failed(why) => return Err(format!("the call's connection failed: {why}")),
             }
         }
@@ -785,10 +846,12 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             };
+            let screen = session.screen_mid();
+            assert!(screen.is_some(), "every join offers a screen track");
             let (id, answer) = sfu
                 .lock()
                 .unwrap()
-                .join(Instant::now(), g.clone(), &offer, None)
+                .join(Instant::now(), g.clone(), &offer, screen.as_deref())
                 .unwrap();
             ids.push(id);
             session.joined(answer);
@@ -801,13 +864,22 @@ mod tests {
             );
         }
 
+        // Alice shares her screen: the forwarder holds a screen until the
+        // roster says so, which here is this call.
+        sfu.lock()
+            .unwrap()
+            .hold_screen(Instant::now(), ids[0], false);
+
         let frame = opus::frame_samples(rate);
         let mut heard: Vec<f32> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
+        let mut screens: Vec<(u32, u32)> = Vec::new();
         let mut connected = false;
         let mut n = 0usize;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && (heard.len() < frame * 60 || seen.len() < 10) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline
+            && (heard.len() < frame * 60 || seen.len() < 10 || screens.len() < 2)
+        {
             for s in signals.lock().unwrap().drain(..) {
                 if let Signal::Offer { to, sdp, tracks } = s {
                     let session = if to == ids[0] { &sa } else { &sb };
@@ -833,12 +905,15 @@ mod tests {
                 }
             }
             for (from, picture) in sb.take_pictures() {
-                assert_eq!(from, (ids[0], Kind::Video));
+                assert_eq!(from.0, ids[0]);
                 assert_eq!(
                     picture.rgba.len(),
                     (picture.width * picture.height * 4) as usize
                 );
-                seen.extend(picture.test_number);
+                match from.1 {
+                    Kind::Screen => screens.push((picture.width, picture.height)),
+                    _ => seen.extend(picture.test_number),
+                }
             }
             if connected {
                 let pcm: Vec<f32> = (0..frame)
@@ -852,6 +927,10 @@ mod tests {
                 // takes what it can and drops the rest, as with a camera.
                 if n % 2 == 0 {
                     sa.send_picture(video::test_pattern(n as u64 / 2));
+                }
+                // A screen, twice a second, at a desktop's size.
+                if n % 25 == 0 {
+                    sa.send_screen(video::test_pattern(n as u64).scaled(1920, 1080));
                 }
                 n += 1;
             }
@@ -874,5 +953,8 @@ mod tests {
         // Video: pictures arrive, decoded, and in the order they were taken.
         assert!(seen.len() >= 10, "bob saw {} pictures", seen.len());
         assert!(seen.windows(2).all(|w| w[0] < w[1]), "in order: {seen:?}");
+        // The screen: its own track, at the screen's size, not the camera's.
+        assert!(screens.len() >= 2, "bob saw {} screens", screens.len());
+        assert!(screens.iter().all(|s| *s == (1280, 720)), "{screens:?}");
     }
 }

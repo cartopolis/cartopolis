@@ -136,6 +136,64 @@ impl I420 {
         Some(out)
     }
 
+    /// From 32-bit pixels, as screens are captured: RGBA (Android's
+    /// `ImageReader`) or, with `bgra`, BGRA (the desktops'). `stride` is the
+    /// bytes from one row to the next, which may exceed `width * 4`. BT.601
+    /// limited range, what both codecs assume; chroma averaged over each 2×2.
+    #[must_use]
+    pub fn from_rgba(
+        width: u32,
+        height: u32,
+        stride: usize,
+        px: &[u8],
+        bgra: bool,
+    ) -> Option<Self> {
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 || stride < w * 4 || px.len() < (h - 1) * stride + w * 4 {
+            return None;
+        }
+        let (cw, ch) = chroma(width, height);
+        let mut out = Self::zeroed(width, height);
+        let rgb = |x: usize, y: usize| -> (i32, i32, i32) {
+            let o = y * stride + x * 4;
+            let (a, b) = (i32::from(px[o]), i32::from(px[o + 2]));
+            let g = i32::from(px[o + 1]);
+            if bgra {
+                (b, g, a)
+            } else {
+                (a, g, b)
+            }
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let (r, g, b) = rgb(x, y);
+                out.y[y * w + x] =
+                    (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+            }
+        }
+        for cy in 0..ch {
+            for cx in 0..cw {
+                let (mut r, mut g, mut b, mut n) = (0, 0, 0, 0);
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (x, y) = (cx * 2 + dx, cy * 2 + dy);
+                    if x < w && y < h {
+                        let p = rgb(x, y);
+                        r += p.0;
+                        g += p.1;
+                        b += p.2;
+                        n += 1;
+                    }
+                }
+                let (r, g, b) = (r / n, g / n, b / n);
+                out.u[cy * cw + cx] =
+                    (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                out.v[cy * cw + cx] =
+                    (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            }
+        }
+        Some(out)
+    }
+
     /// From three separate planes, each with its own row stride and (for the
     /// chroma) pixel stride: Android's `YUV_420_888`, which is planar or
     /// semi-planar depending on the device and says which only through the
@@ -388,6 +446,27 @@ pub fn call_size(width: u32, height: u32) -> (u32, u32) {
     oriented((WIDTH, HEIGHT), width, height)
 }
 
+/// A shared screen's size for a `width`×`height` capture: as large as the
+/// receivers decode ([`MAX_PIXELS`], 1280×720 or 720×1280 for an upright
+/// phone), never larger than the capture, never turned, even sides. Text must
+/// stay readable, which the camera's 320×240 never would.
+#[must_use]
+pub fn screen_size(width: u32, height: u32) -> (u32, u32) {
+    let (bw, bh) = if height > width {
+        (720, 1280)
+    } else {
+        (1280, 720)
+    };
+    let scale = (f64::from(bw) / f64::from(width.max(1)))
+        .min(f64::from(bh) / f64::from(height.max(1)))
+        .min(1.0);
+    let even = |v: f64| ((v as u32) & !1).max(2);
+    (
+        even(f64::from(width) * scale),
+        even(f64::from(height) * scale),
+    )
+}
+
 enum EncoderInner {
     Vp8(Vp8InterStreamEncoder),
     Vp9(Box<Vp9Encoder>),
@@ -407,6 +486,8 @@ pub struct Encoder {
     height: u32,
     /// Pictures since the last keyframe.
     since_key: u64,
+    /// A shared screen's encoder: sized by [`screen_size`], not the camera's.
+    screen: bool,
 }
 
 impl Encoder {
@@ -446,7 +527,17 @@ impl Encoder {
             width,
             height,
             since_key: 0,
+            screen: false,
         }
+    }
+
+    /// A VP9 encoder for a shared screen: up to 1280×720 ([`screen_size`]),
+    /// for the few pictures a second a screen needs.
+    #[must_use]
+    pub fn for_screen() -> Self {
+        let mut enc = Self::sized(Codec::Vp9, 1280, 720);
+        enc.screen = true;
+        enc
     }
 
     /// The codec this encoder writes.
@@ -462,11 +553,17 @@ impl Encoder {
     /// the stream again with a full picture, which is what both codecs need to
     /// change size and what every receiver's decoder already follows.
     pub fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<u8>, Error> {
-        let size = call_size(frame.width, frame.height);
+        let size = if self.screen {
+            screen_size(frame.width, frame.height)
+        } else {
+            call_size(frame.width, frame.height)
+        };
         let mut key = if size == (self.width, self.height) {
             key
         } else {
+            let screen = self.screen;
             *self = Self::sized(self.codec, size.0, size.1);
+            self.screen = screen;
             true
         };
         let scaled;
@@ -827,6 +924,43 @@ mod tests {
         assert!(Decoder::with_codec(Codec::Vp9)
             .decode_as(Codec::Vp9, &key)
             .is_err());
+    }
+
+    #[test]
+    fn screen_pixels_become_the_codec_s_colours_and_a_screen_stays_readable() {
+        // White and pure red, as RGBA and as BGRA with padded rows.
+        let (w, h, stride) = (4u32, 2u32, 20usize);
+        let mut rgba = vec![0u8; stride * 2];
+        let mut bgra = vec![0u8; stride * 2];
+        for y in 0..2 {
+            for x in 0..4 {
+                let o = y * stride + x * 4;
+                let (r, g, b) = if x < 2 { (255, 255, 255) } else { (255, 0, 0) };
+                rgba[o..o + 4].copy_from_slice(&[r, g, b, 255]);
+                bgra[o..o + 4].copy_from_slice(&[b, g, r, 255]);
+            }
+        }
+        let a = I420::from_rgba(w, h, stride, &rgba, false).unwrap();
+        let b = I420::from_rgba(w, h, stride, &bgra, true).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.y[0], 235, "white is limited-range white");
+        assert_eq!((a.u[1], a.v[1]), (90, 240), "red's chroma");
+        assert!(
+            I420::from_rgba(w, h, 8, &rgba, false).is_none(),
+            "a stride shorter than a row"
+        );
+
+        // A 1080p desktop goes out at 1280×720; an upright phone at 720 wide;
+        // a small window as it is.
+        assert_eq!(screen_size(1920, 1080), (1280, 720));
+        assert_eq!(screen_size(1080, 2400), (576, 1280));
+        assert_eq!(screen_size(800, 601), (800, 600));
+        let mut enc = Encoder::for_screen();
+        let frame = test_pattern(0).scaled(1920, 1080);
+        let coded = enc.encode(&frame, false).unwrap();
+        let mut dec = Decoder::new();
+        let pic = dec.decode_as(Codec::Vp9, &coded).unwrap();
+        assert_eq!((pic.width, pic.height), (1280, 720));
     }
 
     #[test]
