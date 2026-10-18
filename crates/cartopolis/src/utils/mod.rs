@@ -9,6 +9,8 @@ pub mod clipboard;
 // captures and shows photos too, it just has nowhere durable to put them.
 pub mod photo;
 pub mod photo_store;
+// A JPEG's EXIF and XMP kept through a re-encode, and written into the camera's pictures.
+pub mod jpeg_meta;
 // A world snapshot framed as a polaroid, for a public post. Pure pixels, every target.
 pub mod sun;
 pub mod tile_utils;

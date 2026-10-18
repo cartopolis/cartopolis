@@ -16,7 +16,7 @@ developer tools. For build/run instructions and system requirements, see the
 - [Developer panel](#developer-panel)
 - [Taking screenshots](#taking-screenshots)
   - [The documentation set (`cargo shots`)](#the-documentation-set-cargo-shots)
-  - [Field checks from the dev panel](#field-checks-from-the-dev-panel)
+  - [The camera](#the-camera)
 - [Letting an editor drive](#letting-an-editor-drive)
 - [Troubleshooting](#troubleshooting)
 
@@ -414,27 +414,25 @@ is raster — which the route planner can't solve against. `CARTO_TILE_URL` stil
 wins over it.) Unknown keys are a hard error, so a typo fails the run instead of
 quietly doing nothing.
 
-### Field checks from the dev panel
+### The camera
 
-**Developer tools ▸ View ▸ 📷 Field check** compares Cartopolis with the real
-place. It opens the camera; on a phone the world camera follows the phone's
-position, compass and tilt while the screen is up, and on a desktop the pose is
-wherever the camera already is. The shutter makes one picture of three panels
-side by side:
+The orange disc in the middle of the dock opens the camera (also Camera in a
+chat's + menu and in the post composer). Three modes, chosen beside the shutter:
 
-1. **Real**: the photograph.
-2. **Cartopolis**: the world drawn from the same pose, with no UI.
-3. **Aerial**: PDOK's aerial photograph from above, with where you stood as a
-   red dot and the line of sight in red. Only in the Netherlands.
+1. **In world**: a polaroid of the view, with the place and date on it. The map
+   inside the frame can still be dragged to frame it.
+2. **Mixed**: the phone's camera beside Cartopolis drawn from the phone's own
+   position, compass and tilt: side by side held sideways, one above the other
+   held upright. The shutter waits for a GPS fix and a compass heading.
+3. **Real**: the phone's camera alone.
 
-The address, position and direction are written under the panels. **Send to
-viberfox** puts the picture in your direct chat with the agent, which reads the
-pose back as a `[[shot]]` block for `docs/field-checks.toml`. **Save to phone**
-puts it in the gallery under `Pictures/Cartopolis`, with the position, direction
-and time in the photo's location data. **Retake** goes back to the camera. Until
-the phone has a GPS fix and a compass heading the shutter is grey, and the
-capture screen says which one it is waiting for.
-(`docs/notes/field-check.md`.)
+The round button by the shutter flips to a selfie (In world turns the view to
+face your avatar), and the other uploads a picture from the phone instead.
+After the shutter: **Post** (to the community on the map, else a picker),
+**Send** (to the chat it was opened from, else a list of chats), **To phone**
+(the gallery, `Pictures/Cartopolis`) and **Retake**. Every picture carries
+where it was taken, the direction, tilt and lens in its EXIF and XMP, so the
+agent can put the camera back on the same view (`docs/notes/camera.md`).
 
 ## Letting an editor drive
 

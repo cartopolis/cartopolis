@@ -139,12 +139,12 @@ pub fn render_dock(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut say: ResMut<crate::systems::chat_overlay::ChatOverlay>,
     avatars: Query<(), With<crate::components::Avatar>>,
-    chat: Res<crate::systems::chat::ChatState>,
+    mut camera: ResMut<crate::systems::camera_screen::CameraScreen>,
 ) {
     // Driving owns the screen — its own chrome already occupies the bottom.
-    // So does a chat's World view (`chats::render_chat_world`): its sheet and
-    // text field sit on the bottom edge, as the design draws it.
-    if driver.active || chat.world.is_some() {
+    // So does the camera, which is the whole screen. A chat's World view does
+    // not: it keeps the dock, whose chat disc writes to that chat.
+    if driver.active || camera.is_open() {
         menu.open = false;
         return;
     }
@@ -177,9 +177,11 @@ pub fn render_dock(
     let mut clicked: Option<RightPanel> = None;
     let mut menu_clicked = false;
     let mut say_clicked = false;
-    // Say comes and goes with the session; the mode disc and the mark are
-    // always there.
-    let disc_count = ENTRIES.len() + 2 + usize::from(has_session);
+    let mut camera_clicked = false;
+    let has_camera = crate::systems::camera_screen::available();
+    // Say comes and goes with the session, the camera with the platform; the
+    // menu is always there.
+    let disc_count = ENTRIES.len() + 1 + usize::from(has_session) + usize::from(has_camera);
     if !covered {
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
@@ -209,13 +211,14 @@ pub fn render_dock(
                     {
                         say_clicked = true;
                     }
-                    // The camera-mode disc, in the slot the Route disc vacated:
-                    // between the session entries and Places. It wears the
-                    // current mode's glyph and a tap steps to the next mode on
-                    // offer — Follow only in a signed-in session
-                    // (`free_camera::follow_available`); the same cycle Tab
-                    // walks, from the same shared functions.
-                    mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
+                    // The camera, in the middle and orange: taking a picture
+                    // and posting it is what the dock is for most, out walking
+                    // (`docs/mockups/social-camera/`). The same size as every
+                    // other disc. The view-mode disc that sat here is at the
+                    // top right now, with the other view controls.
+                    if has_camera && camera_disc(ui).clicked() {
+                        camera_clicked = true;
+                    }
                     panel_disc(ui, RightPanel::Places);
                     // The menu closes the row: everything that is not a place.
                     //
@@ -241,12 +244,30 @@ pub fn render_dock(
                     clicked = Some(RightPanel::Layers);
                 }
             });
+
+        // The view-mode disc (Follow, Fly, Earth), top right, mirroring the
+        // layers disc: it wears the current mode's glyph and a tap steps to the
+        // next mode on offer — Follow only in a signed-in session
+        // (`free_camera::follow_available`); the same cycle Tab walks. It left
+        // the dock's middle to the camera (2026-10-18).
+        egui::Area::new(egui::Id::new("mode_disc"))
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-LEFT_MARGIN, TOP_MARGIN),
+            )
+            .show(ctx, |ui| {
+                mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
+            });
     }
 
     if let Some(panel) = clicked {
         right_panel.toggle(panel);
         // A panel and the menu are two things asking for the same attention, and
         // on a phone the panel is the whole screen the menu would float over.
+        menu.open = false;
+    }
+    if camera_clicked {
+        camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
         menu.open = false;
     }
     if say_clicked {
@@ -267,6 +288,27 @@ pub fn render_dock(
         // rule would otherwise close it in the frame it opened.
         menu.toggled = true;
     }
+}
+
+/// The camera disc: a round button the size of every other, filled with the
+/// brand orange so the dock's one creative action reads as such.
+fn camera_disc(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::Vec2::splat(theme::ROUND_BUTTON_SIZE);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let r = theme::ROUND_BUTTON_SIZE * 0.5 - 1.0;
+    ui.painter().circle_filled(rect.center(), r, theme::BRAND);
+    if resp.hovered() {
+        ui.painter()
+            .circle_stroke(rect.center(), r, egui::Stroke::new(1.5, theme::CREAM));
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        crate::systems::icons::CAMERA,
+        egui::FontId::proportional(17.0),
+        egui::Color32::WHITE,
+    );
+    resp.on_hover_text("Camera")
 }
 
 /// The camera-mode disc: the current mode's glyph, a tap steps to the next mode

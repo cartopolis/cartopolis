@@ -56,12 +56,15 @@ public final class MainActivity extends NativeActivity {
         }
     }
 
-    /** The answer to the system's "share your screen?" dialog (`ScreenCapture`). */
+    /** The answer to the system's "share your screen?" dialog (`ScreenCapture`),
+     *  and the picture picker's (`ImagePick`). */
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == ScreenCapture.REQUEST) {
             ScreenCapture.onResult(this, resultCode, data);
+        } else if (requestCode == ImagePick.REQUEST) {
+            ImagePick.onResult(this, resultCode, data);
         }
     }
 

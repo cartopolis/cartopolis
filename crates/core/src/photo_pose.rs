@@ -1,16 +1,17 @@
-//! A **field check**: a photograph of a real place and Cartopolis drawn from
-//! the same pose, sent to the agent so it can say where the world is wrong
-//! (`docs/mockups/field-check/`).
+//! The **pose of a picture** from the app's camera (`systems::camera_screen`,
+//! `docs/mockups/social-camera/`): where the phone (or the view) was, which way
+//! it looked, through which lens, when, and how good each of those was.
 //!
-//! This is the pose half: where the phone was, which way it looked, through
-//! which lens, when, and how good each of those was. It travels in the
-//! picture's caption, one marked line of JSON under the sender's own note, so
-//! a field check needs no protocol change — an encrypted chat picture already
-//! carries a caption — and a client that has never heard of it shows the note
-//! and a line of JSON rather than nothing.
+//! Every picture the camera makes carries it in its own EXIF ([`PhotoPose::
+//! exif`], [`PhotoPose::xmp`]), so the file alone is enough to put a camera
+//! back on the same view. A picture sent into a chat also carries it in its
+//! caption, one marked line of JSON under the sender's own note, which needs
+//! no protocol change and is what the agent reads, since it is handed the
+//! chat line and not the file. This replaced the field check (2026-10-18),
+//! which was a developer tool for exactly that and nothing else.
 //!
 //! **Its purpose is that the view can be put back exactly**, by the agent,
-//! later, as often as it likes: [`FieldPose::preset_toml`] writes it as a
+//! later, as often as it likes: [`PhotoPose::preset_toml`] writes it as a
 //! `[[shot]]` block for the screenshot harness (`docs/shots.toml` format), with
 //! the receiver's numbers in a `[shot.measured]` table the harness keeps as data
 //! and never renders.
@@ -24,10 +25,13 @@ use serde::{Deserialize, Serialize};
 /// What opens the pose in a caption: the rest of its line is the JSON. Found
 /// anywhere in a line, because a caption with no note is the pose alone and the
 /// chat line made of it starts with "Picture: ".
-pub const CAPTION_MARKER: &str = "cartopolis:field-check ";
+pub const CAPTION_MARKER: &str = "cartopolis:pose ";
 
-/// The shot group every field check is saved under (`--only field-check`).
-pub const GROUP: &str = "field-check";
+/// The marker field checks were sent with before 2026-10-18, still read.
+const LEGACY_MARKER: &str = "cartopolis:field-check ";
+
+/// The shot group every picture's preset is saved under (`--only photo`).
+pub const GROUP: &str = "photo";
 
 /// Where a phone held up to take a picture is, above the ground, when nothing
 /// measured it. The receiver's own height says where its *antenna* is, and the
@@ -35,24 +39,25 @@ pub const GROUP: &str = "field-check";
 /// pose (`Receiver::altitude_m`) rather than trusted as the camera's height.
 pub const EYE_HEIGHT_M: f64 = 1.5;
 
-/// Each half of the picture is this wide for its height: 3:4, portrait, the
-/// shape of a phone camera's sensor held upright. The photograph is cropped to
-/// it and the render is drawn in it, and [`FieldPose::fov_y_deg`] is the
-/// vertical angle of *that* shape — so a re-render must be made at the same
-/// shape ([`MANIFEST_HEADER`]'s `size`) to frame the same picture.
+/// The shape of a phone camera's sensor held upright, width over height: 3:4.
+/// A picture held sideways is the other way round. [`PhotoPose::aspect`] says
+/// which shape a pose's [`PhotoPose::fov_y_deg`] is the vertical angle of, so a
+/// re-render must be made at that shape to frame the same picture.
 pub const PICTURE_ASPECT: f32 = 3.0 / 4.0;
 
-/// The top of `docs/field-checks.toml`, for whoever creates it: the run-wide
-/// settings every field check is re-rendered with. The size has the picture's
-/// shape ([`PICTURE_ASPECT`]); the tile source is pinned as in the other
-/// manifests; the aerial photograph is written beside every render.
+/// The top of `docs/photos.toml`, for whoever creates it: the run-wide
+/// settings every picture is re-rendered with. The size is a phone held
+/// upright ([`PICTURE_ASPECT`]); a picture taken sideways says so in its
+/// `[shot.measured]` `aspect` and needs a run of its own at that shape. The
+/// tile source is pinned as in the other manifests; the aerial photograph is
+/// written beside every render.
 pub const MANIFEST_HEADER: &str = "\
-# Field checks: places photographed in the field, re-rendered from the pose the
-# photograph was taken at. Each [[shot]] is a field check's FieldPose::preset_toml,
-# appended by the agent that received it. Re-render one, or all of them:
+# Pictures taken with the app's camera, re-rendered from the pose each was
+# taken at. Each [[shot]] is a picture's PhotoPose::preset_toml, appended by the
+# agent that received it. Re-render one, or all of them:
 #
-#   cargo shots --shots docs/field-checks.toml --only field-2026-10-15-120311
-#   cargo shots --shots docs/field-checks.toml --only field-check
+#   cargo shots --shots docs/photos.toml --only photo-2026-10-15-120311
+#   cargo shots --shots docs/photos.toml --only photo
 tile_url = \"https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}\"
 size = \"750x1000\"
 out_dir = \"gpu\"
@@ -129,7 +134,7 @@ pub struct Receiver {
 
 /// A photograph's pose.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FieldPose {
+pub struct PhotoPose {
     pub lat: f64,
     pub lng: f64,
     /// The camera's height above the ground at (`lat`, `lng`), metres.
@@ -143,9 +148,17 @@ pub struct FieldPose {
     /// camera's `YXZ` Euler rotation, read off the phone's attitude in the same
     /// convention the renderer applies it, so it needs no interpretation.
     pub roll_deg: f32,
-    /// The vertical field of view of the picture's half, degrees — of the
-    /// photograph as cropped to [`PICTURE_ASPECT`], which is also the render's.
+    /// The vertical field of view of the picture, degrees: of the frame
+    /// [`Self::aspect`] describes, which in a Mixed picture is each half.
     pub fov_y_deg: f32,
+    /// The picture's width over its height (each half's, in a Mixed one).
+    /// Field checks before 2026-10-18 were all 3:4 and carry no value.
+    #[serde(default = "upright")]
+    pub aspect: f32,
+    /// How it was taken: "world" (a polaroid of the view), "mixed" (the
+    /// photograph beside the view) or "real" (the photograph alone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub camera: Facing,
     /// The shutter, Unix milliseconds UTC.
     pub taken_ms: u64,
@@ -174,11 +187,15 @@ pub struct FieldPose {
     pub client: String,
 }
 
+fn upright() -> f32 {
+    PICTURE_ASPECT
+}
+
 /// The longest place name written under a picture, in characters; a longer
 /// one is cut with an ellipsis so the line still fits.
 const PLACE_MAX_CHARS: usize = 48;
 
-impl FieldPose {
+impl PhotoPose {
     /// Every number a renderer will be handed is a real one.
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -233,11 +250,11 @@ impl FieldPose {
     }
 
     /// A name that sorts in the order the checks were taken and never repeats
-    /// for one person walking: `field-2026-10-15-120311`.
+    /// for one person walking: `photo-2026-10-15-120311`.
     #[must_use]
     pub fn name(&self) -> String {
         let (y, m, d, h, mi, s) = self.taken_utc();
-        format!("field-{y:04}-{m:02}-{d:02}-{h:02}{mi:02}{s:02}")
+        format!("photo-{y:04}-{m:02}-{d:02}-{h:02}{mi:02}{s:02}")
     }
 
     /// The caption for the picture: the sender's note, then the pose line.
@@ -254,12 +271,12 @@ impl FieldPose {
 
     /// The sender's note and the pose, if the caption carries one.
     #[must_use]
-    pub fn from_caption(caption: &str) -> Option<(String, FieldPose)> {
+    pub fn from_caption(caption: &str) -> Option<(String, PhotoPose)> {
         let pose = caption
             .lines()
             .find_map(pose_json)
-            .and_then(|json| serde_json::from_str::<FieldPose>(json).ok())
-            .filter(FieldPose::is_valid)?;
+            .and_then(|json| serde_json::from_str::<PhotoPose>(json).ok())
+            .filter(PhotoPose::is_valid)?;
         Some((display_caption(caption), pose))
     }
 
@@ -311,8 +328,8 @@ impl FieldPose {
 
     /// The pose as a `[[shot]]` block for the screenshot harness, with what was
     /// measured in a `[shot.measured]` table. Appending it to
-    /// `docs/field-checks.toml` makes the view one the agent can put the
-    /// camera back on at any time: `cargo shots --shots docs/field-checks.toml
+    /// `docs/photos.toml` makes the view one the agent can put the
+    /// camera back on at any time: `cargo shots --shots docs/photos.toml
     /// --only <name>`.
     #[must_use]
     pub fn preset_toml(&self) -> String {
@@ -348,6 +365,12 @@ impl FieldPose {
             })
         );
         t += &format!("client = {}\n", toml_str(&self.client));
+        // The shape `fov` is the vertical angle of: a run at another shape
+        // frames a different picture (`MANIFEST_HEADER`).
+        t += &format!("aspect = {:.4}\n", self.aspect);
+        if let Some(m) = &self.mode {
+            t += &format!("mode = {}\n", toml_str(m));
+        }
         if let Some(a) = self.accuracy_m {
             t += &format!("accuracy_m = {a:.3}\n");
         }
@@ -393,7 +416,7 @@ impl FieldPose {
     }
 }
 
-impl FieldPose {
+impl PhotoPose {
     /// The pose as an EXIF block (a little-endian TIFF structure, what a JPEG's
     /// APP1 segment carries after `Exif\0\0`), so a field check saved to a
     /// phone's gallery is a photo the gallery, a map and any EXIF reader place
@@ -407,7 +430,7 @@ impl FieldPose {
     ///   rotation vector is referenced to magnetic north and nothing here
     ///   applies the declination. A pose from the app's own view is true north.
     /// - The UserComment is the caption's pose line ([`Self::caption`]), so the
-    ///   file alone is enough to put the camera back: `FieldPose::from_caption`
+    ///   file alone is enough to put the camera back: `PhotoPose::from_caption`
     ///   reads it as it reads a chat picture's caption.
     #[must_use]
     pub fn exif(&self) -> Vec<u8> {
@@ -416,7 +439,7 @@ impl FieldPose {
         let description = self
             .place
             .clone()
-            .unwrap_or_else(|| "Cartopolis field check".to_string());
+            .unwrap_or_else(|| "Cartopolis".to_string());
         let mut comment = b"ASCII\0\0\0".to_vec();
         comment.extend_from_slice(self.caption("").as_bytes());
 
@@ -451,14 +474,23 @@ impl FieldPose {
         if let Some(a) = self.accuracy_m {
             gps.push(Tag::rationals(0x001F, &[(f64::from(a), 1000)]));
         }
-        let exif = vec![
+        let mut exif = vec![
             Tag::ascii(0x9003, &stamp),
             Tag::ascii(0x9011, "+00:00"),
             Tag::undefined(0x9286, &comment),
         ];
+        // The lens as a 35 mm camera's: the focal length that gives a 24 × 36
+        // frame of this shape the same vertical angle. What a gallery shows as
+        // "26 mm", and enough with the shape to rebuild the angle.
+        if let Some(f) = self.focal_35mm() {
+            exif.push(Tag::short(0xA405, f));
+        }
         let ifd0 = |exif_at: u32, gps_at: u32| {
             vec![
                 Tag::ascii(0x010E, &description),
+                // The pixels are already the right way up, whatever way the
+                // phone was held: a reader must not turn them again.
+                Tag::short(0x0112, 1),
                 Tag::ascii(0x0131, &format!("Cartopolis {}", self.client)),
                 Tag::ascii(0x0132, &stamp),
                 Tag::long(0x8769, exif_at),
@@ -477,6 +509,59 @@ impl FieldPose {
         write_ifd(&mut out, &gps);
         out
     }
+
+    /// The 35 mm-equivalent focal length of [`Self::fov_y_deg`] for a frame of
+    /// [`Self::aspect`]: the frame's vertical side on 24 × 36 film is 36 mm
+    /// held upright and 24 mm held sideways.
+    #[must_use]
+    pub fn focal_35mm(&self) -> Option<u16> {
+        let side = if self.aspect < 1.0 { 36.0 } else { 24.0 };
+        let half = (self.fov_y_deg.to_radians() / 2.0).tan();
+        (half > 0.0 && half.is_finite())
+            .then(|| (side / 2.0 / half).round())
+            .filter(|f| (1.0..=2000.0).contains(f))
+            .map(|f| f as u16)
+    }
+
+    /// The angles EXIF has no tag for, as an XMP packet: heading, pitch and
+    /// roll in this module's own conventions, the lens and the height, under
+    /// a namespace of the app's own so no reader mistakes them for another
+    /// tool's (a drone's gimbal pitch, for one, counts down from the horizon
+    /// to −90). What `jpeg::with_metadata` puts in the file beside the EXIF.
+    #[must_use]
+    pub fn xmp(&self) -> String {
+        let mode = self.mode.as_deref().unwrap_or("");
+        format!(
+            "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
+             <x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\
+             <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+             <rdf:Description rdf:about=\"\" xmlns:cartopolis=\"https://cartopolis.org/ns/pose/1.0/\" \
+             cartopolis:HeadingDeg=\"{:.2}\" cartopolis:PitchDeg=\"{:.2}\" \
+             cartopolis:RollDeg=\"{:.2}\" cartopolis:FovYDeg=\"{:.3}\" \
+             cartopolis:Aspect=\"{:.4}\" cartopolis:HeightM=\"{:.2}\" \
+             cartopolis:Latitude=\"{:.8}\" cartopolis:Longitude=\"{:.8}\" \
+             cartopolis:Camera=\"{}\" cartopolis:Mode=\"{}\"/>\
+             </rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>",
+            self.heading_deg.rem_euclid(360.0),
+            self.pitch_deg,
+            self.roll_deg,
+            self.fov_y_deg,
+            self.aspect,
+            self.height_m,
+            self.lat,
+            self.lng,
+            self.camera.label(),
+            xml_attr(mode),
+        )
+    }
+}
+
+/// Text safe inside an XML attribute.
+fn xml_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// One EXIF field: its tag, TIFF type, count and value bytes.
@@ -506,6 +591,14 @@ impl Tag {
             kind: 2,
             count: data.len() as u32,
             data,
+        }
+    }
+    fn short(tag: u16, v: u16) -> Self {
+        Self {
+            tag,
+            kind: 3,
+            count: 1,
+            data: v.to_le_bytes().to_vec(),
         }
     }
     fn long(tag: u16, v: u32) -> Self {
@@ -594,47 +687,53 @@ fn write_ifd(out: &mut Vec<u8>, tags: &[Tag]) {
     out.extend_from_slice(&values);
 }
 
-/// The centred crop of a `width × height` picture to [`PICTURE_ASPECT`]:
-/// `(x, y, w, h)` in its pixels.
+/// The centred crop of a `width × height` picture to `aspect` (width over
+/// height): `(x, y, w, h)` in its pixels.
 #[must_use]
-pub fn picture_crop(width: u32, height: u32) -> (u32, u32, u32, u32) {
+pub fn crop_to(width: u32, height: u32, aspect: f32) -> (u32, u32, u32, u32) {
     let (w, h) = (width as f32, height as f32);
-    if w / h > PICTURE_ASPECT {
-        let cw = ((h * PICTURE_ASPECT).round() as u32).clamp(1, width);
+    if w / h > aspect {
+        let cw = ((h * aspect).round() as u32).clamp(1, width);
         ((width - cw) / 2, 0, cw, height)
     } else {
-        let ch = ((w / PICTURE_ASPECT).round() as u32).clamp(1, height);
+        let ch = ((w / aspect).round() as u32).clamp(1, height);
         (0, (height - ch) / 2, width, ch)
     }
 }
 
-/// The vertical field of view of [`picture_crop`] of a picture whose own
-/// vertical field of view is `fov_y_deg`: unchanged when the crop takes the
-/// sides, narrower when it takes the top and bottom.
+/// The vertical field of view of [`crop_to`] of a picture whose own vertical
+/// field of view is `fov_y_deg`: unchanged when the crop takes the sides,
+/// narrower when it takes the top and bottom.
 #[must_use]
-pub fn cropped_fov_y_deg(width: u32, height: u32, fov_y_deg: f32) -> f32 {
-    let (_, _, _, ch) = picture_crop(width, height);
+pub fn cropped_fov_y_deg(width: u32, height: u32, aspect: f32, fov_y_deg: f32) -> f32 {
+    let (_, _, _, ch) = crop_to(width, height, aspect);
     let half = (fov_y_deg.to_radians() / 2.0).tan() * ch as f32 / height.max(1) as f32;
     2.0 * half.atan().to_degrees()
 }
 
 /// The vertical field of view to give a camera drawing into a `width ×
-/// height` window so that the window's [`picture_crop`] sees `fov_y_deg`
+/// height` window so that the window's [`crop_to`] `aspect` sees `fov_y_deg`
 /// vertically — the inverse of [`cropped_fov_y_deg`]. A phone held upright is
 /// taller than 3:4, so its window must see more than the picture does.
 #[must_use]
-pub fn window_fov_y_deg(width: u32, height: u32, fov_y_deg: f32) -> f32 {
-    let (_, _, _, ch) = picture_crop(width, height);
+pub fn window_fov_y_deg(width: u32, height: u32, aspect: f32, fov_y_deg: f32) -> f32 {
+    let (_, _, _, ch) = crop_to(width, height, aspect);
     let half = (fov_y_deg.to_radians() / 2.0).tan() * height as f32 / ch.max(1) as f32;
     2.0 * half.atan().to_degrees()
 }
 
 /// The pose's JSON in a line, wherever the marker stands in it. Not only at
 /// the start: a caption with no note *is* the pose line, and the chat line it
-/// becomes is `Picture: cartopolis:field-check {…}` — one line, marker inside.
+/// becomes is `Picture: cartopolis:pose {…}` — one line, marker inside.
 fn pose_json(line: &str) -> Option<&str> {
-    line.find(CAPTION_MARKER)
-        .map(|i| &line[i + CAPTION_MARKER.len()..])
+    marker_at(line).map(|(i, m)| &line[i + m.len()..])
+}
+
+/// Where a marker, the current one or the field check's, stands in a line.
+fn marker_at(line: &str) -> Option<(usize, &'static str)> {
+    [CAPTION_MARKER, LEGACY_MARKER]
+        .into_iter()
+        .find_map(|m| line.find(m).map(|i| (i, m)))
 }
 
 /// A caption as a person should read it: everything but the pose.
@@ -642,8 +741,8 @@ fn pose_json(line: &str) -> Option<&str> {
 pub fn display_caption(caption: &str) -> String {
     caption
         .lines()
-        .map(|l| match l.find(CAPTION_MARKER) {
-            Some(i) => l[..i].trim_end(),
+        .map(|l| match marker_at(l) {
+            Some((i, _)) => l[..i].trim_end(),
             None => l,
         })
         .filter(|l| !l.trim().is_empty())
@@ -653,9 +752,9 @@ pub fn display_caption(caption: &str) -> String {
         .to_string()
 }
 
-/// Whether a caption, or a chat line made of one, is a field check's.
+/// Whether a caption, or a chat line made of one, carries a pose.
 #[must_use]
-pub fn is_field_check(caption: &str) -> bool {
+pub fn has_pose(caption: &str) -> bool {
     caption.lines().any(|l| pose_json(l).is_some())
 }
 
@@ -697,8 +796,8 @@ fn toml_str(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn grote_markt() -> FieldPose {
-        FieldPose {
+    fn grote_markt() -> PhotoPose {
+        PhotoPose {
             lat: 53.2183,
             lng: 6.5679,
             height_m: EYE_HEIGHT_M,
@@ -706,6 +805,8 @@ mod tests {
             pitch_deg: 14.0,
             roll_deg: 0.4,
             fov_y_deg: 68.0,
+            aspect: PICTURE_ASPECT,
+            mode: Some("mixed".into()),
             camera: Facing::Rear,
             // 2026-10-15T12:03:11Z
             taken_ms: 1_792_065_791_000,
@@ -733,19 +834,19 @@ mod tests {
     #[test]
     fn a_picture_is_cropped_to_three_by_four_and_its_lens_follows() {
         // Already 3:4: nothing cut, nothing changes.
-        assert_eq!(picture_crop(1440, 1920), (0, 0, 1440, 1920));
-        assert!((cropped_fov_y_deg(1440, 1920, 70.0) - 70.0).abs() < 1e-3);
+        assert_eq!(crop_to(1440, 1920, PICTURE_ASPECT), (0, 0, 1440, 1920));
+        assert!((cropped_fov_y_deg(1440, 1920, PICTURE_ASPECT, 70.0) - 70.0).abs() < 1e-3);
         // A tall phone window: the top and bottom go, the angle narrows.
-        assert_eq!(picture_crop(1080, 2400), (0, 480, 1080, 1440));
-        let narrowed = cropped_fov_y_deg(1080, 2400, 100.0);
+        assert_eq!(crop_to(1080, 2400, PICTURE_ASPECT), (0, 480, 1080, 1440));
+        let narrowed = cropped_fov_y_deg(1080, 2400, PICTURE_ASPECT, 100.0);
         assert!(narrowed < 100.0);
         // …and the window's lens is the inverse: give the window this, and its
         // crop sees exactly what the photograph did.
-        let window = window_fov_y_deg(1080, 2400, narrowed);
+        let window = window_fov_y_deg(1080, 2400, PICTURE_ASPECT, narrowed);
         assert!((window - 100.0).abs() < 1e-3, "{window}");
         // A landscape desktop window: the sides go, the angle is kept.
-        assert_eq!(picture_crop(1600, 900), (462, 0, 675, 900));
-        assert!((window_fov_y_deg(1600, 900, 60.0) - 60.0).abs() < 1e-3);
+        assert_eq!(crop_to(1600, 900, PICTURE_ASPECT), (462, 0, 675, 900));
+        assert!((window_fov_y_deg(1600, 900, PICTURE_ASPECT, 60.0) - 60.0).abs() < 1e-3);
     }
 
     #[test]
@@ -754,7 +855,7 @@ mod tests {
         assert_eq!(p.taken_utc(), (2026, 10, 15, 12, 3, 11));
         assert_eq!(p.date(), "2026-10-15");
         assert!((p.hours_utc() - (12.0 + 3.0 / 60.0 + 11.0 / 3600.0)).abs() < 1e-4);
-        assert_eq!(p.name(), "field-2026-10-15-120311");
+        assert_eq!(p.name(), "photo-2026-10-15-120311");
     }
 
     #[test]
@@ -781,11 +882,23 @@ mod tests {
         let p = grote_markt();
         let caption = p.caption("  the tower is all wrong ");
         assert!(caption.starts_with("the tower is all wrong\n"));
-        assert!(is_field_check(&caption));
-        let (note, back) = FieldPose::from_caption(&caption).expect("reads back");
+        assert!(has_pose(&caption));
+        let (note, back) = PhotoPose::from_caption(&caption).expect("reads back");
         assert_eq!(note, "the tower is all wrong");
         assert_eq!(back, p);
         assert_eq!(display_caption(&caption), "the tower is all wrong");
+    }
+
+    /// A field check sent before the camera replaced it still reads, as 3:4.
+    #[test]
+    fn a_field_check_caption_still_reads() {
+        let old = "look\ncartopolis:field-check {\"lat\":53.2,\"lng\":6.5,\"height_m\":1.5,\
+                   \"heading_deg\":9,\"pitch_deg\":0,\"roll_deg\":0,\"fov_y_deg\":60,\
+                   \"camera\":\"rear\",\"taken_ms\":0,\"source\":\"sensors\",\"client\":\"x\"}";
+        let (note, pose) = PhotoPose::from_caption(old).expect("reads");
+        assert_eq!(note, "look");
+        assert!((pose.aspect - PICTURE_ASPECT).abs() < 1e-6);
+        assert_eq!(display_caption(old), "look");
     }
 
     #[test]
@@ -793,23 +906,23 @@ mod tests {
         let caption = grote_markt().caption("");
         assert!(caption.starts_with(CAPTION_MARKER));
         assert_eq!(display_caption(&caption), "");
-        assert_eq!(FieldPose::from_caption(&caption).unwrap().0, "");
+        assert_eq!(PhotoPose::from_caption(&caption).unwrap().0, "");
     }
 
     #[test]
     fn the_pose_is_found_in_the_chat_line_a_caption_with_no_note_becomes() {
         // `cartopolis_chat::picture_caption` puts the caption after a prefix.
         let line = format!("Picture: {}", grote_markt().caption(""));
-        assert!(is_field_check(&line));
-        let (note, pose) = FieldPose::from_caption(&line).expect("found mid-line");
+        assert!(has_pose(&line));
+        let (note, pose) = PhotoPose::from_caption(&line).expect("found mid-line");
         assert_eq!(pose, grote_markt());
         assert_eq!(note, "Picture:");
     }
 
     #[test]
     fn an_ordinary_caption_is_not_a_field_check() {
-        assert!(!is_field_check("look at this"));
-        assert!(FieldPose::from_caption("look at this").is_none());
+        assert!(!has_pose("look at this"));
+        assert!(PhotoPose::from_caption("look at this").is_none());
         assert_eq!(display_caption("look at this"), "look at this");
     }
 
@@ -817,18 +930,16 @@ mod tests {
     fn a_pose_that_is_not_a_place_is_refused() {
         let mut p = grote_markt();
         p.lat = 91.0;
-        assert!(FieldPose::from_caption(&p.caption("x")).is_none());
+        assert!(PhotoPose::from_caption(&p.caption("x")).is_none());
         let mut p = grote_markt();
         p.fov_y_deg = f32::NAN;
-        assert!(FieldPose::from_caption(&p.caption("x")).is_none());
+        assert!(PhotoPose::from_caption(&p.caption("x")).is_none());
     }
 
     #[test]
     fn the_preset_carries_the_view_and_the_measurements_apart() {
         let t = grote_markt().preset_toml();
-        assert!(t.starts_with(
-            "[[shot]]\nname = \"field-2026-10-15-120311\"\ngroup = \"field-check\"\n"
-        ));
+        assert!(t.starts_with("[[shot]]\nname = \"photo-2026-10-15-120311\"\ngroup = \"photo\"\n"));
         assert!(
             t.contains("at = [53.2183000, 6.5679000, 1.50]\non_ground = true\n"),
             "{t}"
@@ -894,7 +1005,7 @@ mod tests {
         assert!(p
             .preset_toml()
             .contains("description = \"Grote Markt 1, Groningen\"\n"));
-        assert_eq!(FieldPose::from_caption(&p.caption("")).unwrap().1, p);
+        assert_eq!(PhotoPose::from_caption(&p.caption("")).unwrap().1, p);
     }
 
     /// A field from an EXIF block by walking it as a reader would: IFD0, then
@@ -969,11 +1080,19 @@ mod tests {
             exif_field(&tiff, &[0x010E]).2,
             b"Grote Markt 1, Groningen\0"
         );
+        // Upright already, and a 68° upright frame is a 27 mm lens.
+        assert_eq!(exif_field(&tiff, &[0x0112]), (3, 1, vec![1, 0]));
+        assert_eq!(exif_field(&tiff, &[0x8769, 0xA405]), (3, 1, vec![27, 0]));
+        // The angles EXIF has no tag for are in the XMP.
+        let xmp = p.xmp();
+        assert!(xmp.contains("cartopolis:PitchDeg=\"14.00\""), "{xmp}");
+        assert!(xmp.contains("cartopolis:RollDeg=\"0.40\""), "{xmp}");
+        assert!(xmp.contains("cartopolis:Mode=\"mixed\""), "{xmp}");
         // The whole pose rides along, readable as a caption is.
         let (kind, _, comment) = exif_field(&tiff, &[0x8769, 0x9286]);
         assert_eq!(kind, 7);
         assert_eq!(&comment[..8], b"ASCII\0\0\0");
-        let back = FieldPose::from_caption(std::str::from_utf8(&comment[8..]).unwrap());
+        let back = PhotoPose::from_caption(std::str::from_utf8(&comment[8..]).unwrap());
         assert_eq!(back.map(|(_, pose)| pose), Some(p));
     }
 

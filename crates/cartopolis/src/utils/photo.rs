@@ -17,11 +17,12 @@
 //!
 //! **EXIF orientation is applied to the pixels, not carried in the file.** Phone
 //! cameras almost always write the sensor's own landscape frame plus a rotation
-//! tag, so a portrait photo is a landscape image with "turn me" attached. The
-//! tag survives our re-encode only if we copy it deliberately — and every later
-//! consumer (egui's texture upload, the thumbnail crop) would have to honour it
-//! independently. Baking the rotation in once means the rest of the client can
-//! treat a stored photo as a plain upright image.
+//! tag, so a portrait photo is a landscape image with "turn me" attached. Every
+//! later consumer (egui's texture upload, the thumbnail crop) would have to
+//! honour it independently, so the rotation is baked in once and the rest of
+//! the client treats a stored photo as a plain upright image. **The rest of the
+//! EXIF and XMP is kept** (since 2026-10-18, `utils::jpeg_meta`), with its
+//! orientation set to upright: a picture keeps where it was taken.
 //!
 //! **The thumbnail is a square centre-crop, not a scaled-down copy.** The Places
 //! row is a list: a thumbnail whose width depends on the photo's aspect ratio
@@ -88,8 +89,15 @@ pub fn prepare(bytes: &[u8]) -> Result<Prepared, String> {
         image::imageops::FilterType::CatmullRom,
     );
 
+    // The full image keeps where it was taken: the original's EXIF and XMP go
+    // into the copy, marked upright because its pixels now are. The thumbnail
+    // is a list's tile and carries none.
+    let mut meta = crate::utils::jpeg_meta::read(bytes);
+    if let Some(tiff) = meta.exif.as_mut() {
+        crate::utils::jpeg_meta::set_upright(tiff);
+    }
     Ok(Prepared {
-        full: encode_jpeg(&full_img, FULL_QUALITY)?,
+        full: crate::utils::jpeg_meta::write(&encode_jpeg(&full_img, FULL_QUALITY)?, &meta),
         thumb: encode_jpeg(&thumb_img, THUMB_QUALITY)?,
     })
 }
@@ -244,6 +252,18 @@ mod tests {
 
         let thumb = image::load_from_memory(&prepared.thumb).expect("thumb decodes");
         assert_eq!((thumb.width(), thumb.height()), (THUMB_EDGE, THUMB_EDGE));
+    }
+
+    #[test]
+    fn prepare_keeps_where_a_photo_was_taken() {
+        let meta = crate::utils::jpeg_meta::Meta {
+            exif: Some(b"II*\0\x08\0\0\0\0\0\0\0\0\0".to_vec()),
+            xmp: Some(b"<x:xmpmeta/>".to_vec()),
+        };
+        let original = crate::utils::jpeg_meta::write(&sample(2400, 1200), &meta);
+        let prepared = prepare(&original).expect("prepare");
+        assert_eq!(crate::utils::jpeg_meta::read(&prepared.full), meta);
+        assert!(crate::utils::jpeg_meta::read(&prepared.thumb).is_empty());
     }
 
     #[test]

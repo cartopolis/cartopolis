@@ -6,7 +6,11 @@ updated: 2026-10-18
 
 # Walking, the camera, and posts: mockup
 
-A design proposal, not code. **v3 is the current proposal** (2026-10-18).
+**v3 was agreed and built on 2026-10-18** (`docs/notes/camera.md`). Where the
+build differs from the picture: the XMP angles are under the app's own namespace,
+not `Camera:`; Layers ▸ Community posts has no one-community choice (the chip
+on the map is that choice); and the walking view uses first person's own eye
+height (1.62 m), not 1.5 m.
 
 ## v3: from where you stand, one button size, the full pose
 

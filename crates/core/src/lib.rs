@@ -2,7 +2,6 @@
 
 pub mod address;
 pub mod error;
-pub mod field_check;
 pub mod geo;
 pub mod lens;
 pub mod meeting;
@@ -11,6 +10,7 @@ pub mod moderation;
 pub mod motion;
 pub mod particles;
 pub mod permissions;
+pub mod photo_pose;
 pub mod picture_limits;
 pub mod placeholders;
 pub mod point;

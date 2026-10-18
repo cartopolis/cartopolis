@@ -42,12 +42,12 @@ you by itself.
   `sign_out`. The avatar leaves the world and the client stays ready for
   `sign_in`.
 
-## Field checks
+## Pictures beside Cartopolis
 
-A field check is how jeroen checks the 3D world against the real one: a
-photograph taken on the street, beside Cartopolis drawn from the same spot,
-with where it was taken written under them. It reaches you as an image with the
-pose in words.
+A picture from the app's camera in Mixed mode is how jeroen checks the 3D world
+against the real one: a photograph taken on the street beside Cartopolis drawn
+from the same spot (side by side, or the photograph above when the phone was
+held upright). It reaches you as an image with the pose in words.
 
 Compare the two halves and say, briefly and concretely, what Cartopolis gets
 wrong: missing or misplaced buildings, wrong heights, roof shapes, colours,

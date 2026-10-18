@@ -1,6 +1,6 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "field check"]
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose]
 updated: 2026-10-18
 ---
 
@@ -400,8 +400,8 @@ on this side:
   auto-approval check, not midas, refused the bot's first private `say`.
 - **Its input is `inbox`**, a tool made for the host and not the model: it
   waits like `read_chat` and answers with the lines as `read_chat` words them,
-  then every picture from a private chat as an image. A field check also
-  carries its pose in words, because a host passes content blocks on and drops
+  then every picture from a private chat as an image. A camera picture
+  also carries its pose in words, because a host passes content blocks on and drops
   the structured data. Nothing at all comes back when nobody spoke. Each answer
   becomes one prompt, or joins the next one while a turn runs.
 - **Keep it on one node.** Its private-chat keys are that node's

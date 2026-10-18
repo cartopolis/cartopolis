@@ -233,6 +233,12 @@ impl Communities {
         self.topic(key).is_some()
     }
 
+    /// Seeded for a scripted capture, with no session behind it.
+    #[must_use]
+    pub fn is_demo(&self) -> bool {
+        self.demo
+    }
+
     /// Open a community's screen.
     pub fn show(&mut self, id: Uuid) {
         self.adding = false;

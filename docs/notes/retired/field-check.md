@@ -1,10 +1,18 @@
 ---
-topic: field-check
-triggers: [field check, field_check.rs, FieldPose, field-checks.toml, open_still, view_angles, "see_picture", "photo beside the render", roll, fov, on_ground]
+topic: retired/field-check
+triggers: ["field check", field_check.rs, FieldPose, field-checks.toml]
 updated: 2026-10-18
 ---
 
-# The field check: a photograph and the world from the same pose
+# Retired: the field check
+
+Removed 2026-10-18. Its Mixed picture is now one of the camera's three
+modes, and its pose is in the EXIF of every picture the camera makes
+(`camera.md`, `systems::camera_screen`, `cartopolis_core::photo_pose`). The
+aerial panel was not carried over: the agent renders the aerial from the
+pose when it wants it. What follows is the note as it stood.
+
+## The field check: a photograph and the world from the same pose
 
 A harness for the agent first (`docs/mockups/field-check/`). **Developer tools ▸
 View ▸ Field check** opens a capture screen; one shutter makes one picture of

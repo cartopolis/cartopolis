@@ -8,11 +8,10 @@
 //!
 //! **Why polling rather than a callback or an `async fn`.** The Android arm has
 //! no completion event to hand back. `android-activity` 0.6 exposes no
-//! `onActivityResult`, and this APK is `hasCode="false"` — there is no `classes.dex`
-//! in it and therefore nowhere to put the Java shim that would deliver one
-//! (`docs/notes/android-build.md`). The camera app is launched fire-and-forget
-//! and the only way to learn that it finished is to look at the `MediaStore` row
-//! we handed it. Something has to drive that look, and a Bevy system already runs
+//! `onActivityResult`: the camera app is launched fire-and-forget and the only
+//! way to learn that it finished is to look at the `MediaStore` row we handed
+//! it, and the picture picker's answer reaches `MainActivity.onActivityResult`
+//! in Java (`ImagePick.java`), which Rust can only ask about. Something has to drive that look, and a Bevy system already runs
 //! every frame; the alternative — a thread sleeping in a loop — would hold an
 //! `IoTaskPool` thread for as long as the user takes composing the shot.
 //!
@@ -85,10 +84,9 @@ pub fn action_label() -> &'static str {
     imp::ACTION_LABEL
 }
 
-/// What the image is asked for from. Only the web can tell the three apart: a
-/// desktop has a file dialog and nothing else, and the Android arm has the
-/// camera intent and no picker (`android-activity` surfaces no activity
-/// result, so a gallery's answer could not be read back).
+/// What the image is asked for from. A desktop has a file dialog and nothing
+/// else; Android has the camera intent for a photo and the system's picker
+/// (`ImagePick.java`, whose answer `MainActivity` hands over) for a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// Whatever this platform does by default: a photo of a place, so the rear
@@ -106,7 +104,7 @@ pub enum Source {
 pub fn offers(source: Source) -> bool {
     match source {
         Source::Place => imp::AVAILABLE,
-        Source::File => cfg!(not(target_os = "android")),
+        Source::File => imp::AVAILABLE,
         Source::Selfie => cfg!(any(target_arch = "wasm32", target_os = "android")),
     }
 }
@@ -349,6 +347,8 @@ mod imp {
             cancel: Arc<AtomicBool>,
         },
         Capturing(CameraCapture),
+        /// The system's picture picker is up (`ImagePick.java`).
+        Picking,
         Finished,
     }
 
@@ -394,6 +394,16 @@ mod imp {
                         });
                     }
                 }
+                Self::Picking => {
+                    let outcome = match android::image_pick_poll() {
+                        android::ImagePicked::Pending => return,
+                        android::ImagePicked::Ready(bytes) => Outcome::Ready(bytes),
+                        android::ImagePicked::Cancelled => Outcome::Cancelled,
+                        android::ImagePicked::Failed(why) => Outcome::Failed(why),
+                    };
+                    finish(outcome);
+                    *self = Self::Finished;
+                }
                 Self::Finished => {}
             }
         }
@@ -402,12 +412,18 @@ mod imp {
             match self {
                 Self::Asking { cancel, .. } => cancel.store(true, Ordering::Relaxed),
                 Self::Capturing(capture) => capture.discard(),
-                Self::Finished => {}
+                Self::Picking | Self::Finished => {}
             }
         }
     }
 
-    pub fn start(_slot: Slot, _source: super::Source) -> Result<Inner, String> {
+    pub fn start(_slot: Slot, source: super::Source) -> Result<Inner, String> {
+        // A picture already on the phone needs no camera and no permission:
+        // the picker hands over the one file the person chose.
+        if source == super::Source::File {
+            android::image_pick_start()?;
+            return Ok(Inner::Picking);
+        }
         let answer = Answer::default();
         let cancel = Arc::new(AtomicBool::new(false));
         let (out, stop) = (answer.clone(), cancel.clone());

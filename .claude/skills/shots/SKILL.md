@@ -1,6 +1,6 @@
 ---
 name: shots
-description: Photograph the Cartopolis client headlessly or drive a running one — `--shot` captures, sweeps and metrics, `--expect` gates, `--flicker` z-fight checks, `--aerial-reference`, the `cargo shots` README presets and field checks, `--shot-mode avatar`, and the client's MCP server (`view`, `state`, `bun tools/mcp.ts`). Use whenever a change has to be seen rather than tested — "what does it look like from there?", a render bug, a visual before/after, regenerating docs/img — and to pick which build node a capture should run on.
+description: Photograph the Cartopolis client headlessly or drive a running one — `--shot` captures, sweeps and metrics, `--expect` gates, `--flicker` z-fight checks, `--aerial-reference`, the `cargo shots` README presets and camera pictures' poses, `--shot-mode avatar`, and the client's MCP server (`view`, `state`, `bun tools/mcp.ts`). Use whenever a change has to be seen rather than tested — "what does it look like from there?", a render bug, a visual before/after, regenerating docs/img — and to pick which build node a capture should run on.
 ---
 
 # shots
@@ -164,7 +164,7 @@ or the ground is *right*, not merely drawn: the unified tunnels' first renders
 walled a cycle path across a park by Groningen's ring (2026-09-28) while every
 metric was self-consistent, and only the photograph showed the path at grade.
 
-## The README images and field checks: `cargo shots`
+## The README images and camera pictures: `cargo shots`
 
 `docs/shots.toml` remembers named camera positions (`at = [lat, lng, alt]`,
 `look = [pitch, yaw]`, and per shot `mode` / `time` / `fog` / `clouds` / `rain` /
@@ -193,11 +193,11 @@ has the Chromium and the macOS (`tools/render-html.swift`) commands. Shot order 
 the manifest matters (a solved route and the demo chats' shared location outlive
 their shot). The scenic set the README used to carry is the `views` group.
 
-**A field check is a preset that came from a phone** (`systems::field_check`,
-`docs/notes/field-check.md`): Developer tools ▸ View ▸ Field check makes a
-photograph, Cartopolis from the same pose and the aerial map of where it
-stood, side by side, and sends it to the agent's chat, whose pose `read_chat` hands over as a `[[shot]]` for
-`docs/field-checks.toml`.
+**A camera picture is a preset that came from a phone** (`systems::camera_screen`,
+`docs/notes/camera.md`): every picture the camera makes carries its pose in its
+EXIF and XMP, and one sent to the agent's chat carries it in its caption too,
+which `read_chat` hands over as a `[[shot]]` for `docs/photos.toml`. In Mixed
+mode the picture is the photograph beside Cartopolis from the same pose.
 
 ## When a capture comes back wrong
 

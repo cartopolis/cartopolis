@@ -899,7 +899,7 @@ pub struct DevPanelState {
     /// 06:00-sunrise/18:00-sunset equinox arc. See `utils::sun::sun_direction`.
     pub sun_declination_rad: f32,
     /// The day of the year to light the world for instead of today's: set by a
-    /// scripted capture that names a `date`, because a field check re-rendered
+    /// scripted capture that names a `date`, because a picture re-rendered
     /// later must be lit for the day it was photographed or every shadow moves.
     /// `None` is today.
     pub sun_day_of_year: Option<f32>,
@@ -956,9 +956,9 @@ pub struct ScreenshotState {
     /// A snapshot of the map for a public post's polaroid
     /// (`community_posts`): captured the same way, framed as a polaroid after.
     pub post_snapshot: bool,
-    /// The world half of a field check (`systems::field_check`): captured the
-    /// same chrome-free way and handed back to the field check as pixels.
-    pub field_check_snapshot: bool,
+    /// The world for the camera (`systems::camera_screen`): captured the same
+    /// chrome-free way and handed back to it as pixels.
+    pub camera_snapshot: bool,
     /// A polaroid for your own picture (`systems::faces`): the same capture,
     /// handed back for the viewfinder's square to be cut out of it.
     pub face_snapshot: bool,
@@ -1084,6 +1084,9 @@ pub struct ContextMenuState {
     /// clicked, and re-deriving it later would place the pin somewhere else.
     /// `None` when the map has no anchor yet (nothing streamed).
     pub lat_lng: Option<(f64, f64)>,
+    /// The ring's Post here was chosen at this spot: taken by
+    /// `community_posts::post_here`, which opens the composer there.
+    pub post_here: Option<(f64, f64)>,
 }
 
 /// Twist / taper / top-shear / slice parameters edited together in the dialog.
@@ -1562,13 +1565,13 @@ pub struct CameraState {
     pub free_camera_rotation: Vec2, // pitch, yaw
     /// Fly mode's turn about the line of sight, radians: the third angle of the
     /// same `EulerRot::YXZ` rotation. Nothing a person does sets it, only a
-    /// scripted capture or a field check, which must match a photograph taken
+    /// scripted capture or the camera's Mixed mode, which must match a photograph taken
     /// with the phone held a little crooked. Any jump with a pose puts it back
     /// to level (`CameraPose::apply`).
     pub free_camera_roll: f32,
     /// A vertical field of view, radians, for every mode but Follow (which eases
     /// its own with speed). `None` is the default lens. Like the roll, only a
-    /// scripted capture or a field check sets it — `camera_controls` puts the
+    /// scripted capture or the camera's Mixed mode sets it — `camera_controls` puts the
     /// lens back every frame, so writing the projection directly does nothing —
     /// and any jump with a pose clears it.
     pub free_fov: Option<f32>,

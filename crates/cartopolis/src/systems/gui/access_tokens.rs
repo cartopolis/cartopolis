@@ -422,7 +422,7 @@ pub fn seed_demo(tokens: &mut AccessTokens) {
         },
         TokenInfo {
             id: "t2".into(),
-            label: "field check script".into(),
+            label: "photo script".into(),
             created_at: now - 14 * 24 * 3600,
             expires_at: Some(now + 16 * 24 * 3600),
             ..default()

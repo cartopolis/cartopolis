@@ -2770,7 +2770,7 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<
 const PERM_WRITE_STORAGE: &str = "android.permission.WRITE_EXTERNAL_STORAGE";
 
 /// Put a finished JPEG in the phone's gallery, `Pictures/Cartopolis/<name>`:
-/// what the field check's "Save to phone" does.
+/// what the camera's "To phone" does.
 ///
 /// The same MediaStore row the camera intent is given ([`insert_photo_row`]),
 /// written by us instead, through `ContentResolver.openOutputStream`. A row
@@ -3359,6 +3359,90 @@ pub fn screen_latest(seen: u64) -> Result<Option<(u32, u32, usize, u64, Vec<u8>)
         let px = env.convert_byte_array(&bytes)?;
         Ok(Some((w, h, stride, n, px)))
     })
+}
+
+// ---------------------------------------------------------------------------
+// Picking a picture on the phone (`ImagePick.java`, `platform::photo`)
+// ---------------------------------------------------------------------------
+
+const IMAGE_PICK_BINARY: &str = "eu.garage44.cartopolis.ImagePick";
+
+/// Where a pick has got to ([`image_pick_poll`]).
+pub enum ImagePicked {
+    Pending,
+    Ready(Vec<u8>),
+    Cancelled,
+    Failed(String),
+}
+
+/// Run one static call on `ImagePick`, attached for the call only: a pick is
+/// polled from the UI's own system for the seconds the picker is up.
+fn with_image_pick<T>(
+    what: &str,
+    call: impl for<'l> FnOnce(&mut JNIEnv<'l>, &JClass<'l>, &JObject) -> Result<T, Fail>,
+) -> Result<T, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach_current_thread: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, IMAGE_PICK_BINARY)?;
+        call(env, &class, &activity)
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("ImagePick.{what}: {msg}")
+    })
+}
+
+/// Open the system's picture picker.
+pub fn image_pick_start() -> Result<(), String> {
+    with_image_pick("start", |env, class, activity| {
+        env.call_static_method(
+            class,
+            "start",
+            "(Landroid/app/Activity;)V",
+            &[JValue::Object(activity)],
+        )?;
+        Ok(())
+    })
+}
+
+/// What the picker answered, if it has.
+pub fn image_pick_poll() -> ImagePicked {
+    let got = with_image_pick("poll", |env, class, _| {
+        let s = env
+            .call_static_method(class, "status", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let status: Option<String> = if s.is_null() {
+            None
+        } else {
+            Some(env.get_string(&JString::from(s))?.into())
+        };
+        Ok(match status.as_deref() {
+            None | Some("picking") => ImagePicked::Pending,
+            Some("cancelled") => {
+                env.call_static_method(class, "reset", "()V", &[])?;
+                ImagePicked::Cancelled
+            }
+            Some("ready") => {
+                let bytes = env.call_static_method(class, "take", "()[B", &[])?.l()?;
+                if bytes.is_null() {
+                    ImagePicked::Pending
+                } else {
+                    let bytes = jni::objects::JByteArray::from(bytes);
+                    ImagePicked::Ready(env.convert_byte_array(&bytes)?)
+                }
+            }
+            Some(why) => {
+                let why = why.to_string();
+                env.call_static_method(class, "reset", "()V", &[])?;
+                ImagePicked::Failed(why)
+            }
+        })
+    });
+    got.unwrap_or_else(ImagePicked::Failed)
 }
 
 // ---------------------------------------------------------------------------

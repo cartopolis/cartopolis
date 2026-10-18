@@ -1938,18 +1938,18 @@ fn read_chat(
                 .distance
                 .map(|d| format!(" ({d:.0} m away)"))
                 .unwrap_or_default();
-            let field_check = line.picture.as_ref().and_then(|_| {
-                cartopolis_core::field_check::FieldPose::from_caption(
+            let posed = line.picture.as_ref().and_then(|_| {
+                cartopolis_core::photo_pose::PhotoPose::from_caption(
                     crate::systems::private_chat::caption_of(&line.body).unwrap_or(&line.body),
                 )
             });
-            let seen = if let Some((_, pose)) = &field_check {
-                // A field check: the photograph and Cartopolis side by side, and
-                // the pose to put the camera back on (`systems::field_check`).
+            let seen = if let Some((_, pose)) = &posed {
+                // A picture from the app's camera, with the pose to put a camera
+                // back on (`systems::camera_screen`): in Mixed the photograph and
+                // Cartopolis side by side.
                 format!(
-                    " (a field check, {} — `see_picture` {} shows the photograph beside \
-                     Cartopolis; this reply's `field_check` holds the pose as a \
-                     [[shot]] for docs/field-checks.toml)",
+                    " (a picture with its pose, {} — `see_picture` {} shows it; this \
+                     reply's `pose` holds it as a [[shot]] for docs/photos.toml)",
                     pose.name(),
                     line.seq
                 )
@@ -2012,11 +2012,11 @@ fn read_chat(
                 "text": line.body,
                 "distance_m": line.distance,
                 "picture": line.picture.is_some(),
-                "field_check": line
+                "pose": line
                     .picture
                     .as_ref()
                     .and_then(|_| {
-                        cartopolis_core::field_check::FieldPose::from_caption(
+                        cartopolis_core::photo_pose::PhotoPose::from_caption(
                             crate::systems::private_chat::caption_of(&line.body)
                                 .unwrap_or(&line.body),
                         )
@@ -2026,7 +2026,7 @@ fn read_chat(
                         "note": note,
                         "pose": pose,
                         "preset_toml": pose.preset_toml(),
-                        "manifest_header": cartopolis_core::field_check::MANIFEST_HEADER,
+                        "manifest_header": cartopolis_core::photo_pose::MANIFEST_HEADER,
                     })),
                 "place": line.point.as_ref().map(|p| json!({
                     "lat": p.latitude, "lng": p.longitude, "name": p.name,

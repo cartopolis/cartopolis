@@ -129,6 +129,13 @@ impl ChatOverlay {
         self.claim_focus = true;
     }
 
+    /// Whether the field should take the keyboard this frame; asks once. For
+    /// a composer drawn elsewhere: a chat's World view draws its own field
+    /// for this button (`chats::render_chat_world`).
+    pub fn take_claim(&mut self) -> bool {
+        std::mem::take(&mut self.claim_focus)
+    }
+
     /// Close it, keeping whatever was typed — a dismissal is not a delete.
     pub fn close(&mut self) {
         self.composing = false;
@@ -453,12 +460,10 @@ pub fn render_chat_transcript(
     ) {
         return;
     }
-    // A chat's World view (`chats`) shows that chat's own last lines at the
-    // bottom of the screen; a second stream of every channel beside it would be
-    // two transcripts disagreeing about what "the chat" is.
-    if chat.world.is_some() {
-        return;
-    }
+    // A chat's World view (`chats::render_chat_world`) draws no lines of its
+    // own: this transcript is its chat, narrowed to that one chat and without
+    // the label every line would otherwise carry.
+    let only = chat.world.clone();
     // The keys belong to *some* field, and unless it is the composer's there is
     // nothing here worth the half of the screen they leave. While composing the
     // transcript stays: it stacks above the pill, which stacks above the slab,
@@ -480,11 +485,12 @@ pub fn render_chat_transcript(
     } else {
         HOLD_SECS + FADE_SECS
     };
-    let lines: Vec<(String, crate::systems::chat::ChatLine)> = chat
-        .recent(now, window, want)
+    let mut lines: Vec<(String, crate::systems::chat::ChatLine)> = chat
+        .recent(now, window, usize::MAX)
         .into_iter()
+        .filter(|(c, _)| only.as_deref().is_none_or(|k| c.key == k))
         .map(|(c, l)| {
-            let prefix = if c.key == "local" {
+            let prefix = if c.key == "local" || only.is_some() {
                 String::new()
             } else {
                 format!("[{}] ", c.label)
@@ -492,6 +498,9 @@ pub fn render_chat_transcript(
             (prefix, l.clone())
         })
         .collect();
+    if lines.len() > want {
+        lines.drain(0..lines.len() - want);
+    }
     if lines.is_empty() {
         return;
     }
@@ -696,14 +705,14 @@ pub fn render_chat_composer(
         driver.active,
         compact,
         panel_open,
-    ) || chat.world.is_some()
-    {
-        // The last test: a chat's World view has a text field of its own at the
-        // bottom of the screen (`chats::render_chat_world`).
+    ) {
         overlay.close();
         return;
     }
-    if !overlay.composing {
+    // In a chat's World view the pill is that chat's, drawn by
+    // `chats::render_chat_world`: a private chat sends through the engine, not
+    // through a scope this pill can cycle to.
+    if !overlay.composing || chat.world.is_some() {
         return;
     }
 

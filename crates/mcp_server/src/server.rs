@@ -595,11 +595,11 @@ impl Tools {
                        has allowed are shown; lines from anyone else are counted and \
                        withheld. Each line has a sequence number. With `wait_s` it waits \
                        for the next line instead of answering 'nothing new' — the way to \
-                       stay in a conversation without checking over and over. A field \
-                       check (a photograph beside Cartopolis drawn from the same spot) \
-                       comes with its pose in `field_check`, as a [[shot]] block that \
-                       re-renders the same view: `cargo shots --shots \
-                       docs/field-checks.toml --only <name>`."
+                       stay in a conversation without checking over and over. A picture \
+                       from the app's camera (in Mixed mode a photograph beside Cartopolis \
+                       drawn from the same spot) comes with its pose in `pose`, as a \
+                       [[shot]] block that re-renders the same view: `cargo shots --shots \
+                       docs/photos.toml --only <name>`."
     )]
     async fn read_chat(
         &self,
@@ -612,8 +612,8 @@ impl Tools {
         description = "For the program that hosts this client's agent (`midas bot`), not for \
                        the agent: wait for chat from people you can hear and hand it over as \
                        one message — the lines as `read_chat` words them, then every picture \
-                       sent in a private chat as an image (a field check is the photograph \
-                       beside Cartopolis from the same pose). No content at all when nobody \
+                       sent in a private chat as an image (a camera picture in Mixed mode is \
+                       the photograph beside Cartopolis from the same pose). No content at all when nobody \
                        spoke. Moves the same read position as `read_chat`."
     )]
     async fn inbox(
@@ -655,7 +655,7 @@ impl Tools {
                     content.push(ContentBlock::image(data, "image/jpeg"));
                     // The pose is in the structured data, which a host does not
                     // hand on; in words, as `view` takes it.
-                    let pose = &line["field_check"]["pose"];
+                    let pose = &line["pose"]["pose"];
                     if let (Some(lat), Some(lng)) = (pose["lat"].as_f64(), pose["lng"].as_f64()) {
                         content.push(ContentBlock::text(format!(
                             "Where the photograph was taken: lat {lat:.7}, lng {lng:.7}, {:.1} m \
@@ -1089,9 +1089,9 @@ impl Tools {
 
     #[tool(
         description = "Look at a picture somebody sent you in a private chat, by the line \
-                       number `read_chat` gave it. Returns the image. A field check is one \
-                       image: the photograph on the left, Cartopolis from the same pose on \
-                       the right, the pose written under them."
+                       number `read_chat` gave it. Returns the image. A camera picture in \
+                       Mixed mode is one image: the photograph first (left, or top when the \
+                       phone was held upright), Cartopolis from the same pose beside it."
     )]
     async fn see_picture(
         &self,

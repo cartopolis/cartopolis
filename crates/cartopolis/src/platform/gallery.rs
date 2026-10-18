@@ -1,6 +1,6 @@
 //! Putting a finished picture where the person keeps their photos: the
-//! phone's gallery, or a desktop's Pictures folder. The field check's "Save to
-//! phone" is the caller (`systems::field_check`).
+//! phone's gallery, or a desktop's Pictures folder. The camera's "To phone" is
+//! the caller (`systems::camera_screen`).
 //!
 //! **Not `platform::storage`, on purpose.** That store is the app's own
 //! persistence — keyed blobs under the app's directories, gone with the app.
@@ -8,7 +8,7 @@
 //! app and show up where their other photos are. On Android that is a
 //! MediaStore row (`Pictures/Cartopolis`, the same place the saved places'
 //! photos go); on a desktop it is a plain file in `~/Pictures/Cartopolis`.
-//! Not compiled for the web, which has no field check and so no caller.
+//! Not compiled for the web, which has no camera and so no caller.
 
 /// Where saved pictures land, as a person would look for them.
 pub const FOLDER: &str = "Pictures/Cartopolis";

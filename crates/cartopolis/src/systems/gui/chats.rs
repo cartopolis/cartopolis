@@ -118,10 +118,8 @@ const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x3F, 0x3B, 0x38);
 /// Bubble corners: round, with the corner nearest the speaker tucked in.
 const BUBBLE_R: u8 = 18;
 const TAIL_R: u8 = 6;
-/// Widest the World view's header and bottom sheet get on a desktop window.
+/// Widest the World view's composer pill gets on a desktop window.
 const WORLD_SHEET_MAX_WIDTH: f32 = 520.0;
-/// Lines of the chat shown over the map in its World view.
-const WORLD_LINES: usize = 3;
 
 #[derive(Resource, Default)]
 pub struct ChatsView {
@@ -135,6 +133,14 @@ pub struct ChatsView {
     pub new_kind: NewKind,
     /// The open chat's "+" menu is open.
     pub attach: bool,
+    /// The "+" menu's Location is open, showing how long to share for.
+    pub share_open: bool,
+    /// "+ → Camera" asked for the camera, for this chat
+    /// (`camera_screen::open_from_chat`).
+    pub camera_for: Option<String>,
+    /// "+ → Upload" asked for a picture from the device, for this chat. Taken
+    /// where the capture is polled, so it works from the World view too.
+    pub upload_for: Option<String>,
     /// How many of each chat's lines have been seen, for the unread counts.
     seen: HashMap<String, usize>,
     /// Put the caret in the open chat's field on the next frame it is drawn.
@@ -856,6 +862,8 @@ struct Actions {
     community_ops: Vec<crate::systems::communities::CommunityOp>,
     /// Open a community's screen.
     show_community: Option<uuid::Uuid>,
+    /// A community picked in the list: the World, with only its posts on it.
+    community_world: Option<uuid::Uuid>,
     /// Open the directory, or the form for starting a community.
     community_find: bool,
     community_start: bool,
@@ -891,12 +899,8 @@ struct Actions {
     call: Option<crate::systems::calls::CallRequest>,
     /// Open a contacts screen.
     sub: Option<crate::systems::contacts::Sub>,
-    /// Pick or take a picture to send to this chat.
-    pick_picture: Option<String>,
     /// Open a picture full size.
     view_picture: Option<crate::systems::chat_pictures::PictureRef>,
-    /// Send a snapshot of the map to this chat.
-    snapshot: Option<String>,
     /// Open (`true`) or leave (`false`) the You page.
     you: Option<bool>,
     /// Put another panel in this one's place: Admin, Settings, Appearance.
@@ -958,7 +962,6 @@ pub fn render_chats_panel(
     mut contacts: ResMut<crate::systems::contacts::Contacts>,
     identity: Res<crate::resources::AuthIdentity>,
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
-    mut screenshot: ResMut<crate::resources::ScreenshotState>,
     mut communities: ResMut<crate::systems::communities::Communities>,
     mut faces: ResMut<crate::systems::faces::Faces>,
 ) {
@@ -968,8 +971,21 @@ pub fn render_chats_panel(
             error: false,
         });
     }
+    // "+ → Upload", from the panel or a chat's World view.
+    if let Some(channel) = view.upload_for.take() {
+        view.picture_error = None;
+        match crate::platform::photo::start_from(crate::platform::photo::Source::File) {
+            Ok(capture) => {
+                if let Some((_, mut old)) = view.capture.take() {
+                    old.cancel();
+                }
+                view.capture = Some((channel, capture));
+            }
+            Err(why) => view.picture_error = Some(why),
+        }
+    }
     // A picture being picked keeps arriving whether or not the panel is open:
-    // the camera app or the file dialog is in front of it.
+    // the picker is in front of it.
     poll_picture_capture(&mut view, &mut chat);
     // The report dialog is not part of the panel: it hangs off names in the
     // overlay and over avatars too, and must stay up with the panel shut.
@@ -1093,6 +1109,12 @@ pub fn render_chats_panel(
         view.open = None;
         communities.show(id);
     }
+    if let Some(id) = act.community_world.take() {
+        view.open = None;
+        communities.posts.show_only(id);
+        chat.world = None;
+        *right_panel = RightPanel::None;
+    }
     if std::mem::take(&mut act.community_find) {
         view.new_chat = false;
         communities.find();
@@ -1118,7 +1140,7 @@ pub fn render_chats_panel(
     }
     crate::systems::communities::confirm_account_delete(&egui.ctx, &mut communities);
     if std::mem::take(&mut communities.pick_picture) {
-        match crate::platform::photo::start() {
+        match crate::platform::photo::start_from(crate::platform::photo::Source::File) {
             Ok(capture) => communities.capture = Some(capture),
             Err(why) => communities.picture_note = Some(why),
         }
@@ -1142,27 +1164,8 @@ pub fn render_chats_panel(
             }
         }
     }
-    if let Some(channel) = act.pick_picture.take() {
-        view.picture_error = None;
-        match crate::platform::photo::start() {
-            Ok(capture) => {
-                if let Some((_, mut old)) = view.capture.take() {
-                    old.cancel();
-                }
-                view.capture = Some((channel, capture));
-            }
-            Err(why) => view.picture_error = Some(why),
-        }
-    }
     if let Some(picture) = act.view_picture.take() {
         view.viewing = Some(picture);
-    }
-    if let Some(channel) = act.snapshot.take() {
-        // Taken by `ui::drive_screenshots` with the panels hidden for the one
-        // frame it captures, and handed back to this chat as a picture.
-        screenshot.chat_snapshot = Some(channel);
-        screenshot.hide_ui = true;
-        view.attach = false;
     }
     let viewport = egui.viewport_pts();
     picture_viewer(&egui.ctx, viewport, &mut view, &mut pictures);
@@ -1297,7 +1300,7 @@ fn list_screen(
             .filter(|l| !chat.is_blocked(&l.sender))
             .collect();
         let last = visible.last();
-        // A field check's pose is for the agent; a person reads its note.
+        // A camera picture's pose is for the agent; a person reads its note.
         let shown = |l: &ChatLine| crate::systems::private_chat::readable(&l.body).into_owned();
         let kind = kind_of(&c.key);
         let preview = match last {
@@ -1404,11 +1407,13 @@ fn list_screen(
                 if !chat_row(ui, row, sending).clicked() {
                     continue;
                 }
-                if let Some((id, open)) = community_of.get(&row.key) {
-                    match open {
-                        Some(key) => act.open = Some(key.clone()),
-                        None => act.show_community = Some(*id),
-                    }
+                if let Some((id, _)) = community_of.get(&row.key) {
+                    // A community is a place on the map before it is a
+                    // conversation (2026-10-18): picking one goes to the
+                    // World with only its posts there. Its page and topics are
+                    // a tap on the chip that says so (`community_posts::
+                    // render_filter_chip`).
+                    act.community_world = Some(*id);
                 } else if sending && row.kind == ChatKind::Private {
                     act.send_point_to = Some(row.key.clone());
                 } else {
@@ -3092,10 +3097,10 @@ fn bubble(
                         picture_tile(ui, pictures, picture, size, act);
                         // The deep bottom edge: the caption, else blank paper.
                         ui.add_space(6.0);
-                        // A field check's caption is its note; its pose line is
-                        // for the agent (`cartopolis_core::field_check`).
+                        // A camera picture's caption is its note; its pose line is
+                        // for the agent (`cartopolis_core::photo_pose`).
                         let caption = crate::systems::private_chat::caption_of(&line.body)
-                            .map(cartopolis_core::field_check::display_caption)
+                            .map(cartopolis_core::photo_pose::display_caption)
                             .filter(|c| !c.is_empty());
                         ui.add(
                             egui::Label::new(
@@ -3645,84 +3650,7 @@ fn composer(
     if view.attach {
         raised_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if kind == ChatKind::Private {
-                if crate::platform::photo::is_available()
-                    && ui
-                        .button(format!("{} Send a picture", icons::CAMERA))
-                        .on_hover_text(
-                            "A photo or an image file. Encrypted on this device: only this \
-                             chat can open it.",
-                        )
-                        .clicked()
-                {
-                    act.pick_picture = Some(key.to_string());
-                    view.attach = false;
-                }
-                if ui
-                    .button(format!("{} Send a snapshot", icons::CAMERA))
-                    .on_hover_text(
-                        "A picture of the map as you see it now, without the panels. \
-                         Encrypted on this device: only this chat can open it.",
-                    )
-                    .clicked()
-                {
-                    act.snapshot = Some(key.to_string());
-                }
-                if ui
-                    .button(format!("{} Send this view", icons::PIN))
-                    .on_hover_text("Send where the camera is looking, as a place people can tap")
-                    .clicked()
-                {
-                    act.view_to = Some(key.to_string());
-                }
-                if ui
-                    .button(format!("{} Meet up", icons::FLAG))
-                    .on_hover_text(
-                        "Propose a place and a time. Halfway between you when they are \
-                         sharing where they are; otherwise where the map is now.",
-                    )
-                    .clicked()
-                {
-                    act.meetup = Some(key.to_string());
-                }
-                if ui
-                    .button(format!("{} Plan a meeting", icons::EVENT))
-                    .on_hover_text("A call in this chat at a time, with an agenda")
-                    .clicked()
-                {
-                    view.meeting_form = Some((key.to_string(), MeetingForm::plan(now)));
-                    view.attach = false;
-                }
-                if ui
-                    .button(format!("{} Ask a poll", icons::POLL))
-                    .on_hover_text("A question with options; everybody here sees who chose what")
-                    .clicked()
-                {
-                    view.meeting_form = Some((key.to_string(), MeetingForm::poll()));
-                    view.attach = false;
-                }
-                if !chat.sharing.iter().any(|s| s.channel == key) {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{} Share my location for", icons::HERE))
-                                .color(theme::REAL_LOCATION),
-                        );
-                        for (label, minutes) in
-                            [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)]
-                        {
-                            if theme::action_button(ui, label).clicked() {
-                                act.share = Some((key.to_string(), minutes * 60_000));
-                            }
-                        }
-                    });
-                    theme::note(ui, "Only this chat sees it, and it stops by itself.");
-                }
-            } else {
-                theme::note(
-                    ui,
-                    "Places and locations go in private chats only: this one is public.",
-                );
-            }
+            attach_menu(ui, view, key, kind, chat, act, now);
         });
     }
     // The form takes the composer's place: a phone has no room for both, and
@@ -3731,6 +3659,137 @@ fn composer(
         meeting_form(ui, view, key, now, act);
     } else {
         compose_row(ui, view, key, "chats_message_field", act);
+    }
+}
+
+/// The "+" menu: round buttons with a word under each, as everywhere else in
+/// the app, one icon for one meaning (`docs/mockups/social-camera/`, "One icon,
+/// one meaning"). It replaced a column of text buttons where "Send a picture"
+/// (the camera app) and "Send a snapshot" (the map) wore the same camera:
+/// Camera is now the app's own camera, whose In world mode is the snapshot,
+/// and Upload picks a picture already on the phone.
+fn attach_menu(
+    ui: &mut egui::Ui,
+    view: &mut ChatsView,
+    key: &str,
+    kind: ChatKind,
+    chat: &ChatState,
+    act: &mut Actions,
+    now: u64,
+) {
+    if kind != ChatKind::Private {
+        theme::note(
+            ui,
+            "Places and locations go in private chats only: this one is public.",
+        );
+        return;
+    }
+    let sharing = chat.sharing.iter().any(|s| s.channel == key);
+    let camera = crate::systems::camera_screen::available();
+    let upload = crate::platform::photo::offers(crate::platform::photo::Source::File);
+    let mut entries: Vec<(&str, &str, &str, bool)> = Vec::new();
+    if camera {
+        entries.push((
+            icons::CAMERA,
+            "Camera",
+            "Take a picture for this chat",
+            false,
+        ));
+    }
+    if upload {
+        entries.push((
+            icons::UPLOAD,
+            "Upload",
+            "A picture from this device. Encrypted here: only this chat can open it.",
+            false,
+        ));
+    }
+    entries.push((
+        icons::PIN,
+        "This view",
+        "Send where the camera is looking, as a place people can tap",
+        false,
+    ));
+    entries.push((
+        icons::FLAG,
+        "Meet up",
+        "Propose a place and a time. Halfway between you when they are sharing \
+         where they are; otherwise where the map is now.",
+        false,
+    ));
+    entries.push((
+        icons::EVENT,
+        "Meeting",
+        "A call in this chat at a time, with an agenda",
+        false,
+    ));
+    entries.push((
+        icons::POLL,
+        "Poll",
+        "A question with options; everybody here sees who chose what",
+        false,
+    ));
+    if !sharing {
+        entries.push((
+            icons::HERE,
+            "Location",
+            "Share your real location with this chat for a while",
+            view.share_open,
+        ));
+    }
+    let cell = (ui.available_width() / 4.0).floor();
+    let mut picked = None;
+    for row in entries.chunks(4) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (icon, label, hint, on) in row {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(cell, theme::ROUND_BUTTON_SIZE + 22.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        if theme::round_button(ui, icon, hint, *on).clicked() {
+                            picked = Some(*label);
+                        }
+                        ui.label(egui::RichText::new(*label).size(12.0).color(theme::TEXT));
+                    },
+                );
+            }
+        });
+        ui.add_space(6.0);
+    }
+    match picked {
+        Some("Camera") => {
+            view.camera_for = Some(key.to_string());
+            view.attach = false;
+        }
+        Some("Upload") => {
+            view.upload_for = Some(key.to_string());
+            view.attach = false;
+        }
+        Some("This view") => act.view_to = Some(key.to_string()),
+        Some("Meet up") => act.meetup = Some(key.to_string()),
+        Some("Meeting") => {
+            view.meeting_form = Some((key.to_string(), MeetingForm::plan(now)));
+            view.attach = false;
+        }
+        Some("Poll") => {
+            view.meeting_form = Some((key.to_string(), MeetingForm::poll()));
+            view.attach = false;
+        }
+        Some("Location") => view.share_open = !view.share_open,
+        _ => {}
+    }
+    if view.share_open && !sharing {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("for").color(theme::TEXT_DIM));
+            for (label, minutes) in [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)] {
+                if theme::action_button(ui, label).clicked() {
+                    act.share = Some((key.to_string(), minutes * 60_000));
+                    view.share_open = false;
+                }
+            }
+        });
+        theme::note(ui, "Only this chat sees it, and it stops by itself.");
     }
 }
 
@@ -4223,7 +4282,7 @@ fn send_line(
 /// "you are sharing your location" notice while one is up, which
 /// `place_pins::sharing_chip` draws at the top centre and which must never be
 /// covered.
-fn top_offset(chat: &ChatState) -> f32 {
+pub(crate) fn top_offset(chat: &ChatState) -> f32 {
     if chat.sharing.is_empty() {
         theme::OSD_MARGIN
     } else {
@@ -4362,9 +4421,11 @@ pub fn render_chats_switch(
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
+    camera: Res<crate::systems::camera_screen::CameraScreen>,
 ) {
     if (online.is_none() && !view.demo)
         || driver.active
+        || camera.is_open()
         || right_panel.is(RightPanel::Chat)
         || right_panel.is(RightPanel::Admin)
         || chat.world.is_some()
@@ -4416,8 +4477,17 @@ pub fn apply_sign_out(
     crate::systems::session::sign_out(&mut session, &mut store);
 }
 
-/// A chat's World view: its header over the map, and its last lines and text
-/// field at the bottom. The chat's points are pinned by `place_pins`.
+/// A chat's World view: one slim pill over the map (back, who, Chat | World),
+/// and nothing else of the chat's own. The chat's points are pinned by
+/// `place_pins`.
+///
+/// **It reuses the map's chat rather than drawing a second one** (2026-10-18,
+/// `docs/mockups/social-camera/`). Its last lines are the map's transcript,
+/// bottom-left, fading, narrowed to this chat (`chat_overlay`); writing is the
+/// dock's chat button, whose composer pill is drawn here for this chat because
+/// a private chat sends through the engine and not through a channel scope. The
+/// dock, the joystick and the map buttons stay: the half-screen sheet this
+/// replaced hid all of them, and stopped part-way down the screen.
 #[allow(clippy::too_many_arguments)]
 pub fn render_chat_world(
     mut egui: EguiMut,
@@ -4427,6 +4497,7 @@ pub fn render_chat_world(
     mut right_panel: ResMut<RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
+    mut overlay: ResMut<crate::systems::chat_overlay::ChatOverlay>,
 ) {
     let Some(key) = chat.world.clone() else {
         return;
@@ -4440,17 +4511,6 @@ pub fn render_chat_world(
     };
     let kind = kind_of(&key);
     let name = display_name(&key, &channel.label);
-    let recent: Vec<ChatLine> = channel
-        .lines
-        .iter()
-        .filter(|l| !chat.is_blocked(&l.sender))
-        .rev()
-        .take(WORLD_LINES)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
     let n = channel.lines.len();
     view.seen.insert(key.clone(), n);
     if view.open.as_deref() != Some(key.as_str()) {
@@ -4459,13 +4519,6 @@ pub fn render_chat_world(
 
     let now = now_ms();
     let viewport = egui.viewport_pts();
-    // The v1 World view: the map's own buttons and the dock stand down while a
-    // chat is laid over it (`dock`, `hud`, `map_osd` check `ChatState::world`),
-    // so the header runs the full width, 10 pt in from each edge, and the sheet
-    // sits on the bottom edge (only the keyboard can push it up).
-    let header_width = (viewport.x - 20.0).min(WORLD_SHEET_MAX_WIDTH);
-    let width = viewport.x.min(WORLD_SHEET_MAX_WIDTH);
-    let bottom = crate::systems::chat_overlay::keyboard_reserve(&egui, true);
     let top = top_offset(&chat);
     let ctx = egui.ctx_mut().clone();
     let mut act = Actions::default();
@@ -4474,110 +4527,61 @@ pub fn render_chat_world(
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(&ctx, |ui| {
-            ui.set_width(header_width);
-            glass_frame().show(ui, |ui| {
-                ui.set_width(header_width - 24.0);
-                chat_header(
-                    ui,
-                    &chat,
-                    &key,
-                    &name,
-                    kind,
-                    &mut act,
-                    now,
-                    CallButton::Hidden,
-                    None,
-                );
-                ui.add_space(8.0);
-                let w = ui.available_width();
-                if segmented(ui, "Chat", w, Seg::World, 0, false) == Some(Seg::Community) {
-                    act.to_world = false;
-                    act.open = Some(key.clone());
-                }
-            });
-        });
-
-    egui::Area::new(egui::Id::new("chat_world_sheet"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(&ctx, |ui| {
-            ui.set_width(width);
-            // `.sheet`: glass, rounded only at the top, sitting on the edge.
             glass_frame()
-                .corner_radius(egui::CornerRadius {
-                    nw: 24,
-                    ne: 24,
-                    sw: 0,
-                    se: 0,
-                })
-                .inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 4,
-                    bottom: 14,
-                })
+                .corner_radius(egui::CornerRadius::same(24))
+                .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
-                    ui.set_width(width - 28.0);
-                    // `.handle`: the grip at the top of the design's sheet.
-                    let (grip, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 9.0),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(
-                        egui::Rect::from_center_size(grip.center(), egui::vec2(40.0, 5.0)),
-                        egui::CornerRadius::same(3),
-                        theme::LINE,
-                    );
-                    ui.add_space(2.0);
-                    // `.mini`: the speaker's name in brand orange (yours in the
-                    // pale accent), then what they said.
-                    for line in &recent {
-                        let mine = is_mine(&chat, line);
-                        let who = if mine {
-                            "You".to_string()
-                        } else {
-                            line.sender.clone()
-                        };
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.label(egui::RichText::new(who).size(13.5).color(if mine {
-                                theme::ACCENT
-                            } else {
-                                theme::BRAND
-                            }));
-                            ui.label(
-                                egui::RichText::new(
-                                    crate::systems::private_chat::readable(&line.body).as_ref(),
-                                )
-                                .size(13.5)
-                                .color(theme::TEXT),
-                            );
-                        });
-                    }
-                    ui.add_space(6.0);
-                    let y = ui.cursor().top();
-                    let r = ui.max_rect();
-                    ui.painter().hline(
-                        (r.left() - 12.0)..=(r.right() + 12.0),
-                        y,
-                        egui::Stroke::new(1.0, GLINE),
-                    );
-                    ui.add_space(8.0);
-                    if view.attach {
-                        if kind == ChatKind::Private {
-                            if ui
-                                .button(format!("{} Send this view", icons::PIN))
-                                .clicked()
-                            {
-                                act.view_to = Some(key.clone());
-                            }
-                        } else {
-                            theme::note(ui, "Places go in private chats only: this one is public.");
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if circle_button(ui, icons::BACK, false, true, "Back to the chats")
+                            .clicked()
+                        {
+                            act.back = true;
                         }
-                    }
-                    compose_row(ui, &mut view, &key, "chat_world_field", &mut act);
+                        ui.label(
+                            egui::RichText::new(&name)
+                                .size(theme::SIZE_BODY)
+                                .color(theme::CREAM),
+                        );
+                        if segmented(ui, "Chat", 170.0, Seg::World, 0, false)
+                            == Some(Seg::Community)
+                        {
+                            act.to_world = false;
+                            act.open = Some(key.clone());
+                        }
+                    });
                 });
         });
+
+    if overlay.composing {
+        if overlay.take_claim() {
+            view.claim_focus = true;
+        }
+        let keys = crate::systems::chat_overlay::keyboard_reserve(&egui, true);
+        let (bottom, _) = crate::systems::chat_overlay::stack_bottoms(true, keys, 0.0);
+        let width = (viewport.x - 2.0 * theme::OSD_MARGIN).min(WORLD_SHEET_MAX_WIDTH);
+        egui::Area::new(egui::Id::new("chat_world_composer"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+            .show(&ctx, |ui| {
+                ui.set_width(width);
+                glass_frame()
+                    .corner_radius(egui::CornerRadius::same(26))
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 12.0);
+                        if view.attach {
+                            attach_menu(ui, &mut view, &key, kind, &chat, &mut act, now);
+                            ui.add_space(6.0);
+                        }
+                        compose_row(ui, &mut view, &key, "chat_world_field", &mut act);
+                    });
+            });
+        // Sent, the pill goes, as the map's own does.
+        if act.send.is_some() {
+            overlay.close();
+        }
+    }
 
     // "Chat" in the header goes back to the thread, which is the panel.
     if act.open.is_some() {

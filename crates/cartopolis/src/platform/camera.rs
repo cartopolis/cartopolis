@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub const CAMERA_TAKEN: &str = "The camera was taken by another app";
 
-/// The widest picture a still camera asks for ([`Camera::open_still`]). A field
-/// check's picture is two halves of at most 800 px each (a chat picture is
+/// The widest picture a still camera asks for ([`Camera::open_still`]). A Mixed
+/// picture is two halves of at most 800 px each (a chat picture is
 /// re-encoded to 1600 px), so anything wider is converted and turned fifteen
 /// times a second for nothing.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -302,8 +302,9 @@ mod webcam {
 /// `ACAMERA_SENSOR_ORIENTATION` says how far to turn a picture to stand it up
 /// with the phone in its natural (portrait) orientation; this module turns it
 /// that far and assumes the phone *is* upright. The picture is not mirrored:
-/// that is how the other person should see you. Following the phone as it
-/// turns needs the display rotation from Java, and is not done.
+/// that is how the other person should see you. A still camera follows the
+/// phone as it turns (`upright_turn`, from the display rotation); a call's does
+/// not.
 #[cfg(target_os = "android")]
 mod phone {
     use super::{Shared, I420};
@@ -409,7 +410,8 @@ mod phone {
         // SAFETY: `open` and `pump` follow Camera2's documented call order and
         // `Held` owns every handle until it is dropped here.
         let result = unsafe {
-            open(true, false).and_then(|(held, lens)| pump(shared, &held, lens.orientation_deg))
+            open(true, false)
+                .and_then(|(held, lens)| pump(shared, &held, lens.orientation_deg, None))
         };
         if let Err(e) = result {
             fail(e);
@@ -723,7 +725,7 @@ mod phone {
                 if let Ok(mut l) = shared.lens.lock() {
                     *l = Some(lens);
                 }
-                pump(shared, &held, turn)
+                pump(shared, &held, turn, Some(front))
             })
         };
         if let Err(e) = result {
@@ -780,8 +782,28 @@ mod phone {
     }
 
     /// Take pictures until told to stop or the camera goes away.
-    unsafe fn pump(shared: &Arc<Shared>, held: &Held, turn: u32) -> Result<(), String> {
+    ///
+    /// `follow` is a still camera's facing: its pictures turn with the phone,
+    /// the display's rotation read twice a second, so a phone held sideways
+    /// gives a sideways picture the right way up (`super::upright_turn`). A
+    /// call's camera keeps the turn for a phone held upright.
+    unsafe fn pump(
+        shared: &Arc<Shared>,
+        held: &Held,
+        sensor: u32,
+        follow: Option<bool>,
+    ) -> Result<(), String> {
+        let mut turn = sensor;
+        let mut looked: Option<std::time::Instant> = None;
         while !shared.stop.load(Ordering::Relaxed) {
+            if let Some(front) = follow {
+                if looked.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
+                    looked = Some(std::time::Instant::now());
+                    if let Some(display) = crate::platform::android::display_rotation_deg() {
+                        turn = super::upright_turn(sensor, display, front);
+                    }
+                }
+            }
             if LOST.load(Ordering::Relaxed) {
                 return Err(super::CAMERA_TAKEN.into());
             }
@@ -839,8 +861,8 @@ pub use phone::run_back_gray;
 
 /// The size a still camera asks for, from the `(width, height)` sizes the
 /// camera offers (landscape, as sensors report them): the largest **4:3** one
-/// no wider than [`STILL_MAX_WIDTH`], since a field check's halves are 3:4
-/// and a 16:9 picture would lose a quarter of itself to the crop; failing
+/// no wider than [`STILL_MAX_WIDTH`]: a 4:3 photograph is what a phone's main
+/// camera takes, and a 16:9 picture would lose a quarter of itself to the crop; failing
 /// that, the largest of any shape within the width. `None` when nothing fits.
 #[must_use]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -871,6 +893,21 @@ pub fn self_view(picture: &I420, max_width: u32) -> (u32, u32, Vec<u8>) {
             picture.height,
             picture.to_rgba_mirrored(true),
         )
+    }
+}
+
+/// How far to turn a sensor's picture, clockwise, so it stands the right way up
+/// on a display turned `display` degrees from the phone's natural orientation
+/// (Android's `Display.getRotation`, counter-clockwise): the back camera's
+/// mounting less the display's turn, the front camera's (which faces the
+/// other way) plus it. The formula Android's own camera documentation gives.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn upright_turn(sensor: u32, display: i32, front: bool) -> u32 {
+    let display = display.rem_euclid(360) as u32;
+    if front {
+        (sensor + display) % 360
+    } else {
+        (sensor + 360 - display) % 360
     }
 }
 
@@ -918,6 +955,18 @@ mod tests {
         );
         assert_eq!(still_size_from(&[(4000, 3000)]), None);
         assert_eq!(still_size_from(&[]), None);
+    }
+
+    #[test]
+    fn a_still_picture_turns_with_the_phone() {
+        // The usual back camera (mounted at 90°): upright held upright, none
+        // held sideways to the left (display 90°), half a turn to the right.
+        assert_eq!(upright_turn(90, 0, false), 90);
+        assert_eq!(upright_turn(90, 90, false), 0);
+        assert_eq!(upright_turn(90, 270, false), 180);
+        // The front camera (270°) turns the other way with the display.
+        assert_eq!(upright_turn(270, 0, true), 270);
+        assert_eq!(upright_turn(270, 90, true), 0);
     }
 
     #[test]

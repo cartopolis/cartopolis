@@ -467,8 +467,8 @@ pub fn render_avatar_chooser(
     }
 }
 
-/// Fires the pending chrome-free capture (a chat's snapshot, a polaroid, a field
-/// check's world). Runs in Update **after** the panels that ask for one, so the
+/// Fires the pending chrome-free capture (a chat's snapshot, a polaroid, the
+/// camera's world). Runs in Update **after** the panels that ask for one, so the
 /// click is seen this frame; because `suppress_egui_for_screenshot` drops the
 /// egui output later this same frame (while `hide_ui` is set), the captured
 /// swapchain has no UI chrome. After the capturing frame, `hide_ui` is cleared
@@ -503,21 +503,21 @@ pub fn drive_screenshots(
         );
         return;
     }
-    if std::mem::take(&mut shot.field_check_snapshot) {
-        // A field check's world half: the window with no UI, from the pose the
-        // field check is holding the camera on, handed back as pixels for it to
-        // put beside the photograph.
+    if std::mem::take(&mut shot.camera_snapshot) {
+        // The camera's world: the window with no UI, for a polaroid or, in
+        // Mixed, from the pose the camera is holding the view on, handed back
+        // as pixels to be put beside the photograph.
         shot.hide_ui = true;
         commands.spawn(Screenshot::primary_window()).observe(
             |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
-             mut check: ResMut<crate::systems::field_check::FieldCheck>| {
+             mut check: ResMut<crate::systems::camera_screen::CameraScreen>| {
                 let image = &captured.image;
                 let size = image.size();
                 match image.clone().try_into_dynamic() {
                     Ok(dynamic) => {
                         check.world_in = Some((dynamic.to_rgba8().into_raw(), [size.x, size.y]));
                     }
-                    Err(e) => warn!("a field check's world could not be read: {e}"),
+                    Err(e) => warn!("the camera's world could not be read: {e}"),
                 }
             },
         );
@@ -788,6 +788,15 @@ pub fn render_context_menu(
             label: "Route here",
             hint: "Set this point as the destination",
         });
+        // A post is public and lives on a server: online only.
+        if online.is_some() {
+            actions.push(RingAction {
+                key: "post_here",
+                icon: icons::NOTE,
+                label: "Post here",
+                hint: "Write a public post about this spot, to a community",
+            });
+        }
         if camera_altitude.is_some() {
             actions.push(RingAction {
                 key: "save",
@@ -859,6 +868,7 @@ pub fn render_context_menu(
             route.set_endpoint_at(Endpoint::From, lat, lng);
             *right_panel = RightPanel::Route;
         }
+        ("post_here", Some(at), _) => context_menu.post_here = Some(at),
         ("save", Some((lat, lng)), _) => {
             // Altitude and pose come from the camera rather than from the hit
             // point, because a saved place is a remembered *view* as well as a

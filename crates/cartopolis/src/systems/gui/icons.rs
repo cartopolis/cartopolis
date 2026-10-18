@@ -135,8 +135,18 @@ icons! {
     SEND = "\u{e163}", "send";
     /// Leave the world and go back to the offline map.
     LOGOUT = "\u{e9ba}", "logout";
-    /// Take a photo, or a screenshot slot.
+    /// Open the camera (In world, Mixed, Real). Only ever that: picking a
+    /// picture from the phone is [`UPLOAD`].
     CAMERA = "\u{e412}", "photo_camera";
+    /// Upload a picture from the phone, wherever the camera is offered.
+    UPLOAD = "\u{e413}", "photo_library";
+    /// The camera the other way round: a selfie.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the camera is native-only
+    FLIP_CAMERA = "\u{ea37}", "flip_camera_android";
+    /// Save to the phone (the gallery), as against saving a place in the app
+    /// ([`BOOKMARK_ADD`]).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the camera is native-only
+    DOWNLOAD = "\u{f090}", "download";
     /// Delete, and the litter bin as a piece of street furniture.
     DELETE = "\u{e92e}", "delete";
     /// Rename, edit a field in place.
@@ -196,7 +206,7 @@ icons! {
     STOPPED = "\u{ef71}", "stop_circle";
     /// A marked spot the camera can fly to.
     FLAG = "\u{f0c6}", "flag";
-    /// Edit a body of text (a prim's script, a description).
+    /// Write a body of text: a post, a prim's script, a description.
     NOTE = "\u{e745}", "edit_note";
     /// Adjust the properties of a thing — the prim edit dialog.
     TUNE = "\u{e429}", "tune";

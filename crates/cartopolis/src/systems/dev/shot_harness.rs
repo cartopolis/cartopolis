@@ -133,7 +133,7 @@ pub struct ShotSpec {
     pub pitch_deg: f32,
     /// Degrees: 0 = north, **counter-clockwise** seen from above (90 looks west):
     /// +Y up with north at −Z, so a positive turn swings the view towards −X.
-    /// A compass heading is this negated (`field_check::FieldPose::harness_yaw_deg`).
+    /// A compass heading is this negated (`photo_pose::PhotoPose::harness_yaw_deg`).
     pub yaw_deg: f32,
     /// Preset name, when this viewpoint came from a `--shots` manifest. Names
     /// the file and labels the metrics row.
@@ -2333,6 +2333,8 @@ pub struct ScriptedChat<'w, 's> {
     /// The call screens (`--ui callincoming` / `call` / `callvideo` /
     /// `callgroup` / `callfolded`, `systems::call_screen`).
     calls: ResMut<'w, crate::systems::calls::Calls>,
+    /// The camera (`--ui camera`, `systems::camera_screen`).
+    camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
     seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
     avatar: Query<
         'w,
@@ -2403,6 +2405,9 @@ const UI_ELEMENTS: &[&str] = &[
     "chatpoll",
     "chatworld",
     "chatswitch",
+    // A chat with its + menu open, and the camera (`camera_screen`).
+    "chatattach",
+    "camera",
     // The You page, Settings' pages and the Admin pages
     // (`docs/mockups/home-and-profile`).
     "you",
@@ -2606,7 +2611,7 @@ pub fn open_scripted_ui(
         Some("plan")
     } else if want("chatpoll") {
         Some("poll")
-    } else if want("chatthread") {
+    } else if want("chatthread") || want("chatattach") {
         Some("chat")
     } else if want("community") {
         Some("community")
@@ -2821,6 +2826,15 @@ pub fn open_scripted_ui(
     // it. Pair it with `--shot-mode avatar`, or the camera is somewhere the
     // avatar is not and the bubbles are off screen with it.
     seed_scripted_chat(want("chat"), &mut cards.chat);
+    // A chat's World view reads its lines from the map's transcript, which
+    // draws only with a session or this.
+    if want("chatworld") {
+        cards.chat.overlay.demo = true;
+    }
+    cards.chat.chats.attach = want("chatattach");
+    if want("camera") && !cards.chat.camera.is_open() {
+        cards.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
+    }
 
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
     for u in &panels {

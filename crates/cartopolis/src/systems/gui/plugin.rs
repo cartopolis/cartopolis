@@ -62,23 +62,37 @@ impl Plugin for GuiPlugin {
             // splash in index.html, which covers the wasm load this cannot.
             .init_resource::<systems::splash::BootSplash>()
             .init_resource::<systems::chats::ScreenRestore>()
-            .init_resource::<systems::field_check::FieldCheck>()
+            .init_resource::<systems::camera_screen::CameraScreen>()
             .init_resource::<systems::admin::AdminState>()
             .init_resource::<systems::access_tokens::AccessTokens>();
 
-        // The field check (`systems::field_check`): the camera drives the world
+        // The camera (`systems::camera_screen`): in Mixed it drives the world
         // camera after any teleport has landed and before the camera system reads
         // the rotation, and its screen is drawn over everything, as the call
-        // screen is — its own `Foreground` area, so not in the panel chain.
+        // screen is — its own `Foreground` area, so not in the panel chain. A
+        // picture for a post is handed to the composer after it.
         app.add_systems(
             Update,
             (
-                systems::field_check::drive_field_check
+                systems::camera_screen::drive_camera
                     .after(systems::geo_nav::apply_teleport)
                     .before(systems::free_camera::camera_controls)
                     .in_set(ClientPhase::Anchor),
-                systems::field_check::render_field_check
+                systems::camera_screen::render_camera
                     .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+                systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
+                // The ring's Post here, and the chip that says only one
+                // community's posts are on the map (`community_posts`): its own
+                // `Area` under the switch, drawn after the switch it sits under.
+                systems::community_posts::post_here.in_set(ClientPhase::Present),
+                // A text field: drawn before the on-screen keyboard reads it.
+                systems::community_posts::render_floating_composer
+                    .after(systems::community_posts::post_here)
+                    .before(systems::onscreen_keyboard::render_onscreen_keyboard)
+                    .in_set(ClientPhase::Present),
+                systems::community_posts::render_filter_chip
+                    .after(systems::chats::render_chats_switch)
                     .in_set(ClientPhase::Present),
             ),
         );

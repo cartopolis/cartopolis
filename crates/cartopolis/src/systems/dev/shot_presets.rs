@@ -185,7 +185,7 @@ pub struct Preset {
     pub hide_ui: Option<bool>,
     /// Degrees about the line of sight, the third angle after `look`'s pitch
     /// and yaw (the free camera's `EulerRot::YXZ`). For matching a photograph
-    /// taken with the phone held a little crooked; a field check writes it.
+    /// taken with the phone held a little crooked; a camera picture's pose writes it.
     #[serde(default)]
     pub roll: Option<f32>,
     /// Vertical field of view, degrees. Unset keeps the camera's own. A view
@@ -205,7 +205,7 @@ pub struct Preset {
     /// differ by metres, which would put the camera underground or in the air.
     #[serde(default)]
     pub on_ground: Option<bool>,
-    /// What was measured when the view was taken (a field check's receiver,
+    /// What was measured when the view was taken (a camera picture's receiver,
     /// accuracy, compass). Kept as data for whoever reads the file; nothing in
     /// it is rendered.
     #[serde(default)]
@@ -713,9 +713,9 @@ at = [1.0, 2.0, 3.0]
         assert_eq!(m.shots[0].look.unwrap()[0], -18.0);
     }
 
-    fn field_check() -> cartopolis_core::field_check::FieldPose {
-        use cartopolis_core::field_check::{Facing, FieldPose, PoseSource, Receiver};
-        FieldPose {
+    fn camera_picture() -> cartopolis_core::photo_pose::PhotoPose {
+        use cartopolis_core::photo_pose::{Facing, PhotoPose, PoseSource, Receiver};
+        PhotoPose {
             lat: 53.2183,
             lng: 6.5679,
             height_m: 1.5,
@@ -723,6 +723,8 @@ at = [1.0, 2.0, 3.0]
             pitch_deg: 14.0,
             roll_deg: -2.5,
             fov_y_deg: 68.0,
+            aspect: cartopolis_core::photo_pose::PICTURE_ASPECT,
+            mode: Some("mixed".into()),
             camera: Facing::Rear,
             taken_ms: 1_792_065_791_000,
             source: PoseSource::Sensors,
@@ -742,20 +744,20 @@ at = [1.0, 2.0, 3.0]
     }
 
     #[test]
-    fn a_field_check_is_a_preset_this_loader_accepts() {
-        // What the agent appends to `docs/field-checks.toml` — the header and a
+    fn a_camera_pictures_pose_is_a_preset_this_loader_accepts() {
+        // What the agent appends to `docs/photos.toml` — the header and a
         // check's block — has to load, or the view cannot be put back.
         let text = format!(
             "{}\n{}",
-            cartopolis_core::field_check::MANIFEST_HEADER,
-            field_check().preset_toml()
+            cartopolis_core::photo_pose::MANIFEST_HEADER,
+            camera_picture().preset_toml()
         );
         let m: Manifest = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         m.validate().unwrap();
-        let shots = m.select(&["field-check".to_string()]).unwrap();
+        let shots = m.select(&["photo".to_string()]).unwrap();
         assert_eq!(shots.len(), 1);
         let s = shots[0];
-        assert_eq!(s.name, "field-2026-10-15-120311");
+        assert_eq!(s.name, "photo-2026-10-15-120311");
         assert_eq!(s.look, Some([14.0, -9.0]));
         assert_eq!(s.roll, Some(-2.5));
         assert_eq!(s.fov, Some(68.0));
@@ -767,7 +769,7 @@ at = [1.0, 2.0, 3.0]
         // The header's shape is the picture's.
         let (w, h) = m.size.as_deref().unwrap().split_once('x').unwrap();
         let aspect = w.parse::<f32>().unwrap() / h.parse::<f32>().unwrap();
-        assert!((aspect - cartopolis_core::field_check::PICTURE_ASPECT).abs() < 1e-6);
+        assert!((aspect - cartopolis_core::photo_pose::PICTURE_ASPECT).abs() < 1e-6);
     }
 
     #[test]

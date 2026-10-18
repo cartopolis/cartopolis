@@ -1534,7 +1534,7 @@ pub fn camera_controls(
         rig.smoothing.pivot = None;
         rig.smoothing.pullback = 1.0;
         rig.smoothing.idle_s = 0.0;
-        // …unless a scripted capture or a field check names a lens.
+        // …unless a scripted capture or the camera's Mixed mode names a lens.
         set_fov(
             &mut projection,
             camera_state.free_fov.unwrap_or(FOLLOW_FOV_BASE),

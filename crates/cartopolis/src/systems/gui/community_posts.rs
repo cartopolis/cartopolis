@@ -86,6 +86,10 @@ pub struct Posts {
     pub from_view: Option<PostPlace>,
     /// The community whose posts are pinned on the map.
     pub on_map: Option<Uuid>,
+    /// Only this community's posts are on the map, whatever the layer says:
+    /// picking a community in the list goes to the World with this set, and the
+    /// chip under the switch clears it (`render_filter_chip`).
+    pub only: Option<Uuid>,
     /// The community whose page last asked for its posts.
     loaded: Option<Uuid>,
     sending: bool,
@@ -106,6 +110,16 @@ pub struct Posts {
     pub snapshot_in: Option<(Vec<u8>, [u32; 2])>,
     /// A polaroid is being captured, framed or stored.
     pub snapshot_busy: bool,
+    /// The composer asked for the camera (`camera_screen::hand_picture_to_post`
+    /// opens it, and hands the picture back).
+    pub want_camera: bool,
+    /// A picture from the camera waiting for a draft to hold it, then uploaded
+    /// as the post's picture.
+    pub pending_picture: Option<Vec<u8>>,
+    /// The draft is written over the map (`render_floating_composer`), not in
+    /// the panel: it started from the map (Post here, the camera), and the
+    /// place it is about should stay in sight.
+    pub over_map: bool,
 }
 
 /// How often the map's posts are read again while the layer is on: a post
@@ -195,7 +209,11 @@ impl Posts {
     pub fn map_posts(&self) -> Vec<(Uuid, Uuid, Point, String)> {
         let mut out = Vec::new();
         for (c, feed) in &self.feeds {
-            if !self.layer && self.on_map != Some(*c) {
+            let shown = match self.only {
+                Some(only) => only == *c,
+                None => self.layer || self.on_map == Some(*c),
+            };
+            if !shown {
                 continue;
             }
             for p in feed {
@@ -208,6 +226,31 @@ impl Posts {
         // frame to the next whatever the map's iteration order.
         out.sort_by_key(|(c, p, _, _)| (*c, *p));
         out
+    }
+
+    /// The community a post goes to without asking: the one whose posts
+    /// alone are on the map, else the one whose page last put them there, if
+    /// this account is in it.
+    #[must_use]
+    pub fn community_to_post_in(&self, list: &[CommunityDto]) -> Option<Uuid> {
+        self.only
+            .or(self.on_map)
+            .filter(|id| list.iter().any(|c| c.id == *id && c.role.is_some()))
+    }
+
+    /// Show only `community`'s posts on the map, and read them.
+    pub fn show_only(&mut self, community: Uuid) {
+        self.only = Some(community);
+        self.on_map = Some(community);
+        self.refresh(community);
+    }
+
+    /// How many of `community`'s posts have a place to pin.
+    #[must_use]
+    pub fn pinned(&self, community: Uuid) -> usize {
+        self.feeds
+            .get(&community)
+            .map_or(0, |f| f.iter().filter(|p| p.place.is_some()).count())
     }
 
     /// A pin was tapped: have its post open on the community's page, for when
@@ -902,41 +945,35 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         }
     }
     ui.add_space(6.0);
-    // Two halves of one row: the two things a post can carry, as a set.
+    // Camera and Upload, the same two round buttons wherever a picture can be
+    // added (`docs/mockups/social-camera/`). The camera's In world mode is
+    // the polaroid this row used to have a button of its own for.
     ui.horizontal(|ui| {
-        let w = theme::equal_width(ui, 2);
-        let label = if picture.is_some() {
-            "Other photo"
-        } else {
-            "Photo"
-        };
-        if theme::secondary_button(ui, icons::CAMERA, label, w)
-            .on_hover_text("Add a photo from this device")
-            .clicked()
-        {
-            cs.picture_for_post = true;
-            cs.pick_picture = true;
+        ui.spacing_mut().item_spacing.x = 18.0;
+        let busy = !cs.picture_for_post_idle() || cs.posts.snapshot_busy;
+        for (icon, label, hint) in [
+            (icons::CAMERA, "Camera", "Take a picture for this post"),
+            (icons::UPLOAD, "Upload", "A picture from this device"),
+        ] {
+            ui.vertical_centered(|ui| {
+                ui.set_width(theme::ROUND_BUTTON_SIZE + 24.0);
+                if theme::round_button(ui, icon, hint, false).clicked() && !busy {
+                    if label == "Camera" {
+                        cs.posts.want_camera = true;
+                    } else {
+                        cs.picture_for_post = true;
+                        cs.pick_picture = true;
+                    }
+                }
+                ui.label(egui::RichText::new(label).size(12.0).color(theme::TEXT));
+            });
         }
-        let busy = cs.posts.snapshot_busy;
-        let label = if busy {
-            "Developing…"
-        } else if snapshot.is_some() {
-            "New polaroid"
-        } else {
-            "Polaroid"
-        };
-        if ui
-            .add_enabled_ui(!busy, |ui| {
-                theme::secondary_button(ui, icons::LANDSCAPE, label, w)
-            })
-            .inner
-            .on_hover_text(
-                "A snapshot of the map as you see it now, framed as a polaroid from this place. \
-                 It goes with the post, beside any photo.",
-            )
-            .clicked()
-        {
-            cs.posts.want_snapshot = true;
+        if picture.is_some() {
+            ui.label(
+                egui::RichText::new("Another replaces the picture.")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
         }
     });
     if let Some(note) = &cs.picture_note {
@@ -1200,6 +1237,7 @@ pub fn pick_community(ui: &mut egui::Ui, cs: &mut Communities) {
     }
     if theme::action_button(ui, "Cancel").clicked() {
         cs.posts.from_view = None;
+        cs.posts.pending_picture = None;
         cs.screen = None;
     }
 }
@@ -1283,6 +1321,187 @@ pub fn view_place(
             pitch: pitch.to_degrees(),
             yaw: yaw.to_degrees(),
         }),
+    }
+}
+
+/// The chip under the Community | World switch while only one community's
+/// posts are on the map (`Posts::only`): whose they are and how many, the
+/// community's page a tap on its name, and ✕ to show every community's again.
+///
+/// Nothing of the community's chat is on the map with it (2026-10-18, the
+/// user: "we don't need the chat prominent on the screen by default"). The
+/// dock's chat disc and this chip's name are the two ways in.
+#[allow(clippy::too_many_arguments)]
+pub fn render_filter_chip(
+    mut egui: crate::systems::egui_manager::EguiMut,
+    mut cs: ResMut<Communities>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+    chat: Res<crate::systems::chat::ChatState>,
+    driver: Res<crate::systems::driver::DriverState>,
+    camera: Res<crate::systems::camera_screen::CameraScreen>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+) {
+    let Some(id) = cs.posts.only else {
+        return;
+    };
+    if online.is_none() && !cs.is_demo() {
+        cs.posts.only = None;
+        return;
+    }
+    if driver.active
+        || camera.is_open()
+        || chat.world.is_some()
+        || !right_panel.is(crate::resources::RightPanel::None)
+    {
+        return;
+    }
+    let Some(name) = cs.get(id).map(|c| c.settings.name.clone()) else {
+        cs.posts.only = None;
+        return;
+    };
+    let pinned = cs.posts.pinned(id);
+    let top = crate::systems::chats::top_offset(&chat) + 52.0;
+    let ctx = egui.ctx_mut().clone();
+    let (mut open, mut clear) = (false, false);
+    egui::Area::new(egui::Id::new("community_filter_chip"))
+        .order(egui::Order::Middle)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
+        .show(&ctx, |ui| {
+            crate::systems::chats::glass_frame()
+                .corner_radius(egui::CornerRadius::same(16))
+                .inner_margin(egui::Margin::symmetric(10, 4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let (dot, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 5.0, theme::PUBLIC);
+                        let posts = if pinned == 1 { "post" } else { "posts" };
+                        if ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("Only {name} · {pinned} {posts}"))
+                                        .size(theme::SIZE_SUB)
+                                        .color(theme::CREAM),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_text("Open the community's page")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            open = true;
+                        }
+                        if crate::systems::chats::circle_button(
+                            ui,
+                            icons::CLEAR,
+                            false,
+                            true,
+                            "Show every community's posts",
+                        )
+                        .clicked()
+                        {
+                            clear = true;
+                        }
+                    });
+                });
+        });
+    if clear {
+        cs.posts.only = None;
+    }
+    if open {
+        cs.show(id);
+        *right_panel = crate::resources::RightPanel::Chat;
+    }
+}
+
+/// The long-press ring's Post here (`ui::render_context_menu`): the composer,
+/// with that spot as the post's place, in the community on the map; else the
+/// community picker first.
+pub fn post_here(
+    mut menu: ResMut<crate::resources::ContextMenuState>,
+    mut cs: ResMut<Communities>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+) {
+    let Some((lat, lng)) = menu.post_here.take() else {
+        return;
+    };
+    cs.posts.from_view = Some(PostPlace {
+        latitude: lat,
+        longitude: lng,
+        name: None,
+        view: None,
+    });
+    match cs.posts.community_to_post_in(&cs.list) {
+        Some(id) => {
+            cs.posts.compose(id);
+            cs.posts.over_map = true;
+            *right_panel = crate::resources::RightPanel::None;
+        }
+        None => {
+            cs.screen = Some(crate::systems::communities::Screen::PostTo);
+            *right_panel = crate::resources::RightPanel::Chat;
+        }
+    }
+}
+
+/// A post started from the map, written over the map: beside it held
+/// sideways, along the bottom held upright, with the place still in sight
+/// (`docs/mockups/social-camera/`, "Post from the long press"). The same
+/// composer the community page has.
+pub fn render_floating_composer(
+    mut egui: crate::systems::egui_manager::EguiMut,
+    mut cs: ResMut<Communities>,
+    right_panel: Res<crate::resources::RightPanel>,
+    camera: Res<crate::systems::camera_screen::CameraScreen>,
+) {
+    if !cs.posts.over_map {
+        return;
+    }
+    let Some(community) = cs
+        .posts
+        .draft
+        .as_ref()
+        .and_then(|d| cs.get(d.community))
+        .cloned()
+    else {
+        cs.posts.over_map = false;
+        return;
+    };
+    if !right_panel.is(crate::resources::RightPanel::None) || camera.is_open() {
+        return;
+    }
+    let viewport = egui.viewport_pts();
+    let sideways = viewport.x > viewport.y;
+    let (anchor, offset, width, height) = if sideways {
+        (
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
+            380.0_f32.min(viewport.x * 0.5),
+            viewport.y - 2.0 * theme::OSD_MARGIN,
+        )
+    } else {
+        (
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -theme::OSD_MARGIN),
+            viewport.x - 2.0 * theme::OSD_MARGIN,
+            viewport.y * 0.55,
+        )
+    };
+    let ctx = egui.ctx_mut().clone();
+    egui::Area::new(egui::Id::new("floating_post_composer"))
+        .order(egui::Order::Foreground)
+        .anchor(anchor, offset)
+        .show(&ctx, |ui| {
+            crate::systems::chats::glass_frame().show(ui, |ui| {
+                ui.set_width(width - 24.0);
+                egui::ScrollArea::vertical()
+                    .max_height(height - 24.0)
+                    .show(ui, |ui| composer(ui, &mut cs, &community));
+            });
+        });
+    if cs.posts.draft.is_none() {
+        cs.posts.over_map = false;
     }
 }
 
@@ -1387,6 +1606,8 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
     feed[2].via = Some("groningen@feddit.nl".into());
     posts.feeds.insert(community, feed);
     if screen == "communitymap" {
+        // As picking it in the list does, without the read: offline.
+        posts.only = Some(community);
         posts.on_map = Some(community);
     }
     if screen == "communitypost" {
