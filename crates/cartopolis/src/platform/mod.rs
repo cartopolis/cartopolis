@@ -32,6 +32,8 @@ pub mod audio;
 pub mod camera;
 pub mod cell_source;
 pub mod fetch_gate;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gallery;
 // The raw GNSS measurements under the location fix, for the high-precision
 // mode. Compiled everywhere so its holders need no `cfg`; Android only.
 pub mod gnss_raw;

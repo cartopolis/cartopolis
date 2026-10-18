@@ -427,9 +427,13 @@ side by side:
 3. **Aerial**: PDOK's aerial photograph from above, with where you stood as a
    red dot and the line of sight in red. Only in the Netherlands.
 
-The pose is written under the panels. **Send to viberfox** puts the picture in
-your direct chat with the agent, which reads the pose back as a `[[shot]]` block
-for `docs/field-checks.toml`; **Retake** goes back to the camera.
+The address, position and direction are written under the panels. **Send to
+viberfox** puts the picture in your direct chat with the agent, which reads the
+pose back as a `[[shot]]` block for `docs/field-checks.toml`. **Save to phone**
+puts it in the gallery under `Pictures/Cartopolis`, with the position, direction
+and time in the photo's location data. **Retake** goes back to the camera. Until
+the phone has a GPS fix and a compass heading the shutter is grey, and the
+capture screen says which one it is waiting for.
 (`docs/notes/field-check.md`.)
 
 ## Letting an editor drive

@@ -10,9 +10,11 @@ A harness for the agent first (`docs/mockups/field-check/`). **Developer tools �
 View ▸ Field check** opens a capture screen; one shutter makes one picture of
 three panels (the photograph and Cartopolis, cropped to 3:4, and the aerial
 photograph from above with the camera and its line of sight marked), with the
-pose written under them. It is
-shown on screen, and **Send to viberfox** sends it as an encrypted chat picture
-to the direct chat with the first account in `CARTO_FIELD_CHECK_WITH`. The pose also rides in the caption as one marked line
+pose and the address written under them. It is
+shown on screen; **Send to viberfox** sends it as an encrypted chat picture to
+the direct chat with the first account in `CARTO_FIELD_CHECK_WITH`, and **Save
+to phone** writes it as a JPEG into the gallery (`Pictures/Cartopolis`; a
+desktop's `~/Pictures/Cartopolis`). The pose also rides in the caption as one marked line
 of JSON (`cartopolis_core::field_check`), so it needed no protocol change; the
 chat shows only the note, and `read_chat` hands the agent the pose as a ready
 `[[shot]]` block for `docs/field-checks.toml`.
@@ -34,6 +36,21 @@ chat shows only the note, and `read_chat` hands the agent the pose as a ready
   cropped. Its tiles are fetched on the composing thread ("Fetching the aerial
   photo…"); outside PDOK's envelope or on a failed fetch the panel says so and
   the picture is still made.
+- **A saved picture carries its pose in EXIF** (`FieldPose::exif`, hand-written
+  TIFF, since `image` writes an EXIF block but builds none): GPS position,
+  direction, horizontal error, UTC date and time, an altitude when the height map
+  had the ground, and the caption's pose line as the UserComment, so
+  `FieldPose::from_caption` re-reads a saved file as it reads a chat picture.
+  **The direction is tagged magnetic** (`GPSImgDirectionRef = M`): Android's
+  rotation vector is referenced to magnetic north and no declination is applied
+  (about 2° in the Netherlands); a pose from the app's own view is true north.
+- **The address is looked up after the shutter**, on the thread that puts the
+  picture together, from the same Nominatim as the saved places'
+  (`bookmarks::short_address`). A failed lookup leaves `place` empty and the
+  picture is still made; the place is also the preset's `description`.
+- **The capture screen names what it is waiting for**: the GPS (or why there is
+  none, e.g. the permission was refused), then the compass, and the shutter stays
+  grey until both have answered.
 - **Three panels are 1584 px wide**, under the 1600 px a chat picture is
   re-encoded to. A re-render for one panel is still 3:4 (`MANIFEST_HEADER`'s
   750×1000): only the angle matters, not the pixel count.

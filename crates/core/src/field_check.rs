@@ -164,10 +164,19 @@ pub struct FieldPose {
     pub ground_ahn_m: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver: Option<Receiver>,
+    /// The address at the shutter, as the geocoder put it ("Grote Markt 1,
+    /// Groningen"), so a picture says where it is to a person and not only to a
+    /// renderer. Looked up after the shutter; `None` when the lookup failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
     /// The build that drew the render: a render is evidence only about the
     /// code that made it.
     pub client: String,
 }
+
+/// The longest place name written under a picture, in characters; a longer
+/// one is cut with an ellipsis so the line still fits.
+const PLACE_MAX_CHARS: usize = 48;
 
 impl FieldPose {
     /// Every number a renderer will be handed is a real one.
@@ -255,30 +264,41 @@ impl FieldPose {
     }
 
     /// The two lines written under the picture, so it means something wherever
-    /// it goes without its caption: where, how good, which way; then the lens,
-    /// the time and the build.
+    /// it goes without its caption: where and how well; then which way, the
+    /// lens, the time and the build.
     #[must_use]
     pub fn strip_lines(&self) -> [String; 2] {
         let ns = if self.lat >= 0.0 { 'N' } else { 'S' };
         let ew = if self.lng >= 0.0 { 'E' } else { 'W' };
-        let mut first = format!("{:.5} {ns}  {:.5} {ew}", self.lat.abs(), self.lng.abs());
+        let mut first = String::new();
+        if let Some(place) = self.place.as_deref().filter(|p| !p.trim().is_empty()) {
+            let place = place.trim();
+            if place.chars().count() > PLACE_MAX_CHARS {
+                first += &place.chars().take(PLACE_MAX_CHARS - 1).collect::<String>();
+                first += "…";
+            } else {
+                first += place;
+            }
+            first += "  ·  ";
+        }
+        first += &format!("{:.5} {ns}  {:.5} {ew}", self.lat.abs(), self.lng.abs());
         match (&self.fix, self.accuracy_m) {
             (Some(f), Some(a)) => first += &format!("  ·  {f}, {}", metres(a)),
             (Some(f), None) => first += &format!("  ·  {f}"),
             (None, Some(a)) => first += &format!("  ·  ± {}", metres(a)),
             (None, None) => {}
         }
-        first += &format!("  ·  heading {:.0}°", self.heading_deg.rem_euclid(360.0));
+        let mut second = format!("heading {:.0}°", self.heading_deg.rem_euclid(360.0));
         if let Some(h) = self.heading_accuracy_deg {
-            first += &format!(" ± {h:.0}°");
+            second += &format!(" ± {h:.0}°");
         }
-        first += &format!("  ·  pitch {:.0}°", self.pitch_deg);
+        second += &format!("  ·  pitch {:.0}°", self.pitch_deg);
         if self.roll_deg.abs() >= 0.5 {
-            first += &format!("  ·  roll {:.0}°", self.roll_deg);
+            second += &format!("  ·  roll {:.0}°", self.roll_deg);
         }
         let (y, m, d, h, mi, s) = self.taken_utc();
-        let mut second = format!(
-            "{} camera, {:.0}° high  ·  {y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}Z  ·  client {}",
+        second += &format!(
+            "  ·  {} camera, {:.0}° high  ·  {y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}Z  ·  client {}",
             self.camera.label(),
             self.fov_y_deg,
             self.client
@@ -299,6 +319,9 @@ impl FieldPose {
         let mut t = String::new();
         t += "[[shot]]\n";
         t += &format!("name = {}\n", toml_str(&self.name()));
+        if let Some(place) = &self.place {
+            t += &format!("description = {}\n", toml_str(place));
+        }
         t += &format!("group = {}\n", toml_str(GROUP));
         t += &format!(
             "at = [{:.7}, {:.7}, {:.2}]\n",
@@ -368,6 +391,207 @@ impl FieldPose {
         }
         t
     }
+}
+
+impl FieldPose {
+    /// The pose as an EXIF block (a little-endian TIFF structure, what a JPEG's
+    /// APP1 segment carries after `Exif\0\0`), so a field check saved to a
+    /// phone's gallery is a photo the gallery, a map and any EXIF reader place
+    /// where it was taken, facing the way it faced.
+    ///
+    /// - GPS: latitude, longitude, the direction of the view, the horizontal
+    ///   error, the UTC date and time, and an altitude when the height map had
+    ///   the ground (AHN is metres NAP, which is close enough to sea level for
+    ///   EXIF's purpose).
+    /// - **The direction is magnetic** for a pose from the sensors: Android's
+    ///   rotation vector is referenced to magnetic north and nothing here
+    ///   applies the declination. A pose from the app's own view is true north.
+    /// - The UserComment is the caption's pose line ([`Self::caption`]), so the
+    ///   file alone is enough to put the camera back: `FieldPose::from_caption`
+    ///   reads it as it reads a chat picture's caption.
+    #[must_use]
+    pub fn exif(&self) -> Vec<u8> {
+        let (y, m, d, h, mi, s) = self.taken_utc();
+        let stamp = format!("{y:04}:{m:02}:{d:02} {h:02}:{mi:02}:{s:02}");
+        let description = self
+            .place
+            .clone()
+            .unwrap_or_else(|| "Cartopolis field check".to_string());
+        let mut comment = b"ASCII\0\0\0".to_vec();
+        comment.extend_from_slice(self.caption("").as_bytes());
+
+        let mut gps = vec![
+            Tag::bytes(0x0000, &[2, 3, 0, 0]),
+            Tag::ascii(0x0001, if self.lat >= 0.0 { "N" } else { "S" }),
+            Tag::rationals(0x0002, &dms(self.lat.abs())),
+            Tag::ascii(0x0003, if self.lng >= 0.0 { "E" } else { "W" }),
+            Tag::rationals(0x0004, &dms(self.lng.abs())),
+        ];
+        if let Some(ground) = self.ground_ahn_m {
+            let altitude = f64::from(ground) + self.height_m;
+            gps.push(Tag::bytes(0x0005, &[u8::from(altitude < 0.0)]));
+            gps.push(Tag::rationals(0x0006, &[(altitude.abs(), 100)]));
+        }
+        gps.push(Tag::rationals(
+            0x0007,
+            &[(f64::from(h), 1), (f64::from(mi), 1), (f64::from(s), 1)],
+        ));
+        gps.push(Tag::ascii(
+            0x0010,
+            match self.source {
+                PoseSource::Sensors => "M",
+                PoseSource::View => "T",
+            },
+        ));
+        gps.push(Tag::rationals(
+            0x0011,
+            &[(f64::from(self.heading_deg.rem_euclid(360.0)), 100)],
+        ));
+        gps.push(Tag::ascii(0x001D, &format!("{y:04}:{m:02}:{d:02}")));
+        if let Some(a) = self.accuracy_m {
+            gps.push(Tag::rationals(0x001F, &[(f64::from(a), 1000)]));
+        }
+        let exif = vec![
+            Tag::ascii(0x9003, &stamp),
+            Tag::ascii(0x9011, "+00:00"),
+            Tag::undefined(0x9286, &comment),
+        ];
+        let ifd0 = |exif_at: u32, gps_at: u32| {
+            vec![
+                Tag::ascii(0x010E, &description),
+                Tag::ascii(0x0131, &format!("Cartopolis {}", self.client)),
+                Tag::ascii(0x0132, &stamp),
+                Tag::long(0x8769, exif_at),
+                Tag::long(0x8825, gps_at),
+            ]
+        };
+        // The pointers are fixed-size, so the first IFD's size does not depend
+        // on their values: measure it with zeros, then lay the three out in
+        // order.
+        let exif_at = 8 + ifd_len(&ifd0(0, 0));
+        let gps_at = exif_at + ifd_len(&exif);
+        let mut out = b"II*\0".to_vec();
+        out.extend_from_slice(&8u32.to_le_bytes());
+        write_ifd(&mut out, &ifd0(exif_at, gps_at));
+        write_ifd(&mut out, &exif);
+        write_ifd(&mut out, &gps);
+        out
+    }
+}
+
+/// One EXIF field: its tag, TIFF type, count and value bytes.
+struct Tag {
+    tag: u16,
+    kind: u16,
+    count: u32,
+    data: Vec<u8>,
+}
+
+impl Tag {
+    fn bytes(tag: u16, v: &[u8]) -> Self {
+        Self {
+            tag,
+            kind: 1,
+            count: v.len() as u32,
+            data: v.to_vec(),
+        }
+    }
+    fn ascii(tag: u16, v: &str) -> Self {
+        // EXIF's ASCII is 7-bit in the standard and UTF-8 in practice (every
+        // reader in use decodes it so); a NUL inside would end the string early.
+        let mut data: Vec<u8> = v.bytes().filter(|b| *b != 0).collect();
+        data.push(0);
+        Self {
+            tag,
+            kind: 2,
+            count: data.len() as u32,
+            data,
+        }
+    }
+    fn long(tag: u16, v: u32) -> Self {
+        Self {
+            tag,
+            kind: 4,
+            count: 1,
+            data: v.to_le_bytes().to_vec(),
+        }
+    }
+    /// Each value as a fraction over its own denominator.
+    fn rationals(tag: u16, v: &[(f64, u32)]) -> Self {
+        let mut data = Vec::with_capacity(v.len() * 8);
+        for &(x, den) in v {
+            let num = (x * f64::from(den)).round().clamp(0.0, f64::from(u32::MAX)) as u32;
+            data.extend_from_slice(&num.to_le_bytes());
+            data.extend_from_slice(&den.to_le_bytes());
+        }
+        Self {
+            tag,
+            kind: 5,
+            count: v.len() as u32,
+            data,
+        }
+    }
+    fn undefined(tag: u16, v: &[u8]) -> Self {
+        Self {
+            tag,
+            kind: 7,
+            count: v.len() as u32,
+            data: v.to_vec(),
+        }
+    }
+    /// Bytes this field takes outside its entry: none when its value fits the
+    /// entry's four, else the value padded to an even length.
+    fn outside(&self) -> u32 {
+        if self.data.len() <= 4 {
+            0
+        } else {
+            (self.data.len() as u32 + 1) & !1
+        }
+    }
+}
+
+/// A coordinate as degrees, minutes and seconds to a ten-thousandth (3 mm).
+fn dms(deg: f64) -> [(f64, u32); 3] {
+    let d = deg.trunc();
+    let m = ((deg - d) * 60.0).trunc();
+    let s = (deg - d - m / 60.0) * 3600.0;
+    [(d, 1), (m, 1), (s.max(0.0), 10_000)]
+}
+
+/// An IFD's whole length: its count, its entries, the next-IFD link and the
+/// values that did not fit an entry.
+fn ifd_len(tags: &[Tag]) -> u32 {
+    2 + 12 * tags.len() as u32 + 4 + tags.iter().map(Tag::outside).sum::<u32>()
+}
+
+/// Append one IFD (tags in ascending order, as TIFF requires) with its values
+/// right behind it, starting at `out.len()`, and no next IFD.
+fn write_ifd(out: &mut Vec<u8>, tags: &[Tag]) {
+    let start = out.len() as u32;
+    let mut values_at = start + 2 + 12 * tags.len() as u32 + 4;
+    let mut values = Vec::new();
+    out.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+    let mut sorted: Vec<&Tag> = tags.iter().collect();
+    sorted.sort_by_key(|t| t.tag);
+    for t in sorted {
+        out.extend_from_slice(&t.tag.to_le_bytes());
+        out.extend_from_slice(&t.kind.to_le_bytes());
+        out.extend_from_slice(&t.count.to_le_bytes());
+        if t.data.len() <= 4 {
+            let mut inline = [0u8; 4];
+            inline[..t.data.len()].copy_from_slice(&t.data);
+            out.extend_from_slice(&inline);
+        } else {
+            out.extend_from_slice(&values_at.to_le_bytes());
+            values.extend_from_slice(&t.data);
+            if t.data.len() % 2 == 1 {
+                values.push(0);
+            }
+            values_at += t.outside();
+        }
+    }
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&values);
 }
 
 /// The centred crop of a `width × height` picture to [`PICTURE_ASPECT`]:
@@ -501,6 +725,7 @@ mod tests {
                 sigma_m: Some([0.009, 0.011]),
                 sigma_up_m: Some(0.02),
             }),
+            place: None,
             client: "410d46f4".into(),
         }
     }
@@ -641,13 +866,130 @@ mod tests {
     #[test]
     fn the_strip_says_where_how_well_and_when() {
         let [a, b] = grote_markt().strip_lines();
-        assert_eq!(
-            a,
-            "53.21830 N  6.56790 E  ·  RTK fixed, 1 cm  ·  heading 9° ± 3°  ·  pitch 14°"
-        );
+        assert_eq!(a, "53.21830 N  6.56790 E  ·  RTK fixed, 1 cm");
         assert_eq!(
             b,
-            "rear camera, 68° high  ·  2026-10-15 12:03:11Z  ·  client 410d46f4"
+            "heading 9° ± 3°  ·  pitch 14°  ·  rear camera, 68° high  ·  \
+             2026-10-15 12:03:11Z  ·  client 410d46f4"
         );
+    }
+
+    #[test]
+    fn the_place_leads_the_strip_and_a_long_one_is_cut() {
+        let mut p = grote_markt();
+        p.place = Some("Grote Markt 1, Groningen".into());
+        let [a, _] = p.strip_lines();
+        assert!(
+            a.starts_with("Grote Markt 1, Groningen  ·  53.21830 N"),
+            "{a}"
+        );
+        p.place = Some("x".repeat(80));
+        let [a, _] = p.strip_lines();
+        assert!(
+            a.starts_with(&format!("{}…  ·  ", "x".repeat(PLACE_MAX_CHARS - 1))),
+            "{a}"
+        );
+        // It names the preset too, and an old caption without one still reads.
+        p.place = Some("Grote Markt 1, Groningen".into());
+        assert!(p
+            .preset_toml()
+            .contains("description = \"Grote Markt 1, Groningen\"\n"));
+        assert_eq!(FieldPose::from_caption(&p.caption("")).unwrap().1, p);
+    }
+
+    /// A field from an EXIF block by walking it as a reader would: IFD0, then
+    /// the IFD a pointer tag names. `(type, count, value bytes)`.
+    fn exif_field(tiff: &[u8], path: &[u16]) -> (u16, u32, Vec<u8>) {
+        let u16_at = |o: usize| u16::from_le_bytes([tiff[o], tiff[o + 1]]);
+        let u32_at =
+            |o: usize| u32::from_le_bytes([tiff[o], tiff[o + 1], tiff[o + 2], tiff[o + 3]]);
+        assert_eq!(&tiff[..4], b"II*\0");
+        let mut ifd = u32_at(4) as usize;
+        for (i, &want) in path.iter().enumerate() {
+            let n = u16_at(ifd) as usize;
+            let mut tags = Vec::new();
+            let entry = (0..n)
+                .map(|k| ifd + 2 + 12 * k)
+                .find(|&e| {
+                    tags.push(u16_at(e));
+                    u16_at(e) == want
+                })
+                .unwrap_or_else(|| panic!("no tag {want:#06x}"));
+            assert!(tags.windows(2).all(|w| w[0] < w[1]), "tags out of order");
+            let (kind, count) = (u16_at(entry + 2), u32_at(entry + 4));
+            if i + 1 < path.len() {
+                ifd = u32_at(entry + 8) as usize;
+                continue;
+            }
+            let size = match kind {
+                1 | 2 | 7 => 1,
+                3 => 2,
+                4 => 4,
+                _ => 8,
+            } * count as usize;
+            let at = if size <= 4 {
+                entry + 8
+            } else {
+                u32_at(entry + 8) as usize
+            };
+            return (kind, count, tiff[at..at + size].to_vec());
+        }
+        unreachable!()
+    }
+
+    fn rational(b: &[u8], i: usize) -> f64 {
+        let n = u32::from_le_bytes(b[i * 8..i * 8 + 4].try_into().unwrap());
+        let d = u32::from_le_bytes(b[i * 8 + 4..i * 8 + 8].try_into().unwrap());
+        f64::from(n) / f64::from(d)
+    }
+
+    #[test]
+    fn a_saved_picture_says_where_it_was_taken() {
+        let mut p = grote_markt();
+        p.place = Some("Grote Markt 1, Groningen".into());
+        let tiff = p.exif();
+        let (_, _, lat_ref) = exif_field(&tiff, &[0x8825, 0x0001]);
+        assert_eq!(lat_ref, b"N\0");
+        let (kind, count, lat) = exif_field(&tiff, &[0x8825, 0x0002]);
+        assert_eq!((kind, count), (5, 3));
+        let lat = rational(&lat, 0) + rational(&lat, 1) / 60.0 + rational(&lat, 2) / 3600.0;
+        assert!((lat - 53.2183).abs() < 1e-7, "{lat}");
+        let (_, _, lng) = exif_field(&tiff, &[0x8825, 0x0004]);
+        let lng = rational(&lng, 0) + rational(&lng, 1) / 60.0 + rational(&lng, 2) / 3600.0;
+        assert!((lng - 6.5679).abs() < 1e-7, "{lng}");
+        // Facing 9°, magnetic, as the phone's compass measures it.
+        assert_eq!(exif_field(&tiff, &[0x8825, 0x0010]).2, b"M\0");
+        assert!((rational(&exif_field(&tiff, &[0x8825, 0x0011]).2, 0) - 9.0).abs() < 1e-6);
+        // The ground in the height map plus the camera's height above it.
+        let alt = rational(&exif_field(&tiff, &[0x8825, 0x0006]).2, 0);
+        assert!((alt - (6.97 + EYE_HEIGHT_M)).abs() < 0.01, "{alt}");
+        assert_eq!(exif_field(&tiff, &[0x8825, 0x001D]).2, b"2026:10:15\0");
+        assert_eq!(exif_field(&tiff, &[0x0132]).2, b"2026:10:15 12:03:11\0");
+        assert_eq!(
+            exif_field(&tiff, &[0x010E]).2,
+            b"Grote Markt 1, Groningen\0"
+        );
+        // The whole pose rides along, readable as a caption is.
+        let (kind, _, comment) = exif_field(&tiff, &[0x8769, 0x9286]);
+        assert_eq!(kind, 7);
+        assert_eq!(&comment[..8], b"ASCII\0\0\0");
+        let back = FieldPose::from_caption(std::str::from_utf8(&comment[8..]).unwrap());
+        assert_eq!(back.map(|(_, pose)| pose), Some(p));
+    }
+
+    #[test]
+    fn south_and_west_are_written_as_such() {
+        let mut p = grote_markt();
+        p.lat = -33.8568;
+        p.lng = -151.2153;
+        p.source = PoseSource::View;
+        p.ground_ahn_m = None;
+        let tiff = p.exif();
+        assert_eq!(exif_field(&tiff, &[0x8825, 0x0001]).2, b"S\0");
+        assert_eq!(exif_field(&tiff, &[0x8825, 0x0003]).2, b"W\0");
+        assert_eq!(exif_field(&tiff, &[0x8825, 0x0010]).2, b"T\0");
+        let (_, _, lat) = exif_field(&tiff, &[0x8825, 0x0002]);
+        let lat = rational(&lat, 0) + rational(&lat, 1) / 60.0 + rational(&lat, 2) / 3600.0;
+        assert!((lat - 33.8568).abs() < 1e-7, "{lat}");
     }
 }

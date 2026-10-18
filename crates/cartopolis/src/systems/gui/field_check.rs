@@ -266,6 +266,44 @@ fn fill_rect(canvas: &mut image::RgbaImage, x: i32, y: i32, w: i32, h: i32, rgba
     }
 }
 
+/// The picture as a JPEG with `exif` in it (`FieldPose::exif`): what "Save to
+/// phone" writes, so the gallery knows where it was taken.
+pub fn jpeg_with_exif(rgba: &[u8], [w, h]: [u32; 2], exif: Vec<u8>) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())
+        .ok_or_else(|| "the picture's size does not match its pixels".to_string())?;
+    let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+    encoder
+        .set_exif_metadata(exif)
+        .map_err(|e| format!("EXIF: {e}"))?;
+    encoder
+        .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("JPEG: {e}"))?;
+    Ok(out)
+}
+
+/// The address at `lat`, `lng` from the geocoder, shortened as a saved place's
+/// name is ("Grote Markt 1, Groningen"). Blocks on the request: called on the
+/// thread that puts the picture together. `None` when it cannot say.
+#[cfg(not(target_arch = "wasm32"))]
+fn place_at(lat: f64, lng: f64) -> Option<String> {
+    let url = format!(
+        "{}/reverse?format=jsonv2&zoom=18&lat={lat}&lon={lng}",
+        crate::systems::geo_nav::nominatim_base_url()
+    );
+    let body = futures_lite::future::block_on(crate::platform::http::fetch_string(
+        crate::platform::http::Request::get(url),
+    ))
+    .map_err(|e| warn!("field check: no place name: {e}"))
+    .ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    json.get("display_name")
+        .and_then(|v| v.as_str())
+        .map(crate::systems::bookmarks::short_address)
+}
+
 /// The brand face the street names are drawn in, for the strip.
 fn strip_font() -> Option<fontdue::Font> {
     fontdue::Font::from_bytes(
@@ -361,6 +399,7 @@ mod native {
         flip: bool,
         close: bool,
         send: bool,
+        save: bool,
         retake: bool,
         error: Option<String>,
     }
@@ -372,6 +411,11 @@ mod native {
         size: [u32; 2],
         pose: FieldPose,
         texture: Option<egui::TextureHandle>,
+        /// A save in flight: where it went, or why not. Behind a mutex for the
+        /// same reason as `Shutter::Composing`'s receiver.
+        saving: Option<std::sync::Mutex<std::sync::mpsc::Receiver<Result<String, String>>>>,
+        /// The last save's outcome, for the line under the buttons.
+        saved: Option<Result<String, String>>,
     }
 
     enum Shutter {
@@ -392,10 +436,10 @@ mod native {
         },
         /// The picture is being put together on a thread.
         Composing {
-            pose: FieldPose,
-            /// Behind a mutex only because a resource must be `Sync` and a
-            /// receiver is not; nothing else ever takes the lock.
-            done: std::sync::Mutex<std::sync::mpsc::Receiver<(Vec<u8>, [u32; 2])>>,
+            /// The picture and the pose, now with its place. Behind a mutex
+            /// only because a resource must be `Sync` and a receiver is not;
+            /// nothing else ever takes the lock.
+            done: std::sync::Mutex<std::sync::mpsc::Receiver<(Vec<u8>, [u32; 2], FieldPose)>>,
         },
     }
 
@@ -512,6 +556,7 @@ mod native {
                     flip: false,
                     close: false,
                     send: false,
+                    save: false,
                     retake: false,
                     error: None,
                 });
@@ -528,6 +573,50 @@ mod native {
         if std::mem::take(&mut session.retake) {
             session.result = None;
             session.error = None;
+        }
+        if let Some(done) = session.result.as_mut() {
+            if std::mem::take(&mut session.save) && done.saving.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (rgba, size, pose) = (done.rgba.clone(), done.size, done.pose.clone());
+                let spawned = std::thread::Builder::new()
+                    .name("field-check-save".into())
+                    .spawn(move || {
+                        let saved =
+                            super::jpeg_with_exif(&rgba, size, pose.exif()).and_then(|jpeg| {
+                                crate::platform::gallery::save_jpeg(
+                                    &format!("{}.jpg", pose.name()),
+                                    &jpeg,
+                                )
+                            });
+                        let _ = tx.send(saved);
+                    });
+                match spawned {
+                    Ok(_) => {
+                        done.saved = None;
+                        done.saving = Some(std::sync::Mutex::new(rx));
+                    }
+                    Err(e) => done.saved = Some(Err(e.to_string())),
+                }
+            }
+            let got = done.saving.as_ref().map(|m| {
+                m.lock()
+                    .map_err(|_| std::sync::mpsc::TryRecvError::Disconnected)
+                    .and_then(|rx| rx.try_recv())
+            });
+            match got {
+                Some(Ok(outcome)) => {
+                    if let Err(e) = &outcome {
+                        warn!("field check: not saved: {e}");
+                    }
+                    done.saved = Some(outcome);
+                    done.saving = None;
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                    done.saved = Some(Err("the save stopped".into()));
+                    done.saving = None;
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
+            }
         }
         if std::mem::take(&mut session.send) {
             if let (Some(done), Some((peer, channel))) =
@@ -616,6 +705,7 @@ mod native {
                 heading_accuracy_deg: attitude.accuracy_deg.map(|a| a as f32),
                 ground_ahn_m: ground_ahn(fix.lat, fix.lng),
                 receiver: receiver(),
+                place: None,
                 client: client_version(),
             })
         } else if !session.moves_world {
@@ -642,6 +732,7 @@ mod native {
                     heading_accuracy_deg: None,
                     ground_ahn_m: ground_ahn(lat, lng),
                     receiver: None,
+                    place: None,
                     client: client_version(),
                 }
             })
@@ -780,12 +871,13 @@ mod native {
             } => match check.world_in.take() {
                 Some((world, [ww, wh])) => {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    let job_pose = pose.clone();
+                    let mut job_pose = pose;
                     let spawned = std::thread::Builder::new()
                         .name("field-check".into())
                         .spawn(move || {
                             let rgba = photo.to_rgba();
                             let font = strip_font();
+                            job_pose.place = super::place_at(job_pose.lat, job_pose.lng);
                             // The tiles are fetched here, off the frame; a
                             // failure costs the panel, not the picture.
                             let (aerial, note) = match aerial.map(aerial_reference::from_above) {
@@ -804,11 +896,10 @@ mod native {
                                 &job_pose,
                                 font.as_ref(),
                             );
-                            let _ = tx.send(out);
+                            let _ = tx.send((out.0, out.1, job_pose));
                         });
                     match spawned {
                         Ok(_) => Shutter::Composing {
-                            pose,
                             done: std::sync::Mutex::new(rx),
                         },
                         Err(e) => {
@@ -831,22 +922,24 @@ mod native {
                     waited: waited + 1,
                 },
             },
-            Shutter::Composing { pose, done } => {
+            Shutter::Composing { done } => {
                 let got = done
                     .lock()
                     .map_err(|_| std::sync::mpsc::TryRecvError::Disconnected)
                     .and_then(|rx| rx.try_recv());
                 match got {
-                    Ok((rgba, size)) => {
+                    Ok((rgba, size, pose)) => {
                         session.result = Some(Finished {
                             rgba,
                             size,
                             pose,
                             texture: None,
+                            saving: None,
+                            saved: None,
                         });
                         Shutter::Idle
                     }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => Shutter::Composing { pose, done },
+                    Err(std::sync::mpsc::TryRecvError::Empty) => Shutter::Composing { done },
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         session.error = Some("The picture could not be put together.".into());
                         Shutter::Idle
@@ -1001,10 +1094,12 @@ mod native {
                     36.0,
                     egui::Stroke::new(4.0, egui::Color32::WHITE),
                 );
+                // Grey until there is a pose to take: pressing it then could
+                // only say what the chips already say.
                 painter.circle_filled(
                     shutter.center(),
                     29.0,
-                    if session.busy() {
+                    if session.busy() || session.live.is_none() {
                         theme::TEXT_DIM
                     } else {
                         egui::Color32::WHITE
@@ -1066,6 +1161,16 @@ mod native {
             })
             .clone();
         let send_to = session.send_to.as_ref().map(|(peer, _)| peer.clone());
+        let save_line = if done.saving.is_some() {
+            Some(("Saving…".to_string(), false))
+        } else {
+            match &done.saved {
+                Some(Ok(at)) => Some((format!("Saved to {at}"), false)),
+                Some(Err(e)) => Some((format!("Not saved: {e}"), true)),
+                None => None,
+            }
+        };
+        let saving = done.saving.is_some();
         egui::Area::new(egui::Id::new("field_check_result"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::Pos2::ZERO)
@@ -1095,7 +1200,7 @@ mod native {
                 // The picture, as large as the screen allows.
                 let room = egui::Rect::from_min_max(
                     egui::pos2(full.left() + 12.0, full.top() + 104.0),
-                    egui::pos2(full.right() - 12.0, full.bottom() - 150.0),
+                    egui::pos2(full.right() - 12.0, full.bottom() - 190.0),
                 );
                 let size = texture.size_vec2();
                 let scale = (room.width() / size.x).min(room.height() / size.y);
@@ -1108,8 +1213,8 @@ mod native {
                 );
 
                 let row = egui::Rect::from_min_max(
-                    egui::pos2(full.left() + 16.0, full.bottom() - 130.0),
-                    egui::pos2(full.right() - 16.0, full.bottom() - 30.0),
+                    egui::pos2(full.left() + 16.0, full.bottom() - 175.0),
+                    egui::pos2(full.right() - 16.0, full.bottom() - 24.0),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
                     ui.vertical_centered(|ui| {
@@ -1131,9 +1236,26 @@ mod native {
                             ),
                         }
                         ui.add_space(6.0);
-                        if theme::action_button(ui, format!("{}  Retake", icons::CAMERA)).clicked()
-                        {
-                            session.retake = true;
+                        ui.horizontal(|ui| {
+                            // Centred by hand: a horizontal row in a centred
+                            // column still starts at the left.
+                            let gap = (ui.available_width() - 260.0).max(0.0) / 2.0;
+                            ui.add_space(gap);
+                            if theme::action_enabled(ui, !saving, "Save to phone").clicked() {
+                                session.save = true;
+                            }
+                            if theme::action_button(ui, format!("{}  Retake", icons::CAMERA))
+                                .clicked()
+                            {
+                                session.retake = true;
+                            }
+                        });
+                        if let Some((line, bad)) = &save_line {
+                            ui.label(egui::RichText::new(line).size(12.5).color(if *bad {
+                                theme::ERROR
+                            } else {
+                                theme::TEXT_DIM
+                            }));
                         }
                     });
                 });
@@ -1148,15 +1270,26 @@ mod native {
     }
 
     fn chips(session: &Session) -> Vec<(String, Tone)> {
+        // What the shutter is still waiting for, one thing at a time, in the
+        // order it is needed: permission and a fix, then the compass.
         let Some(pose) = session.live.as_ref() else {
-            return vec![(
-                if session.location.error().is_some() {
-                    "No position".to_string()
-                } else {
-                    "Waiting for a position…".to_string()
-                },
-                Tone::Warn,
-            )];
+            let fix = session.location.latest();
+            let first = match (fix, session.location.error()) {
+                (Some(f), _) => format!("GPS · {:.0} m", f.accuracy_m),
+                (None, Some(e)) => format!("No position: {e}"),
+                (None, None) => "Waiting for GPS…".to_string(),
+            };
+            let mut chips = vec![(first, Tone::Warn)];
+            if fix.is_some() {
+                chips.push((
+                    match session.compass.error() {
+                        Some(e) => format!("No compass: {e}"),
+                        None => "Waiting for the compass…".to_string(),
+                    },
+                    Tone::Warn,
+                ));
+            }
+            return chips;
         };
         if pose.source == fc::PoseSource::View {
             return vec![("No sensors: the pose is this view".into(), Tone::Plain)];
@@ -1276,6 +1409,7 @@ mod tests {
             heading_accuracy_deg: Some(3.0),
             ground_ahn_m: None,
             receiver: None,
+            place: None,
             client: "test".into(),
         }
     }
@@ -1358,6 +1492,20 @@ mod tests {
             })
         });
         assert!(lit, "nothing was written in the strip");
+    }
+
+    #[test]
+    fn a_saved_picture_is_a_jpeg_carrying_the_pose() {
+        let px = solid(64, 48, [10, 120, 200]);
+        let jpeg = jpeg_with_exif(&px, [64, 48], pose().exif()).expect("encodes");
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "not a JPEG");
+        let at = jpeg
+            .windows(6)
+            .position(|w| w == b"Exif\0\0")
+            .expect("no EXIF segment");
+        assert_eq!(&jpeg[at + 6..at + 10], b"II*\0");
+        let back = image::load_from_memory(&jpeg).expect("decodes");
+        assert_eq!((back.width(), back.height()), (64, 48));
     }
 
     #[test]

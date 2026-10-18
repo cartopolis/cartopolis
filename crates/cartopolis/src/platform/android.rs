@@ -2693,7 +2693,12 @@ pub fn start_camera_capture() -> Result<CameraCapture, String> {
 }
 
 fn start_camera_capture_inner(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail> {
-    let uri = insert_photo_row(env, activity)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let serial = NEXT_PHOTO.fetch_add(1, Ordering::Relaxed);
+    let uri = insert_photo_row(env, activity, &format!("cartopolis-{stamp}-{serial}.jpg"))?;
     match launch_camera(env, activity, &uri) {
         Ok(()) => Ok(uri),
         Err(e) => {
@@ -2707,8 +2712,9 @@ fn start_camera_capture_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Gl
     }
 }
 
-/// Insert an empty image row and return its `content://` URI.
-fn insert_photo_row(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail> {
+/// Insert an empty image row named `name` under `Pictures/Cartopolis` and
+/// return its `content://` URI.
+fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<GlobalRef, Fail> {
     env.with_local_frame_returning_local(16, |env| {
         let resolver = env
             .call_method(
@@ -2729,17 +2735,7 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, F
             .l()?;
 
         let values = env.new_object("android/content/ContentValues", "()V", &[])?;
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let serial = NEXT_PHOTO.fetch_add(1, Ordering::Relaxed);
-        put_string(
-            env,
-            &values,
-            "_display_name",
-            &format!("cartopolis-{stamp}-{serial}.jpg"),
-        )?;
+        put_string(env, &values, "_display_name", name)?;
         put_string(env, &values, "mime_type", "image/jpeg")?;
         // `RELATIVE_PATH` arrived with scoped storage in API 29. Below that the
         // column does not exist and inserting it throws, so API 28 gets the
@@ -2767,6 +2763,72 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, F
         Ok(uri)
     })
     .and_then(|uri| Ok(env.new_global_ref(&uri)?))
+}
+
+/// The storage permission a MediaStore insert needs below API 29 (the
+/// manifest declares it with `maxSdkVersion="28"`, see [`insert_photo_row`]).
+const PERM_WRITE_STORAGE: &str = "android.permission.WRITE_EXTERNAL_STORAGE";
+
+/// Put a finished JPEG in the phone's gallery, `Pictures/Cartopolis/<name>`:
+/// what the field check's "Save to phone" does.
+///
+/// The same MediaStore row the camera intent is given ([`insert_photo_row`]),
+/// written by us instead, through `ContentResolver.openOutputStream`. A row
+/// whose write fails is deleted, so a failure leaves no empty picture in the
+/// gallery. **Blocks** (a JNI attach, maybe a permission dialog on API 28):
+/// call it from a worker thread.
+pub fn save_to_gallery(name: &str, jpeg: &[u8]) -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    if sdk_int(&mut env).map_err(|Fail(e)| e)? < 29 {
+        let never = AtomicBool::new(false);
+        if !ensure_permission(PERM_WRITE_STORAGE, &never)? {
+            return Err("storage permission denied".to_string());
+        }
+    }
+    let uri = insert_photo_row(&mut env, &activity, name).map_err(|Fail(e)| {
+        clear_pending(&env);
+        e
+    })?;
+    let written: Result<(), Fail> = env.with_local_frame(8, |env| {
+        let resolver = env
+            .call_method(
+                &activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        let stream = env
+            .call_method(
+                &resolver,
+                "openOutputStream",
+                "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+                &[JValue::Object(uri.as_obj())],
+            )?
+            .l()?;
+        if stream.is_null() {
+            return Err(Fail("the gallery gave no stream to write to".to_string()));
+        }
+        let bytes = env.byte_array_from_slice(jpeg)?;
+        env.call_method(&stream, "write", "([B)V", &[JValue::Object(&bytes)])?;
+        env.call_method(&stream, "close", "()V", &[])?;
+        Ok(())
+    });
+    match written {
+        Ok(()) => {
+            tracing::info!(name, bytes = jpeg.len(), "saved a picture to the gallery");
+            Ok(())
+        }
+        Err(Fail(e)) => {
+            clear_pending(&env);
+            delete_row(&mut env, &activity, &uri);
+            Err(e)
+        }
+    }
 }
 
 /// `ContentValues.put(String, String)`.

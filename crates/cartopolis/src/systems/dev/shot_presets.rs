@@ -735,6 +735,8 @@ at = [1.0, 2.0, 3.0]
                 sigma_m: Some([0.009, 0.011]),
                 ..Receiver::default()
             }),
+            // A place becomes the preset's `description`, which the loader must take.
+            place: Some("Grote Markt 1, Groningen".into()),
             client: "410d46f4".into(),
         }
     }

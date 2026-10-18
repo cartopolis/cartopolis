@@ -166,7 +166,7 @@ impl BookmarksState {
 
 /// First few segments of a Nominatim display_name — enough to recognise the
 /// place without the province/country tail.
-fn short_address(display_name: &str) -> String {
+pub(crate) fn short_address(display_name: &str) -> String {
     let parts: Vec<&str> = display_name.split(',').map(str::trim).take(3).collect();
     parts.join(", ")
 }
