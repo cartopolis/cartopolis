@@ -535,6 +535,23 @@ impl ChatState {
         }
     }
 
+    /// Does `channel` already hold this line, as the server dated it? The
+    /// server replays a channel's scrollback at every sign-in and a reconnect is
+    /// one, while the log is kept across it (`session::drive_session`), so
+    /// without this every reconnect appended the backlog again: twice in the
+    /// Global window, and as new lines to a bot's `read_chat`. A replay has no
+    /// row id, so sender, send time and text are the key; never `sender_id`,
+    /// an avatar id that changes across a reconnect. `sent_at_ms == 0` (the
+    /// sender did not say) is never a duplicate.
+    pub fn already_has(&self, channel: &str, sender: &str, sent_at_ms: u64, body: &str) -> bool {
+        sent_at_ms != 0
+            && self.channels.iter().filter(|c| c.key == channel).any(|c| {
+                c.lines
+                    .iter()
+                    .any(|l| l.at_ms == sent_at_ms && l.sender == sender && l.body == body)
+            })
+    }
+
     /// Date the line just received on `channel` by when it was **sent**, and
     /// keep it out of everything that surfaces new lines if that was long ago
     /// ([`BACKLOG_AFTER_MS`]).
@@ -1065,6 +1082,21 @@ pub(crate) fn render_report_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replayed_line_is_known_by_sender_time_and_text() {
+        let mut chat = ChatState::default();
+        chat.receive("global", 7, "jeroen".into(), "hi 🙂".into(), None);
+        chat.date_last("global", 1_000);
+        assert!(chat.already_has("global", "jeroen", 1_000, "hi 🙂"));
+        // Another time, sender, text or channel is another line.
+        assert!(!chat.already_has("global", "jeroen", 2_000, "hi 🙂"));
+        assert!(!chat.already_has("global", "viberfox", 1_000, "hi 🙂"));
+        assert!(!chat.already_has("global", "jeroen", 1_000, "hi"));
+        assert!(!chat.already_has("local", "jeroen", 1_000, "hi 🙂"));
+        // Undated is never a duplicate.
+        assert!(!chat.already_has("global", "jeroen", 0, "hi 🙂"));
+    }
 
     #[test]
     fn a_block_is_matched_regardless_of_case() {

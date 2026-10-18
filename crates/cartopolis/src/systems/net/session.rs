@@ -815,6 +815,9 @@ fn teardown(
     // The chat log belongs to the world it was said in; carrying it into the next
     // one would attribute strangers' lines to a server they never spoke on.
     *chat = crate::systems::chat::ChatState::default();
+    // Other avatars' looks are keyed by that server's avatar ids, which the
+    // next session hands out afresh.
+    commands.insert_resource(crate::systems::human_avatar::RemoteLooks::default());
     game_state.prims_loaded = false;
     game_state.selected_prim_id = None;
 

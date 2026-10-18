@@ -784,6 +784,13 @@ pub fn apply_network_snapshot(
                 ..
             } => {
                 local_sim_id.0 = Some(your_avatar_id);
+                // Avatar ids are a server's own and start again at 1 when it
+                // restarts; a look kept from before belongs to whoever had the
+                // id then. A phone that reconnected drew the bot that got
+                // jeroen's old id in jeroen's own look.
+                if let Some(looks) = auth.looks.as_mut() {
+                    **looks = crate::systems::human_avatar::RemoteLooks::default();
+                }
                 tracing::info!(%username, %server_name, "authenticated");
                 auth.identity.principal_id = Some(principal_id);
                 auth.identity.username = Some(username);
@@ -975,6 +982,13 @@ pub fn apply_network_snapshot(
                 // same number as `RemoteAvatar::sim_id`, which is what lets a
                 // speech bubble find the person who said it without matching on
                 // a display name.
+                if auth
+                    .chat
+                    .already_has(&channel, &sender_name, sent_at_ms, &body)
+                {
+                    // The sign-in replay after a reconnect, of lines kept.
+                    continue;
+                }
                 auth.chat
                     .receive(&channel, sender_id, sender_name, body, distance_m);
                 // The sign-in replay of a channel's scrollback arrives down this
@@ -1020,6 +1034,11 @@ pub fn apply_network_snapshot(
                 auth.chat.blocked = usernames;
             }
             NetMessage::AvatarLookOf { avatar_id, look } => {
+                // The server's broadcast comes back to its sender too; our own
+                // look is the user store's, not a remote one.
+                if Some(avatar_id) == local_sim_id.0 {
+                    continue;
+                }
                 if let Some(looks) = auth.looks.as_mut() {
                     looks.arrived(avatar_id, look);
                 }
@@ -1222,11 +1241,11 @@ fn local_avatar_dto<'a>(
     avatars: &'a [AvatarStateDto],
     local_id: Option<u64>,
 ) -> Option<&'a AvatarStateDto> {
-    if let Some(id) = local_id {
-        avatars.iter().find(|a| a.id == id)
-    } else {
-        avatars.first()
-    }
+    // Until the handshake names our avatar, none of them is ours. This used to
+    // fall back to the first one, which put somebody else's position on the
+    // local avatar for any snapshot handled before the answer.
+    let id = local_id?;
+    avatars.iter().find(|a| a.id == id)
 }
 
 fn sync_remote_avatar_entities(
