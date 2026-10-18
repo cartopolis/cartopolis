@@ -332,6 +332,8 @@ pub struct McpPlugin {
     pub config: systems::mcp::Config,
     /// `--mcp-allow`, which pins the allow-list for this run.
     pub allow: Option<String>,
+    /// `--mcp-private-only`: the agent speaks in private chats only.
+    pub private_only: bool,
     /// What this launch signed in with, kept so an agent can sign back in after
     /// signing out (`mcp::agent`, `sign_in`).
     pub launch_sign_in: Option<systems::session::SessionRequest>,
@@ -354,7 +356,7 @@ impl Plugin for McpPlugin {
         let headless = cfg.headless;
         // Whose chat the agent may read: the flag for this run, else what Settings
         // remembers, else nobody (`mcp::agent::Audience`).
-        let audience = match &self.allow {
+        let mut audience = match &self.allow {
             Some(list) => systems::mcp::agent::Audience {
                 pinned: true,
                 ..systems::mcp::agent::Audience::parse(list)
@@ -368,7 +370,8 @@ impl Plugin for McpPlugin {
                     .unwrap_or(""),
             ),
         };
-        tracing::info!(can_hear = %audience.describe(), "mcp: agent allow-list");
+        audience.private_only = self.private_only;
+        tracing::info!(can_hear = %audience.describe(), private_only = audience.private_only, "mcp: agent allow-list");
         app.insert_resource(audience)
             .insert_resource(match self.launch_sign_in.clone() {
                 Some(request) => systems::mcp::agent::AgentState::signing_in_with(request),

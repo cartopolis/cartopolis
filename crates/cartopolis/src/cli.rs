@@ -274,6 +274,13 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "NAMES")]
     pub(crate) mcp_allow: Option<String>,
 
+    /// An agent driving this client speaks only in private chats: `say` must
+    /// name `to`, and a script that could make an object speak is refused.
+    /// For a bot that should never talk in public.
+    #[cfg(mcp)]
+    #[arg(long)]
+    pub(crate) mcp_private_only: bool,
+
     /// Offscreen surface size for `--mcp-headless`, `WxH`. Ignored when there is
     /// a window, where the window *is* the surface.
     #[cfg(mcp)]

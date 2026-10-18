@@ -168,6 +168,52 @@ pub struct Audience {
     /// Set by `--mcp-allow`: the flag is an instruction for this launch, and
     /// Settings shows the list without being able to change it.
     pub pinned: bool,
+    /// Set by `--mcp-private-only`: the agent speaks in private chats and
+    /// nowhere else. `say` without `to` is refused, and so is a script that
+    /// could make one of its objects speak ([`public_speech_in`]). Here, below
+    /// the agent, because an instruction in the agent's brief is only advice.
+    pub private_only: bool,
+}
+
+/// The script functions that put words in public chat
+/// (`cartopolis_core::script_api`, the Chat group but `log`, which prints to
+/// the script console).
+const SPEAKING_FNS: &[&str] = &["whisper", "say", "shout"];
+
+/// Ways a Luau script reaches a global by a computed name (`_G["s".."ay"]`),
+/// which are the only routes round naming a speaking function outright.
+const GLOBAL_ESCAPES: &[&str] = &[
+    "_G",
+    "_ENV",
+    "getfenv",
+    "setfenv",
+    "load",
+    "loadstring",
+    "loadfile",
+    "dofile",
+    "rawget",
+    "require",
+];
+
+/// The word in `source` that could make an object speak in public chat, for a
+/// client that talks only privately: a speaking function, or a global escape.
+/// Words in comments and strings count too: a false refusal costs a rewrite,
+/// a miss costs the rule.
+#[must_use]
+pub fn public_speech_in(source: &str) -> Option<String> {
+    source
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .find(|w| SPEAKING_FNS.contains(w) || GLOBAL_ESCAPES.contains(w))
+        .map(str::to_string)
+}
+
+/// The refusal for a script [`public_speech_in`] caught.
+fn speech_refusal(word: &str) -> AgentReply {
+    AgentReply::refuse(format!(
+        "This client speaks only in private chats (--mcp-private-only), and a script using \
+         `{word}` could make the object speak in public, so it was not sent. Write it without \
+         chat (whisper, say, shout) and without reaching globals by name."
+    ))
 }
 
 impl Audience {
@@ -1112,6 +1158,26 @@ fn handle(
         }
         AgentRequest::Teleport(args) => teleport(state, w, &args),
         AgentRequest::Emote(args) => emote(w, &args),
+        AgentRequest::Build(args)
+            if audience.private_only
+                && args.prims.iter().any(|p| {
+                    p["script"]
+                        .as_str()
+                        .is_some_and(|s| public_speech_in(s).is_some())
+                }) =>
+        {
+            let word = args
+                .prims
+                .iter()
+                .find_map(|p| p["script"].as_str().and_then(public_speech_in))
+                .unwrap_or_default();
+            speech_refusal(&word)
+        }
+        AgentRequest::SetScript(args)
+            if audience.private_only && public_speech_in(&args.source).is_some() =>
+        {
+            speech_refusal(&public_speech_in(&args.source).unwrap_or_default())
+        }
         AgentRequest::Build(args) => match start_build(w, args) {
             Ok(items) => {
                 let before = w.prims.iter().map(|(p, _)| p.id).collect();
@@ -2162,6 +2228,16 @@ fn say(
         return Some((reply, AgentReply::refuse(NOT_ONLINE)));
     };
     let Some(to) = args.to.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
+        if audience.private_only {
+            return Some((
+                reply,
+                AgentReply::refuse(format!(
+                    "This client speaks only in private chats (--mcp-private-only): nothing \
+                     was said out loud. Send it with `to`, to one of: {}.",
+                    audience.describe()
+                )),
+            ));
+        }
         let scope = match args.scope.as_deref().unwrap_or("local") {
             "local" | "say" => ChatScope::Local { shout: false },
             "shout" => ChatScope::Local { shout: true },
@@ -4272,6 +4348,46 @@ fn first_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_private_only_client_refuses_scripts_that_could_speak() {
+        assert_eq!(public_speech_in("say('hi')").as_deref(), Some("say"));
+        assert_eq!(
+            public_speech_in("local x = 1\nshout(x)").as_deref(),
+            Some("shout")
+        );
+        // Every way round naming it: a global reached by a computed name.
+        assert_eq!(
+            public_speech_in(r#"_G["s".."ay"]("hi")"#).as_deref(),
+            Some("_G")
+        );
+        assert!(public_speech_in("getfenv()[\"say\"]()").is_some());
+        assert!(public_speech_in("rawget(_ENV, 'whisper')").is_some());
+        // Words that merely contain one are not it.
+        assert_eq!(
+            public_speech_in("local essay = sayings + 1; log(essay)"),
+            None
+        );
+        assert_eq!(
+            public_speech_in("on_touch(function() set_color(1, 0, 0) end)"),
+            None
+        );
+    }
+
+    #[test]
+    fn every_script_function_that_speaks_is_refused() {
+        // A speaking function added to the script API must be added here too,
+        // or a private-only bot could build an object that talks in public.
+        for f in cartopolis_core::SCRIPT_API {
+            if f.group == cartopolis_core::ScriptGroup::Chat && f.name != "log" {
+                assert!(
+                    SPEAKING_FNS.contains(&f.name),
+                    "`{}` speaks in chat and is not in SPEAKING_FNS",
+                    f.name
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_list_reads_names_commas_spaces_and_a_star() {

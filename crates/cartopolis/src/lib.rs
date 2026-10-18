@@ -1119,6 +1119,7 @@ fn run_client() {
         app.add_plugins(systems::dev::McpPlugin {
             config,
             allow: cli.mcp_allow.clone(),
+            private_only: cli.mcp_private_only,
             launch_sign_in,
         });
     }
