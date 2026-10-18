@@ -60,9 +60,14 @@ fn sky_reference() -> f32 {
     for (var i = 0; i < 8; i = i + 1) {
         let a = f32(i) * 0.7853982;
         let offset = vec2<f32>(cos(a) / rays.aspect, sin(a)) * REFERENCE_RADIUS;
-        sum += luminance(textureSampleLevel(screen, screen_sampler, rays.sun_uv + offset, 0.0).rgb);
+        let lum = luminance(textureSampleLevel(screen, screen_sampler, rays.sun_uv + offset, 0.0).rgb);
+        sum += log(max(lum, 1e-4));
     }
-    return max(sum / 8.0, 1e-4);
+    // The geometric mean, not the plain one. A crisp cloud edge lit by the
+    // forward lobe is many times the sky, and with the plain mean one tap
+    // crossing it scaled every beam on the screen at once: the frame flashed
+    // white as the deck drifted past the sun (2026-10-17).
+    return exp(sum / 8.0);
 }
 
 @fragment
