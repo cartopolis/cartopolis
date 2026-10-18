@@ -186,6 +186,7 @@ pub fn render_dev_panel(
     mut cache: Local<CensusCache>,
     mut precision_log: ResMut<crate::systems::high_precision::HighPrecisionLog>,
     mut precise_hand: ResMut<crate::systems::prim_hand::PreciseHand>,
+    mut field_check: ResMut<crate::systems::field_check::FieldCheck>,
 ) {
     if !dev.open {
         return;
@@ -224,6 +225,7 @@ pub fn render_dev_panel(
 
     let ctx = egui.ctx_mut();
     let mut open = true;
+    let mut open_field_check = false;
     egui::Window::new("Developer tools")
         .open(&mut open)
         .default_width(300.0)
@@ -254,6 +256,7 @@ pub fn render_dev_panel(
                             &dev,
                             &mut shot,
                             &mut copied_at,
+                            &mut open_field_check,
                         );
                     }
                     DevTab::Profiler => profiler_tab(ui, &readouts.diagnostics),
@@ -267,6 +270,11 @@ pub fn render_dev_panel(
     // Closing via the window's [x] only writes when it actually changed, to avoid
     // marking the resource changed every frame (which would re-run the lighting
     // update).
+    // The capture screen covers the window, so the panel steps aside for it.
+    if open_field_check {
+        field_check.request = true;
+        open = false;
+    }
     if !open && dev.open {
         dev.open = false;
     }
@@ -398,6 +406,7 @@ fn view_tab(
     dev: &crate::resources::DevPanelState,
     shot: &mut crate::resources::ScreenshotState,
     copied_at: &mut Option<Instant>,
+    field_check: &mut bool,
 ) {
     // Where the camera is, in the terms the rest of the client argues in: a
     // geographic fix, the altitude that drives every tier decision, and
@@ -491,27 +500,25 @@ fn view_tab(
             ui.label("copied");
         }
     });
-    ui.horizontal(|ui| {
-        // Clicking captures a chrome-free shot into the next slot, cycling
-        // docs/img/screenshot-{1..N}.png. The `capture_requested` guard stops a
-        // held click from queuing more than one capture.
-        if ui
-            .button(format!(
-                "{}  Capture slot {}",
-                icons::CAMERA,
-                shot.next_slot + 1
-            ))
-            .on_hover_text("Hides the UI for one frame, then saves docs/img/screenshot-N.png")
-            .clicked()
-            && !shot.hide_ui
-        {
-            shot.hide_ui = true;
-            shot.capture_requested = true;
-        }
-        if ui.button("Reset to 1").clicked() {
-            shot.next_slot = 0;
-        }
-    });
+
+    theme::section(ui, "Field check");
+    // A photograph, Cartopolis from the same pose and the aerial photograph
+    // seen from it, side by side (`systems::field_check`). It replaced a
+    // button that saved the view into `docs/img/`, which on a phone is
+    // nowhere.
+    if ui
+        .add_enabled(
+            cfg!(not(target_arch = "wasm32")),
+            egui::Button::new(format!("{}  Field check", icons::CAMERA)),
+        )
+        .on_hover_text(
+            "Take a photo: Cartopolis from the same spot and the aerial photo \
+             from there are laid beside it",
+        )
+        .clicked()
+    {
+        *field_check = true;
+    }
 
     theme::note(
         ui,

@@ -1,21 +1,33 @@
-//! The **field check** (`docs/mockups/field-check/v4.html`, `v4-chat.html`):
-//! a photograph and Cartopolis drawn from the same pose, side by side in one
-//! picture, sent into a private chat with the agent, which says where the
-//! world is wrong and can put the camera back on the same view later.
+//! The **field check** (`docs/mockups/field-check/v4.html`): a photograph,
+//! Cartopolis drawn from the same pose, and the aerial photograph seen from
+//! that pose, side by side in one picture. The picture is shown when it is
+//! made, and one button sends it into the private chat with the agent, which
+//! says where the world is wrong and can put the camera back on the same view
+//! later.
 //!
-//! A harness first: the button is offered only in a direct chat with one of
-//! the accounts in [`FieldCheck::with`] (`CARTO_FIELD_CHECK_WITH`, default
-//! [`DEFAULT_WITH`]).
+//! A developer tool: it opens from Developer tools ▸ View. It used to be a
+//! camera button in the chat bar of a chat with the agent, where nobody found
+//! it. The picture goes to the first account in [`FieldCheck::agents`]
+//! (`CARTO_FIELD_CHECK_WITH`, default [`DEFAULT_WITH`]) this device has a
+//! direct chat with.
 //!
-//! **How the two halves come to share a pose.** On a phone, while the capture
+//! **The aerial panel is the map from above**: PDOK's aerial photograph around
+//! where the camera stood, the camera a red dot, the line of sight red, its aim
+//! a yellow cross (`aerial_reference::from_above`, the `.aerial-map.jpg`
+//! `--aerial-reference` writes). The same photograph seen from the camera
+//! (`from_camera`) was tried first and lost: from eye height it is a smear of
+//! paving with every building flattened into it. The Netherlands only;
+//! elsewhere the panel says so.
+//!
+//! **How the three panels come to share a pose.** On a phone, while the capture
 //! screen is up, the world camera *is* the phone: placed on the position fix at
 //! eye height above the measured ground, turned by the compass and the gravity
 //! sensor, and given the photograph's lens. The shutter takes the newest camera
 //! frame and the pose it was taken at, holds the world camera there for a few
 //! frames, and captures the window with the UI hidden for one frame — the same
-//! chrome-free capture "Send a snapshot" makes (`ui::drive_screenshots`). Both
-//! are cropped to 3:4, put side by side, and the pose is written under them and
-//! into the caption ([`cartopolis_core::field_check`]).
+//! chrome-free capture "Send a snapshot" makes (`ui::drive_screenshots`). The
+//! aerial is fetched around the same pose, the three are put side by side, and the pose is written under them and into the caption
+//! ([`cartopolis_core::field_check`]).
 //!
 //! On a desktop there are no sensors, so the world camera is left where the
 //! person put it and *that* is the pose (`PoseSource::View`); the photograph is
@@ -33,15 +45,23 @@ use cartopolis_core::field_check::{self as fc, FieldPose};
 #[cfg(not(target_arch = "wasm32"))]
 use native::Session;
 
-/// Whose chats offer the button when nothing else says.
+/// Who the picture is sent to when nothing else says.
 pub const DEFAULT_WITH: &str = "viberfox";
 
-/// Each half of the picture, and the strip under them, in pixels. Two halves
-/// make 1500 px, inside the 1600 px a chat picture is re-encoded to, so
+/// Each panel of the picture, and the strip under them, in pixels. Three
+/// panels make 1584 px, inside the 1600 px a chat picture is re-encoded to, so
 /// nothing is scaled twice.
-const HALF_W: u32 = 750;
-const HALF_H: u32 = 1000;
+const PANEL_W: u32 = 528;
+const PANEL_H: u32 = 704;
 const STRIP_H: u32 = 120;
+
+/// The panels' names, left to right.
+const PANELS: [&str; 3] = ["REAL", "CARTOPOLIS", "AERIAL"];
+
+/// How far ahead the aerial panel's line of sight reaches, metres: where a
+/// view looking down meets the ground, and no farther than this, which is where
+/// a level one ends. The same 150 m `--aerial-reference` aims a level view at.
+const AIM_MAX_M: f32 = 150.0;
 
 /// Frames to hold the world camera on the shutter's pose before capturing it,
 /// so the capture is of that pose and not of the frame before it.
@@ -52,14 +72,14 @@ const HOLD_FRAMES: u8 = 3;
 /// side (the high-precision tracker assumes the same, `precise_tracker`).
 const FALLBACK_LONG_FOV_DEG: f32 = 72.0;
 
-/// The field check: who offers it, a request from the chat bar, and the
-/// capture in progress.
+/// The field check: who it is sent to, a request from the developer panel,
+/// and the capture in progress.
 #[derive(Resource)]
 pub struct FieldCheck {
-    /// Lowercase usernames whose direct chat shows the button.
-    with: Vec<String>,
-    /// From the chat bar: open the capture for this chat, with this note.
-    pub request: Option<(String, String)>,
+    /// Lowercase usernames the picture may go to, in order of preference.
+    agents: Vec<String>,
+    /// From Developer tools: open the capture screen.
+    pub request: bool,
     /// The world, captured for the shutter by `ui::drive_screenshots`: RGBA
     /// pixels and their size.
     pub world_in: Option<(Vec<u8>, [u32; 2])>,
@@ -71,8 +91,8 @@ impl Default for FieldCheck {
     fn default() -> Self {
         let list = std::env::var("CARTO_FIELD_CHECK_WITH").unwrap_or_else(|_| DEFAULT_WITH.into());
         Self {
-            with: parse_with(&list),
-            request: None,
+            agents: parse_with(&list),
+            request: false,
             world_in: None,
             #[cfg(not(target_arch = "wasm32"))]
             session: None,
@@ -88,51 +108,89 @@ fn parse_with(list: &str) -> Vec<String> {
 }
 
 impl FieldCheck {
-    /// Whether the chat `key` offers a field check: a direct chat with one of
-    /// [`Self::with`], on a build with a camera.
+    /// The direct chat the picture goes to: the first of [`Self::agents`]
+    /// this device has one with, as `(username, channel key)`.
     #[must_use]
-    pub fn offered(&self, chat: &crate::systems::chat::ChatState, key: &str) -> bool {
-        cfg!(not(target_arch = "wasm32"))
-            && chat
-                .direct
+    pub fn agent_chat(&self, chat: &crate::systems::chat::ChatState) -> Option<(String, String)> {
+        self.agents.iter().find_map(|a| {
+            chat.direct
                 .iter()
-                .any(|(peer, k)| k == key && self.with.iter().any(|w| w == peer))
+                .find(|(peer, _)| *peer == a)
+                .map(|(peer, key)| (peer.clone(), key.clone()))
+        })
     }
 }
 
-/// The two halves side by side over the strip: `(rgba, [width, height])`.
+/// The three panels side by side over the strip: `(rgba, [width, height])`.
 ///
-/// `photo` and `world` are RGBA of their own sizes; each is cropped to the
+/// `photo` and `world` are RGBA of their own sizes, each cropped to the
 /// picture's 3:4 about its centre (`field_check::picture_crop`) and scaled to
-/// one half. Pure, so it runs on a thread and is tested off any GPU.
+/// one panel. `aerial` is the map from above, RGB: it is fitted whole into its
+/// panel instead, because its shape follows the line of sight and a crop could
+/// cut off the camera. No `aerial` (outside the imagery, or it could not be
+/// fetched) leaves its panel dark with `aerial_note` in it. Pure, so it runs
+/// on a thread and is tested off any GPU.
 #[must_use]
 pub fn compose(
     photo: (&[u8], u32, u32),
     world: (&[u8], u32, u32),
+    aerial: Option<&image::RgbImage>,
+    aerial_note: &str,
     pose: &FieldPose,
     font: Option<&fontdue::Font>,
 ) -> (Vec<u8>, [u32; 2]) {
-    use image::{imageops, Rgba, RgbaImage};
-    let (w, h) = (HALF_W * 2, HALF_H + STRIP_H);
+    use image::{imageops, DynamicImage, Rgba, RgbaImage};
+    let (w, h) = (PANEL_W * 3, PANEL_H + STRIP_H);
     let mut canvas = RgbaImage::from_pixel(w, h, Rgba([0x0A, 0x0E, 0x10, 0xFF]));
-    for (i, (pixels, pw, ph)) in [photo, world].into_iter().enumerate() {
-        let Some(img) = RgbaImage::from_raw(pw, ph, pixels.to_vec()) else {
+    let aerial = aerial.map(|a| DynamicImage::ImageRgb8(a.clone()).to_rgba8());
+    let panels = [
+        RgbaImage::from_raw(photo.1, photo.2, photo.0.to_vec()),
+        RgbaImage::from_raw(world.1, world.2, world.0.to_vec()),
+        aerial,
+    ];
+    for (i, img) in panels.iter().enumerate() {
+        let Some(img) = img else {
             continue;
         };
-        let (x, y, cw, ch) = fc::picture_crop(pw, ph);
-        let cropped = imageops::crop_imm(&img, x, y, cw, ch).to_image();
-        let half = imageops::resize(&cropped, HALF_W, HALF_H, imageops::FilterType::Triangle);
-        imageops::overlay(&mut canvas, &half, i64::from(HALF_W * i as u32), 0);
+        let x0 = i64::from(PANEL_W * i as u32);
+        if i == 2 {
+            let scale = (PANEL_W as f32 / img.width().max(1) as f32)
+                .min(PANEL_H as f32 / img.height().max(1) as f32);
+            let (fw, fh) = (
+                ((img.width() as f32 * scale) as u32).clamp(1, PANEL_W),
+                ((img.height() as f32 * scale) as u32).clamp(1, PANEL_H),
+            );
+            let fitted = imageops::resize(img, fw, fh, imageops::FilterType::Triangle);
+            let (ox, oy) = ((PANEL_W - fw) / 2, (PANEL_H - fh) / 2);
+            imageops::overlay(&mut canvas, &fitted, x0 + i64::from(ox), i64::from(oy));
+            continue;
+        }
+        let (x, y, cw, ch) = fc::picture_crop(img.width(), img.height());
+        let cropped = imageops::crop_imm(img, x, y, cw, ch).to_image();
+        let panel = imageops::resize(&cropped, PANEL_W, PANEL_H, imageops::FilterType::Triangle);
+        imageops::overlay(&mut canvas, &panel, x0, 0);
     }
     if let Some(font) = font {
-        for (i, label) in ["REAL", "CARTOPOLIS"].into_iter().enumerate() {
-            let x0 = HALF_W as i32 * i as i32 + 18;
-            let width = text_width(font, label, 26.0) as i32;
-            fill_rect(&mut canvas, x0, 18, width + 24, 42, [10, 14, 16, 200]);
-            draw_text(&mut canvas, font, label, x0 + 12, 49, 26.0, [255, 255, 255]);
+        for (i, label) in PANELS.into_iter().enumerate() {
+            let x0 = PANEL_W as i32 * i as i32 + 16;
+            let width = text_width(font, label, 24.0) as i32;
+            fill_rect(&mut canvas, x0, 16, width + 22, 38, [10, 14, 16, 200]);
+            draw_text(&mut canvas, font, label, x0 + 11, 44, 24.0, [255, 255, 255]);
+        }
+        if panels[2].is_none() {
+            let x0 = PANEL_W as i32 * 2 + 24;
+            draw_text(
+                &mut canvas,
+                font,
+                aerial_note,
+                x0,
+                PANEL_H as i32 / 2,
+                22.0,
+                [0xA5, 0xB2, 0xB7],
+            );
         }
         let [first, second] = pose.strip_lines();
-        let top = HALF_H as i32;
+        let top = PANEL_H as i32;
         draw_text(
             &mut canvas,
             font,
@@ -246,7 +304,10 @@ pub use native::{drive_field_check, render_field_check};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::{compose, fc, photo_fov_y_deg, strip_font, FieldCheck, FieldPose, HOLD_FRAMES};
+    use super::{
+        compose, fc, photo_fov_y_deg, strip_font, FieldCheck, FieldPose, AIM_MAX_M, HOLD_FRAMES,
+    };
+    use crate::systems::aerial_reference;
     use crate::systems::egui_manager::EguiMut;
     use bevy::prelude::*;
     use big_space::prelude::GridCell;
@@ -270,9 +331,9 @@ mod native {
 
     /// The capture screen, while it is up.
     pub(super) struct Session {
-        channel: String,
-        peer: String,
-        note: String,
+        /// Where the picture goes: the agent's direct chat, as
+        /// `(username, channel key)`, looked up every frame.
+        send_to: Option<(String, String)>,
         front: bool,
         camera: Camera,
         location: LocationWatch,
@@ -293,11 +354,24 @@ mod native {
         /// The pose the sensors give now, for the chips and the shutter.
         live: Option<FieldPose>,
         shutter: Shutter,
+        /// The picture once it is made, shown until it is sent or retaken.
+        result: Option<Finished>,
         /// Flags from the screen for the drive system.
         press: bool,
         flip: bool,
         close: bool,
+        send: bool,
+        retake: bool,
         error: Option<String>,
+    }
+
+    /// A finished picture: its pixels, the pose it was taken at, and its
+    /// texture for the result screen.
+    struct Finished {
+        rgba: Vec<u8>,
+        size: [u32; 2],
+        pose: FieldPose,
+        texture: Option<egui::TextureHandle>,
     }
 
     enum Shutter {
@@ -308,10 +382,12 @@ mod native {
             pose: FieldPose,
             frames: u8,
         },
-        /// Waiting for the world capture, for `waited` frames so far.
+        /// Waiting for the world capture, for `waited` frames so far. `aerial`
+        /// is where the world camera stood and looked, for the aerial panel.
         Capturing {
             photo: I420,
             pose: FieldPose,
+            aerial: Option<aerial_reference::View>,
             waited: u16,
         },
         /// The picture is being put together on a thread.
@@ -326,6 +402,10 @@ mod native {
     impl Session {
         fn busy(&self) -> bool {
             !matches!(self.shutter, Shutter::Idle)
+        }
+
+        fn composing(&self) -> bool {
+            matches!(self.shutter, Shutter::Composing { .. })
         }
     }
 
@@ -394,15 +474,9 @@ mod native {
         mut chat: ResMut<crate::systems::chat::ChatState>,
     ) {
         let check = &mut *check;
-        // Open on a request from the chat bar.
-        if let Some((channel, note)) = check.request.take() {
+        // Open on a request from Developer tools.
+        if std::mem::take(&mut check.request) {
             if check.session.is_none() {
-                let peer = chat
-                    .direct
-                    .iter()
-                    .find(|(_, k)| **k == channel)
-                    .map(|(p, _)| p.clone())
-                    .unwrap_or_default();
                 let moves_world = LocationWatch::available();
                 let restore = if moves_world {
                     camera.single().ok().and_then(|(cell, tf, _)| {
@@ -420,9 +494,7 @@ mod native {
                     None
                 };
                 check.session = Some(Session {
-                    channel,
-                    peer,
-                    note,
+                    send_to: None,
                     front: false,
                     camera: Camera::open_still(false),
                     location: LocationWatch::start(),
@@ -435,17 +507,46 @@ mod native {
                     placed_at: None,
                     live: None,
                     shutter: Shutter::Idle,
+                    result: None,
                     press: false,
                     flip: false,
                     close: false,
+                    send: false,
+                    retake: false,
                     error: None,
                 });
             }
         }
+        let send_to = check.agent_chat(&chat);
         let Some(session) = check.session.as_mut() else {
             check.world_in = None;
             return;
         };
+        session.send_to = send_to;
+
+        // The result screen: send the picture, or go back to the camera.
+        if std::mem::take(&mut session.retake) {
+            session.result = None;
+            session.error = None;
+        }
+        if std::mem::take(&mut session.send) {
+            if let (Some(done), Some((peer, channel))) =
+                (session.result.take(), session.send_to.clone())
+            {
+                chat.private_pictures
+                    .push(crate::systems::chat_pictures::OutgoingPicture {
+                        channel,
+                        bytes: done.rgba,
+                        caption: done.pose.caption(""),
+                        rgba: Some(done.size),
+                    });
+                chat.notice = Some(crate::systems::chat::ChatNotice {
+                    text: format!("Field check sent to {peer}."),
+                    error: false,
+                });
+                session.close = true;
+            }
+        }
 
         // Close: put the view back, and the lens.
         if session.close && !session.busy() {
@@ -628,9 +729,39 @@ mod native {
                 if frames == 0 {
                     check.world_in = None;
                     shot.field_check_snapshot = true;
+                    // Where the world camera stands and what it looks at, for
+                    // the aerial panel: the ground it is aimed at, no farther
+                    // than `AIM_MAX_M`, which a level view always is.
+                    let aerial = geo
+                        .filter(|_| crate::systems::aerial::covers(pose.lat, pose.lng))
+                        .map(|anchor| {
+                            let at = crate::grid::anchored_position(cell, tf.translation);
+                            let fwd = tf.forward();
+                            let flat = Vec2::new(fwd.x, fwd.z).normalize_or_zero();
+                            let above = at.y - terrain.at(at.x, at.z);
+                            let ahead = if fwd.y < -1e-3 && above > 0.0 {
+                                (above / -fwd.y * Vec2::new(fwd.x, fwd.z).length()).min(AIM_MAX_M)
+                            } else {
+                                AIM_MAX_M
+                            };
+                            let aim = Vec2::new(at.x, at.z) + flat * ahead;
+                            let ll = |x: f32, z: f32| {
+                                crate::systems::geo_nav::world_to_lat_lng(
+                                    anchor,
+                                    f64::from(x),
+                                    f64::from(z),
+                                )
+                            };
+                            aerial_reference::View {
+                                camera: ll(at.x, at.z),
+                                aim: ll(aim.x, aim.y),
+                                pose: None,
+                            }
+                        });
                     Shutter::Capturing {
                         photo,
                         pose,
+                        aerial,
                         waited: 0,
                     }
                 } else {
@@ -644,6 +775,7 @@ mod native {
             Shutter::Capturing {
                 photo,
                 pose,
+                aerial,
                 waited,
             } => match check.world_in.take() {
                 Some((world, [ww, wh])) => {
@@ -654,9 +786,21 @@ mod native {
                         .spawn(move || {
                             let rgba = photo.to_rgba();
                             let font = strip_font();
+                            // The tiles are fetched here, off the frame; a
+                            // failure costs the panel, not the picture.
+                            let (aerial, note) = match aerial.map(aerial_reference::from_above) {
+                                Some(Ok(img)) => (Some(img), ""),
+                                Some(Err(e)) => {
+                                    warn!("field check: no aerial photo: {e}");
+                                    (None, "The aerial photo could not be fetched")
+                                }
+                                None => (None, "No aerial photo here"),
+                            };
                             let out = compose(
                                 (&rgba, photo.width, photo.height),
                                 (&world, ww, wh),
+                                aerial.as_ref(),
+                                note,
                                 &job_pose,
                                 font.as_ref(),
                             );
@@ -683,6 +827,7 @@ mod native {
                 None => Shutter::Capturing {
                     photo,
                     pose,
+                    aerial,
                     waited: waited + 1,
                 },
             },
@@ -693,19 +838,12 @@ mod native {
                     .and_then(|rx| rx.try_recv());
                 match got {
                     Ok((rgba, size)) => {
-                        chat.private_pictures.push(
-                            crate::systems::chat_pictures::OutgoingPicture {
-                                channel: session.channel.clone(),
-                                bytes: rgba,
-                                caption: pose.caption(&session.note),
-                                rgba: Some(size),
-                            },
-                        );
-                        chat.notice = Some(crate::systems::chat::ChatNotice {
-                            text: format!("Field check sent to {}.", session.peer),
-                            error: false,
+                        session.result = Some(Finished {
+                            rgba,
+                            size,
+                            pose,
+                            texture: None,
                         });
-                        session.close = true;
                         Shutter::Idle
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => Shutter::Composing { pose, done },
@@ -722,12 +860,21 @@ mod native {
     /// other small in the corner, the pose's quality on chips, the shutter and
     /// the flip.
     pub fn render_field_check(mut egui: EguiMut, mut check: ResMut<FieldCheck>) {
+        let agent = check
+            .agents
+            .first()
+            .cloned()
+            .unwrap_or_else(|| super::DEFAULT_WITH.into());
         let Some(session) = check.session.as_mut() else {
             return;
         };
         let ctx = egui.ctx_mut().clone();
         let viewport = egui.viewport_pts();
         let full = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        if session.result.is_some() {
+            render_result(&ctx, full, session, &agent);
+            return;
+        }
 
         // The newest frame as a texture, small enough to upload every frame.
         if let Some(frame) = session.frame.as_ref() {
@@ -832,7 +979,7 @@ mod native {
                 painter.text(
                     egui::pos2(full.center().x, full.top() + 78.0),
                     egui::Align2::CENTER_CENTER,
-                    format!("to {}", session.peer),
+                    "real · Cartopolis · aerial",
                     egui::FontId::proportional(12.5),
                     egui::Color32::WHITE,
                 );
@@ -883,7 +1030,9 @@ mod native {
                     egui::FontId::proportional(11.0),
                     egui::Color32::WHITE,
                 );
-                let status = if session.busy() {
+                let status = if session.composing() {
+                    Some("Fetching the aerial photo…".to_string())
+                } else if session.busy() {
                     Some("Taking the picture…".to_string())
                 } else {
                     session.error.clone()
@@ -897,6 +1046,97 @@ mod native {
                         egui::Color32::WHITE,
                     );
                 }
+            });
+    }
+
+    /// The picture once it is made: real, Cartopolis and aerial side by side,
+    /// fitted to the screen, with Send and Retake under it.
+    fn render_result(ctx: &egui::Context, full: egui::Rect, session: &mut Session, agent: &str) {
+        let Some(done) = session.result.as_mut() else {
+            return;
+        };
+        let texture = done
+            .texture
+            .get_or_insert_with(|| {
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [done.size[0] as usize, done.size[1] as usize],
+                    &done.rgba,
+                );
+                ctx.load_texture("field-check-result", image, egui::TextureOptions::LINEAR)
+            })
+            .clone();
+        let send_to = session.send_to.as_ref().map(|(peer, _)| peer.clone());
+        egui::Area::new(egui::Id::new("field_check_result"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_size(full.size());
+                let painter = ui.painter().clone();
+                ui.allocate_rect(full, egui::Sense::click_and_drag());
+                painter.rect_filled(full, 0.0, theme::INK);
+
+                let close = egui::Rect::from_min_size(
+                    egui::pos2(full.left() + 14.0, full.top() + 48.0),
+                    egui::vec2(40.0, 40.0),
+                );
+                if round_button(ui, &painter, close, icons::CLEAR, false, "fc_result_close")
+                    .clicked()
+                {
+                    session.close = true;
+                }
+                painter.text(
+                    egui::pos2(full.center().x, full.top() + 68.0),
+                    egui::Align2::CENTER_CENTER,
+                    "Field check",
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::WHITE,
+                );
+
+                // The picture, as large as the screen allows.
+                let room = egui::Rect::from_min_max(
+                    egui::pos2(full.left() + 12.0, full.top() + 104.0),
+                    egui::pos2(full.right() - 12.0, full.bottom() - 150.0),
+                );
+                let size = texture.size_vec2();
+                let scale = (room.width() / size.x).min(room.height() / size.y);
+                let shown = egui::Rect::from_center_size(room.center(), size * scale);
+                painter.image(
+                    texture.id(),
+                    shown,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+
+                let row = egui::Rect::from_min_max(
+                    egui::pos2(full.left() + 16.0, full.bottom() - 130.0),
+                    egui::pos2(full.right() - 16.0, full.bottom() - 30.0),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                    ui.vertical_centered(|ui| {
+                        match &send_to {
+                            Some(peer) => {
+                                if theme::primary_button_sized(
+                                    ui,
+                                    &format!("Send to {peer}"),
+                                    200.0,
+                                )
+                                .clicked()
+                                {
+                                    session.send = true;
+                                }
+                            }
+                            None => theme::note(
+                                ui,
+                                &format!("Start a chat with {agent} to send field checks."),
+                            ),
+                        }
+                        ui.add_space(6.0);
+                        if theme::action_button(ui, format!("{}  Retake", icons::CAMERA)).clicked()
+                        {
+                            session.retake = true;
+                        }
+                    });
+                });
             });
     }
 
@@ -1047,31 +1287,71 @@ mod tests {
     }
 
     #[test]
-    fn the_picture_is_the_photograph_left_and_the_world_right() {
-        // A landscape webcam frame and a tall phone window: both are cropped
-        // to 3:4 and land in their own half, at the same size.
+    fn the_picture_is_the_photograph_the_world_and_the_aerial() {
+        // A landscape webcam frame and a tall phone window are cropped to 3:4
+        // and land in their own panel, at the same size; a wide aerial map is
+        // fitted whole into the third.
         let photo = solid(640, 480, [200, 0, 0]);
         let world = solid(1080, 2400, [0, 0, 200]);
-        let (rgba, [w, h]) = compose((&photo, 640, 480), (&world, 1080, 2400), &pose(), None);
-        assert_eq!([w, h], [HALF_W * 2, HALF_H + STRIP_H]);
+        let aerial = image::RgbImage::from_pixel(900, 400, image::Rgb([0, 200, 0]));
+        let (rgba, [w, h]) = compose(
+            (&photo, 640, 480),
+            (&world, 1080, 2400),
+            Some(&aerial),
+            "",
+            &pose(),
+            None,
+        );
+        assert_eq!([w, h], [PANEL_W * 3, PANEL_H + STRIP_H]);
+        assert!(w <= 1600, "a chat picture is re-encoded above 1600 px");
         assert_eq!(rgba.len(), (w * h * 4) as usize);
         let at = |x: u32, y: u32| {
             let i = ((y * w + x) * 4) as usize;
             [rgba[i], rgba[i + 1], rgba[i + 2]]
         };
-        assert_eq!(at(HALF_W / 2, HALF_H / 2), [200, 0, 0]);
-        assert_eq!(at(HALF_W + HALF_W / 2, HALF_H / 2), [0, 0, 200]);
-        // The strip is the dark ink, not either picture.
-        assert_eq!(at(w / 2, HALF_H + STRIP_H / 2), [0x0A, 0x0E, 0x10]);
+        assert_eq!(at(PANEL_W / 2, PANEL_H / 2), [200, 0, 0]);
+        assert_eq!(at(PANEL_W + PANEL_W / 2, PANEL_H / 2), [0, 0, 200]);
+        assert_eq!(at(2 * PANEL_W + PANEL_W / 2, PANEL_H / 2), [0, 200, 0]);
+        // Fitted, not cropped: above and below the wide map is the ink.
+        assert_eq!(at(2 * PANEL_W + PANEL_W / 2, 10), [0x0A, 0x0E, 0x10]);
+        assert_eq!(
+            at(2 * PANEL_W + 2, PANEL_H / 2),
+            [0, 200, 0],
+            "the map's edge was cut"
+        );
+        // The strip is the dark ink, not any picture.
+        assert_eq!(at(w / 2, PANEL_H + STRIP_H / 2), [0x0A, 0x0E, 0x10]);
+    }
+
+    #[test]
+    fn without_an_aerial_its_panel_stays_dark() {
+        let photo = solid(300, 400, [200, 200, 200]);
+        let (rgba, [w, _]) = compose(
+            (&photo, 300, 400),
+            (&photo, 300, 400),
+            None,
+            "",
+            &pose(),
+            None,
+        );
+        let i = (((PANEL_H / 2) * w + 2 * PANEL_W + PANEL_W / 2) * 4) as usize;
+        assert_eq!(&rgba[i..i + 3], &[0x0A, 0x0E, 0x10]);
     }
 
     #[test]
     fn the_strip_is_written_when_there_is_a_font() {
         let photo = solid(300, 400, [0, 0, 0]);
         let font = strip_font().expect("the brand face parses");
-        let (rgba, [w, _]) = compose((&photo, 300, 400), (&photo, 300, 400), &pose(), Some(&font));
+        let (rgba, [w, _]) = compose(
+            (&photo, 300, 400),
+            (&photo, 300, 400),
+            None,
+            "No aerial photo here",
+            &pose(),
+            Some(&font),
+        );
         // Some pixel of the strip's first line is light.
-        let lit = (HALF_H + 30..HALF_H + 56).any(|y| {
+        let lit = (PANEL_H + 30..PANEL_H + 56).any(|y| {
             (24..600).any(|x| {
                 let i = ((y * w + x) * 4) as usize;
                 rgba[i] > 128
@@ -1098,19 +1378,21 @@ mod tests {
     }
 
     #[test]
-    fn only_the_listed_accounts_chats_offer_it() {
+    fn it_goes_to_the_first_listed_account_there_is_a_chat_with() {
         let mut chat = crate::systems::chat::ChatState::default();
         chat.direct.insert("viberfox".into(), "dm:abc".into());
         chat.direct.insert("sanne".into(), "dm:def".into());
-        let check = FieldCheck {
-            with: parse_with(" Viberfox , other"),
-            request: None,
+        let check = |list: &str| FieldCheck {
+            agents: parse_with(list),
+            request: false,
             world_in: None,
             #[cfg(not(target_arch = "wasm32"))]
             session: None,
         };
-        assert!(check.offered(&chat, "dm:abc"));
-        assert!(!check.offered(&chat, "dm:def"));
-        assert!(!check.offered(&chat, "local"));
+        assert_eq!(
+            check(" other , Viberfox ").agent_chat(&chat),
+            Some(("viberfox".into(), "dm:abc".into()))
+        );
+        assert_eq!(check("other").agent_chat(&chat), None);
     }
 }

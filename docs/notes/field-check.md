@@ -1,21 +1,42 @@
 ---
 topic: field-check
 triggers: [field check, field_check.rs, FieldPose, field-checks.toml, open_still, view_angles, "see_picture", "photo beside the render", roll, fov, on_ground]
-updated: 2026-10-15
+updated: 2026-10-18
 ---
 
 # The field check: a photograph and the world from the same pose
 
-A harness for the agent first (`docs/mockups/field-check/`). In a direct chat
-with the agent account, a camera button in the chat bar opens a capture screen;
-one shutter makes one picture, the photograph on the left and Cartopolis on the
-right, cropped to 3:4, with the pose written under them, and sends it as an
-encrypted chat picture. The pose also rides in the caption as one marked line
+A harness for the agent first (`docs/mockups/field-check/`). **Developer tools ▸
+View ▸ Field check** opens a capture screen; one shutter makes one picture of
+three panels (the photograph and Cartopolis, cropped to 3:4, and the aerial
+photograph from above with the camera and its line of sight marked), with the
+pose written under them. It is
+shown on screen, and **Send to viberfox** sends it as an encrypted chat picture
+to the direct chat with the first account in `CARTO_FIELD_CHECK_WITH`. The pose also rides in the caption as one marked line
 of JSON (`cartopolis_core::field_check`), so it needed no protocol change; the
 chat shows only the note, and `read_chat` hands the agent the pose as a ready
 `[[shot]]` block for `docs/field-checks.toml`.
 
 ## Facts that are not obvious from the code
+
+- **It was a camera button in the chat bar** of a chat with the agent until
+  2026-10-18, and nobody found it there. It replaced Developer tools' "Capture
+  slot N", which saved the view into `docs/img/screenshot-N.png`: nothing linked
+  those files, and on a phone that path is nowhere.
+- **The aerial panel is the map from above** (`aerial_reference::from_above`,
+  `--aerial-reference`'s `<shot>.aerial-map.jpg`): camera a red dot, line of
+  sight red to where the view meets the ground, at most 150 m ahead. The
+  camera-matched aerial (`from_camera`, `<shot>.aerial.jpg`) was tried first and
+  rejected on 2026-10-18: from 3.5 m on Grote Markt it was a grey smear of
+  paving under a sky, with every building flattened into it, while the map from
+  above showed the square, the trees and which way the camera faced. The map's
+  shape follows the line of sight, so it is fitted whole into its panel, not
+  cropped. Its tiles are fetched on the composing thread ("Fetching the aerial
+  photo…"); outside PDOK's envelope or on a failed fetch the panel says so and
+  the picture is still made.
+- **Three panels are 1584 px wide**, under the 1600 px a chat picture is
+  re-encoded to. A re-render for one panel is still 3:4 (`MANIFEST_HEADER`'s
+  750×1000): only the angle matters, not the pixel count.
 
 - **The harness's yaw turns the other way from a compass.** `--look`'s yaw is
   counter-clockwise seen from above (90 looks west); a compass heading is the

@@ -151,9 +151,6 @@ pub struct ChatsView {
     viewing: Option<crate::systems::chat_pictures::PictureRef>,
     /// Why the last picture could not be picked, until the next try.
     picture_error: Option<String>,
-    /// The open chat offers a field check (`FieldCheck::offered`), worked out
-    /// each frame the panel draws.
-    field_check_here: bool,
     /// The You page is showing instead of the list (your disc, top right).
     pub you: bool,
     /// What is typed into the list's search field: the list shows only the
@@ -791,8 +788,6 @@ struct Actions {
     view_picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Send a snapshot of the map to this chat.
     snapshot: Option<String>,
-    /// Open a field check for this chat (`systems::field_check`).
-    field_check: Option<String>,
     /// Open (`true`) or leave (`false`) the You page.
     you: Option<bool>,
     /// Put another panel in this one's place: Admin, Settings, Appearance.
@@ -856,7 +851,6 @@ pub fn render_chats_panel(
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
     mut screenshot: ResMut<crate::resources::ScreenshotState>,
     mut communities: ResMut<crate::systems::communities::Communities>,
-    mut field_check: ResMut<crate::systems::field_check::FieldCheck>,
     mut faces: ResMut<crate::systems::faces::Faces>,
 ) {
     for said in communities.take_admin_results() {
@@ -876,10 +870,6 @@ pub fn render_chats_panel(
         }
         return;
     }
-    view.field_check_here = view
-        .open
-        .as_deref()
-        .is_some_and(|key| field_check.offered(&chat, key));
     // Reading a chat is seeing its lines.
     if let Some(key) = view.open.clone() {
         if let Some(c) = chat.channels.iter().find(|c| c.key == key) {
@@ -1063,11 +1053,6 @@ pub fn render_chats_panel(
         // frame it captures, and handed back to this chat as a picture.
         screenshot.chat_snapshot = Some(channel);
         screenshot.hide_ui = true;
-        view.attach = false;
-    }
-    if let Some(channel) = act.field_check.take() {
-        // What is typed in the field goes with it, as the line under the picture.
-        field_check.request = Some((channel, std::mem::take(&mut view.draft)));
         view.attach = false;
     }
     let viewport = egui.viewport_pts();
@@ -3615,21 +3600,13 @@ fn composer(
             }
         });
     }
-    let offer = view.field_check_here;
-    compose_row(ui, view, key, "chats_message_field", offer, act);
+    compose_row(ui, view, key, "chats_message_field", act);
 }
 
 /// "+", the field and send, shared by the Chat view and the World view: the
 /// design's composer, a round raised "+", a raised pill of a field, and the
 /// pale round button that sends.
-fn compose_row(
-    ui: &mut egui::Ui,
-    view: &mut ChatsView,
-    key: &str,
-    id: &str,
-    field_check: bool,
-    act: &mut Actions,
-) {
+fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act: &mut Actions) {
     let claim = std::mem::take(&mut view.claim_focus);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -3651,20 +3628,6 @@ fn compose_row(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ready = !view.draft.trim().is_empty();
             let send = circle_button(ui, icons::SEND, true, ready, "Send");
-            // The field check: a photograph and Cartopolis from the same spot,
-            // for the agent (`systems::field_check`). Only in a chat with one.
-            if field_check
-                && circle_button(
-                    ui,
-                    icons::CAMERA,
-                    false,
-                    true,
-                    "Field check: a photo and Cartopolis from the same spot",
-                )
-                .clicked()
-            {
-                act.field_check = Some(key.to_string());
-            }
             let field = egui::Frame::NONE
                 .fill(theme::SURFACE_RAISED)
                 .corner_radius(egui::CornerRadius::same(20))
@@ -4353,7 +4316,7 @@ pub fn render_chat_world(
                             theme::note(ui, "Places go in private chats only: this one is public.");
                         }
                     }
-                    compose_row(ui, &mut view, &key, "chat_world_field", false, &mut act);
+                    compose_row(ui, &mut view, &key, "chat_world_field", &mut act);
                 });
         });
 

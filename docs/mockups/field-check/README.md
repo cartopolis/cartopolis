@@ -33,7 +33,9 @@ only.
 ### The chat
 
 The field check has its own button in the chat bar, only in a chat with the
-agent. The agent answers by calling the harness: it saves the check as a
+agent. (Built so; since 2026-10-18 the button is in Developer tools ▸ View
+instead, and the picture gains a third panel, the aerial photograph from above
+with the camera marked — `docs/notes/field-check.md`.) The agent answers by calling the harness: it saves the check as a
 preset, renders the same view on a build node, confirms its render matches the
 phone's, then says what differs from the photo. Later it can put the camera
 back on that view and show real, before and after. Each harness call shows as

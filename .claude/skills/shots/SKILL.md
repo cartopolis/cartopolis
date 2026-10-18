@@ -194,8 +194,9 @@ the manifest matters (a solved route and the demo chats' shared location outlive
 their shot). The scenic set the README used to carry is the `views` group.
 
 **A field check is a preset that came from a phone** (`systems::field_check`,
-`docs/notes/field-check.md`): a photograph beside Cartopolis from the same pose,
-sent to the agent's chat, whose pose `read_chat` hands over as a `[[shot]]` for
+`docs/notes/field-check.md`): Developer tools ▸ View ▸ Field check makes a
+photograph, Cartopolis from the same pose and the aerial map of where it
+stood, side by side, and sends it to the agent's chat, whose pose `read_chat` hands over as a `[[shot]]` for
 `docs/field-checks.toml`.
 
 ## When a capture comes back wrong

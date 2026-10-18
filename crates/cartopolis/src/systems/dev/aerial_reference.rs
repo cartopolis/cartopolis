@@ -285,8 +285,9 @@ fn mosaic(z: u32, [x0, y0, x1, y1]: [f64; 4]) -> Result<RgbImage, String> {
 }
 
 /// The top-down reference: the photograph around the camera and the aim,
-/// marked.
-fn from_above(view: View) -> Result<RgbImage, String> {
+/// marked. Blocks on the tiles: call it off the frame (the field check's aerial
+/// panel uses it too).
+pub fn from_above(view: View) -> Result<RgbImage, String> {
     let (z, b) = frame(view);
     let mut out = mosaic(z, b)?;
     let at = |ll: (f64, f64)| {

@@ -37,7 +37,3 @@ and not linked from the README:
 - `views/` is the scenic set the README used to carry: the city, its landmarks and the port.
 - `extras/` has the dusk view, the interface over the city (`chrome.png`, the densest
   settings screen, for checking a palette change) and the atmosphere from 120 km.
-
-`screenshot-1.png` … `screenshot-3.png` are scratch slots for one-off in-app captures
-(developer panel ▸ View ▸ **📷 Capture slot N**). Nothing links to them. See
-[Taking screenshots](../manual.md#taking-screenshots).

@@ -467,11 +467,12 @@ pub fn render_avatar_chooser(
     }
 }
 
-/// Fires the pending README screenshot requested from the dev panel. Runs in Update
-/// **after** `render_dev_panel` so the button click is visible this frame; because
-/// `suppress_egui_for_screenshot` drops the egui output later this same frame (while
-/// `hide_ui` is set), the captured swapchain has no UI chrome. After the capturing
-/// frame, `hide_ui` is cleared and the panel reappears.
+/// Fires the pending chrome-free capture (a chat's snapshot, a polaroid, a field
+/// check's world). Runs in Update **after** the panels that ask for one, so the
+/// click is seen this frame; because `suppress_egui_for_screenshot` drops the
+/// egui output later this same frame (while `hide_ui` is set), the captured
+/// swapchain has no UI chrome. After the capturing frame, `hide_ui` is cleared
+/// and the panels reappear.
 pub fn drive_screenshots(
     mut commands: Commands,
     mut shot: ResMut<crate::resources::ScreenshotState>,
@@ -551,7 +552,7 @@ pub fn drive_screenshots(
     if let Some(channel) = shot.chat_snapshot.take() {
         // The pixels go to the chat as raw RGBA: encoding a full window here
         // would stall the frame, and `chat_pictures` re-encodes on a worker
-        // anyway. `hide_ui` stays set for this frame, as below.
+        // anyway. `hide_ui` stays set for this frame and is cleared on the next.
         shot.hide_ui = true;
         commands.spawn(Screenshot::primary_window()).observe(
             move |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
@@ -574,62 +575,9 @@ pub fn drive_screenshots(
         );
         return;
     }
-    if shot.capture_requested {
-        // The `docs/img/` dir must exist or the save fails with an IO error.
-        if let Err(e) = std::fs::create_dir_all("docs/img") {
-            warn!("Could not create docs/img/ directory: {e}");
-            shot.capture_requested = false;
-            shot.hide_ui = false;
-            return;
-        }
-        let slot = shot.next_slot;
-        let path = std::path::PathBuf::from(format!("docs/img/screenshot-{}.png", slot + 1));
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_screenshot_fixed_resolution(path));
-        shot.next_slot = (slot + 1) % crate::resources::SCREENSHOT_SLOTS;
-        shot.capture_requested = false;
-        // Leave `hide_ui` set: this is the frame being captured, so the UI must stay
-        // hidden. It's cleared on the next run below.
-    } else if shot.hide_ui {
+    // The frame after a capture: the UI comes back.
+    if shot.hide_ui {
         shot.hide_ui = false;
-    }
-}
-
-/// Screenshot observer (a fixed-resolution replacement for Bevy's `save_to_disk`):
-/// normalizes every capture to `SCREENSHOT_WIDTH`×`SCREENSHOT_HEIGHT` so README images
-/// stay consistent regardless of window size. The capture is center-cropped to the
-/// target aspect ratio and resampled (`resize_to_fill`), then the alpha channel — which
-/// carries HDR brightness, not transparency — is dropped before saving as RGB PNG.
-fn save_screenshot_fixed_resolution(
-    path: std::path::PathBuf,
-) -> impl FnMut(On<bevy::render::view::screenshot::ScreenshotCaptured>) {
-    use crate::resources::{SCREENSHOT_HEIGHT, SCREENSHOT_WIDTH};
-
-    move |captured| {
-        let dynamic = match captured.image.clone().try_into_dynamic() {
-            Ok(img) => img,
-            Err(e) => {
-                error!("Screenshot capture could not be decoded: {e}");
-                return;
-            }
-        };
-        let normalized = dynamic
-            .resize_to_fill(
-                SCREENSHOT_WIDTH,
-                SCREENSHOT_HEIGHT,
-                image::imageops::FilterType::Lanczos3,
-            )
-            .to_rgb8();
-        match normalized.save(&path) {
-            Ok(()) => info!(
-                "Screenshot saved to {} ({}×{})",
-                path.display(),
-                SCREENSHOT_WIDTH,
-                SCREENSHOT_HEIGHT
-            ),
-            Err(e) => error!("Cannot save screenshot {}: {e}", path.display()),
-        }
     }
 }
 

@@ -16,7 +16,7 @@ developer tools. For build/run instructions and system requirements, see the
 - [Developer panel](#developer-panel)
 - [Taking screenshots](#taking-screenshots)
   - [The documentation set (`cargo shots`)](#the-documentation-set-cargo-shots)
-  - [One-off captures from the dev panel](#one-off-captures-from-the-dev-panel)
+  - [Field checks from the dev panel](#field-checks-from-the-dev-panel)
 - [Letting an editor drive](#letting-an-editor-drive)
 - [Troubleshooting](#troubleshooting)
 
@@ -414,34 +414,23 @@ is raster — which the route planner can't solve against. `CARTO_TILE_URL` stil
 wins over it.) Unknown keys are a hard error, so a typo fails the run instead of
 quietly doing nothing.
 
-### One-off captures from the dev panel
+### Field checks from the dev panel
 
-The dev panel also has a one-click screenshot tool for capturing clean,
-chrome-free images from wherever the camera is (for sharing or a quick look):
+**Developer tools ▸ View ▸ 📷 Field check** compares Cartopolis with the real
+place. It opens the camera; on a phone the world camera follows the phone's
+position, compass and tilt while the screen is up, and on a desktop the pose is
+wherever the camera already is. The shutter makes one picture of three panels
+side by side:
 
-1. Open the dev panel (**Ctrl + Shift + D**) and go to its **View** tab.
-2. Frame the shot — pick a camera mode, position, and time of day.
-3. Click **📷 Capture slot N**.
+1. **Real**: the photograph.
+2. **Cartopolis**: the world drawn from the same pose, with no UI.
+3. **Aerial**: PDOK's aerial photograph from above, with where you stood as a
+   red dot and the line of sight in red. Only in the Netherlands.
 
-On click, the UI is hidden for a single frame and a screenshot of the world (no
-panels, menus, or overlays) is saved to `docs/img/screenshot-N.png`. The button
-**cycles through three scratch slots** — `screenshot-1.png` … `screenshot-3.png`
-— and then wraps back to slot 1; **Reset to 1** sends the next capture back to
-the first. These are scratch files: the images the README links to come from
-`cargo shots` above, so a stray click here can't overwrite them.
-
-The `docs/img/` directory is created automatically if it doesn't exist. Each save
-is confirmed in the console with a `Screenshot saved to docs/img/screenshot-N.png`
-line.
-
-Every capture is normalized to a **fixed 1920×1080 (16:9) resolution**, independent
-of the window size — the shot is center-cropped to 16:9 and resampled, so all three
-README images have identical dimensions no matter how big the window was.
-
-> **Tip:** because the output is center-cropped to 16:9, keep the important part of
-> the shot near the centre if your window isn't already widescreen. Maximising the
-> window before capturing gives the sharpest result (the fixed resolution upscales
-> from smaller windows).
+The pose is written under the panels. **Send to viberfox** puts the picture in
+your direct chat with the agent, which reads the pose back as a `[[shot]]` block
+for `docs/field-checks.toml`; **Retake** goes back to the camera.
+(`docs/notes/field-check.md`.)
 
 ## Letting an editor drive
 
