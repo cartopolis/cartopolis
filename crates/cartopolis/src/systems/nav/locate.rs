@@ -27,6 +27,14 @@
 //! Follow and nowhere else, so every other view is left exactly where the user
 //! pointed it.
 //!
+//! **In Follow the press steps into first person** (since 2026-10-18,
+//! [`LocateTracking::enter_walk_view`]): walking with the receiver, the chase
+//! camera looked down on the avatar from 4.5 m, and what the person holding the
+//! phone wanted was the street in front of them, aimed by the phone. Turning the
+//! button off hands back the third-person framing, unless the user zoomed out
+//! or changed mode in between. It is still not a mode switch: Fly and Earth are
+//! left alone.
+//!
 //! **Position tracking snaps once and then follows by delta.** Pressing the
 //! button is the "take me there" event, so the first fix places the camera
 //! outright; after that the camera is moved by however far the fix moved, which
@@ -276,8 +284,19 @@ pub struct LocateTracking {
     /// rotate-drag can still drop the rig, and end the tracking, without this
     /// re-arming it the frame after.
     in_follow: bool,
+    /// The third-person framing the press stepped out of, to hand back when the
+    /// button goes off ([`Self::enter_walk_view`]). `None` when the press found
+    /// the camera already in first person, or outside Follow.
+    walk_restore: Option<WalkRestore>,
     watch: Option<LocationWatch>,
     compass: Option<OrientationWatch>,
+}
+
+/// A third-person framing to return to (`LocateTracking::leave_walk_view`).
+#[derive(Clone, Copy, Debug)]
+struct WalkRestore {
+    distance: f32,
+    pitch: f32,
 }
 
 impl LocateTracking {
@@ -345,6 +364,44 @@ impl LocateTracking {
         self.display_geo = Some((fix.lat, fix.lng));
     }
 
+    /// The press's view: in Follow, step into first person, where the phone
+    /// aims the view ([`device_aims_the_view`]) and what is on screen is what
+    /// is in front of the person holding it. The chase camera sits 4.5 m up and
+    /// 5 m behind the avatar and kept whatever tilt was last saved, which from
+    /// the street was a view of the paving and the top of your own head
+    /// (2026-10-18). Fly and Earth keep their view: there the press is a
+    /// position verb, as the module note says.
+    pub fn enter_walk_view(&mut self, camera: &mut CameraState) {
+        if camera.mode != CameraMode::Avatar || camera.drive_locked {
+            return;
+        }
+        if !camera.first_person {
+            self.walk_restore = Some(WalkRestore {
+                distance: camera.distance,
+                pitch: camera.pitch,
+            });
+            camera.first_person = true;
+        }
+        // Level, until the phone's own attitude takes over on the first
+        // compass reading; a saved downward tilt would otherwise greet the
+        // press with the pavement again on a phone with no compass.
+        camera.pitch = 0.0;
+    }
+
+    /// Hand back the framing [`Self::enter_walk_view`] stepped out of, if the
+    /// camera is still where the press put it. A zoom out or a mode change in
+    /// between was the user's own choice and stands.
+    pub fn leave_walk_view(&mut self, camera: &mut CameraState) {
+        let Some(restore) = self.walk_restore.take() else {
+            return;
+        };
+        if camera.mode == CameraMode::Avatar && camera.first_person {
+            camera.first_person = false;
+            camera.distance = restore.distance;
+            camera.pitch = restore.pitch;
+        }
+    }
+
     /// Stop tracking and drop both subscriptions.
     pub fn exit(&mut self) {
         if !self.active {
@@ -364,6 +421,7 @@ impl LocateTracking {
         self.gps = crate::systems::driver::GpsQuality::default();
         self.last_fix_at = None;
         self.in_follow = false;
+        self.walk_restore = None;
         tracing::info!("stopped tracking this device");
     }
 }
@@ -1263,6 +1321,40 @@ mod tests {
                 "{deg}°: the view says {from_view}, the bearing says {from_bearing}"
             );
         }
+    }
+
+    /// The press steps Follow into first person and the release hands the
+    /// chase framing back; outside Follow it touches nothing.
+    #[test]
+    fn the_press_walks_in_first_person_and_hands_the_framing_back() {
+        let mut t = LocateTracking::default();
+        let mut c = CameraState {
+            mode: CameraMode::Avatar,
+            distance: 6.0,
+            pitch: 0.5,
+            ..CameraState::default()
+        };
+        t.enter_walk_view(&mut c);
+        assert!(c.first_person);
+        assert!(c.pitch.abs() < f32::EPSILON);
+        t.leave_walk_view(&mut c);
+        assert!(!c.first_person);
+        assert!((c.distance - 6.0).abs() < f32::EPSILON);
+        assert!((c.pitch - 0.5).abs() < f32::EPSILON);
+
+        // A zoom out in between was the user's own choice and stands.
+        t.enter_walk_view(&mut c);
+        c.first_person = false;
+        c.distance = 12.0;
+        t.leave_walk_view(&mut c);
+        assert!((c.distance - 12.0).abs() < f32::EPSILON);
+
+        let mut fly = CameraState {
+            mode: CameraMode::Free,
+            ..CameraState::default()
+        };
+        t.enter_walk_view(&mut fly);
+        assert!(!fly.first_person);
     }
 
     /// A phone aimed at the sky or at its own feet is pointed along the one

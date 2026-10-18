@@ -806,9 +806,13 @@ pub fn render_map_controls(
                 // that is there instead, and owns the rotate-follow rig too — it
                 // has to, because arriving in Follow later (Tab, the mode disc)
                 // must arm the same thing this press would have.
-                LocateState::Off => tracking.enter(),
+                LocateState::Off => {
+                    tracking.enter();
+                    tracking.enter_walk_view(&mut camera_state);
+                }
                 LocateState::Tracking => {
                     camera_state.follow_rotate = false;
+                    tracking.leave_walk_view(&mut camera_state);
                     tracking.exit();
                     // The camera mode rides on the button's fixes; switching
                     // the button off ends it too.
