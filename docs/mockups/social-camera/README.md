@@ -6,7 +6,20 @@ updated: 2026-10-18
 
 # Walking, the camera, and posts: mockup
 
-A design proposal, not code. **v1 is the current proposal** (2026-10-18).
+A design proposal, not code. **v2 is the current proposal** (2026-10-18).
+
+## v2: the map's own chat, round buttons
+
+After review the same day: a chat's World view draws no chat of its own. It
+uses the chat the plain map already has, the fading transcript bottom-left and
+the dock's chat button with its composer pill, pointed at that chat, under a
+one-row pill (back, who, Chat | World). The controls stay. A community on the
+map has no chat button either. Every button is round: the shutter's Post, Send,
+Save and Retake, the composer's Camera, From phone and Post.
+
+![v2](v2.png)
+
+## v1
 
 Asked for after a walk with the RTK receiver: the camera was too high, taking a
 picture or posting took too many steps, and a chat's World view covered half the
@@ -32,6 +45,9 @@ screen and hid the controls.
   until tapped.
 - **A chat's World view** keeps the dock, joystick and map buttons, with a
   one-row header and the last lines fading under it, instead of the sheet.
+
+Superseded by v2 for the chat World view and the button shapes; the rest
+stands.
 
 ![v1](v1.png)
 
