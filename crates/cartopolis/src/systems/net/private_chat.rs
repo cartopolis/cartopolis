@@ -928,9 +928,6 @@ pub fn drive_private_chats(
             }
         }
     }
-    for msg in out {
-        online.send("private chat", msg);
-    }
     // Which chat goes with which person, for the contacts screens. Rebuilt
     // rather than patched: it is a handful of entries, and a patch would have
     // to follow every way a chat comes and goes.
@@ -941,7 +938,13 @@ pub fn drive_private_chats(
     if chat.direct != direct {
         chat.direct = direct;
     }
-    if arrived || private.dirty {
+    // **Saved before anything is sent.** A sealed line or a commit moves this
+    // device's group state on; sent first and then killed (Android does it to
+    // a backgrounded app, midas to a bot it stops) the device restarts from
+    // the state before it, while the server already took what it sent: a
+    // commit it no longer holds, or a sending key it will use again. Either
+    // leaves the chat stuck in two epochs (`encrypted-chat.md`).
+    if arrived || private.dirty || !out.is_empty() {
         let bytes = engine.save();
         if let Err(e) = crate::platform::storage::write_now(
             crate::platform::storage::Namespace::Data,
@@ -951,6 +954,9 @@ pub fn drive_private_chats(
             tracing::warn!(error = %e, "could not save private-chat keys");
         }
         private.dirty = false;
+    }
+    for msg in out {
+        online.send("private chat", msg);
     }
     private.engine = Some(engine);
 }
