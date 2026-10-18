@@ -180,7 +180,11 @@ pub(super) fn on_key_drop<T: FrameTransport>(
 
 pub(super) fn on_answer<T: FrameTransport>(ctx: &mut ConnCtx<T>, group: Vec<u8>, sdp: String) {
     if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
-        if seat.group == group && sdp.len() <= crate::calls::MAX_SDP_BYTES {
+        // Said, not dropped quietly: an answer this refuses leaves the device
+        // receiving nothing, and the forwarder offering it nothing more.
+        if sdp.len() > crate::calls::MAX_SDP_BYTES {
+            tracing::warn!(user = %ctx.display_name, bytes = sdp.len(), "call answer too large");
+        } else if seat.group == group {
             handle.answer(seat, sdp);
         }
     }

@@ -522,6 +522,20 @@ async fn a_member_waits_until_a_host_lets_them_in() {
     })
     .await
     .expect("the waiting room is on");
+    // Rooms opened and closed before anybody waits: what a meeting does, and
+    // what once left the forwarder offering the newcomer nothing.
+    control(
+        &mut a,
+        &group,
+        CallAction::OpenRooms {
+            names: vec!["Room 1".into()],
+            assign: vec![],
+            minutes: 0,
+            may_move: true,
+        },
+    )
+    .await;
+    control(&mut a, &group, CallAction::CloseRooms).await;
 
     // Bob asks; Alice sees him waiting and lets him in; only then is he joined.
     let bob_joins = join(&mut b, &bob, &group);
@@ -562,6 +576,19 @@ async fn a_member_waits_until_a_host_lets_them_in() {
     assert!(
         heard > 20,
         "alice heard {heard} of bob's frames after letting him in"
+    );
+    // And the other way: the one let in receives, too.
+    let (heard, _) = talk(
+        (&mut a, &mut pa),
+        (&mut b, &mut pb),
+        &group,
+        3000,
+        &mut sent,
+    )
+    .await;
+    assert!(
+        heard > 20,
+        "bob heard {heard} of alice's frames after being let in"
     );
 }
 

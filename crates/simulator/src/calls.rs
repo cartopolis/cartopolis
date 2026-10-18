@@ -36,8 +36,15 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatHub;
 
-/// Longest SDP accepted from a client. An audio-and-video offer is ~3 kB.
-pub const MAX_SDP_BYTES: usize = 16 * 1024;
+/// Longest SDP accepted from a client. A join's offer is ~3 kB, but the
+/// answer to a down offer has a media line per track of everybody else:
+/// measured 2026-10-18 at 28.9 kB from Chrome with four others sending audio,
+/// camera and screen (about 2.4 kB a line), so ~108 kB at [`MAX_PARTICIPANTS`]
+/// of 16. It was 16 kB until then, and a fourth person in a browser meeting
+/// had every answer dropped without a word: nobody received anything new.
+///
+/// [`MAX_PARTICIPANTS`]: cartopolis_calls::sfu::MAX_PARTICIPANTS
+pub const MAX_SDP_BYTES: usize = 256 * 1024;
 
 /// Longest sealed call event relayed: a reaction, or a line of captions.
 pub const MAX_REACTION_BYTES: usize = 1024;
@@ -762,7 +769,7 @@ impl State {
                     .sfu
                     .answer(Instant::now(), ParticipantId(participant), &sdp)
                 {
-                    tracing::debug!(participant, "call answer refused: {e}");
+                    tracing::warn!(participant, "call answer refused: {e}");
                 }
             }
             Command::Leave { participant } => {

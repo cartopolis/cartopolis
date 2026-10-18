@@ -58,9 +58,10 @@ export async function bootSim(): Promise<number> {
     const http = freePort()
     procs.push(Bun.spawn([sim, '--database-path', db, '--listen', '127.0.0.1:0',
         '--http-listen', `127.0.0.1:${http}`, '--calls-listen', '127.0.0.1:0'], {
-        env: {...process.env, RUST_LOG: 'info'},
-        stderr: Bun.file(path.join(tmpdir(), 'chat-browser-sim.log')),
-        stdout: 'ignore',
+        env: {...process.env, RUST_LOG: process.env.RUST_LOG ?? 'info'},
+        // The log is on stdout (tracing's default); a panic is on stderr.
+        stdout: Bun.file(path.join(tmpdir(), 'chat-browser-sim.log')),
+        stderr: Bun.file(path.join(tmpdir(), 'chat-browser-sim.err')),
     }))
     await waitFor('the simulator', async () => (await fetch(`http://127.0.0.1:${http}/api/health`)).ok)
     return http
