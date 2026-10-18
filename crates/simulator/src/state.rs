@@ -57,6 +57,9 @@ struct AvatarSim {
     /// greet whoever walked up. Set once at the handshake; "Someone" until then,
     /// which is what a connection that has not authenticated yet is.
     name: String,
+    /// How this avatar looks (protocol 42), once its owner's client or the
+    /// account has said; handed to clients as `AvatarLookOf`.
+    look: Option<cartopolis_core::AvatarLook>,
     /// Where this avatar is on Earth, as its own client last said (protocol 20).
     ///
     /// The sim cannot compute this and does not use it to move anything: it is
@@ -288,6 +291,7 @@ impl SimWorld {
                 emote_sequence: 0,
                 moved: Vec3::ZERO,
                 name: "Someone".to_string(),
+                look: None,
                 geo: None,
                 seated: None,
                 embodied: false,
@@ -301,6 +305,22 @@ impl SimWorld {
     }
 
     /// Record who an avatar is, once the handshake knows.
+    /// Wear `look` (protocol 42).
+    pub fn set_avatar_look(&mut self, id: u64, look: cartopolis_core::AvatarLook) {
+        if let Some(a) = self.avatars.get_mut(&id) {
+            a.look = Some(look);
+        }
+    }
+
+    /// Every online avatar that has a look, for a client that has just arrived.
+    #[must_use]
+    pub fn avatar_looks(&self) -> Vec<(u64, cartopolis_core::AvatarLook)> {
+        self.avatars
+            .iter()
+            .filter_map(|(id, a)| a.look.clone().map(|l| (*id, l)))
+            .collect()
+    }
+
     pub fn set_avatar_name(&mut self, id: u64, name: &str) {
         if let Some(a) = self.avatars.get_mut(&id) {
             a.name = name.to_string();

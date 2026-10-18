@@ -51,6 +51,9 @@ pub enum ClientRequest {
     SetPresence {
         active: bool,
     },
+    SetAvatarLook {
+        look: cartopolis_core::AvatarLook,
+    },
     CreatePrim {
         request_id: u32,
         name: String,
@@ -339,6 +342,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             },
             NetMessage::Teleport { position, .. } => Self::Teleport { position },
             NetMessage::SetPresence { active, .. } => Self::SetPresence { active },
+            NetMessage::SetAvatarLook { look } => Self::SetAvatarLook { look },
             NetMessage::CreatePrim {
                 request_id,
                 name,
@@ -694,7 +698,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::TopicAddPeople { .. }
             | NetMessage::TopicRemovePeople { .. }
             | NetMessage::TopicLeft { .. }
-            | NetMessage::E2eeRedacted { .. } => return Err(msg),
+            | NetMessage::E2eeRedacted { .. }
+            | NetMessage::AvatarLookOf { .. } => return Err(msg),
         })
     }
 }

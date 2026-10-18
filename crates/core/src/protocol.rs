@@ -200,6 +200,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted, .recording, .guest, .room; CallRoster.settings, .waiting, .spotlight, .rooms), a waiting room (CallWaiting, Admit / Deny), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, CallWatch says whose cameras a device draws, and guests join by link: AuthCredential::Guest, CallInvite / CallInvited, CallKeyDrop / CallKeyDropped (docs/notes/calls.md)",
     },
+    ProtocolRevision {
+        version: 42,
+        adr: "",
+        summary: "avatar looks — SetAvatarLook, a client's MakeHuman look (AvatarLook: body and face sliders, skin, eyes, hair, wardrobe), which the server keeps with the account; AvatarLookOf, an avatar's look, sent to everyone when it changes or its owner arrives, and every online look to a client that has just connected (docs/notes/makehuman-avatars.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -328,6 +333,8 @@ pub enum MessageKind {
     CallInvited = 118,
     CallKeyDrop = 119,
     CallKeyDropped = 120,
+    SetAvatarLook = 121,
+    AvatarLookOf = 122,
 }
 
 impl MessageKind {
@@ -445,6 +452,8 @@ impl MessageKind {
             118 => Some(Self::CallInvited),
             119 => Some(Self::CallKeyDrop),
             120 => Some(Self::CallKeyDropped),
+            121 => Some(Self::SetAvatarLook),
+            122 => Some(Self::AvatarLookOf),
             _ => None,
         }
     }
@@ -686,6 +695,154 @@ fn default_path_cut_end() -> f32 {
 
 fn default_slice_end() -> f32 {
     1.0
+}
+
+/// How an avatar looks: a MakeHuman body and face, a skin, eyes, hair and what
+/// it wears (protocol 42; the client builds it, `docs/notes/makehuman-avatars.md`).
+///
+/// Every slider is a whole percent and every colour three bytes, so a look
+/// compares exactly and travels small — about 150 bytes. Things worn are named
+/// as in the client's avatar pack; a name a client's pack lacks is skipped
+/// there, so a newer wardrobe never breaks an older client. A colour that is
+/// `None` is the garment's or the hair's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvatarLook {
+    /// 0 feminine … 100 masculine (MakeHuman's gender, which is continuous).
+    pub body_shape: u8,
+    /// Years, 18–90.
+    pub age: u8,
+    /// 0–100, 50 average, for each of these.
+    pub height: u8,
+    pub weight: u8,
+    pub muscle: u8,
+    pub proportions: u8,
+    pub chest: u8,
+    /// A skin family (`african`, `asian`, `caucasian`); the age and body shape
+    /// choose among its skins.
+    #[serde(default = "default_look_skin")]
+    pub skin: String,
+    #[serde(default = "default_look_eyes")]
+    pub eyes: String,
+    /// A hair style, or `None` for none.
+    pub hair: Option<String>,
+    #[serde(default)]
+    pub hair_colour: Option<[u8; 3]>,
+    #[serde(default = "default_look_eyebrows")]
+    pub eyebrows: String,
+    /// The outfit, top and bottom in one, and a colour for each half.
+    pub outfit: String,
+    #[serde(default)]
+    pub top_colour: Option<[u8; 3]>,
+    #[serde(default)]
+    pub bottom_colour: Option<[u8; 3]>,
+    #[serde(default = "default_look_shoes")]
+    pub shoes: String,
+    #[serde(default)]
+    pub hat: Option<String>,
+    /// Face controls by MakeHuman modifier (`nose/nose-scale-horiz-decr-incr`),
+    /// -100 … 100; one left at 0 is not listed.
+    #[serde(default)]
+    pub face: Vec<(String, i8)>,
+}
+
+fn default_look_skin() -> String {
+    "caucasian".into()
+}
+
+fn default_look_eyes() -> String {
+    "brown".into()
+}
+
+fn default_look_eyebrows() -> String {
+    "eyebrow001".into()
+}
+
+fn default_look_shoes() -> String {
+    "shoes06".into()
+}
+
+/// The longest name an [`AvatarLook`] may carry, and the most face controls.
+pub const MAX_LOOK_NAME: usize = 48;
+pub const MAX_LOOK_FACE: usize = 128;
+
+impl AvatarLook {
+    /// The body a fresh avatar starts as.
+    #[must_use]
+    pub fn default_for(feminine: bool) -> Self {
+        let (body_shape, hair, outfit, shoes) = if feminine {
+            (0, "bob01", "female_elegantsuit01", "shoes01")
+        } else {
+            (100, "short02", "male_casualsuit01", "shoes06")
+        };
+        Self {
+            body_shape,
+            age: 25,
+            height: 50,
+            weight: 50,
+            muscle: 50,
+            proportions: 50,
+            chest: 50,
+            skin: default_look_skin(),
+            eyes: default_look_eyes(),
+            hair: Some(hair.into()),
+            hair_colour: None,
+            eyebrows: default_look_eyebrows(),
+            outfit: outfit.into(),
+            top_colour: None,
+            bottom_colour: None,
+            shoes: shoes.into(),
+            hat: None,
+            face: Vec::new(),
+        }
+    }
+
+    /// A face control's value, 0 when it is not listed.
+    #[must_use]
+    pub fn face_value(&self, modifier: &str) -> i8 {
+        self.face
+            .iter()
+            .find(|(m, _)| m == modifier)
+            .map_or(0, |(_, v)| *v)
+    }
+
+    /// Set a face control, keeping the list to the ones off zero.
+    pub fn set_face(&mut self, modifier: &str, value: i8) {
+        self.face.retain(|(m, _)| m != modifier);
+        if value != 0 {
+            self.face.push((modifier.to_string(), value));
+            self.face.sort();
+        }
+    }
+
+    /// What the server accepts: sliders in range, names short, the face list
+    /// bounded. Not whether the names exist — that is the client's pack.
+    #[must_use]
+    pub fn is_reasonable(&self) -> bool {
+        let short = |s: &str| s.len() <= MAX_LOOK_NAME;
+        [
+            self.body_shape,
+            self.height,
+            self.weight,
+            self.muscle,
+            self.proportions,
+            self.chest,
+        ]
+        .iter()
+        .all(|v| *v <= 100)
+            && (18..=90).contains(&self.age)
+            && short(&self.skin)
+            && short(&self.eyes)
+            && self.hair.as_deref().is_none_or(short)
+            && short(&self.eyebrows)
+            && short(&self.outfit)
+            && short(&self.shoes)
+            && self.hat.as_deref().is_none_or(short)
+            && self.face.len() <= MAX_LOOK_FACE
+            && self
+                .face
+                .iter()
+                .all(|(m, v)| short(m) && (-100..=100).contains(v))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1730,6 +1887,16 @@ pub enum NetMessage {
     },
     /// Server: a host's [`NetMessage::CallKeyDrop`], for this guest.
     CallKeyDropped { group: Vec<u8>, sealed: Vec<u8> },
+    /// This client's avatar look (protocol 42), sent once connected and again
+    /// whenever its owner saves a new one. The server keeps it with the account
+    /// and hands it on as [`NetMessage::AvatarLookOf`]; one it finds
+    /// unreasonable ([`AvatarLook::is_reasonable`]) is dropped.
+    SetAvatarLook { look: AvatarLook },
+    /// How the avatar `avatar_id` looks. Sent to every client when its owner
+    /// arrives or changes it, and for every online avatar to a client that has
+    /// just connected. Only the avatar id, never the account: who an avatar is
+    /// stays something a client has to ask.
+    AvatarLookOf { avatar_id: u64, look: AvatarLook },
 }
 
 /// How long a guest link, and a guest's account, last: a meeting, not a
@@ -2493,6 +2660,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::HandPose { .. } => MessageKind::HandPose,
         NetMessage::PrimTone { .. } => MessageKind::PrimTone,
         NetMessage::E2eeAddDevices { .. } => MessageKind::E2eeAddDevices,
+        NetMessage::SetAvatarLook { .. } => MessageKind::SetAvatarLook,
+        NetMessage::AvatarLookOf { .. } => MessageKind::AvatarLookOf,
         NetMessage::CommunityList { .. } => MessageKind::CommunityList,
         NetMessage::Communities { .. } => MessageKind::Communities,
         NetMessage::CommunityCreate { .. } => MessageKind::CommunityCreate,
@@ -2856,6 +3025,34 @@ mod tests {
         assert_eq!(m, m2);
     }
 
+    /// A look survives the wire, travels small, and the server's check refuses
+    /// what it should.
+    #[test]
+    fn roundtrip_avatar_look_app_frames() {
+        let mut look = AvatarLook::default_for(true);
+        look.set_face("nose/nose-scale-horiz-decr-incr", 80);
+        look.hair_colour = Some([230, 200, 150]);
+        for m in [
+            NetMessage::SetAvatarLook { look: look.clone() },
+            NetMessage::AvatarLookOf {
+                avatar_id: 9,
+                look: look.clone(),
+            },
+        ] {
+            let bytes = encode_app_frame(&m).unwrap();
+            assert!(bytes.len() < 256, "a look is small: {} bytes", bytes.len());
+            let m2 = decode_app_frame(&bytes).unwrap();
+            assert_eq!(m, m2);
+        }
+        assert!(look.is_reasonable());
+        let mut bad = look.clone();
+        bad.age = 12;
+        assert!(!bad.is_reasonable(), "no children's bodies");
+        let mut bad = look;
+        bad.outfit = "x".repeat(MAX_LOOK_NAME + 1);
+        assert!(!bad.is_reasonable());
+    }
+
     #[test]
     fn roundtrip_chat_app_frames() {
         for m in [
@@ -3200,7 +3397,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 111] = [
+        const ALL: [MessageKind; 113] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3312,6 +3509,8 @@ mod tests {
             CallInvited,
             CallKeyDrop,
             CallKeyDropped,
+            SetAvatarLook,
+            AvatarLookOf,
         ];
         for k in ALL {
             assert_eq!(
@@ -3325,7 +3524,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CallKeyDropped as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(AvatarLookOf as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

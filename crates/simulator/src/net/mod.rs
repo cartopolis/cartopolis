@@ -38,6 +38,7 @@ mod communities;
 mod contacts;
 mod e2ee;
 mod hand;
+mod look;
 mod moderation;
 mod prims;
 pub mod request;
@@ -490,6 +491,8 @@ struct RateGates {
     last_where: Instant,
     /// The hand bucket (`hand::on_hand`, [`take_token`]).
     hand: Instant,
+    /// The look bucket (`look::on_look`, [`take_token`]).
+    look: Instant,
 }
 
 impl RateGates {
@@ -511,6 +514,7 @@ impl RateGates {
             last_call_invite: ago(MIN_CALL_JOIN_INTERVAL),
             last_where: ago(MIN_WHERE_INTERVAL),
             hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
+            look: ago(look::LOOK_INTERVAL * look::LOOK_BURST),
         }
     }
 }
@@ -925,6 +929,9 @@ pub async fn handle_connection<T: FrameTransport>(
         let usage = ctx.world.read().await.capacity();
         ctx.feed(&capacity_message(&usage)).await?;
     }
+    // Looks (protocol 42): wear the saved one, tell everyone, and hand this
+    // client every online avatar's before the snapshot that brings them.
+    look::on_arrival(&mut ctx).await?;
 
     // The one full snapshot this connection gets. The client builds its prim
     // entities from the first `WorldSnapshot` it sees and ignores the prim list
@@ -1160,6 +1167,7 @@ async fn dispatch<T: FrameTransport>(
             avatar::on_presence(ctx, active);
             Ok(())
         }
+        ClientRequest::SetAvatarLook { look } => look::on_look(ctx, look).await,
         ClientRequest::CreatePrim {
             request_id,
             name,

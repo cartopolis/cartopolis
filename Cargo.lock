@@ -2720,6 +2720,7 @@ dependencies = [
  "matroska-demuxer",
  "mlua",
  "p256",
+ "postcard",
  "rapier3d",
  "refinery",
  "rsa",

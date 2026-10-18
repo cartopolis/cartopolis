@@ -845,7 +845,7 @@ pub fn spawn_avatar(
     mut clip_assets: ResMut<Assets<AnimationClip>>,
     store: Res<UserStore>,
     mut avatar_query: Query<
-        (Entity, Has<Avatar>, &mut Transform),
+        (Entity, Has<Avatar>, &mut Transform, Option<&RemoteAvatar>),
         (
             Without<AvatarModelLoaded>,
             Or<(With<Avatar>, With<RemoteAvatar>)>,
@@ -853,18 +853,31 @@ pub fn spawn_avatar(
     >,
     mut human: human_avatar::HumanAssets,
 ) {
-    for (entity, is_local, mut transform) in avatar_query.iter_mut() {
-        // The local player uses the chosen appearance; remotes use the default
-        // until appearance is replicated over the wire (future protocol change).
+    // MakeHuman bodies built this frame. One at a time: a build is a few
+    // milliseconds of shaping and fitting and then every mesh uploaded, so a
+    // crowd arriving at once is built over a few frames, not in one.
+    let mut built = 0u32;
+    for (entity, is_local, mut transform, remote) in avatar_query.iter_mut() {
+        // The local player uses the chosen appearance. Remotes wear the look the
+        // server sent (protocol 42) as MakeHuman bodies, and the default
+        // character otherwise.
         let appearance = if is_local {
             store.data.appearance.clone()
         } else {
             AvatarAppearance::default()
         };
-        if is_local && human_avatar::enabled() && !human.failed() {
-            // Not loaded yet: leave the avatar unmarked and come back next frame.
+        if human_avatar::enabled() && !human.failed() {
+            // Not loaded yet, or this frame's build spent: leave the avatar
+            // unmarked and come back next frame.
             let Some(pack) = human.pack() else { continue };
-            let (look, tints) = human.look(&appearance);
+            if built >= 1 {
+                continue;
+            }
+            built += 1;
+            let (look, tints) = match remote {
+                Some(r) => human.look_of_remote(r.sim_id),
+                None => human.look(&appearance),
+            };
             let spawned = human_avatar::spawn_human(
                 &mut commands,
                 &mut human,

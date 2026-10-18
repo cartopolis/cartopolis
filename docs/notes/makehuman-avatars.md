@@ -1,6 +1,6 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
+triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
 updated: 2026-10-17
 ---
 
@@ -109,9 +109,8 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
 
 The Appearance panel draws `systems::avatar_designer` in place of the slot
 chooser when the switch is on (`docs/mockups/avatar-designer`). A look is
-`user_store::HumanLook`: whole percents and RGB bytes, so it compares exactly
-and would travel as about forty bytes; it is saved with the appearance and not
-yet replicated, so other people still see a character. While the panel is open
+`cartopolis_core::AvatarLook` (the client calls it `HumanLook`): whole percents,
+RGB bytes and names, so it compares exactly and travels in about 150 bytes. While the panel is open
 the avatar wears the draft (`HumanDraft`) and is rebuilt at most every 0.15 s
 as it changes — each rebuild re-uploads about 1.5 MB of meshes — and closing it
 unsaved puts the saved look back.
@@ -129,6 +128,30 @@ Three things it does so the avatar can be seen while it is shaped:
 `CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"` starts an undesigned avatar
 with those sliders, for a capture, which cannot drag one. It takes the wardrobe
 and face too (`hair=afro01,top=150.40.40,face:nose/…=80`).
+
+## Everyone sees everyone's look (protocol 42)
+
+A client sends `SetAvatarLook` on every new connection and whenever its saved
+look changes (never while it has not designed one: then nothing is kept and
+everyone, itself included, draws the default body). The server checks it is
+reasonable (`AvatarLook::is_reasonable`: sliders in range, age 18–90, short
+names, a bounded face list — not whether the names exist, which is the client
+pack's business), keeps it with the account (`accounts.look`, postcard bytes,
+migration V38), wears it in the world and broadcasts `AvatarLookOf { avatar_id,
+look }` on the world channel. A client that connects is handed every online
+look before the snapshot that brings the avatars, and its own saved look is
+worn and broadcast without it sending anything. Only the avatar id travels,
+never the account: who an avatar is stays something a client asks.
+
+On the client a look lives in `RemoteLooks` by sim id, not on `RemoteAvatar`,
+because it arrives before the avatar's snapshot. A look that changes after a
+model is built rebuilds it; the same look again (it is re-sent on every
+connection) does not. **At most one MakeHuman body is built a frame**, so a
+crowd coming into view is built over a few frames rather than in one hitch.
+
+Protocol 42 and migration V38 were reserved through `midas reserve` on
+2026-10-18; 41 and V37 belong to the meetings branch, and until its 41 lands on
+`main` this branch's `protocol_history_is_contiguous_and_current` reports the gap.
 
 ## The wardrobe, the skins and the face (2026-10-18)
 

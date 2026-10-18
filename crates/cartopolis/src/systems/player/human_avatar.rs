@@ -91,6 +91,7 @@ pub(crate) const CLIP_ORDER: [&str; 10] = [
 pub(crate) struct HumanAssets<'w> {
     handle: Option<Res<'w, HumanPackHandle>>,
     draft: Res<'w, HumanDraft>,
+    remote_looks: Res<'w, RemoteLooks>,
     packs: Res<'w, Assets<HumanPackAsset>>,
     asset_server: Res<'w, AssetServer>,
     meshes: ResMut<'w, Assets<Mesh>>,
@@ -102,6 +103,11 @@ impl HumanAssets<'_> {
     /// The look the local avatar should be built in now ([`current_look`]).
     pub(crate) fn look(&self, appearance: &AvatarAppearance) -> (Look, Tints) {
         look_for(&current_look(appearance, &self.draft))
+    }
+
+    /// The look another avatar should be built in ([`RemoteLooks::look_of`]).
+    pub(crate) fn look_of_remote(&self, sim_id: u64) -> (Look, Tints) {
+        look_for(&self.remote_looks.look_of(sim_id))
     }
 
     /// The pack, once it has loaded.
@@ -136,7 +142,11 @@ pub(crate) fn current_look(appearance: &AvatarAppearance, draft: &HumanDraft) ->
         .0
         .clone()
         .or_else(|| appearance.human.clone())
-        .unwrap_or_else(|| with_overrides(HumanLook::default_for(appearance.sex)))
+        .unwrap_or_else(|| {
+            with_overrides(HumanLook::default_for(
+                appearance.sex == crate::systems::user_store::AvatarSex::Woman,
+            ))
+        })
 }
 
 /// `CARTO_HUMAN_LOOK="body_shape=0,age=70,hair=afro01,top=150.40.40,face:nose/nose-scale-horiz-decr-incr=80"`:
@@ -522,6 +532,7 @@ pub(crate) fn rebuild_on_look_change(
     mut commands: Commands,
     store: Res<crate::systems::user_store::UserStore>,
     draft: Res<HumanDraft>,
+    mut remote_looks: ResMut<RemoteLooks>,
     time: Res<Time>,
     children: Query<&Children>,
     avatars: Query<
@@ -531,12 +542,38 @@ pub(crate) fn rebuild_on_look_change(
             With<crate::components::AvatarModelLoaded>,
         ),
     >,
+    remotes: Query<
+        (Entity, &crate::components::RemoteAvatar),
+        With<crate::components::AvatarModelLoaded>,
+    >,
     mut last: Local<Option<HumanLook>>,
     mut since: Local<f32>,
 ) {
     if !enabled() {
         return;
     }
+    let mut unbuild = |entity: Entity| {
+        let model: Vec<Entity> = children.iter_descendants(entity).collect();
+        for e in model {
+            commands.entity(e).try_despawn();
+        }
+        commands.entity(entity).try_remove::<(
+            crate::components::AvatarModelLoaded,
+            super::avatar::AvatarAnimations,
+        )>();
+    };
+    // Another avatar's look arrived after its model was built (it changed it,
+    // or the look came after the snapshot): build it again in the new one.
+    if !remote_looks.changed.is_empty() {
+        for (entity, remote) in &remotes {
+            if remote_looks.changed.contains(&remote.sim_id) {
+                unbuild(entity);
+            }
+        }
+        // An avatar not built yet will be built in its latest look anyway.
+        remote_looks.changed.clear();
+    }
+
     *since += time.delta_secs();
     let want = current_look(&store.data.appearance, &draft);
     if last.as_ref() == Some(&want) {
@@ -553,13 +590,98 @@ pub(crate) fn rebuild_on_look_change(
     *since = 0.0;
     *last = Some(want);
     for entity in &avatars {
-        let model: Vec<Entity> = children.iter_descendants(entity).collect();
-        for e in model {
-            commands.entity(e).try_despawn();
+        unbuild(entity);
+    }
+}
+
+/// Other avatars' looks by sim id, as the server sends them (protocol 42).
+///
+/// A resource rather than a field on `RemoteAvatar`, because a look can arrive
+/// before the snapshot that spawns its avatar: the server hands a newcomer
+/// every look first, then the world.
+#[derive(Resource, Default)]
+pub(crate) struct RemoteLooks {
+    by_id: std::collections::HashMap<u64, HumanLook>,
+    /// Avatars whose look arrived after their model was built, to rebuild.
+    changed: std::collections::HashSet<u64>,
+}
+
+impl RemoteLooks {
+    pub(crate) fn arrived(&mut self, avatar_id: u64, look: HumanLook) {
+        if self.by_id.get(&avatar_id) != Some(&look) {
+            self.by_id.insert(avatar_id, look);
+            self.changed.insert(avatar_id);
         }
-        commands.entity(entity).try_remove::<(
-            crate::components::AvatarModelLoaded,
-            super::avatar::AvatarAnimations,
-        )>();
+    }
+
+    /// The look avatar `id` wears: what the server sent, else the default
+    /// body, which is also what its owner sees until they design one.
+    pub(crate) fn look_of(&self, id: u64) -> HumanLook {
+        self.by_id
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| HumanLook::default_for(false))
+    }
+}
+
+/// Tell the server this client's look (protocol 42): once on every new
+/// connection, and again whenever the saved look changes. Nothing while the
+/// avatar has never been designed — the server keeps no look then, and others
+/// draw the default body, as this client does.
+pub(crate) fn send_avatar_look(
+    online: Option<Res<crate::resources::OnlineSession>>,
+    store: Res<crate::systems::user_store::UserStore>,
+    mut sent: Local<Option<HumanLook>>,
+) {
+    if !enabled() {
+        return;
+    }
+    let Some(online) = online else {
+        *sent = None;
+        return;
+    };
+    if online.is_added() {
+        *sent = None;
+    }
+    let Some(look) = store.data.appearance.human.as_ref() else {
+        return;
+    };
+    if sent.as_ref() == Some(look) {
+        return;
+    }
+    if online.send(
+        "avatar look",
+        cartopolis_core::NetMessage::SetAvatarLook { look: look.clone() },
+    ) {
+        *sent = Some(look.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A look is a rebuild only when it is new: the same look again (a client
+    /// re-sends on every connection) changes nothing.
+    #[test]
+    fn only_a_new_look_rebuilds() {
+        let mut looks = RemoteLooks::default();
+        let look = HumanLook::default_for(true);
+        looks.arrived(7, look.clone());
+        assert!(looks.changed.contains(&7));
+        looks.changed.clear();
+        looks.arrived(7, look.clone());
+        assert!(looks.changed.is_empty(), "the same look again is not a change");
+        assert_eq!(looks.look_of(7), look);
+        assert_eq!(looks.look_of(8), HumanLook::default_for(false), "no look yet: the default body");
+    }
+
+    #[test]
+    fn age_and_skin_follow_the_body() {
+        assert_eq!(age_value(25), 0.5);
+        assert!((age_value(90) - 1.0).abs() < 1.0e-6);
+        assert!(age_value(18) > 0.3 && age_value(18) < 0.5, "18 blends MakeHuman's child and young");
+        assert_eq!(skin_name("african", 30, 10), "young_african_female");
+        assert_eq!(skin_name("asian", 70, 90), "old_asian_male");
     }
 }

@@ -22,6 +22,7 @@ pub mod e2ee;
 pub mod fediverse;
 pub mod http;
 pub mod library;
+pub mod looks;
 pub mod mail;
 pub mod net;
 pub mod physics;

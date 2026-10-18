@@ -22,6 +22,7 @@ impl Plugin for PlayerPlugin {
         app.init_asset::<systems::human_avatar::HumanPackAsset>()
             .init_asset_loader::<systems::human_avatar::HumanPackLoader>()
             .init_resource::<systems::human_avatar::HumanDraft>()
+            .init_resource::<systems::human_avatar::RemoteLooks>()
             .add_systems(Startup, systems::human_avatar::load_human_pack);
         app.init_resource::<systems::touch::TouchGestures>()
             // What the camera is riding along with (`systems::camera_attach`).
@@ -203,6 +204,7 @@ impl Plugin for PlayerPlugin {
                 // this frame or the next. Ordering it before would contradict the
                 // phase this tuple runs in, which follows the spawn's.
                 systems::human_avatar::rebuild_on_look_change,
+                systems::human_avatar::send_avatar_look,
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::gizmo::render_gizmo_visuals,
                 // The first-person twin of the driver arrow: take the avatar's

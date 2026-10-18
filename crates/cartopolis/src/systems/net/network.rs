@@ -46,6 +46,9 @@ pub struct AuthWriteback<'w, 's> {
     /// Physical prims' poses (`PrimMotion`), updated in place so the smoothing
     /// keeps what it is drawing between messages.
     motions: Query<'w, 's, &'static mut crate::components::PhysicalMotion>,
+    /// Other avatars' looks (protocol 42), built from by `human_avatar`.
+    /// Optional for the same reason as `time`.
+    looks: Option<ResMut<'w, crate::systems::human_avatar::RemoteLooks>>,
     /// Optional: the session tests drive this system in an app with no clock.
     time: Option<Res<'w, Time>>,
 }
@@ -1015,6 +1018,11 @@ pub fn apply_network_snapshot(
             }
             NetMessage::BlockedList { usernames } => {
                 auth.chat.blocked = usernames;
+            }
+            NetMessage::AvatarLookOf { avatar_id, look } => {
+                if let Some(looks) = auth.looks.as_mut() {
+                    looks.arrived(avatar_id, look);
+                }
             }
             NetMessage::Permissions { granted } => {
                 tracing::info!(?granted, "this account's permissions");
