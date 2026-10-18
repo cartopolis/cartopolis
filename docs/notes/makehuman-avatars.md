@@ -1,18 +1,18 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, CARTO_HUMAN_AVATAR, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
-updated: 2026-10-17
+triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
+updated: 2026-10-18
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
 
-The Quaternius characters (`avatar-composition.md`) are stylised, and a style
-is the most anyone can choose. The replacement being trialled is a person
-**built in the client** from MakeHuman's data: the base mesh, the shape
-targets the sliders blend, the `game_engine` rig and its weights, and clothes
-and hair as fitting rules. `crates/human` does the arithmetic (Bevy-free);
-`systems::human_avatar` turns the result into joints, skinned meshes and clips.
-It is behind `CARTO_HUMAN_AVATAR=1`, for the local avatar only.
+Every avatar is a person **built in the client** from MakeHuman's data: the
+base mesh, the shape targets the sliders blend, the `game_engine` rig and its
+weights, and clothes and hair as fitting rules. `crates/human` does the
+arithmetic (Bevy-free); `systems::human_avatar` turns the result into joints,
+skinned meshes and clips. It replaced the stylised Quaternius characters
+(`retired/quaternius-avatars.md`), whose only choice was a costume, on
+2026-10-18; there is no switch back.
 
 ## Why MakeHuman, and what lost (2026-10-17)
 
@@ -107,9 +107,8 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
 
 ## The designer
 
-The Appearance panel draws `systems::avatar_designer` in place of the slot
-chooser when the switch is on (`docs/mockups/avatar-designer`). A look is
-`cartopolis_core::AvatarLook` (the client calls it `HumanLook`): whole percents,
+The Appearance panel is `systems::avatar_designer` (`docs/mockups/avatar-designer`).
+A look is `cartopolis_core::AvatarLook` (the client calls it `HumanLook`): whole percents,
 RGB bytes and names, so it compares exactly and travels in about 150 bytes. While the panel is open
 the avatar wears the draft (`HumanDraft`) and is rebuilt at most every 0.15 s
 as it changes — each rebuild re-uploads about 1.5 MB of meshes — and closing it

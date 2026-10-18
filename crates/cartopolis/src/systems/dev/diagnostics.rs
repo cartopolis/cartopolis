@@ -36,7 +36,7 @@ use big_space::prelude::GridCell;
 
 use crate::components::Avatar;
 use crate::resources::{AvatarState, CameraMode, CameraState};
-use crate::systems::avatar::{AvatarReadout, SlotMask};
+use crate::systems::avatar::{AvatarHolder, AvatarReadout};
 
 /// Set by the menu entry; cleared by [`share_diagnostics`] on the next frame.
 ///
@@ -133,7 +133,7 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     /// `0` is the failure the 2026-08-14 fix was about and it is invisible from
     /// anywhere else: an avatar with no holders walks, is followed and is
     /// picked, and simply has no meshes.
-    holders: Query<'w, 's, &'static ChildOf, With<SlotMask>>,
+    holders: Query<'w, 's, &'static ChildOf, With<AvatarHolder>>,
 }
 
 /// Assemble and deliver the report when the menu asks for it.
@@ -347,22 +347,22 @@ fn compose(s: &DiagnosticsSources) -> String {
     }
 
     // The avatar block, and the order is the diagnosis. `holders = 0` is "no model
-    // was ever asked for"; `meshes = 0` with holders is "the glTF did not load";
-    // `rendered = 0` with meshes is "culled"; and meshes == rendered with nothing
-    // on screen is the driver dropping the draw — which is the one case that has
-    // to be read off the log below rather than from these numbers.
+    // was ever asked for"; `meshes = 0` with holders is "the body pack did not
+    // load"; `rendered = 0` with meshes is "culled"; and meshes == rendered with
+    // nothing on screen is the driver dropping the draw — which is the one case
+    // that has to be read off the log below rather than from these numbers.
     out.push_str(&format!(
         "\navatar: holders={holders} meshes={meshes} rendered={rendered}\n"
     ));
-    out.push_str(&format!(
-        "  appearance: {:?} / head {} / top {} / legs {} / feet {} / accessory {}\n",
-        a.sex,
-        a.head,
-        a.top,
-        a.legs,
-        a.feet,
-        a.accessory.as_deref().unwrap_or("—"),
-    ));
+    match &a.human {
+        Some(look) => out.push_str(&format!(
+            "  appearance: designed / skin {} / outfit {} / hair {}\n",
+            look.skin,
+            look.outfit,
+            look.hair.as_deref().unwrap_or("—"),
+        )),
+        None => out.push_str(&format!("  appearance: default {:?}\n", a.sex)),
+    }
     match s.avatars.single() {
         Ok((_, cell, tf, global)) => {
             out.push_str(&format!(

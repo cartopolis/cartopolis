@@ -156,27 +156,9 @@ license: Public domain (U.S. Government work)
 url: https://nomads.ncep.noaa.gov/
 notice: Global cloud cover from the NOAA Global Forecast System.
 
-## Quaternius — Ultimate Modular Men / Women
-
-role: Avatar characters (glTF, per-slot head/top/legs/feet)
-license: CC0 1.0, as published when these files were obtained on 2026-07-22
-url: https://quaternius.com/
-notice: Avatar characters by Quaternius (Ultimate Modular Men / Women), CC0. Consider supporting the work at https://www.patreon.com/quaternius.
-
-The licence version is recorded here because the page at that URL no longer says
-CC0. Quaternius published the "Quaternius Asset License v1.0" on 2026-08-28,
-which permits use in a product and **forbids redistributing the asset files
-themselves** as a standalone asset or asset pack — which is what a public
-repository of `.gltf` files is. Its section 7 says changes do not apply
-retroactively and the version in force when the assets were obtained governs, and
-these files entered this repository on 2026-07-22, five weeks earlier, under CC0.
-
-So what is here is fine and stays. **Anything downloaded from Quaternius from now
-on is not**, and must not be added to `assets/`.
-
 ## MakeHuman — base mesh, targets, rig, weights, system assets
 
-role: The trial avatar bodies (assets/models/avatar/human: the pack and its textures)
+role: The avatar bodies (assets/models/avatar/human: the pack and its textures)
 license: CC0 1.0 (mpfb2 LICENSE.md section C; each system asset file says "explicitly released as CC0 in September 2020")
 url: https://github.com/makehumancommunity/mpfb2 and https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html
 notice: Human base mesh, shape targets, rig, skins, clothes and hair from the MakeHuman project, CC0.
@@ -185,14 +167,14 @@ Only the data is used. MPFB's code is GPL-3 and none of it is copied: `crates/hu
 
 ## 100STYLE — motion capture
 
-role: The trial avatar's walk (the Rushed style) and idle (Neutral), cut into the human pack (assets/models/avatar/human)
+role: The avatar's walk (the Rushed style) and idle (Neutral), cut into the human pack (assets/models/avatar/human)
 license: CC BY 4.0
 url: https://www.ianxmason.com/100style/ (data: https://zenodo.org/records/8127870)
 notice: Walking and idle motion from The 100STYLE Dataset — Ian Mason, CC BY 4.0.
 
 ## CMU Graphics Lab Motion Capture Database
 
-role: The trial avatar's run, gestures and seated pose (run, wave, reach, roll, punch, kick, fall, sit)
+role: The avatar's run, gestures and seated pose (run, wave, reach, roll, punch, kick, fall, sit)
 license: "free for all uses": may be copied, modified and redistributed, including in products that are sold; the data may not be resold directly, even converted
 url: http://mocap.cs.cmu.edu/ (BVH conversion by Bruce Hahne, mirrored at https://github.com/una-dinosauria/cmu-mocap)
 notice: The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.

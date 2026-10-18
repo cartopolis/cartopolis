@@ -65,7 +65,7 @@ Code is **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)** ([`LICENSE`](LICE
 ## Credits
 
 - **Engine**: [Bevy](https://bevy.org/). **Floating origin**: [`big_space`](https://github.com/aevyrie/big_space) by Aevyrie, MIT OR Apache-2.0, vendored and ported.
-- **Avatars**: [Quaternius](https://quaternius.com/) *Ultimate Modular Men/Women*, CC0 ([Patreon](https://www.patreon.com/quaternius)).
+- **Avatars**: bodies, clothes and hair from [MakeHuman](http://www.makehumancommunity.org/), CC0; motion from [100STYLE](https://www.ianxmason.com/100style/) (Ian Mason, CC BY 4.0) and the [CMU Graphics Lab Motion Capture Database](http://mocap.cs.cmu.edu/).
 - **Map data**: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, ODbL. Detail from [Overpass](https://overpass-api.de/), search from [Nominatim](https://nominatim.org/), both self-hosted (public instances under the [OSMF policies](https://operations.osmfoundation.org/policies/)).
 - **Vector tiles**: [VersaTiles](https://versatiles.org/), [Shortbread](https://shortbread-tiles.org/) schema, self-hosted mirror.
 - **Buildings (LoD2.2)**: [3DBAG](https://3dbag.nl/) by the 3D geoinformation group, TU Delft, CC BY 4.0, derived from the Kadaster's [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) and AHN via [PDOK](https://www.pdok.nl/). NL.

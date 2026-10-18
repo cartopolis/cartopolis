@@ -21,6 +21,7 @@
 
 mod auth_handshake;
 mod authoring;
+mod avatar_look;
 mod calls;
 mod chat;
 mod chat_pictures;
@@ -30,7 +31,6 @@ mod http_surface;
 mod model_library;
 mod moderation;
 mod physical_prims;
-mod avatar_look;
 mod presence;
 mod prim_video;
 mod private_chat;

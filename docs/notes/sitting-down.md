@@ -1,10 +1,10 @@
 ---
 topic: sitting-down
-triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, authored clip, AnimationClip at runtime, street furniture, interact prompt, protocol 19, seated on the wire, systems::sit_pose, sit_pose.rs, systems/player/avatar.rs, systems::interact, simulator/src/state.rs, geo/src/furniture.rs, Seated, is_seated, MAX_SEAT_OFFSET_M, SEAT_SLIDE_SECS, "--ui sit"]
-updated: 2026-10-17
+triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, captured clip, sit clip, 13_04, street furniture, interact prompt, protocol 19, seated on the wire, systems/player/avatar.rs, systems::interact, simulator/src/state.rs, geo/src/furniture.rs, Seated, is_seated, MAX_SEAT_OFFSET_M, SEAT_SLIDE_SECS, "--ui sit"]
+updated: 2026-10-18
 ---
 
-# Sitting is an authored clip and a display offset
+# Sitting is a captured clip and a display offset
 
 "Sit at Bench" appeared as soon as `systems::world_places` started reading the
 `pois` layer, and for a while it did nothing you could see: `interact::act` fired
@@ -12,49 +12,22 @@ the one-shot `Interact` gesture that every other prompt fires, wrote a line of
 text, and left the avatar standing beside the bench. Two separate things were
 missing, and neither is the obvious one.
 
-## There is no sit clip, and there cannot be one without an asset
+## The sit is a captured clip
 
-The Quaternius "Ultimate Modular" set embeds the same 24 clips in every character
-file and `docs/notes/avatar-locomotion.md` lists them: no sit, no crouch, no
-kneel. The UAL library cannot lend one for the reason that note gives (different
-rig, different bone names, nothing binds).
+The pack's `sit` is cut from CMU take 13_04 ("sit on stepstool"): the still,
+seated stretch, hands on the thighs (`human-pack`), retargeted onto whatever body
+the player designed and grounded by its lowest ankle like every other clip. It
+sits in the same `AnimationGraph` as the rest, so it cross-fades and is chosen by
+`PoseClip::Sit` exactly like `walk` or `wave`.
 
-Authoring one means shipping a glTF, which means an LFS object with the silent
-failure mode `CLAUDE.md` documents — and it means authoring it **twice**, because
-the men's and the women's rigs are not the same skeleton: same overall height,
-but the women's legs are ~5 cm longer and the torso correspondingly shorter.
+Until 2026-10-18 the Quaternius characters had no sit and one was synthesised
+from the rig at spawn time (`retired/quaternius-avatars.md` has how, and its
+traps).
 
-So it is synthesised, the way `systems::soundscape` synthesises its WAVs.
-`systems::sit_pose` builds an `AnimationClip` at spawn time out of eleven constant
-curves — the pelvis, and three bones per leg — and pushes it into the same
-`AnimationGraph` as the loaded ones, so it cross-fades, phase-locks across a mixed
-avatar's holders and is chosen by `PoseClip` exactly like `Walk` or `Wave`.
-
-**The pose is solved, not tabulated.** What is measured off the glTFs is the rig:
-bind-pose joint positions, the two bone lengths, and each leg bone's bind
-orientation (needed because a bone's *roll* is not implied by where it points, and
-getting it wrong turns the thigh mesh inside out). What is computed is where the
-joints go — hips at seat height, ankles on the ground one thigh-length in front,
-knee from the two-link solution between them. That is what makes one piece of code
-fit both rigs, and it is why the tests can assert "the hips are on the seat and the
-feet are on the pavement" rather than comparing quaternions to themselves.
-
-Three things about the rig are load-bearing and none of them are guessable:
-
-- **The pelvis carries a 27° yaw in every clip**, and the `Torso` above it carries
-  the opposite twist. Setting the pelvis to identity — the obvious choice, since
-  the *bind* pose's pelvis is identity — leaves that counter-twist uncancelled and
-  turns the shoulders 27° off the way the avatar is facing. The consequence is that
-  the two hips are staggered a few centimetres front to back, so each foot is
-  placed relative to *its own* hip; a shared foot line rakes one shin forward and
-  the other back by that much.
-- **The feet hang off `Root`, not off the shins.** There is no ankle in the chain,
-  so bending the knee does not carry the foot with it and the pose has to place
-  both. `a_seated_avatar_sits_on_the_bench_and_stands_on_the_ground` checks that
-  the shin's own rotation ends where the foot was put.
-- **Only the legs and the pelvis are keyed.** Everything above holds whatever the
-  outgoing clip left it in, which is the idle's relaxed upper body. Keying the
-  shoulders would mean keying the whole spine chain to keep them square.
+**The seat height is the stool's, not the bench's.** A captured pose cannot be
+re-solved for a different seat the way the synthesised one was, so a body whose
+legs are longer or shorter than the subject's sits a little into or above the
+slat. Nothing measures that yet.
 
 ## A seat is a display offset, not a position
 
@@ -119,10 +92,9 @@ reasoning about proximity, since the position it reasons about stays honest.
 - **Only benches and picnic tables.** `furniture::seat` answers for exactly the two
   forms whose prompt already reads "Sit at …". A shelter has a slat in it and does
   not offer one, because its prompt says "Use".
-- **The pose is built for one seat height.** Every slat this client can sit on is
-  0.48 m; `a_seat_is_the_top_of_a_slat_that_is_really_meshed` is what keeps that
-  true, and it is the assertion to look at first if a re-measured bench ever puts
-  the avatar's hips through the timber.
+- **Every slat is one height, the pose another.** Every slat this client can sit
+  on is 0.48 m (`a_seat_is_the_top_of_a_slat_that_is_really_meshed` keeps that
+  true); the captured pose sits at its stool's height, whatever the body.
 
 ## Seeing it
 

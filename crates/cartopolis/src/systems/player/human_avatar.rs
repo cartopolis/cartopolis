@@ -1,14 +1,12 @@
-//! The MakeHuman avatar: a person built at runtime from `cartopolis_human`'s
-//! pack instead of a Quaternius character file (`docs/notes/makehuman-avatars.md`).
-//!
-//! **Behind `CARTO_HUMAN_AVATAR=1`, local avatar only**, while it is being
-//! judged against the characters it would replace; remote avatars and the
-//! default stay Quaternius.
+//! Every avatar is a person built at runtime from `cartopolis_human`'s pack: a
+//! MakeHuman body shaped by its look, dressed, and animated with motion capture
+//! (`docs/notes/makehuman-avatars.md`). The local avatar wears its own look,
+//! every other one the look the server sent (protocol 42).
 //!
 //! The model is not a glTF scene: the joints, meshes and clips are made here
-//! from a [`HumanModel`], and slotted under the avatar as one holder that
-//! [`avatar`](super::avatar) drives like any other — the same
-//! `AvatarAnimations` table, the same pose and lean systems. What it has to
+//! from a [`HumanModel`], and put under the avatar as one holder that
+//! [`avatar`](super::avatar) drives — the `AvatarAnimations` table, the pose
+//! and lean systems. What it has to
 //! reproduce of `bevy_gltf` is the binding: each joint carries the
 //! `AnimationTargetId` its name path hashes to, rooted at the holder's player,
 //! and the clips are keyed by the same paths.
@@ -31,11 +29,6 @@ use crate::systems::user_store::{AvatarAppearance, HumanLook};
 
 /// Where the pack and its textures live under `assets/`.
 const PACK_DIR: &str = "models/avatar/human";
-
-/// The switch that puts a MakeHuman body on the local avatar.
-pub(crate) fn enabled() -> bool {
-    crate::debug_switches::env_flag("CARTO_HUMAN_AVATAR")
-}
 
 #[derive(Asset, TypePath)]
 pub(crate) struct HumanPackAsset(pub Arc<HumanPack>);
@@ -69,13 +62,11 @@ impl AssetLoader for HumanPackLoader {
 #[derive(Resource)]
 pub(crate) struct HumanPackHandle(Handle<HumanPackAsset>);
 
-/// Start loading the pack, if the switch is on.
+/// Start loading the pack.
 pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetServer>) {
-    if enabled() {
-        commands.insert_resource(HumanPackHandle(
-            asset_server.load(format!("{PACK_DIR}/default.humanpack")),
-        ));
-    }
+    commands.insert_resource(HumanPackHandle(
+        asset_server.load(format!("{PACK_DIR}/default.humanpack")),
+    ));
 }
 
 /// The pack's clips the avatar's table is built from, in its order: idle, walk,
@@ -116,9 +107,8 @@ impl HumanAssets<'_> {
         self.packs.get(&h.0).map(|p| p.0.clone())
     }
 
-    /// The pack will never load (missing, an LFS pointer, an old layout). The
-    /// avatar then falls back to a character file rather than waiting, which
-    /// is what it did until 2026-10-17: invisible for the whole session.
+    /// The pack will never load (missing, an LFS pointer, an old layout): the
+    /// spawn says so once rather than waiting for it all session.
     pub(crate) fn failed(&self) -> bool {
         self.handle.as_ref().is_some_and(|h| {
             matches!(
@@ -549,9 +539,6 @@ pub(crate) fn rebuild_on_look_change(
     mut last: Local<Option<HumanLook>>,
     mut since: Local<f32>,
 ) {
-    if !enabled() {
-        return;
-    }
     let mut unbuild = |entity: Entity| {
         let model: Vec<Entity> = children.iter_descendants(entity).collect();
         for e in model {
@@ -633,9 +620,6 @@ pub(crate) fn send_avatar_look(
     store: Res<crate::systems::user_store::UserStore>,
     mut sent: Local<Option<HumanLook>>,
 ) {
-    if !enabled() {
-        return;
-    }
     let Some(online) = online else {
         *sent = None;
         return;
@@ -671,16 +655,26 @@ mod tests {
         assert!(looks.changed.contains(&7));
         looks.changed.clear();
         looks.arrived(7, look.clone());
-        assert!(looks.changed.is_empty(), "the same look again is not a change");
+        assert!(
+            looks.changed.is_empty(),
+            "the same look again is not a change"
+        );
         assert_eq!(looks.look_of(7), look);
-        assert_eq!(looks.look_of(8), HumanLook::default_for(false), "no look yet: the default body");
+        assert_eq!(
+            looks.look_of(8),
+            HumanLook::default_for(false),
+            "no look yet: the default body"
+        );
     }
 
     #[test]
     fn age_and_skin_follow_the_body() {
         assert_eq!(age_value(25), 0.5);
         assert!((age_value(90) - 1.0).abs() < 1.0e-6);
-        assert!(age_value(18) > 0.3 && age_value(18) < 0.5, "18 blends MakeHuman's child and young");
+        assert!(
+            age_value(18) > 0.3 && age_value(18) < 0.5,
+            "18 blends MakeHuman's child and young"
+        );
         assert_eq!(skin_name("african", 30, 10), "young_african_female");
         assert_eq!(skin_name("asian", 70, 90), "old_asian_male");
     }

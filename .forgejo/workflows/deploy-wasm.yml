@@ -86,9 +86,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The avatar glTFs are LFS pointers otherwise, and Bevy would fetch a
-          # 130-byte text file where a mesh should be. The legacy Quaternius
-          # packs are gitignored, so a fresh checkout carries only `characters/`.
+          # The avatar body pack and its textures are LFS pointers otherwise,
+          # and the client would read a 130-byte text file where a body should be.
           lfs: true
 
       - uses: https://github.com/Swatinem/rust-cache@v2

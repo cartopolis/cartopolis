@@ -84,9 +84,9 @@ const TRANSCRIPT_LINES_OPEN: usize = 8;
 /// frame until it has swallowed the screen.
 const TRANSCRIPT_WIDTH: f32 = 300.0;
 
-/// A bubble hangs this far above the avatar's feet, in metres. The Quaternius
-/// characters are ~1.8 m and authored origin-at-feet (`systems::avatar`), so
-/// this clears the top of the head by a little.
+/// A bubble hangs this far above the avatar's feet, in metres. The MakeHuman
+/// bodies stand origin-at-feet (`human_avatar`) and the tallest the designer
+/// makes is about 2 m, so this clears the top of the head by a little.
 const BUBBLE_HEIGHT_M: f64 = 2.15;
 /// Bubbles hold for longer than they fade, and shorter than the transcript: the
 /// transcript is the record, a bubble is the moment.

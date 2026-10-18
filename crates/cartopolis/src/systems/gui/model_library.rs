@@ -14,7 +14,7 @@
 //!
 //! Using a model in a world and handing copies of it to other people are
 //! different acts under most asset licences — Quaternius, whose characters this
-//! project's own avatars come from, moved to a licence in August 2026 that permits
+//! project's avatars were until October 2026, moved to a licence in August 2026 that permits
 //! the first and forbids the second in as many words. So the licence is asked at
 //! upload, recorded against the uploader, and a model claimed as "something else"
 //! can be used and can never be shared. The server enforces it; this panel only

@@ -892,9 +892,9 @@ pub struct AvatarStateDto {
 /// from a standing position the colliders keep about 0.6 m short of it.
 pub const MAX_SEAT_OFFSET_M: f32 = 2.0;
 
-/// A one-shot full-body animation an avatar can play. These are clips the
-/// Quaternius "Ultimate Modular" characters already embed — every character glTF
-/// carries the same 24 — so an emote costs no asset, only a name for the index.
+/// A one-shot full-body animation an avatar can play: a clip every body shares
+/// (the motion capture in the MakeHuman pack), so an emote costs no asset, only
+/// a name.
 ///
 /// Deliberately a closed enum rather than a clip index: the index is a property of
 /// the *asset*, and putting it on the wire would freeze the character set. A

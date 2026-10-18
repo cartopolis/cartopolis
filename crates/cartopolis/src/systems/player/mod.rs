@@ -17,7 +17,6 @@ pub mod local_avatar;
 pub mod locomotion;
 pub mod picking;
 pub mod prim_geo;
-pub mod sit_pose;
 // The soundscape's *playback* needs `bevy_audio`, which on Linux needs the ALSA
 // development headers at build time — see the `audio` feature in this crate's
 // Cargo.toml. The synthesis and the volume/step-rate maths are pure and compile

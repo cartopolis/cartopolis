@@ -103,7 +103,7 @@ pub fn routes() -> Router<HttpState> {
 /// standing in and handing copies of it to everyone else are different acts under
 /// almost every asset licence, and the second is what sharing to the library is.
 /// The distinction is not hypothetical — Quaternius, whose characters this
-/// project's avatars come from, moved off CC0 on 2026-08-28 to a licence that
+/// project's avatars were until October 2026, moved off CC0 on 2026-08-28 to a licence that
 /// permits the first and forbids the second in as many words.
 ///
 /// So [`Licence::Other`] exists and is uploadable and usable and may never be

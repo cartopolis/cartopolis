@@ -3,297 +3,37 @@ use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::AvatarState;
 use crate::systems::human_avatar;
 use crate::systems::locomotion;
-use crate::systems::sit_pose;
-use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
+use crate::systems::user_store::UserStore;
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
 use bevy::animation::transition::AnimationTransitions;
-use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::ecs::query::Or;
-use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
-use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 use cartopolis_core::{motion, wrap_angle_pi, Emote};
 use std::time::Duration;
 
-/// One glTF scene to spawn for an avatar, showing only the meshes for the slots in
-/// `mask`. Complete Quaternius characters embed their own clips, so `anims` is the
-/// same file. Several holders (different character files, different slot masks)
-/// compose one mixed avatar on the shared rig.
-struct Holder {
-    scene: &'static str,
-    anims: &'static str,
-    mask: SlotMask,
-    scale: f32,
-    anim_speed: f32,
-}
-
-/// A customization slot within a Quaternius character (identified by mesh-node
-/// suffix). `Head` includes face/hair/headwear.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Slot {
-    Head,
-    Top,
-    Legs,
-    Feet,
-    Accessory,
-}
-
-/// Which slots a holder contributes; meshes for other slots are hidden on spawn.
+/// The entity an avatar's MakeHuman body is built under, a child of the avatar
+/// (`human_avatar::spawn_human`). Its transform carries what the model does that
+/// the avatar does not — the lean of flight and of a jump, the slide onto a seat,
+/// the designer's turn to the camera (`update_avatar_model_pose`) — and never
+/// the avatar's position, which is the sim's.
 #[derive(Component, Clone, Copy, Default)]
-pub(crate) struct SlotMask {
-    head: bool,
-    top: bool,
-    legs: bool,
-    feet: bool,
-    accessory: bool,
-}
+pub(crate) struct AvatarHolder;
 
-impl SlotMask {
-    const ALL: Self = Self {
-        head: true,
-        top: true,
-        legs: true,
-        feet: true,
-        accessory: true,
-    };
-    fn shows(&self, slot: Slot) -> bool {
-        match slot {
-            Slot::Head => self.head,
-            Slot::Top => self.top,
-            Slot::Legs => self.legs,
-            Slot::Feet => self.feet,
-            Slot::Accessory => self.accessory,
-        }
-    }
-    fn set(&mut self, slot: Slot) {
-        match slot {
-            Slot::Head => self.head = true,
-            Slot::Top => self.top = true,
-            Slot::Legs => self.legs = true,
-            Slot::Feet => self.feet = true,
-            Slot::Accessory => self.accessory = true,
-        }
-    }
-}
-
-/// Classify a character mesh-node name into its slot by suffix, or `None` for nodes
-/// we don't slot — weapons are hidden separately (see `is_weapon_node`), and the
-/// fox's unslotted meshes return `None` so they always show.
-fn classify_slot(name: &str) -> Option<Slot> {
-    if name.ends_with("_Head") {
-        Some(Slot::Head)
-    } else if name.ends_with("_Body") {
-        Some(Slot::Top)
-    } else if name.ends_with("_Legs") || name.ends_with("_Pants") {
-        Some(Slot::Legs)
-    } else if name.ends_with("_Feet") {
-        Some(Slot::Feet)
-    } else if name.contains("Backpack") {
-        Some(Slot::Accessory)
-    } else {
-        None
-    }
-}
-
-// Clip indices shared by every Quaternius "Ultimate Modular" character glTF (they
-// all embed the same 24-clip set — see `jq -r '.animations[].name'`). Verified
-// against `Man_Casual.gltf`; every character file agrees, which is what makes a
-// mixed avatar's holders phase-lockable at all.
-const CHAR_IDLE: usize = 4;
-const CHAR_WALK: usize = 22;
-const CHAR_RUN: usize = 16;
-// The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
-// it read as flight is the forward lean in `update_avatar_model_pose`.
-const CHAR_WAVE: usize = 23;
-const CHAR_INTERACT: usize = 10;
-const CHAR_ROLL: usize = 15;
-const CHAR_PUNCH: usize = 13;
-const CHAR_KICK: usize = 11;
-const CHAR_DEATH: usize = 0;
-
-/// Emotes in the order their clips are loaded into the graph, so an [`Emote`] is
-/// an index into [`AvatarAnimations::emotes`]. Adding one means a row here and a
-/// clip index — the graph is built from this table.
-const EMOTE_CLIPS: [(Emote, usize); 6] = [
-    (Emote::Wave, CHAR_WAVE),
-    (Emote::Interact, CHAR_INTERACT),
-    (Emote::Roll, CHAR_ROLL),
-    (Emote::Punch, CHAR_PUNCH),
-    (Emote::Kick, CHAR_KICK),
-    (Emote::Faint, CHAR_DEATH),
+/// Emotes in the order their clips sit in an avatar's table
+/// (`human_avatar::CLIP_ORDER`), so an [`Emote`] is an index into
+/// [`AvatarAnimations::emote_indices`].
+const EMOTE_ORDER: [Emote; 6] = [
+    Emote::Wave,
+    Emote::Interact,
+    Emote::Roll,
+    Emote::Punch,
+    Emote::Kick,
+    Emote::Faint,
 ];
 
-/// Where `emote` sits in [`EMOTE_CLIPS`].
+/// Where `emote` sits in [`EMOTE_ORDER`].
 fn emote_slot(emote: Emote) -> usize {
-    EMOTE_CLIPS
-        .iter()
-        .position(|(e, _)| *e == emote)
-        .unwrap_or(0)
-}
-
-/// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
-/// showing the slots in `mask`.
-fn character_holder(scene: &'static str, mask: SlotMask) -> Holder {
-    Holder {
-        scene,
-        anims: scene,
-        mask,
-        scale: 1.0,
-        anim_speed: 1.0,
-    }
-}
-
-/// A selectable avatar: a display `label` (also the stored `style` id) for a given
-/// `sex`, mapped to the complete self-animated character glTF it loads.
-pub(crate) struct CharacterStyle {
-    pub sex: AvatarSex,
-    pub label: &'static str,
-    pub file: &'static str,
-}
-
-macro_rules! man {
-    ($label:literal, $file:literal) => {
-        CharacterStyle {
-            sex: AvatarSex::Man,
-            label: $label,
-            file: concat!("models/avatar/characters/", $file),
-        }
-    };
-}
-macro_rules! woman {
-    ($label:literal, $file:literal) => {
-        CharacterStyle {
-            sex: AvatarSex::Woman,
-            label: $label,
-            file: concat!("models/avatar/characters/", $file),
-        }
-    };
-}
-
-/// Catalog of Quaternius "Ultimate Modular" characters (CC0), grouped by sex in
-/// chooser-dropdown order. Add a row (and drop the glTF in) to expose a style.
-pub(crate) const CHARACTER_STYLES: &[CharacterStyle] = &[
-    man!("Casual", "Man_Casual.gltf"),
-    man!("Business", "Man_Suit.gltf"),
-    man!("Adventurer", "Man_Adventurer.gltf"),
-    man!("Worker", "Man_Worker.gltf"),
-    man!("Farmer", "Man_Farmer.gltf"),
-    man!("Beach", "Man_Beach.gltf"),
-    man!("King", "Man_King.gltf"),
-    man!("Space Suit", "Man_Spacesuit.gltf"),
-    man!("Swat", "Man_Swat.gltf"),
-    man!("Punk", "Man_Punk.gltf"),
-    woman!("Casual", "Woman_Casual.gltf"),
-    woman!("Business", "Woman_Suit.gltf"),
-    woman!("Formal", "Woman_Formal.gltf"),
-    woman!("Adventurer", "Woman_Adventurer.gltf"),
-    woman!("Worker", "Woman_Worker.gltf"),
-    woman!("Medieval", "Woman_Medieval.gltf"),
-    woman!("Sci-Fi", "Woman_SciFi.gltf"),
-    woman!("Soldier", "Woman_Soldier.gltf"),
-    woman!("Witch", "Woman_Witch.gltf"),
-    woman!("Punk", "Woman_Punk.gltf"),
-];
-
-/// Style labels available for a sex, in catalog order (drives the chooser dropdown).
-pub(crate) fn styles_for(sex: AvatarSex) -> impl Iterator<Item = &'static str> {
-    CHARACTER_STYLES
-        .iter()
-        .filter(move |c| c.sex == sex)
-        .map(|c| c.label)
-}
-
-/// Styles that contribute a wearable (non-weapon) accessory mesh — currently only
-/// the Adventurer's backpack. The chooser lists these (plus "None") for `sex`.
-const ACCESSORY_STYLES: &[(AvatarSex, &str)] = &[(AvatarSex::Man, "Adventurer")];
-
-pub(crate) fn accessory_styles_for(sex: AvatarSex) -> impl Iterator<Item = &'static str> {
-    ACCESSORY_STYLES
-        .iter()
-        .filter(move |(s, _)| *s == sex)
-        .map(|(_, label)| *label)
-}
-
-/// The character file for a (sex, style) that is present on disk, or `None`.
-fn style_file(sex: AvatarSex, style: &str) -> Option<&'static str> {
-    CHARACTER_STYLES
-        .iter()
-        .find(|c| c.sex == sex && c.label == style)
-        .map(|c| c.file)
-        .filter(|f| avatar_asset_exists(f))
-}
-
-/// Add `slot` to the holder group for `file` (creating it), if the file exists.
-fn add_slot(groups: &mut Vec<(&'static str, SlotMask)>, file: Option<&'static str>, slot: Slot) {
-    let Some(f) = file else { return };
-    match groups.iter_mut().find(|(g, _)| *g == f) {
-        Some((_, mask)) => mask.set(slot),
-        None => {
-            let mut mask = SlotMask::default();
-            mask.set(slot);
-            groups.push((f, mask));
-        }
-    }
-}
-
-/// Resolve an appearance into the holders to spawn: one per distinct character glTF
-/// used across the slots, each carrying the slots it contributes. A preset (all
-/// slots one style) collapses to a single holder. Empty if the character glTFs
-/// aren't present (e.g. a clone without Git LFS) — the avatar is then invisible.
-fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
-    let mut groups: Vec<(&'static str, SlotMask)> = Vec::new();
-    add_slot(&mut groups, style_file(a.sex, &a.head), Slot::Head);
-    add_slot(&mut groups, style_file(a.sex, &a.top), Slot::Top);
-    add_slot(&mut groups, style_file(a.sex, &a.legs), Slot::Legs);
-    add_slot(&mut groups, style_file(a.sex, &a.feet), Slot::Feet);
-    if let Some(acc) = &a.accessory {
-        add_slot(&mut groups, style_file(a.sex, acc), Slot::Accessory);
-    }
-    groups
-        .into_iter()
-        .map(|(f, mask)| character_holder(f, mask))
-        .collect()
-}
-
-/// Whether an avatar glTF is present under the runtime asset root.
-///
-/// **Only a filesystem can be asked this, and two platforms haven't got one.**
-/// This probe used to be `Path::new("assets").join(…).is_file()` — a *relative*
-/// path, i.e. one resolved against the process's working directory rather than
-/// against [`crate::ASSET_ROOT`], which is what actually feeds `AssetPlugin`.
-/// The two coincide only when the binary is launched from the repo root, and
-/// where they didn't the answer was `false` for every one of the twenty catalog
-/// entries: `style_file` returned `None` for each slot, `resolve_avatar_holders`
-/// returned an empty vec, and `spawn_avatar` inserted `AvatarModelLoaded` (so it
-/// never retried) and spawned no meshes at all. The avatar entity still existed,
-/// so Follow mode was offered, the camera followed it and it walked — it was
-/// simply not drawn. That was the state of **Android** (a NativeActivity process
-/// starts at `/`, and its assets live inside the APK where only the framework
-/// `AssetManager` can reach them) and of the **web build** (`std::fs` on wasm32
-/// is stubbed, so `is_file()` is unconditionally false), for as long as either
-/// has existed.
-///
-/// So on those two the answer is `true` by construction: the asset store is a
-/// bundle, its contents are fixed at package time, and a path in it is not a
-/// path a process can stat. If a file really is missing there, the asset server
-/// says so — which is the right instrument, because it names the file.
-///
-/// What this does **not** catch, despite reading as if it might: a clone without
-/// Git LFS. A pointer file is a file, so `is_file()` is happily true and the
-/// glTF parse is what fails. LFS is guarded by `.gitattributes` and by every
-/// workflow's `lfs: true`, not here.
-fn avatar_asset_exists(scene_rel: &str) -> bool {
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    {
-        let _ = scene_rel;
-        true
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    {
-        std::path::Path::new(&crate::asset_root())
-            .join(scene_rel)
-            .is_file()
-    }
+    EMOTE_ORDER.iter().position(|e| *e == emote).unwrap_or(0)
 }
 
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
@@ -562,7 +302,7 @@ const MAX_TURN_RATE: f32 = 12.0;
 
 /// The pitch a flying avatar leans into its travel direction, pivoting about
 /// chest height so the feet swing back rather than the model sinking through the
-/// ground. The Quaternius set has no flight clip (see `docs/notes/avatar-locomotion.md`),
+/// ground. The motion-capture set has no flight clip (`makehuman-avatars.md`),
 /// so the pose is what distinguishes gliding from standing in mid-air.
 const FLIGHT_LEAN: f32 = 1.05; // ~60°
 const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
@@ -589,9 +329,9 @@ const TELEPORT_ARRIVE_SECS: f32 = 0.45;
 /// How thin the avatar is at the start of an arrival, across and along.
 ///
 /// It re-forms out of a vertical column rather than fading in, because the model
-/// has no dissolve to fade *with*: the Quaternius characters carry plain opaque
-/// materials, and making them transparent for 0.45 s means a second material per
-/// slot and a place in the transparent sort — for an effect that is over before
+/// has no dissolve to fade *with*: the bodies carry opaque materials, and
+/// making them transparent for 0.45 s means a second material per part and a
+/// place in the transparent sort — for an effect that is over before
 /// it can be looked at. A scale is one transform on a holder that is already
 /// being written every frame.
 const TELEPORT_ARRIVE_PINCH: f32 = 0.06;
@@ -778,8 +518,8 @@ fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
 ///
 /// Public because collision's snap-out backstop has to reconstruct the same
 /// ground the movement path stands on (`GROUND_HEIGHT + terrain.ground_at(..)`), and a
-/// second copy of the number there is exactly the drift the "Standing height"
-/// section of `docs/notes/avatar-composition.md` is about.
+/// second copy of the number there is exactly the drift
+/// `docs/notes/avatar-standing-height.md` is about.
 pub const GROUND_HEIGHT: f32 = 0.05;
 
 /// Animation data attached to an avatar (and each of its model "holder" children),
@@ -793,20 +533,18 @@ pub(crate) struct AvatarAnimations {
     walk_index: AnimationNodeIndex,
     run_index: AnimationNodeIndex,
     fly_index: AnimationNodeIndex,
-    /// One node per [`EMOTE_CLIPS`] row, in that order.
+    /// One node per [`EMOTE_ORDER`] entry, in that order.
     emote_indices: Vec<AnimationNodeIndex>,
-    /// The seated pose. Not a clip out of the character file — the set has none —
-    /// but one this client authors for the rig (`systems::sit_pose`).
+    /// The seated pose: a motion-capture loop of someone sitting still.
     sit_index: AnimationNodeIndex,
-    /// Base playback speed for this model's clips (`Holder::anim_speed`). The
-    /// locomotion clips are scaled on top of this to match ground speed.
+    /// Base playback speed for this model's clips. The locomotion clips are
+    /// scaled on top of this to match ground speed.
     speed: f32,
-    /// The walk and run clips' timing, which differs between models: the
-    /// characters' hand-made cycles and the MakeHuman avatar's captured ones.
+    /// The walk and run clips' timing: each captured cycle's own length and speed.
     walk: ClipGait,
     run: ClipGait,
-    /// How long each emote holds the body, in `EMOTE_CLIPS` order: the clip's
-    /// own length for a captured gesture, [`EMOTE_DURATION`] for the characters.
+    /// How long each emote holds the body, in [`EMOTE_ORDER`]: the clip's own
+    /// length, or [`EMOTE_DURATION`] for one the pack lacks.
     emote_secs: Vec<f32>,
 }
 
@@ -840,7 +578,6 @@ const EMOTE_FADE: Duration = Duration::from_millis(90);
 
 pub fn spawn_avatar(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut clip_assets: ResMut<Assets<AnimationClip>>,
     store: Res<UserStore>,
@@ -852,348 +589,82 @@ pub fn spawn_avatar(
         ),
     >,
     mut human: human_avatar::HumanAssets,
+    mut told_failed: Local<bool>,
 ) {
-    // MakeHuman bodies built this frame. One at a time: a build is a few
-    // milliseconds of shaping and fitting and then every mesh uploaded, so a
-    // crowd arriving at once is built over a few frames, not in one.
+    // Bodies built this frame. One at a time: a build is a few milliseconds of
+    // shaping and fitting and then every mesh uploaded, so a crowd arriving at
+    // once is built over a few frames, not in one.
     let mut built = 0u32;
     for (entity, is_local, mut transform, remote) in avatar_query.iter_mut() {
-        // The local player uses the chosen appearance. Remotes wear the look the
-        // server sent (protocol 42) as MakeHuman bodies, and the default
-        // character otherwise.
-        let appearance = if is_local {
-            store.data.appearance.clone()
-        } else {
-            AvatarAppearance::default()
-        };
-        if human_avatar::enabled() && !human.failed() {
-            // Not loaded yet, or this frame's build spent: leave the avatar
-            // unmarked and come back next frame.
-            let Some(pack) = human.pack() else { continue };
-            if built >= 1 {
-                continue;
+        if human.failed() {
+            // There is no other body to fall back on since the characters were
+            // retired: say so once, loudly, and stop asking.
+            if !*told_failed {
+                tracing::error!("avatar: the body pack did not load; avatars are not drawn");
+                *told_failed = true;
             }
-            built += 1;
-            let (look, tints) = match remote {
-                Some(r) => human.look_of_remote(r.sim_id),
-                None => human.look(&appearance),
-            };
-            let spawned = human_avatar::spawn_human(
-                &mut commands,
-                &mut human,
-                &mut clip_assets,
-                &pack,
-                &look,
-                tints,
-                entity,
-                SlotMask::ALL,
-            );
-            let (graph, indices) = AnimationGraph::from_clips(spawned.clips);
-            let anims = AvatarAnimations {
-                graph_handle: graphs.add(graph),
-                idle_index: indices[0],
-                walk_index: indices[1],
-                run_index: indices[2],
-                fly_index: indices[0],
-                emote_indices: indices[3..indices.len() - 1].to_vec(),
-                sit_index: indices[indices.len() - 1],
-                speed: 1.0,
-                walk: spawned.walk,
-                run: spawned.run,
-                emote_secs: spawned.emote_secs,
-            };
-            let mut player = AnimationPlayer::default();
-            let mut transitions = AnimationTransitions::new();
-            transitions
-                .play(&mut player, anims.idle_index, Duration::ZERO)
-                .repeat();
-            commands.entity(spawned.holder).insert((
-                anims.clone(),
-                player,
-                transitions,
-                AnimationGraphHandle(anims.graph_handle.clone()),
-            ));
-            transform.scale = Vec3::ONE;
-            commands
-                .entity(entity)
-                .try_insert((AvatarModelLoaded, anims));
+            commands.entity(entity).try_insert(AvatarModelLoaded);
             continue;
         }
-        let holders = resolve_avatar_holders(&appearance);
-
-        // Scale lives with the model, not the spawn site. Set it before the scenes
-        // instantiate (no mesh is attached yet) so they never flash at 1.0.
-        transform.scale = Vec3::splat(holders.first().map_or(1.0, |h| h.scale));
-
-        // One child "holder" per distinct character glTF: it shows only its masked
-        // slots (the others are hidden on ready) and plays its own embedded clips.
-        // All holders play the identical clip set on the identical rig and are
-        // phase-locked by `sync_avatar_animations`, so a mixed head/body/legs moves
-        // as one. A representative `AvatarAnimations` is kept on the avatar entity so
-        // `update_avatar_animation` can read the (shared) clip indices.
-        // `try_insert` for the whole of this spawn: the query includes remote
-        // avatars, which `session::teardown` despawns wholesale when a link drops —
-        // and nothing orders the two systems, so the entity can already be queued
-        // for despawn while it is still visible here.
-        commands.entity(entity).try_insert(AvatarModelLoaded);
-        let mut entity_anims: Option<AvatarAnimations> = None;
-        for h in &holders {
-            // Locomotion first, then the emotes in `EMOTE_CLIPS` order, so an
-            // `Emote` indexes `emote_indices` directly.
-            let mut clips: Vec<Handle<AnimationClip>> = vec![
-                asset_server.load(GltfAssetLabel::Animation(CHAR_IDLE).from_asset(h.anims)),
-                asset_server.load(GltfAssetLabel::Animation(CHAR_WALK).from_asset(h.anims)),
-                asset_server.load(GltfAssetLabel::Animation(CHAR_RUN).from_asset(h.anims)),
-            ];
-            clips.extend(EMOTE_CLIPS.iter().map(|(_, ix)| {
-                asset_server.load(GltfAssetLabel::Animation(*ix).from_asset(h.anims))
-            }));
-            // …and last the one clip that is not in the file. The character set
-            // has no sit, so it is built here for the rig this holder wears
-            // (`systems::sit_pose`). Every holder of a mixed avatar gets its own
-            // copy, which costs eleven curves and keeps the node indices of all
-            // the graphs identical — `update_avatar_animation` reads one
-            // `AvatarAnimations` off the avatar entity and drives every holder's
-            // player with it.
-            clips.push(clip_assets.add(sit_pose::sit_clip(appearance.sex)));
-            let (graph, indices) = AnimationGraph::from_clips(clips);
-            let anims = AvatarAnimations {
-                graph_handle: graphs.add(graph),
-                idle_index: indices[0],
-                walk_index: indices[1],
-                run_index: indices[2],
-                // Flight has no clip of its own; the forward lean in
-                // `update_avatar_model_pose` is what distinguishes it from
-                // standing (`docs/notes/avatar-locomotion.md`).
-                fly_index: indices[0],
-                emote_indices: indices[3..indices.len() - 1].to_vec(),
-                sit_index: indices[indices.len() - 1],
-                speed: h.anim_speed,
-                walk: ClipGait::CHARACTER_WALK,
-                run: ClipGait::CHARACTER_RUN,
-                emote_secs: vec![EMOTE_DURATION; EMOTE_CLIPS.len()],
-            };
-            if entity_anims.is_none() {
-                entity_anims = Some(anims.clone());
-            }
-            spawn_slot_holder(&mut commands, &asset_server, entity, h.scene, h.mask, anims);
+        // Not loaded yet, or this frame's build spent: leave the avatar
+        // unmarked and come back next frame.
+        let Some(pack) = human.pack() else { continue };
+        if built >= 1 {
+            continue;
         }
-        if let Some(a) = entity_anims {
-            commands.entity(entity).try_insert(a);
-        }
-        // One line per avatar spawn, and it is an instrument rather than chatter:
-        // `holders = 0` is precisely the state this commit fixes, and it is
-        // otherwise indistinguishable from a healthy spawn — nothing downstream
-        // complains about an avatar with no meshes. The character glTFs are also
-        // the only thing this client loads through the asset server on Android,
-        // where the log is the only instrument there is
-        // (`docs/notes/android-build.md`).
-        tracing::info!(
-            local = is_local,
-            holders = holders.len(),
-            scenes = ?holders.iter().map(|h| h.scene).collect::<Vec<_>>(),
-            "avatar: model requested"
+        built += 1;
+        // The local avatar wears its own look (or the designer's draft);
+        // another wears the look the server sent (protocol 42).
+        let (look, tints) = match remote {
+            Some(r) => human.look_of_remote(r.sim_id),
+            None => human.look(&store.data.appearance),
+        };
+        let spawned = human_avatar::spawn_human(
+            &mut commands,
+            &mut human,
+            &mut clip_assets,
+            &pack,
+            &look,
+            tints,
+            entity,
+            AvatarHolder,
         );
-    }
-}
-
-/// Spawn one character glTF as a child holder of `parent`, tagged with its slot
-/// mask + animation data + ready observer. Identity transform, so it inherits the
-/// avatar's pose and scale exactly.
-fn spawn_slot_holder(
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-    parent: Entity,
-    scene: &'static str,
-    mask: SlotMask,
-    anims: AvatarAnimations,
-) {
-    commands
-        .spawn((
-            anims,
-            mask,
-            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(scene))),
-            Transform::default(),
-            Visibility::default(),
-            ChildOf(parent),
-        ))
-        .observe(play_avatar_animation_when_ready);
-}
-
-/// Rebuild the local avatar's model when the chosen appearance changes (from the
-/// avatar chooser). Strips the instantiated scene and the loaded markers so
-/// `spawn_avatar` re-runs next frame with the newly resolved model. Remotes are
-/// untouched — they don't read the local appearance.
-pub fn respawn_avatar_on_appearance_change(
-    mut commands: Commands,
-    store: Res<UserStore>,
-    mut last: Local<Option<AvatarAppearance>>,
-    children: Query<&Children>,
-    avatars: Query<Entity, (With<Avatar>, With<AvatarModelLoaded>)>,
-) {
-    let current = &store.data.appearance;
-    if last.as_ref() == Some(current) {
-        return;
-    }
-    let first_run = last.is_none();
-    *last = Some(current.clone());
-    if first_run {
-        return; // don't rebuild the just-spawned avatar on startup
-    }
-    for entity in avatars.iter() {
-        // Despawn the instantiated scene (all descendants), then drop the markers
-        // and the scene root so `spawn_avatar` treats the entity as fresh.
-        let descendants: Vec<Entity> = children.iter_descendants(entity).collect();
-        for d in descendants {
-            commands.entity(d).despawn();
-        }
+        let (graph, indices) = AnimationGraph::from_clips(spawned.clips);
+        let anims = AvatarAnimations {
+            graph_handle: graphs.add(graph),
+            idle_index: indices[0],
+            walk_index: indices[1],
+            run_index: indices[2],
+            // Flight has no clip of its own; the forward lean in
+            // `update_avatar_model_pose` is what distinguishes it from standing.
+            fly_index: indices[0],
+            emote_indices: indices[3..indices.len() - 1].to_vec(),
+            sit_index: indices[indices.len() - 1],
+            speed: 1.0,
+            walk: spawned.walk,
+            run: spawned.run,
+            emote_secs: spawned.emote_secs,
+        };
+        let mut player = AnimationPlayer::default();
+        let mut transitions = AnimationTransitions::new();
+        transitions
+            .play(&mut player, anims.idle_index, Duration::ZERO)
+            .repeat();
+        commands.entity(spawned.holder).insert((
+            anims.clone(),
+            player,
+            transitions,
+            AnimationGraphHandle(anims.graph_handle.clone()),
+        ));
+        transform.scale = Vec3::ONE;
+        // `try_insert`: the query includes remote avatars, which
+        // `session::teardown` despawns wholesale when a link drops, and nothing
+        // orders the two systems.
         commands
             .entity(entity)
-            .remove::<AvatarModelLoaded>()
-            .remove::<AvatarAnimations>()
-            .remove::<WorldAssetRoot>();
+            .try_insert((AvatarModelLoaded, anims));
+        tracing::debug!(local = is_local, "avatar: body built");
     }
-}
-
-/// Character-glTF accessory nodes to hide on spawn (weapons the avatar shouldn't
-/// carry). Matched against the glTF node name.
-fn is_weapon_node(name: &str) -> bool {
-    matches!(
-        name,
-        "Pistol" | "Sword" | "Rifle" | "Gun" | "Knife" | "Axe" | "Bow" | "Spear" | "Weapon"
-    )
-}
-
-/// glTF node name of the shared skeleton root in every Quaternius rig (base
-/// bodies, outfits, and the UAL animation library). It is the scene's top-level
-/// node, so the loader roots animation-target paths at it — see
-/// [`bind_external_animations`].
-const ARMATURE_NODE: &str = "Armature";
-
-pub fn play_avatar_animation_when_ready(
-    trigger: On<WorldInstanceReady>,
-    mut commands: Commands,
-    children: Query<&Children>,
-    names: Query<&Name>,
-    masks: Query<&SlotMask>,
-    animations_to_play: Query<&AvatarAnimations>,
-    mut players: Query<&mut AnimationPlayer>,
-) {
-    let root = trigger.event_target();
-    let Ok(anim) = animations_to_play.get(root) else {
-        return;
-    };
-
-    // Keep only this holder's masked slots visible, and always hide weapons (e.g.
-    // the Suit/Swat `Pistol`, Medieval `Sword`) — no business avatar brandishing a
-    // gun. Unslotted meshes fall through and stay. `iter_descendants` walks the
-    // whole subtree; hiding a node hides its mesh children too.
-    let mask = masks.get(root).copied().unwrap_or(SlotMask::ALL);
-    let (mut nodes, mut hidden) = (0usize, 0usize);
-    for child in children.iter_descendants(root) {
-        nodes += 1;
-        let Ok(name) = names.get(child) else { continue };
-        let hide = is_weapon_node(name.as_str())
-            || classify_slot(name.as_str()).is_some_and(|s| !mask.shows(s));
-        if hide {
-            hidden += 1;
-            commands.entity(child).insert(Visibility::Hidden);
-        }
-    }
-    // The other half of the bracket opened in `spawn_avatar` — see its note. This
-    // one also carries the mask's own arithmetic, because "the scene loaded and
-    // every node in it was masked away" and "the scene never loaded" look
-    // identical from the outside and are nothing alike.
-    tracing::info!(nodes, hidden, "avatar: model ready");
-
-    // Case 1 — the character glTF embeds its own clips, so Bevy already spawned an
-    // `AnimationPlayer`. Play the idle clip on it directly.
-    if let Some(player_entity) = children
-        .iter_descendants(root)
-        .find(|&e| players.get(e).is_ok())
-    {
-        if let Ok(mut player) = players.get_mut(player_entity) {
-            // Every clip change goes through `AnimationTransitions` from here on,
-            // so the idle has to be started through it too — driving the player
-            // directly leaves the transitions component with no idea what the
-            // "main" animation is, and the first cross-fade then fades from
-            // nothing.
-            let mut transitions = AnimationTransitions::new();
-            transitions
-                .play(&mut player, anim.idle_index, Duration::ZERO)
-                .repeat()
-                .set_speed(anim.speed);
-            commands
-                .entity(player_entity)
-                .insert((AnimationGraphHandle(anim.graph_handle.clone()), transitions));
-        }
-        return;
-    }
-
-    // Case 2 — the humanoid bodies carry no clips of their own, so the glTF
-    // loader created neither an `AnimationPlayer` nor the per-bone
-    // `AnimationTargetId`/`AnimatedBy` that the external UAL clips bind to. Rebuild
-    // both by hand, exactly as `bevy_gltf` would for an animated file: root a
-    // player on the "Armature" node and hash each bone's name-path into the target
-    // id it was authored against. Both the bodies and the UAL share the same
-    // `Armature → root → pelvis → …` rig, so the ids line up and the clips play.
-    let Some(armature) = children
-        .iter_descendants(root)
-        .find(|&e| names.get(e).is_ok_and(|n| n.as_str() == ARMATURE_NODE))
-    else {
-        tracing::warn!(scene_root = ?root, "avatar: no `Armature` node found; animations will not play");
-        return;
-    };
-    let mut path: Vec<Name> = Vec::new();
-    bind_external_animations(
-        &mut commands,
-        armature,
-        armature,
-        &mut path,
-        &children,
-        &names,
-    );
-
-    let mut player = AnimationPlayer::default();
-    let mut transitions = AnimationTransitions::new();
-    transitions
-        .play(&mut player, anim.idle_index, Duration::ZERO)
-        .repeat()
-        .set_speed(anim.speed);
-    commands.entity(armature).insert((
-        player,
-        transitions,
-        AnimationGraphHandle(anim.graph_handle.clone()),
-    ));
-}
-
-/// Tag `entity` and every named descendant with the `AnimationTargetId` its
-/// name-path hashes to (rooted at `player`), plus `AnimatedBy(player)`, mirroring
-/// `bevy_gltf`'s animation-target setup. This lets clips from a *separate* glTF
-/// bind to a skeleton whose own file had no animations. Unnamed entities (skinned
-/// mesh leaves) are skipped along with their subtrees — bones are always named.
-fn bind_external_animations(
-    commands: &mut Commands,
-    entity: Entity,
-    player: Entity,
-    path: &mut Vec<Name>,
-    children: &Query<&Children>,
-    names: &Query<&Name>,
-) {
-    let Ok(name) = names.get(entity) else {
-        return;
-    };
-    path.push(name.clone());
-    commands.entity(entity).insert((
-        AnimationTargetId::from_names(path.iter()),
-        AnimatedBy(player),
-    ));
-    if let Ok(kids) = children.get(entity) {
-        for child in kids.iter() {
-            bind_external_animations(commands, child, player, path, children, names);
-        }
-    }
-    path.pop();
 }
 
 /// What an avatar's body is doing this frame: which clip, how fast, and whether
@@ -1214,8 +685,7 @@ enum PoseClip {
     Walk,
     Run,
     Fly,
-    /// The authored seated pose (`systems::sit_pose`) — the one clip in the set
-    /// this client builds rather than loads.
+    /// Seated (a motion-capture loop).
     Sit,
     Emote(usize),
 }
@@ -1229,7 +699,7 @@ pub(crate) struct ClipGait {
 }
 
 impl ClipGait {
-    /// The Quaternius characters' `Walk` and `Run`.
+    /// The gait a body without its own walk or run clip falls back to.
     pub(crate) const CHARACTER_WALK: Self = Self {
         secs: locomotion::WALK_CLIP_SECS,
         speed: locomotion::WALK_CLIP_SPEED,
@@ -1238,6 +708,13 @@ impl ClipGait {
         secs: locomotion::RUN_CLIP_SECS,
         speed: locomotion::RUN_CLIP_SPEED,
     };
+
+    /// Footfalls per second at `ground_speed`: two per cycle, at the playback
+    /// rate that speed gives the clip — so a footstep sound counted at this rate
+    /// stays on the foot (`soundscape`).
+    pub(crate) fn steps_per_sec(self, ground_speed: f32) -> f32 {
+        2.0 * locomotion::clip_speed_for(ground_speed, self.speed) / self.secs
+    }
 }
 
 /// Choose the locomotion pose for a ground speed. `running` is the previous
@@ -1270,6 +747,11 @@ fn locomotion_pose(speed: f32, flying: bool, running: bool, gaits: (ClipGait, Cl
 }
 
 impl AvatarAnimations {
+    /// This model's walk and run.
+    pub(crate) fn gaits(&self) -> (ClipGait, ClipGait) {
+        (self.walk, self.run)
+    }
+
     /// One cycle of `node` in seconds, for the two clips whose phase means the
     /// same thing (both `Walk` and `Run` are two footfalls long). `None` for
     /// everything else — idle, flight and the emotes have no stride to carry.
@@ -1434,9 +916,7 @@ pub struct PinnedAnimation {
 /// Hold the local avatar at [`PinnedAnimation`], when a capture asks for it.
 ///
 /// After [`update_avatar_animation`], which has already made the pinned clip the
-/// main one (and set its speed, which this zeroes), and after
-/// [`sync_avatar_animations`], which would otherwise copy the leader's seek
-/// time over a mixed avatar's other holders a frame late.
+/// main one (and set its speed, which this zeroes).
 pub fn pin_avatar_animation(
     pinned: Option<Res<PinnedAnimation>>,
     avatars: Query<(Entity, &AvatarAnimations), With<Avatar>>,
@@ -1450,8 +930,6 @@ pub fn pin_avatar_animation(
     };
     for (avatar, anim) in &avatars {
         let node = anim.node(pinned.clip.pose_clip());
-        // Every holder's graph is built from the same table, so the first
-        // holder's clip length is every holder's.
         let duration = graphs
             .get(&anim.graph_handle)
             .and_then(|g| g.get(node))
@@ -1584,10 +1062,9 @@ pub fn update_avatar_animation(
 /// the sim owns it outright), so pitching or shifting *that* would move all of
 /// them. A holder is a child of it, so writing one is a purely visual change.
 ///
-/// **The lean.** The Quaternius "Ultimate Modular" clip set has no flight (or
-/// jump) animation and the UAL library can't supply one — different rig, so its
-/// clips don't bind (`docs/notes/avatar-locomotion.md`). Flying therefore played
-/// *Idle*, i.e. an avatar standing to attention while it crossed the city at
+/// **The lean.** The motion-capture clip set has no flight (or jump) animation
+/// (`docs/notes/makehuman-avatars.md`). Flying therefore plays *idle*, which
+/// alone is an avatar standing to attention while it crosses the city at
 /// 32 m/s. Pitching the model forward is what turns that same pose into a glide;
 /// hovering in place stays upright, which is the readable difference between the
 /// two. Holders pivot about chest height so the feet swing back instead of the head
@@ -1615,7 +1092,7 @@ pub fn update_avatar_model_pose(
     mut avatar_state: ResMut<AvatarState>,
     avatars: Query<Entity, With<Avatar>>,
     mut remotes: Query<&mut RemoteAvatar>,
-    mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
+    mut holders: Query<(&ChildOf, &mut Transform), With<AvatarHolder>>,
     // The avatar designer is open: turn the model to face the camera, as
     // someone turns to a mirror. A turn of the model, not the avatar, so
     // neither the heading the sim holds nor the camera moves.
@@ -1808,68 +1285,6 @@ fn teleport_scale(progress: f32) -> Vec3 {
     // back down to it, instead of arriving at standing height from one side.
     let bump = (TELEPORT_ARRIVE_STRETCH - 1.0) * (std::f32::consts::PI * t).sin() * out;
     Vec3::new(across, base + bump, across)
-}
-
-/// Phase-lock a mixed avatar's per-slot holders: force every holder's active clips
-/// to the first holder's seek time, so a head from one style and a body from
-/// another (separate skeletons/players that started at slightly different frames)
-/// don't drift apart. No-op for a single-holder avatar (a preset or the fox).
-pub fn sync_avatar_animations(
-    avatars: Query<Entity, Or<(With<Avatar>, With<RemoteAvatar>)>>,
-    children: Query<&Children>,
-    mut players: Query<&mut AnimationPlayer>,
-    // The resolved player entities per avatar. `iter_descendants` walks the
-    // avatar's *entire* spawned scene — armature and every bone — and the set
-    // it finds only changes on respawn (appearance change) or while a holder's
-    // scene is still streaming in, so walking it per avatar per frame paid
-    // (remote avatars × skeleton nodes) for an answer that almost never moves.
-    // The cache is valid while every cached player is alive and there is one
-    // player per holder (holders are the avatar's direct children; each scene
-    // binds exactly one `AnimationPlayer` once ready). A respawn despawns the
-    // old holders, which kills the cached entities and forces the re-walk; a
-    // scene still loading keeps the counts unequal, so it re-walks until every
-    // holder's player exists — the same behaviour the uncached walk had.
-    mut cache: Local<bevy::ecs::entity::EntityHashMap<Vec<Entity>>>,
-    mut seeks: Local<Vec<(AnimationNodeIndex, f32)>>,
-) {
-    cache.retain(|&e, _| avatars.contains(e));
-    for avatar in avatars.iter() {
-        let holder_count = children.get(avatar).map(|c| c.len()).unwrap_or(0);
-        let valid = cache
-            .get(&avatar)
-            .is_some_and(|v| v.len() == holder_count && v.iter().all(|&e| players.contains(e)));
-        if !valid {
-            let found: Vec<Entity> = children
-                .iter_descendants(avatar)
-                .filter(|&e| players.contains(e))
-                .collect();
-            cache.insert(avatar, found);
-        }
-        let holder_players = &cache[&avatar];
-        if holder_players.len() < 2 {
-            continue;
-        }
-        seeks.clear();
-        {
-            let Ok(leader) = players.get(holder_players[0]) else {
-                continue;
-            };
-            seeks.extend(
-                leader
-                    .playing_animations()
-                    .map(|(&node, active)| (node, active.seek_time())),
-            );
-        }
-        for &follower in &holder_players[1..] {
-            if let Ok(mut player) = players.get_mut(follower) {
-                for &(node, t) in seeks.iter() {
-                    if let Some(active) = player.animation_mut(node) {
-                        active.seek_to(t);
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// How far past its last snapshot a remote avatar is carried on its replicated
@@ -2821,6 +2236,20 @@ mod tests {
         }
     }
 
+    /// Footsteps follow the clip that is playing: the captured walk (1.65 m/s on
+    /// a 0.9 s cycle) at its own speed steps twice per cycle, and faster ground
+    /// speed steps faster in proportion. Before, the rate was the Quaternius
+    /// walk's, about 18 % behind this one's feet.
+    #[test]
+    fn footsteps_land_twice_per_cycle_of_the_clip_playing() {
+        let walk = ClipGait {
+            secs: 0.9,
+            speed: 1.65,
+        };
+        assert!((walk.steps_per_sec(1.65) - 2.0 / 0.9).abs() < 1e-5);
+        assert!((walk.steps_per_sec(1.98) - 1.2 * 2.0 / 0.9).abs() < 1e-4);
+    }
+
     #[test]
     fn a_recentring_camera_does_not_steer_a_held_key() {
         let mut latch = None;
@@ -3090,39 +2519,6 @@ mod tests {
                 let yaw = yaw_from_dir(wish).expect("a key is held");
                 assert_dir(facing(yaw), want);
             }
-        }
-    }
-
-    /// The default appearance resolves to a model that will actually be spawned.
-    ///
-    /// This is the test that was missing, and it fails against the old
-    /// `avatar_asset_exists` *in this very binary*: cargo runs a test from the
-    /// package directory, so the old relative `assets/` probe resolved to
-    /// `crates/cartopolis/assets`, found nothing, and every style read as absent
-    /// — exactly the state Android and the web build were in permanently. An
-    /// empty holder list is not a loud failure anywhere: `spawn_avatar` marks the
-    /// avatar loaded and spawns no meshes, so the entity is present, followable
-    /// and walkable, and invisible.
-    #[test]
-    fn the_default_appearance_resolves_to_a_model() {
-        let holders = resolve_avatar_holders(&AvatarAppearance::default());
-        assert!(
-            !holders.is_empty(),
-            "the default avatar resolved to no model at all — it would spawn invisible"
-        );
-    }
-
-    /// Every style in the chooser is backed by a file that resolves, so picking
-    /// one cannot silently leave the avatar with nothing to draw.
-    #[test]
-    fn every_catalog_style_resolves() {
-        for c in CHARACTER_STYLES {
-            assert!(
-                style_file(c.sex, c.label).is_some(),
-                "catalog style {:?} ({}) does not resolve — the chooser would offer an empty avatar",
-                c.label,
-                c.file
-            );
         }
     }
 
@@ -3619,7 +3015,7 @@ mod tests {
             .add_systems(Update, update_avatar_model_pose);
         let holder = app
             .world_mut()
-            .spawn((SlotMask::ALL, Transform::IDENTITY))
+            .spawn((AvatarHolder, Transform::IDENTITY))
             .id();
         app.world_mut().spawn(Avatar).add_child(holder);
 

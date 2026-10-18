@@ -2,10 +2,10 @@
 //! and a wardrobe, edited on a draft the avatar is rebuilt from as it changes
 //! (`docs/mockups/avatar-designer`, `systems::human_avatar`).
 //!
-//! Drawn inside the Appearance panel when `CARTO_HUMAN_AVATAR` is on, in place
-//! of the slot-by-slot chooser; the panel keeps its Apply, which saves the
-//! draft. The names here are the pack's (`crates/human/src/bin/human-pack.rs`
-//! lists what it carries); a name the pack lacks is skipped by the builder.
+//! Drawn inside the Appearance panel (`ui::render_avatar_chooser`), whose
+//! Apply saves the draft. The names here are the pack's
+//! (`crates/human/src/bin/human-pack.rs` lists what it carries); a name the
+//! pack lacks is skipped by the builder.
 
 use crate::systems::theme;
 use crate::systems::user_store::HumanLook;

@@ -114,7 +114,7 @@ bevy = { version = "0.20", default-features = false, features = [
     # `bevy_animation` only enables the animation crate; the glTF *loader's*
     # clip parsing is behind bevy_gltf's own `bevy_animation` feature, wired via
     # this umbrella feature. Without it `GltfAssetLabel::Animation(n)` loads zero
-    # `AnimationClip`s and every glТF (fox + Quaternius avatars) stays in rest pose.
+    # `AnimationClip`s and every glТF (the fox, a prim model) stays in rest pose.
     "gltf_animation",
     "async_executor",
     "bevy_asset",

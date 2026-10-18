@@ -21,8 +21,8 @@
 //! # Why footsteps are counted, not triggered by the animation
 //!
 //! Bevy's animation player exposes a clip's seek time, so the honest way to place
-//! a footfall would be an event on the clip. The Quaternius clips carry no such
-//! events, and adding them means editing 20 glTFs. Instead the step *rate* is
+//! a footfall would be an event on the clip. The motion-capture clips carry no such
+//! events, and adding them means marking every take by hand. Instead the step *rate* is
 //! derived from the same ground speed that drives the clip's playback rate
 //! ([`crate::systems::locomotion::clip_speed_for`]), so the two stay in phase by
 //! construction: when the clip plays 1.4× faster, the steps come 1.4× faster.
@@ -40,7 +40,11 @@ use bevy::audio::{AudioPlayer, AudioSink, AudioSource, PlaybackMode, PlaybackSet
 use bevy::prelude::*;
 
 #[cfg(feature = "audio")]
+use crate::components::Avatar;
+#[cfg(feature = "audio")]
 use crate::resources::{AppPrefs, AvatarState, CameraMode, CameraState};
+#[cfg(feature = "audio")]
+use crate::systems::avatar::{AvatarAnimations, ClipGait};
 use crate::systems::locomotion;
 #[cfg(feature = "audio")]
 use cartopolis_core::motion;
@@ -48,12 +52,6 @@ use cartopolis_core::motion;
 /// Sample rate for everything synthesised here. 22.05 kHz is plenty for noise
 /// bursts and wind, and halves the bytes.
 pub(crate) const SAMPLE_RATE: u32 = 22_050;
-
-/// Strides per second at the walk and run clips' authored speeds. Two footfalls
-/// per cycle, so these are twice the cycle rate: the `Walk` clip is 1.333 s and
-/// the `Run` clip 0.8 s (`docs/notes/avatar-locomotion.md` lists the set).
-const WALK_STEPS_PER_SEC: f32 = 1.5;
-const RUN_STEPS_PER_SEC: f32 = 2.5;
 
 /// Volume of a footstep at a stroll and at a run. A run is not just faster, it
 /// is heavier, and a constant-volume step under an accelerating gait is one of
@@ -165,6 +163,7 @@ pub fn play_avatar_sounds(
     avatar_state: Res<AvatarState>,
     soundscape: Res<Soundscape>,
     prefs: Res<AppPrefs>,
+    gaits: Query<&AvatarAnimations, With<Avatar>>,
     mut stride: Local<f32>,
     mut foot: Local<usize>,
 ) {
@@ -204,13 +203,19 @@ pub fn play_avatar_sounds(
         return;
     }
 
-    // Steps per second, from the same ratio that sets the clip's playback rate —
-    // which is what keeps the sound on the foot.
-    let rate = if locomotion::wants_run_clip(speed, true) {
-        RUN_STEPS_PER_SEC * (speed / locomotion::RUN_CLIP_SPEED)
+    // Steps per second, from the clip actually playing and the same ratio that
+    // sets its playback rate — which is what keeps the sound on the foot.
+    let (walk, run) = gaits
+        .single()
+        .map_or((ClipGait::CHARACTER_WALK, ClipGait::CHARACTER_RUN), |a| {
+            a.gaits()
+        });
+    let gait = if locomotion::wants_run_clip(speed, true) {
+        run
     } else {
-        WALK_STEPS_PER_SEC * (speed / locomotion::WALK_CLIP_SPEED)
+        walk
     };
+    let rate = gait.steps_per_sec(speed);
     *stride += rate * time.delta_secs();
     if *stride < 1.0 {
         return;

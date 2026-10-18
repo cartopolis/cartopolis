@@ -166,7 +166,6 @@ impl Plugin for PlayerPlugin {
                 systems::collision::sync_bore_colliders.before(avatar::handle_avatar_movement),
                 // What the avatar is standing next to, and the nearest house number.
                 systems::interact::track_interaction_target.after(avatar::handle_avatar_movement),
-                avatar::respawn_avatar_on_appearance_change.before(avatar::spawn_avatar),
                 avatar::spawn_avatar,
             )
                 .in_set(ClientPhase::Move),
@@ -198,8 +197,7 @@ impl Plugin for PlayerPlugin {
                     .after(avatar::spawn_avatar),
                 avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
                 avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
-                avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
-                avatar::pin_avatar_animation.after(avatar::sync_avatar_animations),
+                avatar::pin_avatar_animation.after(avatar::update_avatar_animation),
                 // Unordered against the spawn: the avatar it drops is rebuilt on
                 // this frame or the next. Ordering it before would contradict the
                 // phase this tuple runs in, which follows the spawn's.

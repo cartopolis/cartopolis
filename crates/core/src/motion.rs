@@ -152,8 +152,9 @@ pub fn fly_altitude_factor(y: f32) -> f32 {
     (y / FLY_ALT_REF).clamp(1.0, FLY_ALT_MAX_FACTOR)
 }
 
-/// Ground level for a standing avatar (m). The Quaternius models are authored
-/// origin-at-feet, so the sim's floor is exactly zero.
+/// Ground level for a standing avatar (m). The avatar bodies stand
+/// origin-at-feet (each clip is grounded on its lowest ankle), so the sim's floor
+/// is exactly zero.
 pub const GROUND_Y: f32 = 0.0;
 
 /// Integrate one frame of the vertical arc for something that is not flying.

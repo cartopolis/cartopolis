@@ -1263,7 +1263,7 @@ impl EditDialogState {
 }
 
 /// Where the avatar is sitting, while it is (`systems::interact` puts it there,
-/// `systems::sit_pose` supplies the body).
+/// the `sit` clip of the MakeHuman pack supplies the body).
 ///
 /// **A seat is a display offset, not a position.** The sim owns the avatar's
 /// translation and has no idea a bench exists — it holds no map data and never

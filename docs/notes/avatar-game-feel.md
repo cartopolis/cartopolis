@@ -22,17 +22,10 @@ sluggishness was **foot-slide**, and it was arithmetic:
 - The `Run` clip is **0.8 s per cycle** = 2.5 steps/s ≈ **4 m/s** of real stride,
   and it was played at a hard-coded `set_speed(1.0)`.
 
-So the model's feet moved at half the speed of the ground, permanently. Clip
-durations, for anyone re-deriving the constants
-(`jq '.animations[].name' assets/models/avatar/characters/Man_Casual.gltf`, then
-the sampler `max` inputs):
-
-```
-Idle 1.667 s   Run 0.800 s   Walk 1.333 s   Wave 1.667 s   Interact 1.267 s   Roll 1.333 s
-```
-
-`Walk` is clip **22** and was never loaded at all; the client only ever knew
-Idle (4) and Run (16).
+So the model's feet moved at half the speed of the ground, permanently. (Those
+were the Quaternius clips: `Walk` 1.333 s, `Run` 0.8 s, and `Walk` was never
+loaded at all. Since 2026-10-18 the clips are motion capture and each carries
+its own cycle and speed — `avatar-locomotion.md`.)
 
 ## The throttle is a magnitude, which is why gaits needed no protocol change
 

@@ -16,25 +16,15 @@ directions: the avatar chooser falls back to the fox, *and* the four assets that
 the `.mvt` fixtures) get the pointer compiled into the binary — so `cargo build`
 succeeds and the app dies later. CI checkouts set `lfs: true` for that reason.
 
-## Avatar characters (`models/avatar/characters/`)
+## Avatars (`models/avatar/human/`)
 
-The player avatars are **CC0** Quaternius *Ultimate Modular* characters (~62 MB,
-20 glТFs).
+The player avatars are built at run time from one MakeHuman body pack
+(`default.humanpack`, ~14 MB) and its textures (`textures/`, ~10 MB): the base
+mesh, the shape targets the designer's sliders blend, the rig, the clothes and
+hair, and the motion-capture clips. All of it is CC0 (MakeHuman) or CC BY 4.0
+(100STYLE) or free for any use (CMU motion capture); `LICENSE-THIRD-PARTY.md`
+has the credits.
 
-Each file is a self-contained glTF (embedded buffers + solid-colour materials) with
-its own embedded 24-clip animation set and 4 slot-named meshes (`*_Head`, `*_Body`,
-`*_Legs`, `*_Feet`) — see `avatar::CHARACTER_STYLES` for the catalog. Files:
-
-```
-models/avatar/characters/{Man,Woman}_<Style>.gltf
-```
-
-Source (Quaternius, CC0): *Ultimate Modular Men* / *Women* → `Individual
-Characters/glTF/`, renamed to `Man_<Style>` / `Woman_<Style>`. To add a style: drop
-its glTF in and add a `man!`/`woman!` row to `avatar::CHARACTER_STYLES` — LFS picks
-it up from the `*.gltf` pattern with no further setup.
-
-> The earlier approach (Universal Base Characters + Modular Character Outfits –
-> Fantasy + Universal Animation Library, under `base/`, `outfits/`, `anims/`) is
-> retired — the free base pack only shipped the broad *Superhero* body, which
-> poked out of the Regular-sized outfits. Those dirs, if present, are unused.
+Nothing here is edited by hand. `human-pack` (`crates/human`) writes both from
+the MakeHuman and motion-capture sources — `docs/notes/makehuman-avatars.md` has
+the command and what each choice in it is for.

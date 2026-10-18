@@ -10,8 +10,8 @@ cache/
 # ADR-016 solo/dev credentials (never commit)
 data/dev-login.toml
 
-# Legacy Quaternius packs (CC0), superseded by `characters/` (which is committed via
-# Git LFS). Fetched by hand, not committed — deletable. See assets/README.md.
+# Old Quaternius packs some checkouts still hold. Never commit them: their licence
+# since 2026-08-28 forbids redistributing the files (docs/notes/makehuman-avatars.md).
 assets/models/avatar/base/
 assets/models/avatar/outfits/
 assets/models/avatar/anims/

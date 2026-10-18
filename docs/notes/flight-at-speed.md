@@ -364,8 +364,8 @@ no travel in it — the avatar is at one place on one frame and a hundred kilome
 away on the next, and nothing on screen distinguishes that from the map having
 been redrawn around a figure that never moved.
 
-- The arrival **scales**, it does not dissolve. The Quaternius characters carry
-  plain opaque materials; fading them means a second material per slot and a place
+- The arrival **scales**, it does not dissolve. The avatar bodies carry
+  opaque materials; fading them means a second material per part and a place
   in the transparent sort, for an effect that is over in 0.45 s. A scale is one
   transform on a holder `update_avatar_model_pose` already writes every frame.
 - It is published as a **sequence counter** (`AvatarState::teleport_sequence`),

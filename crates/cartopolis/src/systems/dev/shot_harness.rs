@@ -3559,7 +3559,7 @@ pub fn zoom_scripted_first_person(
 /// position can promise. So the seat here is synthetic: half a metre ahead of the
 /// avatar, facing the way it already faces, and fully slid onto (`blend: 1.0` — a
 /// still of the half-way point documents nothing). What the capture then shows is
-/// the authored pose (`systems::sit_pose`), which is the half of this feature with
+/// the seated clip (`sit`, from the MakeHuman pack), which is the half of this feature with
 /// no test that can see it. Pair it with `--shot-mode avatar`, or the camera is
 /// not looking at the avatar.
 ///

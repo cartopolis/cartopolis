@@ -2835,7 +2835,7 @@ scope: Netherlands only
         for required in [
             "OpenStreetMap",
             "3DBAG",
-            "Quaternius — Ultimate Modular Men / Women",
+            "MakeHuman — base mesh, targets, rig, weights, system assets",
             "Plus Jakarta Sans",
         ] {
             let record = notices
