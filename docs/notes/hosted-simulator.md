@@ -177,6 +177,7 @@ deploying either way, check what the deploy brings that a binary copy does not:
 |---|---|---|
 | `world.db` (+ `-wal`, `-shm`) | accounts, sessions, prims, chats' sealed history, push addresses | everything; back it up |
 | `vapid.key` | the key browsers subscribe to call pushes with (`simulator::vapid`, since 2026-10-11), made on the first start with calls on, mode 600 | every subscribed browser stops ringing for calls, silently, until its chat page is opened again and re-subscribes; back it up with the database |
+| `stats.db` (+ `-wal`, `-shm`) | usage counts for Admin › Stats (`usage-stats.md`, since 2026-10-18) | the history of the charts; the server makes a new one and counts on. Back it up if the history matters |
 | `assets/` | uploaded models, one `.glb` per content hash | the models; back it up |
 | `textures` | a link to `/srv/library/game-textures` | nothing; it is the library's |
 

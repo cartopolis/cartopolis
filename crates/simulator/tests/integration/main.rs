@@ -34,5 +34,6 @@ mod presence;
 mod prim_video;
 mod private_chat;
 mod scripting_wire;
+mod stats;
 mod voice;
 mod web_mirror;

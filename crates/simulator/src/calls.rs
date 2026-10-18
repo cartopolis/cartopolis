@@ -81,6 +81,9 @@ pub struct Joiner {
     pub request_id: u32,
     /// A guest let in by an invite link: always waits to be let in.
     pub guest: bool,
+    /// The community the chat is a topic of, for its moderators' numbers
+    /// (`crate::stats`).
+    pub community: Option<uuid::Uuid>,
 }
 
 /// What became of a join.
@@ -261,6 +264,10 @@ struct Info {
     guest: bool,
     /// Its breakout room; 0 is the main call.
     room: u32,
+    /// When it came in, and the chat's community, for the minutes counted
+    /// when it leaves.
+    since: Instant,
+    community: Option<uuid::Uuid>,
 }
 
 impl Info {
@@ -280,6 +287,8 @@ impl Info {
             recording: false,
             guest: joiner.guest,
             room: 0,
+            since: Instant::now(),
+            community: joiner.community,
         }
     }
 
@@ -632,6 +641,7 @@ pub async fn spawn(
     public: Option<SocketAddr>,
     chat: Arc<ChatHub>,
     ring: Option<mpsc::UnboundedSender<crate::push::Ring>>,
+    stats: Option<Arc<crate::stats::Stats>>,
 ) -> anyhow::Result<(CallsHandle, SocketAddr, tokio::task::JoinHandle<()>)> {
     let socket = UdpSocket::bind(listen).await?;
     let bound = socket.local_addr()?;
@@ -650,6 +660,7 @@ pub async fn spawn(
         info: HashMap::new(),
         members: HashMap::new(),
         meetings: HashMap::new(),
+        stats,
     };
     let task = tokio::spawn(run(socket, state, rx));
     Ok((CallsHandle { tx }, bound, task))
@@ -671,6 +682,8 @@ struct State {
     /// roster. Refreshed at each join, which is when it is read from the table.
     members: HashMap<Vec<u8>, Vec<String>>,
     meetings: HashMap<Vec<u8>, Meeting>,
+    /// Calls started and minutes spent (`crate::stats`).
+    stats: Option<Arc<crate::stats::Stats>>,
 }
 
 impl State {
@@ -744,6 +757,16 @@ impl State {
         let meeting = self.meetings.entry(group.clone()).or_default();
         meeting.been_in.insert(joiner.account.clone());
         apply(&mut self.sfu, &self.info, meeting, &group);
+        if let Some(stats) = &self.stats {
+            if first {
+                stats.event(crate::stats::Event::CallStarted, joiner.community, None);
+            }
+            if let (Some(c), false) = (joiner.community, joiner.guest) {
+                if let Ok(account) = uuid::Uuid::parse_str(&joiner.account) {
+                    stats.active(account, c, None);
+                }
+            }
+        }
         // The first one in starts the call: wake the phones of everyone else
         // in the chat whose app is closed (`push`).
         if first {
@@ -1004,6 +1027,11 @@ impl State {
             Signal::Left { who } => {
                 if let Some(i) = self.info.remove(&who) {
                     tracing::info!(participant = who.0, username = %i.username, "left a call");
+                    if let Some(stats) = &self.stats {
+                        let minutes =
+                            i64::try_from(i.since.elapsed().as_secs().div_ceil(60)).unwrap_or(0);
+                        stats.events(crate::stats::Event::CallMinutes, minutes, i.community, None);
+                    }
                     let order = self.sfu.members(&i.group);
                     succeed(&mut self.info, &order, &i.group);
                     if let Some(m) = self.meetings.get_mut(&i.group) {
@@ -1150,6 +1178,7 @@ mod tests {
             screen: None,
             request_id: 1,
             guest,
+            community: None,
         }
     }
 

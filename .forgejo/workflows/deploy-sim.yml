@@ -130,6 +130,10 @@ jobs:
             rm -rf /tmp/livecopy && mkdir -p /tmp/livecopy
             cp "$live" /tmp/livecopy/world.db
             [ -f "$live-wal" ] && cp "$live-wal" /tmp/livecopy/world.db-wal
+            # Usage counts live beside it with their own migrations (crate::stats).
+            stats=/publish/data/stats.db
+            [ -f "$stats" ] && cp "$stats" /tmp/livecopy/stats.db
+            [ -f "$stats-wal" ] && cp "$stats-wal" /tmp/livecopy/stats.db-wal
             CARTO_ADMIN_PASSWORD=smoke-test-not-a-real-password \
               ./target/sim-release/simulator \
                 --database-path /tmp/livecopy/world.db \

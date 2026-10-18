@@ -28,7 +28,11 @@ pub(super) async fn on_create<T: FrameTransport>(
         .create(&ctx.actor, seed, move |_| Ok(fields), ModelCheck::Required)
         .await;
     match created {
-        Ok(_) => tracing::debug!(request_id, "prim created and broadcast"),
+        Ok(_) => {
+            ctx.stats
+                .event(crate::stats::Event::PrimCreated, None, None);
+            tracing::debug!(request_id, "prim created and broadcast");
+        }
         Err(e) => {
             let code = if matches!(e, PrimError::Forbidden(_)) {
                 403
@@ -93,7 +97,13 @@ pub(super) async fn on_update<T: FrameTransport>(
         )
         .await;
     match updated {
-        Ok(_) => tracing::debug!(request_id, prim_id, "prim updated and broadcast"),
+        Ok(_) => {
+            // Updates arrive at the gizmo's drag rate: one person working on
+            // one prim is one edit a day, however many frames it took.
+            let key = format!("{}:{prim_id}", ctx.principal_key);
+            ctx.stats.event_once(crate::stats::Event::PrimEdited, &key);
+            tracing::debug!(request_id, prim_id, "prim updated and broadcast");
+        }
         Err(e) => refuse(ctx, request_id, prim_id, e, "prim update").await?,
     }
     Ok(())

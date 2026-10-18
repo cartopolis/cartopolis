@@ -43,11 +43,18 @@ pub(super) async fn on_join<T: FrameTransport>(
     ctx.gates.last_call_join = Instant::now();
     let account = ctx.principal_key.clone();
     let id = group.clone();
-    let (members, blocked) = match db::call(&ctx.conn, move |c| {
+    let (members, blocked, community) = match db::call(&ctx.conn, move |c| {
         // Fresh rather than the list at connect, as the private-chat sync does: a
         // block made since connecting holds.
         let blocked = blocked_lowercase(c, &account);
-        (crate::e2ee::members(c, &id).unwrap_or_default(), blocked)
+        let community = crate::communities::community_of_topic(c, &id)
+            .ok()
+            .flatten();
+        (
+            crate::e2ee::members(c, &id).unwrap_or_default(),
+            blocked,
+            community,
+        )
     })
     .await
     {
@@ -78,6 +85,7 @@ pub(super) async fn on_join<T: FrameTransport>(
             screen,
             request_id,
             guest: ctx.guest,
+            community,
         })
         .await;
     match joined {

@@ -321,18 +321,43 @@ pub(super) async fn on_send<T: FrameTransport>(
             // it if this entry added them.
             let key = ctx.principal_key.clone();
             let id = group.clone();
-            let silenced = match db::call(&ctx.conn, move |c| {
+            let (silenced, community) = match db::call(&ctx.conn, move |c| {
                 let other = crate::contacts::silenced_by(c, &key, &id).ok().flatten();
                 if let Some(o) = &other {
                     let _ = crate::contacts::leave_direct_chat(c, o, &key);
                 }
-                other
+                // Which community this chat is a topic of, for the counts.
+                let community = if commit {
+                    None
+                } else {
+                    crate::communities::community_of_topic(c, &id)
+                        .ok()
+                        .flatten()
+                };
+                (other, community)
             })
             .await
             {
-                Ok(silenced) => silenced,
+                Ok(got) => got,
                 Err(_) => return Ok(()),
             };
+            // A sealed message is counted, never read: the server cannot.
+            if !commit {
+                match community {
+                    Some(c) => {
+                        let topic = crate::stats::api::hex(&group);
+                        ctx.stats.event(
+                            crate::stats::Event::CommunityMessage,
+                            Some(c),
+                            Some(&topic),
+                        );
+                        ctx.stats.active(ctx.principal, c, Some(&topic));
+                    }
+                    None => ctx
+                        .stats
+                        .event(crate::stats::Event::PrivateMessage, None, None),
+                }
+            }
             let (members, invites) = match &silenced {
                 Some(o) => (
                     appended

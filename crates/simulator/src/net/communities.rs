@@ -316,6 +316,8 @@ pub(super) async fn on_leave<T: FrameTransport>(
         move |c| crate::communities::leave(c, &account, id),
         |r| r
     );
+    ctx.stats
+        .event(crate::stats::Event::CommunityLeft, Some(id), None);
     answer(ctx, request_id).await?;
     tell(ctx, id, Vec::new()).await;
     let me = ctx.principal_key.clone();
@@ -415,6 +417,7 @@ pub(super) async fn on_remove<T: FrameTransport>(
         Err(r) => return ctx.send(&server_error(request_id, 501, r)).await,
     };
     let by = ctx.principal_key.clone();
+    let whole = topic.is_none();
     let removal = act!(
         ctx,
         request_id,
@@ -422,6 +425,10 @@ pub(super) async fn on_remove<T: FrameTransport>(
         move |c| crate::communities::remove(c, &by, id, &name, topic.as_deref(), block),
         |r| r
     );
+    if whole {
+        ctx.stats
+            .event(crate::stats::Event::CommunityLeft, Some(id), None);
+    }
     answer(ctx, request_id).await?;
     tell(ctx, id, vec![removal.account.clone()]).await;
     tell_left(ctx, &removal.account, id, &removal.groups);

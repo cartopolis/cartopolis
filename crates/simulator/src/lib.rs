@@ -32,6 +32,7 @@ pub mod registration;
 pub mod roles;
 pub mod scripting;
 pub mod state;
+pub mod stats;
 pub mod textures;
 pub mod vapid;
 pub mod videos;
@@ -59,6 +60,9 @@ pub struct SimHandle {
     /// Where the call forwarder's UDP socket is bound, when
     /// `SimConfig::calls_listen` asked for one.
     pub calls_addr: Option<SocketAddr>,
+    /// The usage counters, so a test can write them out without waiting for
+    /// the minute (`stats::Stats::flush`).
+    pub stats: Arc<stats::Stats>,
     tasks: tokio::task::JoinSet<&'static str>,
 }
 
@@ -95,6 +99,9 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let scripts = db::load_prim_scripts(&conn)?;
     let owners = db::load_prim_owners(&conn)?;
     let conn = Arc::new(std::sync::Mutex::new(conn));
+    // Usage counts, in their own file beside the world's (`stats`). Sampled and
+    // written once a minute; what the last minute counted is lost on a stop.
+    let stats = stats::Stats::open_beside(&config.database_path)?;
 
     let world = Arc::new(RwLock::new(state::SimWorld::new(
         prims,
@@ -138,9 +145,15 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
                 .context("calls_public_addr must be IP:port")?;
             // Wakes the phones of a chat's members when a call starts in it.
             let ring = push::spawn(conn.clone(), vapid.clone());
-            let (handle, bound, task) = calls::spawn(listen, public, chat.clone(), Some(ring))
-                .await
-                .with_context(|| format!("bind calls_listen {listen}"))?;
+            let (handle, bound, task) = calls::spawn(
+                listen,
+                public,
+                chat.clone(),
+                Some(ring),
+                Some(stats.clone()),
+            )
+            .await
+            .with_context(|| format!("bind calls_listen {listen}"))?;
             tracing::info!(%bound, "calls listening (udp)");
             calls_addr = Some(bound);
             calls_task = Some(task);
@@ -161,6 +174,13 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     );
     // Each task returns a label so `task_ended` can say *which* one died.
     let mut tasks = tokio::task::JoinSet::new();
+    {
+        let (stats, world) = (stats.clone(), world.clone());
+        tasks.spawn(async move {
+            let _ = stats::spawn(stats, world).await;
+            "stats"
+        });
+    }
     if let Some(task) = calls_task {
         tasks.spawn(async move {
             let _ = task.await;
@@ -223,6 +243,11 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             mailer,
             registration_throttle: Arc::new(http::RegistrationLimits::default()),
             fedi: fedi.clone(),
+            stats: stats.clone(),
+            stats_throttle: Arc::new(registration::Throttle::new(
+                600,
+                std::time::Duration::from_secs(3600),
+            )),
         };
         // Public posts reach other servers through a queue, and the servers
         // nobody here talks to come from a shared list; both only once this
@@ -272,6 +297,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         });
     }
 
+    let accept_stats = stats.clone();
     tasks.spawn(async move {
         accept_loop(
             listener,
@@ -284,6 +310,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             script_handle,
             calls,
             prim_service,
+            accept_stats,
         )
         .await;
         "accept loop"
@@ -293,6 +320,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         local_addr,
         http_addr,
         calls_addr,
+        stats,
         tasks,
     })
 }
@@ -324,6 +352,7 @@ async fn accept_loop(
     scripts: scripting::ScriptHandle,
     calls: Option<calls::CallsHandle>,
     prims: prims::PrimService,
+    stats: Arc<stats::Stats>,
 ) {
     // Consecutive failures, for the backoff below. Reset by any success.
     let mut failures: u32 = 0;
@@ -373,6 +402,15 @@ async fn accept_loop(
         let scripts_c = scripts.clone();
         let calls_c = calls.clone();
         let prims_c = prims.clone();
+        // Plain TCP is local tooling and dev servers: no address an app could
+        // name itself on, so its sessions are `unknown`.
+        let arrival = stats::Arrival {
+            stats: stats.clone(),
+            client: stats::client_tag(None),
+            build: String::new(),
+            ip: addr.ip().to_string(),
+            user_agent: String::new(),
+        };
         tokio::spawn(async move {
             if let Err(e) = net::handle_connection(
                 net::tcp_frames(stream),
@@ -385,6 +423,7 @@ async fn accept_loop(
                 scripts_c,
                 calls_c,
                 prims_c,
+                arrival,
             )
             .await
             {

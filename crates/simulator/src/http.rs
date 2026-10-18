@@ -73,6 +73,11 @@ pub struct HttpState {
     pub registration_throttle: Arc<RegistrationLimits>,
     /// Public posts and the fediverse (`crate::fediverse`).
     pub fedi: crate::fediverse::Federation,
+    /// Usage counts (`crate::stats`).
+    pub stats: Arc<crate::stats::Stats>,
+    /// Page views per caller: generous, since a whole school can share one
+    /// address, but a script cannot inflate the counts without end.
+    pub stats_throttle: Arc<Throttle>,
 }
 
 /// The two things a registration is counted against.
@@ -143,6 +148,9 @@ pub fn router(state: HttpState) -> Router {
         // Communities' public posts, and what other fediverse servers ask
         // for (`crate::fediverse`).
         .merge(crate::fediverse::routes::routes())
+        // Usage statistics: the page-view beacon, Admin › Stats and a
+        // community's own numbers (`crate::stats`).
+        .merge(crate::stats::api::routes())
         .with_state(state)
 }
 
@@ -217,11 +225,35 @@ impl Sink<Bytes> for WsFrames {
     }
 }
 
+/// What an app says about itself on the `/ws` address
+/// (`/ws?client=android&build=410d46f4`), for `crate::stats`. On the address
+/// rather than in `ClientHello` because a field there is a protocol revision
+/// every installed app would have to take; an app that sends neither is
+/// counted as `unknown`.
+#[derive(Deserialize, Default)]
+struct WsQuery {
+    client: Option<String>,
+    build: Option<String>,
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<WsQuery>,
 ) -> Response {
+    let arrival = crate::stats::Arrival {
+        stats: state.stats.clone(),
+        client: crate::stats::client_tag(q.client.as_deref()),
+        build: crate::stats::build_tag(q.build.as_deref()),
+        ip: caller_key(&headers, addr),
+        user_agent: headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string(),
+    };
     // The same 32 MiB ceiling the TCP codec enforces (`net::MAX_FRAME`). Without
     // it the WS carrier would be the more permissive of the two, and a texture
     // upload that the TCP client cannot make would be one a browser client can.
@@ -240,6 +272,7 @@ async fn ws_handler(
                 state.scripts,
                 state.calls,
                 state.prims,
+                arrival,
             )
             .await
             {
@@ -324,7 +357,7 @@ struct RegisterRequest {
 /// an attacker adds, so it is only believed when the peer is *itself* a private
 /// address, i.e. something inside this deployment rather than the open internet.
 /// A public peer that sends the header is counted by its own address regardless.
-fn caller_key(headers: &HeaderMap, peer: SocketAddr) -> String {
+pub(crate) fn caller_key(headers: &HeaderMap, peer: SocketAddr) -> String {
     let trusted = match peer.ip() {
         std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
         std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),

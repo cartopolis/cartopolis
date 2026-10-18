@@ -1,0 +1,69 @@
+---
+topic: usage-stats
+triggers: [crates/simulator/src/stats, stats.db, migrations_stats, "/api/stats/hit", "/api/admin/stats", "/api/communities/{id}/stats", stats_view, stats_positions, WsQuery, docs/mockups/stats]
+updated: 2026-10-18
+---
+
+# Usage statistics count what the server already sees, and keep counts
+
+`crate::stats` counts how the world is used and who visits the sites, for
+Admin › Stats and a community's moderators (`docs/mockups/stats/`, decided
+2026-10-18). The rules the design rests on — break one and the page stops
+being cookie-free and consent-free:
+
+- **No IP address, cookie or browser id is ever stored.** A web visitor is a
+  hash of a secret made at midnight (UTC), the address, the browser and the
+  site. The secret lives in memory only, so no visit can be joined to the next
+  day's, and the address goes no further than the hash. A refused sign-in's
+  "devices" use the same hash.
+- **Nothing about fewer than 5 people is shown** (`MIN_PEOPLE`): a 250 m square
+  on the map, a topic's message and writer counts, a cohort's return rates,
+  "active members". A square is kept for a closed day only if 5 people stood
+  in it that day; thinner rows are deleted when the day closes.
+- **Per-account rows (sessions, community activity) are kept 90 days**
+  (`KEEP_DAYS`), then only daily totals remain. Retention cohorts and the
+  funnel's last steps need them; the user chose to keep them over dropping
+  those numbers.
+- **Message content is never counted beyond "one was relayed".** Chats and
+  topics are sealed; the server sees a send and a group id.
+
+## Where it is
+
+`stats.db` beside `world.db`, its own file with its own migrations
+(`crates/simulator/migrations_stats/`, numbered from V1 independently of the
+world's — the two histories never collide). Kept apart because stats grow
+every minute, need no backup with the world, and can be wiped alone. Its
+migrations are exercised by `--create-admin`, which the deploy smoke test runs
+on a copy of the live files.
+
+Recording is a mutex and a hash insert, never the disk: everything is tallied
+in memory and written once a minute (`stats::spawn`). **What the last minute
+counted is lost on a stop**, and a restart mid-day makes that day's distinct
+counts (visitors, people per square) a little low, because the in-memory sets
+start over and the stored value is the larger of the two. Days are UTC; hour
+rows are unix hours, for the page to draw in its reader's zone.
+
+## Which app opened a session
+
+From `/ws?client=android|desktop|web|chat&build=<commit>`. **Not a field in
+`ClientHello`**: postcard is positional, so a field there is a protocol
+revision, and every installed app older than it would be refused at sign-in.
+An app that sends no parameter is `unknown`; so is plain TCP (local tooling).
+
+## Cannot be counted, and why
+
+- **Places shared in chats**: a `Point` travels inside the sealed message. Only
+  public posts' places are visible, and those are what a community's page
+  shows.
+- **Building floor-plan saves** happen in atlas (`put_design`), which asks the
+  simulator `GET /api/buildings/{pand}/access` for opening, saving and
+  deleting alike, so the simulator cannot tell a save from a view.
+- **about.cartopolis.org** is a separate repository (`jeroen/about-cartopolis`):
+  its beacon has to be added there, sending `site: "about"`.
+
+## Deploying
+
+The public paths must be in the host Caddyfile's API matchers, or they answer
+the web UI's `index.html` with a 200 (`hosted-simulator.md`):
+`/api/stats/hit` and `/api/communities/*/stats`. `/api/admin/stats/*` is
+already covered by `/api/admin/*`.

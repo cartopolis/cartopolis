@@ -354,6 +354,21 @@ impl SimWorld {
             .collect()
     }
 
+    /// Every avatar standing in the world with a location: its name and where it
+    /// is on Earth, for `crate::stats` to bin into squares once a minute. Lower
+    /// case, so one person on two devices is one person.
+    #[must_use]
+    pub fn stats_positions(&self) -> Vec<(String, f64, f64)> {
+        self.avatars
+            .values()
+            .filter(|av| av.embodied)
+            .filter_map(|av| {
+                let g = av.geo?;
+                Some((av.name.to_lowercase(), g.latitude, g.longitude))
+            })
+            .collect()
+    }
+
     /// Everybody within [`MEET_RADIUS_M`] of `name`'s avatar, nearest first.
     #[must_use]
     pub fn near(&self, name: &str) -> Vec<(String, f32)> {

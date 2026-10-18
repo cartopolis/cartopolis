@@ -59,6 +59,8 @@ pub(super) async fn on_send<T: FrameTransport>(
                 return Ok(());
             }
             ctx.gates.last_global = Instant::now();
+            ctx.stats
+                .event(crate::stats::Event::EveryoneMessage, None, None);
             // Delivered live either way, but a store that failed means the
             // scrollback replay will silently miss this line — say so.
             if let Err(e) = store_line(
@@ -88,6 +90,8 @@ pub(super) async fn on_send<T: FrameTransport>(
                 return Ok(());
             }
             ctx.gates.last_local = Instant::now();
+            ctx.stats
+                .event(crate::stats::Event::HereMessage, None, None);
             let radius = if shout {
                 crate::chat::SHOUT_RADIUS_M
             } else {

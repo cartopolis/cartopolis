@@ -776,10 +776,14 @@ async fn shared_inbox(
 
 async fn public_info(
     State(state): State<HttpState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<PublicInfo>> {
     let caller = optional_session(&state, &headers).map(|(p, _)| p.to_string());
+    // Somebody outside the community looking at its public side, for its
+    // moderators' numbers (`crate::stats`).
+    crate::stats::api::community_visit(&state, &headers, peer, id, caller.as_deref());
     let fed = state.fedi.clone();
     db(&state, |c| {
         posts::info(c, caller.as_deref(), id, &fed.server, fed.enabled)

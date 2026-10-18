@@ -393,10 +393,15 @@ struct AvatarGuard {
     /// The account and database, so the contacts who can see this account is
     /// online hear that it went (`contacts`).
     presence: Option<(String, SharedConn)>,
+    /// The session `crate::stats` is counting, ended with the connection.
+    stats: Option<(Arc<crate::stats::Stats>, uuid::Uuid)>,
 }
 
 impl Drop for AvatarGuard {
     fn drop(&mut self) {
+        if let Some((stats, session)) = self.stats.take() {
+            stats.session_ended(session);
+        }
         // Unregister on a never-registered id is a map remove of nothing.
         self.chat.unregister(self.avatar_id);
         // Spawned rather than done here: it reads the database, which a `Drop`
@@ -527,6 +532,9 @@ struct ConnCtx<T> {
     scripts: crate::scripting::ScriptHandle,
     calls: Option<crate::calls::CallsHandle>,
     prims: crate::prims::PrimService,
+    /// Usage counts (`crate::stats`): what this connection sends is tallied
+    /// here, never its content.
+    stats: Arc<crate::stats::Stats>,
     /// Who this connection is to the prim service: the account and what its
     /// roles allow.
     actor: crate::prims::Actor,
@@ -661,13 +669,24 @@ pub async fn handle_connection<T: FrameTransport>(
     scripts: crate::scripting::ScriptHandle,
     calls: Option<crate::calls::CallsHandle>,
     prims: crate::prims::PrimService,
+    arrival: crate::stats::Arrival,
 ) -> anyhow::Result<()> {
     let first = framed
         .next()
         .await
         .transpose()?
         .ok_or_else(|| anyhow::anyhow!("closed before hello"))?;
-    let msg = decode_app_frame(&first)?;
+    let msg = match decode_app_frame(&first) {
+        Ok(msg) => msg,
+        Err(e) => {
+            // An app older or newer than this server: the one refusal nobody
+            // reports, because the app only says "connection reset".
+            if let ProtocolError::UnsupportedVersion(v) = e {
+                arrival.refused("protocol", v);
+            }
+            return Err(e.into());
+        }
+    };
     let NetMessage::ClientHello {
         protocol_version,
         auth,
@@ -682,6 +701,7 @@ pub async fn handle_connection<T: FrameTransport>(
             format!("version {protocol_version} not supported"),
         ))?;
         framed.send(Bytes::from(err)).await?;
+        arrival.refused("protocol", protocol_version);
         return Err(ProtocolError::UnsupportedVersion(protocol_version).into());
     }
 
@@ -690,6 +710,7 @@ pub async fn handle_connection<T: FrameTransport>(
     let access = match authenticate(&conn, &sessions, &auth).await {
         Ok(a) => a,
         Err(refusal) => {
+            arrival.refused("sign_in", protocol_version);
             let message = refusal.message();
             let err = encode_app_frame(&server_error(0, 401, message))?;
             framed.send(Bytes::from(err)).await?;
@@ -712,6 +733,7 @@ pub async fn handle_connection<T: FrameTransport>(
         crate::auth::Standing::Member => None,
         crate::auth::Standing::Guest(group) => Some(group),
         crate::auth::Standing::Gone => {
+            arrival.refused("sign_in", protocol_version);
             let message = AuthRefusal::GuestLinkEnded.message();
             let err = encode_app_frame(&server_error(0, 401, message))?;
             framed.send(Bytes::from(err)).await?;
@@ -752,12 +774,26 @@ pub async fn handle_connection<T: FrameTransport>(
         w.set_avatar_name(id, &username);
         id
     };
+    // A call's guest is in for one call and is not somebody using the world,
+    // so only members' sessions are counted (`crate::stats`).
+    let session_id = uuid::Uuid::new_v4();
+    let counted = guest_of.is_none().then(|| {
+        arrival.stats.session_started(
+            session_id,
+            principal,
+            arrival.client,
+            arrival.build.clone(),
+            protocol_version,
+        );
+        (arrival.stats.clone(), session_id)
+    });
     // From here on, every exit — `?`, break, or unwind — retires the avatar.
     let _cleanup = AvatarGuard {
         world: world.clone(),
         chat: chat.clone(),
         avatar_id,
         presence: Some((principal.to_string(), conn.clone())),
+        stats: counted,
     };
     tracing::info!(%principal, %username, avatar_id, "client authenticated");
     // Display name for chat (the ack moves `username`).
@@ -794,7 +830,7 @@ pub async fn handle_connection<T: FrameTransport>(
     // client that already held its ack could speak to — or be spoken to by — a
     // neighbour in that gap, which the hub would silently not deliver.
     let ack = encode_app_frame(&NetMessage::ServerHelloAck {
-        session_id: uuid::Uuid::new_v4(),
+        session_id,
         tick_hz: config.tick_hz,
         your_avatar_id: avatar_id,
         principal_id: principal,
@@ -816,6 +852,7 @@ pub async fn handle_connection<T: FrameTransport>(
         scripts,
         calls,
         prims,
+        stats: arrival.stats.clone(),
         actor: crate::prims::Actor::with_permissions(principal_key.clone(), perms),
         principal,
         principal_key,

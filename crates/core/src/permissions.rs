@@ -67,6 +67,8 @@ pub enum Permission {
     ReportsTriage,
     /// Run atlas's data pipelines.
     PipelineRun,
+    /// Read the usage statistics in Admin › Stats.
+    StatsView,
 }
 
 /// How the web UI groups the list.
@@ -99,6 +101,7 @@ pub const ALL: &[Permission] = &[
     Permission::RolesManage,
     Permission::ReportsTriage,
     Permission::PipelineRun,
+    Permission::StatsView,
 ];
 
 impl Permission {
@@ -124,6 +127,7 @@ impl Permission {
             Self::RolesManage => "roles_manage",
             Self::ReportsTriage => "reports_triage",
             Self::PipelineRun => "pipeline_run",
+            Self::StatsView => "stats_view",
         }
     }
 
@@ -154,6 +158,7 @@ impl Permission {
             Self::RolesManage => "Manage roles",
             Self::ReportsTriage => "Handle reports and building claims",
             Self::PipelineRun => "Run the map data pipelines",
+            Self::StatsView => "Read the usage statistics",
         }
     }
 
@@ -177,7 +182,8 @@ impl Permission {
             | Self::AccountsManage
             | Self::RolesManage
             | Self::ReportsTriage
-            | Self::PipelineRun => PermissionGroup::Server,
+            | Self::PipelineRun
+            | Self::StatsView => PermissionGroup::Server,
         }
     }
 

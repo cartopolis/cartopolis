@@ -39,6 +39,10 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("--create-admin needs a password in ${ADMIN_PASSWORD_ENV}")
         })?;
         let conn = db::open_and_migrate(&config.database_path)?;
+        // The deploy smoke-tests migrations by running this against a copy of
+        // the live files: opening `stats.db` here makes a broken stats
+        // migration fail the deploy instead of the server's next start.
+        cartopolis_simulator::stats::Stats::open_beside(&config.database_path)?;
         let id = ensure_admin_account(&conn, username, &password)?;
         tracing::info!(%id, username, db = %config.database_path, "admin account ready");
         return Ok(());
