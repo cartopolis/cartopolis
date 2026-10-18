@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
-updated: 2026-10-17
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "field check"]
+updated: 2026-10-18
 ---
 
 # Driving the client from an editor
@@ -263,14 +263,18 @@ chat line arrives: a session acts only inside a turn. Checking on a timer
 anything new, the call is parked (`Pending::Chat`) and answered the frame a
 line lands, or at the timeout. An idle bot then costs about six short turns an
 hour and answers within a second. While the call waits, the model does
-nothing, because it is one open request.
+nothing, because it is one open request. **A bot no longer does this
+itself** (2026-10-18): a model looping on `read_chat` was the brittle part,
+since one forgotten re-arm left the chat unanswered and lapsed the lease. Its
+host now holds the wait and hands the model each line as a prompt ("The hosted
+bot", below).
 
 **The host decides how long a call may wait, not this server.** Claude Code gives
 an MCP tool call 60 s by default, so the first bot's `wait_s: 600` came back as
 "The operation timed out" at exactly a minute, every time. The limit is the
 per-server `"timeout"` (milliseconds) in `.mcp.json`, which overrides
-`MCP_TOOL_TIMEOUT`. Progress notifications do not extend it. The bot's is
-660 000. Anything driving these tools from another host needs the equivalent.
+`MCP_TOOL_TIMEOUT`. Progress notifications do not extend it. Anything driving
+the waiting tools from an editor needs a limit like that.
 A waiter whose caller has already given up is **dropped, not answered**
 (`oneshot::Sender::is_canceled`). Answering would still advance the chat cursor
 and spend the line it woke for on nobody.
@@ -357,35 +361,61 @@ container's 3-second frames it walked a bot 5 m past the box it was going to
 press and into a building. `steer` now arrives when the goal is within the
 coming step and strolls the last four metres.
 
-## The bot on the Steam Deck
+## The hosted bot (2026-10-18)
 
-> Superseded by the socket transport above: the tunnel, the token, `--mcp-host`
-> and the `127.0.0.1:4760` address are gone from the code, and the bot is being
-> moved to a midas bot mode that reaches the client as `ssh <machine> cartopolis
-> mcp`. Kept for why it was shaped this way.
+`viberfox` is an ordinary account, signed in from a headless client on a build
+node and answered by an agent of its own. midas runs both:
 
-`viberfox` is an ordinary account driven this way, running headless on the
-Deck's GPU. The Deck's ssh endpoint is a **rootless podman container** (`arch`),
-so its root cannot touch the Deck's netfilter. The first plan, a firewall rule
-admitting only the VPS to the MCP port, is not available there. What replaced
-it needed no root anywhere:
+```bash
+midas bot start --node <node> --name viberfox \
+  --agent 'npx -y @agentclientprotocol/claude-agent-acp' \
+  --brief tools/bot/viberfox.md --agent-meta @tools/bot/claude-agent-acp.json \
+  --agent-mode default \
+  --mcp 'cargo run -q -p cartopolis -- mcp --socket /tmp/bot/mcp.sock' \
+  -- cargo run -q -p cartopolis -- --mcp-headless --mcp-listen /tmp/bot/mcp.sock \
+     --connect cartopolis.org --mcp-allow jeroen
+midas bot log viberfox                  # what it heard, did and thought
+midas bot tell --name viberfox "…"      # a line from the operator
+midas bot stop --name viberfox          # stops both, gives the node back
+```
 
-- The client runs as its own user (`viberbot`) inside that container, from its
-  own copy of the binary and `assets/` (`CARTO_ASSET_ROOT`; the compiled-in path
-  points into a build slot another agent will resync). It serves on
-  **`127.0.0.1:4760`**: loopback, and not 4750, which other agents' clients on
-  the Deck use.
-- The VPS holds an ssh key that the Deck's `viberbot` accepts **only for a
-  tunnel to that one port** (`restrict,port-forwarding,permitopen=…`, no shell).
-  A unit on the VPS holds the tunnel open and publishes it on the agent Docker
-  network's gateway, so a container on that network reaches the bot at
-  `http://172.19.0.1:4750/mcp` with the bearer token, and nothing else. The
-  client accepts that `Host` because of `--mcp-host`.
+The client runs on the node; a **host** process runs in the agent container,
+where the Claude login is, and outlives the session that started it. midas's
+`src/host.rs` and its DESIGN.md (decision 18) have the mechanics. What matters
+on this side:
 
-So an agent environment that should drive the bot got the URL and the token and
-**no ssh key**. With the socket the equivalent is an ssh key restricted to the
-one command (`command="cartopolis mcp"` in `authorized_keys`). The setup, the unit names and how to undo each piece are in
-`docs/guides/deck-bot.md`.
+- **The agent is anything that speaks the Agent Client Protocol** (ACP: JSON-RPC
+  on stdio, as Zed drives Claude Code, Codex or Gemini CLI). Claude Code comes
+  through its official adapter. Swapping the agent changes `--agent` and
+  `--agent-meta`, nothing here. Native Claude-only mechanisms (Remote Control
+  sessions, `--channels`) were rejected for exactly that; MCP's own "sampling"
+  is deprecated in the 2026-07-28 spec and Claude Code never supported it.
+- **Its only tools are this client's.** The session has one MCP server, `bot`
+  (`midas bot mcp`). The host grants a permission only to that server's tools.
+  `tools/bot/claude-agent-acp.json` also turns off Claude Code's built-in tools,
+  settings files and every other MCP server, so the agent's own fence stands
+  in front of midas's. A chat-driven agent with a shell would be a shell for
+  whoever chats; it has none. `--agent-mode default` matters as much: without
+  it the adapter took "auto" from the container's own Claude settings, and its
+  auto-approval check, not midas, refused the bot's first private `say`.
+- **Its input is `inbox`**, a tool made for the host and not the model: it
+  waits like `read_chat` and answers with the lines as `read_chat` words them,
+  then every picture from a private chat as an image. A field check also
+  carries its pose in words, because a host passes content blocks on and drops
+  the structured data. Nothing at all comes back when nobody spoke. Each answer
+  becomes one prompt, or joins the next one while a turn runs.
+- **The agent answers with `say`** and its text output goes only to the
+  transcript; `tools/bot/viberfox.md` tells it so.
+- **The subscription login is for the owner's own use.** Anthropic's terms
+  allow an unmodified Claude Code signed in with your own subscription. A bot
+  that answers other people as a service needs an API key in the agent's
+  environment instead. That is a configuration change on the host and no code.
+
+It replaced (both removed 2026-10-18) the 2026-09-27 setup: a `viberfox-bot`
+container on the VPS, running a Remote Control Claude session told to loop
+`read_chat` itself, reaching a client on the Deck through an ssh tunnel
+(`viberbot-mcp-tunnel.service`) to a bearer-token HTTP listener the socket
+transport above has since removed.
 
 ## What is not built yet
 

@@ -43,9 +43,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::{
     AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
-    EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, LookAroundArgs, LookPrep,
-    NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs, RememberArgs,
-    SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
+    EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, InboxArgs, LookAroundArgs,
+    LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs,
+    RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
 };
 use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
 use crate::protocol::{ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
@@ -606,6 +606,78 @@ impl Tools {
         Parameters(args): Parameters<ReadChatArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::ReadChat(args)).await
+    }
+
+    #[tool(
+        description = "For the program that hosts this client's agent (`midas bot`), not for \
+                       the agent: wait for chat from people you can hear and hand it over as \
+                       one message — the lines as `read_chat` words them, then every picture \
+                       sent in a private chat as an image (a field check is the photograph \
+                       beside Cartopolis from the same pose). No content at all when nobody \
+                       spoke. Moves the same read position as `read_chat`."
+    )]
+    async fn inbox(
+        &self,
+        Parameters(args): Parameters<InboxArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let read = self
+            .agent(AgentRequest::ReadChat(ReadChatArgs {
+                after: None,
+                limit: None,
+                wait_s: Some(args.wait_s.unwrap_or(600).min(600)),
+            }))
+            .await?;
+        if read.error {
+            return Ok(refused(read.text));
+        }
+        let lines = read.data["lines"].as_array().cloned().unwrap_or_default();
+        if lines.is_empty() {
+            // Nobody spoke: nothing for the host to hand on, so not even the
+            // "nothing new" sentence.
+            return Ok(CallToolResult::success(Vec::new()));
+        }
+        let mut content = vec![ContentBlock::text(read.text)];
+        for line in lines.iter().filter(|l| l["picture"] == true) {
+            let Some(seq) = line["seq"].as_u64() else {
+                continue;
+            };
+            let mut seen = self
+                .agent(AgentRequest::SeePicture(SeePictureArgs { seq }))
+                .await?;
+            let image = seen
+                .data
+                .as_object_mut()
+                .and_then(|o| o.remove(IMAGE_KEY))
+                .and_then(|v| v.as_str().map(str::to_string));
+            match image {
+                Some(data) if !seen.error => {
+                    content.push(ContentBlock::text(format!("The picture on line [{seq}]:")));
+                    content.push(ContentBlock::image(data, "image/jpeg"));
+                    // The pose is in the structured data, which a host does not
+                    // hand on; in words, as `view` takes it.
+                    let pose = &line["field_check"]["pose"];
+                    if let (Some(lat), Some(lng)) = (pose["lat"].as_f64(), pose["lng"].as_f64()) {
+                        content.push(ContentBlock::text(format!(
+                            "Where the photograph was taken: lat {lat:.7}, lng {lng:.7}, {:.1} m \
+                             above the ground, heading {:.0}° (0 is north, clockwise), pitch \
+                             {:.0}°, vertical field of view {:.0}°. `view` with these (altitude_m \
+                             = the height, yaw_deg = the heading) draws it again.",
+                            pose["height_m"].as_f64().unwrap_or(1.6),
+                            pose["heading_deg"].as_f64().unwrap_or(0.0),
+                            pose["pitch_deg"].as_f64().unwrap_or(0.0),
+                            pose["fov_y_deg"].as_f64().unwrap_or(0.0),
+                        )));
+                    }
+                }
+                _ => content.push(ContentBlock::text(format!(
+                    "The picture on line [{seq}] could not be opened: {}",
+                    seen.text
+                ))),
+            }
+        }
+        let mut result = CallToolResult::success(content);
+        result.structured_content = Some(read.data);
+        Ok(result)
     }
 
     #[tool(

@@ -25,6 +25,15 @@ pub struct ReadChatArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InboxArgs {
+    #[schemars(
+        description = "Wait up to this many seconds (at most 600) for somebody you can hear \
+                       to say something. Default 600."
+    )]
+    pub wait_s: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SayArgs {
     #[schemars(description = "What to say. One line, at most 500 characters.")]
     pub text: String,

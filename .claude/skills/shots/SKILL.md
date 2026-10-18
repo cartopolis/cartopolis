@@ -253,5 +253,6 @@ chat reaches it only from `--mcp-allow` / Settings ▸ Editor access (empty by
 default), `view` drops the chat overlay while that list is narrower than everyone,
 and a public line counts only with an avatar behind it
 (`ChatLine::sender_is_account`), because `say` speaks under a prim name anyone can
-choose. A long-running bot on a build node is `midas bot start` (see
-`docs/guides/deck-bot.md`).
+choose. The `viberfox` bot, with an agent of its own answering its chat, is
+`midas bot start --agent` (the command is in
+`docs/notes/driving-the-client-from-an-ide.md`, "The hosted bot").
