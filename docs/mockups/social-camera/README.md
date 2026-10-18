@@ -13,7 +13,9 @@ A design proposal, not code. **v3 is the current proposal** (2026-10-18).
 Decided after v2: walking with the GPS is seen in **first person** from the
 phone (about 1.5 m, the phone aiming the view), not over the shoulder; every
 button is round and the same size (the dock camera is orange, not bigger); a
-**public post keeps the full pose** in its picture like any other.
+**public post keeps the full pose** in its picture like any other. Wherever the camera
+is offered, a picture can be uploaded from the phone instead; it keeps its own
+EXIF, and a GPS position in it becomes the post's place.
 
 ![v3](v3.png)
 
