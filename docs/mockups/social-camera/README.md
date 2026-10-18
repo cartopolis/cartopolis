@@ -15,7 +15,9 @@ phone (about 1.5 m, the phone aiming the view), not over the shoulder; every
 button is round and the same size (the dock camera is orange, not bigger); a
 **public post keeps the full pose** in its picture like any other. Wherever the camera
 is offered, a picture can be uploaded from the phone instead; it keeps its own
-EXIF, and a GPS position in it becomes the post's place.
+EXIF, and a GPS position in it becomes the post's place. The chat's + menu becomes the same round
+buttons, and each icon means one thing everywhere (the table in section 5);
+"Send a snapshot" folds into the camera's In world mode.
 
 ![v3](v3.png)
 
