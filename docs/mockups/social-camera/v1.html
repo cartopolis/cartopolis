@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — walking, the camera, and posts v1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 4l8 4.5-8 4.5-8-4.5zM4 13l8 4.5 8-4.5"/></symbol>
+  <symbol id="compass" viewBox="0 0 24 24"><path d="M7 5l11 12-6-2-3 5z"/></symbol>
+  <symbol id="nav" viewBox="0 0 24 24"><path d="M12 3l7 17-7-4-7 4z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="up" viewBox="0 0 24 24"><path d="M5 14l7-7 7 7M5 19h14"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0112 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="camera" viewBox="0 0 24 24"><path d="M4 8h3.5L9 5.5h6L16.5 8H20v11H4z"/><circle cx="12" cy="13.2" r="3.4"/></symbol>
+  <symbol id="pen" viewBox="0 0 24 24"><path d="M5 19l1-4 10-10 3 3-10 10zM14 7l3 3"/></symbol>
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h6a3 3 0 000-6h-4a3 3 0 010-6h6"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.2"/><circle cx="17" cy="6" r="2.2"/><circle cx="17" cy="18" r="2.2"/><path d="M8 11l7-4M8 13l7 4"/></symbol>
+  <symbol id="build" viewBox="0 0 24 24"><path d="M4 20h16M6 20V10l6-5 6 5v10M10 20v-5h4v5"/></symbol>
+  <symbol id="flip" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0114-5l2-2v6h-6l2.5-2.5A5.5 5.5 0 006.5 12M20 12a8 8 0 01-14 5l-2 2v-6h6l-2.5 2.5A5.5 5.5 0 0017.5 12"/></symbol>
+  <symbol id="close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="send" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2.5-8.5z"/></symbol>
+  <symbol id="down" viewBox="0 0 24 24"><path d="M5 12l7 7 7-7M12 5v14"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="9" r="3"/><path d="M3.5 19a5.5 5.5 0 0111 0M15 6.5a3 3 0 010 5.5M17 14a5 5 0 013.5 5"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+</svg>
+
+<h1>Walking, the <b>camera</b>, and posts</h1>
+<p class="essence">Out walking with the GPS, the view should be <b>yours</b>: at head height, looking down the street. <b>The camera</b> gets its own button in the dock and three modes — <b>In world</b>, <b>Mixed</b>, <b>Real</b> — and every picture remembers exactly where it was taken. <b>Posting</b> is one tap from the picture or from a long press on the ground, and a community's posts can be shown <b>on their own</b>, with its chat out of the way until you want it.</p>
+<p class="lede" style="margin-top:-10px">Proposal, 2026-10-18. Grey controls are the app as it is today; anything marked <span class="new">new</span> does not exist yet. The world pictures are Cartopolis captures and the photo a stand-in (credits at the foot).</p>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>1</span>Walking with the GPS: a lower camera</h2>
+<p class="cap">Today the GPS only moves the avatar; the Follow camera is the ordinary chase camera, which sits 4.5 m above the feet and 5.2 m behind, looking 26° down, and keeps whatever tilt and zoom you last left it at. The GPS height never reaches the camera, so it is these numbers, not the receiver.</p>
+<div class="row" style="margin-top:18px">
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../field-check/render-north.jpg);background-size:1300px auto;background-position:50% 100%"></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="disc" style="left:16px;top:62px;color:#8fd6d2"><svg class="i"><use href="#compass"/></svg></div>
+  <div class="disc teal" style="left:16px;top:110px"><svg class="i"><use href="#nav"/></svg><small>±1 cm</small></div>
+  <div class="scale"><span>1 m</span></div>
+  <div class="stick"></div>
+  <div class="toppill"><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">56</span></div><div class="on"><span class="live"></span>World</div></div>
+  <div class="avbox" style="left:470px;top:200px"></div>
+  <div class="rcol"><div class="disc"><svg class="i"><use href="#up"/></svg></div><div class="disc"><svg class="i"><use href="#nav"/></svg></div><div class="disc"><svg class="i"><use href="#plus"/></svg></div><div class="disc"><svg class="i"><use href="#minus"/></svg></div></div>
+  <div class="prompt"><div>Use Traffic light</div><div><svg class="i s"><use href="#route"/></svg></div></div>
+  <div class="dockrow"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>Today</span>looking down on yourself</h3>
+<ul><li>Mostly paving and the top of your own head; the street ahead is off the top of the screen.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../field-check/render-north.jpg);background-size:844px auto;background-position:50% 40%"></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="disc" style="left:16px;top:62px;color:#8fd6d2"><svg class="i"><use href="#compass"/></svg></div>
+  <div class="disc teal" style="left:16px;top:110px"><svg class="i"><use href="#nav"/></svg><small>±1 cm</small></div>
+  <div class="scale"><span>1 m</span></div>
+  <div class="stick"></div>
+  <div class="toppill"><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">56</span></div><div class="on"><span class="live"></span>World</div></div>
+  <div class="avbox" style="left:300px;top:262px;transform:scale(1.5);transform-origin:top left;opacity:.92"></div>
+  <div class="rcol"><div class="disc"><svg class="i"><use href="#up"/></svg></div><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="disc"><svg class="i"><use href="#plus"/></svg></div><div class="disc"><svg class="i"><use href="#minus"/></svg></div></div>
+  <div class="dockrow"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc big hot"><svg class="i"><use href="#camera"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>New</span>over your shoulder, at head height <span class="new">new</span></h3>
+<ul>
+<li><b>While the locate button is lit</b>, Follow uses a walking framing: lens 2.0 m up, 3 m behind and 0.4 m to the right, looking 4° down. You see the street ahead, with yourself at the lower left.</li>
+<li>Pressing locate starts from that framing every time, instead of the last saved tilt and zoom. Pinch and drag still work; leaving locate gives the old framing back.</li>
+<li><b>The camera takes the middle of the dock</b> (orange). The view-mode button (Follow / Fly / Earth) moves to the right column, where the zoom already is.</li>
+</ul>
+</div>
+
+<div class="diagram" style="width:1728px">
+<svg width="1690" height="200" viewBox="0 0 1690 200">
+  <line x1="40" y1="180" x2="1650" y2="180" stroke="#69757A" stroke-width="2"/>
+  <!-- today -->
+  <g transform="translate(60,0)">
+    <rect x="452" y="126" width="16" height="54" rx="5" fill="#8d7c63"/><circle cx="460" cy="117" r="9" fill="#c9b79a"/>
+    <circle cx="304" cy="45" r="8" fill="#A5B2B7"/>
+    <line x1="304" y1="45" x2="460" y2="121" stroke="#A5B2B7" stroke-dasharray="5 4"/>
+    <line x1="304" y1="45" x2="760" y2="180" stroke="#A5B2B7" stroke-width=".8" opacity=".5"/>
+    <line x1="290" y1="45" x2="290" y2="180" stroke="#3E4E55"/>
+    <text x="210" y="110">4.5 m up</text>
+    <text x="320" y="194">5.2 m behind</text>
+    <text x="470" y="40" class="b">Today: the chase camera</text>
+    <text x="470" y="58">26° down, keeps your last tilt and zoom</text>
+  </g>
+  <!-- new -->
+  <g transform="translate(860,0)">
+    <rect x="452" y="126" width="16" height="54" rx="5" fill="#8d7c63"/><circle cx="460" cy="117" r="9" fill="#c9b79a"/>
+    <circle cx="370" cy="120" r="8" fill="#FD6012"/>
+    <line x1="370" y1="120" x2="780" y2="140" stroke="#FD6012" stroke-dasharray="5 4"/>
+    <line x1="356" y1="120" x2="356" y2="180" stroke="#3E4E55"/>
+    <text x="276" y="155" class="o">2.0 m up</text>
+    <text x="372" y="194" class="o">3 m behind</text>
+    <text x="520" y="40" class="b">New: walking with the GPS</text>
+    <text x="520" y="58">4° down, 0.4 m to the right of you</text>
+  </g>
+</svg>
+</div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>2</span>One camera, three modes <span class="new">new</span></h2>
+<p class="cap">The orange dock button opens the camera in the mode you used last. Swipe or tap the mode list beside the shutter; the round button under it flips to a selfie in every mode. The camera turns with the phone: landscape and portrait both work, in every mode, and the picture comes out the way you held it.</p>
+<div class="row" style="margin-top:18px">
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../field-check/render-north.jpg);background-size:844px auto;background-position:50% 50%"></div>
+  <div class="polaroid"><span><em style="font-style:normal">Grote Markt</em><em style="font-style:normal">18 Oct 2026</em></span></div>
+  <div class="disc camx"><svg class="i"><use href="#close"/></svg></div>
+  <div class="modes"><div class="on">In world</div><div>Mixed</div><div>Real</div></div>
+  <div class="shutter inw"><div></div></div>
+  <div class="disc flip"><svg class="i"><use href="#flip"/></svg></div>
+</div>
+<h3><span>In world</span>a polaroid of Cartopolis</h3>
+<ul><li>The view without the interface, in the white frame with the place and date, as the post composer's "Polaroid" makes today — now from the dock.</li><li>Uses the 3D view as it is (Follow, Fly or Earth), so it works without a camera and on the desktop.</li><li><b>Selfie</b> (the flip button): the view turns round to face your avatar, as the profile picture's "Face me" does.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="half l" style="background-image:url(../field-check/photo.jpg);background-position:50% 30%"><em>REAL</em></div>
+  <div class="half r" style="background-image:url(../field-check/render-north.jpg);background-position:50% 22%"><em>CARTOPOLIS</em></div>
+  <div class="disc camx"><svg class="i"><use href="#close"/></svg></div>
+  <div class="posechip"><div class="chip ok"><span class="dot"></span>RTK ±1 cm</div><div class="chip ok"><span class="dot"></span>N 12° ±3°</div></div>
+  <div class="modes"><div>In world</div><div class="on">Mixed</div><div>Real</div></div>
+  <div class="shutter mix"><div></div></div>
+  <div class="disc flip"><svg class="i"><use href="#flip"/></svg></div>
+</div>
+<h3><span>Mixed</span>the real view and Cartopolis side by side</h3>
+<ul><li>The phone camera on one half, the world from the phone's own position, direction, tilt and lens on the other. No polaroid frame.</li><li>Side by side when held sideways, one above the other when held upright. One picture comes out, both halves in it.</li><li>The shutter waits for a GPS position and the compass, as the field check's does.</li><li><b>Selfie</b>: the front camera, and the Cartopolis half turns round with it, so both halves look back at you.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../field-check/photo.jpg);background-size:844px auto;background-position:50% 28%"></div>
+  <div class="disc camx"><svg class="i"><use href="#close"/></svg></div>
+  <div class="posechip"><div class="chip ok"><span class="dot"></span>RTK ±1 cm</div><div class="chip ok"><span class="dot"></span>N 12° ±3°</div></div>
+  <div class="modes"><div>In world</div><div>Mixed</div><div class="on">Real</div></div>
+  <div class="shutter"><div></div></div>
+  <div class="disc flip"><svg class="i"><use href="#flip"/></svg></div>
+</div>
+<h3><span>Real</span>the phone camera, inside the app</h3>
+<ul><li>The phone's own camera, without leaving for the system camera app.</li><li><b>Turns with the phone.</b> Today the picture assumes the phone is upright, so held sideways it comes out on its side; the app turns, the picture doesn't.</li><li><b>Selfie</b>: the front camera. The screen shows you mirrored, as a mirror would; the saved picture is the right way round, and its direction is the way the front lens faced.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="result">
+    <div class="pic"><div style="background-image:linear-gradient(90deg,transparent 49.6%,#fff 49.6%,#fff 50.4%,transparent 50.4%),url(../field-check/render-north.jpg),url(../field-check/photo.jpg);background-size:100% 100%,50% auto,50% auto;background-position:0 0,100% 22%,0 30%;background-repeat:no-repeat"></div></div>
+    <div class="side">
+      <h4>Grote Markt, Groningen</h4>
+      <div class="big p"><svg class="i"><use href="#pen"/></svg><b>Post to Groningen Fietst</b><span>change ▾</span></div>
+      <div class="big"><svg class="i"><use href="#chat"/></svg><b>Send in a chat</b></div>
+      <div class="big"><svg class="i"><use href="#down"/></svg><b>Save to phone</b></div>
+      <p class="meta">In the picture: <i>53.21830, 6.56790 · 1.4 m above the ground · facing 12° · tilt 3° up · lens 68° · 14:21:07</i>. Enough to put the camera back on the same view.</p>
+    </div>
+  </div>
+</div>
+<h3><span>After the shutter</span>post it, send it, keep it</h3>
+<ul><li><b>Post</b> is first, to the community you have on the map (or the last one you posted to). It opens the composer with the picture and the place already in.</li><li>The same three choices after every mode.</li></ul>
+</div>
+
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>3</span>Post from the long press</h2>
+<p class="cap">A long press on the ground opens the ring. It gets one more entry, <b>Post here</b>, which opens the composer with that spot as the post's place.</p>
+<div class="row" style="margin-top:18px">
+
+<div class="wide">
+<div class="land">
+  <div class="bg dim" style="background-image:url(../field-check/render-north.jpg);background-size:844px auto;background-position:50% 55%"></div>
+  <div class="ring" style="left:422px;top:186px">
+    <div class="disc big hot" style="left:115px;top:30px;position:absolute"><svg class="i"><use href="#route"/></svg></div><div class="lbl" style="left:115px;top:62px">Route here</div>
+    <div class="disc big" style="left:198px;top:78px;position:absolute;background:#8a74cf;color:#fff;border-color:transparent"><svg class="i"><use href="#pen"/></svg></div><div class="lbl" style="left:198px;top:110px">Post here <span class="new">new</span></div>
+    <div class="disc" style="left:198px;top:162px;position:absolute"><svg class="i"><use href="#bookmark"/></svg></div><div class="lbl" style="left:198px;top:186px">Save</div>
+    <div class="disc" style="left:115px;top:206px;position:absolute"><svg class="i"><use href="#share"/></svg></div><div class="lbl" style="left:115px;top:228px">Share</div>
+    <div class="disc" style="left:32px;top:162px;position:absolute"><svg class="i"><use href="#build"/></svg></div><div class="lbl" style="left:32px;top:186px">Build</div>
+    <div class="disc" style="left:32px;top:78px;position:absolute"><svg class="i"><use href="#route"/></svg></div><div class="lbl" style="left:32px;top:102px">Route from</div>
+  </div>
+  <div class="spot" style="left:422px;top:350px">This spot · 53.21862, 6.56811</div>
+</div>
+<h3><span>The ring</span>with Post here</h3>
+<ul><li>On the ground only; an object's ring (Touch, Edit, Script…) is unchanged.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../field-check/render-north.jpg);background-size:844px auto;background-position:50% 55%"></div>
+  <div class="compose">
+    <h4>New post <svg class="i"><use href="#close"/></svg></h4>
+    <div class="inp sel"><span style="width:16px;height:16px;border-radius:5px;background:#8a74cf;display:inline-block"></span><b>Groningen Fietst</b><span>▾</span></div>
+    <div class="inp ph">What's here?</div>
+    <div class="inp sel"><svg class="i s"><use href="#pin"/></svg><b>This spot</b><span>53.21862, 6.56811</span></div>
+    <div class="btnrow"><div><svg class="i s"><use href="#camera"/></svg>Camera</div><div><svg class="i s"><use href="#down"/></svg>From phone</div></div>
+    <div class="btnrow" style="margin-top:auto"><div class="p"><svg class="i s"><use href="#send"/></svg>Post</div></div>
+  </div>
+  <div class="post" style="left:220px;top:250px"><div class="head"><svg class="i s" style="width:13px;height:13px"><use href="#pen"/></svg>new post</div><div class="stem"></div><div class="dot"></div></div>
+</div>
+<h3><span>The composer</span>the place is already set</h3>
+<ul><li>The same composer as the community page's "Write a post", opened over the map instead of inside the panel, so you still see where you are posting.</li><li>"Camera" opens the camera of section 2 and comes back here with the picture.</li></ul>
+</div>
+
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>4</span>A community on the map, and chats that stay out of the way</h2>
+<p class="cap">Picking a community goes to the World with only that community's posts on the map. Its chat is one small button, not a sheet over the view. The same goes for a private chat's World view, which today covers half the screen with three lines and a text field.</p>
+<div class="row" style="margin-top:18px">
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(../chat-world/green.jpg);background-position:50% 60%"></div>
+  <div class="toppill"><div><svg class="i s"><use href="#people"/></svg>Community</div><div class="on"><span class="live"></span>World</div></div>
+  <div class="filt"><span class="sq">GF</span>Only Groningen Fietst · 12 posts<span class="sep"></span><span class="chatb" style="position:relative"><svg class="i s"><use href="#chat"/></svg>3</span><span class="x">✕</span></div>
+  <div class="post" style="left:300px;top:200px"><div class="head"><i>GF</i>New bike lane on the Oosterstraat</div><div class="stem"></div><div class="dot"></div></div>
+  <div class="post" style="left:540px;top:170px"><div class="head"><i>GF</i>Stalling full again</div><div class="stem"></div><div class="dot"></div></div>
+  <div class="post" style="left:470px;top:290px"><div class="head"><i>GF</i>📷 Sunday ride start</div><div class="stem"></div><div class="dot"></div></div>
+  <div class="post" style="left:180px;top:320px"><div class="head"><i>GF</i>Pothole, careful</div><div class="stem"></div><div class="dot"></div></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="dockrow"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc big hot"><svg class="i"><use href="#camera"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>A community in the World</span>only its posts <span class="new">new</span></h3>
+<ul>
+<li><b>Tapping a community</b> in the Community list closes the panel and shows its posts only. The chip under the switch says whose posts you see; <b>✕</b> goes back to all communities' posts.</li>
+<li><b>The chat button in the chip</b> (with its unread count) opens the community's topics. Nothing of the chat is on the map until you tap it.</li>
+<li>Layers ▸ Community posts gets the same choice: all, or one community.</li>
+<li>Posting from here (camera, Post here) goes to this community without asking.</li>
+</ul>
+</div>
+
+<div style="display:flex;gap:40px">
+<div class="shot" style="width:312px">
+<div class="phone" style="width:390px;height:844px;transform:scale(.8);transform-origin:top left;margin-bottom:-169px">
+  <div class="world" style="background-image:url(../field-check/render-south.jpg);background-size:cover;background-position:50% 50%"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="float-top"><div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm" style="background:#1f8a74">V</div><div class="who"><b>viberfox</b><span style="color:var(--dim)"><svg class="i s"><use href="#lock"/></svg>Private · end-to-end encrypted</span></div></div><div class="tabs"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Chat</div><div class="on w"><span class="live"></span>World</div></div></div></div>
+  <div class="sheet" style="bottom:300px"><div class="handle"></div><div class="mini"><p><b>viberfox</b>ontvangen, maar ik zie er alleen tekst van — geen afspraak of kaartje.</p><p><b class="me">You</b>doe een dansje</p><p><b>viberfox</b>Gedanst! Rol, zwaai, trap — zag je het?</p></div><div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message</div><div class="circ hot"><svg class="i"><use href="#send"/></svg></div></div></div>
+</div>
+<h3><span>Today</span>a private chat's World</h3>
+<ul><li>A two-row header and a sheet with three lines and a text field: about half the screen. The sheet also stops part-way down, with the world below it.</li><li>The dock, joystick and map buttons are hidden while it is up.</li></ul>
+</div>
+<div class="shot" style="width:312px">
+<div class="phone" style="width:390px;height:844px;transform:scale(.8);transform-origin:top left;margin-bottom:-169px">
+  <div class="world" style="background-image:url(../field-check/render-south.jpg);background-size:cover;background-position:50% 50%"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="cw-top"><svg class="i"><use href="#back"/></svg><div class="av sm" style="background:#1f8a74;width:30px;height:30px;font-size:13px">V</div><div class="who"><b>viberfox</b><span>Private</span></div><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Chat</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="mk" style="left:195px;top:470px"><div class="av ring" style="background:#1f8a74">V</div><div class="stem o"></div><div class="foot"></div><div class="name">viberfox</div></div>
+  <div class="lastline" style="top:116px;bottom:auto;right:60px"><p class="fade"><b>You</b>doe een dansje</p><p><b>viberfox</b>Gedanst! Rol, zwaai, trap — zag je het?</p></div>
+  <div class="disc" style="left:16px;top:200px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="disc teal" style="left:16px;top:250px"><svg class="i"><use href="#nav"/></svg><small>±1 cm</small></div>
+  <div class="rcol" style="top:560px"><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="disc"><svg class="i"><use href="#plus"/></svg></div><div class="disc"><svg class="i"><use href="#minus"/></svg></div></div>
+  <div class="stick" style="bottom:110px"></div>
+  <div class="dockrow" style="bottom:34px"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc" style="position:relative"><svg class="i"><use href="#chat"/></svg><span class="cnt">2</span></div><div class="disc big hot"><svg class="i"><use href="#camera"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>New</span>the controls stay, the chat is a line <span class="new">new</span></h3>
+<ul><li><b>Dock, joystick, locate and zoom stay</b>, as on the plain map; today the World view of a chat hides them all.</li><li>Header in one row. The last two lines float under it and fade, as the Here chat does; tap one for the whole chat.</li><li>The dock's chat button writes to this chat (its badge counts this chat's unread); the camera sends here first.</li></ul>
+</div>
+</div>
+
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>5</span>What a picture remembers, and what goes</h2>
+<p class="cap">Every picture from the camera (all three modes) carries its own pose in the file's EXIF, enough for the agent or the shot harness to put the camera back on the same view. That is what the field check was for, so <b>the field check goes</b>.</p>
+<table>
+<tr><th>In the picture</th><th>EXIF tag</th><th>Today (field check only)</th></tr>
+<tr><td>Position</td><td>GPSLatitude, GPSLongitude, GPSHPositioningError</td><td><span class="verdict ok">written</span></td></tr>
+<tr><td>Height of the lens</td><td>GPSAltitude (NAP: the ground under the camera + the lens's height above it)</td><td><span class="verdict ok">written</span> ground + 1.5 m, when the height map has it</td></tr>
+<tr><td>Direction</td><td>GPSImgDirection, GPSImgDirectionRef (T, or M straight from the compass)</td><td><span class="verdict ok">written</span></td></tr>
+<tr><td>Tilt and roll</td><td>XMP <code>Camera:Pitch</code>, <code>Camera:Roll</code>, <code>Camera:Yaw</code> (the convention photogrammetry tools read)</td><td><span class="verdict">only in the JSON comment</span></td></tr>
+<tr><td>Lens</td><td>FocalLength, FocalLengthIn35mmFilm, and the vertical angle in XMP</td><td><span class="verdict">only in the JSON comment</span></td></tr>
+<tr><td>Which way up</td><td>Orientation, and the picture already turned</td><td><span class="verdict">missing</span></td></tr>
+<tr><td>Time</td><td>DateTimeOriginal, OffsetTimeOriginal, GPSDateStamp, GPSTimeStamp</td><td><span class="verdict ok">written</span></td></tr>
+<tr><td>Mode, receiver, app</td><td>UserComment: one line of JSON (mode, fix, satellites, correction age, client version)</td><td><span class="verdict ok">written</span></td></tr>
+</table>
+<div class="boxes">
+<div><h4>Removed</h4><p>Developer tools ▸ View ▸ <i>Field check</i>, its capture screen, the three-panel picture (real, Cartopolis, aerial) and the pose text under it. Mixed mode makes the two-panel picture; the aerial, if the agent wants it, is rendered from the EXIF.</p><p>Kept: reading the GPS, compass and receiver, and the harness's <i>roll</i>, <i>fov</i> and <i>date</i> keys, which a pose from EXIF still needs.</p></div>
+<div><h4>Pictures keep their EXIF</h4><p>Today every picture sent in a chat is re-encoded and loses its EXIF. A camera picture keeps its block through that, so sending it to the agent is enough.</p></div>
+<div><h4>Open</h4><p><i>Public posts:</i> keep the full pose in a posted picture, or only the position the post already shows? The proposal is position and direction only, without height, tilt or the receiver line.</p><p><i>Walking framing:</i> 2.0 m up and 3 m behind is a first guess, to be tuned on the phone.</p></div>
+</div>
+</div>
+
+<p class="lede" style="margin-top:44px;font-size:12.5px">Credits: the real photo is "Martinitoren, Grote Markt Groningen" by JAHensens, CC BY 4.0, Wikimedia Commons (as in the field-check mockups). World pictures are Cartopolis captures reused from the field-check and chat-world mockups; the walking framings are crops of one capture standing in for the two camera heights, not renders from them.</p>
+</body>
+</html>

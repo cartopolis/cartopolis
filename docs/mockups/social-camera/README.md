@@ -1,0 +1,46 @@
+---
+topic: social-camera
+triggers: [camera, polaroid, world_polaroid.rs, field check, field_check.rs, selfie, EXIF, community_posts.rs, place_pins.rs, action_ring.rs, chat_overlay.rs, render_chat_world, dock.rs, locate.rs, FOLLOW_EYE_HEIGHT, AVATAR_CAM_DEFAULT]
+updated: 2026-10-18
+---
+
+# Walking, the camera, and posts: mockup
+
+A design proposal, not code. **v1 is the current proposal** (2026-10-18).
+
+Asked for after a walk with the RTK receiver: the camera was too high, taking a
+picture or posting took too many steps, and a chat's World view covered half the
+screen and hid the controls.
+
+- **Walking with the GPS**: while locate is lit, Follow uses a walking framing
+  (lens 2.0 m up, 3 m behind, 0.4 m right, 4° down) and starts from it every
+  time, instead of the chase camera's 4.5 m up, 5.2 m behind and the last saved
+  tilt. The GPS height never reaches the camera, so the numbers are the cause.
+- **The camera** takes the middle of the dock; the view-mode button moves to the
+  right column. Three modes: **In world** (a polaroid of the view), **Mixed** (the
+  phone camera and Cartopolis from the same pose, side by side, no polaroid),
+  **Real** (the phone camera in the app). Each flips to a **selfie**. It turns with
+  the phone, which the real camera does not do today.
+- **After the shutter**: Post (first), Send in a chat, Save to phone.
+- **Every picture carries its full pose in EXIF** (position, height, direction,
+  tilt, roll, lens, orientation, time), so **the field check is removed**; chat
+  pictures keep their EXIF through re-encoding.
+- **Post here** joins the ground's long-press ring, opening the composer over the
+  map with that spot as the place.
+- **A community in the World**: picking one shows only its posts, with a chip to
+  clear the filter and a small chat button; nothing of its chat is on the map
+  until tapped.
+- **A chat's World view** keeps the dock, joystick and map buttons, with a
+  one-row header and the last lines fading under it, instead of the sheet.
+
+![v1](v1.png)
+
+Open: how much of the pose a *public* post's picture keeps (proposed: position
+and direction only), and the walking framing's numbers, to be tuned on the phone.
+
+## Image credits
+
+The real photo is "Martinitoren, Grote Markt Groningen" by JAHensens, CC BY 4.0,
+from Wikimedia Commons. The world pictures are Cartopolis captures reused from
+the field-check and chat-world mockups; the two walking framings are crops of
+one capture standing in for the two camera heights, not renders from them.
