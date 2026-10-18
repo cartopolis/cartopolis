@@ -21,6 +21,7 @@
 
 pub mod build;
 pub mod fit;
+pub mod hands;
 pub mod macros;
 #[cfg(feature = "pack")]
 pub mod mocap;

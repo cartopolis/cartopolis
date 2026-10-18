@@ -142,6 +142,13 @@ pub fn retarget(
     let n = pack.bones.len();
     let tpose = &aligned_tpose(pack, rest, tpose, clip);
     let pelvis = pack.bone("pelvis");
+    // The fingers no capture moves (`hands`): a turn per joint per frame on
+    // top of the rest hand.
+    let grip = crate::hands::grip_for(&clip.name);
+    let mut fingers: Vec<Option<crate::hands::FingerJoint>> = vec![None; n];
+    for j in crate::hands::finger_joints(pack, rest) {
+        fingers[j.bone] = Some(j);
+    }
     let mut local = vec![Vec::with_capacity(clip.frames as usize); n];
     let mut hips = Vec::with_capacity(clip.frames as usize);
     let mut world = vec![Quat::IDENTITY; n];
@@ -159,8 +166,21 @@ pub fn retarget(
                 .and_then(|r| r.get(f))
             {
                 Some(d) => (Quat::from_array(*d) * tpose[i]).normalize(),
-                // Not moved by the library: keep the rest pose under its parent.
-                None => parent_world.unwrap_or(Quat::IDENTITY) * rest_local,
+                // Not moved by the library: keep the rest pose under its
+                // parent, a finger curled as the clip's grip says.
+                None => {
+                    let turn = fingers[i].map_or(Quat::IDENTITY, |j| {
+                        let phase = f as f32 / clip.frames.max(1) as f32;
+                        let curl = crate::hands::curl_at(
+                            grip,
+                            phase,
+                            0.04 * j.finger as f32,
+                            j.side as f32,
+                        );
+                        crate::hands::joint_turn(&j, curl)
+                    });
+                    parent_world.unwrap_or(Quat::IDENTITY) * rest_local * turn
+                }
             };
             world[i] = w;
             local[i].push(match parent_world {
@@ -184,6 +204,7 @@ pub fn retarget(
             hips.push(local_at);
         }
     }
+    level_gaze(pack, rest, &mut local);
     ground(pack, rest, &local, &mut hips);
     Retargeted {
         local,
@@ -233,6 +254,83 @@ fn aligned_tpose(
             (Quat::from_rotation_arc(points.normalize(), want.normalize()) * tpose[i]).normalize()
         })
         .collect()
+}
+
+/// Where an upright clip's face points on average: a few degrees below the
+/// horizon, the ground ahead of someone walking.
+const GAZE_PITCH: f32 = -6.0_f32.to_radians();
+/// A clip whose head pitches more than this over its length is tumbling (the
+/// roll, the fall), and its gaze is left as captured.
+const GAZE_UPRIGHT_RANGE: f32 = 40.0_f32.to_radians();
+
+/// Turn the head so an upright clip's face looks, on average, at
+/// [`GAZE_PITCH`]; the motion about that average is the capture's.
+///
+/// Retargeted as they came, the clips held the face 20–25° down at idle and
+/// in the gestures and 42° down in the walk, the run level (measured
+/// 2026-10-18 on the default man): a figure that studies the pavement. How
+/// much of that the subjects did and how much the retarget adds (a capture's
+/// neck and head are straight bones, MakeHuman's a curve) was not settled;
+/// either way a person in a street looks ahead.
+///
+/// **The neck is made, not captured: halfway between the chest and the
+/// head.** CMU's skeleton has two neck joints and the rig one, and played
+/// through the lower of the two the gestures held the rig's neck bent ~55°
+/// back with the head bent forward to make up for it — a kink that showed as
+/// a head dropped onto the shoulder. Halfway is roughly what a neck does, and
+/// it carries half of the gaze's lift with it. A tumbling clip keeps its
+/// captured gaze but gets the same neck.
+fn level_gaze(pack: &HumanPack, rest: &[RestBone], local: &mut [Vec<Quat>]) {
+    let (Some(neck), Some(head)) = (pack.bone("neck_01"), pack.bone("head")) else {
+        return;
+    };
+    let frames = local.first().map_or(0, Vec::len);
+    if frames == 0 {
+        return;
+    }
+    let world_at = |local: &[Vec<Quat>], f: usize| -> Vec<Quat> {
+        let mut w = vec![Quat::IDENTITY; pack.bones.len()];
+        for (i, b) in pack.bones.iter().enumerate() {
+            w[i] = match b.parent {
+                Some(p) => w[p as usize] * local[i][f],
+                None => local[i][f],
+            };
+        }
+        w
+    };
+    // The body faces +z at rest, so the face's direction is the head's turn
+    // from rest applied to +z.
+    let face = |w: &[Quat]| w[head] * rest[head].rotation.inverse() * Vec3::Z;
+    let pitches: Vec<f32> = (0..frames)
+        .map(|f| face(&world_at(local, f)).y.clamp(-1.0, 1.0).asin())
+        .collect();
+    let (lo, hi) = pitches
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let mean = pitches.iter().sum::<f32>() / frames as f32;
+    let lift = if hi - lo > GAZE_UPRIGHT_RANGE {
+        0.0
+    } else {
+        GAZE_PITCH - mean
+    };
+    let Some(neck_parent) = pack.bones[neck].parent.map(|p| p as usize) else {
+        return;
+    };
+    for f in 0..frames {
+        let w = world_at(local, f);
+        // Raise about the axis across the face, whichever way it turns.
+        let Some(across) = face(&w).cross(Vec3::Y).try_normalize() else {
+            continue;
+        };
+        let head_w = Quat::from_axis_angle(across, lift) * w[head];
+        // The neck halfway between the chest and the head, each as its turn
+        // from rest, so the rest pose's curve is kept.
+        let turn = |b: usize, w: Quat| w * rest[b].rotation.inverse();
+        let neck_turn = turn(neck_parent, w[neck_parent]).slerp(turn(head, head_w), 0.5);
+        let neck_w = neck_turn * rest[neck].rotation;
+        local[neck][f] = (w[neck_parent].inverse() * neck_w).normalize();
+        local[head][f] = (neck_w.inverse() * head_w).normalize();
+    }
 }
 
 /// Stand a clip on the ground: shift the pelvis so the lowest an ankle gets

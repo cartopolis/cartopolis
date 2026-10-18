@@ -573,4 +573,64 @@ mod tests {
             "the hips stay at hip height: {pelvis:?}"
         );
     }
+
+    /// The punch closes the hand into a fist and the wave opens it: the
+    /// fingertips come in toward the thumb's root — the palm side, so a curl
+    /// the wrong way round would move them away — and the wave's are further
+    /// out than at rest.
+    #[test]
+    fn a_punch_makes_a_fist_and_a_wave_an_open_hand() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let clip = |name: &str| m.clips.iter().position(|c| c.name == name).unwrap();
+        let reach = |pose: Option<(usize, usize)>| {
+            let p = m.joint_positions(pose);
+            let palm = p[m.joint("thumb_01_l").unwrap()];
+            ["index_03_l", "middle_03_l", "ring_03_l", "pinky_03_l"]
+                .iter()
+                .map(|n| p[m.joint(n).unwrap()].distance(palm))
+                .sum::<f32>()
+        };
+        let rest = reach(None);
+        let fist = reach(Some((clip("punch"), 0)));
+        let open = reach(Some((clip("wave"), 0)));
+        assert!(fist < rest * 0.8, "a fist: {fist} against {rest} at rest");
+        assert!(open > rest, "an open hand: {open} against {rest} at rest");
+    }
+
+    /// Standing clips look ahead, not at the pavement (`rig::level_gaze`).
+    #[test]
+    fn standing_clips_look_ahead() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let head = m.joint("head").unwrap();
+        // The joints' world rotations for a frame of `clip`.
+        let world = |c: Option<usize>, f: usize| {
+            let mut w = vec![glam::Quat::IDENTITY; m.joints.len()];
+            for (i, j) in m.joints.iter().enumerate() {
+                let r = c.map_or(j.rotation, |c| m.clips[c].rotations[i][f]);
+                let r = glam::Quat::from_array(r);
+                w[i] = j.parent.map_or(r, |p| w[p] * r);
+            }
+            w
+        };
+        let rest = world(None, 0)[head];
+        for name in ["idle", "walk", "wave", "sit"] {
+            let c = m.clips.iter().position(|c| c.name == name).unwrap();
+            let frames = m.clips[c].rotations[head].len();
+            let mean = (0..frames)
+                .map(|f| {
+                    (world(Some(c), f)[head] * rest.inverse() * glam::Vec3::Z)
+                        .y
+                        .asin()
+                })
+                .sum::<f32>()
+                / frames as f32;
+            assert!(
+                (mean.to_degrees() + 6.0).abs() < 1.0,
+                "{name} looks {:.1}° from level",
+                mean.to_degrees()
+            );
+        }
+    }
 }
