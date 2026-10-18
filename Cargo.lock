@@ -2469,6 +2469,7 @@ dependencies = [
  "cartopolis_simulator",
  "cartopolis_vio",
  "clap",
+ "core-graphics 0.23.2",
  "cpal",
  "dotenvy",
  "earcutr",
@@ -2511,8 +2512,10 @@ dependencies = [
  "wasm_thread",
  "web-sys",
  "web-time",
+ "windows-sys 0.61.2",
  "winit",
  "winresource",
+ "x11rb",
 ]
 
 [[package]]

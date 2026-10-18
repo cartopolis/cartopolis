@@ -105,6 +105,8 @@ pub enum CallRequest {
     /// A host moves the agenda of the plan with this id to an item, or stops
     /// it (`None`); sent sealed to everyone, as the web does.
     Agenda(String, Option<usize>),
+    /// Share this device's screen, or stop (`platform::screen`).
+    Share(bool),
 }
 
 /// Where a meeting is on its plan's agenda, as a host's device last said.
@@ -233,6 +235,12 @@ struct Active {
     /// The camera, while it is on.
     #[cfg(not(target_arch = "wasm32"))]
     camera: Option<Camera>,
+    /// The screen this device shares, while it does (`platform::screen`).
+    #[cfg(not(target_arch = "wasm32"))]
+    screen: Option<crate::platform::screen::ScreenCapture>,
+    /// The roster has said this device shares: a later roster saying it
+    /// does not is a host stopping it.
+    sharing_seen: bool,
     /// The newest picture from each person seen, by participant.
     pictures: HashMap<u64, Picture>,
     /// The newest picture of each shared screen, by participant.
@@ -516,6 +524,30 @@ impl Calls {
             people: a.seen_people.iter().cloned().collect(),
             transcript: self.transcript.clone(),
         })
+    }
+
+    /// Whether this device is sharing its screen (or asking to: on Android the
+    /// system's dialog may still be up).
+    #[must_use]
+    pub fn sharing_screen(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.active.as_ref().is_some_and(|a| a.screen.is_some());
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// Sharing was asked for and no picture has come yet: the phone's dialog
+    /// is up, or a desktop is asking for its permission.
+    #[must_use]
+    pub fn screen_starting(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self
+            .active
+            .as_ref()
+            .and_then(|a| a.screen.as_ref())
+            .is_some_and(|s| !s.running());
+        #[cfg(target_arch = "wasm32")]
+        false
     }
 
     /// A host posts the record now, as the meeting stands.
@@ -817,6 +849,18 @@ pub fn drive_calls(
                         .map(|m| m.participant)
                         .collect();
                     a.screens.retain(|p, _| sharing.contains(p));
+                    // This device's own screen: once the roster has said it is
+                    // shared, a roster saying it is not is a host stopping it.
+                    let mine = a.participant.is_some_and(|p| sharing.contains(&p));
+                    if mine {
+                        a.sharing_seen = true;
+                    } else if a.sharing_seen {
+                        a.sharing_seen = false;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            a.screen = None;
+                        }
+                    }
                     let held = members
                         .iter()
                         .any(|m| Some(m.participant) == a.participant && m.held);
@@ -950,12 +994,19 @@ pub fn drive_calls(
                     a.waiting = true;
                 }
             }
-            // A refused host action: said, and the call goes on.
+            // A refused host action: said, and the call goes on. A screen the
+            // server would not let this device share stops here too.
             NetMessage::ServerError {
                 message,
                 request_id: CALL_CONTROL_REQUEST,
                 ..
-            } => calls.notice = Some(message),
+            } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(a) = calls.active.as_mut().filter(|a| !a.sharing_seen) {
+                    a.screen = None;
+                }
+                calls.notice = Some(message);
+            }
             NetMessage::CallEnded { group, reason } => {
                 if calls.active_group() == Some(group.as_slice()) {
                     calls.active = None;
@@ -1125,6 +1176,24 @@ pub fn drive_calls(
             }
             #[cfg(target_arch = "wasm32")]
             let _ = emoji;
+        }
+        Some(CallRequest::Share(on)) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(a) = calls.active.as_mut() {
+                a.screen = on.then(crate::platform::screen::ScreenCapture::start);
+                a.sharing_seen = false;
+                online.send(
+                    "call sharing",
+                    NetMessage::CallControl {
+                        group: a.group.clone(),
+                        action: CallAction::Sharing(on),
+                    },
+                );
+            }
+            #[cfg(target_arch = "wasm32")]
+            if on {
+                calls.notice = Some("Share your screen from the chat page in this browser.".into());
+            }
         }
         Some(CallRequest::Agenda(plan, index)) => {
             let at = index.map(|index| AgendaAt {
@@ -1320,7 +1389,7 @@ pub fn drive_calls(
                             request_id: JOIN_REQUEST,
                             group: a.group.clone(),
                             offer,
-                            screen: None,
+                            screen: a.session.screen_mid(),
                         },
                     );
                 }
@@ -1419,6 +1488,7 @@ pub fn drive_calls(
     {
         capture(a, *muted, !*keep_noise, *fake_media, &prefs, level, notice);
         send_camera(a, camera_on, *fake_media, looking, notice);
+        send_screen(a, notice, &online);
     }
 }
 
@@ -1493,6 +1563,9 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         speakers: HashMap::new(),
         #[cfg(not(target_arch = "wasm32"))]
         camera: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        screen: None,
+        sharing_seen: false,
         pictures: HashMap::new(),
         screens: HashMap::new(),
         held: false,
@@ -1505,6 +1578,32 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         others_seen: false,
         last_report: web_time::Instant::now(),
     })
+}
+
+/// The shared screen to the session, a picture at a time as the capture
+/// takes them. A capture that stopped (refused, or stopped from the phone's
+/// own controls) says why, and the call is told this device no longer shares.
+#[cfg(not(target_arch = "wasm32"))]
+fn send_screen(a: &mut Active, notice: &mut Option<String>, online: &OnlineSession) {
+    let Some(screen) = a.screen.as_ref() else {
+        return;
+    };
+    if let Some(why) = screen.error() {
+        *notice = Some(why);
+        a.screen = None;
+        a.sharing_seen = false;
+        online.send(
+            "call sharing",
+            NetMessage::CallControl {
+                group: a.group.clone(),
+                action: CallAction::Sharing(false),
+            },
+        );
+        return;
+    }
+    if let Some(picture) = screen.take() {
+        a.session.send_screen(picture);
+    }
 }
 
 /// Camera to the session, at the call's frame rate, while it is on. The

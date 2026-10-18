@@ -3205,6 +3205,101 @@ pub fn gnss_hardware() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Sharing the screen (`ScreenCapture.java`, `platform::screen`)
+// ---------------------------------------------------------------------------
+
+const SCREEN_CAPTURE_BINARY: &str = "eu.garage44.cartopolis.ScreenCapture";
+
+/// Run one static call on `ScreenCapture`, attached permanently: the screen's
+/// thread polls it a few times a second for as long as the sharing lasts.
+fn with_screen_capture<T>(
+    what: &str,
+    call: impl for<'l> FnOnce(&mut JNIEnv<'l>, &JClass<'l>, &JObject) -> Result<T, Fail>,
+) -> Result<T, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach_current_thread_permanently: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, SCREEN_CAPTURE_BINARY)?;
+        call(env, &class, &activity)
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("ScreenCapture.{what}: {msg}")
+    })
+}
+
+/// Ask the person for the screen: the system's own dialog comes up, and
+/// [`screen_status`] says what they answered.
+pub fn screen_start() -> Result<(), String> {
+    with_screen_capture("start", |env, class, activity| {
+        env.call_static_method(
+            class,
+            "start",
+            "(Landroid/app/Activity;)V",
+            &[JValue::Object(activity)],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn screen_stop() {
+    let result = with_screen_capture("stop", |env, class, activity| {
+        env.call_static_method(
+            class,
+            "stop",
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(activity)],
+        )?;
+        Ok(())
+    });
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "could not stop sharing the screen");
+    }
+}
+
+/// `None` before anything happened; `"asking"`, `"running"`, `"stopped"`, or a
+/// sentence saying why not.
+pub fn screen_status() -> Option<String> {
+    with_screen_capture("status", |env, class, _| {
+        let s = env
+            .call_static_method(class, "status", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if s.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(env.get_string(&JString::from(s))?.into()))
+    })
+    .ok()
+    .flatten()
+}
+
+/// The newest picture if it is newer than picture number `seen`: `(width,
+/// height, row stride, its number, RGBA)`.
+pub fn screen_latest(seen: u64) -> Result<Option<(u32, u32, usize, u64, Vec<u8>)>, String> {
+    with_screen_capture("latest", |env, class, _| {
+        let info = env.call_static_method(class, "info", "()[J", &[])?.l()?;
+        let info = jni::objects::JLongArray::from(info);
+        let mut v = [0i64; 4];
+        env.get_long_array_region(&info, 0, &mut v)?;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let (w, h, stride, n) = (v[0] as u32, v[1] as u32, v[2] as usize, v[3] as u64);
+        if n <= seen || w == 0 || h == 0 {
+            return Ok(None);
+        }
+        let bytes = env.call_static_method(class, "latest", "()[B", &[])?.l()?;
+        if bytes.is_null() {
+            return Ok(None);
+        }
+        let bytes = jni::objects::JByteArray::from(bytes);
+        let px = env.convert_byte_array(&bytes)?;
+        Ok(Some((w, h, stride, n, px)))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // A USB serial adapter (`UsbSerial.java`, `platform::gnss_receiver`)
 // ---------------------------------------------------------------------------
 

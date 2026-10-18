@@ -28,6 +28,7 @@ package eu.garage44.cartopolis;
 
 import android.app.NativeActivity;
 import android.app.NotificationManager;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Process;
 
@@ -52,6 +53,15 @@ public final class MainActivity extends NativeActivity {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.cancel(PushReceiver.NOTIFICATION_ID);
+        }
+    }
+
+    /** The answer to the system's "share your screen?" dialog (`ScreenCapture`). */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == ScreenCapture.REQUEST) {
+            ScreenCapture.onResult(this, resultCode, data);
         }
     }
 

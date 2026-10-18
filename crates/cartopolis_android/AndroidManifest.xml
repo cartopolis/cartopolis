@@ -178,6 +178,10 @@
          a quieter type. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Sharing the screen in a call: the typed permission for ScreenService.
+         Normal, granted at install; the screen itself is asked for each time,
+         in the system's dialog. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- The ongoing notification the service is obliged to show. *Dangerous* from
          API 33, so it is a runtime ask like RECORD_AUDIO — and unlike RECORD_AUDIO
@@ -313,6 +317,15 @@
             android:name=".ConnectionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Sharing the screen in a call (ScreenService.java, ScreenCapture.java):
+             since API 34 a MediaProjection may only be made while a foreground
+             service of this type runs. Started only after the person said yes in
+             the system's own dialog, and stopped with the sharing. -->
+        <service
+            android:name=".ScreenService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- UnifiedPush (Push.java, PushReceiver.java): the distributor app tells us
              our endpoint and wakes us for a call while the app is closed. Exported,

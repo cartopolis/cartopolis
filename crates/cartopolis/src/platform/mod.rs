@@ -48,6 +48,9 @@ pub mod orientation;
 pub mod photo;
 // Compiled everywhere so its holders need no `cfg`; it captures on Android only.
 pub mod precise_sensors;
+// The screen a call shares; not on the web, where the browser shares it.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod screen;
 pub mod storage;
 pub mod stream;
 pub mod sync;

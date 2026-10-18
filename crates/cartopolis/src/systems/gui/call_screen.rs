@@ -1389,6 +1389,13 @@ fn more_sheet(
     if sheet_row(ui, icons::MIC, "Noise suppression", Some(!calls.keep_noise)) {
         calls.keep_noise = !calls.keep_noise;
     }
+    // The phone asks first in its own dialog; a desktop may ask the first
+    // time for its screen-recording permission.
+    let sharing = calls.sharing_screen();
+    if sheet_row(ui, icons::SCREEN_SHARE, "Share your screen", Some(sharing)) {
+        *request = Some(CallRequest::Share(!sharing));
+        *close = true;
+    }
     if !calls.hosting() {
         return;
     }
@@ -2217,6 +2224,38 @@ fn meeting_chips(
         );
         p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::CREAM);
         y += 30.0;
+    }
+    // This device's own screen going out: said where it cannot be missed,
+    // with the way to stop it beside it.
+    if calls.sharing_screen() {
+        let what = if calls.screen_starting() {
+            "Starting to share your screen…"
+        } else {
+            "You're sharing your screen"
+        };
+        let text = format!("{}  {what} · Stop", icons::SCREEN_SHARE);
+        let galley = p.layout_no_wrap(
+            text,
+            egui::FontId::proportional(theme::SIZE_SUB),
+            theme::CREAM,
+        );
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(full.center().x, y),
+            galley.size() + egui::vec2(20.0, 12.0),
+        );
+        p.rect_filled(
+            rect,
+            egui::CornerRadius::same(theme::RADIUS_PILL),
+            theme::CALL_END_RED.gamma_multiply(0.85),
+        );
+        p.galley(rect.min + egui::vec2(10.0, 6.0), galley, theme::CREAM);
+        if ui
+            .interact(rect, ui.id().with("stop_sharing"), egui::Sense::click())
+            .clicked()
+        {
+            *request = Some(CallRequest::Share(false));
+        }
+        y += 34.0;
     }
     let extras = calls.extras();
     let my_room = calls.me().map_or(0, |m| m.room);
