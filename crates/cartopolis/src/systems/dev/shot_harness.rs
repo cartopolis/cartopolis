@@ -2832,7 +2832,9 @@ pub fn open_scripted_ui(
         cards.chat.overlay.demo = true;
     }
     cards.chat.chats.attach = want("chatattach");
-    if want("camera") && !cards.chat.camera.is_open() {
+    if !want("camera") {
+        cards.chat.camera.dismiss();
+    } else if !cards.chat.camera.is_open() {
         cards.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
     }
 

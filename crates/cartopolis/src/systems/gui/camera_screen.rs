@@ -116,6 +116,17 @@ pub struct CameraScreen {
 }
 
 impl CameraScreen {
+    /// Close the camera at once, with no picture: for a scripted capture that
+    /// did not ask for it (`shot_harness`). The live screen closes through its
+    /// own button, which puts a Mixed view back first.
+    pub fn dismiss(&mut self) {
+        self.request = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.session = None;
+        }
+    }
+
     /// Whether the camera's screen is up.
     #[must_use]
     pub fn is_open(&self) -> bool {
