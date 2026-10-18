@@ -480,6 +480,11 @@ fn multi_scatter(sun_od: f32, cos_theta: f32, octaves: i32) -> f32 {
 // (Frozen Fractal's *A pretty sky*, 2026, found the same thing by Monte Carlo:
 // with real multiple scattering, cloud bottoms come out brighter and smoother.)
 //
+// How much of the sun a point in the march's shadow still gets by diffusion,
+// against what it would get lit (see `low_deck_light`). An art weight: at 0.4 a
+// shadow is a quarter to a twelfth of the lit side, as on a cumulus at noon.
+const SHADOW_DIFFUSION: f32 = 0.4;
+
 // The two-stream (Eddington) transmittance of a conservatively scattering slab
 // is that curve in closed form. What is added here is its *diffuse* part only:
 // everything except what still travels near the incoming direction, which the
@@ -547,7 +552,16 @@ fn low_deck_light(
     // The diffused part is weighted by `sun.y`: a low sun spreads the same beam
     // over more of the deck's top, so less of it comes out of each patch of
     // base. Without it a closed deck under a 16 h sun glowed orange.
-    let from_above = ms * mix(1.0, powder, powder_w) + diffuse_through(tau, sun.y) * max(sun.y, 0.0);
+    // What the march toward the sun calls shadow is not dark inside a real cloud:
+    // light that has scattered many times diffuses into it as 1/(1 + (1−g)τ),
+    // where the octaves above fall as exp(−τ). Only the excess over those is
+    // added, so a lit point is unchanged. Without it a patch whose march met a
+    // neighbouring puff went near black, and the deck was covered in dark
+    // smudges — brown bands at dusk, when the march is longest (2026-10-17).
+    let shadow_fill = SHADOW_DIFFUSION
+        * max(1.0 / (1.0 + (1.0 - G_DIFFUSE) * sun_od) - exp(-sun_od), 0.0);
+    let from_above = ms * mix(1.0, powder, powder_w) + shadow_fill
+        + diffuse_through(tau, sun.y) * max(sun.y, 0.0);
     // Just after sunset the deck still has the sun — its horizon is lower than
     // the street's (`utils::sun::sun_disc_at`) — but now *under* it, so a base is
     // the lit face, and what a viewer below sees is what the column reflects
@@ -575,10 +589,23 @@ fn low_deck_light(
 // sunrise and sunset, and the deck's brightness gain.
 fn deck_sunlight(sun: vec3<f32>, above_camera_m: f32, fallback: vec3<f32>, scale: f32) -> vec3<f32> {
     @if(ATMOSPHERE) {
-        return scale * atmosphere_transmittance(sun, above_camera_m);
+        return eye_adapted(scale * atmosphere_transmittance(sun, above_camera_m));
     } @else {
-        return fallback;
+        return eye_adapted(fallback);
     }
+}
+
+// How far the eye corrects for the colour of the light, 0..1 (von Kries: each
+// channel divided by the light's own, this much of the way). A low sun's beam
+// is red-orange, and a deck lit by it at full colour, with the blue sky mixed
+// in, came out salmon pink. Seen by an eye adapted to that light — or painted:
+// Cuyp, van der Neer — an evening cloud is gold and amber, and that is what
+// this gives (2026-10-17).
+const EYE_WHITE_BALANCE: f32 = 0.6;
+
+fn eye_adapted(light: vec3<f32>) -> vec3<f32> {
+    let hue = light / max(max(light.r, max(light.g, light.b)), 1e-6);
+    return light / mix(vec3<f32>(1.0), max(hue, vec3<f32>(0.05)), EYE_WHITE_BALANCE);
 }
 
 @if(ATMOSPHERE)

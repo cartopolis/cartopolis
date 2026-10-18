@@ -33,10 +33,31 @@ pub fn distance_fog(density: f32, hours: f32, decl_rad: f32) -> DistanceFog {
     // dawn/dusk haze glows warm with the sky instead of snapping grey→black.
     let t = sun::sun_transmittance(hours, decl_rad);
     let tint = t / t.max_element().max(1e-4);
-    // Modest warm tint only — the built-in atmosphere already colours the sky at
-    // low sun, so a strong red fog on top read as an unrealistic blood-red dusk.
-    let warm = 0.30 * sun::horizon_proximity(hours, decl_rad);
-    let c = night_color.lerp(day_color, day) * Vec3::ONE.lerp(tint, warm);
+    // The fog colour is mixed in *after* exposure, so it does not follow the
+    // camera opening up toward dusk the way the sky does. Taken by the clock
+    // alone it fell to a sixteenth of the sky beside it at sunset: the horizon
+    // haze was a dark brown band under a bright sky, and the cloud deck, which
+    // takes its fill light from this colour, went brown in every shadow
+    // (2026-10-17). So the daylight part rises by the eye adaptation, up to its
+    // noon colour; the night colour is the night exposure's already. Once the sun
+    // is down the sky darkens faster than the adaptation opens, so the lift
+    // falls away by e every 1.5° of depression — half left at 1°, a twelfth
+    // at 4° — or the deck glowed lavender over a dusk sky darker than it.
+    let lift = 2f32.powf(crate::systems::sky::eye_adaptation_stops(hours, decl_rad));
+    let dusk = (sun::sun_direction(hours, decl_rad).y / 0.026)
+        .exp()
+        .min(1.0);
+    let linear = |c: Vec3| Color::srgb(c.x, c.y, c.z).to_linear().to_vec3();
+    let (night_lin, day_lin) = (linear(night_color), linear(day_color));
+    // A faint warm cast, the beam's colour taken to a low power so blue falls
+    // more than green: gold, as a Cuyp evening is. The beam's own colour took
+    // green and blue down together, and the haze went mauve; and the cast stays
+    // faint because this is also what lights the shadowed side of every cloud,
+    // which in the paintings and in photographs stays a cool blue-grey — gold
+    // on a grey turned them olive (2026-10-18).
+    let gold = Vec3::new(tint.x.powf(0.15), tint.y.powf(0.15), tint.z.powf(0.15));
+    let c = night_lin.lerp(day_lin, (day * lift).min(1.0) * dusk)
+        * Vec3::ONE.lerp(gold, 0.3 * sun::horizon_proximity(hours, decl_rad));
 
     // Map density to a visibility distance on an exponential curve:
     // 0.15 → ~7 km haze, 0.5 → ~1.2 km fog, 1.0 → ~90 m pea soup.
@@ -50,7 +71,7 @@ pub fn distance_fog(density: f32, hours: f32, decl_rad: f32) -> DistanceFog {
     };
 
     DistanceFog {
-        color: Color::srgb(c.x, c.y, c.z),
+        color: Color::linear_rgb(c.x, c.y, c.z),
         // Sun-side glow in the fog, colored like the sun itself (white by day,
         // orange as it sets); fades out through early twilight. The tint is
         // desaturated toward white and kept faint on purpose: at full

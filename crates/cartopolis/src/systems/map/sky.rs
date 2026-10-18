@@ -453,6 +453,7 @@ pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, 
         decl_rad,
         fog_density,
         utils::sun::sun_disc(hours, decl_rad),
+        SUN_COLOR_SATURATION,
     )
 }
 
@@ -470,7 +471,11 @@ pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, 
 pub(crate) fn sun_light_in_atmosphere(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
     let y = sun_direction(hours, decl_rad).y;
     let on = utils::sun::smoothstep(TWILIGHT_SUN_OFF_Y, TWILIGHT_SUN_FULL_Y, y);
-    sun_light_cut(hours, decl_rad, fog_density, on)
+    // Untinted: bevy reddens this light itself, through the transmittance table,
+    // for the sky and for every surface (the patched `bevy_pbr_lighting.wesl`).
+    // Tinting it as well reddened everything twice, and turned the blue zenith
+    // of a sunset mauve (2026-10-17).
+    sun_light_cut(hours, decl_rad, fog_density, on, 0.0)
 }
 
 /// Sun elevations (sine) between which [`sun_light_in_atmosphere`] fades the light
@@ -478,16 +483,20 @@ pub(crate) fn sun_light_in_atmosphere(hours: f32, decl_rad: f32, fog_density: f3
 const TWILIGHT_SUN_FULL_Y: f32 = -0.105;
 const TWILIGHT_SUN_OFF_Y: f32 = -0.309;
 
-/// [`sun_light`] with the horizon's cut given: `cut` 0..1 of the light survives it.
-fn sun_light_cut(hours: f32, decl_rad: f32, fog_density: f32, cut: f32) -> (Color, f32) {
+/// [`sun_light`] with the horizon's cut given: `cut` 0..1 of the light survives it,
+/// and `saturation` of the beam's colour is kept in the light's (0 = white).
+fn sun_light_cut(
+    hours: f32,
+    decl_rad: f32,
+    fog_density: f32,
+    cut: f32,
+    saturation: f32,
+) -> (Color, f32) {
     let t = utils::sun::sun_transmittance(hours, decl_rad);
     let peak = t.max_element().max(1e-4);
     // Hue in the color (peak-normalized), magnitude in the illuminance. Desaturated
     // toward white so the sun light doesn't compound the atmosphere's own sunset red.
-    let hue = Vec3::ONE.lerp(
-        Vec3::new(t.x / peak, t.y / peak, t.z / peak),
-        SUN_COLOR_SATURATION,
-    );
+    let hue = Vec3::ONE.lerp(Vec3::new(t.x / peak, t.y / peak, t.z / peak), saturation);
     let color = Color::linear_rgb(hue.x, hue.y, hue.z);
     // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
     let sun_through_fog = 1.0 - 0.75 * fog_density;
@@ -1598,7 +1607,12 @@ pub(crate) const CLOUD_SKY_ABOVE_GAIN: f32 = 1.0;
 const LUMINANCE: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
 /// Floor under the deck's ambient colour, for the hours when the sky it is taken
 /// from has gone dark. See the argument at the `sky_rgb` it clamps.
-pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.045, 0.045, 0.055);
+///
+/// Faint, and a little warm: city light from below. At 0.045 grey it was some
+/// thirty times the night fog, and the deck stood out as a lit grey lid over
+/// the dark city (2026-10-17). Here it is a few times that, enough to hide the
+/// stars behind it and no more.
+pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.0085, 0.0075, 0.0070);
 /// Fraction of the ambient sky an opaque cloud core still receives, at the two
 /// ends of the coverage range — the shader lerps between them.
 ///
@@ -1749,7 +1763,7 @@ pub(crate) fn update_clouds(
     // left the lit side of a sunset cloud that many stops too dark — muddy brown
     // against a sky and a fog colour that had been lifted (2026-10-17).
     let adapt = 2f32.powf(eye_adaptation_stops(hours, decl));
-    let sun_gain = deck_disc * CLOUD_SUN_GAIN * adapt;
+    let sun_gain = deck_disc * CLOUD_SUN_GAIN * adapt * sky_light_dimming(hours, decl);
     let sun_rgb = beam * sun_gain;
 
     // Ambient sky light filling the shadowed side — and, at full cover, the deck's
@@ -1792,7 +1806,10 @@ pub(crate) fn update_clouds(
             if quality::is_phone() { 1.0 } else { 0.0 },
             // The sky above, as bright as the sky the camera shows: the fog
             // colour is that sky's horizon, in the same post-exposure units.
-            haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN,
+            // Less of it as the day goes: the fog is lifted with the eye's
+            // adaptation at dusk, the sky overhead darkens faster than that, and
+            // at full strength its blue turned every sunset cloud pink.
+            haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN * utils::sun::daylight(hours, decl),
             0.0,
         );
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
@@ -1830,6 +1847,25 @@ pub(crate) fn update_clouds(
             *storage = cloud_field_buffer(gpu);
         }
     }
+}
+
+/// How far the sun light the sky is drawn with has dimmed from its noon
+/// strength, 0..1: the softened air-mass extinction [`sun_light_cut`] gives
+/// the light's illuminance.
+///
+/// bevy's atmosphere is lit by that light, and the deck must be lit by the same
+/// one, or the two disagree at a low sun. Before this the deck took only its own
+/// transmittance and the eye adaptation, while the sky also took this cut. At
+/// sunset that left the deck's lit side about 4× brighter than the sky it hangs
+/// in, so it clipped to flat neon orange (2026-10-17).
+pub(crate) fn sky_light_dimming(hours: f32, decl_rad: f32) -> f32 {
+    let strength = |h: f32| {
+        utils::sun::sun_transmittance(h, decl_rad)
+            .max_element()
+            .max(1e-4)
+            .powf(SUN_EXTINCTION_SOFTNESS)
+    };
+    (strength(hours) / strength(12.0)).min(1.0)
 }
 
 /// How much of the ambient sky an opaque cloud core keeps, for a coverage.
@@ -2229,8 +2265,12 @@ mod overcast_tests {
         let sun = utils::sun::sun_transmittance_at(hours, decl, CLOUD_LAYER_HEIGHT)
             * utils::sun::sun_disc(hours, decl)
             * CLOUD_SUN_GAIN
-            * 2f32.powf(eye_adaptation_stops(hours, decl));
-        let sky_above = SKY_ABOVE_TINT * haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN;
+            * 2f32.powf(eye_adaptation_stops(hours, decl))
+            * sky_light_dimming(hours, decl);
+        let sky_above = SKY_ABOVE_TINT
+            * haze.dot(LUMINANCE)
+            * CLOUD_SKY_ABOVE_GAIN
+            * utils::sun::daylight(hours, decl);
         let tau = DIFFUSE_DEPTH_LOW;
         sun * diffuse_through(tau, sun_direction(hours, decl).y) * sun_direction(hours, decl).y
             + sky_above * diffuse_through(tau, SKY_ABOVE_MU)

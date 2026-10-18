@@ -7,7 +7,7 @@ triggers:
   - adding a cloud layer, or wondering why there are two
   - how fast or which way the clouds move
   - cloud shadows on the ground (see cloud-shadows.md)
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # Cloud lighting: why the deck is a scattering model, not a shaded surface
@@ -209,6 +209,12 @@ now multiplies the sun term by 2^stops. The overcast lift is left out on
 purpose: it pays for the beam the overcast model takes off the *ground*, which
 the deck, being that overcast, never lost.
 
+**And it follows the light the sky is drawn with** (`sky_light_dimming`,
+2026-10-18). The atmosphere is lit by `sun_light_cut`'s illuminance, which
+falls with the softened air mass (`SUN_EXTINCTION_SOFTNESS`); the deck took the
+2^stops and not that, so at sunset its lit side was about 4× the sky it hung in
+and clipped to flat neon orange.
+
 ## The low deck in relief (2026-10-17)
 
 `cloud_field.wesl`'s relief section and the shell's march. In short:
@@ -266,6 +272,78 @@ an alpha-blended shell never receives any. The deck now extincts toward the
 camera's fog colour — the same colour the horizon-haze shell paints. Before, it
 kept full contrast to the last visible pixel and then had its alpha faded to
 nothing, which reads as the sky *ending*.
+
+## Dutch light: what the deck is judged against (2026-10-18)
+
+The person steering judges this deck against **Dutch Golden Age paintings and
+photographs of Dutch skies**, not against what is physically defensible —
+"skies are never that red", "clouds never that solid dark", "too pink". The
+references used, all public domain on Wikimedia Commons: Cuyp, *The Maas at
+Dordrecht* (evening light); van der Neer, *River Landscape at Sunset* and
+*Moonlit Landscape … Kostverloren* (dusk, night); Ruisdael, *View of Haarlem
+with Bleaching Grounds* and van Goyen, *View of Dordrecht* 1651 (day); and the
+photographs *Sunset over Groningen (again)*, *A Dutch polder* and *Lutjegast
+Doezum*. What they agree on:
+
+- **Evening light is gold and amber, never pink.** Lit cloud is cream to gold;
+  pink appears only in a thin band at the horizon and just after sunset.
+- **Shadows stay cool**: blue-grey, lit by the sky. A warm cast on a shadow
+  reads olive, not gold.
+- **At sunset the sky overhead stays blue**; the colour is a low band toward
+  the sun, and the clouds over the viewer are blue-grey with warm undersides.
+- **By day a cumulus has big grey masses** under bright tops.
+- **At night the deck is barely there**: it hides the stars, little more.
+
+What each finding changed, and why:
+
+- **Dark smudges were the sun march's shadow.** A point whose three taps
+  toward the sun met a neighbouring puff fell to exp(−τ) ≈ 0 — blotches by day,
+  brown bands at dusk. Turning the march off removed them and all the shading
+  with them, so the march stays and `low_deck_light` adds the diffusion it
+  lacks (`SHADOW_DIFFUSION` 0.4, the 1/(1 + (1−g)τ) excess over exp(−τ)). At
+  0.6 the noon clouds lost their grey masses.
+- **The fog colour is post-exposure, so it must follow the eye adaptation
+  itself** (`free_camera::distance_fog`). By the clock alone it sat at a
+  sixteenth of the sky at sunset: a dark brown band on the horizon, and every
+  cloud shadow brown, since the deck's fill light *is* this colour. Its daylight
+  part now rises by 2^`eye_adaptation_stops`, capped at noon, and falls by e
+  every 1.5° once the sun is down — at 2.6° the deck glowed lavender over a
+  darker dusk sky.
+- **The haze's warm cast is gold and faint**: the beam's colour to the power
+  0.15 (blue falls more than green), at 0.3 × `horizon_proximity`. The beam's
+  own colour took green and blue down together and went mauve; gold at full
+  strength turned the shadows olive.
+- **The deck's sunlight is eye-adapted** (`cf::eye_adapted`, von Kries at
+  `EYE_WHITE_BALANCE` 0.6). Bevy's table gives a red-orange beam at a low sun;
+  at full colour, with the sky's blue added, the deck came out salmon pink.
+- **The blue sky above fades with `daylight`** (`params3.z`): the fog it is
+  scaled from is lifted at dusk, the real sky above darkens faster, and its
+  blue made every sunset cloud mauve.
+- **`CLOUD_NIGHT_FLOOR` went 0.045 → ~0.008**, a little warm. At 0.045 the night
+  deck was thirty times the night fog: a lit grey lid over a dark city.
+- **The atmosphere's light is untinted** (`the-atmosphere-from-the-street-to-orbit.md`):
+  the tint was reddening the sky twice, and that was the mauve zenith.
+
+**Still wrong, and not the clouds' doing:** the sky bevy draws is greyer than
+the references — at noon sRGB ~(87, 110, 143) at the top of the frame against a
+photograph's deep blue, and at sunset ~(123, 129, 143) against
+(94, 127, 195). Tried and set aside: the tonemapper (`AcesFitted` is bluer by
+day than `TonyMcMapface`, no help at sunset), a smaller
+`TWILIGHT_EXPOSURE_LIFT` (1.5: the sky only got darker, not bluer), and ozone
+(`ScatteringMedium::default()` has it). The next place to look is the medium
+and the light's illuminance curve, not the cloud shader.
+
+**The white flicker** is unconfirmed. Suspected: `sun_rays.wesl` scaled every
+beam by the plain mean of eight taps round the sun, and a crisp, forward-lit
+cloud edge crossing one tap moved the whole frame. It now takes their geometric
+mean. The shot harness could not show it either way: a scripted capture holds
+the scene clock, so ten captures in a row are identical, and `--flicker`'s
+pair differs by whole drifted clouds.
+
+`docs/cloud-shots.toml` is the sweep all of this was judged on: Groningen 40 m
+up, toward and away from the sun, noon to 22 h at 50 % cover. On the Deck
+(`midas take gpu`) it takes about five minutes; use `CARTO_DATA_DIR` set to an
+empty directory there, or the captures inherit the bot's settings.
 
 ## Rejected, with reasons
 

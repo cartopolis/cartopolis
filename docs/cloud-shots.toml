@@ -1,0 +1,161 @@
+# The cloud deck from noon to night — what `docs/notes/cloud-lighting.md`'s
+# "Dutch light" section was judged on. Colour and lighting only mean anything
+# on a real GPU (`midas take gpu`), and on the Deck set CARTO_DATA_DIR to an
+# empty directory or the captures inherit the bot's settings.
+#
+#     CARTO_DATA_DIR=/tmp/empty cargo run -p cartopolis -- --shots docs/cloud-shots.toml
+#
+# Groningen, 40 m up, 50 % cover, 17 October: `west` looks toward the setting
+# sun, `east` away from it. Sun elevation: 16 h 10°, 16.6 h 5°, 17 h 1.6°,
+# 17.3 h −1°, 17.6 h −3.7°, 18 h −7°.
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1280x720"
+out_dir = "gpu/clouds"
+hide_ui = true
+mode = "free"
+settle = 1.0
+wait = 40.0
+
+[[shot]]
+name = "t12_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 12
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t12_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 12
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t16_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 16
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t16_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 16
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t16_6_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 16.6
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t16_6_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 16.6
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 17
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 17
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_3_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 17.3
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_3_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 17.3
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_6_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 17.6
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t17_6_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 17.6
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t18_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 18
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t18_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 18
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t19_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 19
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t19_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 19
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t22_west"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 22
+clouds = 0.5
+date = "2026-10-17"
+
+[[shot]]
+name = "t22_east"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 22
+clouds = 0.5
+date = "2026-10-17"

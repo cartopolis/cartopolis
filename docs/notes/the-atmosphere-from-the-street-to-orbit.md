@@ -6,7 +6,7 @@ triggers: [globe.rs, sky.rs, free_camera.rs, render_features.rs, starfield.wesl,
   AtmosphereEnvironmentMapLight, ScatteringMedium, AtmosphereMedia, space_factor,
   in_space, apply_day_night_cycle, sun_light, SunDisk, sky_shell_radius, Bloom,
   "space tier", "black globe", "the limb", "maroon dawn", "stars from orbit"]
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # Bevy's atmosphere, from the street to orbit
@@ -77,15 +77,24 @@ still hands the reflection probe the view's lookup tables once
 ## Sunlight is the atmosphere's input, so don't pre-extinct it
 
 bevy scatters the sun `DirectionalLight`'s colour and illuminance and applies
-its own air-mass extinction. `sky::sun_light` extincts too (`utils::sun`'s
-Kasten–Young curve, for the surface lighting bevy does not attenuate), so the two
+its own air-mass extinction — to the sky, **and to every lit surface**: the
+patched `bevy_pbr_lighting.wesl` multiplies a directional light by the
+transmittance table at each point (`color *= transmittance * sun_visibility`).
+`sky::sun_light` extincts too (`utils::sun`'s Kasten–Young curve), so the two
 compound: at the full curve dawn kept 9 % of the beam, the atmosphere took its
 cut of that, and sunrise was a near-black maroon sky over a maroon city.
 `SUN_EXTINCTION_SOFTNESS` (0.45) bends only the large-air-mass end (9 % → 32 % at
-the horizon, noon untouched), `SUN_COLOR_SATURATION` (0.25; at 0.7 the city went
-maroon) keeps the hue mild, and `TWILIGHT_EXPOSURE_LIFT` (2.5 stops) is the eye
+the horizon, noon untouched), and `TWILIGHT_EXPOSURE_LIFT` (2.5 stops) is the eye
 adaptation that makes twilight read bright. Every one of them moves the sky and
 the ground together; check both.
+
+**The light's colour is white when the atmosphere draws the sky** (2026-10-18).
+`SUN_COLOR_SATURATION` (0.25) tints the light toward the beam's colour, and
+bevy then reddened it again through its table: the zenith of a sunset came out
+grey-mauve instead of blue, and the clouds lit by that sky pink.
+`sun_light_in_atmosphere` passes saturation 0; the dome sky, which has no
+table, keeps 0.25. The sunset zenith is still greyer than photographs of one —
+see `cloud-lighting.md`, "Dutch light".
 
 **The light must stay on after sunset, or there is no twilight** (2026-10-17).
 `sun_light` cuts the light with `utils::sun::sun_disc` as the disc sets, for the
@@ -96,8 +105,8 @@ all. With the atmosphere drawing the sky, `apply_day_night_cycle` takes
 twilight (−6°) and fades it out by astronomical dusk (−18°). The surfaces do
 not need the cut there: bevy 0.20's lighting already drops a sun below each
 point's horizon (`atmosphere_visible_sun_ratio` in the patched
-`bevy_pbr_lighting.wesl`; the "bevy does not attenuate surfaces" above is about
-air-mass extinction, not the horizon). The dome sky keeps the old cut.
+`bevy_pbr_lighting.wesl`, beside the transmittance above). The dome sky keeps
+the old cut.
 `horizonhaze.wesl` and `water.wesl` read the light directly, so a sun below the
 horizon still reaches their glow and glint terms; neither showed anything wrong
 in the 17.3 h shots, but they were not looked at closely.
