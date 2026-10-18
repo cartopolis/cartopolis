@@ -362,7 +362,7 @@ pub fn render_avatar_chooser(
     // The MakeHuman designer: the draft the avatar is rebuilt from while it is
     // open, and its tab.
     mut human_draft: ResMut<crate::systems::human_avatar::HumanDraft>,
-    mut designer_tab: Local<crate::systems::avatar_designer::DesignerTab>,
+    mut designer: Local<crate::systems::avatar_designer::DesignerState>,
     mut camera: ResMut<crate::resources::CameraState>,
 ) {
     let online = session.is_online();
@@ -407,7 +407,7 @@ pub fn render_avatar_chooser(
             .show(ui, |ui| {
                 let d = &mut chooser.draft;
                 if let Some(look) = d.human.as_mut().filter(|_| designing) {
-                    crate::systems::avatar_designer::designer(ui, &mut designer_tab, look);
+                    crate::systems::avatar_designer::designer(ui, &mut designer, look);
                     ui.separator();
                     let changed = *d != *saved;
                     ui.horizontal(|ui| {

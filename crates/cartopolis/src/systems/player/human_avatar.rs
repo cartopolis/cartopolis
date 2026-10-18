@@ -139,44 +139,72 @@ pub(crate) fn current_look(appearance: &AvatarAppearance, draft: &HumanDraft) ->
         .unwrap_or_else(|| with_overrides(HumanLook::default_for(appearance.sex)))
 }
 
-/// `CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"`: start an undesigned avatar
-/// with these sliders, so a capture — which cannot drag one — can photograph a
-/// body other than the default. Unknown keys and bad numbers are ignored.
+/// `CARTO_HUMAN_LOOK="body_shape=0,age=70,hair=afro01,top=150.40.40,face:nose/nose-scale-horiz-decr-incr=80"`:
+/// start an undesigned avatar with these, so a capture — which cannot drag a
+/// slider — can photograph a look other than the default. Colours are
+/// `r.g.b`; unknown keys and bad values are ignored.
 fn with_overrides(mut look: HumanLook) -> HumanLook {
     let Some(spec) = crate::debug_switches::env_value("CARTO_HUMAN_LOOK") else {
         return look;
     };
-    for pair in spec.split(',') {
-        let Some((k, v)) = pair.split_once('=') else {
-            continue;
-        };
-        let Ok(v) = v.trim().parse::<u8>() else {
-            continue;
-        };
-        match k.trim() {
-            "body_shape" => look.body_shape = v.min(100),
-            "age" => look.age = v.clamp(18, 90),
-            "height" => look.height = v.min(100),
-            "weight" => look.weight = v.min(100),
-            "muscle" => look.muscle = v.min(100),
-            "proportions" => look.proportions = v.min(100),
-            "chest" => look.chest = v.min(100),
-            _ => {}
+    // Body shape first, so a feminine body's default wardrobe can be set
+    // before anything the spec names overrides it.
+    let pairs: Vec<(&str, &str)> = spec
+        .split(',')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .collect();
+    if let Some(v) = pairs
+        .iter()
+        .find(|(k, _)| *k == "body_shape")
+        .and_then(|(_, v)| v.parse::<u8>().ok())
+    {
+        look.body_shape = v.min(100);
+        if v < 50 {
+            look.outfit = "female_elegantsuit01".into();
+            look.hair = Some("bob01".into());
+            look.shoes = "shoes01".into();
         }
     }
-    if look.body_shape < 50 {
-        look.outfit = "female_casualsuit01".into();
+    let colour = |v: &str| -> Option<[u8; 3]> {
+        let c: Vec<u8> = v.split('.').filter_map(|x| x.parse().ok()).collect();
+        (c.len() == 3).then(|| [c[0], c[1], c[2]])
+    };
+    for (k, v) in pairs {
+        let n = v.parse::<i32>().ok();
+        match (k, n) {
+            ("age", Some(n)) => look.age = n.clamp(18, 90) as u8,
+            ("height", Some(n)) => look.height = n.clamp(0, 100) as u8,
+            ("weight", Some(n)) => look.weight = n.clamp(0, 100) as u8,
+            ("muscle", Some(n)) => look.muscle = n.clamp(0, 100) as u8,
+            ("proportions", Some(n)) => look.proportions = n.clamp(0, 100) as u8,
+            ("chest", Some(n)) => look.chest = n.clamp(0, 100) as u8,
+            ("skin", _) => look.skin = v.into(),
+            ("eyes", _) => look.eyes = v.into(),
+            ("hair", _) => look.hair = (v != "none").then(|| v.into()),
+            ("eyebrows", _) => look.eyebrows = v.into(),
+            ("outfit", _) => look.outfit = v.into(),
+            ("shoes", _) => look.shoes = v.into(),
+            ("hat", _) => look.hat = (v != "none").then(|| v.into()),
+            ("hair_colour", _) => look.hair_colour = colour(v),
+            ("top", _) => look.top_colour = colour(v),
+            ("bottom", _) => look.bottom_colour = colour(v),
+            (face, Some(n)) if face.starts_with("face:") => {
+                look.set_face(&face[5..], n.clamp(-100, 100) as i8);
+            }
+            _ => {}
+        }
     }
     look
 }
 
-/// Colours multiplied over the textures: a tone over the one detailed skin, a
-/// tint over the hair and the outfit, so the folds and strands stay.
-#[derive(Clone, Copy, Debug)]
+/// The colours a look puts over the neutral textures; `None` keeps the
+/// garment's or the hair's own (its region's recorded colour).
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Tints {
-    pub skin: Color,
-    pub hair: Color,
-    pub outfit: Color,
+    pub hair: Option<[u8; 3]>,
+    pub top: Option<[u8; 3]>,
+    pub bottom: Option<[u8; 3]>,
 }
 
 /// MakeHuman's age slider from years: 0.1875 is 11, 0.5 is 25 and 1.0 is 90,
@@ -188,6 +216,18 @@ fn age_value(years: u8) -> f32 {
     } else {
         0.5 + (y - 25.0) / 65.0 * 0.5
     }
+}
+
+/// The skin for a family at an age and body shape: MakeHuman painted each
+/// family young, middle-aged and old, female and male.
+fn skin_name(family: &str, years: u8, body_shape: u8) -> String {
+    let age = match years {
+        0..=35 => "young",
+        36..=59 => "middleage",
+        _ => "old",
+    };
+    let sex = if body_shape < 50 { "female" } else { "male" };
+    format!("{age}_{family}_{sex}")
 }
 
 /// A designed look as the body builder and the materials take it.
@@ -203,25 +243,31 @@ pub(crate) fn look_for(h: &HumanLook) -> (Look, Tints) {
         cupsize: pct(h.chest),
         ..Phenotype::default()
     };
-    // The pack's two skins differ in more than colour, so the nearer one.
-    let skin = if h.body_shape >= 50 { "male" } else { "female" };
-    let mut proxies: Vec<String> = ["high-poly", "eyebrow001", "eyelashes01"]
-        .map(String::from)
-        .to_vec();
+    let mut proxies = vec![
+        "high-poly".to_string(),
+        "eyelashes01".into(),
+        h.eyebrows.clone(),
+    ];
     proxies.extend(h.hair.clone());
     proxies.push(h.outfit.clone());
-    proxies.push("shoes06".into());
-    let rgb = |c: [u8; 3]| Color::srgb_u8(c[0], c[1], c[2]);
+    proxies.push(h.shoes.clone());
+    proxies.extend(h.hat.clone());
     (
         Look {
             phenotype,
-            skin: skin.into(),
+            skin: skin_name(&h.skin, h.age, h.body_shape),
             proxies,
+            eyes: Some(h.eyes.clone()),
+            modifiers: h
+                .face
+                .iter()
+                .map(|(m, v)| (m.clone(), f32::from(*v) / 100.0))
+                .collect(),
         },
         Tints {
-            skin: rgb(h.skin_tone),
-            hair: rgb(h.hair_colour),
-            outfit: rgb(h.outfit_colour),
+            hair: h.hair_colour,
+            top: h.top_colour,
+            bottom: h.bottom_colour,
         },
     )
 }
@@ -396,27 +442,26 @@ fn material_for(
         reflectance: 0.35,
         ..default()
     };
-    match part.kind {
-        PartKind::Body => m.base_color = tints.skin,
-        // Eyes are a glossy ball; cut out like the rest of the proxies because
-        // their cornea layer is transparent around the iris.
-        PartKind::Proxy(kind) => {
-            if part.alpha {
-                m.alpha_mode = AlphaMode::Mask(0.5);
-                m.double_sided = true;
-                m.cull_mode = None;
-            }
-            match kind {
-                ProxyKind::Eyes => m.perceptual_roughness = 0.2,
-                ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes => {
-                    m.base_color = tints.hair;
-                }
-                // The shoes keep their own colour; the outfit takes the tint.
-                ProxyKind::Clothes if !part.name.starts_with("shoes") => {
-                    m.base_color = tints.outfit;
-                }
-                ProxyKind::Clothes => {}
-            }
+    // A neutral texture takes its colour as a tint: the look's for this part
+    // if it names one, else the colour the pack recorded for it.
+    let chosen = match part.kind {
+        PartKind::Proxy(ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes) => tints.hair,
+        PartKind::Proxy(ProxyKind::Outfit) if part.region == 0 => tints.top,
+        PartKind::Proxy(ProxyKind::Outfit) => tints.bottom,
+        _ => None,
+    };
+    if let Some(c) = chosen.or(part.default_tint) {
+        m.base_color = Color::srgb_u8(c[0], c[1], c[2]);
+    }
+    if let PartKind::Proxy(kind) = part.kind {
+        if part.alpha {
+            m.alpha_mode = AlphaMode::Mask(0.5);
+            m.double_sided = true;
+            m.cull_mode = None;
+        }
+        // Eyes are a glossy ball.
+        if kind == ProxyKind::Eyes {
+            m.perceptual_roughness = 0.2;
         }
     }
     m

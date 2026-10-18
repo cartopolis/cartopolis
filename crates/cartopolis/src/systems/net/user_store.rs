@@ -362,9 +362,11 @@ pub struct AvatarAppearance {
     pub human: Option<HumanLook>,
 }
 
-/// A MakeHuman avatar as the designer edits it: every slider a whole percent,
-/// every colour three bytes, so a look compares exactly and travels small.
-/// `systems::human_avatar::look_for` turns it into what the body builder takes.
+/// A MakeHuman avatar as the designer edits it: sliders in whole percents,
+/// colours in bytes and everything worn by its name in the pack, so a look
+/// compares exactly and travels small. `systems::human_avatar::look_for` turns
+/// it into what the body builder takes. A colour that is `None` is the
+/// garment's or the hair's own.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct HumanLook {
     /// 0 feminine … 100 masculine (MakeHuman's gender, which is continuous).
@@ -377,22 +379,57 @@ pub struct HumanLook {
     pub muscle: u8,
     pub proportions: u8,
     pub chest: u8,
-    pub skin_tone: [u8; 3],
+    /// A skin family in the pack (`african`, `asian`, `caucasian`); the age and
+    /// body shape choose among its six skins.
+    #[serde(default = "default_skin")]
+    pub skin: String,
+    #[serde(default = "default_eyes")]
+    pub eyes: String,
     /// A hair proxy in the pack, or `None` for none.
     pub hair: Option<String>,
-    pub hair_colour: [u8; 3],
-    /// The outfit proxy in the pack.
+    #[serde(default)]
+    pub hair_colour: Option<[u8; 3]>,
+    #[serde(default = "default_eyebrows")]
+    pub eyebrows: String,
+    /// The outfit, top and bottom in one, and a colour for each half.
     pub outfit: String,
-    pub outfit_colour: [u8; 3],
+    #[serde(default)]
+    pub top_colour: Option<[u8; 3]>,
+    #[serde(default)]
+    pub bottom_colour: Option<[u8; 3]>,
+    #[serde(default = "default_shoes")]
+    pub shoes: String,
+    #[serde(default)]
+    pub hat: Option<String>,
+    /// Face sliders by MakeHuman modifier (`nose/nose-scale-horiz`), -100 …
+    /// 100; a modifier left at 0 is not listed.
+    #[serde(default)]
+    pub face: Vec<(String, i8)>,
+}
+
+fn default_skin() -> String {
+    "caucasian".into()
+}
+
+fn default_eyes() -> String {
+    "brown".into()
+}
+
+fn default_eyebrows() -> String {
+    "eyebrow001".into()
+}
+
+fn default_shoes() -> String {
+    "shoes06".into()
 }
 
 impl HumanLook {
     /// The body a fresh avatar of `sex` starts as.
     #[must_use]
     pub fn default_for(sex: AvatarSex) -> Self {
-        let (body_shape, outfit) = match sex {
-            AvatarSex::Man => (100, "male_casualsuit06"),
-            AvatarSex::Woman => (0, "female_casualsuit01"),
+        let (body_shape, hair, outfit, shoes) = match sex {
+            AvatarSex::Man => (100, "short02", "male_casualsuit01", "shoes06"),
+            AvatarSex::Woman => (0, "bob01", "female_elegantsuit01", "shoes01"),
         };
         Self {
             body_shape,
@@ -402,11 +439,35 @@ impl HumanLook {
             muscle: 50,
             proportions: 50,
             chest: 50,
-            skin_tone: [255; 3],
-            hair: Some("short02".into()),
-            hair_colour: [255; 3],
+            skin: default_skin(),
+            eyes: default_eyes(),
+            hair: Some(hair.into()),
+            hair_colour: None,
+            eyebrows: default_eyebrows(),
             outfit: outfit.into(),
-            outfit_colour: [255; 3],
+            top_colour: None,
+            bottom_colour: None,
+            shoes: shoes.into(),
+            hat: None,
+            face: Vec::new(),
+        }
+    }
+
+    /// A face slider's value, 0 when it is not listed.
+    #[must_use]
+    pub fn face_value(&self, modifier: &str) -> i8 {
+        self.face
+            .iter()
+            .find(|(m, _)| m == modifier)
+            .map_or(0, |(_, v)| *v)
+    }
+
+    /// Set a face slider, keeping the list to the ones off zero.
+    pub fn set_face(&mut self, modifier: &str, value: i8) {
+        self.face.retain(|(m, _)| m != modifier);
+        if value != 0 {
+            self.face.push((modifier.to_string(), value));
+            self.face.sort();
         }
     }
 }
