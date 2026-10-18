@@ -602,3 +602,76 @@ a decision in the notes panel, the agenda started by the host and seen by a
 member, and the record arriving after End for everyone). It found that a
 record card mixing keyed sections and empty holes threw on every redraw, which
 froze the page after the call; Mithril refuses that mix.
+
+## Guests, by link (2026-10-18)
+
+Somebody with no account can join one meeting. Decided with the person
+steering, between two ways of giving a guest the call's key: **the key is
+in the link** — not "add the guest to the chat", which would show a guest
+the chat's messages for as long as they were in it.
+
+- **A link is a code and a secret.** A member asks (`CallInvite`); the
+  server keeps a 10-character code for 24 hours with the chat it opens
+  (`call_links`, migration V37) and answers `CallInvited`. The asking
+  device draws a 16-byte secret and makes `https://…/?meet=<code>#<secret>`:
+  the part after `#` is never sent to any server. The link is posted in the
+  chat, sealed, so **every member's device knows the secret**, and
+  whichever host lets the guest in can hand it the key.
+- **A guest is a short-lived account that can do one thing.** Its hello is
+  `AuthCredential::Guest { code, name }`; the server makes an account
+  (`accounts.guest_of`, `guest_expires_at`, 24 hours, swept) whose username
+  is the name made unique (`Sanne-Jansen~d27`; pages show "Sanne Jansen
+  (guest)"). It may join that chat's call, always through the waiting
+  room, and nothing else: `ClientRequest::guest_may` is an exhaustive
+  whitelist, the HTTP API refuses a guest's session, and an expired guest
+  or a session that outlived its swept account is refused at the hello.
+  The browser worker reconnects a guest with the session token, never the
+  code again, or each reconnect would make another guest.
+- **The key: sealed under the secret, relayed unread.** Once a guest is
+  in, a host's device seals the epoch's base key, the members' sender
+  indices and the guest's own (`0x8000 | seat`) with AES-128-GCM under
+  HMAC-SHA256(secret, "cartopolis guest key"), the chat's id as associated
+  data (`cartopolis_calls::events::seal_guest`, `call-events.js`, held
+  together by `event-vectors.json`), and sends `CallKeyDrop`; the server
+  checks only that it comes from a host and goes to a guest in the same
+  call. A new epoch is handed out again. The app's frame keys accept a
+  sender index in the guest range; the browser's never checked.
+- **What it costs.** The guest holds the epoch's call key. It cannot get
+  any media but this call's (the forwarder sends media only to people let
+  in), but a later call in the same chat *and epoch* would be openable by
+  the guest together with a server that kept the frames. Rotating the epoch
+  after a meeting with guests is not built.
+- **Guests are browser-only.** The app hosts guests (invites, hands keys)
+  but cannot be one.
+
+**Verified 2026-10-18** by `meeting-browser.ts`'s fifth browser: the link,
+the door, the waiting room, and video both ways, which only works if the
+handed key opens both ways.
+
+**It found an older bug**, from when the join started offering a screen
+track: the server dropped any call answer over 16 kB without a word. A
+browser's answer to a down offer has a media line per track of everybody
+else (about 2.4 kB each), so once a fourth person joined a browser meeting
+every answer was dropped and nobody received anything new. The limit is
+256 kB now (`calls::MAX_SDP_BYTES`, with the measurement), and a dropped
+answer is logged.
+
+## The app shares its screen, and suppresses noise (2026-10-18)
+
+- **Screen** (`platform::screen`, More → Share your screen): Android's
+  MediaProjection (`ScreenCapture.java`, with a foreground service of type
+  `mediaProjection`, required since API 34, and the system's own dialog
+  every time); Core Graphics on macOS; the X11 root window over `x11rb` on
+  Linux; GDI on Windows. **Not Wayland**: the screen there comes only
+  through the desktop portal and PipeWire, a C library; the app says to
+  share from the browser instead. Pictures go out about twice a second on
+  the third track every join offers, through a VP9 encoder of their own at
+  up to 1280×720. Checked by building for each target and a two-session
+  forwarder test; the Windows code only against `windows-sys`' signatures,
+  and none of it yet on a device.
+- **Noise** (`cartopolis_calls::denoise`, More → Noise suppression, on by
+  default): RNNoise's network (`nnnoiseless`, pure Rust) on the
+  microphone's own 48 kHz samples, before gain and resampling; 10 ms of
+  delay. On flat white noise it took the ordinary background level to 27 %
+  of its energy but cut little at much quieter or louder levels — the
+  network learned recorded noise.
