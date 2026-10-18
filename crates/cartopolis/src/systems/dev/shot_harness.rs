@@ -1666,7 +1666,7 @@ impl ShotHarness {
             (Some(_), other) => {
                 return Err(format!(
                     "--clip photographs the avatar; --shot-mode {other} does not frame it"
-                ))
+                ));
             }
             (None, _) => mode,
         };
@@ -2398,6 +2398,9 @@ const UI_ELEMENTS: &[&str] = &[
     // A group chat with what a meeting leaves in it: a plan, a poll, notes, a
     // record (`cartopolis_core::meeting`).
     "chatmeeting",
+    // That chat with `+ → Plan a meeting` or `+ → Ask a poll` open.
+    "chatplan",
+    "chatpoll",
     "chatworld",
     "chatswitch",
     // The You page, Settings' pages and the Admin pages
@@ -2599,6 +2602,10 @@ pub fn open_scripted_ui(
         Some("world")
     } else if want("chatmeeting") {
         Some("meeting")
+    } else if want("chatplan") {
+        Some("plan")
+    } else if want("chatpoll") {
+        Some("poll")
     } else if want("chatthread") {
         Some("chat")
     } else if want("community") {

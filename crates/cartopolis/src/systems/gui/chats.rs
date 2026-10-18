@@ -168,6 +168,115 @@ pub struct ChatsView {
     /// account that may run nothing, which then has no Admin row at all.
     /// Written by `admin::render_admin_panel`.
     pub admin: Option<usize>,
+    /// A meeting or a poll being written for a chat (`+ → Plan a meeting`,
+    /// `+ → Ask a poll`), in that chat's composer: (chat key, the form).
+    pub meeting_form: Option<(String, MeetingForm)>,
+}
+
+/// The fields of `+ → Plan a meeting` and `+ → Ask a poll`, the web chat's two
+/// dialogs (`crates/atlas/web`, `chat.tsx`) as forms above the composer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeetingForm {
+    Plan {
+        title: String,
+        start_ms: u64,
+        minutes: u32,
+        /// One item a line; a number at the end is its minutes.
+        agenda: String,
+        text: String,
+    },
+    Poll {
+        question: String,
+        /// One option a line.
+        options: String,
+        multiple: bool,
+    },
+}
+
+impl MeetingForm {
+    /// A meeting at the next whole hour, an hour long, as the web chat starts one.
+    #[must_use]
+    pub fn plan(now_ms: u64) -> Self {
+        MeetingForm::Plan {
+            title: String::new(),
+            start_ms: next_hour_ms(now_ms),
+            minutes: 60,
+            agenda: String::new(),
+            text: String::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn poll() -> Self {
+        MeetingForm::Poll {
+            question: String::new(),
+            options: String::new(),
+            multiple: false,
+        }
+    }
+
+    /// What the form posts, or `None` while it is not yet complete: a plan
+    /// needs a title, a poll a question and two options.
+    #[must_use]
+    pub fn object(&self) -> Option<cartopolis_core::meeting::MeetingObject> {
+        use cartopolis_core::meeting::{new_id, AgendaItem, MeetingObject, Plan, Poll, MAX_ITEMS};
+        match self {
+            MeetingForm::Plan {
+                title,
+                start_ms,
+                minutes,
+                agenda,
+                text,
+            } => {
+                let title = title.trim();
+                (!title.is_empty()).then(|| {
+                    MeetingObject::Plan(Plan {
+                        id: new_id(),
+                        title: title.to_string(),
+                        start_ms: *start_ms,
+                        end_ms: Some(start_ms + u64::from(*minutes) * 60_000),
+                        text: Some(text.trim().to_string()).filter(|t| !t.is_empty()),
+                        agenda: agenda
+                            .lines()
+                            .filter_map(AgendaItem::from_line)
+                            .take(MAX_ITEMS)
+                            .collect(),
+                    })
+                })
+            }
+            MeetingForm::Poll {
+                question,
+                options,
+                multiple,
+            } => {
+                let question = question.trim();
+                let options: Vec<String> = options
+                    .lines()
+                    .map(str::trim)
+                    .filter(|o| !o.is_empty())
+                    .map(str::to_string)
+                    .take(MAX_ITEMS)
+                    .collect();
+                (!question.is_empty() && options.len() >= 2).then(|| {
+                    MeetingObject::Poll(Poll {
+                        id: new_id(),
+                        question: question.to_string(),
+                        options,
+                        multiple: *multiple,
+                    })
+                })
+            }
+        }
+    }
+}
+
+/// The next whole hour on this device's clock, which is not a whole UTC hour
+/// where the offset has minutes in it.
+fn next_hour_ms(now_ms: u64) -> u64 {
+    const HOUR: i64 = 3_600_000;
+    let off = i64::from(local_offset_s(now_ms).unwrap_or(0)) * 1000;
+    let local = now_ms as i64 + off;
+    ((local.div_euclid(HOUR) + 1) * HOUR - off).max(0) as u64
 }
 
 impl ChatsView {
@@ -3576,6 +3685,22 @@ fn composer(
                 {
                     act.meetup = Some(key.to_string());
                 }
+                if ui
+                    .button(format!("{} Plan a meeting", icons::EVENT))
+                    .on_hover_text("A call in this chat at a time, with an agenda")
+                    .clicked()
+                {
+                    view.meeting_form = Some((key.to_string(), MeetingForm::plan(now)));
+                    view.attach = false;
+                }
+                if ui
+                    .button(format!("{} Ask a poll", icons::POLL))
+                    .on_hover_text("A question with options; everybody here sees who chose what")
+                    .clicked()
+                {
+                    view.meeting_form = Some((key.to_string(), MeetingForm::poll()));
+                    view.attach = false;
+                }
                 if !chat.sharing.iter().any(|s| s.channel == key) {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
@@ -3600,7 +3725,141 @@ fn composer(
             }
         });
     }
-    compose_row(ui, view, key, "chats_message_field", act);
+    // The form takes the composer's place: a phone has no room for both, and
+    // a line typed under a half-written poll would be easy to send by mistake.
+    if view.meeting_form.as_ref().is_some_and(|(k, _)| k == key) {
+        meeting_form(ui, view, key, now, act);
+    } else {
+        compose_row(ui, view, key, "chats_message_field", act);
+    }
+}
+
+/// `+ → Plan a meeting` and `+ → Ask a poll`, filled in above where the
+/// composer was; posting seals the object into the chat (`act.meeting`).
+fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, act: &mut Actions) {
+    let Some((_, form)) = view.meeting_form.as_mut() else {
+        return;
+    };
+    let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, rows: usize| {
+        let edit = if rows > 1 {
+            egui::TextEdit::multiline(text).desired_rows(rows)
+        } else {
+            egui::TextEdit::singleline(text)
+        };
+        ui.add(edit.hint_text(hint).desired_width(f32::INFINITY));
+    };
+    let mut close = false;
+    raised_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let (icon, title, note) = match form {
+            MeetingForm::Plan { .. } => (
+                icons::EVENT,
+                "Plan a meeting",
+                "A call in this chat at a time. Everybody here can say whether they come.",
+            ),
+            MeetingForm::Poll { .. } => (
+                icons::POLL,
+                "Ask a poll",
+                "Votes are messages in this chat: everybody in it sees who chose what.",
+            ),
+        };
+        ui.label(
+            egui::RichText::new(format!("{icon}  {title}"))
+                .size(15.0)
+                .color(theme::CREAM),
+        );
+        theme::note(ui, note);
+        ui.add_space(4.0);
+        match form {
+            MeetingForm::Plan {
+                title,
+                start_ms,
+                minutes,
+                agenda,
+                text,
+            } => {
+                field(ui, title, "What: Q4 planning", 1);
+                ui.horizontal_wrapped(|ui| {
+                    // Never before the hour now running: a plan for the past
+                    // is not something to ask people to come to.
+                    let floor = next_hour_ms(now).saturating_sub(3_600_000);
+                    for (label, shift) in [("−1 day", -1440i64), ("−15 min", -15)] {
+                        if theme::action_button(ui, label).clicked() {
+                            *start_ms = start_ms.saturating_add_signed(shift * 60_000).max(floor);
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new(crate::systems::meetup::when_label(
+                            *start_ms,
+                            now,
+                            local_offset_s(*start_ms),
+                        ))
+                        .color(theme::TEXT),
+                    );
+                    for (label, shift) in [("+15 min", 15i64), ("+1 day", 1440)] {
+                        if theme::action_button(ui, label).clicked() {
+                            *start_ms = start_ms.saturating_add_signed(shift * 60_000);
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for m in [15u32, 30, 45, 60, 90, 120] {
+                        let label = if m < 60 {
+                            format!("{m} min")
+                        } else if m % 60 == 0 {
+                            format!("{} h", m / 60)
+                        } else {
+                            format!("{} h", f64::from(m) / 60.0)
+                        };
+                        if theme::chip(ui, &label, *minutes == m).clicked() {
+                            *minutes = m;
+                        }
+                    }
+                });
+                field(
+                    ui,
+                    agenda,
+                    "Agenda, one item a line; a number at the end is its minutes\nBudget 10\nStage and sound 15",
+                    3,
+                );
+                field(ui, text, "Anything else (optional)", 1);
+            }
+            MeetingForm::Poll {
+                question,
+                options,
+                multiple,
+            } => {
+                field(ui, question, "Question: which day suits?", 1);
+                field(ui, options, "Options, one a line\nFriday\nSaturday", 3);
+                theme::checkbox(ui, multiple, "People may choose more than one");
+            }
+        }
+        ui.add_space(4.0);
+        let ready = form.object();
+        ui.horizontal(|ui| {
+            if theme::action_button(ui, "Cancel").clicked() {
+                close = true;
+            }
+            let post = match form {
+                MeetingForm::Plan { .. } => "Post the plan",
+                MeetingForm::Poll { .. } => "Ask",
+            };
+            ui.add_enabled_ui(ready.is_some(), |ui| {
+                if theme::primary_button_sized(ui, &format!("{}  {post}", icons::SEND), 150.0)
+                    .clicked()
+                {
+                    if let Some(object) = ready {
+                        act.meeting = Some((key.to_string(), object));
+                        close = true;
+                    }
+                }
+            });
+        });
+    });
+    if close {
+        view.meeting_form = None;
+    }
+    ui.add_space(6.0);
 }
 
 /// "+", the field and send, shared by the Chat view and the World view: the
@@ -4506,6 +4765,31 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
             chat.world = None;
             RightPanel::Chat
         }
+        // `+ → Plan a meeting` and `+ → Ask a poll`, half filled in.
+        "plan" | "poll" => {
+            seed_demo_meeting(chat);
+            view.open_chat(DEMO_MEETING_CHAT);
+            view.meeting_form = Some((
+                DEMO_MEETING_CHAT.to_string(),
+                if screen == "plan" {
+                    MeetingForm::Plan {
+                        title: "Street party wrap-up".into(),
+                        start_ms: next_hour_ms(now_ms()) + 24 * 3_600_000,
+                        minutes: 45,
+                        agenda: "What went well 10\nThe money 15\nNext year 20".into(),
+                        text: String::new(),
+                    }
+                } else {
+                    MeetingForm::Poll {
+                        question: "Which evening suits?".into(),
+                        options: "Tuesday\nWednesday\nThursday".into(),
+                        multiple: true,
+                    }
+                },
+            ));
+            chat.world = None;
+            RightPanel::Chat
+        }
         "switch" => {
             view.open = None;
             chat.world = None;
@@ -4683,6 +4967,58 @@ pub fn clear_demo_chats(chat: &mut ChatState, view: &mut ChatsView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meeting_form_posts_only_when_complete() {
+        use cartopolis_core::meeting::MeetingObject;
+        let now = 1_792_300_000_000;
+        let mut plan = MeetingForm::plan(now);
+        assert!(plan.object().is_none(), "a plan needs a title");
+        let MeetingForm::Plan {
+            title,
+            start_ms,
+            agenda,
+            ..
+        } = &mut plan
+        else {
+            unreachable!()
+        };
+        assert!(*start_ms > now && *start_ms - now <= 3_600_000);
+        *title = " Q4 planning ".into();
+        *agenda = "Budget 10\n\n- Wrap-up".into();
+        let Some(MeetingObject::Plan(p)) = plan.object() else {
+            panic!("a titled plan posts");
+        };
+        assert_eq!(p.title, "Q4 planning");
+        assert_eq!(p.end_ms, Some(p.start_ms + 60 * 60_000));
+        assert_eq!(p.agenda.len(), 2);
+        assert_eq!(
+            (p.agenda[0].minutes, p.agenda[1].name.as_str()),
+            (10, "Wrap-up")
+        );
+        assert!(p.text.is_none());
+
+        let mut poll = MeetingForm::poll();
+        let MeetingForm::Poll {
+            question, options, ..
+        } = &mut poll
+        else {
+            unreachable!()
+        };
+        *question = "Which day?".into();
+        *options = "Friday\n  \n".into();
+        assert!(poll.object().is_none(), "one option is not a poll");
+        if let MeetingForm::Poll { options, .. } = &mut poll {
+            options.push_str("Saturday\n");
+        }
+        let Some(MeetingObject::Poll(p)) = poll.object() else {
+            panic!("two options make a poll");
+        };
+        assert_eq!(
+            p.options,
+            vec!["Friday".to_string(), "Saturday".to_string()]
+        );
+    }
 
     #[test]
     fn a_chat_says_who_can_read_it() {

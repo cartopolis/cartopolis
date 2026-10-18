@@ -51,6 +51,43 @@ pub struct AgendaItem {
     pub minutes: u32,
 }
 
+impl AgendaItem {
+    /// "Budget 10", "Budget · 10 min" or "- Budget" → an item, as the web
+    /// chat's `agendaLine` reads it: a number at the end is its minutes.
+    #[must_use]
+    pub fn from_line(line: &str) -> Option<Self> {
+        let t = line.trim();
+        let t = t.strip_prefix(['-', '*', '•']).map_or(t, str::trim_start);
+        if t.is_empty() {
+            return None;
+        }
+        let plain = || AgendaItem {
+            name: t.to_string(),
+            minutes: 0,
+        };
+        let lower = t.to_ascii_lowercase();
+        let unit = ["minutes", "mins", "min", "m"]
+            .into_iter()
+            .find(|u| lower.ends_with(u))
+            .map_or(0, str::len);
+        let rest = t[..t.len() - unit].trim_end();
+        let digits = rest.len() - rest.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        if !(1..=3).contains(&digits) {
+            return Some(plain());
+        }
+        let before = &rest[..rest.len() - digits];
+        let sep = |c: char| c.is_whitespace() || matches!(c, '·' | ',' | ':' | '-');
+        let name = before.trim_end_matches(sep);
+        if name.len() == before.len() || name.trim().is_empty() {
+            return Some(plain());
+        }
+        Some(AgendaItem {
+            name: name.trim().to_string(),
+            minutes: rest[rest.len() - digits..].parse().unwrap_or(0),
+        })
+    }
+}
+
 /// Whether somebody comes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rsvp {
@@ -766,5 +803,31 @@ mod tests {
         assert!(f.contains("SUMMARY:Budget\\, again\\; really\r\n"));
         assert!(f.contains("DTSTART:20261014T180000Z\r\n"));
         assert!(f.contains("TRIGGER:-PT10M"));
+    }
+
+    #[test]
+    fn an_agenda_line_reads_as_the_web_chat_reads_it() {
+        let item = |line: &str| AgendaItem::from_line(line).map(|i| (i.name, i.minutes));
+        let named = |name: &str, minutes| Some((name.to_string(), minutes));
+        assert_eq!(item("Budget 10"), named("Budget", 10));
+        assert_eq!(
+            item("- Stage and sound · 15 min"),
+            named("Stage and sound", 15)
+        );
+        assert_eq!(item("Who does what: 5m"), named("Who does what", 5));
+        assert_eq!(item("Wrap-up, 20 minutes"), named("Wrap-up", 20));
+        assert_eq!(item("Program"), named("Program", 0));
+        assert_eq!(
+            item("Q4"),
+            named("Q4", 0),
+            "a number needs a space before it"
+        );
+        assert_eq!(
+            item("Year 2027"),
+            named("Year 2027", 0),
+            "four digits are a name"
+        );
+        assert_eq!(item("   "), None);
+        assert_eq!(item("•"), None);
     }
 }
