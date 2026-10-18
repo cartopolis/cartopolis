@@ -372,8 +372,8 @@ midas bot start --node <node> --name viberfox \
   --brief tools/bot/viberfox.md --agent-meta @tools/bot/claude-agent-acp.json \
   --agent-mode default \
   --mcp 'cargo run -q -p cartopolis -- mcp --socket /tmp/bot/mcp.sock' \
-  -- cargo run -q -p cartopolis -- --mcp-headless --mcp-listen /tmp/bot/mcp.sock \
-     --connect cartopolis.org --mcp-allow jeroen
+  -- 'CARTO_DATA_DIR="$PWD/../viberfox-data" cargo run -q -p cartopolis -- --mcp-headless
+      --mcp-listen /tmp/bot/mcp.sock --connect cartopolis.org --mcp-allow jeroen'
 midas bot log viberfox                  # what it heard, did and thought
 midas bot tell --name viberfox "…"      # a line from the operator
 midas bot stop --name viberfox          # stops both, gives the node back
@@ -404,6 +404,11 @@ on this side:
   carries its pose in words, because a host passes content blocks on and drops
   the structured data. Nothing at all comes back when nobody spoke. Each answer
   becomes one prompt, or joins the next one while a turn runs.
+- **`CARTO_DATA_DIR` outside the checkout** (one shell word, so `$PWD` is the
+  node's checkout). Without it the private-chat keys live in the checkout's
+  `data/`, which a node's full sync (`git clean -fdx`) deletes, and every such
+  restart made the bot a new device, eight in a week, each one more add that
+  can leave a chat in two epochs (`encrypted-chat.md`).
 - **The agent answers with `say`** and its text output goes only to the
   transcript; `tools/bot/viberfox.md` tells it so.
 - **The subscription login is for the owner's own use.** Anthropic's terms
