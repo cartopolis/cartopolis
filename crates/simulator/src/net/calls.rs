@@ -54,7 +54,12 @@ pub(super) async fn on_join<T: FrameTransport>(
         Ok(read) => read,
         Err(_) => return Ok(()),
     };
-    if !members.contains(&ctx.principal_key) {
+    // A guest is in no chat: it may join the one call its link names.
+    let allowed = match &ctx.guest_of {
+        Some(of) => *of == group,
+        None => members.contains(&ctx.principal_key),
+    };
+    if !allowed {
         return ctx
             .send(&server_error(request_id, 403, "you are not in that chat"))
             .await;
@@ -100,6 +105,76 @@ pub(super) async fn on_join<T: FrameTransport>(
             .await
         }
         Err(message) => ctx.send(&server_error(request_id, 409, message)).await,
+    }
+}
+
+/// A member asks for a guest link to its chat's call. The server keeps the
+/// code and which chat; the secret that seals the call's key for the guest is
+/// the asking device's and is never sent here.
+pub(super) async fn on_invite<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+) -> anyhow::Result<()> {
+    if group.len() > crate::e2ee::MAX_GROUP_ID_BYTES {
+        return Ok(());
+    }
+    if ctx.gates.last_call_invite.elapsed() < MIN_CALL_JOIN_INTERVAL {
+        return ctx
+            .send(&server_error(CALL_CONTROL_REQUEST, 429, "slow down"))
+            .await;
+    }
+    ctx.gates.last_call_invite = Instant::now();
+    let (account, id) = (ctx.principal_key.clone(), group.clone());
+    let made = db::call(&ctx.conn, move |c| {
+        if !crate::e2ee::members(c, &id)?.contains(&account) {
+            return Ok(None);
+        }
+        crate::auth::create_call_link(c, &id, &account, crate::auth::unix_now_s()).map(Some)
+    })
+    .await;
+    match made {
+        Ok(Ok(Some((code, expires_ms)))) => {
+            ctx.send(&NetMessage::CallInvited {
+                group,
+                code,
+                expires_ms,
+            })
+            .await
+        }
+        Ok(Ok(None)) => {
+            ctx.send(&server_error(
+                CALL_CONTROL_REQUEST,
+                403,
+                "only somebody in the chat can invite a guest",
+            ))
+            .await
+        }
+        _ => {
+            ctx.send(&server_error(
+                CALL_CONTROL_REQUEST,
+                500,
+                "could not make a guest link",
+            ))
+            .await
+        }
+    }
+}
+
+/// A host hands a guest the call's key, sealed under the link's secret
+/// (`crate::calls::State::key_drop` checks who and to whom).
+pub(super) fn on_key_drop<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+    participant: u64,
+    sealed: Vec<u8>,
+) {
+    if sealed.len() > crate::calls::MAX_KEY_DROP_BYTES {
+        return;
+    }
+    if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
+        if seat.group == group {
+            handle.key_drop(seat, participant, sealed);
+        }
     }
 }
 

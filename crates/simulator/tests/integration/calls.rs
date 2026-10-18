@@ -564,3 +564,206 @@ async fn a_member_waits_until_a_host_lets_them_in() {
         "alice heard {heard} of bob's frames after letting him in"
     );
 }
+
+/// A guest signing in with a call link: the session, or the refusal's words.
+async fn guest_hello(
+    addr: &str,
+    code: &str,
+    name: &str,
+) -> Result<super::private_chat::Client, String> {
+    use cartopolis_core::{decode_app_frame, AuthCredential, PROTOCOL_VERSION};
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut c = tokio_util::codec::Framed::new(
+        stream,
+        tokio_util::codec::LengthDelimitedCodec::builder()
+            .max_frame_length(32 << 20)
+            .little_endian()
+            .new_codec(),
+    );
+    send(
+        &mut c,
+        &NetMessage::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            auth: AuthCredential::Guest {
+                code: code.into(),
+                name: name.into(),
+            },
+        },
+    )
+    .await;
+    match decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap() {
+        NetMessage::ServerHelloAck { .. } => Ok(c),
+        NetMessage::ServerError { message, .. } => Err(message),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
+    use cartopolis_core::CallAction;
+    let (s, _dir) = start(&["alice", "bob"]).await;
+    let addr = s.local_addr.to_string();
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@localhost", Uuid::new_v4()).unwrap();
+    let mut a = online(&addr, &mut alice).await;
+    let mut b = online(&addr, &mut bob).await;
+    let group = start_direct(&mut a, &mut alice, "bob").await;
+    let _ = &mut b;
+    let (_pa, _) = join(&mut a, &alice, &group).await.expect("alice joins");
+
+    // Alice makes a link; a made-up code lets nobody in.
+    send(
+        &mut a,
+        &NetMessage::CallInvite {
+            group: group.clone(),
+        },
+    )
+    .await;
+    let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::CallInvited { code, .. } => Some(code),
+        _ => None,
+    })
+    .await
+    .expect("a link for the call");
+    assert_eq!(code.len(), 10);
+    let refused = guest_hello(&addr, "notacode00", "Mallory").await;
+    assert!(refused.is_err_and(|e| e.contains("ended")));
+
+    // The guest signs in by it and is told which call it may join.
+    let mut g = guest_hello(&addr, &code, "Sanne Jansen")
+        .await
+        .expect("the link lets a guest in");
+    let (told, _) = next_matching(&mut g, PATIENT, |m| match m {
+        NetMessage::CallInvited { group, .. } => Some(group),
+        _ => None,
+    })
+    .await
+    .expect("the guest is told its call");
+    assert_eq!(told, group);
+    let mut guest_dev = Device::new("guest@localhost", Uuid::new_v4()).unwrap();
+    send(
+        &mut g,
+        &NetMessage::E2eeRegisterDevice {
+            request_id: 1,
+            device: guest_dev.identity().device,
+            key_packages: guest_dev.key_packages(1).unwrap(),
+        },
+    )
+    .await;
+    next_matching(&mut g, PATIENT, |m| match m {
+        NetMessage::E2eeDeviceStatus { .. } => Some(()),
+        _ => None,
+    })
+    .await
+    .expect("the guest's device is registered");
+
+    // Nothing but the call: asking for somebody's keys goes unanswered.
+    send(
+        &mut g,
+        &NetMessage::E2eeClaimKeyPackages {
+            request_id: 7,
+            address: "alice".into(),
+        },
+    )
+    .await;
+    assert!(
+        next_matching(&mut g, Duration::from_millis(600), |m| match m {
+            NetMessage::E2eeKeyPackages { .. } | NetMessage::ServerError { request_id: 7, .. } =>
+                Some(()),
+            _ => None,
+        })
+        .await
+        .is_none(),
+        "a guest may not look anybody up"
+    );
+
+    // The guest asks to join, and waits; Alice sees a guest waiting.
+    let (up, down) = (socket(), socket());
+    let (_link, offer) = Link::new(
+        Instant::now(),
+        up.local_addr().unwrap(),
+        down.local_addr().unwrap(),
+        false,
+        false,
+    )
+    .unwrap();
+    send(
+        &mut g,
+        &NetMessage::CallJoin {
+            request_id: 41,
+            group: group.clone(),
+            offer,
+            screen: None,
+        },
+    )
+    .await;
+    let (waiting_as, _) = next_matching(&mut g, PATIENT, |m| match m {
+        NetMessage::CallWaiting { participant, .. } => Some(participant),
+        _ => None,
+    })
+    .await
+    .expect("a guest always waits");
+    let (waiter, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::CallRoster { waiting, .. } if !waiting.is_empty() => Some(waiting[0].clone()),
+        _ => None,
+    })
+    .await
+    .expect("alice sees the guest waiting");
+    assert!(waiter.guest);
+    assert_eq!(waiter.participant, waiting_as);
+    assert!(
+        waiter.username.starts_with("Sanne-Jansen~"),
+        "{}",
+        waiter.username
+    );
+
+    // Let in, the guest is joined; Alice's key reaches the guest and no one else.
+    control(
+        &mut a,
+        &group,
+        CallAction::Admit {
+            participant: waiting_as,
+        },
+    )
+    .await;
+    next_matching(&mut g, PATIENT, |m| match m {
+        NetMessage::CallJoined { .. } => Some(()),
+        _ => None,
+    })
+    .await
+    .expect("the guest is let in");
+    send(
+        &mut a,
+        &NetMessage::CallKeyDrop {
+            group: group.clone(),
+            participant: waiting_as,
+            sealed: vec![7; 64],
+        },
+    )
+    .await;
+    let (sealed, _) = next_matching(&mut g, PATIENT, |m| match m {
+        NetMessage::CallKeyDropped { sealed, .. } => Some(sealed),
+        _ => None,
+    })
+    .await
+    .expect("the guest gets the key");
+    assert_eq!(sealed, vec![7; 64]);
+
+    // A guest cannot make links of its own.
+    send(
+        &mut g,
+        &NetMessage::CallInvite {
+            group: group.clone(),
+        },
+    )
+    .await;
+    assert!(
+        next_matching(&mut g, Duration::from_millis(600), |m| match m {
+            NetMessage::CallInvited { code, .. } if !code.is_empty() => Some(()),
+            _ => None,
+        })
+        .await
+        .is_none(),
+        "a guest may not invite guests"
+    );
+}

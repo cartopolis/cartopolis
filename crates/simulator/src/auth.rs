@@ -301,6 +301,165 @@ pub fn delete_account(conn: &Connection, id: &str) -> anyhow::Result<bool> {
     Ok(n > 0)
 }
 
+// ── Guests in a call (`docs/notes/calls.md`, "Guests") ─────────────────────
+
+/// Unix seconds now.
+#[must_use]
+pub fn unix_now_s() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Most guests one call link lets in while it lasts.
+pub const MAX_GUESTS_PER_LINK: i64 = 50;
+
+/// A code for a guest link: 10 characters a person can read aloud, 50 bits.
+fn link_code() -> String {
+    const ABC: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut bytes = [0u8; 10];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+        .iter()
+        .map(|b| ABC[usize::from(*b) % ABC.len()] as char)
+        .collect()
+}
+
+/// Make a guest link to `group`'s call, asked for by `created_by`. Answers
+/// the code and when it stops working (unix ms).
+pub fn create_call_link(
+    conn: &Connection,
+    group: &[u8],
+    created_by: &str,
+    now_s: u64,
+) -> anyhow::Result<(String, u64)> {
+    let expires = now_s + cartopolis_core::CALL_GUEST_HOURS * 3600;
+    let code = link_code();
+    conn.execute(
+        "INSERT INTO call_links (code, group_id, created_by, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![code, group, created_by, now_s as i64, expires as i64],
+    )?;
+    Ok((code, expires * 1000))
+}
+
+/// Why a guest could not come in by a link.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GuestRefusal {
+    /// No such link, or it has expired.
+    NoLink,
+    /// The link has let in [`MAX_GUESTS_PER_LINK`] already.
+    Full,
+}
+
+/// A guest's account, made by a call link's `code` for a person who gave
+/// `name`: it may only join the link's call, and it is gone after
+/// [`cartopolis_core::CALL_GUEST_HOURS`]. Answers its id, its username (the
+/// name, made unique) and the group whose call it may join.
+pub fn create_guest(
+    conn: &Connection,
+    code: &str,
+    name: &str,
+    now_s: u64,
+) -> anyhow::Result<Result<(Uuid, String, Vec<u8>), GuestRefusal>> {
+    let link: Option<(Vec<u8>, i64)> = conn
+        .query_row(
+            "SELECT group_id, expires_at FROM call_links WHERE code = ?1",
+            [code.trim()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((group, expires)) = link.filter(|(_, e)| *e > now_s as i64) else {
+        return Ok(Err(GuestRefusal::NoLink));
+    };
+    let guests: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM accounts WHERE guest_of = ?1 AND guest_expires_at > ?2",
+        rusqlite::params![group, now_s as i64],
+        |r| r.get(0),
+    )?;
+    if guests >= MAX_GUESTS_PER_LINK {
+        return Ok(Err(GuestRefusal::Full));
+    }
+    // Their name as they gave it, made into one word: a username travels in
+    // addresses (`name@server`) and rosters, which have no room for spaces.
+    let mut base: String = name
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .take(32)
+        .collect();
+    if base.is_empty() {
+        base = "guest".into();
+    }
+    let id = Uuid::new_v4();
+    for _ in 0..8 {
+        let mut tag = [0u8; 2];
+        OsRng.fill_bytes(&mut tag);
+        let username = format!("{base}~{:03x}", u16::from_le_bytes(tag) & 0xfff);
+        // No password: '!' is no PHC string, so a password sign-in never
+        // matches it. The session from the guest hello is the only way in.
+        let made = conn.execute(
+            "INSERT INTO accounts (id, username, pw_hash, guest_of, guest_expires_at)
+             VALUES (?1, ?2, '!guest', ?3, ?4)",
+            rusqlite::params![id.to_string(), username, group, expires],
+        );
+        match made {
+            Ok(_) => return Ok(Ok((id, username, group))),
+            // Taken: draw another tag.
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(anyhow!("could not find a free guest name"))
+}
+
+/// What an account that just signed in is, for a call's guests.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// An ordinary account.
+    Member,
+    /// A guest, who may only join the call of this group.
+    Guest(Vec<u8>),
+    /// A guest past its time, or an account that no longer exists while a
+    /// session for it does (sessions outlive a swept guest): refused.
+    Gone,
+}
+
+pub fn standing(conn: &Connection, principal: Uuid, now_s: u64) -> anyhow::Result<Standing> {
+    let row: Option<(Option<Vec<u8>>, Option<i64>)> = conn
+        .query_row(
+            "SELECT guest_of, guest_expires_at FROM accounts WHERE id = ?1",
+            [principal.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => Standing::Gone,
+        Some((None, _)) => Standing::Member,
+        Some((Some(group), Some(until))) if until > now_s as i64 => Standing::Guest(group),
+        Some((Some(_), _)) => Standing::Gone,
+    })
+}
+
+/// Delete guests and links past their time. A session left for one is
+/// refused at the next sign-in ([`standing`] says `Gone`).
+pub fn sweep_guests(conn: &Connection, now_s: u64) -> anyhow::Result<usize> {
+    conn.execute(
+        "DELETE FROM call_links WHERE expires_at <= ?1",
+        [now_s as i64],
+    )?;
+    let n = conn.execute(
+        "DELETE FROM accounts WHERE guest_of IS NOT NULL AND guest_expires_at <= ?1",
+        [now_s as i64],
+    )?;
+    if n > 0 {
+        tracing::info!(count = n, "swept expired guests");
+    }
+    Ok(n)
+}
+
 /// What [`delete_own_account`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfDelete {

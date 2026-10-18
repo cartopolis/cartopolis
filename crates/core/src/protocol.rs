@@ -198,7 +198,7 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
     ProtocolRevision {
         version: 41,
         adr: "",
-        summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted, .recording, .guest, .room; CallRoster.settings, .waiting, .spotlight, .rooms), a waiting room (CallWaiting, Admit / Deny), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, and CallWatch says whose cameras a device draws (docs/notes/calls.md)",
+        summary: "meetings — a call has hosts and settings (CallMember.role, .hand, .held, .sharing, .muted, .recording, .guest, .room; CallRoster.settings, .waiting, .spotlight, .rooms), a waiting room (CallWaiting, Admit / Deny), CallJoin.screen names a third, screen-share track (CallTrack.kind replaces .video), CallControl carries hands, sharing and host actions, CallEnded tells a removed device or everyone at an end-for-all, CallReact / CallReacted relay sealed reactions, CallWatch says whose cameras a device draws, and guests join by link: AuthCredential::Guest, CallInvite / CallInvited, CallKeyDrop / CallKeyDropped (docs/notes/calls.md)",
     },
 ];
 
@@ -324,6 +324,10 @@ pub enum MessageKind {
     CallReacted = 114,
     CallWatch = 115,
     CallWaiting = 116,
+    CallInvite = 117,
+    CallInvited = 118,
+    CallKeyDrop = 119,
+    CallKeyDropped = 120,
 }
 
 impl MessageKind {
@@ -437,6 +441,10 @@ impl MessageKind {
             114 => Some(Self::CallReacted),
             115 => Some(Self::CallWatch),
             116 => Some(Self::CallWaiting),
+            117 => Some(Self::CallInvite),
+            118 => Some(Self::CallInvited),
+            119 => Some(Self::CallKeyDrop),
+            120 => Some(Self::CallKeyDropped),
             _ => None,
         }
     }
@@ -780,6 +788,10 @@ pub enum AuthCredential {
     /// Username + password. Verified server-side with argon2; never stored
     /// client-side (persist the returned session token instead).
     Password { username: String, password: String },
+    /// A guest with a call link (protocol 41): the link's `code` and the name
+    /// they gave. Makes an account that may only join that link's call and
+    /// lasts [`CALL_GUEST_HOURS`]; the returned session token reconnects it.
+    Guest { code: String, name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1696,7 +1708,33 @@ pub enum NetMessage {
         group: Vec<u8>,
         participant: u64,
     },
+    /// Client: make a link a guest can join this chat's call by. Only a member
+    /// of the chat may; the answer is [`NetMessage::CallInvited`]. The link's
+    /// secret is the asking device's own and never reaches the server.
+    CallInvite { group: Vec<u8> },
+    /// Server: the code for a guest link to `group`'s call, good until
+    /// `expires_ms`. Also what a guest is told right after signing in with
+    /// one, so it knows which call it may join.
+    CallInvited {
+        group: Vec<u8>,
+        code: String,
+        expires_ms: u64,
+    },
+    /// Client (a host): the call's key for the guest seated as `participant`,
+    /// sealed under the link's secret, which the server does not have
+    /// (`docs/notes/calls.md`, "Guests"). Relayed to that guest only.
+    CallKeyDrop {
+        group: Vec<u8>,
+        participant: u64,
+        sealed: Vec<u8>,
+    },
+    /// Server: a host's [`NetMessage::CallKeyDrop`], for this guest.
+    CallKeyDropped { group: Vec<u8>, sealed: Vec<u8> },
 }
+
+/// How long a guest link, and a guest's account, last: a meeting, not a
+/// membership.
+pub const CALL_GUEST_HOURS: u64 = 24;
 
 /// How long an invite link works, in days.
 pub const COMMUNITY_INVITE_DAYS: u64 = 14;
@@ -2489,6 +2527,10 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::CallReacted { .. } => MessageKind::CallReacted,
         NetMessage::CallWatch { .. } => MessageKind::CallWatch,
         NetMessage::CallWaiting { .. } => MessageKind::CallWaiting,
+        NetMessage::CallInvite { .. } => MessageKind::CallInvite,
+        NetMessage::CallInvited { .. } => MessageKind::CallInvited,
+        NetMessage::CallKeyDrop { .. } => MessageKind::CallKeyDrop,
+        NetMessage::CallKeyDropped { .. } => MessageKind::CallKeyDropped,
     }
 }
 
@@ -3025,6 +3067,30 @@ mod tests {
                 group: group.clone(),
                 participant: 13,
             },
+            NetMessage::CallInvite {
+                group: group.clone(),
+            },
+            NetMessage::CallInvited {
+                group: group.clone(),
+                code: "k7q2m9x4".into(),
+                expires_ms: 1_792_000_800_000,
+            },
+            NetMessage::CallKeyDrop {
+                group: group.clone(),
+                participant: 13,
+                sealed: vec![9; 40],
+            },
+            NetMessage::CallKeyDropped {
+                group: group.clone(),
+                sealed: vec![9; 40],
+            },
+            NetMessage::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                auth: AuthCredential::Guest {
+                    code: "k7q2m9x4".into(),
+                    name: "Sanne".into(),
+                },
+            },
             NetMessage::CallControl {
                 group: group.clone(),
                 action: CallAction::OpenRooms {
@@ -3134,7 +3200,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 107] = [
+        const ALL: [MessageKind; 111] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3242,6 +3308,10 @@ mod tests {
             CallReacted,
             CallWatch,
             CallWaiting,
+            CallInvite,
+            CallInvited,
+            CallKeyDrop,
+            CallKeyDropped,
         ];
         for k in ALL {
             assert_eq!(
@@ -3255,7 +3325,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CallWaiting as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(CallKeyDropped as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

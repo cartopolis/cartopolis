@@ -219,6 +219,28 @@ async fn authenticate(
                 via: crate::auth::Credential::Session,
             })
         }
+        // A call's guest: the link makes an account that may join that call
+        // alone (`auth::create_guest`), swept when it expires.
+        AuthCredential::Guest { code, name } => {
+            let (code, name) = (code.clone(), name.clone());
+            let made = db::call(conn, move |c| {
+                let now = crate::auth::unix_now_s();
+                crate::auth::sweep_guests(c, now)?;
+                crate::auth::create_guest(c, &code, &name, now)
+            })
+            .await
+            .map_err(|_| AuthRefusal::BadCredential)?
+            .map_err(|_| AuthRefusal::BadCredential)?;
+            match made {
+                Ok((principal, username, _group)) => Ok(crate::auth::Access {
+                    principal,
+                    username,
+                    via: crate::auth::Credential::Session,
+                }),
+                Err(crate::auth::GuestRefusal::NoLink) => Err(AuthRefusal::GuestLinkEnded),
+                Err(crate::auth::GuestRefusal::Full) => Err(AuthRefusal::GuestLinkFull),
+            }
+        }
     }
 }
 
@@ -229,12 +251,18 @@ async fn authenticate(
 enum AuthRefusal {
     BadCredential,
     EmailUnconfirmed,
+    /// A guest link that does not exist or has expired; or a guest whose
+    /// time is up.
+    GuestLinkEnded,
+    GuestLinkFull,
 }
 
 impl AuthRefusal {
     fn message(&self) -> &'static str {
         match self {
             Self::BadCredential => "authentication failed",
+            Self::GuestLinkEnded => "this meeting link has ended — ask for a new one",
+            Self::GuestLinkFull => "this meeting link has let in all the guests it may",
             Self::EmailUnconfirmed => {
                 "confirm your email address first — check your inbox for the link"
             }
@@ -452,6 +480,8 @@ struct RateGates {
     lookup: Instant,
     last_call_join: Instant,
     last_call_react: Instant,
+    /// The last guest link this connection asked for.
+    last_call_invite: Instant,
     last_where: Instant,
     /// The hand bucket (`hand::on_hand`, [`take_token`]).
     hand: Instant,
@@ -473,6 +503,7 @@ impl RateGates {
             lookup: ago(MIN_LOOKUP_INTERVAL * LOOKUP_BURST),
             last_call_join: ago(MIN_CALL_JOIN_INTERVAL),
             last_call_react: ago(MIN_CALL_REACT_INTERVAL),
+            last_call_invite: ago(MIN_CALL_JOIN_INTERVAL),
             last_where: ago(MIN_WHERE_INTERVAL),
             hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
         }
@@ -505,8 +536,11 @@ struct ConnCtx<T> {
     /// The account's username, which is also its name in chat.
     display_name: String,
     /// A meeting guest's account, let in by an invite link: its calls wait
-    /// to be let in (`crate::calls`).
+    /// to be let in (`crate::calls`), and it may do nothing else
+    /// (`ClientRequest::guest_may`).
     guest: bool,
+    /// The chat whose call a guest may join.
+    guest_of: Option<Vec<u8>>,
     avatar_id: u64,
     /// Built once per connection rather than once per message: a few dozen short
     /// strings into a `HashSet`, against a `ChatSend` path that would otherwise
@@ -663,6 +697,27 @@ pub async fn handle_connection<T: FrameTransport>(
         }
     };
     let (principal, username) = (access.principal, access.username.clone());
+    // A call's guest is let in for its call alone, and a guest whose time is
+    // up (or whose account was swept under a session that lived on) not at
+    // all. A database error refuses: guessing "member" would hand a guest the
+    // whole server.
+    let standing = db::call(&conn, move |c| {
+        crate::auth::standing(c, principal, crate::auth::unix_now_s())
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or(crate::auth::Standing::Gone);
+    let guest_of = match standing {
+        crate::auth::Standing::Member => None,
+        crate::auth::Standing::Guest(group) => Some(group),
+        crate::auth::Standing::Gone => {
+            let message = AuthRefusal::GuestLinkEnded.message();
+            let err = encode_app_frame(&server_error(0, 401, message))?;
+            framed.send(Bytes::from(err)).await?;
+            return Err(anyhow::anyhow!("{message}"));
+        }
+    };
     // A sign-in gets a fresh session token to reconnect with. An access token is
     // answered with itself: it already is the credential to reconnect with, and a
     // bot reconnecting all day must not mint a session per connect — sessions
@@ -765,7 +820,8 @@ pub async fn handle_connection<T: FrameTransport>(
         principal,
         principal_key,
         display_name,
-        guest: false,
+        guest: guest_of.is_some(),
+        guest_of: guest_of.clone(),
         avatar_id,
         filter,
         gates: RateGates::open(),
@@ -780,6 +836,15 @@ pub async fn handle_connection<T: FrameTransport>(
     // Global history), and the client does nothing with any of it before the
     // world has arrived anyway.
     ctx.feed(&permissions_message(perms)).await?;
+    // A guest is told which call it may join: it is in no chat to find it in.
+    if let Some(group) = guest_of {
+        ctx.feed(&NetMessage::CallInvited {
+            group,
+            code: String::new(),
+            expires_ms: 0,
+        })
+        .await?;
+    }
     ctx.feed(&NetMessage::BlockedList { usernames: blocked })
         .await?;
     // Contacts: this connection's own list, and "online" to the contacts who can
@@ -993,6 +1058,13 @@ pub async fn handle_connection<T: FrameTransport>(
 async fn on_frame<T: FrameTransport>(ctx: &mut ConnCtx<T>, bytes: &[u8]) -> anyhow::Result<()> {
     let msg = decode_app_frame(bytes)?;
     match ClientRequest::try_from(msg) {
+        // A call's guest may take part in that call and nothing else: no
+        // world, no chat, no contacts. What it is not let do is dropped
+        // quietly; its client sends some of it (presence) without asking.
+        Ok(request) if ctx.guest && !request.guest_may() => {
+            tracing::debug!("ignored a request a guest may not make");
+            Ok(())
+        }
         Ok(request) => dispatch(ctx, request).await,
         Err(other) => {
             tracing::debug!(
@@ -1252,6 +1324,15 @@ async fn dispatch<T: FrameTransport>(
             Ok(())
         }
         ClientRequest::CallDecline { group } => calls::on_decline(ctx, group).await,
+        ClientRequest::CallInvite { group } => calls::on_invite(ctx, group).await,
+        ClientRequest::CallKeyDrop {
+            group,
+            participant,
+            sealed,
+        } => {
+            calls::on_key_drop(ctx, group, participant, sealed);
+            Ok(())
+        }
         ClientRequest::RequestContact {
             request_id,
             username,

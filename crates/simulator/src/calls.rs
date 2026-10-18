@@ -41,6 +41,9 @@ pub const MAX_SDP_BYTES: usize = 16 * 1024;
 
 /// Longest sealed call event relayed: a reaction, or a line of captions.
 pub const MAX_REACTION_BYTES: usize = 1024;
+/// The longest sealed key a host may hand a guest: a base key, a few dozen
+/// member indices and the seal, with room.
+pub const MAX_KEY_DROP_BYTES: usize = 4096;
 
 /// Most breakout rooms, and the longest room name.
 const MAX_ROOMS: usize = 20;
@@ -114,6 +117,12 @@ enum Command {
     Watch {
         participant: u64,
         cameras: Option<Vec<u64>>,
+    },
+    /// A host's sealed key for a guest (`NetMessage::CallKeyDrop`).
+    KeyDrop {
+        from: u64,
+        to: u64,
+        sealed: Vec<u8>,
     },
 }
 
@@ -201,6 +210,16 @@ impl CallsHandle {
         let _ = self.tx.send(Command::React {
             participant: seat.participant,
             epoch,
+            sealed,
+        });
+    }
+
+    /// The call's key, sealed for the guest seated as `to`: relayed only from
+    /// a host, only to a guest in the same call.
+    pub fn key_drop(&self, seat: &Seat, to: u64, sealed: Vec<u8>) {
+        let _ = self.tx.send(Command::KeyDrop {
+            from: seat.participant,
+            to,
             sealed,
         });
     }
@@ -836,6 +855,23 @@ impl State {
                     ParticipantId(participant),
                     cameras.map(|c| c.into_iter().map(ParticipantId).collect()),
                 );
+            }
+            Command::KeyDrop { from, to, sealed } => {
+                let (Some(host), Some(guest)) = (
+                    self.info.get(&ParticipantId(from)),
+                    self.info.get(&ParticipantId(to)),
+                ) else {
+                    return;
+                };
+                // A host's, for a guest let into the same call: the server
+                // cannot open it, so it can only check who and to whom.
+                if host.role.hosts() && guest.guest && host.group == guest.group {
+                    let msg = NetMessage::CallKeyDropped {
+                        group: guest.group.clone(),
+                        sealed,
+                    };
+                    self.send_to(guest.device, &msg);
+                }
             }
         }
     }

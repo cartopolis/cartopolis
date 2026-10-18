@@ -1200,10 +1200,21 @@ pub(crate) fn require_access(state: &HttpState, headers: &HeaderMap) -> ApiResul
             StatusCode::UNAUTHORIZED,
             "sign in first".to_string(),
         ))?;
-    state.sessions.resolve_access(token).ok_or(ApiError(
+    let access = state.sessions.resolve_access(token).ok_or(ApiError(
         StatusCode::UNAUTHORIZED,
         "that session has expired".to_string(),
-    ))
+    ))?;
+    // A call's guest has a session for the call alone (`net::calls`), never
+    // for the rest of the server: no pictures, no buildings, no profile.
+    let now = auth::unix_now_s();
+    let standing = with_db(state, move |c| auth::standing(c, access.principal, now))?;
+    if standing != auth::Standing::Member {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "a guest in a call can do only that".to_string(),
+        ));
+    }
+    Ok(access)
 }
 
 fn claims_open(state: &HttpState) -> ApiResult<()> {

@@ -205,6 +205,9 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             if let Err(e) = registration::sweep(&guard) {
                 tracing::warn!("registration sweep: {e:#}");
             }
+            if let Err(e) = auth::sweep_guests(&guard, auth::unix_now_s()) {
+                tracing::warn!("guest sweep: {e:#}");
+            }
         }
         let state = http::HttpState {
             world: world.clone(),

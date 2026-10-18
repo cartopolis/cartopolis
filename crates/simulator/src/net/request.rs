@@ -201,6 +201,14 @@ pub enum ClientRequest {
     CallDecline {
         group: Vec<u8>,
     },
+    CallInvite {
+        group: Vec<u8>,
+    },
+    CallKeyDrop {
+        group: Vec<u8>,
+        participant: u64,
+        sealed: Vec<u8>,
+    },
     RequestContact {
         request_id: u32,
         username: String,
@@ -239,6 +247,62 @@ pub enum ClientRequest {
     /// are twenty, and `net::communities::dispatch` matches them exhaustively
     /// against this same list.
     Community(NetMessage),
+}
+
+impl ClientRequest {
+    /// Whether a call's guest may make this request: taking part in the call
+    /// it was let into, and registering the device a call needs. Exhaustive,
+    /// so a new request is refused to guests until somebody decides otherwise.
+    #[must_use]
+    pub fn guest_may(&self) -> bool {
+        match self {
+            Self::Hello
+            | Self::E2eeRegisterDevice { .. }
+            // Its own mailbox, which nothing is sent to: the chat engine
+            // syncs on every connect, and a refusal would stall it.
+            | Self::E2eeSync { .. }
+            | Self::CallJoin { .. }
+            | Self::CallControl { .. }
+            | Self::CallReact { .. }
+            | Self::CallWatch { .. }
+            | Self::CallAnswer { .. }
+            | Self::CallLeave { .. } => true,
+            Self::Intent { .. }
+            | Self::Teleport { .. }
+            | Self::SetPresence { .. }
+            | Self::CreatePrim { .. }
+            | Self::UpdatePrim { .. }
+            | Self::DeletePrim { .. }
+            | Self::SetPrimVideo { .. }
+            | Self::SetPrimPhysical { .. }
+            | Self::SetPushEndpoint { .. }
+            | Self::TextureCatalogRequest
+            | Self::TextureRequest { .. }
+            | Self::ChatSend { .. }
+            | Self::GetPrimScript { .. }
+            | Self::SetPrimScript { .. }
+            | Self::TouchPrim { .. }
+            | Self::HandPose { .. }
+            | Self::VoiceFrame { .. }
+            | Self::SetBlocked { .. }
+            | Self::ReportUser { .. }
+            | Self::DeleteAccount { .. }
+            | Self::E2eeClaimKeyPackages { .. }
+            | Self::E2eeCreateGroup { .. }
+            | Self::E2eeSend { .. }
+            | Self::CallDecline { .. }
+            | Self::CallInvite { .. }
+            | Self::CallKeyDrop { .. }
+            | Self::RequestContact { .. }
+            | Self::AnswerContact { .. }
+            | Self::RemoveContact { .. }
+            | Self::SetContactSettings { .. }
+            | Self::LookupPerson { .. }
+            | Self::GetNearbyPeople { .. }
+            | Self::WherePeople { .. }
+            | Self::Community(_) => false,
+        }
+    }
 }
 
 impl TryFrom<NetMessage> for ClientRequest {
@@ -497,6 +561,16 @@ impl TryFrom<NetMessage> for ClientRequest {
             NetMessage::CallAnswer { group, sdp } => Self::CallAnswer { group, sdp },
             NetMessage::CallLeave { group } => Self::CallLeave { group },
             NetMessage::CallDecline { group } => Self::CallDecline { group },
+            NetMessage::CallInvite { group } => Self::CallInvite { group },
+            NetMessage::CallKeyDrop {
+                group,
+                participant,
+                sealed,
+            } => Self::CallKeyDrop {
+                group,
+                participant,
+                sealed,
+            },
             NetMessage::RequestContact {
                 request_id,
                 username,
@@ -601,6 +675,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallEnded { .. }
             | NetMessage::CallReacted { .. }
             | NetMessage::CallWaiting { .. }
+            | NetMessage::CallInvited { .. }
+            | NetMessage::CallKeyDropped { .. }
             | NetMessage::PrimSound { .. }
             | NetMessage::PrimTone { .. }
             | NetMessage::PrimMotion { .. }

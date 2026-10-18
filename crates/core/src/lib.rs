@@ -45,7 +45,7 @@ pub use protocol::{
     GeoAnchor, JoinRequestDto, JoinRule, ListingState, MessageKind, MetDto, NearbyPersonDto,
     NetMessage, PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry, PrimSurface, PrimVideo,
     ProtocolRevision, Relation, ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry,
-    TopicDto, CALL_CONTROL_REQUEST, COMMUNITY_INVITE_DAYS, EMOTE_REPLICATE_SECS,
+    TopicDto, CALL_CONTROL_REQUEST, CALL_GUEST_HOURS, COMMUNITY_INVITE_DAYS, EMOTE_REPLICATE_SECS,
     MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY,
     PROTOCOL_VERSION,
 };
