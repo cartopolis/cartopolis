@@ -468,6 +468,19 @@ impl Device {
     /// [`Self::confirm_pending`] when it does and [`Self::discard_pending`] when
     /// it does not. Until then this device's view of the chat is unchanged.
     pub fn add(&mut self, group: &[u8], key_packages: &[Vec<u8>]) -> Result<Outgoing, Error> {
+        self.add_replacing(group, key_packages, &[])
+    }
+
+    /// [`Self::add`], taking `replace` (leaves already in the chat) out in the
+    /// same commit: how a device that fell out of step with a chat is let back
+    /// in under its fresh key package (`encrypted-chat.md`, "A device that fell
+    /// behind"). Pending like [`Self::add`].
+    fn add_replacing(
+        &mut self,
+        group: &[u8],
+        key_packages: &[Vec<u8>],
+        replace: &[LeafNodeIndex],
+    ) -> Result<Outgoing, Error> {
         let packages = key_packages
             .iter()
             .map(|b| {
@@ -479,9 +492,37 @@ impl Device {
             .collect::<Result<Vec<_>, _>>()?;
         let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
         let epoch = g.epoch().as_u64();
-        let (commit, welcome, _) = g
-            .add_members(&self.provider, &self.signer, &packages)
+        if replace.is_empty() {
+            let (commit, welcome, _) = g
+                .add_members(&self.provider, &self.signer, &packages)
+                .map_err(mls)?;
+            return Ok(Outgoing {
+                group: group.to_vec(),
+                epoch,
+                message: commit.tls_serialize_detached().map_err(mls)?,
+                welcome: Some(welcome.tls_serialize_detached().map_err(mls)?),
+            });
+        }
+        // What openmls's own `swap_members` does, without its one-for-one rule:
+        // removals and adds as one commit.
+        let packages: Vec<KeyPackage> = packages.into_iter().map(|p| p.into()).collect();
+        let bundle = g
+            .commit_builder()
+            .propose_removals(replace.iter().copied())
+            .propose_adds(packages)
+            .load_psks(self.provider.storage())
+            .map_err(mls)?
+            .build(
+                self.provider.rand(),
+                self.provider.crypto(),
+                &self.signer,
+                |_| true,
+            )
+            .map_err(mls)?
+            .stage_commit(&self.provider)
             .map_err(mls)?;
+        let (commit, welcome, _) = bundle.into_messages();
+        let welcome = welcome.ok_or_else(|| Error::Mls("an add made no invitation".into()))?;
         Ok(Outgoing {
             group: group.to_vec(),
             epoch,
@@ -509,11 +550,18 @@ impl Device {
         })
     }
 
-    /// Add the devices whose key packages name somebody `allowed` admits, and
-    /// no device already in the chat. Answers who was added, or `None` when
-    /// nobody was left. The rule for *who* belongs is the caller's: the
-    /// members already here ([`Self::add_member_devices`]), or the people of
-    /// the community a topic belongs to.
+    /// Add the devices whose key packages name somebody `allowed` admits.
+    /// Answers who was added, or `None` when nobody was left. The rule for
+    /// *who* belongs is the caller's: the members already here
+    /// ([`Self::add_member_devices`]), or the people of the community a topic
+    /// belongs to.
+    ///
+    /// **A device already in the chat is replaced, not skipped**: its old leaf
+    /// goes out in the same commit that adds the new package. The server asks
+    /// for that only for a device that fell behind the chat and dropped it
+    /// (`Refusal::Behind` there), and a key package carries the device's own
+    /// signature, so the server cannot put a device of its choosing in. This
+    /// device itself is never replaced.
     pub fn add_allowed(
         &mut self,
         group: &[u8],
@@ -540,11 +588,9 @@ impl Device {
                 continue;
             };
             let a_member = allowed(&id.address);
-            let already = members
-                .iter()
-                .chain(who.iter())
-                .any(|m| m.device == id.device);
-            if a_member && !already {
+            let twice = who.iter().any(|m| m.device == id.device);
+            let me = id.device == self.me.device;
+            if a_member && !twice && !me {
                 keep.push(b.clone());
                 who.push(id);
             }
@@ -552,7 +598,18 @@ impl Device {
         if keep.is_empty() {
             return Ok(None);
         }
-        Ok(Some((self.add(group, &keep)?, who)))
+        let g = self.groups.get(group).ok_or(Error::UnknownGroup)?;
+        let mine = g.own_leaf_index();
+        let replace: Vec<LeafNodeIndex> = g
+            .members()
+            .filter(|m| m.index != mine)
+            .filter(|m| {
+                Identity::from_credential(&m.credential)
+                    .is_some_and(|id| who.iter().any(|w| w.device == id.device))
+            })
+            .map(|m| m.index)
+            .collect();
+        Ok(Some((self.add_replacing(group, &keep, &replace)?, who)))
     }
 
     /// Take every device of each of `addresses` out of a chat, with one commit.
@@ -740,6 +797,13 @@ impl Device {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Whether this device is still in a chat it holds. False once a commit
+    /// took it out: removed, or replaced because it fell behind.
+    #[must_use]
+    pub fn is_active(&self, group: &[u8]) -> bool {
+        self.groups.get(group).is_some_and(MlsGroup::is_active)
     }
 
     /// The chat's current epoch, which the server checks commits against.
@@ -1159,6 +1223,83 @@ mod tests {
         assert_eq!(Identity::from_bytes(b"no separator"), None);
     }
 
+    /// The viberfox/jeroen chat of 2026-10-18: one device missed a commit, so
+    /// everything it sealed was `TooDistantInThePast` to the others and
+    /// nothing they sealed opened for it. Adding it again under a fresh key
+    /// package replaces its old leaf, and the chat works for everyone.
+    #[test]
+    fn a_device_that_fell_behind_is_replaced_and_reads_again() {
+        let mut ann = Device::new("ann@x", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@x", Uuid::new_v4()).unwrap();
+        let mut ann_phone = Device::new("ann@x", Uuid::new_v4()).unwrap();
+        let g = ann.create_group(b"x/chat").unwrap();
+        let add = ann.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        ann.confirm_pending(&g).unwrap();
+        bob.join(&add.welcome.unwrap()).unwrap();
+
+        // Ann adds her phone; bob never applies that commit.
+        let (missed, _) = ann
+            .add_member_devices(&g, &ann_phone.key_packages(1).unwrap())
+            .unwrap()
+            .unwrap();
+        ann.confirm_pending(&g).unwrap();
+        ann_phone.join(&missed.welcome.unwrap()).unwrap();
+        let line = |d: &mut Device| {
+            d.encrypt(
+                &g,
+                &Payload::Text {
+                    body: "hi".into(),
+                    sent_at_ms: 1,
+                },
+            )
+            .unwrap()
+            .message
+        };
+        // Bob cannot read the chat any more. (Ann can still read *him* for a
+        // few epochs, MAX_PAST_EPOCHS; the chat of 2026-10-18 was further gone.)
+        let from_ann = line(&mut ann);
+        assert!(
+            bob.receive(&g, &from_ann).is_err(),
+            "bob is stuck in the old epoch"
+        );
+
+        // Bob drops the chat and is added back by the phone, replacing his leaf.
+        bob.forget(&g);
+        let (back, who) = ann_phone
+            .add_member_devices(&g, &bob.key_packages(1).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(who, vec![bob.identity().clone()]);
+        ann_phone.confirm_pending(&g).unwrap();
+        assert!(ann.receive(&g, &back.message).is_ok());
+        assert_eq!(bob.join(&back.welcome.unwrap()).unwrap(), g);
+        assert_eq!(ann.members(&g).len(), 3, "replaced, not added twice");
+
+        let from_bob = line(&mut bob);
+        assert!(ann.receive(&g, &from_bob).is_ok());
+        let from_ann = line(&mut ann);
+        assert!(bob.receive(&g, &from_ann).is_ok());
+    }
+
+    /// The leaf a commit replaces stops being in the chat on its old device.
+    #[test]
+    fn a_replaced_device_sees_itself_taken_out() {
+        let mut ann = Device::new("ann@x", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@x", Uuid::new_v4()).unwrap();
+        let g = ann.create_group(b"x/chat").unwrap();
+        let add = ann.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        ann.confirm_pending(&g).unwrap();
+        bob.join(&add.welcome.unwrap()).unwrap();
+        assert!(bob.is_active(&g));
+        let (swap, _) = ann
+            .add_member_devices(&g, &bob.key_packages(1).unwrap())
+            .unwrap()
+            .unwrap();
+        ann.confirm_pending(&g).unwrap();
+        bob.receive(&g, &swap.message).unwrap();
+        assert!(!bob.is_active(&g));
+    }
+
     #[test]
     fn a_request_to_add_member_devices_cannot_bring_in_anybody_new() {
         let mut laptop = Device::new("alice@x", Uuid::new_v4()).unwrap();
@@ -1170,10 +1311,11 @@ mod tests {
         laptop.confirm_pending(&g).unwrap();
         bob.join(&add.welcome.unwrap()).unwrap();
 
-        // A stranger, and a device already in the chat, are both left out.
+        // A stranger is left out, and so is this device itself.
         let mut offered = carol.key_packages(1).unwrap();
-        offered.extend(bob.key_packages(1).unwrap());
         assert!(laptop.add_member_devices(&g, &offered).unwrap().is_none());
+        let own = laptop.key_packages(1).unwrap();
+        assert!(laptop.add_member_devices(&g, &own).unwrap().is_none());
 
         // Alice's own other device goes in, and the stranger beside it does not.
         offered.extend(phone.key_packages(1).unwrap());

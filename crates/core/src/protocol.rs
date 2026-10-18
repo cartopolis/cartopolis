@@ -1903,6 +1903,15 @@ pub enum NetMessage {
 /// membership.
 pub const CALL_GUEST_HOURS: u64 = 24;
 
+/// `E2eeSent::refused` for a line sealed in an epoch the chat left long ago:
+/// the sending device missed a commit and can never catch up. The server has
+/// stopped counting it as holding the chat, so a member device is asked to
+/// add it back; a client that reads this drops the chat's keys and waits for
+/// that invitation (`encrypted-chat.md`, "A device that fell behind"). A
+/// refusal text rather than a new field, so an older client merely shows it.
+pub const E2EE_BEHIND: &str =
+    "this device fell behind the chat and is being added back; send it again in a moment";
+
 /// How long an invite link works, in days.
 pub const COMMUNITY_INVITE_DAYS: u64 = 14;
 

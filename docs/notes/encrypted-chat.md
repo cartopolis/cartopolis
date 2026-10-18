@@ -1,7 +1,7 @@
 ---
 topic: encrypted-chat
 triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql, crates/e2ee, crates/chat, crates/simulator/Cargo.toml]
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # Private chats are end-to-end encrypted, and the server is only a relay
@@ -108,13 +108,48 @@ finds who is missing and asks one that is.
   days are not added: a browser whose storage was cleared would otherwise
   collect a member slot in every chat for ever.
 - **A device adds only devices of people already in the chat**
-  (`Device::add_member_devices` drops any other key package, and any device
-  already in it). The request comes from the server, and this is what keeps it
-  from being a way to add a stranger. The server could always hand out a key
-  package of its choosing when a chat starts, so this is no weaker than that.
+  (`Device::add_member_devices` drops any other key package). The request
+  comes from the server, and this is what keeps it from being a way to add a
+  stranger. The server could always hand out a key package of its choosing
+  when a chat starts, so this is no weaker than that. A device **already** in
+  the chat is replaced, not skipped (next section).
 - **A device that joins this way is labelled by who else is in the chat**, not
   by who invited it: when your own laptop adds your phone, the inviter is you.
   A group's name is sent again after the add, as for a newcomer.
+
+## A device that fell behind (2026-10-18)
+
+A device that misses a commit can never catch up: every later line is sealed
+in an epoch it has no keys for, and what it seals is `TooDistantInThePast` to
+everyone else once the chat is more than `MAX_PAST_EPOCHS` (3) ahead. The
+viberfox/jeroen direct chat ended like that: the bot heard nothing jeroen
+wrote and jeroen saw nothing the bot sent, with only a warning in a log. Ways
+in: a commit that fails to apply, a lost own commit (`OwnCommit::Lost`), and
+until 2026-10-18 a kill between sending and saving (`drive_private_chats` now
+saves first).
+
+The repair needs no new message:
+
+- **The server spots it.** Every `E2eeSend` carries its epoch. A line from a
+  past epoch whose ending commit is older than `e2ee::BEHIND_AFTER_MS` (2 min;
+  younger is a device writing as a commit lands, a race) is refused with
+  `cartopolis_core::E2EE_BEHIND`, and the device's hold, ask and any stale
+  invitation for the chat are deleted.
+- **The device drops the chat's keys and cursor** on that refusal, keeping its
+  label, and syncs without it (`Engine::drop_to_rejoin`).
+- **The usual missing-device path does the rest**: the sync makes the server
+  ask a device that holds the chat to add it, and `add_allowed` takes the
+  stale leaf out in the same commit that adds the fresh key package (openmls's
+  commit builder, as its `swap_members` does). The invitation joins it from
+  there, and the adder shares the history as for any new device.
+- **A device that sees a commit take it out** (`Device::is_active` false) drops
+  the chat the same way, so a replacement it did not ask for, a server bug
+  say, also ends in a rejoin rather than a device locked out.
+
+Limits: a stuck device that only reads is noticed only when it next sends,
+and an older client shows the refusal but does not drop the chat (its next
+sync holds it again), so it needs the update. What was said while it was out
+reaches it only through the shared history.
 
 ## Moderation in encrypted chats
 

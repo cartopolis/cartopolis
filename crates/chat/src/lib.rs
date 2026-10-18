@@ -2056,7 +2056,7 @@ impl Engine {
                     return;
                 }
                 if !self.on_group_committed(request_id, seq, refused.clone(), out, events) {
-                    self.on_sent(request_id, &group, seq, refused, events);
+                    self.on_sent(request_id, &group, seq, refused, out, events);
                 }
             }
             NetMessage::E2eeInvite {
@@ -2413,6 +2413,7 @@ impl Engine {
         group: &[u8],
         seq: Option<u64>,
         refused: Option<String>,
+        out: &mut Vec<NetMessage>,
         events: &mut Vec<Event>,
     ) {
         if let Some(i) = self.starting.iter().position(|s| s.request == request_id) {
@@ -2442,6 +2443,9 @@ impl Engine {
         }
         if let Some(why) = refused {
             let peer = self.peers.get(group).cloned().unwrap_or_default();
+            if why == cartopolis_core::E2EE_BEHIND {
+                self.drop_to_rejoin(group, out);
+            }
             events.push(Event::Notice(format!("Not delivered to {peer}: {why}")));
         } else if let Some(seq) = seq {
             events.push(Event::Sent {
@@ -2630,9 +2634,31 @@ impl Engine {
                     });
                 }
             },
-            Ok(Received::Membership { .. }) => {}
+            Ok(Received::Membership { .. }) => {
+                if !self.device.is_active(&group) {
+                    // This commit took this device out. If it was a member
+                    // device replacing it (it had fallen behind), the
+                    // invitation in the same commit lets it back in.
+                    self.drop_to_rejoin(&group, out);
+                }
+            }
             Err(e) => tracing::warn!(error = %e, seq, "could not read a private-chat entry"),
         }
+    }
+
+    /// This device is out of `group` for good in its current state: it fell
+    /// behind the chat ([`cartopolis_core::E2EE_BEHIND`]), or a commit took it
+    /// out. Drop the keys and the cursor and keep the label, then sync without
+    /// the chat: the server resends any invitation waiting for this device
+    /// once its chat is not among the cursors, and [`Self::on_invite`] joins a
+    /// chat this device has no cursor for. A chat it was really removed from
+    /// has no invitation waiting, and stays as it was, read-only.
+    fn drop_to_rejoin(&mut self, group: &[u8], out: &mut Vec<NetMessage>) {
+        tracing::info!("dropped a private chat this device fell out of; waiting to be added back");
+        self.cursors.remove(group);
+        self.device.forget(group);
+        let sync = self.sync_request(None);
+        out.push(sync);
     }
 }
 

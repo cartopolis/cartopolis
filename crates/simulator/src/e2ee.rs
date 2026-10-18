@@ -62,6 +62,8 @@ pub enum Refusal {
     NotAMember,
     #[error("somebody else changed the chat first; catch up and try again")]
     StaleEpoch,
+    #[error("{}", cartopolis_core::E2EE_BEHIND)]
+    Behind,
     #[error("a direct chat is between two people")]
     DirectIsTwo,
     #[error("an invitation names a device that is not theirs")]
@@ -300,6 +302,38 @@ pub struct WelcomeFor<'a> {
     pub bytes: &'a [u8],
 }
 
+/// How long after a commit a line sealed in the epoch before it is still
+/// taken: a device writing as somebody else's change lands is in a race, not
+/// stuck, and it reads the commit a moment later. Past this it had every
+/// chance to, and did not.
+pub const BEHIND_AFTER_MS: u64 = 2 * 60 * 1000;
+
+/// Is a line sealed in `epoch` from a device that fell behind the chat for
+/// good? The chat is past that epoch, and the commit that ended it is older
+/// than [`BEHIND_AFTER_MS`]. Epochs count accepted commits from 0, so the
+/// commit that ended `epoch` is the chat's `epoch + 1`-th; one the log no
+/// longer has is old by definition.
+fn fell_behind(
+    conn: &Connection,
+    group: &[u8],
+    epoch: u64,
+    current_epoch: u64,
+    now_ms: u64,
+) -> Result<bool, Refusal> {
+    if epoch >= current_epoch {
+        return Ok(false);
+    }
+    let ended: Option<i64> = conn
+        .query_row(
+            "SELECT sent_at_ms FROM e2ee_log WHERE group_id = ?1 AND is_commit = 1
+             ORDER BY seq LIMIT 1 OFFSET ?2",
+            params![group, epoch as i64],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(ended.is_none_or(|t| now_ms.saturating_sub(t as u64) > BEHIND_AFTER_MS))
+}
+
 /// Append a sealed entry to a chat's log, applying rules 2 and 3.
 #[allow(clippy::too_many_arguments)]
 pub fn append(
@@ -339,6 +373,20 @@ pub fn append(
     }
     if is_commit && epoch != current_epoch as u64 {
         return Err(Refusal::StaleEpoch);
+    }
+    if !is_commit && fell_behind(&tx, group, epoch, current_epoch as u64, now_ms)? {
+        // Let it back in: not holding the chat, not asked about lately, and no
+        // stale invitation to rejoin into the epoch it is stuck in. A member
+        // device is asked to add it at the next sync (`missing_devices`).
+        let dev = device.to_string();
+        for table in ["e2ee_group_devices", "e2ee_device_asks", "e2ee_invites"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE group_id = ?1 AND device = ?2"),
+                params![group, dev],
+            )?;
+        }
+        tx.commit()?;
+        return Err(Refusal::Behind);
     }
     if !is_commit && crate::communities::is_archived(&tx, group)? {
         return Err(Refusal::Archived);
@@ -977,6 +1025,39 @@ mod tests {
             claim_key_packages(&t.c, "bob", None).unwrap_or_default(),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn a_device_stuck_behind_the_chat_is_refused_and_let_back_in() {
+        let t = two();
+        let g = b"chat".to_vec();
+        create_group(&t.c, &t.alice, &g, None).unwrap();
+        hold(&t.c, &g, t.ad).unwrap();
+        add_bob(&t, &g); // epoch 0 → 1
+        hold(&t.c, &g, t.bd).unwrap();
+        // Alice changes the chat again at 10 s: epoch 1 → 2.
+        let commit = |at| append(&t.c, &t.alice, "alice", t.ad, &g, 1, true, b"c2", None, at);
+        commit(10_000).unwrap();
+        let line = |epoch, at| append(&t.c, &t.bob, "bob", t.bd, &g, epoch, false, b"hi", None, at);
+
+        // Writing from epoch 1 a moment after the commit is a race, not stuck.
+        assert!(line(1, 11_000).is_ok());
+        assert!(missing_devices(&t.c, &t.alice, Some(&g), 11_000)
+            .unwrap()
+            .is_empty());
+
+        // Still writing from epoch 1 past BEHIND_AFTER_MS: it missed the commit.
+        let later = 10_000 + BEHIND_AFTER_MS + 1;
+        assert_eq!(line(1, later).unwrap_err(), Refusal::Behind);
+        assert_eq!(Refusal::Behind.to_string(), cartopolis_core::E2EE_BEHIND);
+        // It holds the chat no more, so a member device is asked to add it back.
+        let found = missing_devices(&t.c, &t.alice, Some(&g), later).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].missing, vec![(t.bd, "bob".to_string())]);
+        assert_eq!(found[0].holders, vec![t.ad]);
+
+        // A device in the current epoch writes as before.
+        assert!(line(2, later).is_ok());
     }
 
     #[test]
