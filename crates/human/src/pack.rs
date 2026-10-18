@@ -314,17 +314,13 @@ pub fn parse_mhclo(text: &str) -> Result<Mhclo> {
             Block::Verts if numeric => {
                 let n: Vec<f32> = f.iter().filter_map(|s| s.parse().ok()).collect();
                 let r = if n.len() >= 9 {
-                    ProxyRef {
-                        v: [n[0] as u32, n[1] as u32, n[2] as u32],
-                        w: [n[3], n[4], n[5]],
-                        offset: [n[6], n[7], n[8]],
-                    }
+                    ProxyRef::new(
+                        [n[0] as u32, n[1] as u32, n[2] as u32],
+                        [n[3], n[4], n[5]],
+                        [n[6], n[7], n[8]],
+                    )
                 } else {
-                    ProxyRef {
-                        v: [n[0] as u32, 0, 0],
-                        w: [1.0, 0.0, 0.0],
-                        offset: [0.0; 3],
-                    }
+                    ProxyRef::new([n[0] as u32, 0, 0], [1.0, 0.0, 0.0], [0.0; 3])
                 };
                 out.refs.push(r);
                 continue;
@@ -486,9 +482,10 @@ fn outfit_regions(faces: &[Face], refs: &[ProxyRef], base: &[[f32; 3]], hips_y: 
         let entry = height.entry(island).or_default();
         for &v in f.v.iter().filter(|&&v| v != Face::NONE) {
             let r = &refs[v as usize];
+            let w = r.w();
             for k in 0..3 {
-                entry.0 += r.w[k] * base[r.v[k] as usize][1];
-                entry.1 += r.w[k];
+                entry.0 += w[k] * base[r.v[k] as usize][1];
+                entry.1 += w[k];
             }
         }
     }

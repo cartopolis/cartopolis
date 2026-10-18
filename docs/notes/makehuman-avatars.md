@@ -1,6 +1,6 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, MakeHuman, MPFB, 100STYLE, CMU, BVH]
+triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH]
 updated: 2026-10-18
 ---
 
@@ -47,9 +47,20 @@ for the gestures and the seat. The cuts — which take, which frames — are
 listed in `human-pack`.
 
 **The pack carries every macro target** (`TargetSet::Macros`), so the sliders
-can make any adult. That is most of its 11 MB; one body needs about 30 of the
-516, so fetching a body's targets on demand is how this gets small again.
+can make any adult. That is most of it; one body needs about 30 of the 516, so
+fetching a body's targets on demand is the next step if it must get smaller.
 `HumanModel::missing_targets` is how a body asked of a pack without them says so.
+
+**Pack 7 nearly halved it losslessly (2026-10-18): 13.9 MB to 8.0 MB.** Measured
+field by field before: the 786 targets 10.26 MB, the clothing references 2.85
+MB, the mesh 0.49, the clips 0.19, the weights 0.11. The targets became
+differenced columns (`Target`'s doc has the table — 5.13 MB, same numbers);
+the clothing references whole steps instead of `f32`s (`ProxyRef`). **Trap:
+MakeHuman's reference weights go past 2** (up to 5.1, in a bob haircut; every
+pair of shoes is 3.5), so an `i16` at 1/16384 clipped them, and the clipped
+shoes stood a grey spike out behind the legs. They are `i32`, which postcard
+writes in the same three bytes. The textures went from 9.9 MB to 7.5 MB by
+storing the grey (neutral) ones as one channel, plus alpha where they cut out.
 
 Measured 2026-10-17 on mac-1: the pack was 11.1 MB (13.6 MB from 2026-10-18 with the wardrobe and the face, plus 9.9 MB of textures) — ten clips and all 516 macro targets from age 18 up (the "child" ones blend in below 25; only the baby ones are left out), stored as half-millimetre steps and deflated, where floats were 70 MB —, the nine 2048² PNG textures
 19 MB (too big for a phone; downscale and compress before this ships). The
@@ -178,6 +189,14 @@ not they are, which made every outfit a 1.5 MB PNG; the pack now looks at the
 alpha. The client needed Bevy's `jpeg` feature, whose decoder the `image` crate
 already built.
 
+**On the GPU they are block-compressed, with mips** (`HumanTextureLoader`,
+reusing the map tiles' encoder): the default man's seven textures went from
+16.0 MB of RGBA8 to 5.3 MB. What routes a file to that loader rather than
+Bevy's is its **inner extension**: every pack texture is `*.avatar.jpg` or
+`*.avatar.png` (`textures::TEXTURE_EXTENSION`), and Bevy tries a file's full
+extension before its last one. A texture written as plain `.jpg` still loads —
+uncompressed, with no error to say so.
+
 **The face is MakeHuman's modifiers**, carried whole (about 110 controls, 270
 targets, 0.1 MB of the pack); the designer offers about thirty. A modifier is a
 pair of target sets by sign, a left-and-right one moving both sides; a
@@ -195,7 +214,26 @@ hand-keyed clips — and no commit on the branch ever carried a pack made from
 the library. Mixamo (no redistribution), Bandai Namco's set and LAFAN1
 (non-commercial) and SFU's (no commercial products) were ruled out on licence.
 
-Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in CMU
-(a slip-and-fall stands in), 100STYLE has no finger bones (the hands keep their
-relaxed rest pose), and the `--clip` sheet's first tile sometimes catches the
-city before it has loaded.
+## What code adds on top of the capture (2026-10-18)
+
+- **The gaze.** Retargeted as captured, the face looked 20–25° down at idle
+  and in the gestures and 42° down in the walk (the run was level) — measured
+  per clip as the head's turn from rest applied to forward. `rig::level_gaze`
+  turns each upright clip's head so its average is 6° below level; the
+  capture's motion about that average stays. Clips whose head pitches over
+  more than 40° (the roll, the fall) keep their gaze.
+- **The neck** is halfway between the chest and the head, in every clip. CMU's
+  skeleton has two neck joints to the rig's one; through the lower one the
+  gestures held the rig's neck ~55° back and the head forward against it, and
+  the wave's head lay on its shoulder until the neck was derived instead.
+- **The fingers.** Neither database records them (100STYLE stops at the wrist,
+  CMU has a stub), so `hands` curls them per clip — relaxed at idle, a loose
+  fist running, a fist to punch, open to wave, closing at the end of the reach
+  — with a little movement through each cycle. The bend direction comes from
+  the rest hand's own curl, so no bone roll had to be worked out; a test
+  checks that a fist brings the fingertips toward the thumb's root.
+
+Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in
+CMU (a slip-and-fall stands in), the waving hand is the only one that opens on
+purpose (both hands share the clip's grip), and the `--clip` sheet's first tile
+sometimes catches the city before it has loaded.

@@ -59,6 +59,84 @@ impl AssetLoader for HumanPackLoader {
     }
 }
 
+/// The pack's textures (`*.avatar.jpg`, `*.avatar.png` — the inner extension
+/// is what routes them here rather than to Bevy's image loader), mipmapped and
+/// block-compressed for this GPU the way map tiles are
+/// (`tile_loader::tile_texels`).
+///
+/// Measured 2026-10-18 (the `debug!` below, on mac-1, BC3): the default man
+/// draws seven textures — three 1024², three 512², one 256² — which Bevy's
+/// image loader put on the GPU as 16.0 MB of RGBA8 with no mips; compressed,
+/// mips included, they are 5.3 MB. ETC2 blocks are the same size. Encoding
+/// them took 352 ms of worker time in all. The mips matter on their own too:
+/// an avatar is mostly seen from a follow camera's distance, where an
+/// unmipped 1024² skin shimmers.
+///
+/// The decode and the encode run on `platform::workers`, never the asset
+/// loader's own thread: a 1024² ETC2 chain is tens of milliseconds of blocking
+/// CPU, and Bevy's IO pool is where every other asset waits.
+#[derive(Default, TypePath)]
+pub(crate) struct HumanTextureLoader;
+
+impl AssetLoader for HumanTextureLoader {
+    type Asset = Image;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        _load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let (done, image) = futures_channel::oneshot::channel();
+        use crate::platform::workers;
+        // Near: it is the body on screen, and nothing draws it until all its
+        // textures are in.
+        workers::submit_ranked(
+            "avatar textures",
+            workers::NEAR,
+            Box::new(move || {
+                let _ = done.send(human_texture(&bytes));
+            }),
+        );
+        image.await.map_err(std::io::Error::other)?
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["avatar.jpg", "avatar.png"]
+    }
+}
+
+/// Decode a pack texture and make it the image the GPU gets: its whole mip
+/// chain, block-compressed where this device decodes a block format.
+fn human_texture(bytes: &[u8]) -> std::io::Result<Image> {
+    use crate::systems::tile_loader::{image_from_mip_chain, tile_texels};
+    let rgba = image::load_from_memory(bytes)
+        .map_err(std::io::Error::other)?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let (texels, mip_count) = tile_texels(width, height, rgba.into_raw());
+    debug!(
+        "avatar texture {width}x{height}: {:?}, {} mips, {} bytes (RGBA8 unmipped: {})",
+        texels.format,
+        mip_count,
+        texels.data.len(),
+        width * height * 4
+    );
+    Ok(image_from_mip_chain(
+        width,
+        height,
+        texels.data,
+        mip_count,
+        texels.format,
+        RenderAssetUsages::RENDER_WORLD,
+        bevy::image::ImageSampler::linear(),
+    ))
+}
+
 #[derive(Resource)]
 pub(crate) struct HumanPackHandle(Handle<HumanPackAsset>);
 

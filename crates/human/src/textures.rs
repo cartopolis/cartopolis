@@ -44,19 +44,45 @@ fn luma(p: &Rgba<u8>) -> f32 {
     (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
 }
 
+/// The inner extension every pack texture carries (`skin.avatar.jpg`). The
+/// client claims `avatar.jpg` and `avatar.png` with a loader of its own, which
+/// mipmaps and block-compresses them for its GPU (`human_avatar`); a plain
+/// `.jpg` would go to Bevy's image loader and up as uncompressed RGBA.
+pub const TEXTURE_EXTENSION: &str = "avatar";
+
 /// Write `img` beside the pack: JPEG when it is opaque (a skin is ~250 KB that
 /// way and a megabyte as PNG), PNG when its alpha is a cut-out. Returns the
 /// file name.
 pub fn write(img: &DynamicImage, out_dir: &Path, stem: &str, alpha: bool) -> Result<String> {
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-    let name = format!("{stem}.{}", if alpha { "png" } else { "jpg" });
+    let name = format!(
+        "{stem}.{TEXTURE_EXTENSION}.{}",
+        if alpha { "png" } else { "jpg" }
+    );
     let path = out_dir.join(&name);
+    // A neutral texture is grey, and three equal channels are two more than
+    // it needs: one channel (and its alpha) is what goes in the file. The
+    // client widens it back to RGBA on decode.
+    let grey = img
+        .to_rgba8()
+        .pixels()
+        .all(|p| p[0] == p[1] && p[1] == p[2]);
     let written = if alpha {
-        img.to_rgba8().save(&path).map_err(|e| e.to_string())
+        if grey {
+            img.to_luma_alpha8().save(&path)
+        } else {
+            img.to_rgba8().save(&path)
+        }
+        .map_err(|e| e.to_string())
     } else {
         let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+        let pixels = if grey {
+            DynamicImage::ImageLuma8(img.to_luma8())
+        } else {
+            DynamicImage::ImageRgb8(img.to_rgb8())
+        };
         image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 88)
-            .encode_image(&DynamicImage::ImageRgb8(img.to_rgb8()))
+            .encode_image(&pixels)
             .map_err(|e| e.to_string())
     };
     written.map_err(|e| format!("{}: {e}", path.display()))?;

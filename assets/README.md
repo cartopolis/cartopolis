@@ -19,7 +19,7 @@ succeeds and the app dies later. CI checkouts set `lfs: true` for that reason.
 ## Avatars (`models/avatar/human/`)
 
 The player avatars are built at run time from one MakeHuman body pack
-(`default.humanpack`, ~14 MB) and its textures (`textures/`, ~10 MB): the base
+(`default.humanpack`, ~8 MB) and its textures (`textures/`, ~7.5 MB): the base
 mesh, the shape targets the designer's sliders blend, the rig, the clothes and
 hair, and the motion-capture clips. All of it is CC0 (MakeHuman) or CC BY 4.0
 (100STYLE) or free for any use (CMU motion capture); `LICENSE-THIRD-PARTY.md`

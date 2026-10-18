@@ -29,13 +29,14 @@ pub fn offset_scale(proxy: &Proxy, base: &[Vec3]) -> Vec3 {
 /// Where one proxy vertex sits on `base`.
 #[must_use]
 pub fn fit_vertex(r: &ProxyRef, base: &[Vec3], scale: Vec3) -> Vec3 {
+    let w = r.w();
     let mut p = Vec3::ZERO;
     for k in 0..3 {
-        if r.w[k] != 0.0 {
-            p += r.w[k] * base[r.v[k] as usize];
+        if w[k] != 0.0 {
+            p += w[k] * base[r.v[k] as usize];
         }
     }
-    p + Vec3::from_array(r.offset) * scale
+    p + r.offset() * scale
 }
 
 /// Every vertex of `proxy`, fitted to `base`.
@@ -54,12 +55,13 @@ pub fn fit(proxy: &Proxy, base: &[Vec3]) -> Vec<Vec3> {
 #[must_use]
 pub fn blend_weights(r: &ProxyRef, weights: &[Vec<(u16, f32)>]) -> Vec<(u16, f32)> {
     let mut out: Vec<(u16, f32)> = Vec::new();
-    let total: f32 = r.w.iter().map(|w| w.abs()).sum();
+    let rw = r.w();
+    let total: f32 = rw.iter().map(|w| w.abs()).sum();
     if total <= 0.0 {
         return out;
     }
     for k in 0..3 {
-        let w = r.w[k].abs() / total;
+        let w = rw[k].abs() / total;
         if w == 0.0 {
             continue;
         }
@@ -122,11 +124,7 @@ mod tests {
             Vec3::new(4.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         ];
-        let r = ProxyRef {
-            v: [1, 2, 0],
-            w: [0.5, 0.5, 0.0],
-            offset: [1.0, 1.0, 1.0],
-        };
+        let r = ProxyRef::new([1, 2, 0], [0.5, 0.5, 0.0], [1.0, 1.0, 1.0]);
         let p = proxy(vec![r], [Some((0, 1, 2.0)), None, None]);
         let fitted = fit(&p, &base);
         // Mean of B1 and B2 is (2, 0.5, 0); the x offset doubles (4 / 2).
@@ -140,11 +138,7 @@ mod tests {
             vec![(1, 0.5), (2, 0.5)],
             vec![(3, 0.6), (4, 0.4)],
         ];
-        let r = ProxyRef {
-            v: [0, 1, 2],
-            w: [0.5, 0.25, 0.25],
-            offset: [0.0; 3],
-        };
+        let r = ProxyRef::new([0, 1, 2], [0.5, 0.25, 0.25], [0.0; 3]);
         let blended = blend_weights(&r, &weights);
         let total: f32 = blended.iter().map(|(_, w)| w).sum();
         assert!((total - 1.0).abs() < 1.0e-5);

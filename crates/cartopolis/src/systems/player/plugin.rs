@@ -17,10 +17,10 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        // The MakeHuman body pack (`systems::human_avatar`), loaded only when
-        // its switch is on.
+        // The MakeHuman body pack and its textures (`systems::human_avatar`).
         app.init_asset::<systems::human_avatar::HumanPackAsset>()
             .init_asset_loader::<systems::human_avatar::HumanPackLoader>()
+            .init_asset_loader::<systems::human_avatar::HumanTextureLoader>()
             .init_resource::<systems::human_avatar::HumanDraft>()
             .init_resource::<systems::human_avatar::RemoteLooks>()
             .add_systems(Startup, systems::human_avatar::load_human_pack);

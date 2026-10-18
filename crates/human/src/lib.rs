@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 6;
+pub const PACK_VERSION: u32 = 7;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -86,21 +86,33 @@ impl Face {
 
 /// A shape target: sparse offsets, OBJ frame, added at the slider's weight.
 ///
-/// Stored small, because the sliders need hundreds of them (348 for adult
-/// bodies, 2.9 million offsets): vertex numbers as gaps from the previous one,
+/// Stored small, because the sliders need hundreds of them (786 in the shipped
+/// pack, 4.5 million offsets): vertex numbers as gaps from the previous one,
 /// mostly 1 and so a byte each, and offsets as whole steps of half a millimetre,
 /// which postcard writes in one or two bytes and deflate shrinks further
 /// ([`TARGET_STEP`]). (A step scaled to each target's largest offset was tried first:
 /// every value then filled its 16 bits, and the adult and teenage targets
 /// came to 18.7 MB.)
+///
+/// **The offsets are three columns, each value stored as its difference from
+/// the one before.** Neighbouring vertices of a whole-body target move almost
+/// alike, so the differences are mostly a step or two, and one axis's run of
+/// small numbers is what deflate packs best. Measured 2026-10-18 on the
+/// shipped pack: the 786 targets took 10.26 MB deflated as `[x, y, z]` rows,
+/// 6.59 MB as plain columns and 5.13 MB as differenced columns — the same
+/// numbers, losslessly. (Halving the resolution to 1 mm as well gave 4.21 MB;
+/// not taken.) The differences wrap at 16 bits, so they hold in an `i16`
+/// whatever the jump.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Target {
     /// Path under MakeHuman's `targets/`, without `.target`, e.g.
     /// `macrodetails/universal-male-young-averagemuscle-averageweight`.
     pub name: String,
     pub gaps: Vec<u16>,
-    pub deltas: Vec<[i16; 3]>,
-    /// Decimetres per unit of `deltas`.
+    /// x, y and z, each in steps, each value less the one before it
+    /// (wrapping).
+    pub columns: [Vec<i16>; 3],
+    /// Decimetres per unit of the offsets.
     pub step: f32,
 }
 
@@ -123,8 +135,9 @@ impl Target {
         // the largest, a baby's, is 1.07 m).
         let step = (largest / 32767.0).max(TARGET_STEP);
         let mut prev = 0u32;
+        let mut last = [0i16; 3];
         let mut gaps = Vec::with_capacity(offsets.len());
-        let mut deltas = Vec::with_capacity(offsets.len());
+        let mut columns: [Vec<i16>; 3] = Default::default();
         for (v, d) in offsets {
             let q = d.map(|x| (x / step).round().clamp(-32767.0, 32767.0) as i16);
             // Rounds to nothing: not worth its bytes.
@@ -133,12 +146,15 @@ impl Target {
             }
             gaps.push((v - prev) as u16);
             prev = v;
-            deltas.push(q);
+            for (a, column) in columns.iter_mut().enumerate() {
+                column.push(q[a].wrapping_sub(last[a]));
+            }
+            last = q;
         }
         Self {
             name: name.to_string(),
             gaps,
-            deltas,
+            columns,
             step,
         }
     }
@@ -146,13 +162,34 @@ impl Target {
     /// Every `(vertex, offset)` the target moves, in decimetres.
     pub fn offsets(&self) -> impl Iterator<Item = (usize, glam::Vec3)> + '_ {
         let mut v = 0usize;
-        self.gaps.iter().zip(&self.deltas).map(move |(&g, d)| {
-            v += g as usize;
-            (
-                v,
-                glam::Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32) * self.step,
-            )
-        })
+        let mut q = [0i16; 3];
+        let [x, y, z] = &self.columns;
+        self.gaps
+            .iter()
+            .zip(x.iter().zip(y).zip(z))
+            .map(move |(&g, ((&dx, &dy), &dz))| {
+                v += g as usize;
+                q = [
+                    q[0].wrapping_add(dx),
+                    q[1].wrapping_add(dy),
+                    q[2].wrapping_add(dz),
+                ];
+                (
+                    v,
+                    glam::Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) * self.step,
+                )
+            })
+    }
+
+    /// How many vertices the target moves.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.gaps.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.gaps.is_empty()
     }
 }
 
@@ -215,11 +252,45 @@ pub struct Proxy {
 }
 
 /// One proxy vertex: `Σ w·B[v] + offset·scale`, over the morphed base mesh B.
+///
+/// Stored in whole steps: weights in 1/16384ths and the offset in
+/// [`TARGET_STEP`]s, the half millimetre the shape targets already use. As
+/// three `f32` each they were 2.85 MB of the pack, deflate getting nothing out
+/// of their mantissas. The weights are `i32` because MakeHuman's go past 2
+/// (every pair of shoes, some suits and hair): as `i16` they clipped, and
+/// the clipped vertices stood out of the garment as spikes. postcard writes
+/// either in the same three bytes for a weight near 1.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct ProxyRef {
     pub v: [u32; 3],
-    pub w: [f32; 3],
-    pub offset: [f32; 3],
+    w: [i32; 3],
+    offset: [i16; 3],
+}
+
+/// One unit of a [`ProxyRef`] weight.
+const PROXY_WEIGHT_STEP: f32 = 1.0 / 16384.0;
+
+impl ProxyRef {
+    #[must_use]
+    pub fn new(v: [u32; 3], w: [f32; 3], offset: [f32; 3]) -> Self {
+        Self {
+            v,
+            w: w.map(|x| (x / PROXY_WEIGHT_STEP).round() as i32),
+            offset: offset.map(|x| (x / TARGET_STEP).round().clamp(-32767.0, 32767.0) as i16),
+        }
+    }
+
+    /// The three base vertices' weights.
+    #[must_use]
+    pub fn w(&self) -> [f32; 3] {
+        self.w.map(|x| x as f32 * PROXY_WEIGHT_STEP)
+    }
+
+    /// The offset from the weighted base vertices, in decimetres before scaling.
+    #[must_use]
+    pub fn offset(&self) -> glam::Vec3 {
+        glam::Vec3::from_array(self.offset.map(|x| f32::from(x) * TARGET_STEP))
+    }
 }
 
 /// A skin texture, and whom MakeHuman painted it for: a look picks its skin
@@ -324,5 +395,53 @@ impl HumanPack {
 
     pub fn bone(&self, name: &str) -> Option<usize> {
         self.bones.iter().position(|b| b.name == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The differenced columns give back exactly the steps that went in, a
+    /// jump across most of an `i16`'s range included, and a vertex that
+    /// rounds to nothing is left out.
+    #[test]
+    fn a_target_gives_back_its_offsets() {
+        let step = TARGET_STEP;
+        let input = vec![
+            (3, [0.0, 1.0, -2.0]),
+            (4, [150.0, -150.0, 0.5]),
+            (9, [-150.0, 150.0, 0.0]),
+            (10, [0.0001, 0.0, 0.0]),
+            (12, [0.01, 0.02, -0.03]),
+        ];
+        let t = Target::new("t", input.clone());
+        let out: Vec<(usize, glam::Vec3)> = t.offsets().collect();
+        assert_eq!(out.len(), 4, "the vertex that rounds to nothing is dropped");
+        for ((v, got), (want_v, want)) in out.iter().zip(input.iter().filter(|(v, _)| *v != 10)) {
+            assert_eq!(*v, *want_v as usize);
+            let want = glam::Vec3::from_array(*want);
+            assert!(
+                (*got - want).abs().max_element() <= step * 0.5 + 1.0e-6,
+                "{got} vs {want}"
+            );
+        }
+    }
+
+    /// A clothing reference keeps its weights and offset to within half a step.
+    #[test]
+    fn a_proxy_ref_keeps_its_numbers() {
+        let r = ProxyRef::new([1, 2, 3], [0.7, 0.25, 0.05], [0.123, -0.456, 0.0]);
+        let w = r.w();
+        for (a, b) in w.iter().zip([0.7, 0.25, 0.05]) {
+            assert!((a - b).abs() <= PROXY_WEIGHT_STEP);
+        }
+        let o = r.offset();
+        assert!(
+            (o - glam::Vec3::new(0.123, -0.456, 0.0))
+                .abs()
+                .max_element()
+                <= TARGET_STEP
+        );
     }
 }
