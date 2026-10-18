@@ -494,6 +494,18 @@ impl Wire {
                 let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
                     .max_message_size(Some(MAX_FRAME))
                     .max_frame_size(Some(MAX_FRAME));
+                // Which app this is, for the server's usage counts
+                // (`cartopolis_core::ws_address`).
+                let client = if cfg!(target_os = "android") {
+                    "android"
+                } else {
+                    "desktop"
+                };
+                let url = cartopolis_core::ws_address::tagged(
+                    url,
+                    client,
+                    option_env!("CARTO_BUILD_SHA"),
+                );
                 let (socket, _) =
                     tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false)
                         .await?;

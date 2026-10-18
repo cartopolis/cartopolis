@@ -23,6 +23,7 @@ pub mod tone;
 pub mod ts_mirror;
 pub mod video_limits;
 pub mod world;
+pub mod ws_address;
 pub mod yaw;
 
 pub use error::ProtocolError;

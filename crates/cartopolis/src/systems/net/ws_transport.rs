@@ -256,6 +256,9 @@ async fn run(
     // gets a fresh password login rather than locking the user out. Each attempt
     // needs its own socket — the server closes on a rejected credential.
     let attempts: Vec<AuthCredential> = std::iter::once(primary).chain(fallback).collect();
+    // The app in a browser, for the server's usage counts
+    // (`cartopolis_core::ws_address`).
+    let url = cartopolis_core::ws_address::tagged(&url, "web", option_env!("CARTO_BUILD_SHA"));
     let mut socket = None;
     let mut rejection: Option<String> = None;
 

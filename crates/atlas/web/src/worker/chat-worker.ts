@@ -341,7 +341,8 @@ async function signIn(credential: Credential): Promise<void> {
         onEvent,
         server: self.location.host,
         store,
-        url: `${scheme}//${self.location.host}/ws`,
+        // `client=chat` names the web chat to the server's usage counts.
+        url: `${scheme}//${self.location.host}/ws?client=chat`,
     })
     conn.start()
 }
