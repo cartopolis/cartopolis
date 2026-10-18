@@ -10,6 +10,7 @@ import {Verify} from '@/components/pages/verify/verify'
 import {Tokens} from '@/components/pages/tokens/tokens'
 import {layout} from '@/lib/layout'
 import {ADMIN} from '@/lib/base'
+import {pageView} from '@/lib/stats'
 
 /** The wordmark, as the client draws it: "carto" in cream, "polis" in the brand orange. */
 class Wordmark extends MithrilComponent {
@@ -60,10 +61,16 @@ class PageFrame extends MithrilComponent<{wide?: boolean}> {
  * the same component rather than making a new one — which is what keeps the
  * World frame loaded. The notifier's toasts still show over it.
  */
-const chatPage: RouteResolver = {render: () => m.fragment(null, m(Chat), m(Notifications))}
+const chatPage: RouteResolver = {
+    // Every change of address is one page view (`lib/stats.ts`), counted
+    // without a cookie.
+    onmatch: (_args, path) => pageView(path),
+    render: () => m.fragment(null, m(Chat), m(Notifications)),
+}
 
 /** One route: the page inside its frame, with the route's parameters as its attrs. */
 const page = (Page: ComponentType<any>, frame: 'page' | 'wide' = 'page'): RouteResolver => ({
+    onmatch: (_args, path) => pageView(path),
     render: (vnode) => m.fragment(null, m(PageFrame, {wide: frame === 'wide'}, m(Page, vnode.attrs)), m(Notifications)),
 })
 

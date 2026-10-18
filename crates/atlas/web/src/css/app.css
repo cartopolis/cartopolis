@@ -18,6 +18,7 @@
 @import '../components/pages/overrides/overrides.css';
 @import '../components/pages/pipeline/pipeline.css';
 @import '../components/pages/reports/reports.css';
+@import '../components/pages/stats/stats.css';
 @import '../components/pages/roles/roles.css';
 /* Glass and depth, last: it restyles the library's surfaces and the pages' rows. */
 @import './depth.css';

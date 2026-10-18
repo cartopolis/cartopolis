@@ -7,6 +7,17 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <title>Cartopolis</title>
+    <!-- One page view for the server's usage counts (docs/notes/usage-stats.md):
+         the page, where the visitor came from and the window width; no cookie.
+         Before the WebGPU gate, which stops the page on a browser without it. -->
+    <script>
+      fetch('/api/stats/hit', {
+        method: 'POST',
+        keepalive: true,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({site: 'viewer', path: location.pathname, referrer: document.referrer, width: window.innerWidth}),
+      }).catch(function () {});
+    </script>
     <!-- The WebGPU gate must come BEFORE the `rel="rust"` link below; see the
          comment in it for why the order is load-bearing rather than stylistic. -->
     <script>

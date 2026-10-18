@@ -35,6 +35,14 @@ import type {
     PlaceholderModel,
     RegistrationRules,
     Role,
+    CommunityStats,
+    StatsDayApps,
+    StatsEventTotal,
+    StatsOverview,
+    StatsPlaces,
+    StatsRanked,
+    StatsWeb,
+    StatsWorld,
     StoredAsset,
 } from '@/types'
 import type {BuildingDesign, BuildingFacts, BuildingResponse, P2, Storey, Wall} from '@/lib/design'
@@ -134,7 +142,189 @@ const permissions: PermissionInfo[] = [
     {group: 'server', label: 'Manage roles', player_default: false, slug: 'roles_manage'},
     {group: 'server', label: 'Handle reports and building claims', player_default: false, slug: 'reports_triage'},
     {group: 'server', label: 'Run the map data pipelines', player_default: false, slug: 'pipeline_run'},
+    {group: 'server', label: 'Read the usage statistics', player_default: false, slug: 'stats_view'},
 ]
+
+// ── Usage statistics (invented, the same shape as docs/mockups/stats/) ─────────
+
+const today = Math.floor(Date.now() / 86_400_000)
+const span = (days: number) => Array.from({length: days}, (_, i) => today - days + 1 + i)
+/** A repeatable wobble, so the charts look the same on every reload. */
+const wobble = (i: number, k: number) => ((i * 7 + k * 13) % 11) / 10
+
+function statsOverview(days: number): StatsOverview {
+    const daily: StatsDayApps[] = span(days).map((day, i) => {
+        const weekend = new Date(day * 86_400_000).getUTCDay() % 6 === 0 ? 4 : 0
+        const android = Math.round(9 + weekend + 5 * wobble(i, 1))
+        const web = Math.round(3 + weekend / 2 + 4 * wobble(i, 2))
+        const desktop = Math.round(1 + 2 * wobble(i, 3))
+        return {all: android + web + desktop + 1, android, chat: 1, day, desktop, unknown: 0, web}
+    })
+    const visitors_daily = span(days).map((day, i) => ({day, n: Math.round(110 + 60 * wobble(i, 4) + (i === days - 6 ? 470 : 0) + (i === days - 5 ? 250 : 0))}))
+    const visitors = visitors_daily.reduce((s, d) => s + d.n, 0)
+    return {
+        accounts_total: 141,
+        active_period: days <= 90 ? 74 : null,
+        active_prev: days <= 45 ? 63 : null,
+        active_today: daily.at(-1)?.all ?? 0,
+        daily,
+        days,
+        funnel: {accounts: 64, came_back: 27, opened_world: 1410, signed_in: 49, visitors},
+        new_accounts: 64,
+        new_accounts_prev: 18,
+        online_now: 7,
+        peak_today: 12,
+        places: [
+            {lat: 53.2185, lon: 6.5677, minutes: 6720, people: 41},
+            {lat: 53.2061, lon: 6.5752, minutes: 4260, people: 30},
+            {lat: 53.2263, lon: 6.5584, minutes: 3240, people: 22},
+            {lat: 53.2105, lon: 6.5641, minutes: 2640, people: 19},
+            {lat: 53.2408, lon: 6.5345, minutes: 1500, people: 11},
+        ],
+        today,
+        visitors,
+        visitors_daily,
+        visitors_prev: Math.round(visitors * 0.62),
+    }
+}
+
+function statsWorld(days: number): StatsWorld {
+    const event = (kind: string, n: number, prev: number): StatsEventTotal => ({
+        daily: span(days).map((_, i) => Math.round((n / days) * (0.6 + 0.8 * wobble(i, kind.length)))),
+        kind,
+        n,
+        prev,
+    })
+    const hours = span(Math.min(days, 30)).flatMap((day) =>
+        Array.from({length: 24}, (_, h) => {
+            const evening = h >= 18 && h <= 22 ? 5 : 0
+            const avg = Math.max(0, Math.sin(((h - 6) / 24) * Math.PI * 1.15) * 5 + evening + wobble(day, h))
+            return {avg, hour: day * 24 + h, peak: Math.ceil(avg + 2)}
+        }),
+    )
+    const monday = (d: number) => d - ((d + 3) % 7)
+    return {
+        apps: [
+            {build: '410d46f4', client: 'android', people: 38},
+            {build: '29d736d5', client: 'android', people: 9},
+            {build: '410d46f4', client: 'web', people: 21},
+            {build: '', client: 'chat', people: 17},
+            {build: '410d46f4', client: 'desktop', people: 6},
+        ],
+        cohorts: [5, 4, 3, 2, 1, 0].map((k, i) => {
+            const size = [4, 5, 3, 6, 14, 29][i]
+            const week = monday(today) - 7 * k
+            return {back: size < 5 ? [] : [0.6, 0.6, 0.4, 0.4, 0.4].slice(0, k), size, week}
+        }),
+        days,
+        events: [
+            event('private_message', 6410, 5120),
+            event('community_message', 2870, 2210),
+            event('here_message', 550, 610),
+            event('everyone_message', 320, 290),
+            event('call_started', 212, 168),
+            event('call_minutes', 1140, 905),
+            event('prim_created', 341, 290),
+            event('prim_edited', 188, 160),
+        ],
+        hours,
+        longest_minutes: 250,
+        median_minutes: 21,
+        peak: 14,
+        peak_hour: (today - 1) * 24 + 18,
+        refused: [{attempts: 6, build: '1c9e0a7b', client: 'android', devices: 3, protocol: 39, reason: 'protocol'}],
+        sessions: 1206,
+        sessions_prev: 988,
+    }
+}
+
+function statsWeb(days: number, site: null | string): StatsWeb {
+    const o = statsOverview(days)
+    const share = site === null ? 1 : site === 'web' ? 0.62 : site === 'viewer' ? 0.28 : 0.1
+    const scale = (n: number) => Math.round(n * share)
+    const rank = (rows: [string, number][]): StatsRanked[] => rows.map(([value, n]) => ({value, views: scale(n * 2.4), visitors: scale(n)}))
+    return {
+        bots: scale(31_400),
+        daily: o.visitors_daily.map((d) => ({day: d.day, views: scale(d.n * 2.9), visitors: scale(d.n)})),
+        days,
+        devices: rank([['phone', 2870], ['desktop', 1930], ['tablet', 148]]),
+        languages: rank([['nl', 3068], ['en', 1188], ['de', 445], ['fr', 99]]),
+        opened_world: scale(1410),
+        pages: rank([['/', 2960], ['/world', 1410], ['about /', 1050], ['/register', 380], ['/c/oosterpoort', 240], ['/building/:id', 190]]),
+        site,
+        sources: rank([['direct', 2410], ['mastodon.social', 820], ['about.cartopolis.org', 610], ['search engines', 518], ['garage44.eu', 190], ['lemmy.world', 160]]),
+        views: scale(14_230),
+        visitors: scale(o.visitors),
+        visitors_prev: scale(o.visitors_prev),
+    }
+}
+
+function statsPlaces(days: number): StatsPlaces {
+    const spots: [number, number, number, number][] = [
+        [53.2185, 6.5677, 112, 2.4],
+        [53.2061, 6.5752, 64, 2.2],
+        [53.2263, 6.5584, 52, 2.3],
+        [53.2105, 6.5641, 46, 1.6],
+        [53.2195, 6.5855, 14, 1.8],
+    ]
+    const squares: StatsPlaces['squares'] = []
+    for (let sy = Math.floor(53.195 * 444); sy <= Math.floor(53.235 * 444); sy++) {
+        for (let sx = Math.floor(6.535 * 266); sx <= Math.floor(6.6 * 266); sx++) {
+            const [lat, lon] = [(sy + 0.5) / 444, (sx + 0.5) / 266]
+            let hours = 0
+            for (const [la, lo, a, r] of spots) {
+                hours += a * Math.exp(-(((lat - la) * 444) ** 2 + ((lon - lo) * 266) ** 2) / (2 * r * r))
+            }
+            if (hours >= 5) squares.push({lat, lon, minutes: Math.round(hours * 60), people: Math.round(hours / 3 + 5), sx, sy})
+        }
+    }
+    squares.sort((a, b) => b.minutes - a.minutes)
+    return {days, per_lat: 444, per_lon: 266, squares}
+}
+
+function communityStats(days: number): CommunityStats {
+    const monday = (d: number) => d - ((d + 3) % 7)
+    return {
+        active_members: 96,
+        boosts_in: 402,
+        call_minutes: 310,
+        days,
+        followers: 212,
+        followers_by_server: [
+            {n: 88, server: 'mastodon.social'},
+            {n: 42, server: 'mastodon.nl'},
+            {n: 27, server: 'lemmy.world'},
+            {n: 55, server: 'others'},
+        ],
+        followers_new: 31,
+        joined: 27,
+        left: 8,
+        members: 214,
+        messages: 1840,
+        messages_prev: 1400,
+        post_places: [
+            {lat: 53.205, lon: 6.575, minutes: 0, people: 14},
+            {lat: 53.219, lon: 6.568, minutes: 0, people: 9},
+        ],
+        posts: 38,
+        replies_in: 146,
+        topics: [
+            {messages: 820, messages_prev: 410, name: 'street-party', topic: 'a1', writers: 41},
+            {messages: 512, messages_prev: 470, name: 'general', topic: 'a2', writers: 58},
+            {messages: 230, messages_prev: 240, name: 'lost-and-found', topic: 'a3', writers: 22},
+            {messages: 196, messages_prev: 90, name: 'road-works', topic: 'a4', writers: 17},
+            {messages: 0, messages_prev: 0, name: 'choir', topic: 'a5', writers: null},
+        ],
+        visitors: 640,
+        visitors_daily: span(days).map((day, i) => ({day, n: Math.round(14 + 20 * wobble(i, 5))})),
+        visitors_prev: 410,
+        weeks: Array.from({length: 12}, (_, k) => ({
+            joined: [3, 2, 4, 2, 3, 5, 3, 4, 6, 9, 11, 5][k],
+            left: [1, 0, 1, 2, 1, 0, 1, 1, 2, 3, 2, 1][k],
+            week: monday(today) - 7 * (11 - k),
+        })),
+    }
+}
 
 const roles: Role[] = [
     {
@@ -656,6 +846,11 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
     const method = req.method
     const parts = p.split('/').filter(Boolean) // ['api', …]
 
+    // ── The page-view beacon (unauthenticated, answers nothing) ─────────────
+    if (p === '/api/stats/hit' && method === 'POST') {
+        return new Response(null, {status: 204})
+    }
+
     // ── Sessions and registration (unauthenticated) ────────────────────────
     if ((p === '/api/login' || p === '/api/admin/login') && method === 'POST') {
         const {username} = await body<{username: string}>(req)
@@ -937,6 +1132,22 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             }
             return json({roles: roleList()})
         }
+    }
+    if (parts[1] === 'admin' && parts[2] === 'stats' && method === 'GET') {
+        const days = Number(url.searchParams.get('days') ?? 30)
+        switch (parts[3]) {
+            case 'overview':
+                return json(statsOverview(days))
+            case 'world':
+                return json(statsWorld(days))
+            case 'web':
+                return json(statsWeb(days, url.searchParams.get('site')))
+            case 'places':
+                return json(statsPlaces(days))
+        }
+    }
+    if (parts[1] === 'communities' && parts[3] === 'stats' && method === 'GET') {
+        return json(communityStats(Number(url.searchParams.get('days') ?? 30)))
     }
     if (p === '/api/admin/reports' && method === 'GET') {
         return json(userReports.filter((r) => url.searchParams.get('all') === 'true' || !r.resolved))

@@ -234,6 +234,111 @@ async fn a_refused_sign_in_is_counted_without_an_account() {
     panic!("the refusal was never counted");
 }
 
+/// The atlas web UI's hand-written types for these answers
+/// (`crates/atlas/web/src/types.ts`), read against what the server sends: a
+/// renamed field otherwise arrives in the page as a number that reads
+/// `undefined`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_web_pages_types_match_what_the_server_sends() {
+    const WEB_TYPES: &str = include_str!("../../../atlas/web/src/types.ts");
+    let fields = |name: &str| {
+        let mut f = cartopolis_core::ts_mirror::type_fields(WEB_TYPES, name)
+            .unwrap_or_else(|| panic!("`{name}` is not declared in types.ts"));
+        f.sort();
+        f
+    };
+    let keys = |v: &serde_json::Value| {
+        let mut k: Vec<String> = v.as_object().expect("an object").keys().cloned().collect();
+        k.sort();
+        k
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("world.db").to_str().unwrap().to_string();
+    let community = {
+        let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+        ensure_admin_account(&conn, "root", "adminpass").unwrap();
+        let owner = ensure_account(&conn, "owner", "ownerpw")
+            .unwrap()
+            .to_string();
+        let member = ensure_account(&conn, "member", "memberpw")
+            .unwrap()
+            .to_string();
+        let settings = cartopolis_core::CommunitySettings {
+            name: "Oosterpoort".into(),
+            about: String::new(),
+            join: cartopolis_core::JoinRule::Open,
+            listed: true,
+            members_start_topics: true,
+            picture: None,
+            place: None,
+        };
+        let id = cartopolis_simulator::communities::create(&conn, &owner, &settings, 1).unwrap();
+        cartopolis_simulator::communities::join(&conn, &member, id, "", 2).unwrap();
+        id
+    };
+    let config = SimConfig {
+        database_path: db,
+        listen: "127.0.0.1:0".into(),
+        http_listen: Some("127.0.0.1:0".into()),
+        ..SimConfig::default()
+    };
+    let handle = serve(Arc::new(config)).await.unwrap();
+
+    // Somebody outside the community opens its public page: a visitor.
+    call(
+        "GET",
+        format!("{}/api/communities/{community}/public", base(&handle)),
+        None,
+        "Mozilla/5.0 Firefox",
+        None,
+    )
+    .await;
+    handle.stats.flush().await.unwrap();
+
+    let admin = token(&handle, "/api/admin/login", "root", "adminpass").await;
+    for (page, name) in [
+        ("overview", "StatsOverview"),
+        ("world", "StatsWorld"),
+        ("web", "StatsWeb"),
+        ("places", "StatsPlaces"),
+    ] {
+        let (status, body) = call(
+            "GET",
+            format!("{}/api/admin/stats/{page}", base(&handle)),
+            Some(admin.clone()),
+            "test",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{page}: {body}");
+        assert_eq!(
+            fields(name),
+            keys(&body),
+            "types.ts's {name} has drifted from stats::api"
+        );
+    }
+
+    let owner = token(&handle, "/api/login", "owner", "ownerpw").await;
+    let url = format!("{}/api/communities/{community}/stats", base(&handle));
+    let (status, body) = call("GET", url.clone(), Some(owner), "test", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        fields("CommunityStats"),
+        keys(&body),
+        "types.ts's CommunityStats has drifted from stats::api"
+    );
+    assert_eq!(body["members"], 2, "{body}");
+    assert_eq!(body["visitors"], 1, "{body}");
+    // Fewer than 5 active members is a gap, not a number.
+    assert!(body["active_members"].is_null(), "{body}");
+
+    // A member who does not moderate is refused.
+    let member = token(&handle, "/api/login", "member", "memberpw").await;
+    let (status, _) = call("GET", url, Some(member), "test", None).await;
+    assert_eq!(status, 403);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn only_accounts_allowed_to_read_them_see_the_numbers() {
     let (handle, _dir) = server().await;

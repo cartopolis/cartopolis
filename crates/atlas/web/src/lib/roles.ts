@@ -33,6 +33,11 @@ export const TABS: {tab: AdminTab; label: string; needs: string[]}[] = [
     {label: 'Overrides', needs: ['building_override'], tab: 'overrides'},
     {label: 'Models', needs: ['library_manage'], tab: 'library'},
     {label: 'Data', needs: ['pipeline_run'], tab: 'pipeline'},
+    {label: 'Overview', needs: ['stats_view'], tab: 'stats'},
+    // Not "World" and "Web": the page's own switch already says World.
+    {label: 'In the world', needs: ['stats_view'], tab: 'stats_world'},
+    {label: 'Web visitors', needs: ['stats_view'], tab: 'stats_web'},
+    {label: 'Places', needs: ['stats_view'], tab: 'stats_places'},
 ]
 
 /** The tabs this operator may open. */
@@ -40,17 +45,18 @@ export function visibleTabs() {
     return TABS.filter((t) => t.needs.some(may))
 }
 
-export type AdminAreaId = 'people' | 'content' | 'data'
+export type AdminAreaId = 'people' | 'content' | 'data' | 'stats'
 
 /**
- * The tabs grouped into the three areas the Admin rail shows
- * (`docs/mockups/web-navigation/`): who is on the server, what is in the world,
- * and the data that builds the map.
+ * The tabs grouped into the areas the Admin rail shows
+ * (`docs/mockups/web-navigation/`, `docs/mockups/stats/`): who is on the server,
+ * what is in the world, the data that builds the map, and how it is all used.
  */
 export const AREAS: {id: AdminAreaId; label: string; hint: string; tabs: AdminTab[]}[] = [
     {hint: 'Accounts, what they may do, and who holds which building', id: 'people', label: 'People', tabs: ['accounts', 'roles', 'claims', 'reports']},
     {hint: 'Buildings drawn from a model, and the shared model library', id: 'content', label: 'Content', tabs: ['overrides', 'library']},
     {hint: 'The pipelines that build the map', id: 'data', label: 'Data', tabs: ['pipeline']},
+    {hint: 'How the world is used, and who visits the sites', id: 'stats', label: 'Stats', tabs: ['stats', 'stats_world', 'stats_web', 'stats_places']},
 ]
 
 /** The areas with at least one tab this operator may open, each with only those tabs. */

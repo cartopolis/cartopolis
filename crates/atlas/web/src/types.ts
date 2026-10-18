@@ -301,6 +301,137 @@ export type AdminTab =
     | 'overrides'
     | 'library'
     | 'pipeline'
+    | 'stats'
+    | 'stats_world'
+    | 'stats_web'
+    | 'stats_places'
+
+/*
+ * Usage statistics, as the simulator's `stats::api` serialises them
+ * (`docs/notes/usage-stats.md`). Days are UTC day numbers (unix seconds /
+ * 86400) and hours unix hours, for the page to draw in the reader's zone.
+ */
+
+/** Different accounts in the world on one day, by the app they used. */
+export interface StatsDayApps {
+    all: number
+    android: number
+    chat: number
+    day: number
+    desktop: number
+    unknown: number
+    web: number
+}
+
+export interface StatsDayCount {
+    day: number
+    n: number
+}
+
+/** A 250 m square, or a public post's place; `people` is person-days. */
+export interface StatsPlace {
+    lat: number
+    lon: number
+    minutes: number
+    people: number
+}
+
+export interface StatsOverview {
+    accounts_total: number
+    /** Null past the 90 days sessions are kept. */
+    active_period: null | number
+    active_prev: null | number
+    active_today: number
+    daily: StatsDayApps[]
+    days: number
+    funnel: {accounts: number; came_back: number; opened_world: number; signed_in: number; visitors: number}
+    new_accounts: number
+    new_accounts_prev: number
+    online_now: number
+    peak_today: number
+    places: StatsPlace[]
+    today: number
+    visitors: number
+    visitors_daily: StatsDayCount[]
+    visitors_prev: number
+}
+
+export interface StatsEventTotal {
+    daily: number[]
+    kind: string
+    n: number
+    prev: number
+}
+
+export interface StatsWorld {
+    apps: {build: string; client: string; people: number}[]
+    /** Each week's new accounts and the share seen again in each week after; `back` is empty below 5. */
+    cohorts: {back: number[]; size: number; week: number}[]
+    days: number
+    events: StatsEventTotal[]
+    hours: {avg: number; hour: number; peak: number}[]
+    longest_minutes: number
+    median_minutes: number
+    peak: number
+    peak_hour: null | number
+    refused: {attempts: number; build: string; client: string; devices: number; protocol: number; reason: string}[]
+    sessions: number
+    sessions_prev: number
+}
+
+export interface StatsRanked {
+    value: string
+    views: number
+    visitors: number
+}
+
+export interface StatsWeb {
+    bots: number
+    daily: {day: number; views: number; visitors: number}[]
+    days: number
+    devices: StatsRanked[]
+    languages: StatsRanked[]
+    opened_world: number
+    pages: StatsRanked[]
+    site: null | string
+    sources: StatsRanked[]
+    views: number
+    visitors: number
+    visitors_prev: number
+}
+
+export interface StatsPlaces {
+    days: number
+    per_lat: number
+    per_lon: number
+    squares: {lat: number; lon: number; minutes: number; people: number; sx: number; sy: number}[]
+}
+
+/** A community's own numbers, for its owner and moderators. */
+export interface CommunityStats {
+    /** Null below 5 people. */
+    active_members: null | number
+    boosts_in: number
+    call_minutes: number
+    days: number
+    followers: number
+    followers_by_server: {n: number; server: string}[]
+    followers_new: number
+    joined: number
+    left: number
+    members: number
+    messages: number
+    messages_prev: number
+    post_places: StatsPlace[]
+    posts: number
+    replies_in: number
+    /** `writers` is null, and the counts 0, where fewer than 5 people wrote. */
+    topics: {messages: number; messages_prev: number; name: string; topic: string; writers: null | number}[]
+    visitors: number
+    visitors_daily: StatsDayCount[]
+    visitors_prev: number
+    weeks: {joined: number; left: number; week: number}[]
+}
 
 /**
  * A report about a person, from the app's Report (`ReportUser` on the wire), as

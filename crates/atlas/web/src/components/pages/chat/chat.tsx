@@ -38,6 +38,7 @@ import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
 import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
 import {Icon} from '@/lib/icons'
+import {CommunityStats} from './community-stats'
 import {Posts, Tabs, tabOf} from './posts'
 
 /**
@@ -526,6 +527,7 @@ type Pane =
     | {kind: 'edit'; id: string}
     | {kind: 'find'}
     | {kind: 'preview'; id: string}
+    | {kind: 'stats'; id: string}
     | {kind: 'create'}
     | {code: string; kind: 'invite'}
     | {kind: 'welcome'}
@@ -1045,6 +1047,9 @@ export class Chat extends MithrilComponent {
                     {pane.kind === 'edit' && this.editView(pane.id)}
                     {pane.kind === 'find' && this.findView()}
                     {pane.kind === 'preview' && this.previewView(pane.id)}
+                    {pane.kind === 'stats' && (
+                        <CommunityStats id={pane.id} name={chat().communities.find((x) => x.id === pane.id)?.settings.name ?? ''} />
+                    )}
                     {pane.kind === 'create' && this.createView()}
                     {pane.kind === 'invite' && this.inviteView(pane.code)}
                     {pane.kind === 'welcome' && this.welcome()}
@@ -1490,6 +1495,13 @@ export class Chat extends MithrilComponent {
                             <button class="chat-item" onclick={() => this.show({id: community.id, kind: 'community'})} type="button">
                                 <span class="chat-label">Reports</span>
                                 {community.reports.length > 0 && <span class="chat-count is-mention">{community.reports.length}</span>}
+                            </button>
+                            <button
+                                class={s.pane.kind === 'stats' && s.pane.id === community.id ? 'chat-item is-current' : 'chat-item'}
+                                onclick={() => this.show({id: community.id, kind: 'stats'})}
+                                type="button"
+                            >
+                                <span class="chat-label">Stats</span>
                             </button>
                         </section>
                     )}

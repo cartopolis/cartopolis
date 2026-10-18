@@ -50,6 +50,20 @@ From `/ws?client=android|desktop|web|chat&build=<commit>`. **Not a field in
 revision, and every installed app older than it would be refused at sign-in.
 An app that sends no parameter is `unknown`; so is plain TCP (local tooling).
 
+## The pages
+
+Admin › Stats (`crates/atlas/web/src/components/pages/stats/`) and a
+community's Stats pane (`community-stats.tsx`) draw the answers; their types in
+`types.ts` are checked against the live answers by the integration test
+`stats::the_web_pages_types_match_what_the_server_sends`. The site counts a
+page view on every change of address (`main.tsx`'s route resolvers), the
+viewer once on load (`crates/cartopolis/index.html`, before the WebGPU gate).
+Busy squares are named by our own `nominatim.cartopolis.org`, from the
+operator's browser, only for the ranked lists (never per square on the map).
+There is no raster base map: the tile server serves vector tiles only, and
+loading map images from a third party would send operators' browsers
+elsewhere.
+
 ## Cannot be counted, and why
 
 - **Places shared in chats**: a `Point` travels inside the sealed message. Only

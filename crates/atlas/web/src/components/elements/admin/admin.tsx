@@ -11,6 +11,7 @@ import {Overrides} from '@/components/pages/overrides/overrides'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Reports} from '@/components/pages/reports/reports'
 import {Roles} from '@/components/pages/roles/roles'
+import {StatsOverviewPage, StatsPlacesPage, StatsWebPage, StatsWorldPage} from '@/components/pages/stats/stats'
 import {loadAccounts} from '@/lib/accounts'
 import {closeContext, contextContent, layout} from '@/lib/layout'
 import {requestedPand} from '@/lib/overrides'
@@ -20,6 +21,7 @@ import {AREAS, type AdminAreaId, areaOf, may, visibleAreas, visibleTabs} from '@
 const GLYPHS: Record<AdminAreaId, string> = {
     content: 'M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z',
     data: 'M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.59 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm6 14c0 .5-2.13 2-6 2s-6-1.5-6-2v-2.23c1.61.78 3.72 1.23 6 1.23s4.39-.45 6-1.23V17zm0-4.55c-1.3.95-3.58 1.55-6 1.55s-4.7-.6-6-1.55V9.64c1.47.83 3.61 1.36 6 1.36s4.53-.53 6-1.36v2.81zM12 9C8.13 9 6 7.5 6 7s2.13-2 6-2 6 1.5 6 2-2.13 2-6 2z',
+    stats: 'M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z',
     people: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z',
 }
 
@@ -66,6 +68,14 @@ function page(tab: AdminTab) {
             return <Reports />
         case 'roles':
             return <Roles />
+        case 'stats':
+            return <StatsOverviewPage />
+        case 'stats_world':
+            return <StatsWorldPage />
+        case 'stats_web':
+            return <StatsWebPage />
+        case 'stats_places':
+            return <StatsPlacesPage />
         default:
             return <Accounts />
     }
