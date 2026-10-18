@@ -153,6 +153,16 @@ pub struct SimConfig {
     /// setting, not a security one: it keeps one account from claiming a street.
     #[serde(default = "default_max_buildings_per_account")]
     pub max_buildings_per_account: usize,
+    /// Fetch DB-IP's country table monthly for the web visitors' Countries
+    /// (`stats::countries`). Off by default, so a test or a dev server never
+    /// reaches the network; a table already beside the database is used either
+    /// way.
+    #[serde(default)]
+    pub geoip_download: bool,
+    /// Where Caddy streams its APK download lines (`stats::apk`), e.g. the
+    /// docker gateway `172.17.0.1:4750`. `None`: APK downloads are not counted.
+    #[serde(default)]
+    pub apk_log_listen: Option<String>,
 }
 
 fn default_max_buildings_per_account() -> usize {
@@ -258,6 +268,8 @@ impl Default for SimConfig {
             house_claims_open: default_house_claims_open(),
             claim_municipality: default_claim_municipality(),
             max_buildings_per_account: default_max_buildings_per_account(),
+            geoip_download: false,
+            apk_log_listen: None,
         }
     }
 }

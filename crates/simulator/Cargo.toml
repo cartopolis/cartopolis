@@ -91,6 +91,9 @@ uuid.workspace = true
 # this workspace already fetches with, and an async client for two requests would
 # put a second TLS stack in the tree to save two threads.
 ureq.workspace = true
+# Unpacking the monthly country table (`stats::countries`), which is published
+# gzipped. Already in the tree: it is what `ureq`'s `gzip` feature decodes with.
+flate2 = "1"
 cartopolis_core = { path = "../core" }
 # The call forwarder (`calls`). Only the `sfu` half: sealing and opening media
 # is the `client` feature, which this crate must not link outside its tests,

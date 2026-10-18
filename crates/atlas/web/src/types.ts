@@ -386,7 +386,12 @@ export interface StatsRanked {
 }
 
 export interface StatsWeb {
+    /** Whole APK downloads, whatever site is chosen: the APK is on none of them. */
+    apk_downloads: number
+    apk_downloads_prev: number
     bots: number
+    /** Two-letter codes; `unknown` while the server has no country table. */
+    countries: StatsRanked[]
     daily: {day: number; views: number; visitors: number}[]
     days: number
     devices: StatsRanked[]

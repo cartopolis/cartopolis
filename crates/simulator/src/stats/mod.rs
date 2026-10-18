@@ -22,6 +22,8 @@
 //! larger of the two).
 
 pub mod api;
+pub mod apk;
+pub mod countries;
 mod store;
 pub mod web;
 
@@ -108,6 +110,8 @@ pub enum Event {
     PrimEdited,
     CommunityJoined,
     CommunityLeft,
+    /// The APK downloaded whole, as Caddy reports it (`stats::apk`).
+    ApkDownload,
 }
 
 impl Event {
@@ -128,6 +132,7 @@ impl Event {
             Self::PrimEdited => "prim_edited",
             Self::CommunityJoined => "community_joined",
             Self::CommunityLeft => "community_left",
+            Self::ApkDownload => "apk_download",
         }
     }
 }
@@ -252,6 +257,8 @@ fn fresh_secret() -> [u8; 32] {
 pub struct Stats {
     conn: SharedConn,
     live: Mutex<Live>,
+    /// Address ranges to countries, once loaded (`countries::keep_fresh`).
+    countries: Arc<std::sync::RwLock<Option<Arc<countries::Countries>>>>,
 }
 
 impl Stats {
@@ -274,6 +281,7 @@ impl Stats {
         Ok(Arc::new(Self {
             conn: Arc::new(Mutex::new(conn)),
             live: Mutex::new(Live::new(day_of(now_s()))),
+            countries: Arc::default(),
         }))
     }
 
@@ -285,6 +293,18 @@ impl Stats {
 
     pub(crate) fn conn(&self) -> &SharedConn {
         &self.conn
+    }
+
+    /// Where the country table goes once loaded.
+    #[must_use]
+    pub fn countries(&self) -> Arc<std::sync::RwLock<Option<Arc<countries::Countries>>>> {
+        self.countries.clone()
+    }
+
+    fn country_of(&self, ip: &str) -> Option<String> {
+        let ip = ip.parse().ok()?;
+        let table = self.countries.read().ok()?.clone()?;
+        table.lookup(ip)
     }
 
     /// A handshake was accepted.
@@ -385,8 +405,12 @@ impl Stats {
 
     /// One page view (`POST /api/stats/hit`).
     pub fn web_hit(&self, hit: web::Hit, ip: &str, user_agent: &str) {
+        // The country is read from the address here, before the address is
+        // hashed and dropped; it is all of the address that is kept.
+        let country = self.country_of(ip).unwrap_or_else(|| "unknown".into());
         let mut l = self.live();
         let who = l.visitor(ip, user_agent, hit.site);
+        l.web(hit.site, "country", country, who);
         l.web(hit.site, "total", String::new(), who);
         l.web(hit.site, "path", hit.path, who);
         l.web(hit.site, "source", hit.source, who);

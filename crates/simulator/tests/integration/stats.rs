@@ -134,6 +134,39 @@ async fn page_views_count_visitors_once_and_bots_apart() {
     assert_eq!(web["pages"][0]["value"], "/building/:id");
     assert_eq!(web["sources"][0]["value"], "mastodon.social");
     assert_eq!(web["devices"][0]["value"], "phone");
+    // No country table in a test: the visitors are counted as unknown.
+    assert_eq!(web["countries"][0]["value"], "unknown");
+}
+
+/// The about site posts with `navigator.sendBeacon`, which sends `text/plain`;
+/// it must count the same as JSON.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_beacon_from_the_about_site_counts_as_plain_text() {
+    let (handle, _dir) = server().await;
+    let url = format!("{}/api/stats/hit", base(&handle));
+    let status = tokio::task::spawn_blocking(move || {
+        ureq::post(&url)
+            .set("User-Agent", "Mozilla/5.0 Firefox")
+            .set("Content-Type", "text/plain;charset=UTF-8")
+            .send_string(r#"{"site":"about","path":"/","referrer":"","width":1280}"#)
+            .map(|r| r.status())
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 204);
+    handle.stats.flush().await.unwrap();
+    let admin = token(&handle, "/api/admin/login", "root", "adminpass").await;
+    let (_, web) = call(
+        "GET",
+        format!("{}/api/admin/stats/web?site=about", base(&handle)),
+        Some(admin),
+        "test",
+        None,
+    )
+    .await;
+    assert_eq!(web["visitors"], 1, "{web}");
+    assert_eq!(web["pages"][0]["value"], "about /", "{web}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -38,12 +38,20 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 
 /// `POST /api/stats/hit`: one page shown. Anonymous, answers 204 whatever
 /// happened, so a page never waits on it or learns anything from it.
+///
+/// The body is JSON whatever its content type: about.cartopolis.org sends it
+/// with `navigator.sendBeacon`, which posts `text/plain` — the one kind of
+/// cross-site request a browser sends without asking first, so this endpoint
+/// needs no CORS answer at all.
 async fn hit(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(body): Json<web::HitBody>,
+    body: axum::body::Bytes,
 ) -> StatusCode {
+    let Ok(body) = serde_json::from_slice::<web::HitBody>(&body) else {
+        return StatusCode::NO_CONTENT;
+    };
     let ip = crate::http::caller_key(&headers, peer);
     if !state.stats_throttle.allow(&ip) {
         return StatusCode::NO_CONTENT;
@@ -646,6 +654,12 @@ pub struct Web {
     pub sources: Vec<Ranked>,
     pub devices: Vec<Ranked>,
     pub languages: Vec<Ranked>,
+    /// Two-letter codes, or `unknown` while the country table is not loaded.
+    pub countries: Vec<Ranked>,
+    /// Whole APK downloads, as Caddy reports them (`stats::apk`), whatever site
+    /// is chosen: the APK is on none of them.
+    pub apk_downloads: i64,
+    pub apk_downloads_prev: i64,
 }
 
 fn ranked(
@@ -656,10 +670,12 @@ fn ranked(
     to: i64,
 ) -> anyhow::Result<Vec<Ranked>> {
     let mut st = c.prepare(
-        "SELECT value, SUM(visitors), SUM(views) FROM web_daily WHERE dim = ?1 AND day BETWEEN ?2 AND ?3 \
+        // A page is named with its site unless it is cartopolis.org's own, so
+        // the about site's `/` is not counted as the front page's.
+        "SELECT CASE WHEN dim = 'path' AND site != 'web' THEN site || ' ' || value ELSE value END AS label, \
+         SUM(visitors), SUM(views) FROM web_daily WHERE dim = ?1 AND day BETWEEN ?2 AND ?3 \
          AND site != 'community' AND (?4 IS NULL OR site = ?4) \
-         GROUP BY CASE WHEN site = 'about' AND dim = 'path' THEN 'about ' || value ELSE value END \
-         ORDER BY 2 DESC LIMIT 20",
+         GROUP BY label ORDER BY 2 DESC LIMIT 20",
     )?;
     let rows = st
         .query_map(params![dim, from, to, site], |r| {
@@ -687,6 +703,13 @@ async fn web_page(
         let (visitors_prev, _) = sum_web(c, s, "total", from - days, from - 1)?;
         let (opened_world, _) = sum_web(c, Some("viewer"), "total", from, to)?;
         let (_, bots) = sum_web(c, s, "bots", from, to)?;
+        let apk = |a: i64, b: i64| -> anyhow::Result<i64> {
+            Ok(c.query_row(
+                "SELECT COALESCE(SUM(n), 0) FROM events_daily WHERE kind = 'apk_download' AND day BETWEEN ?1 AND ?2",
+                params![a, b],
+                |r| r.get(0),
+            )?)
+        };
         let mut st = c.prepare(
             "SELECT day, SUM(visitors), SUM(views) FROM web_daily WHERE dim = 'total' AND site != 'community' \
              AND day BETWEEN ?1 AND ?2 AND (?3 IS NULL OR site = ?3) GROUP BY day",
@@ -718,6 +741,9 @@ async fn web_page(
             sources: ranked(c, s, "source", from, to)?,
             devices: ranked(c, s, "device", from, to)?,
             languages: ranked(c, s, "lang", from, to)?,
+            countries: ranked(c, s, "country", from, to)?,
+            apk_downloads: apk(from, to)?,
+            apk_downloads_prev: apk(from - days, from - 1)?,
         })
     })?;
     Ok(Json(w))

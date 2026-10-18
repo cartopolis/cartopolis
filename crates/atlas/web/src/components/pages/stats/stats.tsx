@@ -38,6 +38,18 @@ function appsWithOther(rows: StatsDayApps[]) {
     return rows.map((r) => ({...r, other: Math.max(0, r.all - r.android - r.web - r.desktop)}))
 }
 
+const COUNTRY_NAMES = new Intl.DisplayNames(['en'], {type: 'region'})
+
+/** A two-letter code as the country's name; `unknown` as itself. */
+function countryName(code: string) {
+    if (code.length !== 2) return code === 'unknown' ? 'Not known' : code
+    try {
+        return COUNTRY_NAMES.of(code) ?? code
+    } catch {
+        return code
+    }
+}
+
 /** A busy square's place link: World opens above it. */
 function placeLink(lat: number, lon: number) {
     return `/go?place=${lat.toFixed(5)},${lon.toFixed(5)},400m,-60.0,0.0`
@@ -256,6 +268,7 @@ export class StatsWebPage extends StatsPage<StatsWeb> {
                     compared('Visitors', w.visitors, w.visitors_prev),
                     {label: 'Pages shown', note: w.visitors ? `${(w.views / w.visitors).toFixed(1)} per visitor` : '', value: count(w.views)},
                     {label: 'Opened World', note: w.visitors ? `${Math.round((w.opened_world / Math.max(1, w.visitors)) * 100)}% of visitors` : '', value: count(w.opened_world)},
+                    compared('APK downloads', w.apk_downloads, w.apk_downloads_prev),
                     {label: 'Crawlers filtered', note: 'never counted as visitors', value: count(w.bots)},
                 ])}
                 <div class="stats-row is-wide">
@@ -272,13 +285,17 @@ export class StatsWebPage extends StatsPage<StatsWeb> {
                     {Card('Pages', '', Ranked(rank(w.pages), ['Page', 'Visitors']))}
                     {Card('Where they came from', '', Ranked(rank(w.sources), ['Site', 'Visitors']))}
                     {Card(
-                        'How this is counted',
+                        'Countries',
                         '',
+                        Ranked(w.countries.map((r) => ({label: countryName(r.value), n: r.visitors})), ['Country', 'Visitors']),
                         <p class="stats-note">
-                            Each page sends one request when it is shown: the site, the page with its ids removed, the site the visitor came from and the window width. A visitor is a hash of a secret that is thrown away at midnight, the address and the browser — no cookie, and no address is kept.
+                            Read from the address at the moment of the visit, which is then dropped. <a href="https://db-ip.com" rel="noopener" target="_blank">IP Geolocation by DB-IP</a>.
                         </p>,
                     )}
                 </div>
+                <p class="stats-note">
+                    Each page sends one request when it is shown: the site, the page with its ids removed, the site the visitor came from and the window width. A visitor is a hash of a secret that is thrown away at midnight, the address and the browser — no cookie, and no address is kept. APK downloads are counted by the web server, whole downloads only.
+                </p>
             </div>
         )
     }

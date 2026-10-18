@@ -72,12 +72,31 @@ elsewhere.
 - **Building floor-plan saves** happen in atlas (`put_design`), which asks the
   simulator `GET /api/buildings/{pand}/access` for opening, saving and
   deleting alike, so the simulator cannot tell a save from a view.
-- **about.cartopolis.org** is a separate repository (`jeroen/about-cartopolis`):
-  its beacon has to be added there, sending `site: "about"`.
+
+## Counted from outside the simulator
+
+- **about.cartopolis.org** (`jeroen/about-cartopolis`, branch `presentation`)
+  sends `site: "about"` with `navigator.sendBeacon`, only when served from that
+  host. A beacon posts `text/plain`, the one cross-site request a browser sends
+  without a CORS preflight, so `/api/stats/hit` reads the body as JSON whatever
+  its content type and answers no CORS at all.
+- **Countries** come from DB-IP's free country table (CC BY 4.0: the Web
+  visitors page carries the attribution), a CSV beside the database fetched
+  monthly when `geoip_download` is on (`CARTO_GEOIP_DOWNLOAD=true`). The CSV
+  rather than the MaxMind-format file because reading that needs a crate this
+  tree does not have. Without the table every visitor is `unknown`.
+- **APK downloads** come from Caddy, which serves the file itself: the
+  `cartopolis.org` block logs only `/apk/cartopolis.apk`, deletes the address and
+  headers from each line, and streams the lines over TCP (`output net`) to
+  `apk_log_listen` on the docker gateway (`CARTO_APK_LOG_LISTEN=172.17.0.1:4750`).
+  No log file exists; a line is counted and gone. Only a `GET` answered `200`
+  counts, so a resumed download is one, and a download cannot be told from
+  another by who made it — the address is gone before it arrives.
 
 ## Deploying
 
 The public paths must be in the host Caddyfile's API matchers, or they answer
 the web UI's `index.html` with a 200 (`hosted-simulator.md`):
 `/api/stats/hit` and `/api/communities/*/stats`. `/api/admin/stats/*` is
-already covered by `/api/admin/*`.
+already covered by `/api/admin/*`. The two settings above live in
+`/etc/cartopolis-sim.env`.

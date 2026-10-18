@@ -244,7 +244,10 @@ function statsWeb(days: number, site: null | string): StatsWeb {
     const scale = (n: number) => Math.round(n * share)
     const rank = (rows: [string, number][]): StatsRanked[] => rows.map(([value, n]) => ({value, views: scale(n * 2.4), visitors: scale(n)}))
     return {
+        apk_downloads: 162,
+        apk_downloads_prev: 116,
         bots: scale(31_400),
+        countries: rank([['NL', 3120], ['DE', 610], ['BE', 280], ['GB', 240], ['US', 230], ['FR', 130]]),
         daily: o.visitors_daily.map((d) => ({day: d.day, views: scale(d.n * 2.9), visitors: scale(d.n)})),
         days,
         devices: rank([['phone', 2870], ['desktop', 1930], ['tablet', 148]]),

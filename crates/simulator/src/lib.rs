@@ -182,6 +182,27 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             "stats"
         });
     }
+    // The web visitors' countries: a table beside the database, fetched monthly
+    // when `geoip_download` is on (`stats::countries`).
+    if config.database_path != ":memory:" {
+        stats::countries::keep_fresh(
+            stats.countries(),
+            stats::countries::path_beside(&config.database_path),
+            config.geoip_download,
+        );
+    }
+    // APK downloads, from the lines Caddy streams (`stats::apk`). Bound here so
+    // a bad address fails the boot rather than a task later.
+    if let Some(ref addr) = config.apk_log_listen {
+        let (bound, task) = stats::apk::listen(addr, stats.clone())
+            .await
+            .with_context(|| format!("bind apk_log_listen {addr}"))?;
+        tracing::info!(%bound, "apk download lines listening");
+        tasks.spawn(async move {
+            let _ = task.await;
+            "apk download lines"
+        });
+    }
     if let Some(task) = calls_task {
         tasks.spawn(async move {
             let _ = task.await;
