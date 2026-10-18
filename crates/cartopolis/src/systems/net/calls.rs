@@ -81,7 +81,8 @@ impl CallInbox {
             | NetMessage::CallDeclined { .. }
             | NetMessage::CallEnded { .. }
             | NetMessage::CallReacted { .. }
-            | NetMessage::CallWaiting { .. } => true,
+            | NetMessage::CallWaiting { .. }
+            | NetMessage::CallInvited { .. } => true,
             NetMessage::ServerError { request_id, .. } => is_call_request(*request_id),
             _ => false,
         }
@@ -107,6 +108,75 @@ pub enum CallRequest {
     Agenda(String, Option<usize>),
     /// Share this device's screen, or stop (`platform::screen`).
     Share(bool),
+    /// A host makes a guest link to this call (protocol 41): the server makes
+    /// the code, this device the secret after the `#`.
+    InviteGuest,
+}
+
+/// A guest link's address: the web page a guest opens, which handles `meet`.
+/// Not the `/go` path, which the app claims on Android: a guest has no app.
+#[must_use]
+pub fn guest_link(code: &str, secret: &[u8]) -> String {
+    format!(
+        "{}/?meet={code}#{}",
+        crate::systems::place_link::WEB_ORIGIN,
+        b64url(secret)
+    )
+}
+
+/// A guest link's code and secret, from a link or a chat line that holds one
+/// (the web's `readGuestLink`).
+#[must_use]
+pub fn read_guest_link(text: &str) -> Option<(String, Vec<u8>)> {
+    let at = text.find("meet=")? + 5;
+    let code: String = text[at..].chars().take(10).collect();
+    if code.len() != 10
+        || !code
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        return None;
+    }
+    let rest = text[at + 10..].strip_prefix('#')?;
+    let secret: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    (secret.len() == 22)
+        .then(|| unb64url(&secret))
+        .flatten()
+        .map(|s| (code, s))
+}
+
+const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Base64url without padding: what a URL's fragment carries, and the browser's
+/// `btoa` with `+/` swapped and `=` dropped.
+fn b64url(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(B64URL[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+fn unb64url(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = B64URL.iter().position(|b| *b == c)? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 /// Where a meeting is on its plan's agenda, as a host's device last said.
@@ -325,6 +395,18 @@ pub struct Calls {
     pub meeting_out: Vec<(Vec<u8>, cartopolis_core::meeting::MeetingObject)>,
     /// A meeting's record to write, drained by `private_chat`.
     pub record_due: Option<RecordDue>,
+    /// The guest link asked for and not answered yet: the call and its secret.
+    invite_secret: Option<(Vec<u8>, Vec<u8>)>,
+    /// The newest guest link made here, to show and copy.
+    pub invited: Option<String>,
+    /// A guest link to post into its chat, sealed, so every member's device
+    /// can hand the guest the key: drained by `private_chat`.
+    pub link_to_post: Option<(Vec<u8>, String)>,
+    /// Guest links' secrets by chat: made here, or read from the chat.
+    pub guest_links: HashMap<Vec<u8>, Vec<u8>>,
+    /// Hosting: the epoch each guest in the call was last handed, by
+    /// participant. Cleared with the call.
+    pub keys_dropped: HashMap<u64, u64>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
     pub request: Option<CallRequest>,
@@ -1018,6 +1100,19 @@ pub fn drive_calls(
                     });
                 }
             }
+            // The code for the guest link asked for: the link is the code and
+            // this device's secret, posted in the chat and shown to copy.
+            NetMessage::CallInvited { group, code, .. } if !code.is_empty() => {
+                if let Some((asked, secret)) = calls.invite_secret.take() {
+                    if asked == group {
+                        let link = guest_link(&code, &secret);
+                        calls.guest_links.insert(group.clone(), secret);
+                        calls.invited = Some(link.clone());
+                        calls.link_to_post = Some((group, link));
+                        calls.notice = Some("Guest link made: it is in the chat too".into());
+                    }
+                }
+            }
             NetMessage::CallReacted {
                 group,
                 participant,
@@ -1193,6 +1288,14 @@ pub fn drive_calls(
             #[cfg(target_arch = "wasm32")]
             if on {
                 calls.notice = Some("Share your screen from the chat page in this browser.".into());
+            }
+        }
+        Some(CallRequest::InviteGuest) => {
+            if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+                // The secret: a v4 uuid's 16 bytes, 122 of their bits random.
+                let secret = uuid::Uuid::new_v4().into_bytes().to_vec();
+                calls.invite_secret = Some((group.clone(), secret));
+                online.send("call invite", NetMessage::CallInvite { group });
             }
         }
         Some(CallRequest::Agenda(plan, index)) => {
@@ -1865,6 +1968,22 @@ fn page_is_local() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same link the browser makes (`call.ts`: base64url of the secret,
+    /// no padding) reads back here, from the link or the chat line it is in.
+    #[test]
+    fn a_guest_link_carries_its_code_and_secret() {
+        let secret: Vec<u8> = (0u8..16).collect();
+        let link = guest_link("k7q2m9x4ab", &secret);
+        assert!(
+            link.ends_with("/?meet=k7q2m9x4ab#AAECAwQFBgcICQoLDA0ODw"),
+            "{link}"
+        );
+        let line = format!("Guest link for the call, good for a day: {link}");
+        assert_eq!(read_guest_link(&line), Some(("k7q2m9x4ab".into(), secret)));
+        assert_eq!(read_guest_link("meet=short#AAECAwQFBgcICQoLDA0ODw"), None);
+        assert_eq!(read_guest_link("no link here"), None);
+    }
 
     #[test]
     fn the_call_goes_to_the_host_the_client_is_connected_to() {

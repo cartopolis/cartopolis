@@ -1405,6 +1405,25 @@ fn more_sheet(
         *request = Some(CallRequest::Control(CallAction::MuteAll));
         *close = true;
     }
+    // A link for somebody without an account: they wait to be let in, and
+    // this device hands them the call's key (`systems::private_chat`).
+    if sheet_row(ui, icons::GROUP, "Invite a guest", None) {
+        *request = Some(CallRequest::InviteGuest);
+    }
+    if let Some(link) = calls.invited.clone() {
+        theme::note(
+            ui,
+            "Guest link, good for a day. Anybody with it can ask to join.",
+        );
+        ui.label(
+            egui::RichText::new(&link)
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+        if theme::secondary_button(ui, icons::COPY, "Copy the guest link", 0.0).clicked() {
+            ui.ctx().copy_text(link);
+        }
+    }
     let mut set =
         |ui: &mut egui::Ui, icon: &str, text: &str, on: bool, f: fn(&mut CallSettings, bool)| {
             if sheet_row(ui, icon, text, Some(on)) {

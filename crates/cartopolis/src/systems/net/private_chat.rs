@@ -592,6 +592,64 @@ pub fn drive_private_chats(
         }
         private.dirty = true;
     }
+    // A guest link this device made goes into its chat, sealed: every member's
+    // device then has the secret, so whichever host lets the guest in can
+    // hand it the key.
+    if let Some((group, link)) = calls.link_to_post.take() {
+        chat.private_outbox.push((
+            channel_key(&group),
+            format!("Guest link for the call, good for a day: {link}"),
+        ));
+    }
+    // Hosting: every guest in the call gets this epoch's key, once, sealed
+    // under the link's secret (`cartopolis_calls::events::seal_guest`).
+    #[cfg(not(target_arch = "wasm32"))]
+    if calls.hosting() {
+        if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+            let guests: Vec<u64> = calls
+                .members()
+                .iter()
+                .filter(|m| m.guest)
+                .map(|m| m.participant)
+                .collect();
+            let epoch = engine
+                .call_epoch(&group, cartopolis_calls::keys::BASE_KEY_LEN)
+                .ok();
+            if let (false, Some(e)) = (guests.is_empty(), epoch) {
+                let secret = calls.guest_links.get(&group).cloned().or_else(|| {
+                    let key = channel_key(&group);
+                    chat.channels
+                        .iter()
+                        .find(|c| c.key == key)?
+                        .lines
+                        .iter()
+                        .rev()
+                        .find_map(|l| crate::systems::calls::read_guest_link(&l.body))
+                        .map(|(_, s)| s)
+                });
+                if let Some(secret) = secret {
+                    calls.guest_links.insert(group.clone(), secret.clone());
+                    for participant in guests {
+                        if calls.keys_dropped.get(&participant) == Some(&e.epoch) {
+                            continue;
+                        }
+                        calls.keys_dropped.insert(participant, e.epoch);
+                        let key = cartopolis_calls::events::GuestKey {
+                            epoch: e.epoch,
+                            base_key: e.base_key.clone(),
+                            own_index: cartopolis_calls::events::guest_index(participant),
+                            members: e.members.iter().map(|m| m.0).collect(),
+                        };
+                        out.push(NetMessage::CallKeyDrop {
+                            group: group.clone(),
+                            participant,
+                            sealed: cartopolis_calls::events::seal_guest(&secret, &group, &key),
+                        });
+                    }
+                }
+            }
+        }
+    }
     // Notes taken in the call screen, and the record a host owes when the
     // call ends (`systems::calls`): gathered here, where the chat's lines are.
     for (group, meeting) in std::mem::take(&mut calls.meeting_out) {
