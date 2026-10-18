@@ -1881,7 +1881,9 @@ fn read_chat(
                 // A field check: the photograph and Cartopolis side by side, and
                 // the pose to put the camera back on (`systems::field_check`).
                 format!(
-                    " (a field check, {} — `see_picture` {} shows the photograph beside                      Cartopolis; this reply's `field_check` holds the pose as a                      [[shot]] for docs/field-checks.toml)",
+                    " (a field check, {} — `see_picture` {} shows the photograph beside \
+                     Cartopolis; this reply's `field_check` holds the pose as a \
+                     [[shot]] for docs/field-checks.toml)",
                     pose.name(),
                     line.seq
                 )
