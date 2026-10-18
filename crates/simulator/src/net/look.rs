@@ -42,6 +42,11 @@ pub(super) async fn on_look<T: FrameTransport>(
 /// Just after the handshake: wear the account's saved look, tell everyone, and
 /// hand the newcomer every online avatar's look.
 pub(super) async fn on_arrival<T: FrameTransport>(ctx: &mut ConnCtx<T>) -> anyhow::Result<()> {
+    // A meeting guest is shown no world, so it has no avatar to dress and no
+    // use for anybody else's look.
+    if ctx.guest {
+        return Ok(());
+    }
     let principal = ctx.principal_key.clone();
     let saved = crate::db::call(&ctx.conn, move |c| crate::looks::load(c, &principal))
         .await

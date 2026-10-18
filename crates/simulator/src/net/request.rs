@@ -297,6 +297,8 @@ impl ClientRequest {
             | Self::CallDecline { .. }
             | Self::CallInvite { .. }
             | Self::CallKeyDrop { .. }
+            // A guest has no avatar in the world to wear one.
+            | Self::SetAvatarLook { .. }
             | Self::RequestContact { .. }
             | Self::AnswerContact { .. }
             | Self::RemoveContact { .. }
