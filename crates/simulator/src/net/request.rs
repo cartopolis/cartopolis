@@ -257,6 +257,8 @@ impl ClientRequest {
     pub fn guest_may(&self) -> bool {
         match self {
             Self::Hello
+            // Only ever to say "send me no world": a guest's page draws none.
+            | Self::SetPresence { .. }
             | Self::E2eeRegisterDevice { .. }
             // Its own mailbox, which nothing is sent to: the chat engine
             // syncs on every connect, and a refusal would stall it.
@@ -269,7 +271,6 @@ impl ClientRequest {
             | Self::CallLeave { .. } => true,
             Self::Intent { .. }
             | Self::Teleport { .. }
-            | Self::SetPresence { .. }
             | Self::CreatePrim { .. }
             | Self::UpdatePrim { .. }
             | Self::DeletePrim { .. }

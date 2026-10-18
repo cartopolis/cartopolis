@@ -1,17 +1,19 @@
 #!/usr/bin/env bun
 /**
- * A meeting in three real browsers, against a real simulator (protocol 41,
+ * A meeting in five real browsers, against a real simulator (protocol 41,
  * `docs/notes/calls.md` "A call is a meeting").
  *
  *   bun run build:chat-core --dev && bun run build
  *   bun meeting-browser.ts --sim "$CARGO_TARGET_DIR/debug/simulator" --shots /tmp/meeting
  *
- * Ann starts a video call in a topic and so hosts it; Bob and Carol answer.
- * Bob raises a hand and Ann is told; Bob reacts and Ann sees it over his
- * tile, sealed end to end; Ann mutes Carol, who is told and cannot unmute;
- * Ann shares a screen and Bob sees it as the stage; Ann ends the call for
- * everyone. The screen is a canvas standing in for `getDisplayMedia`, which a
- * headless browser has no screen for.
+ * Before the call: Ann plans it with an agenda and Bob says he comes; Bob asks
+ * a poll and Carol votes. In it: the check before joining, hosts, a raised
+ * hand, a sealed reaction, a host's mute that holds, a shared screen,
+ * spotlight, breakout rooms, recording, captions, the waiting room (Dave), a
+ * guest by link with no account (the fifth browser, handed the key by Ann's
+ * page), notes and the agenda. After it: end for everyone and the record.
+ * The screen is a canvas standing in for `getDisplayMedia`, which a headless
+ * browser has no screen for.
  */
 import {mkdirSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -253,7 +255,40 @@ try {
     if (!(await ann.click('Admit'))) throw new Error('no Admit in the knock notice')
     await waitFor('dave in the call', () =>
         dave.eval(`!document.querySelector('.meet-waiting') && !!document.querySelector('.chat-call-tile:not(.is-self)')`), 30000)
+    // Pictures, not just tiles: a fourth person's answer to the forwarder once
+    // outgrew its SDP limit and was dropped, and the tiles came up empty.
+    await waitFor('dave sees the others', () =>
+        dave.eval(`[...document.querySelectorAll('.chat-call-tile:not(.is-self) video')].filter((v) => v.videoWidth > 0 && v.currentTime > 0).length >= 2`), 60000)
     step('dave waited until ann let him in')
+
+    // A guest, by link: no account. Ann makes the link; a fifth browser opens
+    // it, gives a name, waits, is let in, and is handed the key by Ann's page.
+    // Video both ways is the proof: the guest opens the members' frames with
+    // the handed key, and they open the guest's.
+    if (!(await ann.eval(`[...document.querySelectorAll('.meet-panel')].some((p) => p.getAttribute('aria-label') === 'People in the call')`))) {
+        await ann.click('People in the call')
+    }
+    if (!(await ann.click('Invite a guest'))) throw new Error('no Invite a guest for the host')
+    let link = ''
+    await waitFor('the guest link', async () => {
+        link = await ann.eval<string>(`document.querySelector('.meet-invite-link input')?.value ?? ''`)
+        return link.includes('?meet=')
+    }, 20000)
+    const guest = new Browser('guest')
+    browsers.push(guest)
+    await guest.launch(link)
+    await guest.until('Join the meeting', 30000)
+    await guest.type('input[placeholder="Sanne"]', 'Sanne Jansen')
+    if (!(await guest.click('Ask to join'))) throw new Error('no Ask to join at the door')
+    await guest.until('Waiting for a host to let you in', 30000)
+    await ann.until('Sanne Jansen (guest) is waiting', 30000)
+    if (!(await ann.click('Admit'))) throw new Error('no Admit for the guest')
+    await waitFor('the guest sees the members', () =>
+        guest.eval(`[...document.querySelectorAll('.chat-call-tile:not(.is-self) video')].filter((v) => v.videoWidth > 0 && v.currentTime > 0).length >= 2`), 60000)
+    await waitFor('ann sees the guest', () =>
+        ann.eval(`[...document.querySelectorAll('.chat-call-tile')].some((t) => t.innerText.includes('Sanne Jansen (guest)') && [...t.querySelectorAll('video')].some((v) => v.videoWidth > 0 && v.currentTime > 0))`), 60000)
+    step('a guest came in by link, waited, was let in, and sees and is seen through the handed key')
+    if (shots) await guest.shot(path.join(shots, 'guest.png'))
 
     // Notes: Ann notes a decision; Bob sees it in his notes panel.
     for (const b of [ann, bob]) await b.click('Notes, polls and the agenda')
@@ -285,6 +320,8 @@ try {
     await waitFor('the record on bob\'s page', () =>
         bob.eval(`document.querySelector('.chat-record')?.innerText.includes('The gazebos stay') ?? false`), 30000)
     step('the meeting record arrived in the chat, with the decision in it')
+    await guest.until('The meeting is over', 20000)
+    step('the guest was told the meeting is over')
     if (shots) await bob.shot(path.join(shots, 'record.png'))
     // A page that kept working past an error it did not catch is not a pass.
     const errors = browsers.flatMap((b) => b.logs.filter((l) => /^uncaught|call: closing/.test(l)).map((l) => `${b.name}: ${l}`))

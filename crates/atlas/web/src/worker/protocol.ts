@@ -8,7 +8,7 @@
 import type {Message} from './history.ts'
 
 /** How the worker signs in: the session token the web UI already holds. */
-export type Credential = {token: string} | {password: string; username: string}
+export type Credential = {token: string} | {password: string; username: string} | {guest: {code: string; name: string}}
 
 export type Role = 'member' | 'moderator' | 'owner'
 export type JoinRule = 'ask' | 'invite' | 'open'
@@ -148,6 +148,8 @@ export type ChatEvent =
     | {code: number; control: boolean; kind: 'call_refused'; message: string}
     | {by: string; channel: string; kind: 'call_ended'; reason: 'removed' | 'ended'}
     | {channel: string; epoch: string; kind: 'call_reacted'; participant: number; sealed: string}
+    | {channel: string; code: string; expires_ms: number; kind: 'call_invited'}
+    | {channel: string; kind: 'call_key_dropped'; sealed: string}
     | {
         channel: string
         count: number
@@ -220,6 +222,8 @@ export type Command =
     | {channel: string; epoch: string; sealed: string; type: 'call_react'}
     /** Whose cameras this page draws: a JSON list of participants, or `null`. */
     | {cameras: string; channel: string; type: 'call_watch'}
+    | {channel: string; type: 'call_invite'}
+    | {channel: string; participant: number; sealed: string; type: 'call_key_drop'}
     | {channel: string; sdp: string; type: 'call_answer'}
     | {channel: string; type: 'call_leave'}
     | {channel: string; type: 'call_decline'}

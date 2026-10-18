@@ -296,7 +296,12 @@ function signOut(): void {
 }
 
 async function signIn(credential: Credential): Promise<void> {
-    const key = 'token' in credential ? credential.token : `${credential.username}:${credential.password}`
+    const key =
+        'token' in credential
+            ? credential.token
+            : 'guest' in credential
+              ? `guest:${credential.guest.code}:${credential.guest.name}`
+              : `${credential.username}:${credential.password}`
     // Already signed in, or on the way: a page's first draw can ask twice
     // before the first answer, and a second lock request would read as another
     // tab holding the keys.
@@ -453,6 +458,10 @@ async function run(command: Command, from: Port): Promise<void> {
             return c.community((core) => core.call_react(command.channel, command.epoch, command.sealed))
         case 'call_watch':
             return c.community((core) => core.call_watch(command.channel, command.cameras))
+        case 'call_invite':
+            return c.community((core) => core.call_invite(command.channel))
+        case 'call_key_drop':
+            return c.community((core) => core.call_key_drop(command.channel, command.participant, command.sealed))
         case 'call_answer':
             return c.community((core) => core.call_answer(command.channel, command.sdp))
         case 'call_leave':

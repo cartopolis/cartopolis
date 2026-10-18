@@ -825,7 +825,8 @@ pub async fn handle_connection<T: FrameTransport>(
         avatar_id,
         filter,
         gates: RateGates::open(),
-        presence_active: true,
+        // A guest has no world to be shown: none is sent until it asks.
+        presence_active: guest_of.is_none(),
         e2ee_device: None,
         call_seat: None,
         push_endpoint: None,

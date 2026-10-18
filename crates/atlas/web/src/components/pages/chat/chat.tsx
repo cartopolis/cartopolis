@@ -12,7 +12,7 @@ import {
     type Message,
     type Role,
 } from '@/lib/chat'
-import type {CallMember} from '@/lib/call'
+import {type CallMember, callName, readGuestLink} from '@/lib/call'
 import {CAPTION_LANGUAGES} from '@/lib/call-captions'
 import {
     type Meetings,
@@ -602,6 +602,11 @@ interface PageState {
     note: {kind: NoteKind; text: string}
     /** Plans already reminded of on this page, by id. */
     reminded: Set<string>
+    /** This page was opened by a guest link (`?meet=…#…`): its code and
+     *  secret, and what the guest is filling in at the door. */
+    meet: {code: string; secret: Uint8Array} | null
+    guestName: string
+    guestCamera: boolean
 }
 
 function emptyDraft(): Draft {
@@ -670,6 +675,9 @@ export class Chat extends MithrilComponent {
         notesTab: 'notes',
         note: {kind: 'note', text: ''},
         reminded: new Set(),
+        meet: typeof location === 'undefined' ? null : readGuestLink(location.search + location.hash),
+        guestName: '',
+        guestCamera: true,
         space: null,
         report: {channel: '', line: '', note: '', reason: 'spam', seq: 0, who: ''},
         thread: null,
@@ -930,6 +938,8 @@ export class Chat extends MithrilComponent {
      * reloads it, and this one is a hundred megabytes of WebAssembly.
      */
     view() {
+        // Opened by a guest link: the meeting, and nothing else of the site.
+        if (this.s.meet) return this.guestView(this.s.meet)
         const signedIn = !!$s.signup.token
         const now = mode()
         if (now === 'world') this.worldOpened = true
@@ -950,6 +960,61 @@ export class Chat extends MithrilComponent {
                         {this.s.dialog && this.dialogView()}
                     </div>
                 )}
+            </div>
+        )
+    }
+
+    /**
+     * A guest's page (`docs/notes/calls.md`, "Guests"): a name at the door,
+     * then the meeting full-page once a host lets them in, then its end. A
+     * guest is in no chat and sees none; the link's secret, after `#`, never
+     * reaches the server and opens the key a host hands this page.
+     */
+    guestView(link: {code: string; secret: Uint8Array}) {
+        const s = this.s
+        const c = chat()
+        const calls = c.calls
+        if (calls.active) {
+            return (
+                <div class="chat is-in-call is-call-focus is-guest">
+                    {this.callStage()}
+                </div>
+            )
+        }
+        const asked = calls.guest !== null
+        const ended = asked && calls.guest!.channel !== null
+        const name = s.guestName.trim()
+        return (
+            <div class="guest-door">
+                <form
+                    class="guest-card"
+                    onsubmit={(e: Event) => {
+                        e.preventDefault()
+                        if (!name || asked) return
+                        s.callFocus = true
+                        calls.joinAsGuest(link, name, s.guestCamera)
+                    }}
+                >
+                    <div class="guest-brand">{Icon('videocam')} Cartopolis</div>
+                    <h1>{ended ? 'The meeting is over' : 'Join the meeting'}</h1>
+                    {ended ? (
+                        <p>{calls.notice ?? 'You left the meeting.'} You can close this page.</p>
+                    ) : (
+                        <p>
+                            You are invited as a guest. A host lets you in. Sound and pictures are end-to-end
+                            encrypted: the server passes them on and cannot see or hear them.
+                        </p>
+                    )}
+                    {c.notice && !ended && <p class="guest-note">{c.notice}</p>}
+                    {!asked && [
+                        <FieldText label="Your name" model={bind(s, 'guestName')} placeholder="Sanne" />,
+                        <FieldCheckbox label="Camera on" model={bind(s, 'guestCamera')} />,
+                        <Button disabled={!name} type="submit" variant="primary">
+                            Ask to join
+                        </Button>,
+                    ]}
+                    {asked && !ended && <p class="guest-note">Asking to join…</p>}
+                </form>
             </div>
         )
     }
@@ -1762,10 +1827,12 @@ export class Chat extends MithrilComponent {
         const me = calls.self()
         const hosting = calls.hosting()
         const settings = calls.settings()
-        const name = this.chatTitle(a.channel)
+        // A guest is in no chat: it sees the meeting, not the chat's name.
+        const guest = calls.guest !== null
+        const name = guest ? 'Meeting' : this.chatTitle(a.channel)
         const people: CallPerson[] = others.map((o) => {
             const t = a.tiles.get(o.participant)
-            return {audio: t?.audio ?? null, key: `p${o.participant}`, member: o, name: o.username, participant: o.participant, video: t?.video ?? null}
+            return {audio: t?.audio ?? null, key: `p${o.participant}`, member: o, name: callName(o), participant: o.participant, video: t?.video ?? null}
         })
         // Pictures and sound from somebody the roster has not named yet.
         for (const t of a.tiles.values()) {
@@ -2115,7 +2182,7 @@ export class Chat extends MithrilComponent {
                                     {Avatar(w.username, 30)}
                                     <span class="meet-row-name">
                                         <b>
-                                            {w.username}
+                                            {callName(w)}
                                             {w.guest && <span class="meet-badge is-guest">GUEST</span>}
                                         </b>
                                         <small>waiting {waitedFor(w.since_ms)}</small>
@@ -2137,7 +2204,7 @@ export class Chat extends MithrilComponent {
                                 <div class="meet-row" key={`h${mem.participant}`}>
                                     <span class="meet-q">{i + 1}</span>
                                     <span class="meet-row-name">
-                                        <b>{mem.participant === a.participant ? 'You' : mem.username}</b>
+                                        <b>{mem.participant === a.participant ? 'You' : callName(mem)}</b>
                                     </span>
                                     {hosting && (
                                         <button class="meet-btn is-primary" onclick={() => calls.control({AllowTalk: {participant: mem.participant}})}>
@@ -2170,7 +2237,7 @@ export class Chat extends MithrilComponent {
                                     {Avatar(mem.username, 30)}
                                     <span class="meet-row-name">
                                         <b>
-                                            {isMe ? 'You' : mem.username}
+                                            {isMe ? 'You' : callName(mem)}
                                             {mem.role !== 'member' && <span class="meet-badge">{mem.role === 'host' ? 'HOST' : 'CO-HOST'}</span>}
                                         </b>
                                         {mem.sharing && <small>presenting</small>}
@@ -2216,7 +2283,26 @@ export class Chat extends MithrilComponent {
                         <button class="meet-btn" onclick={() => calls.control('MuteAll')}>
                             {Icon('mic_off')} Mute everyone
                         </button>
+                        {!guest && (
+                            <button
+                                class="meet-btn"
+                                onclick={() => calls.inviteGuest()}
+                                title="A link somebody without an account can join by, through the waiting room"
+                            >
+                                {Icon('person_add')} Invite a guest
+                            </button>
+                        )}
                     </footer>
+                )}
+                {hosting && calls.invited?.channel === a.channel && (
+                    <div class="meet-invite-link">
+                        <small>Guest link, good for a day. Anybody with it can ask to join.</small>
+                        <input
+                            onclick={(e: Event) => (e.target as HTMLInputElement).select()}
+                            readonly
+                            value={calls.invited.url}
+                        />
+                    </div>
                 )}
             </aside>
         )
@@ -2245,25 +2331,30 @@ export class Chat extends MithrilComponent {
                             <span class="meet-hands">{hands.length + (hosting ? calls.waiting().length : 0)}</span>
                         )}
                     </button>
-                    <button
-                        class={s.callPanel === 'notes' && s.callFocus ? 'chat-call-swap is-on' : 'chat-call-swap'}
-                        onclick={() => {
-                            s.callFocus = true
-                            s.callPanel = s.callPanel === 'notes' ? null : 'notes'
-                        }}
-                        title="Notes, polls and the agenda"
-                    >
-                        {Icon('edit_note')}
-                        <span>Notes</span>
-                    </button>
-                    <button
-                        class="chat-call-swap"
-                        onclick={() => this.focusCall(!s.callFocus)}
-                        title={s.callFocus ? 'Put the chat back in the middle' : 'Put the call in the middle'}
-                    >
-                        {Icon(s.callFocus ? 'chat' : 'swap')}
-                        <span>{s.callFocus ? 'Chat' : 'Swap'}</span>
-                    </button>
+                    {/* A guest is in no chat: no notes or polls of its own, no chat to swap to. */}
+                    {!guest && (
+                        <button
+                            class={s.callPanel === 'notes' && s.callFocus ? 'chat-call-swap is-on' : 'chat-call-swap'}
+                            onclick={() => {
+                                s.callFocus = true
+                                s.callPanel = s.callPanel === 'notes' ? null : 'notes'
+                            }}
+                            title="Notes, polls and the agenda"
+                        >
+                            {Icon('edit_note')}
+                            <span>Notes</span>
+                        </button>
+                    )}
+                    {!guest && (
+                        <button
+                            class="chat-call-swap"
+                            onclick={() => this.focusCall(!s.callFocus)}
+                            title={s.callFocus ? 'Put the chat back in the middle' : 'Put the call in the middle'}
+                        >
+                            {Icon(s.callFocus ? 'chat' : 'swap')}
+                            <span>{s.callFocus ? 'Chat' : 'Swap'}</span>
+                        </button>
+                    )}
                 </header>
                 <div class="meet-body">
                     <div class="meet-main">
@@ -2495,7 +2586,7 @@ export class Chat extends MithrilComponent {
             <aside class={this.s.callFocus ? 'chat-call meet is-focus' : 'chat-call meet'}>
                 <div class="meet-waiting">
                     {self ? <div class="meet-waiting-self">{Media(self, 'video', true)}</div> : Avatar(chat().address ?? 'You', 96)}
-                    <h3>{this.chatTitle(channel)}</h3>
+                    <h3>{chat().calls.guest ? 'Meeting' : this.chatTitle(channel)}</h3>
                     <p class="meet-waiting-state">
                         <span class="meet-spinner" />
                         Waiting for a host to let you in

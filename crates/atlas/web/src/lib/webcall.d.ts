@@ -39,4 +39,14 @@ declare module '*/cartopolis/web/webcall.js' {
 declare module '*/cartopolis/web/call-events.js' {
     export function sealEvent(baseKey: Uint8Array, epoch: bigint, plain: Uint8Array, nonce?: Uint8Array): Promise<Uint8Array>
     export function openEvent(baseKey: Uint8Array, epoch: bigint, sealed: Uint8Array): Promise<Uint8Array | null>
+    export const GUEST_INDEX_BASE: number
+    export function guestIndex(participant: number): number
+    export interface GuestKey {
+        baseKey: Uint8Array
+        epoch: bigint
+        members: number[]
+        ownIndex: number
+    }
+    export function sealGuestKey(secret: Uint8Array, group: Uint8Array, key: GuestKey, nonce?: Uint8Array): Promise<Uint8Array>
+    export function openGuestKey(secret: Uint8Array, group: Uint8Array, sealed: Uint8Array): Promise<GuestKey | null>
 }

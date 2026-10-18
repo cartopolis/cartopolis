@@ -249,7 +249,18 @@ export class ChatClient {
     callSignal(
         command: Extract<
             Command,
-            {type: 'call_answer' | 'call_control' | 'call_decline' | 'call_join' | 'call_leave' | 'call_react' | 'call_watch'}
+            {
+                type:
+                    | 'call_answer'
+                    | 'call_control'
+                    | 'call_decline'
+                    | 'call_invite'
+                    | 'call_join'
+                    | 'call_key_drop'
+                    | 'call_leave'
+                    | 'call_react'
+                    | 'call_watch'
+            }
         >,
     ): void {
         this.send(command)

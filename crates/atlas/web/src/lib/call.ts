@@ -21,7 +21,7 @@
  * worked out on this page from the sound it already plays, so the server learns
  * nothing from it.
  */
-import {openEvent, sealEvent} from '../../../../cartopolis/web/call-events.js'
+import {guestIndex, openEvent, openGuestKey, sealEvent, sealGuestKey} from '../../../../cartopolis/web/call-events.js'
 import {WebCall, webCallSupported} from '../../../../cartopolis/web/webcall.js'
 
 import type {ChatClient} from './chat'
@@ -168,6 +168,32 @@ interface Active {
     /** How much the last record posted from here held, so ending does not
      *  post the same one twice. */
     recorded: number
+    /** This page is a guest: the link's secret, which opens the key a host
+     *  hands it. A guest is in no chat, so it has no key of its own. */
+    guestSecret: Uint8Array | null
+    /** Hosting: the epoch each guest in the call was last handed, by participant. */
+    dropped: Map<number, number>
+}
+
+/** The channel's group id, as the bytes a guest's key is bound to. */
+const groupBytes = (channel: string) => unhexBytes(channel.replace(/^dm:/, ''))
+const unhexBytes = (s: string) => new Uint8Array((s.match(/../g) ?? []).map((h) => parseInt(h, 16)))
+const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const unb64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
+
+/** A guest link in a chat line: its code, and the secret after `#`. */
+export const GUEST_LINK = /[?&]meet=([a-z0-9]{10})#([A-Za-z0-9_-]{22})/
+
+/** How a person in a call is named on screen: a guest by the name they gave
+ *  (their account name, `Sanne-Jansen~3fa`, is made unique) and marked as one. */
+export function callName(m: {guest: boolean; username: string}): string {
+    return m.guest ? `${m.username.replace(/~[0-9a-f]{3}$/, '').replace(/-/g, ' ')} (guest)` : m.username
+}
+
+/** A guest link's code and secret, from a URL or a line that holds one. */
+export function readGuestLink(text: string): {code: string; secret: Uint8Array} | null {
+    const m = GUEST_LINK.exec(text)
+    return m ? {code: m[1], secret: unb64url(m[2])} : null
 }
 
 /** How long a call placed here rings before giving up, ms. */
@@ -221,6 +247,16 @@ export class Calls {
     toasts: Toast[] = []
     /** Reactions in the call, newest last. */
     reactions: Reaction[] = []
+    /** This page came in by a guest link: the link, the name given, and the
+     *  call it may join once the server says which (`call_invited`). */
+    guest: {camera: boolean; channel: string | null; name: string; secret: Uint8Array} | null = null
+    /** The newest guest link made on this page, to show and copy. */
+    invited: {channel: string; url: string} | null = null
+    /** Guest links by channel: made here, or read from the chat they were
+     *  posted in, so any host's page can hand a guest the key. */
+    private links = new Map<string, Uint8Array>()
+    /** Links asked for and not answered yet: their secrets, by channel. */
+    private asking = new Map<string, Uint8Array>()
 
     private client: ChatClient
     private changed: () => void
@@ -404,6 +440,8 @@ export class Calls {
                     a.web.forgetGone()
                     for (const m of members) if (!a.waiting) a.seen.add(m.username)
                     this.meetingChanges(before, members)
+                    // A guest just let in gets the key from whichever host sees it first.
+                    void this.dropKeys()
                     const others = this.others(channel)
                     if (others.length && a.connected && a.since === null) a.since = Date.now()
                     // The last other person hung up: this side ends too, as a phone does.
@@ -464,6 +502,33 @@ export class Calls {
             case 'call_reacted':
                 if (a && a.channel === event.channel) void this.reacted(event.participant as number, event.epoch as string, event.sealed as string)
                 return
+            case 'call_invited': {
+                const channel = event.channel as string
+                const code = event.code as string
+                // No code: this page is a guest, being told which call it may join.
+                if (!code) {
+                    if (this.guest && !this.guest.channel) {
+                        this.guest.channel = channel
+                        void this.join(channel, this.guest.camera)
+                    }
+                    break
+                }
+                const secret = this.asking.get(channel)
+                if (!secret) break
+                this.asking.delete(channel)
+                this.links.set(channel, secret)
+                const url = `${location.origin}/?meet=${code}#${b64url(secret)}`
+                this.invited = {channel, url}
+                // Posted in the chat, sealed: every member's page then knows the
+                // secret, so whichever host lets the guest in can hand it the key.
+                this.client.sendText(channel, `Guest link for the call, good for a day: ${url}`)
+                void navigator.clipboard?.writeText(url).catch(() => undefined)
+                this.toast({kind: 'info', sub: 'Posted in the chat, and copied', text: 'Guest link ready'})
+                break
+            }
+            case 'call_key_dropped':
+                if (a && a.channel === event.channel && a.guestSecret) void this.keyDropped(a.guestSecret, event.sealed as string)
+                return
             default:
                 return
         }
@@ -491,11 +556,11 @@ export class Calls {
             }
             // Somebody starting to record is told to everyone, every time.
             if (m.recording && !old?.recording) {
-                this.toast({kind: 'rec', participant: m.participant, sub: 'On their own device', text: `${m.username} is recording`})
+                this.toast({kind: 'rec', participant: m.participant, sub: 'On their own device', text: `${callName(m)} is recording`})
             }
             // A hand going up is news to whoever runs the call.
             if (hosting && m.hand !== null && (old?.hand ?? null) === null) {
-                this.toast({kind: 'hand', participant: m.participant, sub: 'In the queue', text: `${m.username} raised a hand`})
+                this.toast({kind: 'hand', participant: m.participant, sub: 'In the queue', text: `${callName(m)} raised a hand`})
             }
         }
         // A hand that went down takes its notice with it.
@@ -516,8 +581,10 @@ export class Calls {
             this.notify()
             return
         }
-        const keys = await this.client.callKeys(channel)
-        if (!keys) {
+        // A guest has no key of its own: a host hands it one once it is let in.
+        const guest = this.guest?.channel === channel ? this.guest : null
+        const keys = guest ? null : await this.client.callKeys(channel)
+        if (!keys && !guest) {
             this.notice = 'This chat is not ready for a call yet.'
             this.notify()
             return
@@ -578,6 +645,8 @@ export class Calls {
             agenda: null,
             endingForAll: false,
             recorded: 0,
+            guestSecret: guest?.secret ?? null,
+            dropped: new Map(),
             participant: null,
             probe: null,
             sharing: false,
@@ -589,7 +658,7 @@ export class Calls {
             web,
         }
         this.active = a
-        this.applyKeys(keys)
+        if (keys) this.applyKeys(keys)
         if (camera) void web.setCamera(true)
         if (prefs.blur) void web.setBlur(true)
         if (prefs.muted) {
@@ -700,13 +769,71 @@ export class Calls {
     private async refreshKeys(): Promise<void> {
         const a = this.active
         if (!a) return
-        // Nobody answered a call placed here.
-        if (a.since === null && !this.others(a.channel).length && Date.now() - a.started > NO_ANSWER_MS) {
+        // Nobody answered a call placed here. Not while waiting to be let in,
+        // which takes as long as the hosts take.
+        if (a.since === null && !a.waiting && !this.others(a.channel).length && Date.now() - a.started > NO_ANSWER_MS) {
             this.hangUp('No answer')
             return
         }
+        // A guest's key comes from a host (`call_key_dropped`), not the chat.
+        if (a.guestSecret) return
         const keys = await this.client.callKeys(a.channel)
         if (keys) this.applyKeys(keys)
+    }
+
+    /** Make a guest link to this page's call. The server answers with its
+     *  code (`call_invited`); the secret is made here and never sent to it. */
+    inviteGuest(): void {
+        const a = this.active
+        if (!a || a.guestSecret) return
+        this.asking.set(a.channel, crypto.getRandomValues(new Uint8Array(16)))
+        this.client.callSignal({channel: a.channel, type: 'call_invite'})
+    }
+
+    /** Come into a meeting by a guest link, as `name`. Signs this page in as
+     *  a guest; the call is joined when the server says which it is. */
+    joinAsGuest(link: {code: string; secret: Uint8Array}, name: string, camera: boolean): void {
+        this.guest = {camera, channel: null, name, secret: link.secret}
+        this.client.signIn({guest: {code: link.code, name}})
+        this.notify()
+    }
+
+    /** The secret of a guest link to `channel`: made on this page, or read
+     *  from the chat it was posted in. */
+    private linkSecret(channel: string): Uint8Array | null {
+        const known = this.links.get(channel)
+        if (known) return known
+        const lines = this.client.histories.get(channel) ?? []
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const link = readGuestLink(lines[i].body)
+            if (link) {
+                this.links.set(channel, link.secret)
+                return link.secret
+            }
+        }
+        return null
+    }
+
+    /** Hosting: hand every guest in the call this epoch's key, once each,
+     *  sealed under the link's secret. */
+    private async dropKeys(): Promise<void> {
+        const a = this.active
+        if (!a || !a.keys || a.guestSecret || !this.hosting()) return
+        const keys = a.keys
+        const guests = this.members().filter((m) => m.guest && a.dropped.get(m.participant) !== keys.epoch)
+        if (!guests.length) return
+        const secret = this.linkSecret(a.channel)
+        if (!secret) return
+        for (const g of guests) {
+            a.dropped.set(g.participant, keys.epoch)
+            const sealed = await sealGuestKey(secret, groupBytes(a.channel), {
+                baseKey: keys.key,
+                epoch: BigInt(keys.epoch),
+                members: [],
+                ownIndex: guestIndex(g.participant),
+            })
+            this.client.callSignal({channel: a.channel, participant: g.participant, sealed: hex(sealed), type: 'call_key_drop'})
+        }
     }
 
     private applyKeys(keys: {epoch: number; index: number; key: string}): void {
@@ -717,6 +844,18 @@ export class Calls {
         a.lastKeys = a.keys
         a.keys = {epoch: keys.epoch, key}
         a.web.keys(keys.epoch, key, keys.index)
+        // A new epoch is a new key: every guest in the call needs it too.
+        void this.dropKeys()
+    }
+
+    /** A guest: the key a host handed this page, opened with the link's secret. */
+    private async keyDropped(secret: Uint8Array, sealed: string): Promise<void> {
+        const a = this.active
+        if (!a) return
+        const key = await openGuestKey(secret, groupBytes(a.channel), unhex(sealed))
+        if (!key) return
+        this.applyKeys({epoch: Number(key.epoch), index: key.ownIndex, key: hex(key.baseKey)})
+        this.notify()
     }
 
     /** Send a `CallAction` (its serde JSON: `{Hand: true}`, `'MuteAll'`, …). */
@@ -812,7 +951,7 @@ export class Calls {
         if (!this.hosting()) return
         for (const w of now) {
             if (before.some((b) => b.participant === w.participant)) continue
-            this.toast({kind: 'knock', participant: w.participant, sub: w.guest ? 'Guest · invite link' : 'Wants to join', text: `${w.username} is waiting`})
+            this.toast({kind: 'knock', participant: w.participant, sub: w.guest ? 'Guest · invite link' : 'Wants to join', text: `${callName(w)} is waiting`})
         }
         // Somebody let in, turned away or gone takes the notice with them.
         this.toasts = this.toasts.filter((t) => t.kind !== 'knock' || now.some((w) => w.participant === t.participant))
@@ -888,7 +1027,7 @@ export class Calls {
         if (!a) return []
         const people = this.roomOthers().map((m) => {
             const t = a.tiles.get(m.participant)
-            return {audio: t?.audio ?? null, name: m.username, screen: m.sharing ? (t?.screen ?? null) : null, video: t?.video ?? null}
+            return {audio: t?.audio ?? null, name: callName(m), screen: m.sharing ? (t?.screen ?? null) : null, video: t?.video ?? null}
         })
         const mic = a.web.levelTrack()
         people.push({audio: mic && !a.muted ? new MediaStream([mic]) : null, name: 'You', screen: a.web.screenView(), video: a.web.selfView()})

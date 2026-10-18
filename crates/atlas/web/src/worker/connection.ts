@@ -44,6 +44,8 @@ export interface ChatCoreApi {
     call_control(channel: string, action: string): void
     call_react(channel: string, epoch: string, sealed: string): void
     call_watch(channel: string, cameras: string): void
+    call_invite(channel: string): void
+    call_key_drop(channel: string, participant: number, sealed: string): void
     call_keys(channel: string): string
     call_leave(channel: string): void
     start_direct(username: string): void
@@ -81,6 +83,7 @@ export interface ChatCoreModule {
     ChatCore: {
         hello_password(username: string, password: string): Uint8Array
         hello_token(token: string): Uint8Array
+        hello_guest(code: string, name: string): Uint8Array
         new (): ChatCoreApi
         protocol_version(): number
     }
@@ -252,7 +255,9 @@ export class ChatConnection {
                 socket.send(
                     ('token' in c
                         ? this.mod.ChatCore.hello_token(c.token)
-                        : this.mod.ChatCore.hello_password(c.username, c.password)) as Uint8Array<ArrayBuffer>,
+                        : 'guest' in c
+                          ? this.mod.ChatCore.hello_guest(c.guest.code, c.guest.name)
+                          : this.mod.ChatCore.hello_password(c.username, c.password)) as Uint8Array<ArrayBuffer>,
                 )
             }, (e) => {
                 // The module did not load: no connection can work, so stop.
@@ -311,6 +316,9 @@ export class ChatConnection {
         for (const event of events) {
             if (event.kind === 'signed_in') {
                 this.attempts = 0
+                // A guest link makes a guest each time it is used: a reconnect
+                // comes back with the session it was given instead.
+                if ('guest' in this.opts.credential) this.opts.credential = {token: event.session_token}
                 await this.openKeys(core, event.username)
             }
             if (event.kind === 'refused') {

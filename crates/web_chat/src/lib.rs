@@ -257,6 +257,20 @@ impl ChatCore {
         .map_err(js_err)
     }
 
+    /// The first frame of a guest's connection: a call link's code and the
+    /// name they gave (protocol 41). The session token in the answer
+    /// reconnects them for as long as the guest lasts.
+    pub fn hello_guest(code: &str, name: &str) -> Result<Vec<u8>, Error> {
+        encode_app_frame(&NetMessage::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            auth: AuthCredential::Guest {
+                code: code.to_string(),
+                name: name.to_string(),
+            },
+        })
+        .map_err(js_err)
+    }
+
     /// The protocol version this module speaks. The server refuses any other.
     #[must_use]
     pub fn protocol_version() -> u16 {
@@ -405,6 +419,23 @@ impl ChatCore {
                 "channel": channel_key(&group),
                 "participant": participant,
                 "epoch": epoch.to_string(),
+                "sealed": hex(&sealed),
+            })),
+            // A guest link for this chat's call; or, with no code, the call a
+            // guest that just signed in may join.
+            NetMessage::CallInvited {
+                group,
+                code,
+                expires_ms,
+            } => self.events.push(json!({
+                "kind": "call_invited",
+                "channel": channel_key(&group),
+                "code": code,
+                "expires_ms": expires_ms,
+            })),
+            NetMessage::CallKeyDropped { group, sealed } => self.events.push(json!({
+                "kind": "call_key_dropped",
+                "channel": channel_key(&group),
                 "sealed": hex(&sealed),
             })),
             NetMessage::CallJoined {
@@ -595,6 +626,29 @@ impl ChatCore {
         self.push(&NetMessage::CallReact {
             group,
             epoch,
+            sealed,
+        })
+    }
+
+    /// Ask for a guest link to this chat's call (`call_invited` answers).
+    pub fn call_invite(&mut self, channel: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        self.push(&NetMessage::CallInvite { group })
+    }
+
+    /// Hand the guest seated as `participant` the call's key, which the page
+    /// sealed under the link's secret (`call-events.js`), as hex.
+    pub fn call_key_drop(
+        &mut self,
+        channel: &str,
+        participant: f64,
+        sealed: &str,
+    ) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let sealed = unhex_vec(sealed).ok_or_else(|| Error("not hex".into()))?;
+        self.push(&NetMessage::CallKeyDrop {
+            group,
+            participant: participant as u64,
             sealed,
         })
     }

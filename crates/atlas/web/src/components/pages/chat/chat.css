@@ -3454,3 +3454,83 @@
 .meet-panel-foot.is-note .meet-btn {
     flex: none;
 }
+
+/* ── A guest's page: the door, then the meeting full-page ─────────────── */
+
+.guest-door {
+    align-items: center;
+    background: var(--m-bg);
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+}
+
+.guest-card {
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: 20px;
+    box-shadow: 0 30px 60px -30px var(--m-shadow-color);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 420px;
+    padding: 28px;
+    width: 100%;
+}
+
+.guest-brand {
+    align-items: center;
+    color: var(--m-accent-text);
+    display: flex;
+    font-weight: 700;
+    gap: 6px;
+}
+
+.guest-card h1 {
+    color: var(--m-text-strong);
+    font-size: 1.5rem;
+    margin: 0;
+}
+
+.guest-card p {
+    color: var(--m-text);
+    font-size: 0.92rem;
+    line-height: 1.45;
+    margin: 0;
+}
+
+.guest-card .guest-note {
+    color: var(--m-text-dim);
+}
+
+.chat.is-guest {
+    height: 100vh;
+}
+
+.chat.is-guest .chat-call {
+    flex: 1;
+}
+
+.meet-invite-link {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px 12px;
+}
+
+.meet-invite-link small {
+    color: var(--m-text-dim);
+    font-size: 0.75rem;
+}
+
+.meet-invite-link input {
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    color: var(--m-text);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 6px 8px;
+}
