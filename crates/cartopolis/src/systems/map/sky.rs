@@ -1558,19 +1558,21 @@ pub struct CloudField {
     _module: Handle<Shader>,
 }
 
-/// The shared cloud module (`cloud_field.wesl`). Compiled in rather than loaded,
-/// for the reason `water_common` is: on Android there is no asset directory to
-/// lose it in, and an import that is not there yet is a pipeline that waits.
+/// The shared cloud module (`cloud_field.wesl`), for the layout test below.
+#[cfg(test)]
 const CLOUD_FIELD_WESL: &str = include_str!("../../../../../assets/shaders/cloud_field.wesl");
 
 impl FromWorld for CloudField {
     fn from_world(world: &mut World) -> Self {
+        // Loaded, never `Assets::add`ed from an `include_str!`: the shader loader
+        // loads `super::cloud_field` from this same path for every shader that
+        // imports it, and a second asset at that module path makes bevy drop and
+        // recompile every pipeline built against the first — the WESL compile the
+        // web build runs on its one thread, mid-load. See `water_common` in
+        // `water.rs`, which had the same pair.
         let module = world
-            .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wesl(
-                CLOUD_FIELD_WESL,
-                "shaders/cloud_field.wesl",
-            ));
+            .resource::<AssetServer>()
+            .load("shaders/cloud_field.wesl");
         // Coverage 0 until `update_clouds` writes the first frame: water mirrors no
         // cloud rather than a guessed one — and stays that way under
         // `CARTO_NO_CLOUDS`, where nothing ever writes it.

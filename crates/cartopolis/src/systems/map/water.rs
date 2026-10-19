@@ -325,9 +325,6 @@ pub struct WaterSeaState {
     _common: Handle<Shader>,
 }
 
-/// The shared water module both water shaders import (`water_common.wesl`).
-const WATER_COMMON_WESL: &str = include_str!("../../../../../assets/shaders/water_common.wesl");
-
 /// Bevy's `reflectance` for water — not F0: `F0 = 0.16 · reflectance²`, and
 /// water's F0 is `((n-1)/(n+1))²` at n = 1.333, i.e. 0.0204. Shared by the
 /// surface and the clipmap's water past the ring.
@@ -339,17 +336,17 @@ impl FromWorld for WaterSeaState {
             world
                 .resource_mut::<Assets<Image>>()
                 .add(shore_image(&[u8::MAX], 1, "open water"));
-        // `water.wesl` and `ground_detail.wesl` both import it, so it has to be in
-        // `Assets<Shader>` before either pipeline composes. Compiled in rather
-        // than loaded, for the reason `atmosphere_patch` gives: on Android there
-        // is no asset directory to lose it in, and an import that is not there
-        // yet is a pipeline that waits.
+        // `water.wesl` and `ground_detail.wesl` both import it as
+        // `super::water_common`, which the shader loader resolves by loading this
+        // same path. Loaded here too, so both are one asset. It used to be
+        // `Assets::add`ed from an `include_str!` (a holdover from naga_oil's named
+        // imports), which put a second asset at the module path: bevy then warns
+        // "registered to a different shader" and drops and recompiles every
+        // pipeline built against the first — on the web, on the one thread,
+        // mid-load.
         let common = world
-            .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wesl(
-                WATER_COMMON_WESL,
-                "shaders/water_common.wesl",
-            ));
+            .resource::<AssetServer>()
+            .load("shaders/water_common.wesl");
         let s = sea_state(
             crate::systems::weather::wind_velocity(
                 crate::systems::weather::FALLBACK_WIND_FROM_DEG,

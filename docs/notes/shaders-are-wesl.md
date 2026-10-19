@@ -1,9 +1,9 @@
 ---
 topic: shaders-are-wesl
 triggers: [assets/shaders, glass.wgsl, atmosphere_patch.rs, systems::atmosphere_patch,
-  from_wesl, WESL, naga_oil, "#ifdef", "@if", define_import_path, MATERIAL_BIND_GROUP,
+  from_wesl, water_common, cloud_field, "registered to a different shader", WESL, naga_oil, "#ifdef", "@if", define_import_path, MATERIAL_BIND_GROUP,
   ShaderCacheError, "unresolved import", "writing a shader", "bumping Bevy"]
-updated: 2026-10-17
+updated: 2026-10-19
 ---
 
 # Shaders are WESL, and nothing in the test suite compiles them
@@ -28,17 +28,25 @@ dialect are now errors.
   `cloud_field.wesl` and `water_common.wesl` are `super::cloud_field` /
   `super::water_common` from a sibling in `assets/shaders/`.
 
-## Libraries are compiled in, under the path their importers resolve
+## Our libraries are loaded, never `Assets::add`ed beside the loader
 
-`sky.rs` and `water.rs` also register those two libraries with
-`Shader::from_wesl(include_str!(…), "shaders/cloud_field.wesl")`, so an import
-never waits on asset IO (and on Android there is no asset directory to lose
-them in). `from_wesl` derives the module path from the path string it is given,
-and the shader cache resolves every `import` by that path — so the string must be
-the asset path the importers resolve, never the repository path of a copy. That
-is the whole trick of `atmosphere_patch`: each patched copy is registered under
-the *stock* shader's own `embedded://` path, or it would be a second module that
-nothing imports.
+`sky.rs` and `water.rs` hold a handle to `cloud_field.wesl` and
+`water_common.wesl` so they stay loaded, and they get it from
+`AssetServer::load` on the same path the importers resolve. **They must not
+`Shader::from_wesl(include_str!(…), "shaders/…")` it into `Assets<Shader>`.** The
+shader loader already loads every `super::…` import from that path, so an added
+copy is a second asset at the same WESL module path. Bevy's shader cache then
+warns `Shader module path … was registered to a different shader, replacing`,
+and it drops and recompiles every pipeline built against the first. On the web
+that compile runs on the page's only thread in the middle of a load. Until
+2026-10-19 both libraries were registered this way, which was left over from
+naga_oil's named imports. Android is not a reason to do it either: the APK
+carries `assets/`, and the importing shaders already load from it.
+
+The opposite case is `atmosphere_patch`, and there adding is right. Each patched
+copy replaces a *stock* bevy module that nothing else loads, so it is registered
+under that module's own `embedded://` path. Otherwise it would be a second module
+that nothing imports.
 
 A plain `.wgsl` given to bevy is passed through untouched (`bevy_shader` 0.20's
 `shader_cache.rs`), which is only right for a shader with no imports at all. The
