@@ -2,7 +2,7 @@
 //!
 //! The pure half — which centrelines are drivable, which way and how fast — is
 //! [`cartopolis_geo::traffic`]. This is the ECS half: where the network is kept,
-//! the pool of cars that drives it, and the one mesh they all share.
+//! the pool of cars and people that travels it, and the models they share.
 //!
 //! It is the first thing in this codebase that *moves on its own*. Everything
 //! else streamed from the map is placed and then stands still — buildings,
@@ -15,10 +15,13 @@
 //!
 //! * **Nothing may be built per frame.** The documented device-loss failure in
 //!   this tree is mass mesh churn (`docs/notes/upload-bursts.md`), and a moving
-//!   object is the obvious way to reintroduce it. So there is exactly **one** car
-//!   mesh, built once at startup and shared by every car; a car is an entity with
-//!   a `Transform`, and driving it writes that transform and nothing else. After
-//!   startup this layer uploads nothing, ever. `systems::grass` reached the same
+//!   object is the obvious way to reintroduce it. So the models — four car
+//!   bodies and one walker, a handful of meshes in all
+//!   (`cartopolis_geo::agent_models`) — are built once at startup and shared by
+//!   the whole pool; an agent is an entity with a `Transform` and a few child
+//!   parts, and moving it writes those transforms (and a braking car's tail-lamp
+//!   material handle) and nothing else. After startup this layer uploads
+//!   nothing, ever. `systems::grass` reached the same
 //!   shape from the same constraint — a fixed pool that slides rather than a
 //!   stream that rebuilds.
 //! * **The pool is fixed and the cars are recycled.** [`MAX_CARS`] entities are
@@ -30,20 +33,21 @@
 //!   car holds one of them — the same small palette the parked cars use
 //!   (`cartopolis_geo::parking`), because a moving car and a parked one on the
 //!   same street must not be from different worlds.
-//! * **A car is not a physics body.** It follows its line at its road's speed,
-//!   turns to face along it, and hands off to a connected line at the end. It
-//!   does not accelerate, avoid, queue or stop — see the module's list of what it
-//!   deliberately is not, below.
+//! * **A car is not a physics body.** It follows its line, easing its speed
+//!   toward the least of the road, the bend ahead, the car in front and a red
+//!   light, and hands off to a connected line at the end; its body pitch and
+//!   roll are read off that motion rather than simulated.
 //!
 //! ## What this deliberately is not
 //!
-//! No collision between cars, no traffic-light obedience, no give-way, no
-//! queueing, no avatar interaction. Every one of those is a simulation problem
-//! whose cost lands on the frame, and none of them is what the layer is for: the
-//! question it answers is "is this street alive", which is settled at a glance
-//! from a distance where two cars overlapping for a moment is invisible. The
-//! signals already cycle (`systems::street_detail`) and cars ignore them; that is
-//! a known limit, recorded rather than hidden.
+//! No collision beyond following the car ahead, no give-way, no avatar
+//! interaction, and people walk through each other and ignore the lights. Every
+//! one of those is a simulation problem whose cost lands on the frame, and none
+//! of them is what the layer is for: the question it answers is "is this street
+//! alive", settled at a glance from a distance where two figures overlapping for
+//! a moment is invisible. Cars *do* stop at the drawn signals
+//! (`systems::street_detail`), because a car driving through a red light it is
+//! standing next to is not invisible at all — see [`signal_speed`].
 
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
@@ -722,6 +726,53 @@ pub struct Car {
     heading: Vec2,
     /// Set while the agent is crossing a junction. See [`Turn`].
     turn: Option<Turn>,
+    /// Which pavement a walker keeps to: `+1` the one right of its travel,
+    /// `-1` the one left of it. A pavement is two-way, so people going both
+    /// ways use both — with everybody on their own right, each pavement of a
+    /// street carried a one-way crowd. Always `+1` for a car.
+    side: f32,
+    /// A walker's distance out from the pavement's own line, so a pavement's
+    /// people are not threaded on one string. Zero for a car.
+    lateral: f32,
+    /// A walker's gait phase, radians; one cycle per
+    /// [`agent_models::STRIDE_M`] walked.
+    phase: f32,
+    /// A car's body pitch and roll, radians, eased — see [`body_tilt`].
+    tilt: Vec2,
+    /// Metres of road over which signals are ignored after driving through
+    /// one, so a car that crossed on green does not stop in the middle of the
+    /// junction for the opposite approach's stop line.
+    signal_grace: f32,
+    /// Whether the brake lamps are lit, as last written.
+    braking: bool,
+    /// A car's tail-lamp child (whose material braking swaps), or a walker's
+    /// four limbs: left leg, right leg, left arm, right arm.
+    parts: AgentParts,
+}
+
+/// The child entities an agent drives besides its own transform.
+#[derive(Clone, Copy)]
+enum AgentParts {
+    Car { tail: Entity },
+    Walker { limbs: [Entity; 4] },
+}
+
+/// Marks a walker's limb, so the limb query is disjoint from the agents'.
+#[derive(Component)]
+pub struct Limb;
+
+/// The two tail-lamp materials, swapped per car as it brakes.
+#[derive(Resource)]
+pub struct TailLampMaterials {
+    off: Handle<StandardMaterial>,
+    on: Handle<StandardMaterial>,
+}
+
+impl Car {
+    /// How far right of the centre line this agent travels, in metres.
+    fn offset(&self, kind: AgentKind, line: &WorldDriveLine) -> f32 {
+        (kind.offset(line) + self.lateral) * self.side
+    }
 }
 
 /// Deterministic unit random from three integers. The same shape as the geo
@@ -735,17 +786,26 @@ fn rand01(seed: u64, a: u64, b: u64) -> f32 {
     (h >> 40) as f32 / 16_777_216.0
 }
 
-/// Build the one car mesh and the shared paints, and spawn the pool.
+/// Build the shared models and paints, and spawn the pool.
 ///
 /// Runs once. The cars start with no line and are placed by
 /// [`drive_traffic`] on the first frame there is a network to place them on —
 /// which is not the first frame of the app, since the roads stream in.
+///
+/// A car is three meshes (body, trim, tail lamps) and a walker five (torso,
+/// two legs, two arms); see `cartopolis_geo::agent_models` for why each part is
+/// its own. Every mesh is built here, once, and shared by the whole pool: four
+/// car bodies and one walker, **eight car meshes and three walker meshes in
+/// all**. After this nothing is uploaded — the parts are child entities, and
+/// driving or walking writes their transforms and, for a braking car, which of
+/// two materials its tail lamps hold.
 pub fn setup_traffic(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     roots: Query<Entity, With<BigSpace>>,
 ) {
+    use cartopolis_geo::agent_models::{self as models, CarBody};
     let Ok(root) = roots.single() else {
         // Ordered `.after(setup_camera)` in `nav::plugin`, which is what spawns the
         // root — so this is unreachable, and it says so rather than returning in
@@ -753,41 +813,126 @@ pub fn setup_traffic(
         tracing::warn!("no BigSpace root at traffic setup; ambient traffic is off for this run");
         return;
     };
-    let mesh = meshes.add(car_mesh());
+    let mut colour = |rgb: u32, roughness: f32, reflectance: f32| {
+        let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
+        materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(r, g, b),
+            perceptual_roughness: roughness,
+            reflectance,
+            ..default()
+        })
+    };
+    // Car paint is glossier than the furniture it used to share a material
+    // shape with: the sheen along a body side is most of what says "car".
     let paints: Vec<Handle<StandardMaterial>> = cartopolis_geo::parking::CAR_PAINTS
         .iter()
-        .map(|&rgb| {
-            let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
-            materials.add(StandardMaterial {
-                base_color: Color::linear_rgb(r, g, b),
-                perceptual_roughness: 0.45,
-                ..default()
-            })
-        })
+        .map(|&rgb| colour(rgb, 0.32, 0.6))
         .collect();
-
-    let walker_mesh = meshes.add(walker_mesh());
+    let white_paint = colour(VAN_WHITE, 0.32, 0.6);
     let coats: Vec<Handle<StandardMaterial>> = COAT_COLOURS
         .iter()
-        .map(|&rgb| {
-            let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
-            materials.add(StandardMaterial {
-                base_color: Color::linear_rgb(r, g, b),
-                perceptual_roughness: 0.85,
-                ..default()
-            })
+        .map(|&rgb| colour(rgb, 0.85, 0.4))
+        .collect();
+    let trousers: Vec<Handle<StandardMaterial>> = TROUSER_COLOURS
+        .iter()
+        .map(|&rgb| colour(rgb, 0.9, 0.4))
+        .collect();
+    // The trim's colours are per vertex; the material only says "fairly glossy"
+    // so the glass catches the sky.
+    let trim = materials.add(StandardMaterial {
+        perceptual_roughness: 0.3,
+        reflectance: 0.5,
+        ..default()
+    });
+    // Lamps are unlit — a lamp is its own colour whatever the sun does — and a
+    // braking car's are pushed past 1.0 so the bloom picks them up where it runs.
+    let tail_off = materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(0.7, 0.7, 0.7),
+        unlit: true,
+        ..default()
+    });
+    let tail_on = materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(4.0, 4.0, 4.0),
+        unlit: true,
+        ..default()
+    });
+    commands.insert_resource(TailLampMaterials {
+        off: tail_off.clone(),
+        on: tail_on,
+    });
+
+    let bodies: Vec<(CarBody, [Handle<Mesh>; 3])> = CarBody::ALL
+        .iter()
+        .map(|&b| {
+            let m = b.build();
+            (
+                b,
+                [
+                    meshes.add(model_mesh_to_bevy(&m.body)),
+                    meshes.add(model_mesh_to_bevy(&m.trim)),
+                    meshes.add(model_mesh_to_bevy(&m.tail)),
+                ],
+            )
         })
         .collect();
+    let figure = models::walker();
+    let torso = meshes.add(model_mesh_to_bevy(&figure.torso));
+    let leg = meshes.add(model_mesh_to_bevy(&figure.leg));
+    let arm = meshes.add(model_mesh_to_bevy(&figure.arm));
 
-    let mut spawn_pool = |count: usize, kind: AgentKind, seed: u64| {
-        for i in 0..count {
-            let (m, mat) = match kind {
-                AgentKind::Car => (mesh.clone(), paints[i % paints.len()].clone()),
-                AgentKind::Walker => (walker_mesh.clone(), coats[i % coats.len()].clone()),
-            };
-            commands.spawn((
-                Mesh3d(m),
-                MeshMaterial3d(mat),
+    let agent = |kind: AgentKind, i: usize, seed: u64, parts: AgentParts| {
+        let walker = kind == AgentKind::Walker;
+        let r = |stream: u64| rand01(seed, i as u64, stream);
+        Car {
+            line: None,
+            s: 0.0,
+            dir: 1.0,
+            speed_scale: 0.85 + r(7) * 0.3,
+            speed: 0.0,
+            heading: Vec2::ZERO,
+            turn: None,
+            side: if walker && r(11) < 0.5 { -1.0 } else { 1.0 },
+            lateral: if walker { (r(12) - 0.3) * 1.2 } else { 0.0 },
+            phase: r(13) * std::f32::consts::TAU,
+            tilt: Vec2::ZERO,
+            signal_grace: 0.0,
+            braking: false,
+            parts,
+        }
+    };
+
+    for i in 0..MAX_CARS {
+        let (body, [body_mesh, trim_mesh, tail_mesh]) = {
+            let b = CarBody::for_index(i);
+            let (_, m) = bodies
+                .iter()
+                .find(|(k, _)| *k == b)
+                .expect("every body is built");
+            (b, m.clone())
+        };
+        let paint = if body.fleet_white() && rand01(0x0CA2, i as u64, 3) < 0.7 {
+            white_paint.clone()
+        } else {
+            paints[i % paints.len()].clone()
+        };
+        let trim_part = commands
+            .spawn((
+                Mesh3d(trim_mesh),
+                MeshMaterial3d(trim.clone()),
+                Transform::default(),
+            ))
+            .id();
+        let tail = commands
+            .spawn((
+                Mesh3d(tail_mesh),
+                MeshMaterial3d(tail_off.clone()),
+                Transform::default(),
+            ))
+            .id();
+        let car = commands
+            .spawn((
+                Mesh3d(body_mesh),
+                MeshMaterial3d(paint),
                 // Off-screen until placed. An agent with no line must not be
                 // visible at the origin, which is where the avatar stands.
                 Visibility::Hidden,
@@ -795,61 +940,83 @@ pub fn setup_traffic(
                 GridCell::default(),
                 ChildOf(root),
                 HideInSpace,
-                kind,
-                Car {
-                    line: None,
-                    s: 0.0,
-                    dir: 1.0,
-                    speed_scale: 0.85 + rand01(seed, i as u64, 7) * 0.3,
-                    speed: 0.0,
-                    heading: Vec2::ZERO,
-                    turn: None,
-                },
-            ));
+                AgentKind::Car,
+                agent(AgentKind::Car, i, 0x0CA2, AgentParts::Car { tail }),
+            ))
+            .id();
+        commands.entity(trim_part).insert(ChildOf(car));
+        commands.entity(tail).insert(ChildOf(car));
+    }
+
+    for i in 0..MAX_WALKERS {
+        let coat = coats[i % coats.len()].clone();
+        let legs = trousers[(i * 7 + 3) % trousers.len()].clone();
+        let limb = |mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, x: f32, y: f32| {
+            (
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_xyz(x, y, 0.0),
+                Limb,
+            )
+        };
+        let limbs = [
+            commands
+                .spawn(limb(&leg, &legs, -models::HIP_X, models::HIP_Y))
+                .id(),
+            commands
+                .spawn(limb(&leg, &legs, models::HIP_X, models::HIP_Y))
+                .id(),
+            commands
+                .spawn(limb(&arm, &coat, -models::SHOULDER_X, models::SHOULDER_Y))
+                .id(),
+            commands
+                .spawn(limb(&arm, &coat, models::SHOULDER_X, models::SHOULDER_Y))
+                .id(),
+        ];
+        // People are not all one height: ±8 % is roughly a city's spread of
+        // adults, and a crowd of identical figures is a crowd of clones.
+        let height = 0.92 + rand01(0x0FEE, i as u64, 14) * 0.16;
+        let walker = commands
+            .spawn((
+                Mesh3d(torso.clone()),
+                MeshMaterial3d(coat),
+                Visibility::Hidden,
+                Transform::from_scale(Vec3::splat(height)),
+                GridCell::default(),
+                ChildOf(root),
+                HideInSpace,
+                AgentKind::Walker,
+                agent(AgentKind::Walker, i, 0x0FEE, AgentParts::Walker { limbs }),
+            ))
+            .id();
+        for l in limbs {
+            commands.entity(l).insert(ChildOf(walker));
         }
-    };
-    spawn_pool(MAX_CARS, AgentKind::Car, 0x0CA2);
-    spawn_pool(MAX_WALKERS, AgentKind::Walker, 0x0FEE);
+    }
 }
 
 /// Muted outerwear. The same judgement the parked cars' palette makes: a crowd in
-/// primary colours is the loudest thing on a pale cartographic street.
+/// primary colours is the loudest thing on a pale cartographic street — but a
+/// Dutch street in a raincoat season does carry the odd rust, bottle green and
+/// trench beige among the greys.
 const COAT_COLOURS: &[u32] = &[
-    0x4A_4F_57, 0x6B_5E_52, 0x3E_4A_52, 0x7A_6E_63, 0x5A_4E_58, 0x86_7C_6E,
+    0x4A_4F_57, 0x6B_5E_52, 0x3E_4A_52, 0x7A_6E_63, 0x5A_4E_58, 0x86_7C_6E, 0x8C_4A_3A, 0x3F_5A_4A,
+    0xB4_A4_86, 0x2B_2D_31,
 ];
+
+/// Trousers: denim, black, charcoal, navy, khaki — what a street wears.
+const TROUSER_COLOURS: &[u32] = &[
+    0x3A_48_60, 0x26_27_29, 0x45_47_4B, 0x2C_34_46, 0x84_7A_64, 0x52_5A_6A,
+];
+
+/// Most vans are white; see [`CarBody::fleet_white`](cartopolis_geo::agent_models::CarBody::fleet_white).
+const VAN_WHITE: u32 = 0xEC_EC_EA;
 
 /// How many people exist, on the same fixed-pool terms as the cars.
 ///
 /// More than the cars because a city has more people than vehicles in view and
-/// they are a fifth of the geometry each — three boxes against seven.
+/// each is a fraction of a car's geometry.
 pub const MAX_WALKERS: usize = 220;
-
-/// The one mesh every walker draws: a body, a head and a pair of legs.
-///
-/// Three boxes and no animation. A figure this size at the range the layer is
-/// seen from is a silhouette in motion, and motion is the whole signal — the
-/// avatar's own locomotion work (`docs/notes/avatar-game-feel.md`) is about a
-/// model you stand behind, which this is not. What it must not do is read as a
-/// bollard, which is why the head and the leg gap are there at all.
-fn walker_mesh() -> Mesh {
-    use cartopolis_geo::furniture::{FurnitureInstance, FurnitureKind};
-    let items = [FurnitureInstance {
-        x: 0.0,
-        z: 0.0,
-        yaw: 0.0,
-        kind: FurnitureKind::Person,
-        luma: 1.0,
-        paint: cartopolis_geo::vector_tiles::palette::FURNITURE,
-        over_water: false,
-        hull_only: false,
-    }];
-    let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);
-    let sm = meshes
-        .into_iter()
-        .next()
-        .expect("the person form has parts");
-    surface_mesh_to_bevy(&sm)
-}
 
 /// Advance every car, and recycle the ones that have run out of road.
 #[allow(clippy::too_many_arguments)]
@@ -872,6 +1039,10 @@ pub fn drive_traffic(
         ),
         Without<FreeCamera>,
     >,
+    detail: Res<crate::systems::street_detail::StreetDetail>,
+    tail_materials: Option<Res<TailLampMaterials>>,
+    mut tails: Query<&mut MeshMaterial3d<StandardMaterial>, Without<Car>>,
+    mut limbs: Query<&mut Transform, (With<Limb>, Without<Car>, Without<FreeCamera>)>,
     mut frame: Local<u64>,
 ) {
     // One toggle per pool (Layers ▸ Life ▸ Traffic / People). A pool that is off
@@ -956,6 +1127,17 @@ pub fn drive_traffic(
     }
 
     let dt = time.delta_secs();
+    let elapsed = time.elapsed_secs();
+    // The drawn signals a car could reach before it is recycled. Empty with the
+    // street-detail layer off, which is right: a car stops only at a light that
+    // is on the screen to be red.
+    let signals: Vec<(Vec2, u8)> = if show_cars {
+        detail
+            .signals_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     for (i, (mut car, &kind, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
         if !showing(kind) {
@@ -972,6 +1154,11 @@ pub fn drive_traffic(
         }
         let mut key = car.line;
         let mut line = key.and_then(|k| net.get(k));
+        // What this frame's advance did, for the body's lean, the brake lamps
+        // and the stride.
+        let mut accel_now = 0.0;
+        let mut held = false;
+        let mut stepped = 0.0;
 
         // ── Advance ──────────────────────────────────────────────────────────
         //
@@ -997,13 +1184,28 @@ pub fn drive_traffic(
                     want = want.min(t.speed_limit());
                 }
                 want = want.min(headway_speed(&occupied, k, car.dir, car.s, want));
+                if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
+                    let reach = l.half_width + 1.0;
+                    let mut grace = car.signal_grace;
+                    want = want.min(signal_speed(
+                        &signals, elapsed, p, travel, car.speed, reach, &mut grace,
+                    ));
+                    car.signal_grace = grace;
+                }
             }
             let (accel, brake) = kind.accel();
             let rate = if want > car.speed { accel } else { brake };
+            let before = car.speed;
             car.speed = (car.speed + (want - car.speed).clamp(-rate * dt, rate * dt)).max(0.0);
+            if dt > 0.0 {
+                accel_now = (car.speed - before) / dt;
+            }
+            held = car.speed < 0.4 && want < 0.4;
 
             // Inside a junction the progress is the turn's, not the line's.
             let step = car.speed * dt;
+            stepped = step;
+            car.signal_grace = (car.signal_grace - step).max(0.0);
             let mut done = false;
             if let Some(t) = car.turn.as_mut() {
                 t.t += step / t.len.max(0.5);
@@ -1039,7 +1241,7 @@ pub fn drive_traffic(
                             let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
                             let (centre, heading, to_y) = nl.at_with_deck(entry);
                             let to_dir = heading * next_dir;
-                            let to = centre + right_of(to_dir) * kind.offset(nl);
+                            let to = centre + right_of(to_dir) * car.offset(kind, nl);
                             // The corner is not in the data: two centre lines
                             // meet at a *point*, and how far the vehicle swings
                             // getting from one to the other is set by how wide
@@ -1092,6 +1294,10 @@ pub fn drive_traffic(
                     // already moving — but not at the limit either, so it is
                     // seen to pick up rather than to appear at speed.
                     car.speed = kind.speed(l) * car.speed_scale * 0.7;
+                    car.tilt = Vec2::ZERO;
+                    car.signal_grace = 0.0;
+                    accel_now = 0.0;
+                    held = false;
                     // Record it, so the next agent recycled on this same frame
                     // does not choose the spot that has just been taken.
                     occupied.entry((k, lane_key(dir))).or_default().push(s);
@@ -1117,6 +1323,7 @@ pub fn drive_traffic(
         // The drawn heading is not the path's tangent but a rate-limited chase
         // of it: a simplified centre line changes direction in steps, and a
         // vehicle cannot. See `TURN_RATE_PER_MS`.
+        let was = car.heading;
         car.heading = if car.heading == Vec2::ZERO {
             travel
         } else {
@@ -1124,6 +1331,15 @@ pub fn drive_traffic(
             rotate_toward(car.heading, travel, rate * dt)
         };
         let facing = car.heading;
+        // Signed yaw rate, rad/s, positive toward `right_of`.
+        let yaw_rate = if was == Vec2::ZERO || dt <= 0.0 {
+            0.0
+        } else {
+            (was.x * facing.y - was.y * facing.x)
+                .clamp(-1.0, 1.0)
+                .asin()
+                / dt
+        };
 
         // **Under the ground where the road is under the ground.** `deck` is
         // this line's own carriageway height, resolved per feature, so a street
@@ -1163,7 +1379,159 @@ pub fn drive_traffic(
         } else {
             yaw
         };
+        let parts = car.parts;
+        match parts {
+            AgentParts::Car { tail } => {
+                car.tilt = body_tilt(car.tilt, accel_now, car.speed * yaw_rate, dt);
+                tf.rotation = tf.rotation
+                    * Quat::from_rotation_x(car.tilt.x)
+                    * Quat::from_rotation_z(car.tilt.y);
+                let braking = brake_lamps(car.braking, accel_now, held);
+                if braking != car.braking {
+                    car.braking = braking;
+                    if let (Some(mats), Ok(mut m)) = (tail_materials.as_ref(), tails.get_mut(tail))
+                    {
+                        m.0 = if braking {
+                            mats.on.clone()
+                        } else {
+                            mats.off.clone()
+                        };
+                    }
+                }
+            }
+            AgentParts::Walker { limbs: limb_ids } => {
+                // The stride is walked, not timed: the phase advances by distance,
+                // so the feet keep pace with the ground at every speed. A taller
+                // figure takes longer steps.
+                let stride = cartopolis_geo::agent_models::STRIDE_M * tf.scale.y;
+                car.phase =
+                    (car.phase + stepped / stride * std::f32::consts::TAU) % std::f32::consts::TAU;
+                let (ll, rl, la, ra, lift) =
+                    cartopolis_geo::agent_models::gait(car.phase, car.speed / WALK_SPEED);
+                tf.translation.y += lift * tf.scale.y;
+                for (e, angle) in limb_ids.into_iter().zip([ll, rl, la, ra]) {
+                    if let Ok(mut limb) = limbs.get_mut(e) {
+                        limb.rotation = Quat::from_rotation_x(angle);
+                    }
+                }
+            }
+        }
         *vis = Visibility::Inherited;
+    }
+}
+
+/// How far ahead a car looks for a signal, metres.
+const SIGNAL_LOOKAHEAD_M: f32 = 45.0;
+
+/// How far short of a signal's node a waiting car's centre stops. The node is
+/// the stop line, and the nose is half a car in front of the centre.
+const STOP_SHORT_M: f32 = 4.0;
+
+/// The deceleration a car plans a stop at a light with, m/s² — gentler than
+/// [`CAR_BRAKE`], which is the most the easing allows, so the stop is a glide
+/// rather than a lurch and the easing never falls behind the plan.
+const SIGNAL_BRAKE: f32 = 3.0;
+
+/// The hardest a driver will brake for a light. A car that would need more is
+/// committed and drives through on the amber, as a real one caught by it does —
+/// stopping it anyway puts it in the middle of the junction.
+const SIGNAL_HARD_BRAKE: f32 = 7.0;
+
+/// Road over which a car ignores signals after driving through one. OSM puts a
+/// stop line on each approach, so a car that has crossed on green has the
+/// *opposite* approach's line right ahead of it, in its own phase group.
+const SIGNAL_GRACE_M: f32 = 30.0;
+
+/// The fastest a car may go given the signals ahead of it: a braking curve
+/// that ends at the stop line of a light showing amber or red, or no limit.
+///
+/// Only signals in the car's own phase group (`street_detail::signal_group` of
+/// its heading) and within `reach` of its line count — that is what keeps a
+/// cross street's lights, ten metres to the side at the same junction, from
+/// stopping it. `grace` is [`Car::signal_grace`]: set here when the car is
+/// found just past a signal.
+fn signal_speed(
+    signals: &[(Vec2, u8)],
+    elapsed: f32,
+    pos: Vec2,
+    travel: Vec2,
+    speed: f32,
+    reach: f32,
+    grace: &mut f32,
+) -> f32 {
+    use crate::systems::street_detail::{signal_group, signal_says_stop};
+    let group = signal_group(travel);
+    let mut limit = f32::MAX;
+    for &(at, g) in signals {
+        if g != group {
+            continue;
+        }
+        let rel = at - pos;
+        let ahead = rel.dot(travel);
+        let lateral = (rel.x * travel.y - rel.y * travel.x).abs();
+        if lateral > reach || ahead > SIGNAL_LOOKAHEAD_M {
+            continue;
+        }
+        if ahead <= 0.0 {
+            if ahead > -3.0 {
+                *grace = SIGNAL_GRACE_M;
+            }
+            continue;
+        }
+        if ahead < *grace || !signal_says_stop(elapsed, g) {
+            continue;
+        }
+        let gap = ahead - STOP_SHORT_M;
+        if gap < -1.5 {
+            // Its nose is over the line: it goes.
+            continue;
+        }
+        let gap = gap.max(0.0);
+        if speed * speed / (2.0 * SIGNAL_HARD_BRAKE) > gap + 0.5 {
+            continue;
+        }
+        limit = limit.min((2.0 * SIGNAL_BRAKE * gap).sqrt());
+    }
+    limit
+}
+
+/// Pitch per m/s² of acceleration, and roll per m/s² of cornering, radians.
+/// About a degree and a half at a firm stop and two in a brisk corner — what a
+/// family car's suspension gives, and enough to read from across a street.
+const PITCH_PER_ACCEL: f32 = 0.005;
+const ROLL_PER_LAT_ACCEL: f32 = 0.012;
+const MAX_TILT: f32 = 0.05;
+/// How quickly the body settles to its lean, seconds.
+const TILT_TAU: f32 = 0.25;
+
+/// Ease a car body's (pitch, roll) toward what its acceleration and cornering
+/// ask for. The nose dips under braking and lifts pulling away; the body leans
+/// out of a turn. `lateral` is speed × yaw rate, positive turning toward
+/// [`right_of`].
+///
+/// The signs are the model's: +z is the nose, so a positive rotation about x
+/// dips it; +x is the car's left, so a turn to the right (outside on the left)
+/// rolls the roof toward +x, which is a negative rotation about z.
+fn body_tilt(tilt: Vec2, accel: f32, lateral: f32, dt: f32) -> Vec2 {
+    let target = Vec2::new(-accel * PITCH_PER_ACCEL, -lateral * ROLL_PER_LAT_ACCEL)
+        .clamp(Vec2::splat(-MAX_TILT), Vec2::splat(MAX_TILT));
+    if dt <= 0.0 {
+        return tilt;
+    }
+    tilt + (target - tilt) * (1.0 - (-dt / TILT_TAU).exp())
+}
+
+/// Whether a car's brake lamps are lit: while it slows harder than it would
+/// rolling, and while it waits at a stop. The two thresholds differ so a car
+/// easing off does not flicker its lamps every frame.
+fn brake_lamps(lit: bool, accel: f32, held: bool) -> bool {
+    if held {
+        return true;
+    }
+    if lit {
+        accel < -0.3
+    } else {
+        accel < -0.9
     }
 }
 
@@ -1199,7 +1567,11 @@ fn pose_of(car: &Car, line: Option<&WorldDriveLine>, kind: AgentKind) -> Option<
     };
     let (centre, heading, deck) = l.at_with_deck(along);
     let travel = heading * car.dir;
-    Some((centre + right_of(travel) * kind.offset(l), travel, deck))
+    Some((
+        centre + right_of(travel) * car.offset(kind, l),
+        travel,
+        deck,
+    ))
 }
 
 /// Turn `from` toward `to` by at most `max_rad`.
@@ -1364,56 +1736,28 @@ fn place_agent(
 
 /// How far the car body's origin sits above the road surface.
 ///
-/// The shared mesh is built in the same frame `furniture::form::CAR` is — origin
-/// on the ground between the wheels — so this is only the clearance that keeps it
+/// The models (`cartopolis_geo::agent_models`) have their origin on the ground
+/// between the wheels, so this is only the clearance that keeps them
 /// off a coplanar fight with the road it is standing on. The road ribbons win
 /// their own depth fight through `systems::road_depth`; a car is ordinary
 /// geometry and just needs to be above them.
 const CAR_RIDE_HEIGHT: f32 = 0.02;
 
-/// The one mesh every car draws.
-///
-/// Built from the *same* `furniture::form::CAR` parts the parked cars use, so a
-/// car waiting at a kerb and a car driving past it are the same object. The paint
-/// is the material here rather than a vertex colour, because a shared mesh cannot
-/// carry a per-instance tint — which is the one difference between the two.
-fn car_mesh() -> Mesh {
-    use cartopolis_geo::furniture::{parts, FurnitureKind};
-    let items = [cartopolis_geo::furniture::FurnitureInstance {
-        x: 0.0,
-        z: 0.0,
-        yaw: 0.0,
-        kind: FurnitureKind::Car,
-        luma: 1.0,
-        paint: cartopolis_geo::vector_tiles::palette::FURNITURE,
-        over_water: false,
-        hull_only: false,
-    }];
-    debug_assert!(!parts(FurnitureKind::Car).is_empty());
-    let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);
-    let sm = meshes.into_iter().next().expect("the car form has parts");
-    surface_mesh_to_bevy(&sm)
-}
-
-/// One `SurfaceMesh` as a bevy `Mesh`.
+/// One of `cartopolis_geo::agent_models`' meshes as a bevy `Mesh`.
 ///
 /// Local rather than reaching into `map_geometry::build_mesh`, which also folds in
 /// the terrain refinement a cell's ground needs and an agent's model does not.
-///
-/// The form's own vertex colours carry the parts that are *not* the body — glass,
-/// tyres, a walker's head — apart from it. The body colour is the material, which
-/// is the one thing a shared mesh cannot vary per instance.
-fn surface_mesh_to_bevy(sm: &cartopolis_geo::vector_tiles::SurfaceMesh) -> Mesh {
+fn model_mesh_to_bevy(m: &cartopolis_geo::agent_models::ModelMesh) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, sm.positions.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, sm.normals.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, sm.colors.clone());
-    mesh.insert_indices(Indices::U32(sm.indices.clone()));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, m.colors.clone());
+    mesh.insert_indices(Indices::U32(m.indices.clone()));
     mesh
 }
 
@@ -1944,5 +2288,154 @@ mod tests {
         assert!((l.nearest_along(Vec2::new(140.0, 60.0)) - 160.0).abs() < 1e-2);
         // Past either end it clamps to the end.
         assert!(l.nearest_along(Vec2::new(-50.0, 0.0)).abs() < 1e-2);
+    }
+
+    /// A time when group 0 shows stop and one when it shows go.
+    fn red_and_green() -> (f32, f32) {
+        use crate::systems::street_detail::signal_says_stop;
+        let ts = || (0..480).map(|t| t as f32 * 0.1);
+        (
+            ts().find(|&t| signal_says_stop(t, 0)).unwrap(),
+            ts().find(|&t| !signal_says_stop(t, 0)).unwrap(),
+        )
+    }
+
+    /// Heading north (−z), which is phase group 0, with a light 30 m ahead.
+    const NORTH: Vec2 = Vec2::new(0.0, -1.0);
+
+    #[test]
+    fn a_car_stops_at_red_and_drives_on_green() {
+        let (red, green) = red_and_green();
+        let light = [(Vec2::new(0.0, -30.0), 0u8)];
+        let mut grace = 0.0;
+        let at_red = signal_speed(&light, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace);
+        // A braking curve ending at the stop line, not an instant stop.
+        let curve = (2.0 * SIGNAL_BRAKE * (30.0 - STOP_SHORT_M)).sqrt();
+        assert!(
+            (at_red - curve).abs() < 1e-3,
+            "a red light 30 m ahead slows the car: {at_red}"
+        );
+        let at_green = signal_speed(&light, green, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace);
+        assert_eq!(at_green, f32::MAX);
+        // Waiting at the line it stays put until the light changes.
+        let line = Vec2::new(0.0, -30.0 + STOP_SHORT_M);
+        assert_eq!(
+            signal_speed(&light, red, line, NORTH, 0.0, 4.0, &mut grace),
+            0.0
+        );
+        assert_eq!(
+            signal_speed(&light, green, line, NORTH, 0.0, 4.0, &mut grace),
+            f32::MAX
+        );
+    }
+
+    /// The cross street's lights stand at the same junction, beside this road
+    /// and in the other phase group; neither may stop a car.
+    #[test]
+    fn a_cross_streets_light_does_not_stop_a_car() {
+        let (red, _) = red_and_green();
+        let mut grace = 0.0;
+        let beside = [(Vec2::new(10.0, -30.0), 0u8)];
+        assert_eq!(
+            signal_speed(&beside, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace),
+            f32::MAX
+        );
+        let other_group = [(Vec2::new(0.0, -30.0), 1u8)];
+        assert_eq!(
+            signal_speed(&other_group, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace),
+            f32::MAX
+        );
+    }
+
+    /// Too close to stop and it goes, as a driver caught by the amber does —
+    /// a stop forced anyway would leave it in the junction.
+    #[test]
+    fn a_car_too_close_to_stop_drives_through() {
+        let (red, _) = red_and_green();
+        let light = [(Vec2::new(0.0, -10.0), 0u8)];
+        let mut grace = 0.0;
+        assert_eq!(
+            signal_speed(&light, red, Vec2::ZERO, NORTH, 14.0, 4.0, &mut grace),
+            f32::MAX
+        );
+    }
+
+    /// Having crossed one stop line, the opposite approach's line beyond the
+    /// junction — same road, same phase group — is not this car's.
+    #[test]
+    fn a_car_through_a_junction_ignores_the_far_stop_line() {
+        let (red, _) = red_and_green();
+        let near_and_far = [(Vec2::new(0.0, 1.0), 0u8), (Vec2::new(0.0, -15.0), 0u8)];
+        let mut grace = 0.0;
+        let v = signal_speed(&near_and_far, red, Vec2::ZERO, NORTH, 6.0, 4.0, &mut grace);
+        assert_eq!(v, f32::MAX);
+        assert_eq!(grace, SIGNAL_GRACE_M);
+    }
+
+    #[test]
+    fn the_body_dips_braking_and_leans_out_of_a_turn() {
+        let mut t = Vec2::ZERO;
+        for _ in 0..60 {
+            t = body_tilt(t, -5.0, 0.0, 1.0 / 60.0);
+        }
+        assert!(t.x > 0.02, "the nose dips under braking: {t:?}");
+        let mut t = Vec2::ZERO;
+        for _ in 0..60 {
+            // Turning right at speed: the outside of the turn is the car's left,
+            // which is the model's +x — a negative roll about z.
+            t = body_tilt(t, 0.0, 2.5, 1.0 / 60.0);
+        }
+        assert!(t.y < -0.02, "the roof leans out of the turn: {t:?}");
+        assert!(
+            body_tilt(Vec2::ZERO, -100.0, 100.0, 10.0)
+                .abs()
+                .max_element()
+                <= MAX_TILT + 1e-6
+        );
+    }
+
+    #[test]
+    fn brake_lamps_hold_at_a_stop_and_do_not_flicker() {
+        assert!(brake_lamps(false, 0.0, true), "lit while waiting");
+        assert!(brake_lamps(false, -2.0, false), "lit braking");
+        assert!(!brake_lamps(false, -0.5, false), "not lit easing off");
+        assert!(
+            brake_lamps(true, -0.5, false),
+            "stays lit easing off a stop"
+        );
+        assert!(!brake_lamps(true, 1.0, false), "off pulling away");
+    }
+
+    /// A pavement is two-way, and people going each way use both of them.
+    #[test]
+    fn walkers_keep_to_either_pavement() {
+        let net = net_with(&[[0.0, 0.0], [100.0, 0.0]]);
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let l = net.get(key);
+        let walker = |side: f32| Car {
+            line: Some(key),
+            s: 50.0,
+            dir: 1.0,
+            speed_scale: 1.0,
+            speed: 1.0,
+            heading: Vec2::ZERO,
+            turn: None,
+            side,
+            lateral: 0.0,
+            phase: 0.0,
+            tilt: Vec2::ZERO,
+            signal_grace: 0.0,
+            braking: false,
+            parts: AgentParts::Walker {
+                limbs: [Entity::PLACEHOLDER; 4],
+            },
+        };
+        let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
+        let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
+        assert!(right.y > 3.0 && left.y < -3.0, "{right} {left}");
+        assert!((right.y + left.y).abs() < 1e-3, "the two pavements mirror");
     }
 }

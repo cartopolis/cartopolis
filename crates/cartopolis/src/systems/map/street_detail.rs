@@ -440,6 +440,9 @@ pub(crate) struct DetailCellBuild {
     meshes: Vec<(PropClass, Mesh)>,
     colliders: Vec<Footprint>,
     lamp_points: Vec<Vec3>,
+    /// Each signal's stop line — the node on the carriageway, world XZ — and
+    /// its phase group, for the cars that stop at it (`systems::traffic`).
+    signal_points: Vec<(Vec2, u8)>,
 }
 
 type CellResult = Result<Option<DetailCellBuild>, String>;
@@ -671,6 +674,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     let mut meshes: Vec<(PropClass, Mesh)> = Vec::new();
     let mut colliders: Vec<Footprint> = Vec::new();
     let mut lamp_points: Vec<Vec3> = Vec::new();
+    let mut signal_points: Vec<(Vec2, u8)> = Vec::new();
 
     // ── Trees ────────────────────────────────────────────────────────────
     if ctx.wants_trees {
@@ -870,6 +874,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let y0 = ground_at(at);
         let yaw = dir.y.atan2(dir.x);
         let group = signal_group(dir);
+        signal_points.push((Vec2::new(p.x + ox, p.y + oz), group));
         let post = linear(SIGNAL_POST);
         push_yawed_box(
             &mut solid,
@@ -1246,13 +1251,14 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         meshes,
         colliders,
         lamp_points,
+        signal_points,
     }))
 }
 
 /// Which signal phase group a road direction belongs to: roughly north–south
 /// approaches are group 0, east–west group 1 — opposing arms of a junction then
 /// alternate green the way a real junction does.
-fn signal_group(dir: Vec2) -> u8 {
+pub(crate) fn signal_group(dir: Vec2) -> u8 {
     if dir.x.abs() > dir.y.abs() {
         1
     } else {
@@ -1305,6 +1311,9 @@ pub struct StreetDetail {
     cell_entities: HashMap<(i64, i64), Vec<Entity>>,
     /// Lamp head positions (world frame) per cell, for the light pool.
     lamps: HashMap<(i64, i64), Vec<Vec3>>,
+    /// Signal stop lines (world XZ) and their phase groups per cell, for the
+    /// traffic that stops at them.
+    signals: HashMap<(i64, i64), Vec<(Vec2, u8)>>,
     /// Shared materials by class.
     solid_material: Option<Handle<StandardMaterial>>,
     linear_material: Option<Handle<StandardMaterial>>,
@@ -1340,6 +1349,7 @@ impl Default for StreetDetail {
             }),
             cell_entities: HashMap::new(),
             lamps: HashMap::new(),
+            signals: HashMap::new(),
             solid_material: None,
             linear_material: None,
             paint_material: None,
@@ -1368,6 +1378,18 @@ impl StreetDetail {
     /// All live lamp positions (world frame).
     fn lamp_iter(&self) -> impl Iterator<Item = &Vec3> {
         self.lamps.values().flatten()
+    }
+
+    /// Every drawn signal within `radius` of `at` (world XZ): its stop line
+    /// and phase group. Only signals that are drawn, so a car never stops at a
+    /// light nobody can see.
+    pub fn signals_near(&self, at: Vec2, radius: f32) -> impl Iterator<Item = (Vec2, u8)> + '_ {
+        let r2 = radius * radius;
+        self.signals
+            .values()
+            .flatten()
+            .copied()
+            .filter(move |(p, _)| p.distance_squared(at) <= r2)
     }
 }
 
@@ -1415,6 +1437,7 @@ pub fn update_street_detail(
         sd.lid_digest = lids;
         sd.spawned_meshes = 0;
         sd.lamps.clear();
+        sd.signals.clear();
         colliders.clear_features();
         let sd = &mut *sd;
         sd.cells.restart(&mut sd.cell_entities, &mut sd.anchor);
@@ -1548,6 +1571,9 @@ pub fn update_street_detail(
                 if !build.lamp_points.is_empty() {
                     sd.lamps.insert(cell, build.lamp_points);
                 }
+                if !build.signal_points.is_empty() {
+                    sd.signals.insert(cell, build.signal_points);
+                }
                 sd.cells.succeeded(&cell);
             }
             Ok(None) => sd.cells.succeeded(&cell),
@@ -1573,6 +1599,7 @@ pub fn update_street_detail(
             sd.cells.retire_all(entities);
         }
         sd.lamps.remove(&cell);
+        sd.signals.remove(&cell);
         colliders.remove_feature_cell(cell);
         sd.cells.forget(&cell);
     }
@@ -1878,6 +1905,13 @@ pub fn update_lamp_lights(
 /// Full cycle length in seconds: each group gets green, amber, then all-red
 /// clearance while the other runs.
 const SIGNAL_CYCLE_S: f32 = 24.0;
+
+/// Whether group `group`'s lamps show stop (amber or red) `elapsed` seconds
+/// into the app — the same clock [`update_signal_cycle`] lights them by, so a
+/// car stops at exactly the light that is drawn red.
+pub(crate) fn signal_says_stop(elapsed: f32, group: u8) -> bool {
+    signal_phase(elapsed % SIGNAL_CYCLE_S, group) != 2
+}
 
 /// Which lamp of a group is lit at `t` seconds into the cycle: the group's half
 /// is green 0–9 s, amber 9–12 s, red for the rest (the other group mirrors at

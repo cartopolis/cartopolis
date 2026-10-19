@@ -2,8 +2,9 @@
 topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
-  "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle"]
-updated: 2026-09-10
+  "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
+  agent_models.rs, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians"]
+updated: 2026-10-19
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -39,11 +40,12 @@ The documented device-loss failure in this tree is mass mesh churn
 (`docs/notes/upload-bursts.md`), and a moving object is the obvious way to
 reintroduce it. So:
 
-- There is exactly **one** car mesh, built once at startup from the same
-  `furniture::form::CAR` parts the parked cars use — a car waiting at a kerb and
-  a car driving past it are the same object.
-- A car is an entity with a `Transform`. Driving it writes that transform and
-  nothing else. **After startup this layer uploads nothing, ever.**
+- The models are built once at startup and shared by the whole pool: four car
+  bodies of three meshes each and one walker of three (`agent_models`, see
+  below). Until 2026-10-19 a moving car was the parked cars' seven boxes.
+- An agent is an entity with a `Transform` and a few child parts. Moving it
+  writes those transforms, and a braking car swaps its tail lamps' material
+  handle — nothing else. **After startup this layer uploads nothing, ever.**
 - The pool is **fixed** and cars are **recycled**, never spawned or despawned on
   the move. A car that runs out of range is given a new road, not deleted.
 
@@ -99,11 +101,10 @@ and six would be a worse claim rather than a better one. It reads as a figure, n
 as somebody identifiable, which is the honest resolution for something inferred
 from "a pavement exists here".
 
-**No walk animation.** Three boxes sliding along a line. `avatar-game-feel.md`
-documents how badly a sliding figure reads — but that is about a model you stand
-directly behind, and these are seen from tens of metres where an upright
-silhouette in motion is the whole signal. That is an argument, not a measurement,
-and no still can settle it.
+**Walk animation since 2026-10-19** — see "Looks" below. Before that a walker
+was three boxes sliding along a line, on the argument that from tens of metres an
+upright silhouette in motion was the whole signal; asked for realism, the
+sliding was the first thing to go.
 
 ## `traffic_cars` / `traffic_walkers` mean *placed*, not *on screen*
 
@@ -125,9 +126,9 @@ from the cause. The visibility queries are one `SystemParam` bundle now.
 
 ## What this deliberately is not
 
-No car-to-car collision, no obeying the traffic signals that already cycle
-(`systems::street_detail`), no give-way, no queueing, no avatar interaction, and
-people walk through each other and through the cars.
+No car-to-car collision, no give-way, no avatar interaction, and people walk
+through each other and through the cars and ignore the lights. (Queueing came with
+headway on 2026-09-10, and stopping at signals on 2026-10-19 — see below.)
 Every one is a simulation cost landing on every frame, and none is what the layer
 is for: the question it answers is "is this street alive", settled at a glance
 from a range where two cars overlapping for a moment is invisible. Recorded here
@@ -322,3 +323,61 @@ on recycle are reasoned about and pinned by unit tests on the pure parts —
 `a_junction_turn_is_exact_at_both_ends`, `a_heading_turns_at_a_bounded_rate`,
 `only_the_bend_ahead_is_a_reason_to_slow` — not watched. A still cannot show any
 of it.
+
+## Looks, lights and a walk (2026-10-19)
+
+Asked to make the cars and people "more realistic, how they look and how they
+move". What changed, and the reasoning that is not in the code:
+
+**The moving cars stopped being the parked cars.** The parked form is seven
+boxes because a lot merges hundreds of them into one cell mesh and every box is
+multiplied by the lot (`parked-vehicles.md`). The moving pool has the opposite
+cost shape — one shared mesh per model, uploaded once — so a model costs its
+vertices once. `cartopolis_geo::agent_models` lofts each body from a table of
+cross-sections (bonnet, raked windscreen, roof, rear window, boot), with round
+wheels, bumpers, sills, mirrors, yellow plates, headlamps and tail lamps. Four
+bodies — hatchback, saloon, estate, van, about 40/25/23/12 % by pool index, and
+most vans white. The parked cars are unchanged; the claim "a moving car and a
+parked one are the same object" no longer holds and was traded knowingly.
+
+**A car is three meshes because of what a shared mesh cannot do.** The body
+takes the paint material; the trim (glass, tyres, plates, lamps) has its own
+neutral material with per-vertex colour, so a red car's windscreen is not red;
+the tail lamps are alone so a braking car can swap their material
+(`TailLampMaterials`) — a handle write, no upload. They are unlit and the braking
+one is pushed past 1.0 for bloom. They light while the car slows harder than
+0.9 m/s² and while it waits; the off threshold is lower so easing off does not
+flicker them.
+
+**The body leans.** Pitch from the eased acceleration (nose down braking), roll
+from speed × yaw rate (out of the turn), eased over 0.25 s and capped at 0.05
+rad. Read off the motion, not simulated.
+
+**Cars stop at the drawn signals.** `street_detail` now keeps each signal's
+node (world XZ) and phase group per cell (`signals_near`); `signal_speed` puts
+a braking curve (3 m/s²) on a car whose own phase group shows amber or red ahead,
+ending 4 m short of the node. Three things it has to get right, each with a test:
+a cross street's lights at the same junction (other group, or >half-width+1 m to
+the side) must not stop it; a car that would need more than 7 m/s² goes through
+on the amber rather than stopping in the junction; and having crossed one stop
+line, the *opposite approach's* line beyond the junction — same road, same group
+— is ignored for 30 m (`signal_grace`). With street detail off there are no
+signals and nothing stops: a car only obeys a light you can see. Queues form
+behind the stopped car through the existing headway.
+
+**People walk.** A walker is a torso with the head and four child limbs hung
+from hip and shoulder; `agent_models::gait` swings legs in opposition and each
+arm against its own leg, with a small dip as the legs pass. The phase advances
+by **distance** (one cycle per 1.4 m, scaled by height), so the feet keep pace at
+any speed. Heights vary ±8 %, trousers have their own palette, and walkers use
+**both pavements in both directions** with up to a metre of spread — before, all
+walkers kept to the pavement on their own right, so each side of a street was a
+one-way stream. The head is still the neutral grey, for the reason above.
+
+The black and dark-blue paints were added to `parking::CAR_PAINTS` too: they are
+two of the four commonest Dutch car colours and the palette had no dark car.
+
+**Not verified by watching**, as before: the pure parts are unit-tested
+(`a_car_stops_at_red_and_drives_on_green`, `a_car_through_a_junction_ignores_the_far_stop_line`,
+`the_body_dips_braking_and_leans_out_of_a_turn`, `walkers_keep_to_either_pavement`,
+`agent_models`' winding and proportion tests); the models were checked in stills.
