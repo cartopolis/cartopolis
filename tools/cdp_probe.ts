@@ -34,6 +34,8 @@
  *   bun tools/cdp_probe.ts --remote --port 9444    # drive a browser already listening there (e.g. an
  *                                                  # ssh -L to a machine with a real GPU) instead of spawning one
  *   bun tools/cdp_probe.ts --drive 20              # from t=20 s, move the camera the way a person does
+ *   bun tools/cdp_probe.ts --keep-profile          # a returning visitor: keep the browser profile (its
+ *                                                  # IndexedDB cache) from the run before, and after this one
  *
  * A still camera hides most of what a person calls stutter: a settled scene
  * streams nothing. `--drive` repeats a fixed script — pan (left drag), turn
@@ -61,6 +63,7 @@ const { values: opt } = parseArgs({
     trace: { type: "string" },
     remote: { type: "boolean", default: false },
     drive: { type: "string" },
+    "keep-profile": { type: "boolean", default: false },
   },
 });
 
@@ -105,7 +108,7 @@ if (opt["no-webgpu"]) {
   flags.push("--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=swiftshader");
 }
 
-await Bun.$`rm -rf ${profile}`.quiet().nothrow();
+if (!opt["keep-profile"]) await Bun.$`rm -rf ${profile}`.quiet().nothrow();
 // Launch on `about:blank`, not the target URL. Chromium begins loading a
 // command-line URL before this script can attach, so the run would either miss
 // the opening requests or — if corrected with a reload — fetch the whole module
@@ -653,5 +656,5 @@ chrome!.kill();
 // makes the tool fail *after* it has already printed everything it was asked for.
 // The temp dir is per-port and gets cleared on the next run anyway.
 await chrome!.exited;
-await Bun.$`rm -rf ${profile}`.quiet().nothrow();
+if (!opt["keep-profile"]) await Bun.$`rm -rf ${profile}`.quiet().nothrow();
 process.exit(errors.length ? 1 : 0);
