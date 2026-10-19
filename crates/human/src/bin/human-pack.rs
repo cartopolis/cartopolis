@@ -16,39 +16,22 @@ use cartopolis_human::mocap::{Cut, CutKind};
 use cartopolis_human::pack::{build_pack, ProxySource, SkinSource, Sources, TargetSet};
 use cartopolis_human::{ProxyKind, SkinAge};
 
-/// Walking and standing, from 100STYLE. The frame ranges are the
+/// Standing, from 100STYLE. The frame ranges are the
 /// dataset's own `Frame_Cuts.csv`, which trims the calibration T-poses at
-/// either end of each take; the walk loop brackets one stride pair (left and
-/// right foot), the unit a walk repeats in.
+/// either end of each take.
 fn style_cuts(style: &Path) -> Vec<Cut> {
     let take = |f: &str| style.join("Neutral").join(f);
-    vec![
-        Cut {
-            name: "idle".into(),
-            file: take("Neutral_ID.bvh"),
-            start: Some(655),
-            end: Some(1555),
-            kind: CutKind::Loop {
-                min_s: 3.0,
-                max_s: 7.0,
-            },
-            fps: None,
+    vec![Cut {
+        name: "idle".into(),
+        file: take("Neutral_ID.bvh"),
+        start: Some(655),
+        end: Some(1555),
+        kind: CutKind::Loop {
+            min_s: 3.0,
+            max_s: 7.0,
         },
-        // Rushed, not Neutral: Neutral's walk is 0.86 m/s on the default man and
-        // the game walks at 1.8, which played it at twice its own cadence.
-        // Rushed's is 1.65 m/s with a 0.9 s cycle (`--probe`, 2026-10-17).
-        Cut {
-            name: "walk".into(),
-            file: style.join("Rushed").join("Rushed_FW.bvh"),
-            start: Some(343),
-            end: Some(3265),
-            kind: CutKind::Loop {
-                min_s: 0.9,
-                max_s: 1.5,
-            },
-            fps: None,
-        },
-    ]
+        fps: None,
+    }]
 }
 
 /// The emotes and the seat, from the CMU database (the cgspeed BVH conversion,
@@ -66,6 +49,13 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
         fps,
     };
     vec![
+        // 08_08 "walk": an ordinary walk at 1.76 m/s on a 0.92 s cycle, the
+        // game's 1.8 near enough to play at its own pace; trunk 3° forward,
+        // arms -26° to +19° (`--try-walk`, 2026-10-19, of 23 CMU walks). It
+        // replaced 100STYLE's `Rushed` walk (1.65 m/s, but the trunk 20°
+        // forward and the arms held behind the body: a funny walk); every
+        // 100STYLE walk at the game's pace is a hurried style.
+        walk_cut(&cmu.join("08_08.bvh"), "walk", 1, None),
         // 09_01 "run": a real run, 3.46 m/s with a 0.73 s cycle on the default
         // man. Every 100STYLE "run" is a jog (2.3 m/s at best) and the game runs
         // at 6 m/s.
@@ -261,8 +251,145 @@ fn probe_bones() -> Vec<cartopolis_human::Bone> {
         .collect()
 }
 
+/// The walk's cycle bounds when it is looked for in a take: one stride pair.
+const WALK_LOOP: CutKind = CutKind::Loop {
+    min_s: 0.9,
+    max_s: 1.5,
+};
+
+/// A walk cut from a whole CMU take (frame 0 is the conversion's T-pose).
+fn walk_cut(file: &Path, name: &str, start: usize, end: Option<usize>) -> Cut {
+    Cut {
+        name: name.into(),
+        file: file.to_path_buf(),
+        start: Some(start),
+        end,
+        kind: WALK_LOOP,
+        fps: None,
+    }
+}
+
+/// `--try-walk PACK FILE…`: cut a walk loop from each take, play it on the
+/// default man exactly as captured (none of `rig`'s corrections to the walk),
+/// and print what makes a walk look like one: its pace and cycle, how far the
+/// trunk leans and rocks, how far the upper arm swings and the elbow bends.
+/// Ordinary walking, for comparison: a trunk 2–5° forward rocking a few
+/// degrees, the upper arm about ±15–20°, the elbow 10–45°.
+fn try_walks(pack_path: &Path, files: &[String]) {
+    use cartopolis_human::mocap::{clip_from_motion, parse_bvh};
+    use cartopolis_human::{build, Look, Phenotype};
+    let pack = std::fs::read(pack_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| cartopolis_human::HumanPack::decode(&b))
+        .unwrap_or_else(|e| {
+            eprintln!("{}: {e}", pack_path.display());
+            std::process::exit(1);
+        });
+    let look = Look {
+        phenotype: Phenotype::male(),
+        skin: String::new(),
+        proxies: vec![],
+        eyes: None,
+        modifiers: vec![],
+    };
+    for file in files {
+        // Named so that no correction meant for the walk applies.
+        let cut = walk_cut(Path::new(file), "candidate", 1, None);
+        let clip = match std::fs::read_to_string(file)
+            .map_err(|e| e.to_string())
+            .and_then(|t| parse_bvh(&t))
+            .and_then(|m| clip_from_motion(&m, &cut, &pack.bones, 30.0))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                println!("{file}: {e}");
+                continue;
+            }
+        };
+        let mut trial = pack.clone();
+        trial.clips = vec![clip];
+        let m = build(&trial, &look);
+        let Some(c) = m.clips.first() else { continue };
+        let j = |n: &str| m.joint(n).unwrap_or(0);
+        let frames = c.rotations.first().map_or(0, Vec::len);
+        let (mut lean, mut arm, mut elbow) = (Vec::new(), Vec::new(), Vec::new());
+        for f in 0..frames {
+            let p = m.joint_positions(Some((0, f)));
+            let trunk = p[j("neck_01")] - p[j("pelvis")];
+            lean.push(trunk.z.atan2(trunk.y).to_degrees());
+            let up = p[j("lowerarm_l")] - p[j("upperarm_l")];
+            let fore = p[j("hand_l")] - p[j("lowerarm_l")];
+            arm.push(up.z.atan2(-up.y).to_degrees());
+            elbow.push(up.angle_between(fore).to_degrees());
+        }
+        let range = |v: &[f32]| {
+            v.iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)))
+        };
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+        let (l, a, e) = (range(&lean), range(&arm), range(&elbow));
+        println!(
+            "{file}: {:.2} m/s, {:.2} s cycle | trunk {:.0}° ({:.0}..{:.0}) | arm {:.0}..{:.0}° | elbow {:.0}..{:.0}°",
+            c.speed,
+            c.duration(),
+            mean(&lean),
+            l.0,
+            l.1,
+            a.0,
+            a.1,
+            e.0,
+            e.1
+        );
+    }
+}
+
+/// `--replace-walk PACK FILE START [END]`: put a walk cut from a take in place
+/// of the pack's, leaving everything else in the pack as it is — so a better
+/// walk needs only its own take, not every source the pack was built from.
+fn replace_walk(pack_path: &Path, file: &Path, start: usize, end: Option<usize>) {
+    use cartopolis_human::mocap::{clip_from_motion, parse_bvh};
+    let result = std::fs::read(pack_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| cartopolis_human::HumanPack::decode(&b))
+        .and_then(|mut pack| {
+            let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+            let clip = clip_from_motion(
+                &parse_bvh(&text)?,
+                &walk_cut(file, "walk", start, end),
+                &pack.bones,
+                30.0,
+            )?;
+            let slot = pack
+                .clips
+                .iter_mut()
+                .find(|c| c.name == "walk")
+                .ok_or("the pack has no walk")?;
+            *slot = clip;
+            let bytes = pack.encode()?;
+            std::fs::write(pack_path, &bytes).map_err(|e| e.to_string())?;
+            Ok(bytes.len())
+        });
+    match result {
+        Ok(n) => println!("{}: walk replaced, {} KB", pack_path.display(), n / 1024),
+        Err(e) => {
+            eprintln!("human-pack: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let all: Vec<String> = std::env::args().collect();
+    if all.get(1).is_some_and(|f| f == "--try-walk") && all.len() > 3 {
+        try_walks(Path::new(&all[2]), &all[3..]);
+        return;
+    }
+    if all.get(1).is_some_and(|f| f == "--replace-walk") && all.len() > 4 {
+        let start = all[4].parse().unwrap_or(1);
+        let end = all.get(5).and_then(|s| s.parse().ok());
+        replace_walk(Path::new(&all[2]), Path::new(&all[3]), start, end);
+        return;
+    }
     if let [_, flag, dir] = all.as_slice() {
         if flag == "--probe" {
             probe(Path::new(dir));
