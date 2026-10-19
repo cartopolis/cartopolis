@@ -1,8 +1,9 @@
 ---
 topic: parked-vehicles
 triggers: [parking.rs, furniture.rs, "parked car", "parked cars", "bicycle parking",
-  "sites layer", "car park", "vehicles", "more lively", "inhabited", world_places.rs]
-updated: 2026-08-26
+  "sites layer", "car park", "vehicles", "more lively", "inhabited", world_places.rs,
+  park_in_bays, parking bays, parkeervakken]
+updated: 2026-10-19
 ---
 
 # The car parks are filled, and the cars are inferred
@@ -99,6 +100,16 @@ So what the fill mostly produces is cars parked down residential streets, and th
 two-rows-and-an-aisle module rarely comes into play there. That is a better result
 for the goal than a car park would have been, and it is the reason the inset and
 the road keep-out matter more than the module does.
+
+## Where a city surveys its bays, the bays win (2026-10-19)
+
+Groningen registers every public parking bay as its own polygon (34,994; OSM has
+1,741), served by atlas's `registers` dataset. `park_in_bays` puts one car in each
+— a different and stronger claim than the lot fill, since only *whether this bay is
+taken* is invented — and `extract_parking_around` leaves out every OSM lot that
+contains a surveyed bay's centre, so a lot is never parked twice. Lots with no
+surveyed bay in them (private car parks) are filled as before. The numbers and the
+bay sizes are in `municipal-registers.md`.
 
 ## Known limits, none worth a request to fix
 

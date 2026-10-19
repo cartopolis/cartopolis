@@ -153,6 +153,23 @@ pub fn extract_parking(
     tile_m: f32,
     seed: u64,
 ) -> Result<Vec<FurnitureInstance>, String> {
+    extract_parking_around(tile, tile_m, seed, &[])
+}
+
+/// [`extract_parking`], leaving out every car park with a surveyed bay in it.
+///
+/// `surveyed_bays` are the centres of the bays a register surveyed in this cell,
+/// in the tile-local frame, which [`park_in_bays`] parks one car each into. A lot
+/// that holds one is drawn from the survey and not filled as well: two fills of
+/// one car park put two cars in every bay. Decided by containment, which is
+/// exact, and per lot — a supermarket's private car park that no city surveys is
+/// still filled.
+pub fn extract_parking_around(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+    surveyed_bays: &[[f32; 2]],
+) -> Result<Vec<FurnitureInstance>, String> {
     use crate::vector_tiles::tessellate_polygon;
     use geo_types::Geometry;
 
@@ -194,6 +211,19 @@ pub fn extract_parking(
             rings.extend(clipped_rings(p, scale, extent));
         }
         if indices.is_empty() {
+            continue;
+        }
+        if lot.kind == FurnitureKind::Car
+            && surveyed_bays.iter().any(|b| {
+                indices.chunks_exact(3).any(|t| {
+                    let at = |i: u32| {
+                        let p = positions[i as usize];
+                        (p[0], p[2])
+                    };
+                    in_triangle((b[0], b[1]), at(t[0]), at(t[1]), at(t[2]))
+                })
+            })
+        {
             continue;
         }
 
@@ -326,10 +356,208 @@ fn paints_pick(paints: &[u32], h: u64) -> u32 {
     paints[((rand01(h, 2) * paints.len() as f32) as usize).min(paints.len() - 1)]
 }
 
+/// Fraction of surveyed bays left empty. Lower than a lot's: a bay on a Dutch
+/// street is where the residents' cars are, and an emptier street than a car
+/// park would read backwards.
+const BAY_VACANCY: f32 = 0.25;
+
+/// The smallest bay a car is parked in: the car is 4.40 × 1.72 m. Smaller bays
+/// exist — a motorbike bay, a sliver left over at a corner — and a car hanging
+/// out of one is worse than an empty one.
+const MIN_BAY: (f32, f32) = (4.3, 1.65);
+
+/// The longest a single bay is believed to be. The city's are one bay each
+/// (herringbone a median 6.8 m, 2026-10-19); a ring much longer than that is a
+/// strip, and one car centred in a strip is a guess at where in it.
+const MAX_BAY_LONG: f32 = 12.0;
+
+/// The centre of a surveyed bay, in the tile-local frame — the point
+/// [`extract_parking_around`] tests its lots against.
+#[must_use]
+pub fn bay_centre(ring: &[[f32; 2]]) -> Option<[f32; 2]> {
+    let pts = open_ring(ring);
+    if pts.len() < 3 {
+        return None;
+    }
+    let n = pts.len() as f32;
+    let (sx, sz) = pts
+        .iter()
+        .fold((0.0, 0.0), |(x, z), p| (x + p[0], z + p[1]));
+    Some([sx / n, sz / n])
+}
+
+/// A ring without its closing repeat.
+fn open_ring(ring: &[[f32; 2]]) -> &[[f32; 2]] {
+    match ring {
+        [first, .., last] if first == last => &ring[..ring.len() - 1],
+        _ => ring,
+    }
+}
+
+/// One car in each surveyed parking bay, some bays left empty.
+///
+/// **A different claim from the lot fill above.** The bay is surveyed — where it
+/// is, which way it runs, that it holds one car — so the car stands in it, along
+/// its long side and centred, and the fill is right about everything a person
+/// walking past can check. Whether *this* bay is taken right now is the one thing
+/// invented, and it is hashed off the bay's own position, so a cell that streams
+/// out and back is parked identically and a bay is the same bay from whichever
+/// cell asks. The cars are vehicles in `world_places`, not interactables, for the
+/// reason the module note gives.
+///
+/// The bay's own layout (parallel, perpendicular, herringbone) is not needed: in
+/// every one of them the car lies along the bay's long side.
+#[must_use]
+pub fn park_in_bays(bays: &[Vec<[f32; 2]>], seed: u64) -> Vec<FurnitureInstance> {
+    let mut out = Vec::new();
+    for ring in bays {
+        let pts = open_ring(ring);
+        let Some([cx, cz]) = bay_centre(pts) else {
+            continue;
+        };
+        // The long side: the longest edge's direction.
+        let Some((dx, dz)) = pts
+            .iter()
+            .zip(pts.iter().cycle().skip(1))
+            .map(|(a, b)| (b[0] - a[0], b[1] - a[1]))
+            .max_by(|a, b| a.0.hypot(a.1).total_cmp(&b.0.hypot(b.1)))
+        else {
+            continue;
+        };
+        let len = dx.hypot(dz);
+        if len < 1e-3 {
+            continue;
+        }
+        let (ux, uz) = (dx / len, dz / len);
+        // The bay's extent along and across that side, measured over every
+        // corner — a herringbone bay is a parallelogram, whose longest edge is
+        // not its length.
+        let (mut a0, mut a1, mut c0, mut c1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for p in pts {
+            let (rx, rz) = (p[0] - cx, p[1] - cz);
+            let along = rx * ux + rz * uz;
+            let across = -rx * uz + rz * ux;
+            (a0, a1) = (a0.min(along), a1.max(along));
+            (c0, c1) = (c0.min(across), c1.max(across));
+        }
+        let (long, short) = (a1 - a0, c1 - c0);
+        if long < MIN_BAY.0 || short < MIN_BAY.1 || long > MAX_BAY_LONG {
+            continue;
+        }
+        // Keyed on the bay's position to the decimetre, not its index: atlas files
+        // a bay under one cell, but nothing else here should depend on the order
+        // a register lists them in.
+        let h = hash3(seed, (cx * 10.0).round() as i32, (cz * 10.0).round() as i32);
+        if rand01(h, 0) < BAY_VACANCY {
+            continue;
+        }
+        // `push_box` turns a form's local +z to (sin yaw, cos yaw); nose-in or
+        // nose-out is a coin toss, as it is on a real street.
+        let yaw = ux.atan2(uz)
+            + if rand01(h, 3) < 0.5 {
+                std::f32::consts::PI
+            } else {
+                0.0
+            };
+        out.push(FurnitureInstance {
+            x: cx,
+            z: cz,
+            yaw,
+            kind: FurnitureKind::Car,
+            luma: 1.0 + (rand01(h, 1) - 0.5) * 0.08,
+            paint: paints_pick(CAR_PAINTS, h),
+            over_water: false,
+            hull_only: false,
+        });
+    }
+    crate::scatter::thin_evenly(out, MAX_VEHICLES_PER_CELL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vector_tiles::{mesh_upload_bytes, SurfaceGroup};
+
+    fn bay(x: f32, z: f32, long: f32, short: f32) -> Vec<[f32; 2]> {
+        vec![
+            [x, z],
+            [x + long, z],
+            [x + long, z + short],
+            [x, z + short],
+            [x, z],
+        ]
+    }
+
+    /// A bay holds one car, centred and lying along it; a bay too small for a car
+    /// holds none; and roughly a quarter are empty.
+    #[test]
+    fn a_surveyed_bay_holds_one_car_along_its_length() {
+        let bays: Vec<_> = (0..200)
+            .map(|i| bay(i as f32 * 6.0, 10.0, 5.7, 2.0))
+            .collect();
+        let cars = park_in_bays(&bays, 7);
+        let empty = 200 - cars.len();
+        assert!((25..=75).contains(&empty), "{empty} of 200 bays empty");
+        for c in &cars {
+            assert_eq!(c.kind, FurnitureKind::Car);
+            assert!((c.z - 11.0).abs() < 1e-3, "centred across the bay");
+            // Lying along +x: the nose points east or west.
+            assert!(c.yaw.sin().abs() > 0.999, "yaw {}", c.yaw);
+        }
+        assert!(
+            park_in_bays(&[bay(0.0, 0.0, 2.5, 1.2)], 7).is_empty(),
+            "a motorbike bay"
+        );
+        assert!(
+            park_in_bays(&[bay(0.0, 0.0, 30.0, 2.0)], 7).is_empty(),
+            "a strip"
+        );
+    }
+
+    /// Parked the same way every time, whichever order the register lists them in.
+    #[test]
+    fn a_bay_is_parked_the_same_whatever_the_order() {
+        let bays: Vec<_> = (0..50)
+            .map(|i| bay(0.0, i as f32 * 3.0, 4.9, 2.3))
+            .collect();
+        let mut reversed = bays.clone();
+        reversed.reverse();
+        let mut a: Vec<_> = park_in_bays(&bays, 3)
+            .iter()
+            .map(|c| (c.z.to_bits(), c.paint))
+            .collect();
+        let mut b: Vec<_> = park_in_bays(&reversed, 3)
+            .iter()
+            .map(|c| (c.z.to_bits(), c.paint))
+            .collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+    }
+
+    /// A car park with a surveyed bay in it is not filled as well; the rest are.
+    #[test]
+    fn a_lot_with_surveyed_bays_is_not_filled_twice() {
+        let all = extract_parking(&fixture(), TILE_M, 11).expect("extract");
+        let car = all
+            .iter()
+            .find(|i| i.kind == FurnitureKind::Car)
+            .expect("a car");
+        let around =
+            extract_parking_around(&fixture(), TILE_M, 11, &[[car.x, car.z]]).expect("extract");
+        let cars =
+            |v: &[FurnitureInstance]| v.iter().filter(|i| i.kind == FurnitureKind::Car).count();
+        assert!(
+            cars(&around) < cars(&all),
+            "the lot holding the bay is left to the survey"
+        );
+        assert!(cars(&around) > 0, "and only that lot");
+        assert_eq!(
+            all.len() - cars(&all),
+            around.len() - cars(&around),
+            "cycle parks are not the bays' business"
+        );
+    }
 
     use crate::testdata::groningen as fixture;
 
