@@ -1,6 +1,6 @@
 ---
 topic: wasm-performance
-triggers: [platform/workers.rs, crates/wgpu, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+triggers: [platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
 updated: 2026-10-19
 ---
 
@@ -167,22 +167,61 @@ same build is normal under that load. Look at `ioreg -r -c IOAccelerator` and
 
 **Still costing, in order:**
 
-1. **Shader compiles, 2 s a run, some mid-drive.** `?pipeline_log` logs each new
-   pipeline with its shaders and defs (`pipeline_health.rs`). One run built 69
-   pipelines and compiled 56 distinct (shader, defs) pairs. Most mid-drive compiles
-   are `mesh.wesl` + `ground_detail.wesl` again for a new vertex layout:
-   ground-detail meshes arrive with and without `VERTEX_COLORS` and `VERTEX_UVS`,
-   three combinations each compiled separately. Giving every ground-detail mesh one
-   layout would remove two of them. Compiled WGSL keyed by a hash of its sources and
-   defs could be kept in `platform::storage`, so a second visit compiles nothing.
-   That needs bevy_shader vendored: `wesl::Resolver` has no hook to cache a parsed
-   module, and each compile re-parses every import, which is half its cost.
+1. **Shader composing on a first visit, ~0.4 s a run.** `?pipeline_log` logs each
+   new pipeline with its shaders and defs (`pipeline_health.rs`). One run built 69
+   pipelines from 56 distinct (shader, defs) pairs. Most mid-drive ones are
+   `mesh.wesl` + `ground_detail.wesl` again for a new vertex layout: ground-detail
+   meshes arrive with and without `VERTEX_COLORS` and `VERTEX_UVS`, three
+   combinations each composed separately. Giving every ground-detail mesh one
+   layout would remove two of them. The rest of what this item used to cost is
+   gone (next section).
 2. **The render schedule itself**: `render_system`, `camera_driver` and extraction
    are ~40 % of busy time while driving. They scale with draws and entities, and on
    the web they share the one thread with everything else.
 3. **One 790 ms `writeTexture`** inside `GpuImage::prepare_asset`, seen once,
    during a frame that also queued 10–14 MB of uploads. `upload_meter` warns about
    those frames. Which image it was is not established.
+
+## Composed shaders are kept, and composed without WESL's checks (2026-10-19)
+
+`crates/bevy_shader` is bevy_shader 0.20.0 with two changes, both marked
+`cartopolis:`:
+
+- **A release build composes without WESL's own validation and source map.**
+  Profiled, they were over half of composing: `check_cycles` 0.76 s and
+  `validate_wgsl` 0.52 s of 2.3 s in one run. They only make an error message
+  better, and the renderer validates the WGSL either way. A debug build keeps them.
+- **Composed WGSL is kept between runs** by `shader_store.rs`, one blob in
+  `platform::storage`'s cache (`shaders/wgsl-v1.bin`, ~1.6 MB for a Groningen
+  session). An entry is keyed by the main module's source, defs and constants. It
+  lists every module it was composed from, by asset path and source hash, and is
+  only used while all of them are unchanged. So a deploy that changes a shader
+  recomposes it, and nothing has to be cleared by hand.
+
+Main-thread time composing WESL over one 100 s drive, same probe as above
+(sampler gaps capped at 3 ms, so these read low against the earlier table):
+
+| | composing |
+|---|---|
+| before | 612 ms |
+| first visit | 409–441 ms |
+| second visit | 8–11 ms |
+
+On a second visit the time inside ≥100 ms freezes was 3.4–4.2 s, against 9.3 s
+for the build before. Most of that difference is not the shaders: the browser
+also keeps its compiled copy of the wasm module and the app's tile caches. The
+sampler gaps that made every first-visit profile noisy (12–30 s of 100) fell to
+~2 s on a second visit, so much of that noise was the browser compiling the
+157 MB module and not the shared host.
+
+Two things to know when working on shaders:
+
+- **A WESL mistake in a release build surfaces as the renderer's WGSL error**,
+  naming mangled identifiers. Reproduce it in a debug build for WESL's own message.
+- **`cdp_probe --keep-profile` is a returning visitor.** Without it every probe
+  run is a first visit, because the browser profile is deleted. The probe kills the
+  browser at the end, and a save from the last seconds of a run can be lost with
+  it. That costs the next run one recompose, not a wrong shader.
 
 ## The phone tier (2026-08-09)
 
