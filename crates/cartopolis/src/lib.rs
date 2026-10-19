@@ -123,6 +123,8 @@ pub fn run() {
         // Private-chat keys are read on the frame a session comes up, which
         // cannot wait on IndexedDB either.
         storage::preload(systems::private_chat::STATE_PREFIX, "").await;
+        // And the calendar kept beside them, read on the same frame.
+        storage::preload(systems::calendar::STORE_PREFIX, "").await;
         run_client();
     });
     #[cfg(not(target_arch = "wasm32"))]

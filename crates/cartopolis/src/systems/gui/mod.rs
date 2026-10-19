@@ -11,6 +11,7 @@ pub mod admin;
 pub mod avatar_designer;
 pub mod bookmarks;
 pub mod building_card;
+pub mod calendar;
 pub mod call_screen;
 pub mod camera_screen;
 pub mod chat;

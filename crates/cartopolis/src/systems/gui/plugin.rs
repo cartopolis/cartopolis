@@ -64,7 +64,26 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::chats::ScreenRestore>()
             .init_resource::<systems::camera_screen::CameraScreen>()
             .init_resource::<systems::admin::AdminState>()
-            .init_resource::<systems::access_tokens::AccessTokens>();
+            .init_resource::<systems::access_tokens::AccessTokens>()
+            .init_resource::<systems::calendar::Calendar>();
+
+        // The calendar (`systems::calendar`): its book takes in what the chats
+        // hold before the Community panel draws it, and its reminder is its own
+        // `Foreground` area over everything, so not in the panel chain.
+        app.add_systems(
+            Update,
+            (
+                (
+                    systems::calendar::collect_calendar,
+                    systems::calendar::track_here,
+                )
+                    .in_set(ClientPhase::Input)
+                    .before(systems::chats::render_chats_panel),
+                systems::calendar::render_reminder
+                    .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+            ),
+        );
 
         // The camera (`systems::camera_screen`): in Mixed it drives the world
         // camera after any teleport has landed and before the camera system reads

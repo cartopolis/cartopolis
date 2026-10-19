@@ -2335,6 +2335,8 @@ pub struct ScriptedChat<'w, 's> {
     calls: ResMut<'w, crate::systems::calls::Calls>,
     /// The camera (`--ui camera`, `systems::camera_screen`).
     camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
+    /// The calendar (`--ui calendar…`, `reminder`).
+    calendar: ResMut<'w, crate::systems::calendar::Calendar>,
     seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
     avatar: Query<
         'w,
@@ -2346,6 +2348,16 @@ pub struct ScriptedChat<'w, 's> {
         ),
     >,
 }
+
+/// The calendar's `--ui` pages, by name ([`crate::systems::calendar::seed_demo`]).
+const CALENDAR_PAGES: [&str; 6] = [
+    "calendar",
+    "calendarmonth",
+    "calendarplan",
+    "calendarmeetup",
+    "calendarnew",
+    "calendarsettings",
+];
 
 /// Every name `--ui` accepts — the vocabulary [`open_scripted_ui`] checks the
 /// caller's list against, so a typo is a warning rather than a silently missing
@@ -2404,6 +2416,15 @@ const UI_ELEMENTS: &[&str] = &[
     "chatplan",
     "chatpoll",
     "chatworld",
+    // The calendar's pages (`docs/mockups/calendar`), and a reminder over the
+    // map.
+    "calendar",
+    "calendarmonth",
+    "calendarplan",
+    "calendarmeetup",
+    "calendarnew",
+    "calendarsettings",
+    "reminder",
     "chatswitch",
     // A chat with its + menu open, and the camera (`camera_screen`).
     "chatattach",
@@ -2633,6 +2654,7 @@ pub fn open_scripted_ui(
         || want("adminreports")
         || want("adminreport")
         || want("adminaccount")
+        || CALENDAR_PAGES.iter().any(|p| want(p))
     {
         Some("list")
     } else {
@@ -2682,6 +2704,14 @@ pub fn open_scripted_ui(
             }
         }
     }
+    // The calendar's pages over the demo chats, its "Coming up" card on every
+    // messenger screen, and its reminder over the map (`systems::calendar`).
+    crate::systems::calendar::seed_demo(
+        &mut cards.chat.calendar,
+        CALENDAR_PAGES.iter().copied().find(|p| want(p)),
+        messenger.is_some(),
+        want("reminder"),
+    );
     // The You page, over the demo chats and contacts; `youadmin` as an admin
     // sees it, with the Admin row and its waiting reports.
     cards.chat.chats.you = want("you") || want("youadmin");

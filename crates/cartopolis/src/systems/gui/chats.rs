@@ -31,6 +31,7 @@
 
 use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
+use cartopolis_core::meeting::Every;
 use cartopolis_core::{NetMessage, ReportReason};
 use std::collections::HashMap;
 
@@ -190,6 +191,10 @@ pub enum MeetingForm {
         /// One item a line; a number at the end is its minutes.
         agenda: String,
         text: String,
+        /// How often it comes back, and every how many: `None` for once.
+        repeat: Option<(Every, u32)>,
+        /// The start of the series' last date; `None` for no end.
+        until_ms: Option<u64>,
     },
     Poll {
         question: String,
@@ -209,6 +214,8 @@ impl MeetingForm {
             minutes: 60,
             agenda: String::new(),
             text: String::new(),
+            repeat: None,
+            until_ms: None,
         }
     }
 
@@ -225,7 +232,9 @@ impl MeetingForm {
     /// needs a title, a poll a question and two options.
     #[must_use]
     pub fn object(&self) -> Option<cartopolis_core::meeting::MeetingObject> {
-        use cartopolis_core::meeting::{new_id, AgendaItem, MeetingObject, Plan, Poll, MAX_ITEMS};
+        use cartopolis_core::meeting::{
+            new_id, AgendaItem, MeetingObject, Plan, Poll, Repeat, MAX_ITEMS,
+        };
         match self {
             MeetingForm::Plan {
                 title,
@@ -233,6 +242,8 @@ impl MeetingForm {
                 minutes,
                 agenda,
                 text,
+                repeat,
+                until_ms,
             } => {
                 let title = title.trim();
                 (!title.is_empty()).then(|| {
@@ -247,6 +258,13 @@ impl MeetingForm {
                             .filter_map(AgendaItem::from_line)
                             .take(MAX_ITEMS)
                             .collect(),
+                        repeat: repeat.map(|(every, interval)| Repeat {
+                            every,
+                            interval,
+                            until_ms: until_ms
+                                .and_then(|u| snap_until(*start_ms, every, interval, u)),
+                        }),
+                        skip: Vec::new(),
                     })
                 })
             }
@@ -910,6 +928,54 @@ struct Actions {
     /// Settings, opened from the You page.
     settings_from_you: bool,
     sign_out: bool,
+    /// Open the calendar.
+    calendar: bool,
+    /// Open the calendar on this row.
+    calendar_pick: Option<crate::systems::calendar::Pick>,
+}
+
+/// Do what the calendar's pages asked for, through the same [`Actions`] the
+/// chat cards use, so an answer from the calendar is the answer from the card.
+fn calendar_out(
+    out: crate::systems::calendar::Out,
+    calendar: &mut crate::systems::calendar::Calendar,
+    view: &mut ChatsView,
+    act: &mut Actions,
+) {
+    if out.back {
+        calendar.open = false;
+    }
+    if out.save {
+        crate::systems::calendar::mark_dirty(calendar);
+    }
+    act.open = out.open_chat;
+    act.meeting = out.meeting;
+    act.meetup_going = out.meetup_going;
+    act.route_to = out.route_to;
+    act.go_to = out.go_to;
+    if let Some(group) = out.join {
+        act.call = Some(crate::systems::calls::CallRequest::Join(group));
+    }
+    if let Some((key, day_ms)) = out.plan_in {
+        // The chat's own form, on the day the calendar was showing, at the
+        // clock time it would have proposed for today.
+        let today = MeetingForm::plan(now_ms());
+        let mut form = today.clone();
+        if let (MeetingForm::Plan { start_ms, .. }, MeetingForm::Plan { start_ms: t, .. }) =
+            (&mut form, &today)
+        {
+            let clock = t.saturating_sub(crate::systems::calendar::day_start_ms(
+                crate::systems::calendar::local_day(*t),
+            ));
+            *start_ms = (day_ms + clock).max(*t);
+        }
+        view.meeting_form = Some((key.clone(), form));
+        act.open = Some(key);
+    }
+    if let Some(key) = out.meetup_in {
+        act.meetup = Some(key.clone());
+        act.open = Some(key);
+    }
 }
 
 /// The call key in a chat's header: between the call screen's banner size
@@ -964,6 +1030,7 @@ pub fn render_chats_panel(
     mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
     mut communities: ResMut<crate::systems::communities::Communities>,
     mut faces: ResMut<crate::systems::faces::Faces>,
+    mut calendar: ResMut<crate::systems::calendar::Calendar>,
 ) {
     for said in communities.take_admin_results() {
         chat.notice = Some(crate::systems::chat::ChatNotice {
@@ -1069,12 +1136,25 @@ pub fn render_chats_panel(
                         ui, &me, &me_full, &contacts, view.admin, &mut faces, &mut act,
                     );
                 }
+                (None, None) if calendar.open => {
+                    let mut out = crate::systems::calendar::Out::default();
+                    crate::systems::calendar::screen(
+                        ui,
+                        &mut calendar,
+                        &chat,
+                        &communities,
+                        now,
+                        &mut out,
+                    );
+                    calendar_out(out, &mut calendar, &mut view, &mut act);
+                }
                 (None, None) => list_screen(
                     ui,
                     &mut chat,
                     &mut view,
                     &contacts,
                     &mut communities,
+                    &calendar,
                     &mut act,
                     &me,
                     lift,
@@ -1100,6 +1180,15 @@ pub fn render_chats_panel(
         });
     if !open_flag {
         act.close = true;
+    }
+    if std::mem::take(&mut act.calendar) {
+        calendar.show(now);
+    }
+    if let Some(pick) = act.calendar_pick.take() {
+        calendar.show(now);
+        calendar.picked = Some(pick);
+        calendar.every = false;
+        calendar.page = crate::systems::calendar::Page::Detail;
     }
     if let Some(request) = act.call.take() {
         calls.request = Some(request);
@@ -1191,6 +1280,7 @@ fn list_screen(
     view: &mut ChatsView,
     contacts: &crate::systems::contacts::Contacts,
     communities: &mut crate::systems::communities::Communities,
+    calendar: &crate::systems::calendar::Calendar,
     act: &mut Actions,
     me: &str,
     lift: f32,
@@ -1399,6 +1489,18 @@ fn list_screen(
                     }
                 });
                 ui.add_space(8.0);
+            }
+            // What is coming up from every chat, and the way into the
+            // calendar (`docs/mockups/calendar/v1`, A). Not while searching:
+            // the list is then the answer to the search.
+            if needle.is_empty() && !sending {
+                let (open, pick) =
+                    crate::systems::calendar::coming_up(ui, calendar, chat, communities, now_ms());
+                act.calendar |= open;
+                if pick.is_some() {
+                    act.calendar_pick = pick;
+                }
+                ui.add_space(4.0);
             }
             if !rows.is_empty() {
                 theme::section(ui, "Conversations");
@@ -2364,9 +2466,27 @@ fn meeting_card(
         );
     };
     match meeting {
-        MeetingObject::Plan(plan) => {
+        MeetingObject::Plan(first) => {
+            // As its planner last left it: a date skipped, the series ended.
+            let plan = &cartopolis_core::meeting::current_plan(
+                first,
+                &line.sender,
+                thread
+                    .iter()
+                    .filter_map(|l| l.meeting.as_ref().map(|m| (l.sender.as_str(), m))),
+            );
+            let offset = &crate::systems::calendar::offset_s;
+            // The date the card is about: the next one not over, else the
+            // series' last.
+            let date = plan.next_date(now, offset).unwrap_or_else(|| {
+                plan.dates(plan.start_ms, now, offset)
+                    .last()
+                    .copied()
+                    .unwrap_or(plan.start_ms)
+            });
             let answers = cartopolis_core::meeting::tally_rsvps(
-                &plan.id,
+                plan,
+                date,
                 said.iter().map(|(w, m)| (w.as_str(), *m)),
             );
             let mine = answers.iter().find(|(w, _)| w == "You").map(|(_, r)| *r);
@@ -2375,26 +2495,30 @@ fn meeting_card(
                 .filter(|(_, r)| *r == Rsvp::Going)
                 .map(|(w, _)| w.as_str())
                 .collect();
-            let end = plan.end_ms.unwrap_or(plan.start_ms + 3_600_000);
-            let live = now + 15 * 60_000 >= plan.start_ms && now <= end;
+            let end = date + plan.duration_ms();
+            let live = now + 15 * 60_000 >= date && now <= end;
             frame(live).show(ui, |ui| {
                 ui.set_width(w);
-                let when = crate::systems::meetup::when_label(
-                    plan.start_ms,
-                    now,
-                    local_offset_s(plan.start_ms),
-                );
+                let when = crate::systems::meetup::when_label(date, now, local_offset_s(date));
                 kicker(ui, icons::EVENT, &format!("Meeting · {when}"));
                 title(ui, &plan.title);
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{}–{}",
-                        clock_time(plan.start_ms),
-                        clock_time(end)
-                    ))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    egui::RichText::new(format!("{}–{}", clock_time(date), clock_time(end)))
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
                 );
+                if let Some(rule) = crate::systems::calendar::rule_words(plan) {
+                    let next = if date != plan.start_ms || plan.next_date(now, offset).is_some() {
+                        format!(" · next {}", crate::systems::calendar::short_day(date))
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{rule}{next}"))
+                            .size(theme::SIZE_SUB)
+                            .color(theme::ACCENT),
+                    );
+                }
                 if let Some(text) = &plan.text {
                     ui.label(egui::RichText::new(text).size(13.0).color(theme::TEXT));
                 }
@@ -2443,17 +2567,85 @@ fn meeting_card(
                                 r.words().to_string()
                             };
                             if theme::chip(ui, &label, mine == Some(r)).clicked() {
+                                // On a series the card answers its next date.
+                                let date = if plan.repeat.is_some() {
+                                    cartopolis_core::meeting::AnswerFor::Date(date)
+                                } else {
+                                    cartopolis_core::meeting::AnswerFor::First
+                                };
                                 act.meeting = Some((
                                     key.to_string(),
                                     MeetingObject::Answer {
                                         plan: plan.id.clone(),
                                         rsvp: r,
+                                        date,
                                     },
                                 ));
                             }
                         }
                     });
                 }
+                // Its planner can take the next date out, or end the series
+                // with it (`docs/mockups/calendar/v2-repeat`, K).
+                let last = plan.repeat.and_then(|r| r.until_ms) == Some(date);
+                if is_mine(chat, line) && plan.repeat.is_some() && now <= end {
+                    ui.horizontal_wrapped(|ui| {
+                        let day = crate::systems::calendar::short_day(date);
+                        if theme::action_button(ui, format!("Skip {day}")).clicked() {
+                            let mut p = plan.clone();
+                            p.skip.push(date);
+                            act.meeting = Some((key.to_string(), MeetingObject::Update(p)));
+                        }
+                        if !last && theme::action_button(ui, format!("Stop after {day}")).clicked()
+                        {
+                            let mut p = plan.clone();
+                            if let Some(r) = p.repeat.as_mut() {
+                                r.until_ms = Some(date);
+                            }
+                            p.skip.retain(|d| *d <= date);
+                            act.meeting = Some((key.to_string(), MeetingObject::Update(p)));
+                        }
+                    });
+                }
+            });
+        }
+        MeetingObject::Update(after) => {
+            // Said once, as a line: what the planner changed. An update from
+            // anybody else changes nothing, so it says nothing either.
+            let at = thread
+                .iter()
+                .position(|l| std::ptr::eq(l, line))
+                .unwrap_or(thread.len());
+            let original = thread.iter().find_map(|l| match &l.meeting {
+                Some(MeetingObject::Plan(p)) if p.id == after.id => Some((l, p)),
+                _ => None,
+            });
+            let text = match original {
+                Some((planned, _)) if planned.sender != line.sender => return,
+                Some((planned, p)) => {
+                    let before = cartopolis_core::meeting::current_plan(
+                        p,
+                        &planned.sender,
+                        thread[..at]
+                            .iter()
+                            .filter_map(|l| l.meeting.as_ref().map(|m| (l.sender.as_str(), m))),
+                    );
+                    cartopolis_core::meeting::PlanChange::between(&before, after)
+                        .words(&after.title, &crate::systems::calendar::long_day)
+                }
+                None => format!("changed {}", after.title),
+            };
+            let who = if is_mine(chat, line) {
+                "You".to_string()
+            } else {
+                line.sender.clone()
+            };
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}  {who} {text}", icons::EVENT))
+                        .size(12.0)
+                        .color(theme::TEXT_DIM),
+                );
             });
         }
         MeetingObject::Poll(poll) => {
@@ -3795,6 +3987,102 @@ fn attach_menu(
 
 /// `+ → Plan a meeting` and `+ → Ask a poll`, filled in above where the
 /// composer was; posting seals the object into the chat (`act.meeting`).
+/// The dates a plan starting at `start_ms` with this rule would have, for
+/// the next two years: what Until steps through.
+fn series_dates(start_ms: u64, every: Every, interval: u32) -> Vec<u64> {
+    let series = cartopolis_core::meeting::Plan {
+        start_ms,
+        repeat: Some(cartopolis_core::meeting::Repeat {
+            every,
+            interval,
+            until_ms: None,
+        }),
+        ..Default::default()
+    };
+    series.dates(
+        start_ms,
+        start_ms + 730 * 86_400_000,
+        &crate::systems::calendar::offset_s,
+    )
+}
+
+/// The series' last date on or before `until_ms`; `None` when there is none.
+fn snap_until(start_ms: u64, every: Every, interval: u32, until_ms: u64) -> Option<u64> {
+    series_dates(start_ms, every, interval)
+        .into_iter()
+        .take_while(|d| *d <= until_ms)
+        .last()
+}
+
+/// Repeats and Until in the plan form (`docs/mockups/calendar/v2-repeat`, I):
+/// how often, and the last date stepped one meeting at a time.
+fn repeat_fields(
+    ui: &mut egui::Ui,
+    start_ms: u64,
+    repeat: &mut Option<(Every, u32)>,
+    until_ms: &mut Option<u64>,
+) {
+    ui.label(
+        egui::RichText::new("Repeats")
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+    );
+    ui.horizontal_wrapped(|ui| {
+        for (label, rule) in [
+            ("Never", None),
+            ("Every week", Some((Every::Week, 1))),
+            ("Every 2 weeks", Some((Every::Week, 2))),
+            ("Every month", Some((Every::Month, 1))),
+        ] {
+            if theme::chip(ui, label, *repeat == rule).clicked() && *repeat != rule {
+                *repeat = rule;
+                *until_ms = None;
+            }
+        }
+    });
+    let Some((every, interval)) = *repeat else {
+        return;
+    };
+    let dates = series_dates(start_ms, every, interval);
+    // Where Until is in the series, by its date, after the start moved.
+    let at = until_ms.and_then(|u| dates.iter().position(|d| *d >= u));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new("Until")
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+        let last = dates.len().saturating_sub(1);
+        if theme::chip(ui, "No end", at.is_none()).clicked() {
+            *until_ms = None;
+        }
+        match at {
+            // An end starts four meetings in, and steps one meeting at a time.
+            None => {
+                if theme::action_button(ui, "Set an end").clicked() {
+                    *until_ms = dates.get(3.min(last)).copied();
+                }
+            }
+            Some(i) => {
+                if theme::action_button(ui, "−1").clicked() {
+                    *until_ms = dates.get(i.saturating_sub(1).max(1).min(last)).copied();
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} · {} times",
+                        crate::systems::calendar::short_day(dates[i]),
+                        i + 1
+                    ))
+                    .color(theme::TEXT),
+                );
+                if theme::action_button(ui, "+1").clicked() {
+                    *until_ms = dates.get((i + 1).min(last)).copied();
+                }
+            }
+        }
+    });
+}
+
 fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, act: &mut Actions) {
     let Some((_, form)) = view.meeting_form.as_mut() else {
         return;
@@ -3836,6 +4124,8 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
                 minutes,
                 agenda,
                 text,
+                repeat,
+                until_ms,
             } => {
                 field(ui, title, "What: Q4 planning", 1);
                 ui.horizontal_wrapped(|ui| {
@@ -3875,6 +4165,7 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
                         }
                     }
                 });
+                repeat_fields(ui, *start_ms, repeat, until_ms);
                 field(
                     ui,
                     agenda,
@@ -4782,6 +5073,9 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
                         minutes: 45,
                         agenda: "What went well 10\nThe money 15\nNext year 20".into(),
                         text: String::new(),
+                        repeat: Some((Every::Week, 1)),
+                        // Nine weeks, so the capture shows Until stepped.
+                        until_ms: Some(next_hour_ms(now_ms()) + 57 * 24 * 3_600_000),
                     }
                 } else {
                     MeetingForm::Poll {
@@ -4864,6 +5158,13 @@ fn seed_demo_meeting(chat: &mut ChatState) {
                     minutes: 5,
                 },
             ],
+            // Weekly, so the capture shows a series and its next date.
+            repeat: Some(cartopolis_core::meeting::Repeat {
+                every: Every::Week,
+                interval: 1,
+                until_ms: None,
+            }),
+            skip: Vec::new(),
         }),
     );
     for (who, rsvp) in [
@@ -4878,6 +5179,7 @@ fn seed_demo_meeting(chat: &mut ChatState) {
             MeetingObject::Answer {
                 plan: plan.into(),
                 rsvp,
+                date: cartopolis_core::meeting::AnswerFor::First,
             },
         );
     }

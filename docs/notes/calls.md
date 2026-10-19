@@ -595,7 +595,8 @@ written by `cartopolis_core::meeting` (the reference) and the web's
 - **Reminders are made on the device** (the server cannot read the plan): the
   page reminds ten minutes before a plan the person answered Going or Maybe to,
   while it is open, and the calendar file (`ics`) carries its own alarm. The
-  app does neither yet.
+  app reminds from its calendar while it runs (`calendar.md`); a plan can
+  repeat, and an answer then names its date.
 
 **Verified 2026-10-17** by `meeting-browser.ts` (plan, answer, poll, vote,
 a decision in the notes panel, the agenda started by the host and seen by a
