@@ -787,14 +787,15 @@ pub struct MapSurfaces {
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
     /// Surveyed-coverage revisions these cells were built against — the BGT's
-    /// (`surveyed::coverage_revision`) and the crop register's
-    /// (`crops::coverage_revision`), each 0 while its manifest is in flight and
+    /// (`surveyed::coverage_revision`), the crop register's
+    /// (`crops::coverage_revision`) and the city registers'
+    /// (`municipal::coverage_revision`), each 0 while its manifest is in flight and
     /// counting up with each different answer. Surveyed trees, lampposts and crop
     /// parcels are merged into these cells' meshes, so a cell built during either
     /// gap has none of them and nothing would revisit it. Each moves at most
     /// twice per process: the copy kept from the last launch, then the network if
     /// it disagrees (`coverage`).
-    bgt_revision: (u32, u32),
+    bgt_revision: (u32, u32, u32),
     /// Cells whose bridge decks are tessellated but not yet *placed*: their height
     /// is a measurement that arrives from `systems::height` some frames later. Held
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
@@ -850,7 +851,7 @@ impl Default for MapSurfaces {
             materials: HashMap::new(),
             road_materials: HashMap::new(),
             terrain_revision: 0,
-            bgt_revision: (0, 0),
+            bgt_revision: (0, 0, 0),
             pending_decks: HashMap::new(),
             pending_meshes: VecDeque::new(),
             awaiting_complete: HashSet::new(),
@@ -1208,15 +1209,11 @@ fn spawn_geometry_task(
             // outside the coverage, which is everywhere the host has not run
             // atlas's `pipeline/bgt.rs`.
             let surveyed_task = io.spawn(crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1));
-            // …and, where the city this cell falls in publishes a tree register
-            // of its own, that register — which supersedes the BGT's trees below
-            // rather than joining them (`systems::municipal` says why). Empty
-            // everywhere no city in `municipal::REGISTERS` reaches.
-            //
-            // Gated on `wants.trees` rather than filtered afterwards, unlike the
-            // BGT cell above: this one reaches a *city's* server, not ours, and a
-            // dense cell of it is 1.3 MB. Asking a third party for a layer that
-            // is switched off is the one cost here worth not paying.
+            // …and, where atlas has read a city's own registers for this cell,
+            // those — which supersede the BGT's copies kind by kind below rather
+            // than joining them (`systems::municipal` says why) — with the
+            // parking bays and the public art. Empty outside the coverage.
+            // Gated on the two groups that draw any of it.
             let registered_task = (wants.trees || wants.furniture)
                 .then(|| io.spawn(crate::systems::municipal::load_registered_cell(cell.0, cell.1)));
             // …and its surveyed paving, in a file of its own because it is by far
@@ -1618,11 +1615,7 @@ fn spawn_geometry_task(
                                         };
                                         let mut city = city;
                                         off_road(&mut city);
-                                        if !municipal::supersedes(
-                                            cell.0,
-                                            cell.1,
-                                            municipal::Supply::Trees,
-                                        ) {
+                                        if !registered.supplies(municipal::Supply::Trees) {
                                             let planted =
                                                 crate::systems::surveyed::surveyed_trees(
                                                     &surveyed,
@@ -1698,7 +1691,7 @@ fn spawn_geometry_task(
                                         // those. The city says nothing about
                                         // benches, and suppressing the whole cell
                                         // would delete them to fix the lighting.
-                                        let by_city = municipal::supplied_props(cell.0, cell.1);
+                                        let by_city = registered.supplied_props();
                                         if !by_city.is_empty() {
                                             placed.retain(|p| !by_city.contains(&p.kind));
                                             // …and the same for the ones read out
@@ -1903,8 +1896,20 @@ fn spawn_geometry_task(
                                 // the benches above, and the same toggle, because
                                 // collision has to match what is drawn
                                 // (`systems::parking`).
-                                match parking::extract_parking(&tile, tile_m, veg_seed(cell)) {
-                                    Ok(items) => {
+                                // …and the bays a city surveyed, one car each,
+                                // with the car parks that hold one left to them
+                                // rather than filled twice (`parking::park_in_bays`).
+                                let bays = municipal::registered_bays(&registered, cell.0, cell.1, tile_m);
+                                let bay_centres: Vec<[f32; 2]> =
+                                    bays.iter().filter_map(|b| parking::bay_centre(b)).collect();
+                                match parking::extract_parking_around(
+                                    &tile,
+                                    tile_m,
+                                    veg_seed(cell),
+                                    &bay_centres,
+                                ) {
+                                    Ok(mut items) => {
+                                        items.extend(parking::park_in_bays(&bays, veg_seed(cell)));
                                         // …and a replaced car is replaced in the
                                         // car parks too: a placeholder is about a
                                         // form, not about which extractor placed it.
@@ -2624,6 +2629,7 @@ pub fn update_map_surfaces(
     let bgt_revision = (
         crate::systems::surveyed::coverage_revision(),
         crate::systems::crops::coverage_revision(),
+        crate::systems::municipal::coverage_revision(),
     );
     // **A new field alone retires only the cells built on an older one** (step 2c
     // of `level-of-detail-tile-tree.md`). The ring used to go whole, which also threw
@@ -2844,7 +2850,7 @@ fn dispatch_cells(
     wanted: &HashSet<Cell>,
     template: &String,
     wants: DetailWants,
-    bgt_revision: (u32, u32),
+    bgt_revision: (u32, u32, u32),
     (ccx, ccy): Cell,
     (fcx, fcy): (f64, f64),
     tile_m: f32,
@@ -2885,7 +2891,7 @@ fn dispatch_cells(
             t
         }
     };
-    let coverage_known = (bgt_revision.0 != 0 && bgt_revision.1 != 0)
+    let coverage_known = (bgt_revision.0 != 0 && bgt_revision.1 != 0 && bgt_revision.2 != 0)
         || since.elapsed().as_secs_f32() > COVERAGE_WAIT_S;
     while let Some(c) = coverage_known
         .then(|| surfaces.stream.next_job(now))

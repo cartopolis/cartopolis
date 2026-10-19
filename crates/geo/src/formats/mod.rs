@@ -37,6 +37,7 @@ pub mod decks;
 pub mod dikes;
 pub mod lod22;
 pub mod osm_buildings;
+pub mod registers;
 pub mod roofs;
 pub mod sewers;
 pub mod underground;

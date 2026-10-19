@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [municipal.rs, Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, FRACTIE, containers, laadpalen, fonteinen, cache fingerprint]
-updated: 2026-09-08
+triggers: [municipal.rs, pipeline/registers.rs, formats/registers.rs, "registers/", Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, FRACTIE, containers, laadpalen, fonteinen, parkeervakken, parking bays, park_in_bays, Wikidata, public art, statues, artwork, benches, speelplekken, Kunstpunt, kunstsoort, Overpass, osm_has]
+updated: 2026-10-19
 ---
 
 # The trees a city surveys, where the country's register is empty
@@ -70,25 +70,154 @@ city's own carries 493 columns in one cell, of which 481 are `Lichtmast`; the
 drawn as a four-metre column is worse than not drawing it. That is why the reader
 returns an `Option`.
 
-## What is read from Groningen today
+## What is read today, and from where
 
-Five sources, counted over the whole municipality:
+Atlas's `registers` dataset (`crates/atlas/src/pipeline/registers.rs`) reads
+these, counted over the whole municipality, and writes them per cell to
+`registers/14/{x}/{y}.json` (`cartopolis_geo::formats::registers`):
 
 | source | count | becomes | notes |
 |---|---|---|---|
-| trees | 126,060 | tree with a height | eight height bands |
-| street lighting | ~12,500 in the loaded ring | `Lamp` | 481 columns per 493 points; ground spots, tunnel lights and a clock refused |
+| trees | 126,074 | tree with a height | eight height bands |
+| street lighting | — | `Lamp` | 481 columns per 493 points in one cell; ground spots, tunnel lights and a clock refused |
 | waste containers | 1,962 | `Recycling`, coloured | 1,277 household, 379 paper, 208 glass, 98 textile |
 | charge points | 611 | `Cabinet` | one status value today; anything else refused |
 | fountains | 34 | `Fountain` | all `Fontein` |
+| bus shelters | 286 | `Shelter` | all `Abri` |
+| traffic lights | 2,047 | `TrafficLight`, `Cabinet` | the controller cabinet is a box |
+| ticket machines | 357 | `Cabinet` | OSM has 68 |
+| parking bays | 34,994 | one parked car each | see below; OSM has 1,741 `parking_space` |
+| statues and memorials (Wikidata) | 16 added in the area | `Artwork` | only those OSM lacks; see below |
 
-Left on the table deliberately: **play equipment** (98 items in one cell) is a
-per-item register with a typed vocabulary — parcours, fitness, balance element,
-climbing frame, and a bench — and mapping it needs a judgement about *forms*, not
-about data. Parking bays (1,549 polygons in one cell) are the first polygon
-source and would exercise the paving shape, which no register uses yet. Traffic
-lights have no form in the furniture table. The city's own copy of the national
-topography is not read at all: we have the national one.
+## Atlas reads the city; the client reads atlas (2026-10-19)
+
+Until 2026-10-19 the client asked the city's GeoServer itself — one request per
+source per cell, nine sources, carrying the city's layer names, field names and
+vocabulary in `municipal.rs`, and a *reader fingerprint* hashed into every cache
+key so that changing any of those invalidated what installs had stored. All of
+that moved into atlas, for three reasons:
+
+- **The server answers a whole layer at once.** All 126,074 trees in one request,
+  ~2 s, 2.9 MB gzipped (measured 2026-10-19); the client's per-cell path was nine
+  requests standing between every cell's ground and its mesh job.
+- **One path for every Dutch layer.** Every other register reaches the client as
+  an atlas cell behind a coverage manifest; this was the only one that went to a
+  third party from the phone, with its own breaker and timeout.
+- **The city's vocabulary no longer ships in the APK.** A city that renames a
+  layer or adds a height band is an atlas re-run, not a release.
+
+Two things about the request, each of which broke something once:
+
+- **`srsName=EPSG:28992` is load-bearing.** By 2026-10-01 the GeoServer answered
+  in Web Mercator metres when nobody asked, the reader took them as RD, and every
+  tree and lamp post landed in another country — and because the city's register
+  *replaces* the BGT's, Groningen drew street trees from neither. A page that is
+  not RD fails the run rather than being written.
+- **No paging.** GeoServer refuses `startIndex` on these layers without a
+  `sortBy` ("Cannot do natural order without a primary key"), and each layer
+  names its columns differently. Not needed: every layer comes back whole, and a
+  response short of its own `numberMatched` fails the run rather than writing a
+  thinned city. The geometry property is `GEOM` on most layers and **`geom`** on
+  the parking bays, and `propertyName` with the wrong case is a 400.
+
+**Which kinds a register speaks for travels in the cell file** (`supplies`), and
+every cell in a run's area is written even when it holds nothing: a covered cell
+with no lamp posts in it is the city's word that there are none. The client's
+cache key carries the run's stamp from the manifest, as the dikes' does, so a
+re-run (a felled tree, a new statue) is never answered from an old copy — the
+role the reader fingerprint used to play.
+
+**Coverage is now what atlas ran**, not the city's whole extent: a cell the
+operator has not run `registers` over gets the BGT's trees, as anywhere else.
+
+## Parking bays: the cars stand where the bays are
+
+The city surveys every public parking bay as its own polygon — measured over a
+square kilometre of the centre on 2026-10-19: 727 parallel bays (median 5.7 ×
+2.0 m), 122 perpendicular (4.9 × 2.3), 38 herringbone (6.8 × 2.2). The layer
+also says what each is for (707 electric, 471 disabled, 131 loading, 76 drop-off
+across the city); none of that changes what is drawn, so atlas drops it.
+
+`parking::park_in_bays` puts one car in each bay, along its long side (true of
+all three layouts), centred, a quarter of bays empty. Whether a given bay is
+taken is the one invented fact, hashed off the bay's position, so the claim the
+lot fill makes (`parked-vehicles.md`) holds: the cars are vehicles, not
+interactables. Bays too small for a car (under 4.3 × 1.65 m) or too long to be
+one bay (over 12 m) get none.
+
+**A car park with a surveyed bay in it is not filled as well**
+(`extract_parking_around`): two fills of one lot put two cars in every bay. By
+containment of the bay's centre in the lot's tessellation, which is exact and per
+lot, so a supermarket's private car park that no city surveys is still filled.
+
+## Public art: Wikidata's statues, added to OpenStreetMap's
+
+Gemeente Groningen publishes no register of its public art (checked 2026-10-19:
+the GeoServer's 75 layers and the city's datasets on data.overheid.nl; its
+`Monumenten` layer is buildings only). Wikidata has 562 items of the broad art
+classes (sculpture, work of art, memorial, monument, …) inside the municipality,
+most imported from Kunstpunt Groningen's "Kunst op straat" catalogue.
+
+**The broad classes cannot be used: half of them are not in the street.** The
+first capture of this layer stood "Wandsculpturen met torsende mannen" — two
+figures on a façade, filed as a plain `sculpture` — in the middle of a street. A
+hand-checked sample of 40 items against Kunstpunt's pages: 18 free-standing, the
+rest on or in a building, wall sculptures, reliefs, light and new-media works,
+glass, paintings, or set in the paving. Nothing on Wikidata separates them.
+
+**Rejected: reading Kunstpunt's pages for their art type** (`Kunstsoort`). It was
+built and ran once on a build node (2026-10-19, ~480 page reads) and was taken
+out the same day on the owner's instruction: we do not scrape third-party sites.
+Kunstpunt's REST API is closed and it publishes no export. The proper routes are
+asking Kunstpunt for an export or permission, or adding the distinction to
+Wikidata — both decisions for a person, not for atlas.
+
+So atlas takes only the **unambiguous classes** — statue, bust, group of
+sculptures, war memorial, memorial stone: 64 over the municipality — and drops
+any that is also a relief, plaque, gable stone, mural, tile panel, mosaic,
+memorial wall, Stolperstein, grave monument or fountain by class, or
+architectural sculpture, light, new media or land art by genre (`P136`).
+
+These **add to** the tile's `tourism=artwork` rather than replace it (OSM has 173
+artworks over the city, far more than 64). A Wikidata work OSM already has is left
+to OSM: atlas asks our own Overpass once for the area's artworks and skips a work
+an OSM object names in its `wikidata` tag, or one standing within 25 m of an OSM
+artwork. That 25 m sits in a measured gap — the unlinked works nearest an OSM
+artwork are 0–21 m from it, the next 36 m — so it separates two registers placing
+one statue from two statues. Over the `groningen` area (2026-10-19): 27 kept, 11
+already in OSM, **16 added**; 30 dropped as on a wall or in the paving.
+
+Wikidata's coordinates are rougher than a survey — usually metres, sometimes
+tens — so a statue is on the right square, not necessarily on its exact spot.
+
+## Asking external services as little as possible
+
+A `registers` run asks each source **once**: one WFS request per city layer (nine
+for Groningen), one Wikidata query, one query to our own Overpass. Every answer
+goes through atlas's source cache (`pipeline/http.rs`), so a re-run within a month
+asks nobody anything; `--fresh` is the deliberate exception. The client asks only
+our host. Before 2026-10-19 every client asked the city's server nine times per
+cell it streamed.
+
+## What else is available, and what was not taken (2026-10-19)
+
+- **Benches have no better source than OpenStreetMap's 2,169.** The city publishes
+  no bench register, and the BGT's `straatmeubilair` over the whole city holds
+  only what the *province* registered on its own grounds (P0020): 249 objects,
+  8 benches. The city's play-area register (`Speelplekken`, 3,840 items) does
+  carry 385 benches, but only at playgrounds, and 141 of them are within 10 m of
+  an OSM bench — the same benches or their neighbours, which cannot be told apart
+  without a tolerance. Not taken.
+- **Play equipment** (`Speelplekken`): swings (`1.2*`, ~400), slides, climbing
+  frames, goals, 56 table-tennis tables. Not taken: it needs a judgement about
+  forms the furniture table does not have.
+- **The national monument register** (RCE, `ps-ch:rce_inspire_points` on PDOK): 858
+  points over the city, with no name or type, so statues cannot be picked out.
+  Wikidata already carries the listed memorials with their classes.
+- **RDW's parking open data** (`b3us-f26s`, area manager 14): 17 facilities with
+  capacities — garages and P+R, not bays.
+- **The city's own copy of the BGT** (`geo_info:BGT_*`): not read; we have the
+  national one.
 
 ## The fraction is a colour, not a kind
 
@@ -117,34 +246,6 @@ suppressing the national copy was enough. A container is in **both** — the til
 points layer carries `amenity=recycling` — so filtering only the national
 register would still have drawn every container twice. The kinds a city supplies
 are now filtered out of the tile-derived furniture as well.
-
-## Why the abstraction is per city and not per country
-
-There is no national municipal API and there is not going to be one. Each city
-publishes on whatever it already runs, in its own coordinate system, with its own
-field names, and its own vocabulary for how tall a tree is. Groningen is a
-GeoServer answering WFS 2.0 in RD metres with heights as Dutch prose
-(`"15 tot 18 m."`); the next city will not be.
-
-So a `TreeRegister` owns the whole question — coverage, how to phrase a request
-for one cell, and how to read the answer — and the shared part is only the far
-end: every parser normalises to `RegisteredTree { lat, lng, height_m }`. Adding a
-city is one entry in `REGISTERS` plus two functions beside it. No caller changes,
-because no caller ever sees a city's own wire format.
-
-Two consequences of that split are worth naming.
-
-**The cache stores the normalised form, not the city's answer.** Groningen's
-GeoJSON is ~265 bytes a tree even trimmed with `propertyName` to the geometry and
-the height band (615 untrimmed, the layer carries fifteen fields); the normalised
-form is ~30. Over a dense cell that is 1.3 MB against 150 kB, and the fat one buys
-nothing, since every field it carries was discarded by the parser that wrote it.
-
-**Coverage is a bounding box, not the municipal boundary.** Being too generous
-costs one request that answers with nothing. Being exact costs a dependency on a
-second dataset — 342 municipal boundaries — that would also have to be kept
-current. The box is the layer's own published extent, so it is the city's reach
-and not a guess at it.
 
 ## A city register replaces the BGT's trees, it does not add to them
 
@@ -195,103 +296,15 @@ floor. Bands are read off the numbers in the string rather than matched against 
 table of the eight spellings seen today, because the register is a city's
 operational database and a ninth band costs nothing to add there.
 
-## The cache invalidates itself
-
-Nothing revalidates a stored cell — the sweep is by size, not by age — so a reader
-that changes and a key that does not is a permanent wrong answer. This tree has
-shipped exactly that: `surveyed::cell_cache_key` carries a hand-bumped `v2`
-because a fix to the extractor could not reach cells already written under `v1`,
-and every install kept its ghost pavements until the key moved.
-
-A constant somebody has to remember to bump is the same bug waiting. So the key
-carries a **fingerprint of the reader's own behaviour**: each source's reader is
-run at startup over a fixture page embedded beside its register, the normalised
-result is hashed together with the layer and attribute names, and that hash is a
-path segment. Change the layer name, the attribute, the height bands, or which
-lamp types are refused, and the key moves and the old entries are never read
-again. Nothing to remember.
-
-The fingerprint is FNV-1a rather than `DefaultHasher`, deliberately: the number
-goes into a cache key that must mean the same thing on every platform and every
-build, and std makes no stability promise about its hashers across releases. It
-is logged at startup per source, because "why did every cell re-download after
-that release?" is otherwise unanswerable from a log, and the answer is always
-this number.
-
-**Its one limit, stated plainly: the fixture is the contract.** A reader change on
-an input the fixture does not contain will not move the fingerprint. The fixture
-is sized to carry every branch each source decides on, and two tests hold that
-line — one asserting every source reads something out of its register's fixture,
-one asserting an altered reader fingerprints differently from the real one.
-
-`CACHE_GENERATION` survives as the second axis and stays a hand-bumped constant,
-because it is for what a fingerprint cannot see: a change to the stored *format*,
-which invalidates every source of every city at once.
-
-## What it costs — and the cost is latency, not bytes
-
-The first version of this note said a dense cell was 1.3 MB. That was the
-decompressed size and it is not what crosses the network: the server gzips, and
-`ureq` is built with its `gzip` feature so it asks for that and inflates
-transparently. Measured 2026-09-07 over the densest Groningen tree cell:
-
-| | decompressed | on the wire |
-|---|---|---|
-| GeoJSON, all 15 fields | 751 kB | — |
-| GeoJSON, `propertyName` trimmed to two | 324 kB | **27 kB** |
-| the same as CSV | 120 kB | 17 kB |
-
-So bytes are a non-issue, and CSV was measured and **not** adopted: it saves
-10 kB on the wire and costs a hand-rolled WKT parser, against a JSON parse that is
-already far below the ~120 ms an MVT rasterise costs on the same worker.
-
-What is real is that every source is one more request standing between a cell's
-ground and its mesh job, so they are fetched **together**. Natively that is
-presentation rather than overlap — `http::fetch` is a blocking `ureq` call with no
-await point in it, the same thing `map_geometry` records about the two optional
-layers it already zips — and on wasm it is a real overlap. On both it is what
-stops a second source doubling the wait.
-
-Two more things chosen for cost: the request carries `propertyName` so it asks for
-the geometry and the one attribute the reader looks at (615 bytes a tree against
-265), and `CARTO_NO_MUNICIPAL=1` turns the whole layer off for a bisecting
-capture, read once through a `LazyLock` rather than as an environment lookup per
-cell on the mesh path.
-
-**Multiple layers in one request does not work here.** GeoServer answers a
-`typeNames` list with two entries with a 400, so one request per source is forced
-and concurrency is the only lever.
-
-## Things that were checked and are not problems
-
-- **CORS.** `maps.groningen.nl` echoes `Access-Control-Allow-Origin`, so the web
-  build reaches it directly and needs no `/up/` proxy in the Caddyfile — unlike
-  AHN, which needs one.
-- **Truncation, and the ceiling that was wrong first.** The request carries a
-  per-cell `count` so one cell cannot hand the streamer an unbounded download.
-  It was `scatter::MAX_TREES_PER_CELL` (6,000) for one run, and that was a
-  mistake worth recording: the scatter's cap bounds a *generated* lattice, where
-  the number is a decision, while this one bounds a count of *real* trees, where
-  any cell it cuts is a cell drawn wrong. Two Groningen cells were truncated at
-  6,000 out of 6,263 and 6,808. `MAX_REGISTERED_TREES_PER_CELL` is 12,000 — about
-  20× the municipal mean (126,060 trees over 447 km², against 2.14 km² in a z14
-  cell here) and 1.8× the densest cell measured. GeoServer reports
-  `numberMatched` alongside `numberReturned`, so a cell that hits the ceiling is
-  logged rather than silently thinned — its page order is arbitrary, so a
-  truncated avenue would otherwise read as the register's own answer.
-- **The request box.** RD's grid is rotated against Web Mercator's, so the box is
-  built from the cell's corners *and* its edge midpoints, the same care
-  `terrain::field_request` takes. It is deliberately a little generous;
-  containment is settled afterwards in the cell's own frame.
-
 ## What is still open
 
-- **One city.** Every other municipality with the same hole needs its own entry.
-  The pattern is there; the work is finding each city's endpoint and its field
-  names.
-- **Never seen on a device.** Verified headlessly and by direct queries against
-  the register — a capture on the study quay pavement reports
-  `municipal_trees = 32,398` standing in the loaded cells with `surveyed_trees = 0`
-  beside it (the BGT correctly not read over covered ground), and the avenue is
-  drawn. Colour and lighting are not evidence on this container's software
-  rasteriser, so `municipal_trees` in `--dump-state` is the half that is.
+- **One city.** Every other municipality with the same hole needs its own entry
+  in atlas's `REGISTERS`: its endpoint, its layer and field names, its readers.
+- **Artwork names.** Wikidata has the title of every statue; the cell format
+  carries none yet, so the proximity prompt says "Artwork".
+- **Most of the city's sculpture is not drawn.** ~370 works Wikidata files as
+  sculpture or work of art are left out until something open says which stand
+  free (above).
+- **Bay markings.** The register says which bays are marked (`MARKERING`); the
+  white lines are not drawn.
+- **The parked cars on bays have not been seen on a device.**

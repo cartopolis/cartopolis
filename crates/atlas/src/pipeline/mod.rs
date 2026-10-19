@@ -37,6 +37,7 @@ pub mod lod22;
 pub mod models;
 pub mod pipelines;
 pub mod rd;
+pub mod registers;
 pub mod roofs;
 pub mod sewers;
 pub mod tall;
@@ -627,6 +628,18 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "bgt/coverage.json",
         typical_minutes: 1,
         run: bgt::run,
+    },
+    Dataset {
+        id: "registers",
+        label: "City registers and public art",
+        description: "What a city surveys of its own streets where the BGT is silent — \
+                      trees with their heights, street lights, containers, charge points, \
+                      bus shelters, traffic lights, ticket machines and every parking bay — \
+                      and the free-standing public art Wikidata places in the area. The \
+                      client draws the city's objects instead of the BGT's, kind by kind.",
+        coverage: "registers/coverage.json",
+        typical_minutes: 1,
+        run: registers::run,
     },
     Dataset {
         id: "brp",

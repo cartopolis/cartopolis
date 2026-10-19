@@ -2654,11 +2654,11 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::surveyed::bgt_attribution() {
                     ui.small(credit);
                 }
-                // A line per city whose own register has actually answered. These
-                // are the only credits here that are a **licence condition** and
-                // not a courtesy: the national registers around them are CC0,
-                // these are CC BY, and the layer may not ship without them.
-                for credit in crate::systems::municipal::attributions() {
+                // The city registers' line. The only credit here that is a
+                // **licence condition** and not a courtesy: the national registers
+                // around it are CC0, a city's are CC BY, and the layer may not
+                // ship without it.
+                if let Some(credit) = crate::systems::municipal::attribution() {
                     ui.small(credit);
                 }
                 // Its own line: the crop register is the RVO's, not the

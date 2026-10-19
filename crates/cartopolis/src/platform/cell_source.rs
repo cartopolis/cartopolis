@@ -41,13 +41,6 @@
 //! An additive layer wants the failure forgotten; a streamed one wants it
 //! remembered. That is a real difference and it keeps the two seams apart.
 //!
-//! **`systems::municipal`**, for a plainer reason: its key and its URL are
-//! functions of *which register and which source*, and every field here is a bare
-//! function pointer so the whole descriptor can be a `const`. Carrying a context
-//! would mean a boxed closure per source, which costs more than the twenty lines
-//! it saves. It is also the module with the better idea about cache keys — see
-//! its reader fingerprint — and that idea is not smuggled in here.
-//!
 //! # The cache keys are preserved exactly, and that is deliberate
 //!
 //! It is tempting to make the key generic too: one scheme, one version segment,

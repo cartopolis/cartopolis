@@ -250,6 +250,7 @@ impl Plugin for MapPlugin {
                     systems::building_facts::update_building_facts,
                     systems::surveyed::prefetch_bgt_coverage,
                     systems::crops::prefetch_brp_coverage,
+                    systems::municipal::prefetch_registers_coverage,
                     systems::terrain_tiles::prefetch_terrain_coverage,
                     systems::interiors::update_interiors,
                     // Which building the avatar is standing in, and the glass that
