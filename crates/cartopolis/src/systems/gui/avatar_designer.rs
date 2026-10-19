@@ -2,6 +2,12 @@
 //! and a wardrobe, edited on a draft the avatar is rebuilt from as it changes
 //! (`docs/mockups/avatar-designer`, `systems::human_avatar`).
 //!
+//! **Taps before sliders.** A person is a starter or "Surprise me" first,
+//! then a quick pick per row (body shape, age, build, height), "Another face",
+//! and the skin, hair and clothes choices; the sliders are under "Fine-tune"
+//! and the face parts, for whoever wants them. Shaping a body from the
+//! default by sliders alone took a dozen drags.
+//!
 //! Drawn inside the Appearance panel (`ui::render_avatar_chooser`), whose
 //! Apply saves the draft. The names here are the pack's
 //! (`crates/human/src/bin/human-pack.rs` lists what it carries); a name the
@@ -337,16 +343,265 @@ const CLOTH_COLOURS: [[u8; 3]; 10] = [
     [214, 140, 176],
 ];
 
+/// A ready-made person to start from: a whole look in one tap, to adjust
+/// rather than build from the default.
+struct Starter {
+    label: &'static str,
+    body_shape: u8,
+    age: u8,
+    /// Height, weight, muscle.
+    build: [u8; 3],
+    skin: &'static str,
+    hair: &'static str,
+    hair_colour: [u8; 3],
+    outfit: &'static str,
+    top: Option<[u8; 3]>,
+    bottom: Option<[u8; 3]>,
+    shoes: &'static str,
+    hat: Option<&'static str>,
+}
+
+/// Eight people across body shape, age, build, skin and dress, so that most
+/// looks are a starter and a few taps away. Only names the pack carries
+/// (the lists above).
+const STARTERS: [Starter; 8] = [
+    Starter {
+        label: "Student",
+        body_shape: 15,
+        age: 21,
+        build: [45, 40, 45],
+        skin: "asian",
+        hair: "ponytail01",
+        hair_colour: [30, 24, 20],
+        outfit: "female_sportsuit01",
+        top: None,
+        bottom: None,
+        shoes: "shoes05",
+        hat: None,
+    },
+    Starter {
+        label: "Suit",
+        body_shape: 90,
+        age: 38,
+        build: [60, 50, 55],
+        skin: "african",
+        hair: "short01",
+        hair_colour: [30, 24, 20],
+        outfit: "male_elegantsuit01",
+        top: None,
+        bottom: None,
+        shoes: "shoes01",
+        hat: None,
+    },
+    Starter {
+        label: "Athlete",
+        body_shape: 10,
+        age: 27,
+        build: [60, 35, 80],
+        skin: "african",
+        hair: "braid01",
+        hair_colour: [30, 24, 20],
+        outfit: "female_sportsuit01",
+        top: Some([42, 62, 110]),
+        bottom: Some([40, 40, 44]),
+        shoes: "shoes02",
+        hat: None,
+    },
+    Starter {
+        label: "Builder",
+        body_shape: 95,
+        age: 45,
+        build: [55, 70, 75],
+        skin: "caucasian",
+        hair: "short04",
+        hair_colour: [110, 76, 50],
+        outfit: "male_worksuit01",
+        top: None,
+        bottom: None,
+        shoes: "shoes03",
+        hat: None,
+    },
+    Starter {
+        label: "Artist",
+        body_shape: 50,
+        age: 32,
+        build: [50, 45, 45],
+        skin: "african",
+        hair: "afro01",
+        hair_colour: [30, 24, 20],
+        outfit: "male_casualsuit01",
+        top: Some([214, 140, 176]),
+        bottom: None,
+        shoes: "shoes06",
+        hat: None,
+    },
+    Starter {
+        label: "Office",
+        body_shape: 20,
+        age: 45,
+        build: [55, 55, 45],
+        skin: "caucasian",
+        hair: "long01",
+        hair_colour: [176, 84, 46],
+        outfit: "female_elegantsuit01",
+        top: Some([42, 62, 110]),
+        bottom: Some([40, 40, 44]),
+        shoes: "shoes01",
+        hat: None,
+    },
+    Starter {
+        label: "Silver",
+        body_shape: 5,
+        age: 72,
+        build: [35, 60, 30],
+        skin: "caucasian",
+        hair: "bob02",
+        hair_colour: [235, 235, 235],
+        outfit: "female_elegantsuit01",
+        top: Some([150, 40, 40]),
+        bottom: None,
+        shoes: "shoes01",
+        hat: None,
+    },
+    Starter {
+        label: "Fedora",
+        body_shape: 95,
+        age: 75,
+        build: [45, 55, 35],
+        skin: "asian",
+        hair: "short02",
+        hair_colour: [150, 150, 150],
+        outfit: "male_casualsuit03",
+        top: None,
+        bottom: None,
+        shoes: "shoes01",
+        hat: Some("fedora01"),
+    },
+];
+
+impl Starter {
+    fn look(&self) -> HumanLook {
+        let mut look = HumanLook::default_for(self.body_shape < 50);
+        look.body_shape = self.body_shape;
+        look.age = self.age;
+        [look.height, look.weight, look.muscle] = self.build;
+        look.skin = self.skin.into();
+        look.hair = Some(self.hair.into());
+        look.hair_colour = Some(self.hair_colour);
+        look.outfit = self.outfit.into();
+        look.top_colour = self.top;
+        look.bottom_colour = self.bottom;
+        look.shoes = self.shoes.into();
+        look.hat = self.hat.map(Into::into);
+        look
+    }
+}
+
 /// The designer's state between frames.
 #[derive(Default)]
 pub struct DesignerState {
     pub tab: DesignerTab,
     pub face: FacePart,
+    /// The dice: "Surprise me" and "Another face" draw from it.
+    dice: u64,
+}
+
+impl DesignerState {
+    /// A number from the dice (splitmix64), stirred with the time so that two
+    /// sessions do not roll the same people.
+    fn roll(&mut self, time: f64) -> u64 {
+        self.dice = self
+            .dice
+            .wrapping_add(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(time.to_bits());
+        let mut z = self.dice;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
+/// Draws from the dice: a number in `range`, and one of a list.
+struct Dice<'a> {
+    state: &'a mut DesignerState,
+    time: f64,
+}
+
+impl Dice<'_> {
+    fn int(&mut self, range: std::ops::RangeInclusive<i32>) -> i32 {
+        let span = (range.end() - range.start() + 1).max(1) as u64;
+        range.start() + (self.state.roll(self.time) % span) as i32
+    }
+
+    /// Mostly near the middle of `range`: the mean of two rolls.
+    fn middling(&mut self, range: std::ops::RangeInclusive<i32>) -> u8 {
+        ((self.int(range.clone()) + self.int(range)) / 2) as u8
+    }
+
+    fn chance(&mut self, percent: i32) -> bool {
+        self.int(0..=99) < percent
+    }
+
+    fn pick<'t, T>(&mut self, items: &'t [T]) -> &'t T {
+        &items[self.int(0..=items.len() as i32 - 1) as usize]
+    }
+}
+
+/// A whole look at random, kept to people one meets: bodies near the middle
+/// of each slider, a face only a little off average.
+fn surprise(dice: &mut Dice) -> HumanLook {
+    let body_shape = if dice.chance(85) {
+        if dice.chance(50) {
+            dice.int(0..=25)
+        } else {
+            dice.int(75..=100)
+        }
+    } else {
+        dice.int(26..=74)
+    } as u8;
+    let mut look = HumanLook::default_for(body_shape < 50);
+    look.body_shape = body_shape;
+    look.age = dice.middling(18..=80);
+    look.height = dice.middling(10..=90);
+    look.weight = dice.middling(10..=90);
+    look.muscle = dice.middling(15..=85);
+    look.proportions = dice.middling(40..=80);
+    look.chest = dice.middling(20..=80);
+    look.skin = dice.pick(&SKINS).0.into();
+    look.eyes = dice.pick(&EYES).0.into();
+    look.hair = (!dice.chance(5)).then(|| dice.pick(&HAIR).0.into());
+    // Grey and white hair only with the years for it.
+    let greys = if look.age >= 55 { 9 } else { 7 };
+    look.hair_colour = Some(*dice.pick(&HAIR_COLOURS[..greys]));
+    look.eyebrows = dice.pick(&EYEBROWS).0.into();
+    look.outfit = dice.pick(&OUTFITS).0.into();
+    look.top_colour = dice.chance(60).then(|| *dice.pick(&CLOTH_COLOURS));
+    look.bottom_colour = dice.chance(40).then(|| *dice.pick(&CLOTH_COLOURS));
+    look.shoes = dice.pick(&SHOES).0.into();
+    look.hat = dice.chance(10).then(|| "fedora01".into());
+    another_face(dice, &mut look);
+    look
+}
+
+/// A different face: a handful of the face controls, each a little off
+/// average.
+fn another_face(dice: &mut Dice, look: &mut HumanLook) {
+    look.face.clear();
+    for (_, sliders) in FACE.iter() {
+        for FaceSlider(modifier, _, _, one_sided) in sliders.iter() {
+            if dice.chance(40) {
+                let lo = if *one_sided { 0 } else { -45 };
+                look.set_face(modifier, dice.int(lo..=45) as i8);
+            }
+        }
+    }
 }
 
 /// The designer's body. Returns whether the look changed this frame.
 pub fn designer(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) -> bool {
     let before = look.clone();
+    start_from(ui, state, look);
+    ui.add_space(8.0);
     theme::segmented(
         ui,
         &mut state.tab,
@@ -360,14 +615,104 @@ pub fn designer(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLo
     ui.add_space(8.0);
     match state.tab {
         DesignerTab::Body => body(ui, look),
-        DesignerTab::Face => face(ui, &mut state.face, look),
+        DesignerTab::Face => face(ui, state, look),
         DesignerTab::SkinAndHair => skin_and_hair(ui, look),
         DesignerTab::Clothes => clothes(ui, look),
     }
     *look != before
 }
 
+/// The starters and the dice, above the tabs: a whole person in one tap.
+fn start_from(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
+    theme::section(ui, "Start from");
+    let time = ui.input(|i| i.time);
+    ui.horizontal_wrapped(|ui| {
+        for starter in &STARTERS {
+            let theirs = starter.look();
+            if theme::chip(ui, starter.label, *look == theirs).clicked() {
+                *look = theirs;
+            }
+        }
+        if theme::chip(ui, "Surprise me", false).clicked() {
+            *look = surprise(&mut Dice { state, time });
+        }
+    });
+    theme::note(ui, "Then change anything below.");
+}
+
+/// A row of quick picks for one or more sliders: each pick sets them all,
+/// and shows chosen while they hold its values. Most bodies are a pick per
+/// row; the sliders under "Fine-tune" are for the rest.
+fn picks<const N: usize>(
+    ui: &mut egui::Ui,
+    title: &str,
+    options: &[(&str, [u8; N])],
+    mut values: [&mut u8; N],
+) {
+    ui.label(title);
+    ui.horizontal_wrapped(|ui| {
+        for (label, set) in options {
+            let chosen = values.iter().zip(set).all(|(v, s)| **v == *s);
+            if theme::chip(ui, label, chosen).clicked() {
+                for (v, s) in values.iter_mut().zip(set) {
+                    **v = *s;
+                }
+            }
+        }
+    });
+    ui.add_space(6.0);
+}
+
 fn body(ui: &mut egui::Ui, look: &mut HumanLook) {
+    picks(
+        ui,
+        "Body shape",
+        &[
+            ("Feminine", [0]),
+            ("In between", [50]),
+            ("Masculine", [100]),
+        ],
+        [&mut look.body_shape],
+    );
+    picks(
+        ui,
+        "Age",
+        &[
+            ("20s", [24]),
+            ("30s", [34]),
+            ("40s", [44]),
+            ("50s", [54]),
+            ("60s", [64]),
+            ("70s", [74]),
+            ("80s", [84]),
+        ],
+        [&mut look.age],
+    );
+    // Weight and muscle together: a build is both.
+    picks(
+        ui,
+        "Build",
+        &[
+            ("Slim", [25, 40]),
+            ("Average", [50, 50]),
+            ("Athletic", [40, 85]),
+            ("Sturdy", [70, 70]),
+            ("Heavy", [90, 40]),
+        ],
+        [&mut look.weight, &mut look.muscle],
+    );
+    picks(
+        ui,
+        "Height",
+        &[("Short", [20]), ("Average", [50]), ("Tall", [80])],
+        [&mut look.height],
+    );
+    egui::CollapsingHeader::new("Fine-tune")
+        .id_salt("avatar_body_fine_tune")
+        .show(ui, |ui| body_sliders(ui, look));
+}
+
+fn body_sliders(ui: &mut egui::Ui, look: &mut HumanLook) {
     let shape = look.body_shape;
     slider(
         ui,
@@ -445,7 +790,20 @@ fn body(ui: &mut egui::Ui, look: &mut HumanLook) {
     );
 }
 
-fn face(ui: &mut egui::Ui, part: &mut FacePart, look: &mut HumanLook) {
+fn face(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
+    // Whole faces first: most people want a different face, not a narrower
+    // nose.
+    let time = ui.input(|i| i.time);
+    ui.horizontal_wrapped(|ui| {
+        if theme::action_button(ui, "Another face").clicked() {
+            another_face(&mut Dice { state, time }, look);
+        }
+        if !look.face.is_empty() && theme::action_button(ui, "Average face").clicked() {
+            look.face.clear();
+        }
+    });
+    ui.add_space(6.0);
+    let part = &mut state.face;
     ui.horizontal_wrapped(|ui| {
         for (p, label) in [
             (FacePart::Head, "Head"),
@@ -481,9 +839,6 @@ fn face(ui: &mut egui::Ui, part: &mut FacePart, look: &mut HumanLook) {
             look.set_face(modifier, v.clamp(-100, 100) as i8);
         }
         ends_row(ui, if *one_sided { ("", ends.1) } else { *ends });
-    }
-    if !look.face.is_empty() && theme::action_button(ui, "Reset the face").clicked() {
-        look.face.clear();
     }
 }
 
@@ -657,6 +1012,52 @@ mod tests {
         assert_eq!(word(0, w), "a");
         assert_eq!(word(50, w), "c");
         assert_eq!(word(100, w), "e");
+    }
+
+    /// Every starter wears only what the designer offers, so picking one
+    /// leaves every tab showing a choice, and they are all different people.
+    #[test]
+    fn the_starters_are_made_of_what_is_on_offer() {
+        let mut seen = std::collections::HashSet::new();
+        for s in &STARTERS {
+            let look = s.look();
+            assert!(
+                look.is_reasonable(),
+                "{} is a look the server keeps",
+                s.label
+            );
+            assert!(SKINS.iter().any(|(n, _)| *n == look.skin), "{}", s.label);
+            assert!(
+                HAIR.iter().any(|(n, _)| Some(*n) == look.hair.as_deref()),
+                "{}",
+                s.label
+            );
+            assert!(
+                OUTFITS.iter().any(|(n, _)| *n == look.outfit),
+                "{}",
+                s.label
+            );
+            assert!(SHOES.iter().any(|(n, _)| *n == look.shoes), "{}", s.label);
+            assert!(HAIR_COLOURS.contains(&s.hair_colour), "{}", s.label);
+            assert!(seen.insert(format!("{look:?}")), "{} twice", s.label);
+        }
+    }
+
+    /// The dice make people the server keeps, and different ones each roll.
+    #[test]
+    fn a_surprise_is_a_reasonable_new_person() {
+        let mut state = DesignerState::default();
+        let mut looks = std::collections::HashSet::new();
+        for i in 0..50 {
+            let look = surprise(&mut Dice {
+                state: &mut state,
+                time: f64::from(i),
+            });
+            assert!(look.is_reasonable(), "{look:?}");
+            assert!((18..=90).contains(&look.age));
+            looks.insert(format!("{look:?}"));
+        }
+        assert!(looks.len() > 45, "{} different people in 50", looks.len());
     }
 
     /// Every face part has sliders, and no modifier is offered twice.
