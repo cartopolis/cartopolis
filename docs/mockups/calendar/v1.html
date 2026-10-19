@@ -1,0 +1,432 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Calendar v1</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0113 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M15.5 14.2a5.5 5.5 0 016.2 5.3"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+  <symbol id="video" viewBox="0 0 24 24"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="walk" viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="1.8"/><path d="M10 21l2.5-6 2.5 2.5V21M8 12l2-4.5 3.5 1 2 3.5 2.5 1M12.5 8.5L11 14"/></symbol>
+  <symbol id="bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 4l9 5-9 5-9-5z"/><path d="M3 14l9 5 9-5"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="pinf" viewBox="0 0 24 24"><path d="M12 22s-7-6.4-7-12a7 7 0 0114 0c0 5.6-7 12-7 12z"/><circle cx="12" cy="10" r="2.6" fill="#fff" stroke="none"/></symbol>
+</svg>
+
+<h1>Calendar v1: <b>every plan you are in</b>, in one place</h1>
+<p class="lede">A design proposal, not code. Meet-ups (a place and a time) and meetings (a call with an agenda) can already be made in any private chat, group or community topic, and people already answer them there. What is missing is one place that shows them all. This adds a <b style="color:var(--cream);font-weight:inherit">Calendar</b> to the Community tab in the app and to the Community page on the web. It gathers what is already in your chats and adds nothing new to send. <span class="newtag">new</span> marks what the app does not have today.</p>
+
+<div class="principles">
+  <div><h3><i>1</i> Nothing new is sent</h3><p>The calendar reads the meet-ups and meetings already in your chats. The server, the wire protocol and the message formats stay as they are.</p></div>
+  <div><h3><i>2</i> Built on your device</h3><p>Plans are sealed chat messages. Each device builds its calendar from what it can read, so the server can't tell that a calendar exists.</p></div>
+  <div><h3><i>3</i> Answer where you look</h3><p>Going, Maybe and Can't come in the calendar send the same answer as the card in the chat. Change your mind there or here, and the newest answer counts.</p></div>
+  <div><h3><i>4</i> Every item leads back</h3><p>To its chat, to its call when it starts, and for a meet-up to its place in the World and a walk there.</p></div>
+</div>
+
+<h2 class="sec-h"><span>1</span>In the app</h2>
+<p class="sec-p">Monday 19 October, 9:41. You are in a direct chat with Sanne, the group Fietsclub, and two communities (Gorecht buurt and oosterparkwijk).</p>
+
+<div class="row">
+
+<!-- A. COMMUNITY LIST WITH COMING UP -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="bar">
+    <div class="seg"><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div><div><span class="live"></span>World</div></div>
+    <div class="me">J</div>
+  </div>
+  <div class="find"><svg class="i s"><use href="#search"/></svg>Search</div>
+  <div class="pubs">
+    <div class="pub"><div class="h"><div class="ic" style="background:#3f3b38"><svg class="i s"><use href="#pin"/></svg></div>Here</div><div class="p">Nieuwjaar — nog 74 dagen</div></div>
+    <div class="pub"><div class="h"><div class="ic" style="background:#4374c4"><svg class="i s"><use href="#globe"/></svg></div>Everyone</div><div class="p">viberfox: waving from Groningen</div><span class="badge b">12</span></div>
+  </div>
+  <div class="soon">
+    <div class="h"><span>Coming up <span class="newtag">new</span></span><a>Calendar <svg class="i s"><use href="#chev"/></svg></a></div>
+    <div class="ev">
+      <div class="tm">12:30<small>today</small></div><div class="bar2 mu"></div>
+      <div class="t"><b>Vismarkt</b><span><svg class="i s"><use href="#pin"/></svg>Meet-up · Sanne</span></div>
+      <span class="ans g">Going</span>
+    </div>
+    <div class="ev">
+      <div class="tm">19:30<small>today</small></div><div class="bar2"></div>
+      <div class="t"><b>Q4 planning</b><span><svg class="i s"><use href="#video"/></svg>Gorecht buurt · # bankjes</span></div>
+      <span class="ans q">Answer</span>
+    </div>
+  </div>
+  <div class="list-h"><span>Conversations</span></div>
+  <div class="chat-row">
+    <div class="av sq c5">G</div>
+    <div class="body"><div class="l1"><span>Gorecht buurt</span><time>9:12</time></div><div class="l2"><span># bankjes · Anna planned Q4 planning</span><span class="badge b">2</span></div></div>
+  </div>
+  <div class="chat-row">
+    <div class="av c4">S</div>
+    <div class="body"><div class="l1"><span>Sanne <svg class="i s lk"><use href="#lock"/></svg></span><time>8:50</time></div><div class="l2"><span>You: I'm going · Vismarkt 12:30</span></div></div>
+  </div>
+  <div class="chat-row">
+    <div class="av c1">F</div>
+    <div class="body"><div class="l1"><span>Fietsclub <svg class="i s lk"><use href="#lock"/></svg></span><time>gister</time></div><div class="l2"><span>Tom: route voor zondag staat erin</span></div></div>
+  </div>
+  <div class="fab"><svg class="i"><use href="#plus"/></svg></div>
+</div>
+<h2><span>A</span>Coming up, on the list <span class="newtag">new</span></h2>
+<ul>
+  <li>Up to two plans from the next 24 hours, above Conversations. A plan you have not answered says <b>Answer</b> in orange.</li>
+  <li><b>Calendar ›</b> opens the whole calendar. With nothing coming up the card shrinks to that one line, so the way in never moves.</li>
+  <li>Orange edge: a meet-up (a place). Pale edge: a meeting (a call). The same two colours are used everywhere below.</li>
+</ul>
+</div>
+
+<!-- B. AGENDA -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="seg cseg"><div class="on">List</div><div>Month</div></div>
+  <div class="week">
+    <div class="on">Mon<b>19</b><i></i></div><div>Tue<b>20</b><i class="mu"></i></div><div>Wed<b>21</b><i class="none"></i></div><div>Thu<b>22</b><i></i></div><div>Fri<b>23</b><i class="none"></i></div><div>Sat<b>24</b><i class="mu"></i></div><div>Sun<b>25</b><i class="mu"></i></div>
+  </div>
+  <div class="agenda">
+    <div class="dayh t">Today<span>Monday 19 October</span></div>
+    <div class="nowline">9:41</div>
+    <div class="ev"><div class="tm">12:30</div><div class="bar2 mu"></div><div class="t"><b>Vismarkt</b><span><svg class="i s"><use href="#pin"/></svg>Sanne · 14 min walk</span></div><span class="ans g">Going</span></div>
+    <div class="ev"><div class="tm">19:30<small>45 min</small></div><div class="bar2"></div><div class="t"><b>Q4 planning</b><span><svg class="i s"><use href="#video"/></svg>Gorecht buurt · # bankjes</span></div><span class="ans q">Answer</span></div>
+    <div class="dayh">Tomorrow<span>Tuesday 20</span></div>
+    <div class="ev"><div class="tm">18:00</div><div class="bar2 mu"></div><div class="t"><b>Hoofdstation</b><span><svg class="i s"><use href="#pin"/></svg>Fietsclub · 3 going</span></div><span class="ans q">Answer</span></div>
+    <div class="dayh">Thursday 22</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><svg class="i s"><use href="#video"/></svg>oosterparkwijk · # general</span></div><span class="ans g">Going</span></div>
+    <div class="dayh">Saturday 24</div>
+    <div class="ev no"><div class="tm">10:00</div><div class="bar2"></div><div class="t"><b>Bankjes overleg</b><span><svg class="i s"><use href="#video"/></svg>Gorecht buurt · # bankjes</span></div><span class="ans n">Can't come</span></div>
+    <div class="ev"><div class="tm">14:00</div><div class="bar2 mu"></div><div class="t"><b>Noorderplantsoen, Kruissingel</b><span><svg class="i s"><use href="#pin"/></svg>Fietsclub · 5 going</span></div><span class="ans g">Going</span></div>
+    <div class="dayh">Sunday 25</div>
+    <div class="ev"><div class="tm">9:30</div><div class="bar2 mu"></div><div class="t"><b>Martinitoren</b><span><svg class="i s"><use href="#pin"/></svg>Fietsclub · Tom</span></div><span class="ans q">Answer</span></div>
+  </div>
+</div>
+<h2><span>B</span>The calendar: a list by day <span class="newtag">new</span></h2>
+<ul>
+  <li>The week strip on top shows which days have something (a dot per kind). Tap a day to jump to it.</li>
+  <li>Each row has its time, the place or title, which chat it came from, and <b>your</b> answer. A meet-up also shows the walking time from where you are, using the routing that is already there.</li>
+  <li>Plans you can't come to stay on the list, faded and struck through, so you can still change your mind.</li>
+</ul>
+</div>
+
+<!-- C. MONTH -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="seg cseg"><div>List</div><div class="on">Month</div></div>
+  <div class="month">
+    <div class="mh">October 2026<span><svg class="i s"><use href="#back"/></svg><svg class="i s"><use href="#chev"/></svg></span></div>
+    <div class="grid7">
+      <div class="wd">M</div><div class="wd">T</div><div class="wd">W</div><div class="wd">T</div><div class="wd">F</div><div class="wd">S</div><div class="wd">S</div>
+      <div class="d o">28<i></i></div><div class="d o">29<i></i></div><div class="d o">30<i></i></div><div class="d">1<i></i></div><div class="d">2<i></i></div><div class="d">3<i><u class="mu"></u></i></div><div class="d">4<i></i></div>
+      <div class="d">5<i></i></div><div class="d">6<i></i></div><div class="d">7<i><u></u></i></div><div class="d">8<i></i></div><div class="d">9<i></i></div><div class="d">10<i><u class="mu"></u></i></div><div class="d">11<i></i></div>
+      <div class="d">12<i></i></div><div class="d">13<i></i></div><div class="d">14<i><u></u></i></div><div class="d">15<i></i></div><div class="d">16<i></i></div><div class="d">17<i><u class="mu"></u></i></div><div class="d">18<i></i></div>
+      <div class="d t">19<i><u class="mu"></u><u></u></i></div><div class="d">20<i><u class="mu"></u></i></div><div class="d">21<i></i></div><div class="d">22<i><u></u></i></div><div class="d">23<i></i></div><div class="d sel">24<i><u></u><u class="mu"></u></i></div><div class="d">25<i><u class="mu"></u></i></div>
+      <div class="d">26<i></i></div><div class="d">27<i></i></div><div class="d">28<i></i></div><div class="d">29<i><u></u></i></div><div class="d">30<i></i></div><div class="d">31<i></i></div><div class="d o">1<i></i></div>
+    </div>
+  </div>
+  <div class="agenda">
+    <div class="dayh">Saturday 24 October</div>
+    <div class="ev no"><div class="tm">10:00</div><div class="bar2"></div><div class="t"><b>Bankjes overleg</b><span><svg class="i s"><use href="#video"/></svg>Gorecht buurt · # bankjes</span></div><span class="ans n">Can't come</span></div>
+    <div class="ev"><div class="tm">14:00</div><div class="bar2 mu"></div><div class="t"><b>Noorderplantsoen, Kruissingel</b><span><svg class="i s"><use href="#pin"/></svg>Fietsclub · 5 going</span></div><span class="ans g">Going</span></div>
+  </div>
+</div>
+<h2><span>C</span>The month <span class="newtag">new</span></h2>
+<ul>
+  <li>A month grid with a dot per kind on each day. Today's number is orange; the chosen day is filled, and its plans are listed under the grid.</li>
+  <li>Past days keep their dots, so last week's meeting is easy to find again (and its notes and record, in its chat).</li>
+</ul>
+</div>
+
+<!-- D. A MEETING, OPENED -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="seg cseg"><div class="on">List</div><div>Month</div></div>
+  <div class="scrim2"></div>
+  <div class="detail">
+    <div class="handle"></div>
+    <div class="kind"><svg class="i s"><use href="#video"/></svg>Meeting · a call</div>
+    <h4>Q4 planning</h4>
+    <div class="when">Today, 19:30 – 20:15</div>
+    <div class="from"><div class="av room c5">G</div>Gorecht buurt · # bankjes · planned by Anna</div>
+    <div class="rsvp"><div>Going</div><div>Maybe</div><div>Can't come</div></div>
+    <div class="who">
+      <div class="w"><span class="lab">Going 4</span><div class="faces2"><div class="av c2">A</div><div class="av c3">K</div><div class="av c6">L</div><div class="av c4">B</div></div><span class="names">Anna, Karim, Lotte, Bas</span></div>
+      <div class="w"><span class="lab">Maybe 1</span><span class="names">Ruud</span></div>
+      <div class="w"><span class="lab">Can't come 1</span><span class="names">Ilse</span></div>
+      <div class="w"><span class="lab">No answer 3</span><span class="names">you, Pieter, Mo</span></div>
+    </div>
+    <div class="ag">
+      <div class="hh">Agenda</div>
+      <div class="li">Nieuwe bankjes<span>10 min</span></div>
+      <div class="li">Budget<span>15 min</span></div>
+      <div class="li">Wie doet wat<span>20 min</span></div>
+    </div>
+    <div class="btns"><div><svg class="i s"><use href="#chat"/></svg>Open chat</div><div class="off"><svg class="i s"><use href="#video"/></svg>Join · from 19:20</div></div>
+  </div>
+</div>
+<h2><span>D</span>A meeting, opened <span class="newtag">new</span></h2>
+<ul>
+  <li>The same content as the plan's card in its chat (<code>meeting::Plan</code>): title, time, agenda and everybody's answers. Opened from the calendar, it comes up as a sheet.</li>
+  <li>The three answers send the same <code>Accept</code> / <code>TentativeAccept</code> / <code>Reject</code> as the card does.</li>
+  <li><b>Join</b> unlocks ten minutes before the start, which is when the web page's reminder already fires.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="row">
+
+<!-- E. A MEET-UP, OPENED -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="scrim2"></div>
+  <div class="detail">
+    <div class="handle"></div>
+    <div class="kind mu"><svg class="i s"><use href="#pin"/></svg>Meet-up · a place and a time</div>
+    <h4>Vismarkt</h4>
+    <div class="when">Today, 12:30</div>
+    <div class="from"><div class="av c4">S</div>Sanne <svg class="i s" style="color:var(--line)"><use href="#lock"/></svg> · proposed by Sanne</div>
+    <div class="mapbit"><div class="pinm"><svg viewBox="0 0 24 24"><use href="#pinf"/></svg></div><div class="lbl">14 min walk · 1.1 km</div></div>
+    <div class="who">
+      <div class="w"><span class="lab">Going 2</span><div class="faces2"><div class="av c4">S</div><div class="av" style="background:#4374c4">J</div></div><span class="names">Sanne, you</span></div>
+    </div>
+    <div class="btns" style="margin-bottom:8px"><div style="color:var(--going)"><svg class="i s"><use href="#check"/></svg>I'm going</div><div class="p"><svg class="i s"><use href="#walk"/></svg>Walk there</div></div>
+    <div class="btns"><div><svg class="i s"><use href="#chat"/></svg>Open chat</div><div><svg class="i s"><use href="#cube"/></svg>Show in World</div></div>
+    <div class="hint2"><svg class="i s"><use href="#shield"/></svg>From 12:15 your location is shared with Sanne, until you arrive or an hour after the start. This is how "I'm going" works today.</div>
+  </div>
+</div>
+<h2><span>E</span>A meet-up, opened <span class="newtag">new</span></h2>
+<ul>
+  <li>A meet-up has its place. The small map is the place's own picture, as in the chat's card.</li>
+  <li><b>Walk there</b> starts the same walking route as tapping the pin in the chat's World view. <b>Show in World</b> flies there.</li>
+  <li>A meet-up can only be answered with <b>I'm going</b> today. There is no Maybe or Can't come for it (question 3).</li>
+</ul>
+</div>
+
+<!-- F. REMINDER IN THE WORLD -->
+<div class="shot">
+<div class="phone">
+  <div class="worldbg"></div>
+  <div class="status"><span>12:07</span><div class="notch"></div><span>●●● 78%</span></div>
+  <div class="wbar">
+    <div class="seg"><div><svg class="i s"><use href="#people"/></svg>Community</div><div class="on w"><span class="live"></span>World</div></div>
+    <div class="me">J</div>
+  </div>
+  <div class="notice">
+    <div class="l1"><div class="ic"><svg class="i"><use href="#walk"/></svg></div><div style="flex:1"><b>Leave now for Vismarkt</b><span>Meet-up with Sanne at 12:30 · 14 min walk</span></div><svg class="i s" style="color:var(--line)"><use href="#x"/></svg></div>
+    <div class="acts"><div>Open chat</div><div class="p">Walk there</div></div>
+  </div>
+  <div class="dockw"><div><svg class="i"><use href="#search"/></svg></div><div><svg class="i"><use href="#pin"/></svg></div><div><svg class="i"><use href="#chat"/></svg></div><div><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h2><span>F</span>A reminder, wherever you are <span class="newtag">new</span></h2>
+<ul>
+  <li>For a meet-up you're going to: <b>when it's time to leave</b>, which is the start minus the walking time minus five minutes. For a meeting you said Going or Maybe to: ten minutes before, with <b>Join</b>.</li>
+  <li>It is a notice over whatever is open, the same kind as an incoming call. The web page already reminds people about meetings this way; the app does not yet.</li>
+  <li>This works while the app is running. A reminder with the app closed is question 2.</li>
+</ul>
+</div>
+
+<!-- G. PLANNING FROM THE CALENDAR -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="scrim2"></div>
+  <div class="detail">
+    <div class="handle"></div>
+    <div class="ptitle" style="padding-top:6px">Plan something on Saturday 24</div>
+    <div class="optl">
+      <div class="o sel"><div class="ic mu"><svg class="i"><use href="#pin"/></svg></div><div><b>Meet up</b><span>A place and a time</span></div><svg class="i tick2"><use href="#check"/></svg></div>
+      <div class="o"><div class="ic"><svg class="i"><use href="#video"/></svg></div><div><b>Meeting</b><span>A call, with an agenda</span></div></div>
+    </div>
+    <div class="subh">In which chat</div>
+    <div class="optl">
+      <div class="o"><div class="av c4">S</div><div><b>Sanne</b><span>Direct · private</span></div></div>
+      <div class="o sel"><div class="av c1">F</div><div><b>Fietsclub</b><span>Group · 6 people</span></div><svg class="i tick2"><use href="#check"/></svg></div>
+      <div class="o"><div class="av room c5" style="border-radius:12px">G</div><div><b>Gorecht buurt · # bankjes</b><span>Community topic · 9 people</span></div></div>
+      <div class="o"><div class="av room c6" style="border-radius:12px">O</div><div><b>oosterparkwijk · # general</b><span>Community topic · 24 people</span></div></div>
+    </div>
+    <div class="btns"><div class="p">Next: where and when</div></div>
+  </div>
+</div>
+<h2><span>G</span>Planning from the calendar <span class="newtag">new</span></h2>
+<ul>
+  <li><b>+</b> asks two things: what kind of plan, and in which chat. Then the chat's own form opens (<b>+ → Meet up</b> or <b>Plan a meeting</b>, as today), with the day you were looking at already filled in.</li>
+  <li>A plan always belongs to a chat. Those are the people who see it and answer it, and the chat's encryption keeps it private.</li>
+</ul>
+</div>
+
+<!-- H. SETTINGS -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ptitle"><svg class="i" style="color:var(--accent)"><use href="#back"/></svg>Calendar</div>
+  <div class="grp-h">Show</div>
+  <div class="grp">
+    <div class="it"><div class="t">Plans I can't come to<span>Faded, so you can still change your mind</span></div><div class="tg on"></div></div>
+    <div class="it"><div class="t">Coming up, on the Community list</div><div class="tg on"></div></div>
+  </div>
+  <div class="grp-h">From</div>
+  <div class="grp">
+    <div class="it"><div class="t">People and groups<span>Sanne, Fietsclub</span></div><div class="tg on"></div></div>
+    <div class="it"><div class="t">Gorecht buurt<span>2 topics</span></div><div class="tg on"></div></div>
+    <div class="it"><div class="t">oosterparkwijk<span>5 topics · only the plans I answered</span></div><div class="tg"></div></div>
+  </div>
+  <div class="grp-h">Remind me</div>
+  <div class="grp">
+    <div class="it"><div class="t">When it's time to leave<span>For meet-ups I'm going to</span></div><div class="tg on"></div></div>
+    <div class="it"><div class="t">10 minutes before a meeting<span>When I said Going or Maybe</span></div><div class="tg on"></div></div>
+  </div>
+  <div class="grp-h">On this phone</div>
+  <div class="grp">
+    <div class="it"><div class="ic"><svg class="i s"><use href="#phone"/></svg></div><div class="t">23 plans, from 7 chats<span>Kept here only. Your other devices build their own.</span></div></div>
+  </div>
+</div>
+<h2><span>H</span>Calendar settings <span class="newtag">new</span></h2>
+<ul>
+  <li>Reached from <b>···</b> on the calendar and from Settings. A big community can fill a calendar, so each community can be limited to the plans you answered.</li>
+  <li>The last row says plainly where the calendar lives: on this phone, and nowhere else.</li>
+</ul>
+</div>
+
+</div>
+
+<h2 class="sec-h"><span>2</span>On the web</h2>
+<p class="sec-p">The same calendar on cartopolis.org, as a row on the Community page beside the chats. A screen this wide gets a week of hours, with the plan you picked open on the right.</p>
+
+<div style="position:relative">
+<div class="win">
+  <div class="chrome"><i></i><i></i><i></i><div class="url"><b>cartopolis.org</b>/calendar</div></div>
+  <div class="wtop">
+    <div class="wm2"><span>carto<i>polis</i></span></div>
+    <div class="seg"><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div><div><span class="live"></span>World</div></div>
+    <div class="sp" style="flex:1"></div>
+    <div class="me">J</div>
+  </div>
+  <div class="wbody">
+    <div class="side">
+      <div class="sl"><div class="ic" style="background:#3f3b38;color:#fff;border-radius:50%"><svg class="i s"><use href="#pin"/></svg></div>Here</div>
+      <div class="sl"><div class="ic" style="background:#4374c4;color:#fff;border-radius:50%"><svg class="i s"><use href="#globe"/></svg></div>Everyone<small><span class="badge b">12</span></small></div>
+      <div class="sl on"><div class="ic"><svg class="i s"><use href="#cal"/></svg></div>Calendar <span class="newtag">new</span><small>2 today</small></div>
+      <div class="sh">Conversations</div>
+      <div class="sl"><div class="av room c5" style="border-radius:9px">G</div>Gorecht buurt<small><span class="badge b">2</span></small></div>
+      <div class="sl"><div class="av c4">S</div>Sanne</div>
+      <div class="sl"><div class="av c1">F</div>Fietsclub</div>
+      <div class="sl"><div class="av room c6" style="border-radius:9px">O</div>oosterparkwijk</div>
+    </div>
+    <div class="wmain">
+      <div class="wmh">
+        <h3>19 – 25 October 2026</h3>
+        <div class="nav"><div><svg class="i s"><use href="#back"/></svg></div><div><svg class="i s"><use href="#chev"/></svg></div></div>
+        <div class="todayb">Today</div>
+        <div style="flex:1"></div>
+        <div class="seg"><div>List</div><div class="on">Week</div><div>Month</div></div>
+        <div class="newb"><svg class="i s"><use href="#plus"/></svg>Plan</div>
+      </div>
+      <div class="wk">
+        <div class="hrs"><div class="colh" style="border-bottom:1px solid var(--gline)"></div>
+          <div class="area" style="background:none"><div class="hr">9:00</div><div class="hr">10:00</div><div class="hr">11:00</div><div class="hr">12:00</div><div class="hr">13:00</div><div class="hr">14:00</div><div class="hr">15:00</div><div class="hr">16:00</div><div class="hr">17:00</div><div class="hr">18:00</div><div class="hr">19:00</div><div class="hr">20:00</div><div class="hr">21:00</div></div>
+        </div>
+        <div class="col t"><div class="colh t">Mon<b>19</b></div><div class="area">
+          <div class="blk mu" style="top:168px;height:46px">12:30 Vismarkt<small>Sanne · Going</small></div>
+          <div class="nowl" style="top:208px"></div>
+          <div class="blk sel" style="top:504px;height:36px">19:30 Q4 planning<small>Gorecht buurt · Going</small></div>
+        </div></div>
+        <div class="col"><div class="colh">Tue<b>20</b></div><div class="area">
+          <div class="blk mu q" style="top:432px;height:46px">18:00 Hoofdstation<small>Fietsclub · answer</small></div>
+        </div></div>
+        <div class="col"><div class="colh">Wed<b>21</b></div><div class="area"></div></div>
+        <div class="col"><div class="colh">Thu<b>22</b></div><div class="area">
+          <div class="blk" style="top:528px;height:72px">20:00 Buurtvergadering<small>oosterparkwijk · Going</small></div>
+        </div></div>
+        <div class="col"><div class="colh">Fri<b>23</b></div><div class="area"></div></div>
+        <div class="col"><div class="colh">Sat<b>24</b></div><div class="area">
+          <div class="blk no" style="top:48px;height:46px">10:00 Bankjes overleg<small>Can't come</small></div>
+          <div class="blk mu" style="top:240px;height:46px">14:00 Noorderplantsoen<small>Fietsclub · Going</small></div>
+        </div></div>
+        <div class="col"><div class="colh">Sun<b>25</b></div><div class="area">
+          <div class="blk mu q" style="top:24px;height:46px">9:30 Martinitoren<small>Fietsclub · answer</small></div>
+        </div></div>
+      </div>
+    </div>
+    <div class="wdet">
+      <div class="detail">
+        <div class="kind"><svg class="i s"><use href="#video"/></svg>Meeting · a call</div>
+        <h4>Q4 planning</h4>
+        <div class="when">Today, 19:30 – 20:15</div>
+        <div class="from"><div class="av room c5">G</div>Gorecht buurt · # bankjes · planned by Anna</div>
+        <div class="rsvp"><div class="g">Going</div><div>Maybe</div><div>Can't come</div></div>
+        <div class="who">
+          <div class="w"><span class="lab">Going 5</span><div class="faces2"><div class="av" style="background:#4374c4">J</div><div class="av c2">A</div><div class="av c3">K</div><div class="av c6">L</div><div class="av c4">B</div></div><span class="names">you, Anna, Karim, Lotte, Bas</span></div>
+          <div class="w"><span class="lab">Maybe 1</span><span class="names">Ruud</span></div>
+          <div class="w"><span class="lab">Can't come 1</span><span class="names">Ilse</span></div>
+          <div class="w"><span class="lab">No answer 2</span><span class="names">Pieter, Mo</span></div>
+        </div>
+        <div class="ag">
+          <div class="hh">Agenda</div>
+          <div class="li">Nieuwe bankjes<span>10 min</span></div>
+          <div class="li">Budget<span>15 min</span></div>
+          <div class="li">Wie doet wat<span>20 min</span></div>
+        </div>
+        <div class="btns"><div><svg class="i s"><use href="#chat"/></svg>Open chat</div><div class="off"><svg class="i s"><use href="#video"/></svg>Join · from 19:20</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="cn" style="left:287px;top:206px">1</div>
+<div class="cn" style="left:972px;top:116px">2</div>
+<div class="cn" style="left:502px;top:406px">3</div>
+<div class="cn" style="left:640px;top:652px">4</div>
+<div class="cn" style="left:1040px;top:262px">5</div>
+<div class="cn" style="left:1336px;top:116px">6</div>
+</div>
+<ol class="callouts">
+  <li><b>Calendar is a row on the Community page</b>at the top of the list, under Here and Everyone, with how many plans are today.</li>
+  <li><b>List, Week, Month</b>The list and the month are the phone's two views. Week is added on the web, where there is room for hours. <b>Plan</b> asks the same two questions as the app's <b>+</b>.</li>
+  <li><b>Now</b>A line across today at the current time. A meet-up has no end time, so it is drawn as one hour.</li>
+  <li><b>Not answered yet</b>Outlined in orange, in the list and on the grid.</li>
+  <li><b>Struck through</b>Plans you can't come to stay visible, faded.</li>
+  <li><b>The plan, on the right</b>The same panel as the phone's sheet. Here you have just answered Going. The web keeps the readable history of every chat on this browser (IndexedDB), so this calendar is built from that.</li>
+</ol>
+
+<h2 class="sec-h"><span>3</span>Where the dates come from</h2>
+<p class="sec-p">Every date in the calendar comes from a message already sent in a chat. Nothing is added to the protocol. One new piece is needed in the app: somewhere to keep the plans.</p>
+<table class="src">
+  <tr><th></th><th>Today</th><th>What the calendar does</th></tr>
+  <tr><td>Meeting</td><td><code>meeting::Plan</code>, an ActivityStreams <code>Event</code>: title, start, an end if one was given, the agenda. Answers are <code>Accept</code>, <code>TentativeAccept</code> or <code>Reject</code> naming the plan's id; each person's newest answer counts.</td><td>Shows the title, the start and the end. With no end it uses the agenda's minutes, and with no agenda one hour. Answers go out through the same path the chat card uses.</td></tr>
+  <tr><td>Meet-up</td><td>A <code>Point</code> with <code>Meetup { start_ms }</code> and a place. "I'm going" is a second point at the same place and time (<code>same_meetup</code>).</td><td>Shows the place's name (or the caption if it has none), the start, and the walking time from you. The only answer is I'm going.</td></tr>
+  <tr><td>Kept in the app</td><td>Chat lines live <b>in memory only</b>. After a restart only the encryption keys are left (<code>platform::storage</code>, Data), so a plan from last week is gone.</td><td><span class="newtag">new</span> A small list of dated items next to the chat keys in <code>platform::storage</code>, updated as lines arrive and answers change. Items more than 30 days past are dropped. This also keeps "I'm going" location sharing working across a restart, which it does not today.</td></tr>
+  <tr><td>Kept on the web</td><td>Every chat it has read, in IndexedDB (<code>history</code>, up to 5,000 messages per chat).</td><td>Read from that history, so nothing new needs storing. The web already reminds about meetings ten minutes before; the reminder moves to the calendar.</td></tr>
+  <tr><td>A new device</td><td>It reads only what was said after it joined a chat, plus the shared history of the last 300 messages.</td><td>Its calendar fills from the same sources, so a plan made before the device joined shows up only if it is in that shared history.</td></tr>
+</table>
+
+<h2 class="sec-h"><span>4</span>Open questions</h2>
+<div class="qs">
+  <div><b>1. Copy plans to the phone's own calendar?</b><p>An "Add to my calendar" button (an <code>.ics</code> file, or Android's calendar) is what people expect. But it copies a private plan out of the encryption, into Google or Apple's sync. <em>Proposal: leave it out of v1. If it's added later, make it one item at a time and say where the copy goes.</em></p></div>
+  <div><b>2. Reminders while the app is closed?</b><p>Push today only wakes the phone for an incoming call, and the server can't know when a sealed plan starts. A reminder with the app closed would need the phone to set its own alarm (Android <code>AlarmManager</code>) when a plan arrives. <em>Proposal: v1 reminds only while the app is running, as the web does; the alarm comes next.</em></p></div>
+  <div><b>3. Maybe and Can't come for meet-ups?</b><p>A meet-up only has "I'm going", so people who can't come say nothing. Giving meet-ups the meeting's three answers is a change to the message format: older builds would show the new answer as an extra message. <em>Proposal: keep it as it is for now.</em></p></div>
+  <div><b>4. Big communities</b><p>Every member of a community is in every topic, so a busy community puts every topic's plans in every member's calendar. <em>Proposal: show everything by default, with the per-community switch in H ("only the plans I answered").</em></p></div>
+  <div><b>5. Repeating meetings</b><p>"Every Thursday at 20:00" does not exist: a plan has one start. A repeat would be a new field in the plan. Older builds would see only the first date. <em>Not in v1.</em></p></div>
+</div>
+
+</body></html>

@@ -1,0 +1,203 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Calendar v2: repeating meetings</title><link rel="stylesheet" href="style.css">
+<style>
+  .form { padding:4px 16px 0; }
+  .form .fh { color:var(--cream); font-size:17px; display:flex; gap:8px; align-items:center; margin:4px 0 2px; }
+  .form .fs { color:var(--dim); font-size:12.5px; margin-bottom:12px; }
+  .fld { background:var(--raised); border:1px solid var(--gline); border-radius:12px; padding:10px 12px; color:var(--text); font-size:14.5px; margin-bottom:10px; }
+  .fld.dim { color:var(--line); }
+  .lab2 { color:var(--dim); font-size:12px; letter-spacing:.6px; text-transform:uppercase; margin:6px 2px 6px; }
+  .stepr { display:flex; gap:6px; align-items:center; margin-bottom:10px; }
+  .stepr div { background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 6px; font-size:11.5px; color:var(--text); white-space:nowrap; }
+  .stepr .v { flex:1; text-align:center; background:transparent; border:0; color:var(--cream); font-size:13px; padding:7px 0; }
+  .chipr { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .chipr div { background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:6px 11px; font-size:13px; color:var(--text); }
+  .chipr .on { background:var(--accent); color:var(--ink); border-color:transparent; }
+  .chipr.new { position:relative; }
+  .newbox { border:1px dashed rgba(253,96,18,.55); border-radius:14px; padding:8px 10px 2px; margin:0 -10px 10px; }
+  .fbtn { display:flex; gap:8px; margin-top:6px; }
+  .fbtn div { flex:1; text-align:center; padding:11px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:14px; }
+  .fbtn .p { background:var(--brand); color:#fff; border-color:transparent; }
+  .rep { display:inline-flex; align-items:center; gap:3px; color:var(--accent); }
+  .twobtn { display:flex; margin:0 16px 10px; background:var(--raised); border-radius:11px; padding:3px; border:1px solid var(--gline); }
+  .twobtn div { flex:1; text-align:center; padding:6px; border-radius:8px; font-size:13px; color:var(--dim); }
+  .twobtn .on { background:var(--accent); color:var(--ink); }
+  .host { margin:12px 16px 0; border-top:1px solid var(--gline); padding-top:10px; }
+  .host .hh { color:var(--dim); font-size:12px; letter-spacing:.6px; text-transform:uppercase; margin-bottom:8px; }
+  .thread { padding:10px 14px; display:flex; flex-direction:column; gap:8px; }
+  .pcard { align-self:flex-start; width:280px; background:var(--raised); border-radius:18px; border-bottom-left-radius:6px; padding:12px 14px; }
+  .pcard .snd { color:var(--brand); font-size:12px; margin-bottom:4px; }
+  .pcard b { color:var(--cream); font-weight:inherit; font-size:16px; display:block; }
+  .pcard .w { color:var(--text); font-size:13px; margin-top:2px; }
+  .pcard .nx { color:var(--dim); font-size:12.5px; margin-top:6px; }
+  .pcard .ansr { display:flex; gap:6px; margin-top:10px; }
+  .pcard .ansr div { flex:1; text-align:center; padding:7px 4px; border-radius:10px; background:var(--surface); font-size:12.5px; color:var(--text); }
+  .pcard .ansr .g { background:var(--going); color:var(--ink); }
+  .sysl { align-self:center; color:var(--dim); font-size:12px; background:var(--surface); border:1px solid var(--gline); padding:5px 12px; border-radius:12px; display:flex; gap:6px; align-items:center; }
+  .bub2 { align-self:flex-start; background:var(--raised); color:var(--text); padding:8px 12px; border-radius:18px; border-bottom-left-radius:6px; font-size:14px; max-width:78%; }
+  .bub2 .snd { color:var(--brand); font-size:12px; display:block; }
+  .old { margin:14px; border:1px dashed var(--line); border-radius:14px; padding:10px 12px; color:var(--dim); font-size:12.5px; }
+  .old b { color:var(--text); font-weight:inherit; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="video" viewBox="0 0 24 24"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="rep" viewBox="0 0 24 24"><path d="M4 11a7 7 0 0112-4.9L18 8M18 4v4h-4M20 13a7 7 0 01-12 4.9L6 16M6 20v-4h4"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="skip" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+</svg>
+
+<h1>Calendar v2: <b>meetings that repeat</b></h1>
+<p class="lede">Decided on v1 (2026-10-19): no copying plans to the phone's own calendar, no reminders while the app is closed, meet-ups keep only "I'm going", and each big community gets the "only the plans I answered" switch. <b style="color:var(--cream);font-weight:inherit">Repeating meetings are in the first version.</b> This sheet adds them. Only meetings repeat; a meet-up stays a single place and time. Everything here is <span class="newtag">new</span>.</p>
+
+<div class="principles">
+  <div><h3><i>1</i> A repeat is part of the plan</h3><p>One plan with a rule ("every Thursday until 17 December"), not a pile of copies. Everyone's device works out the dates from the rule.</p></div>
+  <div><h3><i>2</i> You answer one date</h3><p>Coming this Thursday says nothing about next Thursday. A switch answers every date at once, for the regulars.</p></div>
+  <div><h3><i>3</i> The planner can skip or stop</h3><p>"Not on 29 October" and "stop after this one" change the plan for everybody. Both are said in the chat, so nobody misses it.</p></div>
+  <div><h3><i>4</i> Older apps still see a meeting</h3><p>An app from before this shows the first date as an ordinary plan. Nobody gets a broken message; they just miss the later dates until they update.</p></div>
+</div>
+
+<div class="row">
+
+<!-- I. THE FORM -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i" style="color:var(--accent)"><use href="#back"/></svg><div class="av sm room c6" style="border-radius:10px">O</div><div class="who"><b>oosterparkwijk · # general</b><span>24 people</span></div></div>
+  <div class="form">
+    <div class="fh"><svg class="i s"><use href="#video"/></svg>Plan a meeting</div>
+    <div class="fs">A call in this chat at a time. Everybody here can say whether they come.</div>
+    <div class="fld">Buurtvergadering</div>
+    <div class="stepr"><div>−1 day</div><div>−15 min</div><div class="v">Thu 22 Oct, 20:00</div><div>+15 min</div><div>+1 day</div></div>
+    <div class="chipr"><div>30 min</div><div>1 h</div><div class="on">1½ h</div><div>2 h</div></div>
+    <div class="newbox">
+      <div class="lab2">Repeats <span class="newtag">new</span></div>
+      <div class="chipr"><div>Never</div><div class="on">Every week</div><div>Every 2 weeks</div><div>Every month</div></div>
+      <div class="lab2">Until</div>
+      <div class="stepr"><div>−1 week</div><div class="v">Thu 17 Dec · 9 times</div><div>+1 week</div></div>
+      <div class="chipr"><div>No end</div></div>
+    </div>
+    <div class="fld dim" style="height:62px">Agenda, one item a line<br>Budget 10</div>
+    <div class="fbtn"><div>Cancel</div><div class="p">Post the plan</div></div>
+  </div>
+</div>
+<h2><span>I</span>Planning it</h2>
+<ul>
+  <li>The chat's <b>Plan a meeting</b> form, as it is today, plus <b>Repeats</b>: never, every week, every 2 weeks, or every month.</li>
+  <li><b>Every month</b> means the same weekday of the month ("every 4th Thursday"), which is how neighbourhood meetings are usually set. A date that doesn't exist in a month (a 5th Thursday) is skipped.</li>
+  <li><b>Until</b> steps by a week and says how many meetings that makes. <b>No end</b> is allowed.</li>
+</ul>
+</div>
+
+<!-- J. IN THE CALENDAR -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="seg cseg"><div class="on">List</div><div>Month</div></div>
+  <div class="agenda">
+    <div class="dayh">Thursday 22</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><span class="rep"><svg class="i s"><use href="#rep"/></svg>weekly</span> · oosterparkwijk</span></div><span class="ans g">Going</span></div>
+    <div class="dayh">Thursday 29</div>
+    <div class="ev no"><div class="tm">20:00</div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span>Skipped by you</span></div><span class="ans n">Skipped</span></div>
+    <div class="dayh">Thursday 5 November</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><span class="rep"><svg class="i s"><use href="#rep"/></svg>weekly</span> · oosterparkwijk</span></div><span class="ans g">Going</span></div>
+    <div class="dayh">Thursday 12 November</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><span class="rep"><svg class="i s"><use href="#rep"/></svg>weekly</span> · oosterparkwijk</span></div><span class="ans m">Maybe</span></div>
+    <div class="dayh">Thursday 19 November</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><span class="rep"><svg class="i s"><use href="#rep"/></svg>weekly</span> · oosterparkwijk</span></div><span class="ans g">Going</span></div>
+    <div class="dayh">Thursday 26 November</div>
+    <div class="ev"><div class="tm">20:00<small>1½ h</small></div><div class="bar2"></div><div class="t"><b>Buurtvergadering</b><span><span class="rep"><svg class="i s"><use href="#rep"/></svg>weekly</span> · oosterparkwijk</span></div><span class="ans g">Going</span></div>
+  </div>
+</div>
+<h2><span>J</span>Every date, in the calendar</h2>
+<ul>
+  <li>Each date is its own row, marked <b>↻ weekly</b>, with your answer for <b>that date</b>.</li>
+  <li>A skipped date stays on the list, faded, saying who skipped it, so a regular doesn't turn up to an empty call.</li>
+  <li>Here you answered Going to every date and then Maybe for 12 November: one date's own answer wins over the answer for all of them.</li>
+</ul>
+</div>
+
+<!-- K. ONE DATE, OPENED -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="ctop"><div class="back"><svg class="i"><use href="#back"/></svg>Community</div><h3>Calendar</h3><div class="plus"><svg class="i"><use href="#plus"/></svg></div></div>
+  <div class="scrim2"></div>
+  <div class="detail">
+    <div class="handle"></div>
+    <div class="kind"><svg class="i s"><use href="#video"/></svg>Meeting · a call</div>
+    <h4>Buurtvergadering</h4>
+    <div class="when">Thursday 5 November, 20:00 – 21:30</div>
+    <div class="when" style="color:var(--accent);display:flex;gap:5px;align-items:center;font-size:13px"><svg class="i s"><use href="#rep"/></svg>Every Thursday until 17 December · 3rd of 9</div>
+    <div class="from"><div class="av room c6">O</div>oosterparkwijk · # general · planned by you</div>
+    <div class="twobtn"><div class="on">This date</div><div>Every date</div></div>
+    <div class="rsvp"><div class="g">Going</div><div>Maybe</div><div>Can't come</div></div>
+    <div class="who">
+      <div class="w"><span class="lab">Going 7</span><span class="names">you, Karim, Fatima, Joris, +3</span></div>
+      <div class="w"><span class="lab">Maybe 2</span><span class="names">Daan, mei</span></div>
+      <div class="w"><span class="lab">No answer 15</span><span class="names"></span></div>
+    </div>
+    <div class="btns"><div><svg class="i s"><use href="#chat"/></svg>Open chat</div><div class="off"><svg class="i s"><use href="#video"/></svg>Join · from 19:50</div></div>
+    <div class="host">
+      <div class="hh">You planned this</div>
+      <div class="btns"><div><svg class="i s"><use href="#skip"/></svg>Skip 5 November</div><div style="color:#ff8a7a"><svg class="i s"><use href="#stop"/></svg>Stop after this</div></div>
+    </div>
+  </div>
+</div>
+<h2><span>K</span>One date, opened</h2>
+<ul>
+  <li>The rule is under the time: how often, until when, and which meeting of the series this is.</li>
+  <li><b>This date | Every date</b> picks what your answer applies to. It starts on <b>This date</b>.</li>
+  <li>Only the person who planned it sees <b>Skip</b> and <b>Stop after this</b>. Other people's apps ignore a skip or stop sent by anyone else.</li>
+</ul>
+</div>
+
+<!-- L. IN THE CHAT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i" style="color:var(--accent)"><use href="#back"/></svg><div class="av sm room c6" style="border-radius:10px">O</div><div class="who"><b>oosterparkwijk · # general</b><span>24 people</span></div></div>
+  <div class="thread">
+    <div class="day">Saturday</div>
+    <div class="pcard">
+      <div class="snd">You</div>
+      <b>📅 Buurtvergadering</b>
+      <div class="w">Every Thursday, 20:00 – 21:30, until 17 December</div>
+      <div class="nx">Next: Thursday 22 October · 7 going</div>
+      <div class="ansr"><div class="g">Going</div><div>Maybe</div><div>Can't come</div></div>
+    </div>
+    <div class="bub2"><span class="snd">Karim</span>29 oktober ben ik er niet, en Fatima ook niet</div>
+    <div class="day">Today</div>
+    <div class="sysl"><svg class="i s"><use href="#skip"/></svg>You skipped Buurtvergadering on Thursday 29 October</div>
+    <div class="bub2"><span class="snd">Fatima</span>Top, dank!</div>
+  </div>
+  <div class="old"><b>In an app from before this change</b>, the card shows only "Buurtvergadering, Thursday 22 October, 20:00". The skip shows as "(a message this version can't display)", as any unknown message does today.</div>
+</div>
+<h2><span>L</span>How it reads in the chat</h2>
+<ul>
+  <li>The plan's card names the rule and the next date, and answers on the card apply to that next date.</li>
+  <li>A skip or a stop is a small line in the chat, said once, rather than a second card.</li>
+  <li>The web page's existing "download as a calendar file" button includes the rule, so a repeating meeting downloads as a repeating event.</li>
+</ul>
+</div>
+
+</div>
+
+<h2 class="sec-h"><span>3</span>What changes in the message</h2>
+<p class="sec-p">Plans are ActivityStreams objects sealed inside the chat (<code>cartopolis_core::meeting</code>, mirrored in the web's <code>meeting.ts</code>). Three fields are added and one kind of message. No server change and no wire protocol change, since the server can't read any of it.</p>
+<table class="src">
+  <tr><th></th><th>Added</th><th>What an older app does with it</th></tr>
+  <tr><td>The plan</td><td><code>cartopolis:repeat</code>: how often (<code>week</code> or <code>month</code>), every how many (1 or 2), and an optional <code>until</code>. Also <code>cartopolis:skip</code>: the dates taken out.</td><td>Ignores the fields and shows the first date, as today.</td></tr>
+  <tr><td>An answer</td><td><code>cartopolis:date</code>, the start of the date it answers, or <code>cartopolis:every</code> for all of them. An answer with neither counts for the first date.</td><td>Ignores the field. An answer sent by an older app counts for the first date.</td></tr>
+  <tr><td>Skip, stop</td><td>An ActivityStreams <code>Update</code> carrying the plan again with its new <code>cartopolis:skip</code> or <code>until</code>. Only one from the plan's own author is believed; the newest counts.</td><td>Shows "(a message this version can't display)".</td></tr>
+</table>
+
+</body></html>
