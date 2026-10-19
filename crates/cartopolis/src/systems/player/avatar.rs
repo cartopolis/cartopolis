@@ -623,39 +623,13 @@ pub fn spawn_avatar(
             &mut commands,
             &mut human,
             &mut clip_assets,
-            &pack,
-            &look,
+            human_avatar::prepare_human(&pack, &look),
             tints,
             entity,
             AvatarHolder,
+            false,
         );
-        let (graph, indices) = AnimationGraph::from_clips(spawned.clips);
-        let anims = AvatarAnimations {
-            graph_handle: graphs.add(graph),
-            idle_index: indices[0],
-            walk_index: indices[1],
-            run_index: indices[2],
-            // Flight has no clip of its own; the forward lean in
-            // `update_avatar_model_pose` is what distinguishes it from standing.
-            fly_index: indices[0],
-            emote_indices: indices[3..indices.len() - 1].to_vec(),
-            sit_index: indices[indices.len() - 1],
-            speed: 1.0,
-            walk: spawned.walk,
-            run: spawned.run,
-            emote_secs: spawned.emote_secs,
-        };
-        let mut player = AnimationPlayer::default();
-        let mut transitions = AnimationTransitions::new();
-        transitions
-            .play(&mut player, anims.idle_index, Duration::ZERO)
-            .repeat();
-        commands.entity(spawned.holder).insert((
-            anims.clone(),
-            player,
-            transitions,
-            AnimationGraphHandle(anims.graph_handle.clone()),
-        ));
+        let anims = animate_holder(&mut commands, &mut graphs, spawned, None);
         transform.scale = Vec3::ONE;
         // `try_insert`: the query includes remote avatars, which
         // `session::teardown` despawns wholesale when a link drops, and nothing
@@ -665,6 +639,71 @@ pub fn spawn_avatar(
             .try_insert((AvatarModelLoaded, anims));
         tracing::debug!(local = is_local, "avatar: body built");
     }
+}
+
+/// Give a spawned body's holder its animation graph and player, and return
+/// the table its avatar carries.
+///
+/// `from` is the body it replaces (`human_avatar::finish_rebuilds`): the new
+/// one starts on the same clip at the same point, playing at the same speed,
+/// so a rebuild in mid-stride carries on the stride rather than snapping to
+/// the clip's first frame. Both graphs are built from `CLIP_ORDER`, so a node
+/// index means the same clip in each.
+pub(crate) fn animate_holder(
+    commands: &mut Commands,
+    graphs: &mut Assets<AnimationGraph>,
+    spawned: human_avatar::SpawnedHuman,
+    from: Option<(&AnimationPlayer, &AnimationTransitions)>,
+) -> AvatarAnimations {
+    let (graph, indices) = AnimationGraph::from_clips(spawned.clips);
+    let anims = AvatarAnimations {
+        graph_handle: graphs.add(graph),
+        idle_index: indices[0],
+        walk_index: indices[1],
+        run_index: indices[2],
+        // Flight has no clip of its own; the forward lean in
+        // `update_avatar_model_pose` is what distinguishes it from standing.
+        fly_index: indices[0],
+        emote_indices: indices[3..indices.len() - 1].to_vec(),
+        sit_index: indices[indices.len() - 1],
+        speed: 1.0,
+        walk: spawned.walk,
+        run: spawned.run,
+        emote_secs: spawned.emote_secs,
+    };
+    let mut player = AnimationPlayer::default();
+    let mut transitions = AnimationTransitions::new();
+    let playing = from.and_then(|(player, transitions)| {
+        let node = transitions.get_main_animation()?;
+        let active = player.animation(node)?;
+        Some((
+            node,
+            active.repeat_mode(),
+            active.speed(),
+            active.seek_time(),
+        ))
+    });
+    match playing {
+        Some((node, repeat, speed, seek)) => {
+            transitions
+                .play(&mut player, node, Duration::ZERO)
+                .set_repeat(repeat)
+                .set_speed(speed)
+                .set_seek_time(seek);
+        }
+        None => {
+            transitions
+                .play(&mut player, anims.idle_index, Duration::ZERO)
+                .repeat();
+        }
+    }
+    commands.entity(spawned.holder).insert((
+        anims.clone(),
+        player,
+        transitions,
+        AnimationGraphHandle(anims.graph_handle.clone()),
+    ));
+    anims
 }
 
 /// What an avatar's body is doing this frame: which clip, how fast, and whether

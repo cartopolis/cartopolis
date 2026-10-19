@@ -23,6 +23,7 @@ impl Plugin for PlayerPlugin {
             .init_asset_loader::<systems::human_avatar::HumanTextureLoader>()
             .init_resource::<systems::human_avatar::HumanDraft>()
             .init_resource::<systems::human_avatar::RemoteLooks>()
+            .init_resource::<systems::human_avatar::HumanTextures>()
             .add_systems(Startup, systems::human_avatar::load_human_pack);
         app.init_resource::<systems::touch::TouchGestures>()
             // What the camera is riding along with (`systems::camera_attach`).
@@ -198,10 +199,12 @@ impl Plugin for PlayerPlugin {
                 avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
                 avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
                 avatar::pin_avatar_animation.after(avatar::update_avatar_animation),
-                // Unordered against the spawn: the avatar it drops is rebuilt on
-                // this frame or the next. Ordering it before would contradict the
-                // phase this tuple runs in, which follows the spawn's.
+                // A changed look is built on a worker and swapped in whole
+                // (`human_avatar::HumanRebuild`); the old body stays drawn
+                // until then, so neither needs ordering against the spawn.
                 systems::human_avatar::rebuild_on_look_change,
+                systems::human_avatar::finish_rebuilds
+                    .after(systems::human_avatar::rebuild_on_look_change),
                 systems::human_avatar::send_avatar_look,
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::gizmo::render_gizmo_visuals,

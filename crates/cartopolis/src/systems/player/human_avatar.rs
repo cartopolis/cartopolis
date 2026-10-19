@@ -166,9 +166,32 @@ pub(crate) struct HumanAssets<'w> {
     meshes: ResMut<'w, Assets<Mesh>>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
     bindposes: ResMut<'w, Assets<SkinnedMeshInverseBindposes>>,
+    textures: ResMut<'w, HumanTextures>,
 }
 
+/// Every pack texture the designer has shown this time it is open, held so
+/// that going back to a skin or a hair tried a moment ago is not another load
+/// and encode (352 ms of worker time for the default man). Emptied when the
+/// designer closes; what the avatars wear stays loaded through their own
+/// materials.
+#[derive(Resource, Default)]
+pub(crate) struct HumanTextures(std::collections::HashMap<String, Handle<Image>>);
+
 impl HumanAssets<'_> {
+    /// A pack texture by its file name, kept while the designer is open.
+    fn texture(&mut self, name: &str) -> Handle<Image> {
+        if let Some(h) = self.textures.0.get(name) {
+            return h.clone();
+        }
+        let h = self
+            .asset_server
+            .load(format!("{PACK_DIR}/textures/{name}"));
+        if self.draft.0.is_some() {
+            self.textures.0.insert(name.to_string(), h.clone());
+        }
+        h
+    }
+
     /// The look the local avatar should be built in now ([`current_look`]).
     pub(crate) fn look(&self, appearance: &AvatarAppearance) -> (Look, Tints) {
         look_for(&current_look(appearance, &self.draft))
@@ -361,110 +384,123 @@ pub(crate) struct SpawnedHuman {
     pub emote_secs: Vec<f32>,
 }
 
-/// Build `look` and put it under `parent` as one holder. `holder` bundles what
-/// the caller's avatar code tags a holder with.
-pub(crate) fn spawn_human(
-    commands: &mut Commands,
-    assets: &mut HumanAssets,
-    clip_assets: &mut Assets<AnimationClip>,
-    pack: &HumanPack,
-    look: &Look,
-    tints: Tints,
-    parent: Entity,
-    holder: impl Bundle,
-) -> SpawnedHuman {
+/// A person built and turned into engine data — meshes, clips, the joints'
+/// rest transforms — with nothing yet in the world. Everything here is plain
+/// data, so it can be made on a worker ([`prepare_human`]); only
+/// [`spawn_human`]'s asset handles and entities need the main thread.
+pub(crate) struct PreparedHuman {
+    joints: Vec<PreparedJoint>,
+    inverse_binds: Vec<Mat4>,
+    parts: Vec<(Mesh, HumanPart, Name)>,
+    /// One per [`CLIP_ORDER`] name; `None` plays the idle, which is first.
+    clips: Vec<Option<AnimationClip>>,
+    walk: ClipGait,
+    run: ClipGait,
+    emote_secs: Vec<f32>,
+    height: f32,
+    vertices: usize,
+    built_ms: f32,
+    missing_targets: usize,
+}
+
+struct PreparedJoint {
+    name: Name,
+    parent: Option<usize>,
+    transform: Transform,
+    target: AnimationTargetId,
+}
+
+/// What a drawn part of a person is, kept on its mesh entity so a colour
+/// change can repaint it without building the person again
+/// ([`rebuild_on_look_change`]).
+#[derive(Component, Clone, Debug)]
+pub(crate) struct HumanPart {
+    kind: PartKind,
+    region: u8,
+    texture: Option<String>,
+    alpha: bool,
+    default_tint: Option<[u8; 3]>,
+}
+
+/// Build `look` from `pack` into [`PreparedHuman`]: the shaping, the fitting
+/// and the retargeting, then the meshes and clips made of them. Pure CPU work
+/// with no world access — a few milliseconds natively, more on a phone — so a
+/// rebuild runs it on `platform::workers` and the frame never waits for it.
+pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
     let started = bevy::platform::time::Instant::now();
     let model = cartopolis_human::build(pack, look);
-    let built_ms = started.elapsed().as_secs_f32() * 1000.0;
 
-    let holder_name = Name::new("human");
-    let holder = commands
-        .spawn((
-            holder,
-            holder_name.clone(),
-            Transform::default(),
-            Visibility::default(),
-            ChildOf(parent),
-        ))
-        .id();
-
-    // Joints, parents first (the model's order), each bound to the holder's
-    // player by its name path.
+    // Each joint's animation target is its name path from the holder, the
+    // binding `bevy_gltf` would have made.
+    let holder_name = Name::new(HOLDER_NAME);
     let mut paths: Vec<Vec<Name>> = Vec::with_capacity(model.joints.len());
-    let mut joints: Vec<Entity> = Vec::with_capacity(model.joints.len());
-    for j in &model.joints {
-        let mut path = match j.parent {
-            Some(p) => paths[p].clone(),
-            None => vec![holder_name.clone()],
-        };
-        path.push(Name::new(j.name.clone()));
-        let entity = commands
-            .spawn((
-                Name::new(j.name.clone()),
-                Transform {
+    let joints = model
+        .joints
+        .iter()
+        .map(|j| {
+            let mut path = match j.parent {
+                Some(p) => paths[p].clone(),
+                None => vec![holder_name.clone()],
+            };
+            path.push(Name::new(j.name.clone()));
+            let target = AnimationTargetId::from_names(path.iter());
+            paths.push(path);
+            PreparedJoint {
+                name: Name::new(j.name.clone()),
+                parent: j.parent,
+                transform: Transform {
                     translation: Vec3::from_array(j.translation),
                     rotation: Quat::from_array(j.rotation),
                     scale: Vec3::ONE,
                 },
-                Visibility::default(),
-                AnimationTargetId::from_names(path.iter()),
-                AnimatedBy(holder),
-                ChildOf(j.parent.map_or(holder, |p| joints[p])),
-            ))
-            .id();
-        paths.push(path);
-        joints.push(entity);
-    }
-    let bindposes = assets.bindposes.add(SkinnedMeshInverseBindposes::from(
-        model
-            .joints
-            .iter()
-            .map(|j| Mat4::from_cols_array(&j.inverse_bind))
-            .collect::<Vec<_>>(),
-    ));
+                target,
+            }
+        })
+        .collect();
+    let inverse_binds = model
+        .joints
+        .iter()
+        .map(|j| Mat4::from_cols_array(&j.inverse_bind))
+        .collect();
 
     let mut vertices = 0;
-    for part in &model.parts {
-        vertices += part.positions.len();
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs.clone());
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_JOINT_INDEX,
-            VertexAttributeValues::Uint16x4(part.joints.clone()),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, part.weights.clone());
-        mesh.insert_indices(Indices::U32(part.indices.clone()));
-        let material = material_for(part, &assets.asset_server, tints);
-        commands.spawn((
-            Name::new(part.name.clone()),
-            Mesh3d(assets.meshes.add(mesh)),
-            MeshMaterial3d(assets.materials.add(material)),
-            SkinnedMesh {
-                inverse_bindposes: bindposes.clone(),
-                joints: joints.clone(),
-            },
-            Transform::default(),
-            Visibility::default(),
-            ChildOf(holder),
-        ));
-    }
+    let parts = model
+        .parts
+        .iter()
+        .map(|part| {
+            vertices += part.positions.len();
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs.clone());
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_JOINT_INDEX,
+                VertexAttributeValues::Uint16x4(part.joints.clone()),
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, part.weights.clone());
+            mesh.insert_indices(Indices::U32(part.indices.clone()));
+            let info = HumanPart {
+                kind: part.kind,
+                region: part.region,
+                texture: part.texture.clone(),
+                alpha: part.alpha,
+                default_tint: part.default_tint,
+            };
+            (mesh, info, Name::new(part.name.clone()))
+        })
+        .collect();
 
     let find = |name: &str| model.clips.iter().find(|c| c.name == name);
-    let idle = clip_assets.add(
-        find("idle")
-            .map(|c| animation_clip(c, &model, &paths))
-            .unwrap_or_default(),
-    );
     let clips = CLIP_ORDER
         .iter()
         .map(|name| match find(name) {
-            Some(c) if *name != "idle" => clip_assets.add(animation_clip(c, &model, &paths)),
-            _ => idle.clone(),
+            Some(c) => Some(animation_clip(c, &model, &paths)),
+            // An idle the pack lacks is still a clip, an empty one.
+            None if *name == "idle" => Some(AnimationClip::default()),
+            None => None,
         })
         .collect();
     // A captured cycle's own length and speed; a pack without the clip keeps
@@ -477,60 +513,150 @@ pub(crate) fn spawn_human(
                 speed: c.speed,
             })
     };
-    let walk = gait("walk", ClipGait::CHARACTER_WALK);
-    let run = gait("run", ClipGait::CHARACTER_RUN);
     // A gesture the pack lacks plays the idle, for as long as the characters'
     // emotes last.
     let emote_secs = CLIP_ORDER[3..9]
         .iter()
         .map(|n| find(n).map_or(1.6, |c| c.duration()))
         .collect();
+    PreparedHuman {
+        joints,
+        inverse_binds,
+        parts,
+        clips,
+        walk: gait("walk", ClipGait::CHARACTER_WALK),
+        run: gait("run", ClipGait::CHARACTER_RUN),
+        emote_secs,
+        height: model.height,
+        vertices,
+        built_ms: started.elapsed().as_secs_f32() * 1000.0,
+        missing_targets: model.missing_targets.len(),
+    }
+}
+
+/// The holder's name, the root of every joint's animation target path.
+const HOLDER_NAME: &str = "human";
+
+/// Put a prepared person under `parent` as one holder. `holder` bundles what
+/// the caller's avatar code tags a holder with. With `hidden`, every mesh is
+/// spawned hidden, for a rebuild to show once its textures are in
+/// ([`finish_rebuilds`]) — the holder's own visibility stays the first-person
+/// and driver systems' to write.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_human(
+    commands: &mut Commands,
+    assets: &mut HumanAssets,
+    clip_assets: &mut Assets<AnimationClip>,
+    prepared: PreparedHuman,
+    tints: Tints,
+    parent: Entity,
+    holder: impl Bundle,
+    hidden: bool,
+) -> SpawnedHuman {
+    let holder = commands
+        .spawn((
+            holder,
+            Name::new(HOLDER_NAME),
+            Transform::default(),
+            Visibility::default(),
+            ChildOf(parent),
+        ))
+        .id();
+
+    // Joints, parents first (the model's order), each bound to the holder's
+    // player.
+    let mut joints: Vec<Entity> = Vec::with_capacity(prepared.joints.len());
+    for j in prepared.joints {
+        let entity = commands
+            .spawn((
+                j.name,
+                j.transform,
+                Visibility::default(),
+                j.target,
+                AnimatedBy(holder),
+                ChildOf(j.parent.map_or(holder, |p| joints[p])),
+            ))
+            .id();
+        joints.push(entity);
+    }
+    let bindposes = assets
+        .bindposes
+        .add(SkinnedMeshInverseBindposes::from(prepared.inverse_binds));
+
+    let parts = prepared.parts.len();
+    for (mesh, info, name) in prepared.parts {
+        let material = material_for(&info, assets, tints);
+        commands.spawn((
+            name,
+            Mesh3d(assets.meshes.add(mesh)),
+            MeshMaterial3d(assets.materials.add(material)),
+            SkinnedMesh {
+                inverse_bindposes: bindposes.clone(),
+                joints: joints.clone(),
+            },
+            info,
+            Transform::default(),
+            if hidden {
+                Visibility::Hidden
+            } else {
+                Visibility::default()
+            },
+            ChildOf(holder),
+        ));
+    }
+
+    let mut clips_in = prepared.clips.into_iter();
+    let idle = clip_assets.add(clips_in.next().flatten().unwrap_or_default());
+    let clips = std::iter::once(idle.clone())
+        .chain(clips_in.map(|c| c.map_or_else(|| idle.clone(), |c| clip_assets.add(c))))
+        .collect();
 
     tracing::info!(
-        height_m = model.height,
-        joints = model.joints.len(),
-        parts = model.parts.len(),
-        vertices,
-        built_ms,
-        missing_targets = model.missing_targets.len(),
+        height_m = prepared.height,
+        joints = joints.len(),
+        parts,
+        vertices = prepared.vertices,
+        built_ms = prepared.built_ms,
+        missing_targets = prepared.missing_targets,
         "avatar: MakeHuman body built"
     );
     SpawnedHuman {
         holder,
         clips,
-        walk,
-        run,
-        emote_secs,
+        walk: prepared.walk,
+        run: prepared.run,
+        emote_secs: prepared.emote_secs,
     }
 }
 
-fn material_for(
-    part: &cartopolis_human::Part,
-    asset_server: &AssetServer,
-    tints: Tints,
-) -> StandardMaterial {
+/// The tint a part takes under `tints`: the look's for this part if it names
+/// one, else the colour the pack recorded for it; `None` for an authored
+/// texture, which takes none.
+fn tint_for(part: &HumanPart, tints: Tints) -> Option<[u8; 3]> {
     use cartopolis_human::ProxyKind;
-    let texture = part
-        .texture
-        .as_ref()
-        .map(|t| asset_server.load(format!("{PACK_DIR}/textures/{t}")));
-    let mut m = StandardMaterial {
-        base_color_texture: texture,
-        perceptual_roughness: 0.75,
-        reflectance: 0.35,
-        ..default()
-    };
-    // A neutral texture takes its colour as a tint: the look's for this part
-    // if it names one, else the colour the pack recorded for it.
     let chosen = match part.kind {
         PartKind::Proxy(ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes) => tints.hair,
         PartKind::Proxy(ProxyKind::Outfit) if part.region == 0 => tints.top,
         PartKind::Proxy(ProxyKind::Outfit) => tints.bottom,
         _ => None,
     };
-    if let Some(c) = chosen.or(part.default_tint) {
-        m.base_color = Color::srgb_u8(c[0], c[1], c[2]);
-    }
+    chosen.or(part.default_tint)
+}
+
+fn base_colour(part: &HumanPart, tints: Tints) -> Color {
+    tint_for(part, tints).map_or(Color::WHITE, |c| Color::srgb_u8(c[0], c[1], c[2]))
+}
+
+fn material_for(part: &HumanPart, assets: &mut HumanAssets, tints: Tints) -> StandardMaterial {
+    use cartopolis_human::ProxyKind;
+    let texture = part.texture.as_ref().map(|t| assets.texture(t));
+    let mut m = StandardMaterial {
+        base_color: base_colour(part, tints),
+        base_color_texture: texture,
+        perceptual_roughness: 0.75,
+        reflectance: 0.35,
+        ..default()
+    };
     if let PartKind::Proxy(kind) = part.kind {
         if part.alpha {
             m.alpha_mode = AlphaMode::Mask(0.5);
@@ -584,59 +710,137 @@ fn animation_clip(
     out
 }
 
-/// The shortest gap between two rebuilds of the avatar while a look changes.
-/// A rebuild is a few milliseconds of shaping and fitting, then every mesh
-/// uploaded again (about 1.5 MB), so a slider drag rebuilds several times a
-/// second rather than every frame.
-const REBUILD_SECS: f32 = 0.15;
+/// The shortest gap between two rebuilds started while a look changes. The
+/// build itself runs on a worker, so this is not about the frame: it bounds
+/// how much mesh a slider drag uploads, about 1.5 MB a body.
+const REBUILD_SECS: f32 = 0.1;
 
-/// Rebuild the local MakeHuman avatar when the look it should wear changes —
-/// a slider moved in the designer, a look saved or abandoned.
+/// How many frames a rebuilt body waits, hidden, after its textures are in,
+/// before it replaces the old one: its meshes go up on the render thread, a
+/// frame behind, and a body shown before they have is not drawn at all — the
+/// flicker this whole arrangement exists to prevent.
+const SWAP_FRAMES: u8 = 2;
+
+/// An avatar whose body is being built again in a new look. The old body
+/// stays on screen until the new one can be drawn whole ([`finish_rebuilds`]).
 ///
-/// The rebuild is `spawn_avatar`'s own: the avatar's model is despawned and its
-/// markers dropped, and the next frame builds it fresh from [`current_look`].
+/// Rebuilding used to despawn the body and let `spawn_avatar` build the next
+/// one on the following frame: every slider step left frames with no body —
+/// none at all until the new meshes were up, and a white one until any
+/// texture dropped with the old materials had been loaded and encoded again —
+/// and restarted the clip from its first frame: on the designer's sliders, a
+/// body flickering as it was dragged (reported 2026-10-19).
+#[derive(Component)]
+pub(crate) enum HumanRebuild {
+    /// Being built on a worker.
+    Building {
+        receiver: futures_channel::oneshot::Receiver<PreparedHuman>,
+        tints: Tints,
+    },
+    /// Spawned with its meshes hidden, waiting for its textures; `ready`
+    /// counts the frames since they arrived.
+    Showing {
+        holder: Entity,
+        anims: super::avatar::AvatarAnimations,
+        ready: u8,
+    },
+}
+
+/// Build `look` for `avatar` on a worker; [`finish_rebuilds`] takes it from
+/// there.
+fn start_rebuild(commands: &mut Commands, avatar: Entity, pack: Arc<HumanPack>, look: &HumanLook) {
+    use crate::platform::workers;
+    let (look, tints) = look_for(look);
+    let (done, receiver) = futures_channel::oneshot::channel();
+    // Near: it is a body on screen, being looked at.
+    workers::submit_ranked(
+        "avatar body",
+        workers::NEAR,
+        Box::new(move || {
+            let _ = done.send(prepare_human(&pack, &look));
+        }),
+    );
+    commands
+        .entity(avatar)
+        .try_insert(HumanRebuild::Building { receiver, tints });
+}
+
+/// Whether two looks are the same body in the same clothes, whatever their
+/// colours: a colour is a material's base colour over a neutral texture, so a
+/// change of colour alone repaints the body rather than building it again.
+fn same_body(a: &HumanLook, b: &HumanLook) -> bool {
+    let shape = |l: &HumanLook| HumanLook {
+        hair_colour: None,
+        top_colour: None,
+        bottom_colour: None,
+        ..l.clone()
+    };
+    shape(a) == shape(b)
+}
+
+/// Rebuild an avatar's MakeHuman body when the look it should wear changes —
+/// a slider moved in the designer, a look saved or abandoned, another
+/// player's look arriving — or repaint it, when only a colour changed.
+///
+/// One rebuild per avatar at a time: a look that changes while its body is
+/// being built is started once that build is done, so a drag ends on the look
+/// it stopped at.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rebuild_on_look_change(
     mut commands: Commands,
     store: Res<crate::systems::user_store::UserStore>,
     draft: Res<HumanDraft>,
     mut remote_looks: ResMut<RemoteLooks>,
+    handle: Option<Res<HumanPackHandle>>,
+    packs: Res<Assets<HumanPackAsset>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut textures: ResMut<HumanTextures>,
     time: Res<Time>,
     children: Query<&Children>,
+    parts: Query<(&HumanPart, &MeshMaterial3d<StandardMaterial>)>,
     avatars: Query<
-        Entity,
+        (Entity, Has<HumanRebuild>),
         (
             With<crate::components::Avatar>,
             With<crate::components::AvatarModelLoaded>,
         ),
     >,
     remotes: Query<
-        (Entity, &crate::components::RemoteAvatar),
+        (Entity, &crate::components::RemoteAvatar, Has<HumanRebuild>),
         With<crate::components::AvatarModelLoaded>,
     >,
     mut last: Local<Option<HumanLook>>,
     mut since: Local<f32>,
 ) {
-    let mut unbuild = |entity: Entity| {
-        let model: Vec<Entity> = children.iter_descendants(entity).collect();
-        for e in model {
-            commands.entity(e).try_despawn();
-        }
-        commands.entity(entity).try_remove::<(
-            crate::components::AvatarModelLoaded,
-            super::avatar::AvatarAnimations,
-        )>();
+    // Closing the designer lets go of the textures it was keeping.
+    if draft.0.is_none() && !textures.0.is_empty() {
+        textures.0.clear();
+    }
+    let Some(pack) = handle
+        .as_ref()
+        .and_then(|h| packs.get(&h.0))
+        .map(|p| p.0.clone())
+    else {
+        return;
     };
+
     // Another avatar's look arrived after its model was built (it changed it,
     // or the look came after the snapshot): build it again in the new one.
     if !remote_looks.changed.is_empty() {
-        for (entity, remote) in &remotes {
-            if remote_looks.changed.contains(&remote.sim_id) {
-                unbuild(entity);
+        let mut later = std::collections::HashSet::new();
+        for (entity, remote, rebuilding) in &remotes {
+            if !remote_looks.changed.contains(&remote.sim_id) {
+                continue;
+            }
+            if rebuilding {
+                later.insert(remote.sim_id);
+            } else {
+                let look = remote_looks.look_of(remote.sim_id);
+                start_rebuild(&mut commands, entity, pack.clone(), &look);
             }
         }
         // An avatar not built yet will be built in its latest look anyway.
-        remote_looks.changed.clear();
+        remote_looks.changed = later;
     }
 
     *since += time.delta_secs();
@@ -644,8 +848,35 @@ pub(crate) fn rebuild_on_look_change(
     if last.as_ref() == Some(&want) {
         return;
     }
-    // The first look is the one the avatar was built with.
-    if last.is_none() {
+    // The first look is the one the avatar was built with; so is any look
+    // that changes before it has been.
+    let Some(was) = last.clone().filter(|_| !avatars.is_empty()) else {
+        *last = Some(want);
+        return;
+    };
+    if avatars.iter().any(|(_, rebuilding)| rebuilding) {
+        return;
+    }
+    if same_body(&was, &want) {
+        let (_, tints) = look_for(&want);
+        for (avatar, _) in &avatars {
+            for e in children.iter_descendants(avatar) {
+                let Ok((part, material)) = parts.get(e) else {
+                    continue;
+                };
+                let colour = base_colour(part, tints);
+                // Read first: `get_mut` re-prepares the material even when
+                // nothing changed.
+                if materials
+                    .get(&material.0)
+                    .is_some_and(|m| m.base_color != colour)
+                {
+                    if let Some(mut m) = materials.get_mut(&material.0) {
+                        m.base_color = colour;
+                    }
+                }
+            }
+        }
         *last = Some(want);
         return;
     }
@@ -653,9 +884,123 @@ pub(crate) fn rebuild_on_look_change(
         return;
     }
     *since = 0.0;
+    for (avatar, _) in &avatars {
+        start_rebuild(&mut commands, avatar, pack.clone(), &want);
+    }
     *last = Some(want);
-    for entity in &avatars {
-        unbuild(entity);
+}
+
+/// Bring rebuilt bodies in: spawn each, hidden, as it comes back from its
+/// worker, starting its clip where the old body's is; once its textures are
+/// in and its meshes have had [`SWAP_FRAMES`] to reach the GPU, show it and
+/// drop the old one in the same frame.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_rebuilds(
+    mut commands: Commands,
+    mut rebuilds: Query<(Entity, &mut HumanRebuild)>,
+    mut human: HumanAssets,
+    mut clip_assets: ResMut<Assets<AnimationClip>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    children: Query<&Children>,
+    holders: Query<&Visibility, With<super::avatar::AvatarHolder>>,
+    players: Query<(&AnimationPlayer, &AnimationTransitions)>,
+    parts: Query<&MeshMaterial3d<StandardMaterial>, With<HumanPart>>,
+) {
+    for (avatar, mut rebuild) in &mut rebuilds {
+        let old_holders = || {
+            children
+                .get(avatar)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|e| holders.contains(*e))
+        };
+        match &mut *rebuild {
+            HumanRebuild::Building { receiver, tints } => {
+                let prepared = match receiver.try_recv() {
+                    Ok(Some(p)) => p,
+                    Ok(None) => continue,
+                    // The worker dropped it (a panic in the build): keep the
+                    // body there is.
+                    Err(_) => {
+                        commands.entity(avatar).try_remove::<HumanRebuild>();
+                        continue;
+                    }
+                };
+                let old = old_holders().next();
+                let spawned = spawn_human(
+                    &mut commands,
+                    &mut human,
+                    &mut clip_assets,
+                    prepared,
+                    *tints,
+                    avatar,
+                    super::avatar::AvatarHolder,
+                    true,
+                );
+                let holder = spawned.holder;
+                // Hidden or shown as the old one is: the first-person and
+                // driver systems own a holder's visibility.
+                if let Some(v) = old.and_then(|o| holders.get(o).ok()) {
+                    commands.entity(holder).insert(*v);
+                }
+                let anims = super::avatar::animate_holder(
+                    &mut commands,
+                    &mut graphs,
+                    spawned,
+                    old.and_then(|o| players.get(o).ok()),
+                );
+                *rebuild = HumanRebuild::Showing {
+                    holder,
+                    anims,
+                    ready: 0,
+                };
+            }
+            HumanRebuild::Showing {
+                holder,
+                anims,
+                ready,
+            } => {
+                let holder = *holder;
+                if !holders.contains(holder) {
+                    commands.entity(avatar).try_remove::<HumanRebuild>();
+                    continue;
+                }
+                let Ok(meshes) = children.get(holder) else {
+                    continue;
+                };
+                let loaded = meshes.iter().filter_map(|e| parts.get(e).ok()).all(|m| {
+                    human
+                        .materials
+                        .get(&m.0)
+                        .and_then(|m| m.base_color_texture.as_ref())
+                        .is_none_or(|t| {
+                            human.asset_server.is_loaded_with_dependencies(t)
+                                || matches!(
+                                    human.asset_server.load_state(t),
+                                    bevy::asset::LoadState::Failed(_)
+                                )
+                        })
+                });
+                if !loaded {
+                    continue;
+                }
+                *ready = ready.saturating_add(1);
+                if *ready <= SWAP_FRAMES {
+                    continue;
+                }
+                for e in meshes.iter().filter(|e| parts.contains(*e)) {
+                    commands.entity(e).try_insert(Visibility::Inherited);
+                }
+                for old in old_holders().filter(|e| *e != holder) {
+                    commands.entity(old).try_despawn();
+                }
+                commands
+                    .entity(avatar)
+                    .try_insert(anims.clone())
+                    .try_remove::<HumanRebuild>();
+            }
+        }
     }
 }
 
