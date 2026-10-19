@@ -1,7 +1,7 @@
 ---
 topic: makehuman-avatars
 triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH]
-updated: 2026-10-18
+updated: 2026-10-19
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
@@ -41,9 +41,9 @@ writes `assets/models/avatar/human/default.humanpack` (postcard) plus the
 textures beside it. Sources: mpfb2's `src/mpfb/data`, the MakeHuman system
 assets zip (`files2.makehumancommunity.org/asset_packs/makehuman_system_assets/`),
 and motion capture: 100STYLE's Neutral style (`zenodo.org/records/8127870`,
-CC BY 4.0) for walk, run and idle, and the CMU database's cgspeed BVH
+CC BY 4.0) for the idle, and the CMU database's cgspeed BVH
 (`github.com/una-dinosauria/cmu-mocap`, free for all uses but not for resale)
-for the gestures and the seat. The cuts — which take, which frames — are
+for the walk, the run, the gestures and the seat. The cuts — which take, which frames — are
 listed in `human-pack`.
 
 **The pack carries every macro target** (`TargetSet::Macros`), so the sliders
@@ -100,8 +100,8 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
   (before that, `Rushed`'s walk came out at 0.2 m/s).
 - **The gaits were chosen by speed** (`human-pack --probe`, 2026-10-17, on the
   default man): 100STYLE's Neutral walk is 0.86 m/s, and the game walks at
-  1.8 — twice its cadence. `Rushed` is 1.65 m/s on a 0.9 s cycle and plays at
-  1.1×. Every 100STYLE run is a jog (2.3 m/s at best, `Rushed`) and the game
+  1.8 — twice its cadence; `Rushed` (1.65 m/s) was taken and later replaced by
+  a CMU walk (below). Every 100STYLE run is a jog (2.3 m/s at best) and the game
   runs at 6 m/s; CMU 09_01 is a real run, 3.46 m/s on 0.73 s, played at 1.7×.
 - - **A capture rests in a T-pose and MakeHuman in an A-pose**, with different
   bone rolls, so clips cannot be copied channel for channel. They are stored as
@@ -112,7 +112,14 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
   straight at rest and MakeHuman's lean forward; without the turn the take's
   own neck lean was added to a neck that had it, and every clip looked at its
   feet. Each clip is then stood on the ground by its lowest ankle
-  (`rig::ground`), so no capture's floor height matters.
+  (`rig::ground`), so no capture's floor height matters, and then on its soles
+  (`build::plant_feet`, 2026-10-19): what is drawn below 12 cm at rest — feet
+  or shoes — is skinned through every frame, and the clip is lifted or lowered
+  so that its lowest point is at the ground in a quarter of the frames. The
+  ankle alone stood the idle's toes 3.3 cm in the ground and let the walk's
+  sole wander from 4.6 cm under to 1.6 cm over it; one frame's minimum would
+  have lifted the whole walk for a toe dipping at push-off.
+  `standing_clips_put_the_soles_on_the_ground` is the guard.
   `the_shipped_clips_play_like_people` is the guard: idle hands hang by the
   sides, and a walking ankle reaches the ground.
 
@@ -121,9 +128,26 @@ brows, lashes, hair, outfit and shoes — the Quaternius Adventurer file is abou
 The Appearance panel is `systems::avatar_designer` (`docs/mockups/avatar-designer`).
 A look is `cartopolis_core::AvatarLook` (the client calls it `HumanLook`): whole percents,
 RGB bytes and names, so it compares exactly and travels in about 150 bytes. While the panel is open
-the avatar wears the draft (`HumanDraft`) and is rebuilt at most every 0.15 s
-as it changes — each rebuild re-uploads about 1.5 MB of meshes — and closing it
-unsaved puts the saved look back.
+the avatar wears the draft (`HumanDraft`) and closing it unsaved puts the saved
+look back. **It opens on taps, not sliders**: eight starters and "Surprise
+me", a row of quick picks each for body shape, age, build (weight and muscle
+together) and height, and "Another face"; the sliders sit under "Fine-tune" and
+the face parts.
+
+**A changed look is swapped in, never rebuilt in place** (`HumanRebuild`,
+2026-10-19). The body is built on a worker (`prepare_human`), spawned with its
+meshes hidden beside the old one, and shown — the old one despawned in the same
+frame — once its textures are in and two more frames have let its meshes reach
+the GPU; its clip starts where the old body's was (`avatar::animate_holder`).
+Before, a rebuild despawned the body and built the next on the following
+frame: the body vanished on every slider step until its meshes were up, came
+back white while any texture dropped with the old materials was re-encoded,
+and restarted its clip — the flicker the designer had. A change of colour alone
+(hair, top, bottom) repaints the materials and builds nothing (`same_body`).
+One build per avatar at a time, at most every 0.1 s, each about 1.5 MB of mesh
+uploads; the designer keeps every texture it has shown (`HumanTextures`) until
+it closes, so going back to a skin or hair is not another 350 ms encode.
+Another player's new look goes through the same swap.
 
 Three things it does so the avatar can be seen while it is shaped:
 - **The model turns to the camera** (`update_avatar_model_pose`), which in
@@ -231,6 +255,43 @@ the library. Mixamo (no redistribution), Bandai Namco's set and LAFAN1
   — with a little movement through each cycle. The bend direction comes from
   the rest hand's own curl, so no bone roll had to be worked out; a test
   checks that a fist brings the fingertips toward the thumb's root.
+
+- **Clothes' skin weights are smoothed** (2026-10-19). A garment vertex
+  copies its weights from the one to three body vertices it hangs on, and
+  neighbours on a garment can hang on body vertices far apart: under the arm a
+  shirt vertex 86% on the chest sat beside one wholly on the upper arm, and
+  the casual suit spiked 21 cm at the armpit in the gestures and 13 cm at the
+  crotch in the walk. `fit::smooth_weights` (8 rounds of half-self,
+  half-neighbours over the garment's own edges, outfits, shoes and hats only)
+  brings every outfit under 5 cm in every upright clip but a skirt running
+  (6.6 cm). Measured by skinning each clip on the CPU — `clothes_do_not_spike`,
+  which is also the way to find the next one. The body's own weights were
+  never the problem.
+- **The shoulders** (2026-10-19). Every CMU clip — the run, the gestures,
+  the seat — shrugged: the shoulder joints sat level with the base of the neck
+  on average, where the rest pose and the 100STYLE clips hold them 9.4 cm
+  below it. `rig::settle_shoulders` turns each collarbone, once per clip, so
+  its average direction under the chest is 12° below the rest pose's
+  (`SHOULDER_DROP` — the rest pose raises the arms 45°, which lifts the
+  collarbones, and settled exactly at rest the walk still looked shrugged); the capture's
+  motion about it stays (a wave still lifts its shoulder), and the upper arm
+  keeps its world turn. `upright_clips_keep_the_shoulders_down` is the guard.
+  The cause on CMU's side (its rest pose or its collar joints) was not found.
+- **The walk is CMU 08_08, an ordinary walk** (2026-10-19). The first walk was
+  100STYLE `Rushed`, picked for its pace: it leaned the trunk (pelvis to neck)
+  13–25° forward, held the upper arm 15–47° behind the body and pumped the
+  elbow to 84° — a zombie, then, once code straightened the trunk and made an
+  arm swing, "the ministry of funny walks". Patching a hurried walk does not
+  make an ordinary one, so both patches were deleted and the walk replaced.
+  `human-pack --try-walk PACK FILE…` plays candidate takes on the default man
+  uncorrected and prints pace, cycle, trunk lean, arm swing and elbow bend; of
+  23 CMU walks, 08_08 is 1.76 m/s on a 0.92 s cycle (the game walks at 1.8, so
+  it plays at its own pace), trunk 3°, arms -26° to +19°. Subjects 35 and 16
+  walk at 1.0–1.2 m/s with the arms nearly still; 07_01 (1.37 m/s, arms ±25°)
+  is the pick if the game's walk ever slows. `human-pack --replace-walk PACK
+  FILE START [END]` swapped it into the pack without the other sources — the
+  CMU takes come from `raw.githubusercontent.com/una-dinosauria/cmu-mocap/
+  master/data/008/08_08.bvh`. `the_walk_is_an_ordinary_walk` is the guard.
 
 Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in
 CMU (a slip-and-fall stands in), the waving hand is the only one that opens on

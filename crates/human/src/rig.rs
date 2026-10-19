@@ -205,6 +205,7 @@ pub fn retarget(
         }
     }
     level_gaze(pack, rest, &mut local);
+    settle_shoulders(pack, rest, &mut local);
     ground(pack, rest, &local, &mut hips);
     Retargeted {
         local,
@@ -330,6 +331,72 @@ fn level_gaze(pack: &HumanPack, rest: &[RestBone], local: &mut [Vec<Quat>]) {
         let neck_w = neck_turn * rest[neck].rotation;
         local[neck][f] = (w[neck_parent].inverse() * neck_w).normalize();
         local[head][f] = (neck_w.inverse() * head_w).normalize();
+    }
+}
+
+/// How far below the rest pose's the collarbones sit on average. The rest
+/// pose holds the arms out at 45°, and raising an arm lifts the collarbone
+/// with it; settled exactly at rest, the walk's shoulders still looked high
+/// (2026-10-19).
+const SHOULDER_DROP: f32 = 12.0_f32.to_radians();
+
+/// Put each collarbone back where the rest pose holds it, on average over the
+/// clip; its motion about that average is the capture's.
+///
+/// Every CMU clip shrugged: the shoulder joints sat 0.5–3.8 cm *above* the base
+/// of the neck on average, where the rest pose and the 100STYLE idle hold them
+/// 9.4 cm below it (measured 2026-10-19 on the default man) — a figure with its
+/// shoulders up by its ears in the run, the gestures and the seat. Which of
+/// CMU's rest pose and its collar joints causes it was not settled; the
+/// correction is one turn per collarbone per clip, in its parent's frame, so a
+/// shrug the subject really made (a wave lifts the shoulder) still shows. The
+/// upper arm keeps its world turn, so the arm hangs and reaches as captured
+/// from the lowered shoulder.
+fn settle_shoulders(pack: &HumanPack, rest: &[RestBone], local: &mut [Vec<Quat>]) {
+    let frames = local.first().map_or(0, Vec::len);
+    if frames == 0 {
+        return;
+    }
+    for (clavicle, arm) in [("clavicle_l", "upperarm_l"), ("clavicle_r", "upperarm_r")] {
+        let (Some(c), Some(a)) = (pack.bone(clavicle), pack.bone(arm)) else {
+            continue;
+        };
+        if pack.bones[a].parent.map(usize::from) != Some(c) {
+            continue;
+        }
+        // The collarbone's direction in its parent's frame: at rest, and in
+        // the clip on average.
+        let along = rest[c].rotation.inverse() * (rest[c].tail - rest[c].head);
+        let Some(at_rest) = pack.bones[c]
+            .parent
+            .map(|p| rest[p as usize].rotation.inverse() * (rest[c].tail - rest[c].head))
+            .and_then(Vec3::try_normalize)
+        else {
+            continue;
+        };
+        let Some(mean) = local[c]
+            .iter()
+            .map(|q| (*q * along).normalize_or_zero())
+            .sum::<Vec3>()
+            .try_normalize()
+        else {
+            continue;
+        };
+        // Below the rest pose's: its arms are raised 45°, and a raised arm
+        // lifts the collarbone with it.
+        let up = pack.bones[c]
+            .parent
+            .map_or(Vec3::Y, |p| rest[p as usize].rotation.inverse() * Vec3::Y);
+        let want = at_rest.cross(up).try_normalize().map_or(at_rest, |across| {
+            Quat::from_axis_angle(across, -SHOULDER_DROP) * at_rest
+        });
+        let settle = Quat::from_rotation_arc(mean, want);
+        for f in 0..frames {
+            let was = local[c][f];
+            let now = (settle * was).normalize();
+            local[c][f] = now;
+            local[a][f] = (now.inverse() * was * local[a][f]).normalize();
+        }
     }
 }
 

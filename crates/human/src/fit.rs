@@ -76,6 +76,60 @@ pub fn blend_weights(r: &ProxyRef, weights: &[Vec<(u16, f32)>]) -> Vec<(u16, f32
     out
 }
 
+/// Even out skin weights across a garment's own mesh: each round, every
+/// vertex takes half its weights and half its neighbours' mean.
+///
+/// A garment vertex copies its weights from the one to three body vertices it
+/// hangs on, and two neighbours on a garment can hang on body vertices far
+/// apart: under the arm, a shirt vertex bound to the chest (86% `spine_03`)
+/// sat beside one bound wholly to the upper arm, and every arm movement
+/// pulled the triangle between them out into a spike — up to 21 cm in the
+/// gestures, 13 cm at the crotch in the walk (measured 2026-10-19 on the
+/// default man's casual suit, by skinning every clip frame on the CPU). The
+/// body's own weights change smoothly and showed nothing like it.
+pub fn smooth_weights(weights: &mut [Vec<(u16, f32)>], edges: &[(u32, u32)], rounds: usize) {
+    let n = weights.len();
+    let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for &(a, b) in edges {
+        let (a, b) = (a as usize, b as usize);
+        if a < n && b < n && a != b {
+            neighbours[a].push(b as u32);
+            neighbours[b].push(a as u32);
+        }
+    }
+    for list in &mut neighbours {
+        list.sort_unstable();
+        list.dedup();
+    }
+    let add = |out: &mut Vec<(u16, f32)>, from: &[(u16, f32)], k: f32| {
+        for &(bone, w) in from {
+            match out.iter_mut().find(|(b, _)| *b == bone) {
+                Some(slot) => slot.1 += k * w,
+                None => out.push((bone, k * w)),
+            }
+        }
+    };
+    for _ in 0..rounds {
+        let next: Vec<Vec<(u16, f32)>> = (0..n)
+            .map(|v| {
+                let near = &neighbours[v];
+                if near.is_empty() {
+                    return weights[v].clone();
+                }
+                let mut out = Vec::new();
+                add(&mut out, &weights[v], 0.5);
+                let k = 0.5 / near.len() as f32;
+                for &u in near {
+                    add(&mut out, &weights[u as usize], k);
+                }
+                out.retain(|(_, w)| *w >= 0.001);
+                out
+            })
+            .collect();
+        weights.clone_from_slice(&next);
+    }
+}
+
 /// The four strongest influences, renormalised — what a GPU skin takes.
 #[must_use]
 pub fn top_four(mut influences: Vec<(u16, f32)>) -> ([u16; 4], [f32; 4]) {

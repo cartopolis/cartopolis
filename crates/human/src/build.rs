@@ -99,6 +99,10 @@ pub struct HumanModel {
     pub missing_targets: Vec<String>,
 }
 
+/// Rounds of [`fit::smooth_weights`] over a garment: each round reaches one
+/// edge further across the garment's mesh.
+const GARMENT_SMOOTHING: usize = 8;
+
 /// Build the person `look` describes.
 #[must_use]
 pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
@@ -210,6 +214,27 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
             ProxyKind::Eyes => eye_texture.clone().or_else(|| proxy.texture.clone()),
             _ => proxy.texture.clone(),
         };
+        // Skin weights from the body, evened out across what is worn, so
+        // neighbours on a garment do not pull apart (`fit::smooth_weights`).
+        let mut weights: Vec<Vec<(u16, f32)>> = proxy
+            .refs
+            .iter()
+            .map(|r| fit::blend_weights(r, &pack.weights))
+            .collect();
+        if matches!(
+            proxy.kind,
+            ProxyKind::Outfit | ProxyKind::Shoes | ProxyKind::Hat
+        ) {
+            let edges: Vec<(u32, u32)> = proxy
+                .faces
+                .iter()
+                .flat_map(|f| {
+                    let c: Vec<u32> = corners(f).collect();
+                    (0..c.len()).map(move |i| (c[i], c[(i + 1) % c.len()]))
+                })
+                .collect();
+            fit::smooth_weights(&mut weights, &edges, GARMENT_SMOOTHING);
+        }
         // One mesh per tint region, so each takes its own colour.
         let regions = proxy.region_colours.len().max(1) as u8;
         for region in 0..regions {
@@ -233,7 +258,7 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
                 &at,
                 &proxy.uvs,
                 &faces,
-                |v| fit::blend_weights(&proxy.refs[v], &pack.weights),
+                |v| weights[v].clone(),
                 texture.clone(),
                 proxy.alpha,
             );
@@ -249,7 +274,7 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         .bone("pelvis")
         .zip(pack.bone("foot_l"))
         .map_or(1.0, |(p, f)| rest[p].head.y - rest[f].head.y);
-    let clips = pack
+    let mut clips: Vec<RetargetedClip> = pack
         .clips
         .iter()
         .map(|c| {
@@ -271,12 +296,111 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         })
         .collect();
 
+    plant_feet(&mut clips, &joints, &parts);
     HumanModel {
         parts,
         joints,
         clips,
         height,
         missing_targets,
+    }
+}
+
+/// Feet: the skin of the body below this height at rest, metres — the soles,
+/// heels and toes, what stands on the ground.
+const FOOT_HEIGHT: f32 = 0.12;
+
+/// Stand every clip on its soles: lift or lower it, once for the whole clip,
+/// so that in a quarter of its frames the lowest point of the feet is at or
+/// below the ground and in the rest above it — for a walk, the stance; for a
+/// run, the frames that touch down.
+///
+/// `rig::ground` stands a clip on its lowest *ankle*, which is right only
+/// while the foot is flat as it is at rest. With the foot turned, the sole is
+/// elsewhere: the idle stood its toes 3.3 cm into the ground, and the walk's
+/// lowest sole point wandered from 4.6 cm below to 1.6 cm above (measured
+/// 2026-10-19 on the default man by skinning every frame). One frame's
+/// minimum would lift the whole clip for the sake of a toe dipping at
+/// push-off, which no rigid foot avoids; the quartile is what a foot planted
+/// for half a stride and the other foot's swing make of it.
+fn plant_feet(clips: &mut [RetargetedClip], joints: &[Joint], parts: &[Part]) {
+    // What is drawn near the ground at rest — the feet, or the shoes on them —
+    // as position, joints and weights.
+    let feet: Vec<(Vec3, [u16; 4], [f32; 4])> = parts
+        .iter()
+        .flat_map(|p| {
+            p.positions
+                .iter()
+                .zip(&p.joints)
+                .zip(&p.weights)
+                .map(|((at, j), w)| (Vec3::from_array(*at), *j, *w))
+        })
+        .filter(|(at, _, _)| at.y < FOOT_HEIGHT)
+        .collect();
+    if feet.is_empty() {
+        return;
+    }
+    let inverse: Vec<Mat4> = joints
+        .iter()
+        .map(|j| Mat4::from_cols_array(&j.inverse_bind))
+        .collect();
+    for clip in clips.iter_mut() {
+        let Some((pelvis, at)) = clip.pelvis.as_mut() else {
+            continue;
+        };
+        let pelvis = *pelvis;
+        let frames = at.len();
+        let mut lowest = Vec::with_capacity(frames);
+        let mut up = Vec3::Y;
+        for f in 0..frames {
+            let mut world: Vec<Mat4> = Vec::with_capacity(joints.len());
+            for (i, j) in joints.iter().enumerate() {
+                let r = clip
+                    .rotations
+                    .get(i)
+                    .and_then(|r| r.get(f))
+                    .map_or(glam::Quat::from_array(j.rotation), |q| {
+                        glam::Quat::from_array(*q)
+                    });
+                let t = if i == pelvis {
+                    Vec3::from_array(at[f])
+                } else {
+                    Vec3::from_array(j.translation)
+                };
+                let local = Mat4::from_rotation_translation(r, t);
+                world.push(j.parent.map_or(local, |p| world[p] * local));
+            }
+            if f == 0 {
+                // A world lift as a move in the pelvis's parent's frame.
+                if let Some(p) = joints[pelvis].parent {
+                    up = world[p].inverse().transform_vector3(Vec3::Y);
+                }
+            }
+            let low = feet
+                .iter()
+                .map(|(at, j, w)| {
+                    (0..4)
+                        .map(|k| {
+                            let b = j[k] as usize;
+                            (world[b] * inverse[b]).transform_point3(*at) * w[k]
+                        })
+                        .sum::<Vec3>()
+                        .y
+                })
+                .fold(f32::INFINITY, f32::min);
+            lowest.push(low);
+        }
+        lowest.sort_by(f32::total_cmp);
+        let Some(&quartile) = lowest.get(frames / 4) else {
+            continue;
+        };
+        if !quartile.is_finite() {
+            continue;
+        }
+        let lift = up * -quartile;
+        for p in at.iter_mut() {
+            *p = (Vec3::from_array(*p) + lift).to_array();
+        }
     }
 }
 
@@ -571,6 +695,218 @@ mod tests {
         assert!(
             pelvis.0 > 0.75 && pelvis.1 < 1.1,
             "the hips stay at hip height: {pelvis:?}"
+        );
+    }
+
+    /// Clothes stay in one piece through the clips (`fit::smooth_weights`):
+    /// skinned on the CPU at every other frame, no edge of any outfit or pair
+    /// of shoes grows by more than 5 cm. Before the smoothing, the casual suit's
+    /// armpit grew 21 cm in the gestures and its crotch 13 cm in the walk —
+    /// spikes. The roll and the kick spread the legs further than any outfit
+    /// was cut for and are left out. Fails at four smoothing rounds (the
+    /// gestures' armpit, 6.4 cm).
+    #[test]
+    fn clothes_do_not_spike() {
+        use glam::Quat;
+        let Some(pack) = shipped_pack() else { return };
+        let worn: Vec<&str> = pack
+            .proxies
+            .iter()
+            .filter(|p| matches!(p.kind, ProxyKind::Outfit | ProxyKind::Shoes))
+            .map(|p| p.name.as_str())
+            .collect();
+        for name in worn {
+            let m = build(
+                &pack,
+                &Look {
+                    phenotype: Phenotype::male(),
+                    skin: "young_caucasian_male".into(),
+                    proxies: vec!["high-poly".into(), name.into()],
+                    eyes: None,
+                    modifiers: vec![],
+                },
+            );
+            let inverse: Vec<glam::Mat4> = m
+                .joints
+                .iter()
+                .map(|j| glam::Mat4::from_cols_array(&j.inverse_bind))
+                .collect();
+            for clip in &m.clips {
+                // A skirt spans both legs, so a stride stretches it (5.0 cm
+                // walking, 6.6 running) however it is weighted.
+                let skirt_striding =
+                    name == "female_elegantsuit01" && (clip.name == "walk" || clip.name == "run");
+                if clip.name == "roll" || clip.name == "kick" || skirt_striding {
+                    continue;
+                }
+                for f in (0..clip.rotations[0].len()).step_by(2) {
+                    let mut world: Vec<glam::Mat4> = Vec::new();
+                    for (i, j) in m.joints.iter().enumerate() {
+                        let r = clip.rotations.get(i).and_then(|r| r.get(f));
+                        let r = Quat::from_array(*r.unwrap_or(&j.rotation));
+                        let t = match &clip.pelvis {
+                            Some((p, at)) if *p == i => Vec3::from_array(at[f]),
+                            _ => Vec3::from_array(j.translation),
+                        };
+                        let local = glam::Mat4::from_rotation_translation(r, t);
+                        world.push(j.parent.map_or(local, |p| world[p] * local));
+                    }
+                    let skin: Vec<glam::Mat4> =
+                        world.iter().zip(&inverse).map(|(w, i)| *w * *i).collect();
+                    for part in m.parts.iter().filter(|p| p.kind != PartKind::Body) {
+                        let posed: Vec<Vec3> = part
+                            .positions
+                            .iter()
+                            .enumerate()
+                            .map(|(v, p)| {
+                                (0..4)
+                                    .map(|k| {
+                                        skin[part.joints[v][k] as usize]
+                                            .transform_point3(Vec3::from_array(*p))
+                                            * part.weights[v][k]
+                                    })
+                                    .sum()
+                            })
+                            .collect();
+                        for t in part.indices.chunks(3) {
+                            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                                let (a, b) = (a as usize, b as usize);
+                                let rest = Vec3::from_array(part.positions[a])
+                                    .distance(Vec3::from_array(part.positions[b]));
+                                let grown = posed[a].distance(posed[b]) - rest;
+                                assert!(
+                                    grown < 0.05,
+                                    "{name} in {} frame {f}: an edge grew {grown:.3} m",
+                                    clip.name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// No upright clip shrugs (`rig::settle_shoulders`): on average the
+    /// shoulder joints sit a little lower under the neck than at rest, whose
+    /// arms are raised. Every CMU clip held them 8–10 cm higher, level with it.
+    #[test]
+    fn upright_clips_keep_the_shoulders_down() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let j = |n: &str| m.joint(n).unwrap();
+        let below_neck = |p: &[Vec3]| {
+            let neck = p[j("neck_01")].y;
+            [neck - p[j("upperarm_l")].y, neck - p[j("upperarm_r")].y]
+        };
+        let rest = below_neck(&m.joint_positions(None));
+        for name in ["idle", "walk", "run", "interact", "punch", "sit"] {
+            let c = m.clips.iter().position(|c| c.name == name).unwrap();
+            let frames = m.clips[c].rotations[0].len();
+            for side in 0..2 {
+                let mean = (0..frames)
+                    .map(|f| below_neck(&m.joint_positions(Some((c, f))))[side])
+                    .sum::<f32>()
+                    / frames as f32;
+                assert!(
+                    (0.005..0.05).contains(&(mean - rest[side])),
+                    "{name}: a shoulder {mean:.3} m below the neck, at rest {:.3}",
+                    rest[side]
+                );
+            }
+        }
+    }
+
+    /// Feet on the ground (`plant_feet`): skinned on the CPU, the lowest point
+    /// of the body and its shoes is within 2 cm of the ground in a typical
+    /// frame of every clip that stands. Grounded on the ankles instead, the
+    /// idle stood its toes 3.3 cm into the ground.
+    #[test]
+    fn standing_clips_put_the_soles_on_the_ground() {
+        use glam::Quat;
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let inverse: Vec<Mat4> = m
+            .joints
+            .iter()
+            .map(|j| Mat4::from_cols_array(&j.inverse_bind))
+            .collect();
+        for name in ["idle", "walk", "interact", "wave", "punch", "sit"] {
+            let clip = m.clips.iter().find(|c| c.name == name).unwrap();
+            let mut lows: Vec<f32> = (0..clip.rotations[0].len())
+                .map(|f| {
+                    let mut world: Vec<Mat4> = Vec::new();
+                    for (i, j) in m.joints.iter().enumerate() {
+                        let r = clip.rotations.get(i).and_then(|r| r.get(f));
+                        let r = Quat::from_array(*r.unwrap_or(&j.rotation));
+                        let t = match &clip.pelvis {
+                            Some((p, at)) if *p == i => Vec3::from_array(at[f]),
+                            _ => Vec3::from_array(j.translation),
+                        };
+                        let local = Mat4::from_rotation_translation(r, t);
+                        world.push(j.parent.map_or(local, |p| world[p] * local));
+                    }
+                    let mut low = f32::MAX;
+                    for part in &m.parts {
+                        for (v, p) in part.positions.iter().enumerate() {
+                            let y = (0..4)
+                                .map(|k| {
+                                    let b = part.joints[v][k] as usize;
+                                    (world[b] * inverse[b]).transform_point3(Vec3::from_array(*p))
+                                        * part.weights[v][k]
+                                })
+                                .sum::<Vec3>()
+                                .y;
+                            low = low.min(y);
+                        }
+                    }
+                    low
+                })
+                .collect();
+            lows.sort_by(f32::total_cmp);
+            let typical = lows[lows.len() / 2];
+            assert!(
+                typical.abs() < 0.02,
+                "{name}: the soles are {typical:.3} m off the ground"
+            );
+        }
+    }
+
+    /// The walk is an ordinary one (CMU 08_08, `human-pack`): the trunk
+    /// upright, the arms swinging forward and back of the body against the
+    /// legs. The walk it replaced (100STYLE `Rushed`) leaned the trunk 20° and
+    /// held the arms 15–47° behind the body; patching it in code still looked
+    /// like a funny walk.
+    #[test]
+    fn the_walk_is_an_ordinary_walk() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let walk = m.clips.iter().position(|c| c.name == "walk").unwrap();
+        let frames = m.clips[walk].rotations[0].len();
+        let j = |n: &str| m.joint(n).unwrap();
+        // Forward of straight down (a limb) or of upright (the trunk), in
+        // degrees; the body faces +z.
+        let pitch = |d: Vec3| d.z.atan2(-d.y).to_degrees();
+        let (mut lo, mut hi, mut lean, mut opposed) = (f32::MAX, f32::MIN, 0.0, 0);
+        for f in 0..frames {
+            let p = m.joint_positions(Some((walk, f)));
+            let trunk = p[j("neck_01")] - p[j("pelvis")];
+            lean += trunk.z.atan2(trunk.y).to_degrees() / frames as f32;
+            let arm = pitch(p[j("lowerarm_l")] - p[j("upperarm_l")]);
+            lo = lo.min(arm);
+            hi = hi.max(arm);
+            if arm * pitch(p[j("calf_l")] - p[j("thigh_l")]) < 0.0 {
+                opposed += 1;
+            }
+        }
+        assert!((-2.0..8.0).contains(&lean), "the trunk leans {lean:.1}°");
+        assert!(
+            lo < -10.0 && hi > 10.0,
+            "the arm swings forward and back of the body: {lo:.0}° to {hi:.0}°"
+        );
+        assert!(
+            opposed * 3 > frames * 2,
+            "the arm opposes its leg in {opposed} of {frames} frames"
         );
     }
 
