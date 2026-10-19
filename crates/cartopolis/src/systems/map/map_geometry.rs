@@ -2091,7 +2091,13 @@ fn spawn_geometry_task(
                             // parse like everything above it — the `land` layer
                             // is already decoded here, and the two keep-out masks
                             // are the same ones the tree scatter builds.
-                            if wants.grass {
+                            //
+                            // Built with the grass layer off too, wherever the
+                            // tier runs the people layer: the same answer is what
+                            // keeps the ambient walkers off the lawns
+                            // (`traffic::keep_walkers_off`). A tier constant,
+                            // not the toggle, so it never retears the cells.
+                            if wants.grass || crate::quality::budget().detail_layers {
                                 // The parcels go in as the third keep-out: OSM
                                 // draws farmland as grass, so without the
                                 // register a ploughed field grows a lawn.
@@ -2117,7 +2123,11 @@ fn spawn_geometry_task(
                                         area.add_surveyed(&a.rings, tile_m);
                                     }
                                 }
-                                if !area.is_empty() {
+                                cartopolis_geo::traffic::keep_walkers_off(
+                                    &mut cell_places.drive_lines,
+                                    &|x, z| area.plantable(x, z),
+                                );
+                                if wants.grass && !area.is_empty() {
                                     grass = Some(area);
                                 }
                             }

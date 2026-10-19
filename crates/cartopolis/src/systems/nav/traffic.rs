@@ -53,7 +53,7 @@ use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
-use cartopolis_geo::traffic::{DriveLine, Flow, Uses};
+use cartopolis_geo::traffic::{DriveLine, Flow, Pavements, Uses, PAVEMENT_CLEARANCE_M};
 
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, AnchoredCamera};
@@ -356,6 +356,8 @@ pub struct WorldDriveLine {
     /// This way is flagged `bridge`, so its height comes from `DeckPlates` —
     /// which is measured, and so arrives some frames after the cell does.
     pub on_deck: bool,
+    /// Which sides have a pavement (`cartopolis_geo::traffic::keep_walkers_off`).
+    pub pavements: Pavements,
 }
 
 impl WorldDriveLine {
@@ -530,6 +532,7 @@ impl DriveNetwork {
                     cumulative,
                     deck,
                     on_deck: l.on_deck,
+                    pavements: l.pavements,
                 })
             })
             .collect();
@@ -699,8 +702,10 @@ impl AgentKind {
 /// ambient people are not going anywhere in particular.
 const WALK_SPEED: f32 = 1.25;
 
-/// How far beyond the kerb a walker's line sits.
-const PAVEMENT_CLEARANCE_M: f32 = 1.6;
+/// How far either way of a pavement's middle a walker may keep, metres. A
+/// pavement is two or three metres wide; more than this and the outer ones
+/// stand in the front gardens.
+const WALK_SPREAD_M: f32 = 0.4;
 
 /// One agent in a pool. The entity exists for the life of the process; every
 /// field here is rewritten when it is recycled onto a new line.
@@ -770,8 +775,29 @@ pub struct TailLampMaterials {
 
 impl Car {
     /// How far right of the centre line this agent travels, in metres.
+    ///
+    /// A walker on a path walks **on** it, keeping a little to its own side; on
+    /// a street it walks the pavement beyond the kerb. It used to stand beside a
+    /// path the way it stands beside a street, which put every walker in a
+    /// park on the lawn either side of the path.
     fn offset(&self, kind: AgentKind, line: &WorldDriveLine) -> f32 {
+        if kind == AgentKind::Walker && !line.uses.drive {
+            let keep = (self.lateral + WALK_SPREAD_M) / (2.0 * WALK_SPREAD_M);
+            return self.side * line.half_width * 0.5 * keep.clamp(0.0, 1.0);
+        }
         (kind.offset(line) + self.lateral) * self.side
+    }
+
+    /// Put a walker about to travel `line` in direction `dir` on a side of it
+    /// that has a pavement — its own if it can, else the other one, which at a
+    /// junction is crossing the street. A car, and a path, are left alone.
+    fn keep_to_pavement(&mut self, kind: AgentKind, line: &WorldDriveLine, dir: f32) {
+        if kind != AgentKind::Walker || !line.uses.drive {
+            return;
+        }
+        if !line.pavements.on(self.side * dir) && line.pavements.on(-self.side * dir) {
+            self.side = -self.side;
+        }
     }
 }
 
@@ -892,7 +918,11 @@ pub fn setup_traffic(
             heading: Vec2::ZERO,
             turn: None,
             side: if walker && r(11) < 0.5 { -1.0 } else { 1.0 },
-            lateral: if walker { (r(12) - 0.3) * 1.2 } else { 0.0 },
+            lateral: if walker {
+                (r(12) * 2.0 - 1.0) * WALK_SPREAD_M
+            } else {
+                0.0
+            },
             phase: r(13) * std::f32::consts::TAU,
             tilt: Vec2::ZERO,
             signal_grace: 0.0,
@@ -1241,6 +1271,7 @@ pub fn drive_traffic(
                             let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
                             let (centre, heading, to_y) = nl.at_with_deck(entry);
                             let to_dir = heading * next_dir;
+                            car.keep_to_pavement(kind, nl, next_dir);
                             let to = centre + right_of(to_dir) * car.offset(kind, nl);
                             // The corner is not in the data: two centre lines
                             // meet at a *point*, and how far the vehicle swings
@@ -1282,6 +1313,7 @@ pub fn drive_traffic(
             ) {
                 Some((k, dir, s)) => {
                     let l = net.get(k).expect("place_agent only offers lines it read");
+                    car.keep_to_pavement(kind, l, dir);
                     car.line = Some(k);
                     car.dir = dir;
                     car.s = s;
@@ -1777,6 +1809,7 @@ mod tests {
             },
             deck: vec![f32::NAN; points.len()],
             on_deck: false,
+            pavements: Pavements::BOTH,
         }
     }
 
@@ -2437,5 +2470,73 @@ mod tests {
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
         assert!(right.y > 3.0 && left.y < -3.0, "{right} {left}");
         assert!((right.y + left.y).abs() < 1e-3, "the two pavements mirror");
+    }
+
+    fn walker_on(key: LineKey, side: f32, lateral: f32) -> Car {
+        Car {
+            line: Some(key),
+            s: 50.0,
+            dir: 1.0,
+            speed_scale: 1.0,
+            speed: 1.0,
+            heading: Vec2::ZERO,
+            turn: None,
+            side,
+            lateral,
+            phase: 0.0,
+            tilt: Vec2::ZERO,
+            signal_grace: 0.0,
+            braking: false,
+            parts: AgentParts::Walker {
+                limbs: [Entity::PLACEHOLDER; 4],
+            },
+        }
+    }
+
+    /// A street with a pavement on its right only: a walker meant for the left
+    /// crosses to the right, in either direction of travel.
+    #[test]
+    fn a_walker_crosses_to_the_side_with_a_pavement() {
+        let mut one_sided = line(&[[0.0, 0.0], [100.0, 0.0]], Flow::Both);
+        one_sided.pavements = Pavements {
+            right: true,
+            left: false,
+        };
+        let mut net = DriveNetwork::default();
+        net.insert_cell((0, 0), 0.0, 0.0, vec![one_sided]);
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let l = net.get(key).unwrap();
+        for dir in [1.0f32, -1.0] {
+            for side in [1.0f32, -1.0] {
+                let mut w = walker_on(key, side, 0.0);
+                w.keep_to_pavement(AgentKind::Walker, l, dir);
+                assert_eq!(w.side * dir, 1.0, "dir {dir} side {side}");
+            }
+        }
+    }
+
+    /// On a path a walker is on the path, not on the grass beside it.
+    #[test]
+    fn a_walker_walks_on_a_path() {
+        let mut path = line(&[[0.0, 0.0], [100.0, 0.0]], Flow::Both);
+        path.uses.drive = false;
+        path.half_width = 1.2;
+        let mut net = DriveNetwork::default();
+        net.insert_cell((0, 0), 0.0, 0.0, vec![path]);
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let l = net.get(key);
+        for side in [1.0, -1.0] {
+            for lateral in [-WALK_SPREAD_M, 0.0, WALK_SPREAD_M] {
+                let (p, ..) =
+                    pose_of(&walker_on(key, side, lateral), l, AgentKind::Walker).unwrap();
+                assert!(p.y.abs() <= 1.2, "off the path at {p}");
+            }
+        }
     }
 }

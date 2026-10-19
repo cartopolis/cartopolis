@@ -337,8 +337,9 @@ vertices once. `cartopolis_geo::agent_models` lofts each body from a table of
 cross-sections (bonnet, raked windscreen, roof, rear window, boot), with round
 wheels, bumpers, sills, mirrors, yellow plates, headlamps and tail lamps. Four
 bodies — hatchback, saloon, estate, van, about 40/25/23/12 % by pool index, and
-most vans white. The parked cars are unchanged; the claim "a moving car and a
-parked one are the same object" no longer holds and was traded knowingly.
+most vans white. The parked cars use the same bodies at a cheaper level of
+detail (`parked-vehicles.md`), so a moving car and a parked one are the same
+object again.
 
 **A car is three meshes because of what a shared mesh cannot do.** The body
 takes the paint material; the trim (glass, tyres, plates, lamps) has its own
@@ -373,6 +374,19 @@ any speed. Heights vary ±8 %, trousers have their own palette, and walkers use
 **both pavements in both directions** with up to a metre of spread — before, all
 walkers kept to the pavement on their own right, so each side of a street was a
 one-way stream. The head is still the neutral grey, for the reason above.
+
+**People keep off the grass.** Two causes put them there. On a path, a walker
+used the street rule — half the width plus 1.6 m out — so everybody in a park
+walked on the lawn beside the path; a path is now walked *on*, within half its
+half-width of the middle. And a street was assumed to have a pavement both
+sides; `traffic::keep_walkers_off` now samples where each pavement would be
+every 6 m against the grass layer's own `GrassArea::plantable` (the tile's
+lawns and the survey's verges, minus anything a road or path is drawn over), and
+a side more than 30 % grass has no pavement. A street with none loses its
+walkers; one with a single side puts everybody on it, and a walker reaching it
+from the other side crosses at the junction (`Car::keep_to_pavement`). The
+grass area is built whenever the tier runs the people layer, not only with the
+grass toggle on — a tier constant, so it never retears the cells.
 
 The black and dark-blue paints were added to `parking::CAR_PAINTS` too: they are
 two of the four commonest Dutch car colours and the palette had no dark car.

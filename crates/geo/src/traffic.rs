@@ -115,6 +115,101 @@ pub struct DriveLine {
     /// route line settled this the same way (`Route::levels`), and the first
     /// attempt there hoisted every underpass onto the structure above it.
     pub on_deck: bool,
+    /// Which sides of a street have somewhere to walk. Both until
+    /// [`keep_walkers_off`] has looked at the ground beside it.
+    pub pavements: Pavements,
+}
+
+/// Whether a street has a pavement on each side, relative to the line's own
+/// order: `right` is the side a car driving it forward keeps to.
+///
+/// The tile models no pavements, so a walker on a street stands where one would
+/// be — [`PAVEMENT_CLEARANCE_M`] outside the kerb — and on a road with a grass
+/// verge instead that is the middle of the lawn. This is the answer to "is there
+/// a pavement there at all", taken from the same grass map the blades grow on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pavements {
+    pub right: bool,
+    pub left: bool,
+}
+
+impl Pavements {
+    pub const BOTH: Self = Self {
+        right: true,
+        left: true,
+    };
+
+    /// The pavement on `side`: `+1` right of the line's order, `-1` left.
+    #[must_use]
+    pub fn on(self, side: f32) -> bool {
+        if side > 0.0 {
+            self.right
+        } else {
+            self.left
+        }
+    }
+}
+
+/// How far beyond the kerb a walker on a street stands — the middle of a
+/// pavement that the tile does not draw.
+pub const PAVEMENT_CLEARANCE_M: f32 = 1.6;
+
+/// How often along a street its pavements are checked, metres.
+const PAVEMENT_SAMPLE_M: f32 = 6.0;
+
+/// The share of a side's samples that may land on grass with the side still
+/// counting as a pavement. Not zero: the grass polygons and the road ribbon are
+/// separate generalisations, and a lawn reaching to the kerb at every corner
+/// would otherwise strip the pavements off half the streets in a town.
+const PAVEMENT_GRASS_SHARE: f32 = 0.3;
+
+/// Take the walkers off the grass.
+///
+/// For every street people share with cars, sample where its pavements would be
+/// on each side; a side that is mostly `green` (the grass layer's own
+/// `GrassArea::plantable`, in the same tile-local frame) has no pavement, and a
+/// street with neither loses its walkers outright — a verge-lined arterial is a
+/// road nobody strolls along. A path, a footway or a pedestrian street is not
+/// sampled: people walk *on* those, and a path across a park is meant to be
+/// across the grass.
+pub fn keep_walkers_off(lines: &mut [DriveLine], green: &dyn Fn(f32, f32) -> bool) {
+    for line in lines.iter_mut() {
+        if !(line.uses.walk && line.uses.drive) {
+            continue;
+        }
+        let reach = line.half_width + PAVEMENT_CLEARANCE_M;
+        let (mut n, mut right, mut left) = (0u32, 0u32, 0u32);
+        for w in line.points.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 1e-3 {
+                continue;
+            }
+            // Right of travel in a +x east, +z south frame, as the client's
+            // `traffic::right_of` has it.
+            let (rx, rz) = (-dz / len, dx / len);
+            let steps = (len / PAVEMENT_SAMPLE_M).ceil().max(1.0) as u32;
+            for k in 0..steps {
+                let t = (k as f32 + 0.5) / steps as f32;
+                let (px, pz) = (a[0] + dx * t, a[1] + dz * t);
+                n += 1;
+                right += u32::from(green(px + rx * reach, pz + rz * reach));
+                left += u32::from(green(px - rx * reach, pz - rz * reach));
+            }
+        }
+        if n == 0 {
+            continue;
+        }
+        let paved = |g: u32| (g as f32) <= n as f32 * PAVEMENT_GRASS_SHARE;
+        line.pavements = Pavements {
+            right: paved(right),
+            left: paved(left),
+        };
+        if !line.pavements.right && !line.pavements.left {
+            line.uses.walk = false;
+        }
+    }
 }
 
 impl DriveLine {
@@ -298,6 +393,7 @@ pub fn extract_drive_lines(
                 },
                 deck,
                 on_deck,
+                pavements: Pavements::BOTH,
             };
             if candidate.length() < MIN_DRIVE_LEN_M {
                 continue;
@@ -396,6 +492,52 @@ mod tests {
     use crate::testdata::groningen as fixture;
 
     const TILE_M: f32 = 1472.0;
+
+    fn street(points: &[[f32; 2]], drive: bool) -> DriveLine {
+        DriveLine {
+            points: points.to_vec(),
+            flow: Flow::Both,
+            speed: 7.5,
+            half_width: 3.0,
+            uses: Uses { drive, walk: true },
+            deck: vec![f32::NAN; points.len()],
+            on_deck: false,
+            pavements: Pavements::BOTH,
+        }
+    }
+
+    /// A street along +x, a lawn south of it (+z, which is its right) and a
+    /// pavement north: only the north side keeps its walkers. Lawn both sides
+    /// and nobody walks it; a path over the same lawn keeps them, on it.
+    #[test]
+    fn walkers_keep_off_the_verges() {
+        let south_lawn = |_x: f32, z: f32| z > 0.0;
+        let mut lines = vec![
+            street(&[[0.0, 0.0], [120.0, 0.0]], true),
+            street(&[[0.0, 0.0], [120.0, 0.0]], false),
+        ];
+        keep_walkers_off(&mut lines, &south_lawn);
+        assert_eq!(
+            lines[0].pavements,
+            Pavements {
+                right: false,
+                left: true
+            }
+        );
+        assert!(lines[0].uses.walk);
+        assert!(lines[1].uses.walk, "a path is walked on, not beside");
+        assert_eq!(lines[1].pavements, Pavements::BOTH);
+
+        let mut verged = vec![street(&[[0.0, 0.0], [120.0, 0.0]], true)];
+        keep_walkers_off(&mut verged, &|_, _| true);
+        assert!(!verged[0].uses.walk, "grass both sides: nobody walks it");
+        assert!(verged[0].uses.drive, "the cars still do");
+
+        // A lawn reaching the kerb at one corner does not strip a pavement.
+        let mut corner = vec![street(&[[0.0, 0.0], [120.0, 0.0]], true)];
+        keep_walkers_off(&mut corner, &|x, _| x < 12.0);
+        assert_eq!(corner[0].pavements, Pavements::BOTH);
+    }
 
     #[test]
     fn the_fixture_yields_a_drivable_network() {
