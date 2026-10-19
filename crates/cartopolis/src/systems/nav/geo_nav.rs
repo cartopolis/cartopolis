@@ -107,7 +107,7 @@ const RECENT_SUGGESTIONS: usize = 6;
 /// origin-at-feet, so this is the ground/tile surface (`avatar::GROUND_HEIGHT`);
 /// the offline gravity clamp rests the feet at the same value. (Was 0.45 = ground
 /// + half fox height, which floated the humanoids ~0.4 m.)
-const AVATAR_GROUND_Y: f64 = 0.05;
+const AVATAR_GROUND_Y: f64 = crate::systems::avatar::GROUND_HEIGHT as f64;
 /// Minimum free-camera altitude after a teleport that had to **choose** one, so
 /// the destination is visible. Not a floor on an altitude the caller stated —
 /// see the `CameraMode::Free` arm of `apply_teleport` for why the two differ.

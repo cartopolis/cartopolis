@@ -512,15 +512,18 @@ fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
     Vec3::new(yaw.sin(), 0.0, yaw.cos())
 }
 
-/// Standing height on flat ground: the region tile's top surface (the cuboid's
-/// half-extent in y). The avatar models are authored origin-at-feet, so this *is*
-/// the resting height — not a half-height offset.
+/// Standing height on flat ground: the sim's floor (`motion::GROUND_Y`), where
+/// the ground sheets are drawn (within a centimetre of the plane,
+/// `GroundLayer::y_offset`). The avatar models are authored origin-at-feet, so
+/// this *is* the resting height — not a half-height offset. It was 0.05, the
+/// top of a region tile long gone, which stood every offline avatar — and every
+/// capture of one — 5 cm in the air.
 ///
 /// Public because collision's snap-out backstop has to reconstruct the same
 /// ground the movement path stands on (`GROUND_HEIGHT + terrain.ground_at(..)`), and a
 /// second copy of the number there is exactly the drift
 /// `docs/notes/avatar-standing-height.md` is about.
-pub const GROUND_HEIGHT: f32 = 0.05;
+pub const GROUND_HEIGHT: f32 = cartopolis_core::motion::GROUND_Y;
 
 /// Animation data attached to an avatar (and each of its model "holder" children),
 /// read once a scene is ready. `Clone` so the body and outfit holders can share it.

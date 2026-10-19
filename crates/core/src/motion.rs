@@ -153,7 +153,7 @@ pub fn fly_altitude_factor(y: f32) -> f32 {
 }
 
 /// Ground level for a standing avatar (m). The avatar bodies stand
-/// origin-at-feet (each clip is grounded on its lowest ankle), so the sim's floor
+/// origin-at-feet (each clip is stood on its soles), so the sim's floor
 /// is exactly zero.
 pub const GROUND_Y: f32 = 0.0;
 

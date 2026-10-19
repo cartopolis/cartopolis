@@ -2981,7 +2981,7 @@ pub fn hold_scripted_fire(
     // an 8°-pitched frustum. Two emitters, 296 quads, nothing in the picture.
     // Staying on the ray cannot do that: whatever the camera is doing, the point
     // is in front of it.
-    const GROUND_Y: f32 = 0.05;
+    const GROUND_Y: f32 = crate::systems::avatar::GROUND_HEIGHT;
     let forward = cam.forward().as_vec3();
     let drop = cam.translation.y - GROUND_Y;
     let hit = (forward.y < -0.05 && drop > 0.0).then(|| drop / -forward.y);
@@ -3251,7 +3251,7 @@ pub fn hold_scripted_chat(
         return;
     };
     /// Ground the avatars stand on (`geo_nav::AVATAR_GROUND_Y`).
-    const GROUND_Y: f32 = 0.05;
+    const GROUND_Y: f32 = crate::systems::avatar::GROUND_HEIGHT;
     /// Nearest and furthest the speaker is placed, in metres.
     const RANGE: std::ops::RangeInclusive<f32> = 3.0..=15.0;
     let forward = cam.forward().as_vec3();
