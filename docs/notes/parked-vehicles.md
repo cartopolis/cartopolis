@@ -66,7 +66,8 @@ boundary inset can see it.
 ## Measured, and what bounds it
 
 **2026-08-26, Groningen z14 fixture** (`parking::tests::survey_the_fixture`):
-531 vehicles — 215 cars, 316 bikes — costing **3.5 MB** of mesh. A car is seven
+531 vehicles — 215 cars, 316 bikes — costing **3.5 MB** of mesh (before the
+2026-10-19 bodies below). A car was seven
 boxes (4.40 × 1.72 × 1.45 m, body clear of the ground so the wheels reach under
 it), a bike is four.
 
@@ -144,3 +145,16 @@ pale cartographic paper (`systems::vegetation`), and a car park in real car
 colours is instantly the loudest object on screen. Silver, white and graphite are
 most of any Dutch lot anyway, with two desaturated hues to break up the grey and
 nothing brighter.
+
+## The cars are the moving traffic's bodies (2026-10-19)
+
+Asked for parked cars "similar" to the moving ones, the seven-box form gave way
+to `agent_models::CarBody` — hatchback, saloon, estate, van, chosen by a hash of
+the bay's position so a lot streams back identically — at `Detail::Parked`: no
+underside, sills, grille, mirrors or hubs, octagonal wheels, plates and lamps as
+single quads, and every quad sharing its four vertices. Measured by
+`agent_models::tests::a_parked_car_stays_cheap` and `survey_the_fixture`; see the
+commit for the numbers. Paint is still per vertex (`push_parked_car`): the body
+carries the instance's paint, the trim its own colours as multipliers over the
+furniture material, like every tone. `form::CAR` remains for anything that asks
+for the boxes.

@@ -1,11 +1,14 @@
-//! The moving traffic's own models: four car bodies and a walker with limbs.
+//! The traffic's models: four car bodies, and a walker with limbs.
 //!
-//! The parked cars ([`crate::furniture::form::CAR`]) are seven boxes because a
-//! car park holds hundreds of them merged into one cell mesh, and every box is
-//! multiplied by the lot. The ambient pool (`cartopolis`'s `systems::traffic`)
-//! is the opposite case: a fixed set of entities sharing **one mesh per model**,
-//! uploaded once at startup. A model there costs its vertices once, not once per
-//! car, so it can afford a sloped windscreen, round wheels and lamps.
+//! The same bodies serve two very different costs. The ambient pool
+//! (`cartopolis`'s `systems::traffic`) is a fixed set of entities sharing **one
+//! mesh per model**, uploaded once at startup, so a model costs its vertices
+//! once and can afford hubs, mirrors and a grille. A parked car
+//! (`furniture::push_parked_car`) is merged into its cell's mesh **once per
+//! bay**, so it is built at [`Detail::Parked`]: the same silhouette, about 2×
+//! the seven boxes it replaced rather than the moving model's 3.6×. Both being
+//! one body is what keeps a car at the kerb and a car driving past it the same
+//! car.
 //!
 //! Each model comes in parts because the parts are drawn with different
 //! materials, and a shared mesh cannot vary anything per instance but its
@@ -32,33 +35,84 @@ pub struct ModelMesh {
 }
 
 impl ModelMesh {
-    /// One flat triangle, wound so its front face points along `out`.
-    fn tri(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], out: [f32; 3], rgba: [f32; 4]) {
-        let n = cross(sub(b, a), sub(c, a));
+    /// A planar-ish quad `a b c d` (in order round its edge), facing `out`.
+    ///
+    /// Four vertices, not six: the two triangles share their diagonal. A parked
+    /// car is multiplied by every bay in the lot, so the third saved here is a
+    /// third of the lot's mesh.
+    fn quad(&mut self, q: [[f32; 3]; 4], out: [f32; 3], rgba: [f32; 4]) {
+        let mut n = cross(sub(q[1], q[0]), sub(q[2], q[0]));
+        if dot(n, n) < 1e-12 {
+            n = cross(sub(q[2], q[0]), sub(q[3], q[0]));
+        }
         let len = dot(n, n).sqrt();
-        if len < 1e-7 {
+        if len < 1e-6 {
             return;
         }
         let mut n = [n[0] / len, n[1] / len, n[2] / len];
-        let (b, c) = if dot(n, out) < 0.0 {
+        let q = if dot(n, out) < 0.0 {
             n = [-n[0], -n[1], -n[2]];
-            (c, b)
+            [q[0], q[3], q[2], q[1]]
         } else {
-            (b, c)
+            q
         };
         let base = self.positions.len() as u32;
-        for p in [a, b, c] {
+        for p in q {
             self.positions.push(p);
             self.normals.push(n);
             self.colors.push(rgba);
         }
-        self.indices.extend([base, base + 1, base + 2]);
+        self.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
-    /// A planar-ish quad `a b c d` (in order round its edge), facing `out`.
-    fn quad(&mut self, q: [[f32; 3]; 4], out: [f32; 3], rgba: [f32; 4]) {
-        self.tri(q[0], q[1], q[2], out, rgba);
-        self.tri(q[0], q[2], q[3], out, rgba);
+    /// A flat rectangle on a face that looks along `±z`: a plate or a lamp
+    /// lens, which is only ever seen from the side it faces.
+    fn panel(&mut self, c: [f32; 3], half: [f32; 2], facing: f32, rgba: [f32; 4]) {
+        let (x0, x1, y0, y1) = (
+            c[0] - half[0],
+            c[0] + half[0],
+            c[1] - half[1],
+            c[1] + half[1],
+        );
+        self.quad(
+            [
+                [x0, y0, c[2]],
+                [x1, y0, c[2]],
+                [x1, y1, c[2]],
+                [x0, y1, c[2]],
+            ],
+            [0.0, 0.0, facing],
+            rgba,
+        );
+    }
+
+    /// A fan round `centre` through `ring` (closed), facing `out`.
+    fn fan(&mut self, centre: [f32; 3], ring: &[[f32; 3]], out: [f32; 3], rgba: [f32; 4]) {
+        let base = self.positions.len() as u32;
+        let n = [out[0], out[1], out[2]];
+        self.positions.push(centre);
+        self.normals.push(n);
+        self.colors.push(rgba);
+        for p in ring {
+            self.positions.push(*p);
+            self.normals.push(n);
+            self.colors.push(rgba);
+        }
+        let k = ring.len() as u32;
+        for i in 0..k {
+            let (a, b) = (base + 1 + i, base + 1 + (i + 1) % k);
+            // Wound so the face looks along `out`.
+            let c = cross(
+                sub(ring[(i as usize + 1) % ring.len()], centre),
+                sub(ring[i as usize], centre),
+            );
+            if dot(c, out) >= 0.0 {
+                self.indices.extend([base, b, a]);
+            } else {
+                self.indices.extend([base, a, b]);
+            }
+        }
     }
 
     /// An axis-aligned box, centre and half extents.
@@ -109,40 +163,41 @@ impl ModelMesh {
         self.quad(b, [0.0, -1.0, 0.0], rgba);
     }
 
-    /// A cylinder lying along x: a wheel. `hub` colours the outward cap.
+    /// A cylinder lying along x: a wheel. `hub`, where given, is a smaller
+    /// disc on the outward cap.
+    #[allow(clippy::too_many_arguments)]
     fn wheel(
         &mut self,
         c: [f32; 3],
         r: f32,
         half_w: f32,
         outward: f32,
+        sides: usize,
         tyre: [f32; 4],
-        hub: [f32; 4],
+        hub: Option<[f32; 4]>,
     ) {
-        const SIDES: usize = 12;
-        let at = |k: usize, x: f32| {
-            let a = k as f32 / SIDES as f32 * std::f32::consts::TAU;
-            [x, c[1] + r * a.sin(), c[2] + r * a.cos()]
+        let at = |k: usize, x: f32, rr: f32| {
+            let a = k as f32 / sides as f32 * std::f32::consts::TAU;
+            [x, c[1] + rr * a.sin(), c[2] + rr * a.cos()]
         };
         let (xi, xo) = (c[0] - half_w * outward, c[0] + half_w * outward);
-        for k in 0..SIDES {
-            let k1 = (k + 1) % SIDES;
-            let mid = (k as f32 + 0.5) / SIDES as f32 * std::f32::consts::TAU;
+        for k in 0..sides {
+            let k1 = (k + 1) % sides;
+            let mid = (k as f32 + 0.5) / sides as f32 * std::f32::consts::TAU;
             let out = [0.0, mid.sin(), mid.cos()];
-            self.quad([at(k, xi), at(k1, xi), at(k1, xo), at(k, xo)], out, tyre);
-            let centre_o = [xo, c[1], c[2]];
-            // The hub is a smaller disc on the outer face; the ring round it is tyre.
-            let hub_at = |k: usize| {
-                let p = at(k, xo);
-                [
-                    xo + 0.004 * outward,
-                    c[1] + (p[1] - c[1]) * 0.62,
-                    c[2] + (p[2] - c[2]) * 0.62,
-                ]
-            };
-            let hub_c = [xo + 0.004 * outward, c[1], c[2]];
-            self.tri(centre_o, at(k, xo), at(k1, xo), [outward, 0.0, 0.0], tyre);
-            self.tri(hub_c, hub_at(k), hub_at(k1), [outward, 0.0, 0.0], hub);
+            self.quad(
+                [at(k, xi, r), at(k1, xi, r), at(k1, xo, r), at(k, xo, r)],
+                out,
+                tyre,
+            );
+        }
+        let side = [outward, 0.0, 0.0];
+        let ring: Vec<[f32; 3]> = (0..sides).map(|k| at(k, xo, r)).collect();
+        self.fan([xo, c[1], c[2]], &ring, side, tyre);
+        if let Some(hub) = hub {
+            let x = xo + 0.004 * outward;
+            let ring: Vec<[f32; 3]> = (0..sides).map(|k| at(k, x, r * 0.62)).collect();
+            self.fan([x, c[1], c[2]], &ring, side, hub);
         }
     }
 }
@@ -307,9 +362,25 @@ impl CarBody {
         }
     }
 
-    /// The three meshes of this body. See the module docs for why it is three.
+    /// The three meshes of this body, as a moving car draws it. See the module
+    /// docs for why it is three.
     #[must_use]
     pub fn build(self) -> CarModel {
+        self.build_at(Detail::Moving)
+    }
+
+    /// This body as a parked car: the same shape, cached, at [`Detail::Parked`].
+    #[must_use]
+    pub fn parked(self) -> &'static CarModel {
+        static PARKED: std::sync::OnceLock<[CarModel; 4]> = std::sync::OnceLock::new();
+        let all = PARKED.get_or_init(|| Self::ALL.map(|b| b.build_at(Detail::Parked)));
+        &all[Self::ALL.iter().position(|b| *b == self).unwrap_or(0)]
+    }
+
+    /// The three meshes at a level of detail.
+    #[must_use]
+    pub fn build_at(self, detail: Detail) -> CarModel {
+        let full = detail == Detail::Moving;
         let stations = self.stations();
         let mut body = ModelMesh::default();
         let mut trim = ModelMesh::default();
@@ -356,17 +427,20 @@ impl CarBody {
                 Top::Glass => trim.quad(top, [0.0, 1.0, 0.0], glass),
                 Top::Paint => body.quad(top, [0.0, 1.0, 0.0], WHITE),
             }
-            // The underside, so a car seen from a low kerb is not hollow.
-            body.quad(
-                [
-                    [-a.w_body, a.y_low, a.z],
-                    [a.w_body, a.y_low, a.z],
-                    [b.w_body, b.y_low, b.z],
-                    [-b.w_body, b.y_low, b.z],
-                ],
-                [0.0, -1.0, 0.0],
-                WHITE,
-            );
+            // The underside, so a car seen from a low kerb is not hollow. A
+            // parked one is never seen from below the kerb.
+            if full {
+                body.quad(
+                    [
+                        [-a.w_body, a.y_low, a.z],
+                        [a.w_body, a.y_low, a.z],
+                        [b.w_body, b.y_low, b.z],
+                        [-b.w_body, b.y_low, b.z],
+                    ],
+                    [0.0, -1.0, 0.0],
+                    WHITE,
+                );
+            }
         }
         // Nose and tail faces.
         for (s, out) in [(stations[0], 1.0f32), (stations[stations.len() - 1], -1.0)] {
@@ -406,15 +480,16 @@ impl CarBody {
                 [s.w_body + 0.02, 0.08, 0.10],
                 plastic,
             );
-            trim.cuboid(
-                [0.0, s.y_low + 0.10, s.z + dz * 0.05],
-                [0.26, 0.055, 0.008],
+            trim.panel(
+                [0.0, s.y_low + 0.10, s.z + dz * 0.045],
+                [0.26, 0.055],
+                dz,
                 lin(PLATE),
             );
         }
         // Sills: the dark strip between the wheels that sits a body off the road.
         let (fa, ra, r) = self.axles();
-        for sx in [-1.0f32, 1.0] {
+        for sx in [-1.0f32, 1.0].into_iter().filter(|_| full) {
             trim.cuboid(
                 [sx * (width - 0.02), 0.27, (fa + ra) * 0.5],
                 [0.04, 0.06, (fa - ra) * 0.5 - r - 0.05],
@@ -424,20 +499,27 @@ impl CarBody {
         // Headlamps on the nose face, a grille between them.
         let lamp_y = front.y_belt - 0.10;
         for sx in [-1.0f32, 1.0] {
-            trim.cuboid(
-                [sx * (front.w_body - 0.18), lamp_y, front.z + 0.005],
-                [0.15, 0.055, 0.02],
+            trim.panel(
+                [sx * (front.w_body - 0.18), lamp_y, front.z + 0.01],
+                [0.15, 0.055],
+                1.0,
                 lin(HEADLAMP),
             );
         }
-        trim.cuboid(
-            [0.0, lamp_y - 0.02, front.z + 0.004],
-            [front.w_body - 0.36, 0.04, 0.015],
-            plastic,
-        );
+        if full {
+            trim.panel(
+                [0.0, lamp_y - 0.02, front.z + 0.008],
+                [front.w_body - 0.36, 0.04],
+                1.0,
+                plastic,
+            );
+        }
         // Mirrors at the foot of the windscreen.
         let cabin = stations.iter().position(|s| s.y_top > s.y_belt + 0.1);
-        if let Some(screen) = cabin.and_then(|i| stations.get(i.checked_sub(1)?)) {
+        if let Some(screen) = cabin
+            .and_then(|i| stations.get(i.checked_sub(1)?))
+            .filter(|_| full)
+        {
             for sx in [-1.0f32, 1.0] {
                 trim.cuboid(
                     [
@@ -450,24 +532,43 @@ impl CarBody {
                 );
             }
         }
-        // Wheels, poking just outside the body side so the disc reads.
-        let (tyre, hub) = (lin(TYRE), lin(HUB));
+        // Wheels, poking just outside the body side so the disc reads. A
+        // parked car's are coarser and bare: across a car park an octagon is a
+        // wheel and a hub is a pixel.
+        let tyre = lin(TYRE);
+        let (sides, hub) = if full {
+            (12, Some(lin(HUB)))
+        } else {
+            (8, None)
+        };
         for z in [fa, ra] {
             for sx in [-1.0f32, 1.0] {
-                trim.wheel([sx * (width - 0.07), r, z], r, 0.11, sx, tyre, hub);
+                trim.wheel([sx * (width - 0.07), r, z], r, 0.11, sx, sides, tyre, hub);
             }
         }
         // Tail lamps: their own mesh, so braking can light them.
         let tail_y = rear.y_belt - 0.12;
         for sx in [-1.0f32, 1.0] {
-            tail.cuboid(
-                [sx * (rear.w_body - 0.14), tail_y, rear.z - 0.012],
-                [0.13, 0.07, 0.02],
+            tail.panel(
+                [sx * (rear.w_body - 0.14), tail_y, rear.z - 0.01],
+                [0.13, 0.07],
+                -1.0,
                 lin(TAIL_LAMP),
             );
         }
         CarModel { body, trim, tail }
     }
+}
+
+/// How much of a car to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// The moving pool: one mesh shared by every car, so detail is nearly free.
+    Moving,
+    /// A parked car, merged into its cell's mesh once **per bay**: the same
+    /// body, without the underside, sills, grille, mirrors and hubs, and with
+    /// octagonal wheels.
+    Parked,
 }
 
 /// A car body's three meshes.
@@ -678,6 +779,25 @@ mod tests {
                 );
             }
             assert!(panes >= 6, "{body:?} has {panes} glass triangles");
+        }
+    }
+
+    /// A parked car is merged once per bay, so its vertex count is the lot's.
+    /// The seven-box form it replaced was 168 vertices; this pins the cost of
+    /// the real shape near twice that, not the moving model's.
+    #[test]
+    fn a_parked_car_stays_cheap() {
+        for body in CarBody::ALL {
+            let count = |m: &CarModel| {
+                [&m.body, &m.trim, &m.tail]
+                    .iter()
+                    .map(|p| p.positions.len())
+                    .sum::<usize>()
+            };
+            let (parked, moving) = (count(body.parked()), count(&body.build()));
+            println!("{body:?}: parked {parked} vertices, moving {moving}");
+            assert!(parked <= 400, "{body:?} parks at {parked} vertices");
+            assert!(parked < moving, "{body:?}");
         }
     }
 

@@ -1405,13 +1405,17 @@ fn build_furniture_meshes_with(
         // hold at least one object or a cap under one form's cost would emit
         // empty meshes forever.
         if let Some(max) = max_bytes {
-            let step = parts_for(item).len() * BOX_BYTES;
+            let step = item_bytes(item);
             if buf.bytes() + step > max && !buf.positions.is_empty() {
                 out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
             }
         }
         let (sn, cs) = item.yaw.sin_cos();
         let up = lift(item);
+        if item.kind == FurnitureKind::Car {
+            push_parked_car(&mut buf, item, (sn, cs), up);
+            continue;
+        }
         for p in parts_for(item) {
             let m = match p.tone {
                 Tone::Paint => paint_multiplier(item.paint),
@@ -1435,6 +1439,69 @@ fn build_furniture_meshes_with(
         out.push(buf.finish(SurfaceGroup::Furniture));
     }
     out
+}
+
+/// Which of the moving traffic's bodies a parked car at this spot is.
+///
+/// Hashed off the bay's own position, so a lot that streams out and back is
+/// parked with the same cars — the same reason its vacancies are hashed.
+#[must_use]
+pub fn parked_body(item: &FurnitureInstance) -> crate::agent_models::CarBody {
+    let mut h = u64::from(item.x.to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(item.z.to_bits()).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 31;
+    crate::agent_models::CarBody::for_index((h % 10_007) as usize)
+}
+
+/// What one instance adds to a furniture mesh, in upload bytes.
+#[must_use]
+pub fn item_bytes(item: &FurnitureInstance) -> usize {
+    if item.kind == FurnitureKind::Car {
+        let m = parked_body(item).parked();
+        let (v, i) = [&m.body, &m.trim, &m.tail]
+            .iter()
+            .fold((0, 0), |(v, i), p| {
+                (v + p.positions.len(), i + p.indices.len())
+            });
+        return v * VERTEX_BYTES + i * INDEX_BYTES;
+    }
+    parts_for(item).len() * BOX_BYTES
+}
+
+/// A parked car: one of the moving traffic's bodies (`agent_models`), at its
+/// parked level of detail, so a car at the kerb and one driving past it are the
+/// same car again. [`form::CAR`] stays for what still asks for its boxes.
+///
+/// Merged like every other form, so the paint is a vertex colour here: the body
+/// carries the instance's paint and the trim its own colours, each as the
+/// multiplier over the furniture material's base that every tone already is.
+fn push_parked_car(buf: &mut MeshBuf, item: &FurnitureInstance, (sn, cs): (f32, f32), up: f32) {
+    let m = parked_body(item).parked();
+    let base = srgb_to_linear_rgb(palette::FURNITURE);
+    let paint = paint_multiplier(item.paint);
+    let l = item.luma;
+    for (mesh, painted) in [(&m.body, true), (&m.trim, false), (&m.tail, false)] {
+        let start = buf.positions.len() as u32;
+        for (k, p) in mesh.positions.iter().enumerate() {
+            let [wx, wz] = place_ground(item.x, item.z, (sn, cs), p[0], p[2]);
+            buf.positions.push([wx, p[1] + up, wz]);
+            let n = mesh.normals[k];
+            buf.normals
+                .push([n[0] * cs + n[2] * sn, n[1], -n[0] * sn + n[2] * cs]);
+            let c = mesh.colors[k];
+            buf.colors.push(if painted {
+                [paint[0] * l, paint[1] * l, paint[2] * l, 1.0]
+            } else {
+                [
+                    c[0] / base[0].max(1e-4) * l,
+                    c[1] / base[1].max(1e-4) * l,
+                    c[2] / base[2].max(1e-4) * l,
+                    1.0,
+                ]
+            });
+        }
+        buf.indices.extend(mesh.indices.iter().map(|i| i + start));
+    }
 }
 
 /// A surveyed boundary: a fence, a wall or a hedge, as the line it was surveyed

@@ -662,8 +662,11 @@ mod tests {
         const MAX: usize = 256 * 1024;
         let cut = crate::furniture::build_furniture_meshes(&items, Some(MAX));
         assert!(cut.len() > 1, "a parked city tile is past a 256 kB ceiling");
-        let one_vehicle =
-            crate::furniture::parts(FurnitureKind::Car).len() * mesh_upload_bytes(24, 36);
+        let one_vehicle = items
+            .iter()
+            .map(crate::furniture::item_bytes)
+            .max()
+            .unwrap_or(0);
         for m in &cut {
             assert_eq!(m.group, SurfaceGroup::Furniture);
             assert!(!m.positions.is_empty(), "a piece is never empty");
@@ -702,10 +705,7 @@ mod tests {
             .filter(|i| i.kind == FurnitureKind::Car)
             .count();
         let bikes = items.len() - cars;
-        let bytes: usize = items
-            .iter()
-            .map(|i| crate::furniture::parts(i.kind).len() * mesh_upload_bytes(24, 36))
-            .sum();
+        let bytes: usize = items.iter().map(crate::furniture::item_bytes).sum();
         println!(
             "parked {} ({} cars, {} bikes), {} kB of mesh",
             items.len(),
