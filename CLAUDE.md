@@ -118,6 +118,7 @@ A Cargo workspace of seventeen crates. Each row's note has the history and numbe
 | `cartopolis_materials` (`crates/materials`) | The custom material types and `MaterialsPlugin` only, split for build cost; never depends on `cartopolis` |
 | `big_space` | Vendored fork of `big_space` 0.10 (floating origin); upstream stops at Bevy 0.18, so re-sync `bevy_compat.rs` on every Bevy bump (`vendored-big-space.md`) |
 | `web-task` (`crates/web_task`) | Vendored `web-task` 1.1.3, the browser executor under `bevy_tasks`, patched for a freed-callback bug; drop it when upstream fixes it (`web-task-stale-waiters.md`) |
+| `wgpu` (`crates/wgpu`, not a member) | Vendored wgpu 30.0.1 whose browser backend caches `features()`/`limits()`; re-copy it on every wgpu bump (`wasm-performance.md`) |
 
 **The client** (`crates/cartopolis`). `components.rs` and `resources.rs` hold the ECS
 types. `systems/` is one file per concern in group folders (`geo` `map` `nav`

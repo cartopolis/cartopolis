@@ -21,6 +21,9 @@ members = [
     "crates/web_task",
 ]
 default-members = ["crates/cartopolis"]
+# Not a member, unlike `web_task`: it is a dependency patched in below, and as a
+# member `cargo test --workspace` would build and run all of wgpu's doctests.
+exclude = ["crates/wgpu"]
 
 [workspace.package]
 version = "1.0.0"
@@ -445,3 +448,9 @@ codegen-units = 1
 # when upstream publishes one. `docs/notes/web-task-stale-waiters.md`.
 [patch.crates-io]
 web-task = { path = "crates/web_task" }
+# wgpu's browser backend asked the page for every feature name and limit on each
+# `Device::features()` / `limits()` call — several per material bevy prepares,
+# and the largest single cost in the web build's hitches. `crates/wgpu` is 30.0.1
+# with those two answers cached. Re-copy it on every wgpu bump, and drop it when
+# upstream caches them. `docs/notes/wasm-performance.md`.
+wgpu = { path = "crates/wgpu" }
