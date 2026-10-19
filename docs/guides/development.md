@@ -219,7 +219,7 @@ and nothing has run on a device yet — read
 [`docs/notes/android-build.md`](../notes/android-build.md) before touching it,
 particularly the part about NativeActivity costing the soft keyboard.
 
-**The hosted simulator.** `midas deploy sim` (or, with the farm down,
+**The hosted simulator.** `midas deploy sim` (or, with the workshop down,
 `deploy-sim.yml`) builds `cartopolis_simulator` in release and publishes the
 binary to the VPS, where a systemd unit runs it. It
 serves the wire and the account admin API from one process and one account store,
@@ -381,7 +381,7 @@ Every other deploy lane in this repo is manual, because publishing is either
 expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
 Everything is deployed with `midas deploy <target>` now — `sim`, `atlas`, `web`,
-`wasm`, `apk` — built on a farm node rather than on the runner, from the scripts
+`wasm`, `apk` — built on a workshop node rather than on the runner, from the scripts
 in `deploy/build/`, with the workflows as the fallback. The simulator and atlas
 are linked by cargo-zigbuild against glibc 2.38 (`server.sh`): a node runs Arch,
 ahead of the host's Ubuntu, and a binary linked there asked for `GLIBC_2.44`

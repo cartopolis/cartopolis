@@ -2,7 +2,7 @@
 #
 # Claude Code SessionStart hook: hand this session the open ends an earlier
 # session left for this machine (`midas todo add --for workstation "…"`), with
-# the instruction to do them first. The build farm's hub keeps them, and the
+# the instruction to do them first. The build workshop's hub keeps them, and the
 # caller key this machine speaks with says which machine it is.
 #
 # Plain curl against the hub's API, not the midas command, so it works on a

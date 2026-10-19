@@ -92,7 +92,7 @@ repository: hooks are registered in its own `.claude/settings.json` and live in
 Where an out-of-repo dependency is still unavoidable — container images, the
 environment an editor launches agents with, midas's own session hooks —
 something that *does* run must verify it and say so, reporting the real state
-rather than asserting it, as midas's session hook does for the build farm.
+rather than asserting it, as midas's session hook does for the build workshop.
 
 ## What no gate here covers, and must not be faked
 

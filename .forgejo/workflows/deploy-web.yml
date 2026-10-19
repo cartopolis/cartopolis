@@ -8,8 +8,8 @@ name: Deploy web UI
 # static files interrupts nobody — unlike the simulator or atlas, nothing restarts.
 #
 # **Manual since 2026-10-16**: `midas deploy web` is the usual path (it builds
-# on a farm node from deploy/build/web.sh, the same steps as below, and publishes
-# in about 80 s); this workflow is the fallback for when the farm is down. It ran
+# on a workshop node from deploy/build/web.sh, the same steps as below, and publishes
+# in about 80 s); this workflow is the fallback for when the workshop is down. It ran
 # on every push to `main` that touched the web UI before.
 on:
   workflow_dispatch:

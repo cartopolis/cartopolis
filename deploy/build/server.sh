@@ -3,7 +3,7 @@
 #
 #   deploy/build/server.sh <package> <binary> <profile>
 #
-# A farm node runs Arch and the deploy host Ubuntu, and a binary linked on the
+# A workshop node runs Arch and the deploy host Ubuntu, and a binary linked on the
 # node asks for the node's glibc: the first simulator built this way wanted
 # GLIBC_2.44 from a host with 2.43, and the deploy's own smoke test refused it.
 # So it is linked by cargo-zigbuild against an older glibc, $GLIBC — 2.38, what

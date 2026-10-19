@@ -72,7 +72,7 @@ name: CI
 # here on the push proved the same tree again, ~10 minutes on the 3-slot runner
 # every landing shares, and the deploys no longer wait on it (`midas deploy`
 # asks for the receipt instead). What a nightly run still catches is what a
-# landing cannot: a farm that verified wrongly, and the world moving under an
+# landing cannot: a workshop that verified wrongly, and the world moving under an
 # unchanged tree (a crate yanked, a toolchain bumped).
 on:
   schedule:

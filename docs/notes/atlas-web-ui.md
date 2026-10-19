@@ -46,9 +46,9 @@ History: it was the *console*, at `/console/` (Caddy still redirects it to
 
 ## Publishing
 
-**`midas deploy web`**, which builds on a farm node from
+**`midas deploy web`**, which builds on a workshop node from
 `deploy/build/web.sh` and publishes in about 80 s. `deploy-web.yml` is
-`workflow_dispatch` only since 2026-10-16 and is the fallback for when the farm
+`workflow_dispatch` only since 2026-10-16 and is the fallback for when the workshop
 is down; until then it ran on every push to `main` that touched the web UI.
 Publishing static files restarts nothing.
 
