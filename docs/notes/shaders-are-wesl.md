@@ -1,6 +1,6 @@
 ---
 topic: shaders-are-wesl
-triggers: [assets/shaders, glass.wgsl, atmosphere_patch.rs, systems::atmosphere_patch,
+triggers: [assets/shaders, crates/bevy_shader, shader_store.rs, glass.wgsl, atmosphere_patch.rs, systems::atmosphere_patch,
   from_wesl, water_common, cloud_field, "registered to a different shader", WESL, naga_oil, "#ifdef", "@if", define_import_path, MATERIAL_BIND_GROUP,
   ShaderCacheError, "unresolved import", "writing a shader", "bumping Bevy"]
 updated: 2026-10-19
@@ -60,6 +60,15 @@ pipeline that uses it is drawn. A WESL error is a line in the log of a run that
 draws it, and the frame simply lacks whatever the pipeline was for. After any
 shader edit, run a capture that shows it and grep its log for
 `ShaderCacheError` and `unresolved import`.
+
+**Do that in a debug build.** Since 2026-10-19 a release build composes WESL
+without WESL's own validation (`crates/bevy_shader`, which saves half of every
+compose on the web), so there a mistake surfaces as the renderer's WGSL error,
+naming mangled identifiers. Composed shaders are also kept between runs
+(`shader_store.rs`). An edited shader can never be served stale, because its
+source hash is part of the entry, but a capture that composes nothing new does
+not log the WESL errors of shaders it reused. Delete `shaders/wgsl-v1.bin` from
+the cache to force a full compose ([wasm-performance.md](wasm-performance.md)).
 
 On a Bevy bump, `atmosphere_patch`'s copies are re-made from the new bevy's own
 files and their hunks re-applied (`adreno-atmosphere-struct-copy.md`); its FNV-1a

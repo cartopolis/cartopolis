@@ -21,9 +21,9 @@ members = [
     "crates/web_task",
 ]
 default-members = ["crates/cartopolis"]
-# Not a member, unlike `web_task`: it is a dependency patched in below, and as a
-# member `cargo test --workspace` would build and run all of wgpu's doctests.
-exclude = ["crates/wgpu"]
+# Not members, unlike `web_task`: they are dependencies patched in below, and as
+# members `cargo test --workspace` would build and run all of their doctests.
+exclude = ["crates/wgpu", "crates/bevy_shader"]
 
 [workspace.package]
 version = "1.0.0"
@@ -454,3 +454,8 @@ web-task = { path = "crates/web_task" }
 # with those two answers cached. Re-copy it on every wgpu bump, and drop it when
 # upstream caches them. `docs/notes/wasm-performance.md`.
 wgpu = { path = "crates/wgpu" }
+# bevy composes every WESL shader to WGSL on the web's one thread, ~2 s a load.
+# `crates/bevy_shader` is 0.20.0 with WESL's own validation skipped in release
+# builds and composed shaders kept between runs (`shader_store.rs`). Re-copy it
+# on every bevy bump. `docs/notes/wasm-performance.md`.
+bevy_shader = { path = "crates/bevy_shader" }

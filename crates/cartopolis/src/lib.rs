@@ -20,6 +20,7 @@ mod quality;
 mod render_halt;
 mod render_setup;
 mod resources;
+mod shader_store;
 mod simd_baseline;
 mod systems;
 mod utils;
@@ -882,6 +883,9 @@ fn run_client() {
         // silently skipped pass and one startup-time log line (its module header
         // has the Adreno case this was built for).
         .add_plugins(systems::pipeline_health::PipelineHealthPlugin)
+        // Composed WESL shaders kept between runs, so a second visit does not
+        // compose them again on the web's one thread (`shader_store.rs`).
+        .add_plugins(shader_store::ShaderStorePlugin)
         // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
         // PbrPlugin); it's attached as a component to the camera in setup_camera.
         //
