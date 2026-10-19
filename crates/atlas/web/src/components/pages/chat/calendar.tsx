@@ -1,20 +1,24 @@
 import m from '@garage44/mithril'
-import {Button, Dialog, FieldSegmented, FieldSwitch} from '@garage44/mithril/components'
+import {Button, Dialog, FieldSegmented, FieldSwitch, FieldText} from '@garage44/mithril/components'
 
 import type {ChatClient} from '@/lib/chat'
 import {
     type Entry,
+    type FoundPlace,
     type MeetingEntry,
     type MeetupEntry,
+    type NominatimResult,
     type Settings,
     type Source,
     addDays,
     clock,
     dayStart,
     entries,
+    distinctPlaces,
     goingJson,
     loadSettings,
     longDate,
+    meetupJson,
     monthStart,
     ruleWords,
     saveSettings,
@@ -22,6 +26,7 @@ import {
 } from '@/lib/calendar'
 import {type AnswerFor, type Plan, type Rsvp, RSVP_WORDS, isSkipped} from '@/lib/meeting'
 import {Icon} from '@/lib/icons'
+import {NOMINATIM} from '@/lib/stats'
 
 /**
  * The calendar page (`docs/mockups/calendar/v1.html` section 2, and
@@ -55,8 +60,22 @@ export interface CalendarCtx {
     /** Back to the list of communities, on a phone. */
     back: () => void
     join: (channel: string) => void
-    /** Open a chat's plan dialog on a day (a local midnight). */
-    plan: (channel: string, day: number) => void
+    /** Open a chat's plan dialog on a day (a local midnight), at a time if one
+     *  was clicked in the week. */
+    plan: (channel: string, day: number, at: number | null) => void
+}
+
+/** A meet-up being put together from the web: which chat, where, when. */
+interface MeetupDraft {
+    channel: string
+    query: string
+    found: FoundPlace[]
+    place: FoundPlace | null
+    /** "20:00", on [`st.day`]. */
+    time: string
+    note: string
+    searching: boolean
+    error: string | null
 }
 
 /** Everything the calendar page holds. */
@@ -71,7 +90,62 @@ const st = {
     /** Whether an answer in the panel is for every date of the series. */
     every: false,
     planning: false,
+    /** What Plan makes: a meeting, or a meet-up (a place and a time). */
+    kind: 'meeting' as 'meeting' | 'meetup',
+    /** The time clicked in the week, for Plan to start at. */
+    planAt: null as number | null,
+    /** The meet-up form, once a chat is picked for one. */
+    meetup: null as MeetupDraft | null,
     settings: loadSettings() as Settings,
+}
+
+/** Open Plan on the picked day, at `at` if a time was clicked. */
+function startPlanning(at: number | null): void {
+    st.planAt = at
+    st.kind = 'meeting'
+    st.meetup = null
+    st.planning = true
+}
+
+/** "20:00" for an instant, or for the next whole hour when there is none. */
+function timeOf(at: number | null): string {
+    const t = new Date(at ?? Date.now())
+    if (at === null) {
+        t.setMinutes(0, 0, 0)
+        t.setHours(t.getHours() + 1)
+    }
+    return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
+}
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Look the typed place up on our own address server, a moment after typing stops. */
+function searchPlace(d: MeetupDraft): void {
+    if (searchTimer) clearTimeout(searchTimer)
+    const q = d.query.trim()
+    if (q.length < 3) {
+        d.found = []
+        return
+    }
+    searchTimer = setTimeout(async () => {
+        d.searching = true
+        d.error = null
+        m.redraw()
+        try {
+            // Biased towards the Netherlands, where the map has its detail,
+            // without ruling anywhere else out.
+            const r = await fetch(
+                `${NOMINATIM}/search?format=jsonv2&addressdetails=1&limit=10&viewbox=3.2,53.7,7.3,50.7&q=${encodeURIComponent(q)}`,
+            )
+            const list = r.ok ? ((await r.json()) as NominatimResult[]) : []
+            if (d.query.trim() === q) d.found = distinctPlaces(list).slice(0, 6)
+            if (!r.ok) d.error = 'The address search did not answer. Try again in a moment.'
+        } catch {
+            d.error = 'The address search could not be reached.'
+        }
+        d.searching = false
+        m.redraw()
+    }, 350)
 }
 
 /** Open on today: a week of hours, or the list on a phone, which has no room for hours. */
@@ -219,7 +293,7 @@ export function Calendar(ctx: CalendarCtx): m.Children {
                         size="sm"
                     />
                     {settingsMenu(ctx)}
-                    <Button onclick={() => (st.planning = true)} size="sm" variant="primary">
+                    <Button onclick={() => startPlanning(null)} size="sm" variant="primary">
                         {Icon('add')} Plan
                     </Button>
                 </header>
@@ -308,8 +382,25 @@ function weekView(ctx: CalendarCtx, list: Entry[], from: number, me: string) {
                         const t = new Date(ms)
                         return t.getHours() + t.getMinutes() / 60
                     }
+                    // A click on an empty part of the day plans something at
+                    // that time, to the half hour; one on a plan opens it.
+                    const planHere = (ev: MouseEvent) => {
+                        if ((ev.target as HTMLElement).closest('.cal-block')) return
+                        const r = (ev.currentTarget as HTMLElement).getBoundingClientRect()
+                        const hour = Math.floor((h0 + ((ev.clientY - r.top) / r.height) * hours) * 2) / 2
+                        const at = new Date(d)
+                        at.setHours(Math.floor(hour), (hour % 1) * 60, 0, 0)
+                        if (at.getTime() < Date.now()) return
+                        st.day = d
+                        startPlanning(at.getTime())
+                    }
                     return (
-                        <div class={d === today ? 'cal-col is-today' : 'cal-col'} key={d}>
+                        <div
+                            class={d === today ? 'cal-col is-today' : 'cal-col'}
+                            key={d}
+                            onclick={planHere}
+                            title={d + DAY_MS > now ? 'Click to plan something at this time' : undefined}
+                        >
                             {inDay.map((e) => {
                                 const y = pct(hourOf(e.startMs))
                                 const h = pct(hourOf(e.endMs)) - y
@@ -361,7 +452,14 @@ function monthView(ctx: CalendarCtx, list: Entry[], from: number, me: string) {
                 })}
             </div>
             <section class="cal-day">
-                <h3>{dayWords(day)}</h3>
+                <h3 class="cal-day-h">
+                    {dayWords(day)}
+                    {day >= today && (
+                        <Button onclick={() => startPlanning(null)} size="sm" variant="ghost">
+                            {Icon('add')} Plan on this day
+                        </Button>
+                    )}
+                </h3>
                 {onDay.length === 0 ? <p class="chat-empty">Nothing planned.</p> : onDay.map((e) => row(ctx, e, me))}
             </section>
         </div>
@@ -678,48 +776,153 @@ function planDialog(ctx: CalendarCtx) {
         },
         set value(v: boolean) {
             st.planning = v
+            if (!v) st.meetup = null
         },
     }
-    const chats = ctx.client.chats
+    const when = dayWords(st.day) === 'Today' || dayWords(st.day) === 'Tomorrow' ? dayWords(st.day).toLowerCase() : `on ${longDate(st.day)}`
+    const at = st.planAt === null ? '' : ` at ${clock(st.planAt)}`
     return (
-        <Dialog class="chat-dialog cal-plan" model={open} title={`Plan something ${dayWords(st.day) === 'Today' || dayWords(st.day) === 'Tomorrow' ? dayWords(st.day).toLowerCase() : `on ${longDate(st.day)}`}`}>
-            <div class="cal-plan-kinds">
-                <div class="cal-plan-kind is-on">
-                    {Icon('videocam')}
-                    <span>
-                        <b>Meeting</b>
-                        <small>A call, with an agenda</small>
-                    </span>
-                    {Icon('check')}
-                </div>
-                <div class="cal-plan-kind is-off">
-                    {Icon('location_on')}
-                    <span>
-                        <b>Meet up</b>
-                        <small>A place and a time: made in the app, where there is a map to pick it on</small>
-                    </span>
-                </div>
-            </div>
-            <h3 class="cal-plan-h">In which chat</h3>
-            <div class="cal-plan-chats">
-                {chats.length === 0 && <p class="chat-empty">No chats yet.</p>}
-                {chats.map((x) => (
-                    <button
-                        class="cal-plan-chat"
-                        key={x.channel}
-                        onclick={() => {
-                            st.planning = false
-                            ctx.plan(x.channel, st.day)
-                        }}
-                        type="button"
-                    >
-                        {ctx.where(x.channel).includes(' # ')
-                            ? <span class="cal-plan-hash">#</span>
-                            : x.group ? <span class="cal-plan-hash">⧉</span> : ctx.avatar(x.people[0] ?? x.label, 24)}
-                        <span>{ctx.where(x.channel)}</span>
-                    </button>
-                ))}
-            </div>
+        <Dialog class="chat-dialog cal-plan" model={open} title={st.meetup ? `Meet up ${when}` : `Plan something ${when}${at}`}>
+            {st.meetup ? meetupForm(ctx, st.meetup) : planPicker(ctx)}
         </Dialog>
     )
+}
+
+/** What to plan, and in which chat. */
+function planPicker(ctx: CalendarCtx) {
+    const chats = ctx.client.chats
+    const kind = (k: 'meeting' | 'meetup', icon: string, title: string, sub: string) => (
+        <button class={st.kind === k ? 'cal-plan-kind is-on' : 'cal-plan-kind'} onclick={() => (st.kind = k)} type="button">
+            {Icon(icon)}
+            <span>
+                <b>{title}</b>
+                <small>{sub}</small>
+            </span>
+            {st.kind === k && Icon('check')}
+        </button>
+    )
+    return [
+        <div class="cal-plan-kinds">
+            {kind('meeting', 'videocam', 'Meeting', 'A call, with an agenda')}
+            {kind('meetup', 'location_on', 'Meet up', 'A place and a time')}
+        </div>,
+        <h3 class="cal-plan-h">In which chat</h3>,
+        <div class="cal-plan-chats">
+            {chats.length === 0 && <p class="chat-empty">No chats yet.</p>}
+            {chats.map((x) => (
+                <button
+                    class="cal-plan-chat"
+                    key={x.channel}
+                    onclick={() => {
+                        if (st.kind === 'meeting') {
+                            st.planning = false
+                            ctx.plan(x.channel, st.day, st.planAt)
+                            return
+                        }
+                        st.meetup = {
+                            channel: x.channel,
+                            error: null,
+                            found: [],
+                            note: '',
+                            place: null,
+                            query: '',
+                            searching: false,
+                            time: timeOf(st.planAt),
+                        }
+                    }}
+                    type="button"
+                >
+                    {ctx.where(x.channel).includes(' # ')
+                        ? <span class="cal-plan-hash">#</span>
+                        : x.group ? <span class="cal-plan-hash">⧉</span> : ctx.avatar(x.people[0] ?? x.label, 24)}
+                    <span>{ctx.where(x.channel)}</span>
+                </button>
+            ))}
+        </div>,
+    ]
+}
+
+/**
+ * A meet-up from the web: the place found by name on our own address server
+ * (there is no map on this page to point at), a time on the picked day, and an
+ * optional line. It goes out as the same message the app's `+ → Meet up` sends.
+ */
+function meetupForm(ctx: CalendarCtx, d: MeetupDraft) {
+    const [h, mm] = d.time.split(':').map(Number)
+    const start = new Date(st.day)
+    start.setHours(h || 0, mm || 0, 0, 0)
+    const past = start.getTime() < Date.now()
+    const ready = d.place !== null && !past
+    const model = <K extends 'query' | 'note'>(key: K, then?: () => void) => ({
+        get value() {
+            return d[key]
+        },
+        set value(v: string) {
+            d[key] = v
+            then?.()
+        },
+    })
+    return [
+        <p class="cal-plan-in">In {ctx.where(d.channel)}</p>,
+        d.place ? (
+            <div class="cal-place is-picked">
+                {Icon('location_on')}
+                <span>
+                    <b>{d.place.name}</b>
+                    <small>{d.place.area}</small>
+                </span>
+                <Button onclick={() => (d.place = null)} size="sm" variant="ghost">
+                    Change
+                </Button>
+            </div>
+        ) : (
+            <div class="cal-place-search">
+                <FieldText
+                    label="Where"
+                    model={model('query', () => searchPlace(d))}
+                    placeholder="A square, a café, an address: Vismarkt, Groningen"
+                />
+                {d.searching && <p class="chat-empty">Looking…</p>}
+                {d.error && <p class="chat-empty">{d.error}</p>}
+                {!d.searching && d.query.trim().length >= 3 && d.found.length === 0 && !d.error && (
+                    <p class="chat-empty">Nothing found by that name.</p>
+                )}
+                <div class="cal-place-list">
+                    {d.found.map((p) => (
+                        <button class="cal-place" key={`${p.latitude},${p.longitude}`} onclick={() => (d.place = p)} type="button">
+                            {Icon('location_on')}
+                            <span>
+                                <b>{p.name}</b>
+                                <small>{p.area}</small>
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+        ),
+        <label class="cal-time">
+            <span>When, {dayWords(st.day).toLowerCase() === 'today' ? 'today' : longDate(st.day)}</span>
+            <input oninput={(e: Event) => (d.time = (e.target as HTMLInputElement).value)} type="time" value={d.time} />
+        </label>,
+        past && <p class="chat-empty">That time has passed.</p>,
+        <FieldText label="A line with it (optional)" model={model('note')} placeholder="Coffee first?" />,
+        <footer class="cal-plan-foot">
+            <Button onclick={() => (st.meetup = null)} variant="ghost">
+                Back
+            </Button>
+            <Button
+                disabled={!ready}
+                onclick={() => {
+                    if (!d.place) return
+                    const json = meetupJson(d.place, start.getTime(), d.note)
+                    ctx.client.sendPoint(d.channel, json, d.note.trim() || d.place.name)
+                    st.meetup = null
+                    st.planning = false
+                }}
+                variant="primary"
+            >
+                {Icon('send')} Propose the meet-up
+            </Button>
+        </footer>,
+    ]
 }

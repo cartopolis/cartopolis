@@ -111,6 +111,69 @@ export function goingJson(m: Meetup): string {
     return JSON.stringify(v)
 }
 
+/** A place found by name, for a meet-up proposed from the web. */
+export interface FoundPlace {
+    latitude: number
+    longitude: number
+    /** "Vismarkt". */
+    name: string
+    /** Where it is: "Binnenstad, Groningen". */
+    area: string
+}
+
+/**
+ * A meet-up proposed from the web, as the app writes one (`Point::to_activity_json`
+ * with a `Meetup`): an `Event` at a `Place`, with no camera view, since a page
+ * with no map has none to send. The app shows it like any other meet-up.
+ */
+export function meetupJson(place: FoundPlace, startMs: number, note: string | null): string {
+    const v: Record<string, unknown> = {
+        location: {latitude: place.latitude, longitude: place.longitude, name: place.name, type: 'Place'},
+        startTime: new Date(startMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        type: 'Event',
+    }
+    if (note?.trim()) v.content = note.trim()
+    return JSON.stringify(v)
+}
+
+/** A Nominatim `jsonv2` result (asked with `addressdetails=1`). */
+export interface NominatimResult {
+    address?: Record<string, string>
+    display_name?: string
+    lat?: string
+    lon?: string
+    name?: string
+}
+
+/**
+ * A Nominatim result as a place a meet-up can be at: its name, and the
+ * district and town it is in. From the address parts rather than the display
+ * name, which in some answers carries every district level, the country twice
+ * and a postcode where the town should be.
+ */
+export function foundPlace(r: NominatimResult): FoundPlace | null {
+    const latitude = Number(r.lat)
+    const longitude = Number(r.lon)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+    const a = r.address ?? {}
+    const first = (r.display_name ?? '').split(',')[0]?.trim()
+    const name = r.name?.trim() || first || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+    const district = a.suburb || a.quarter || a.neighbourhood || a.city_district || a.village
+    const town = a.city || a.town || a.village || a.municipality
+    const area = [...new Set([district, town].filter((p): p is string => !!p && p !== name))].join(', ')
+    return {area, latitude, longitude, name}
+}
+
+/** Found places, one per name and area: a square and the street segments
+ *  around it that share its name are one place to meet at. */
+export function distinctPlaces(results: NominatimResult[]): FoundPlace[] {
+    const out: FoundPlace[] = []
+    for (const p of results.map(foundPlace)) {
+        if (p && !out.some((q) => q.name === p.name && q.area === p.area)) out.push(p)
+    }
+    return out
+}
+
 interface Common {
     channel: string
     endMs: number

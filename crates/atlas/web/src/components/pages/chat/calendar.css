@@ -694,8 +694,115 @@
     border-color: var(--m-accent);
 }
 
-.cal-plan-kind.is-off {
-    opacity: 0.55;
+.chat .cal-plan-kind {
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    padding: 8px 10px !important;
+    text-align: left;
+    width: 100%;
+}
+
+.chat .cal-plan-kind:hover {
+    background: var(--m-hover);
+}
+
+/* ── Plan: a meet-up's place, found by name, and its time ── */
+
+.cal-plan-in {
+    color: var(--m-text-dim);
+    font-size: 0.8rem;
+    margin: 0 0 8px;
+}
+
+.cal-place-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.cal-place {
+    align-items: center;
+    border-radius: 8px;
+    display: flex;
+    gap: 10px;
+    padding: 6px 8px;
+}
+
+.chat .cal-place {
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    padding: 6px 8px !important;
+    text-align: left;
+    width: 100%;
+}
+
+.chat .cal-place:hover {
+    background: var(--m-hover);
+}
+
+.cal-place .chat-icon {
+    color: var(--c-brand);
+}
+
+.cal-place > span {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.cal-place small {
+    color: var(--m-text-dim);
+    font-size: 0.75rem;
+}
+
+.cal-place.is-picked {
+    border: 1px solid var(--m-accent);
+    margin-bottom: 8px;
+}
+
+.cal-time {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    margin: 10px 0;
+}
+
+.cal-time span {
+    color: var(--m-text-dim);
+    font-size: 0.85rem;
+}
+
+.cal-time input {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    color: inherit;
+    font: inherit;
+    padding: 4px 8px;
+}
+
+.cal-plan-foot {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+/* A click on an empty part of a day plans something then. */
+.cal-col {
+    cursor: cell;
+}
+
+.cal-day-h {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
 }
 
 .cal-plan-kind > span {

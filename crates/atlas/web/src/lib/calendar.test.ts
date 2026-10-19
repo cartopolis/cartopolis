@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test'
 
-import {type Settings, type Source, entries, goingJson, readMeetups} from './calendar'
+import {type Settings, type Source, distinctPlaces, entries, foundPlace, goingJson, meetupJson, readMeetups} from './calendar'
 import {type Plan, readMeetings, toJson} from './meeting'
 import type {Message} from '@/worker/history'
 
@@ -93,5 +93,40 @@ describe('the calendar', () => {
         expect(m[0].going).toEqual(['sanne', 'me'])
         const e = entries([source([line('sanne', vismarkt), line('me', going)])], 'me', 0, Number.MAX_SAFE_INTEGER, all)
         expect(e[0]).toMatchObject({endMs: Date.parse('2026-10-19T11:30:00Z'), kind: 'meetup', mine: 'going', title: 'Vismarkt'})
+    })
+})
+
+describe('a meet-up proposed from the web', () => {
+    // As our address server answers `addressdetails=1`: a square, and a
+    // stretch of street of the same name with a postcode.
+    const address = {city: 'Groningen', country: 'Nederland', neighbourhood: 'Binnenstad-zuid', quarter: 'Binnenstad', suburb: 'Centrum'}
+    const square = {address: {...address, square: 'Vismarkt'}, display_name: 'Vismarkt, Binnenstad-zuid, Binnenstad, Centrum, Groningen, Nederland', lat: '53.2172209', lon: '6.5648775', name: 'Vismarkt'}
+    const street = {address: {...address, postcode: '9712 CB', road: 'Vismarkt'}, display_name: 'Vismarkt, Binnenstad-zuid, Binnenstad, Centrum, Groningen, Nederland, 9712 CB, Nederland', lat: '53.2170', lon: '6.5652', name: 'Vismarkt'}
+    const vismarkt = foundPlace(square)!
+
+    test('a found place is named, and where it is says district and town, never a postcode', () => {
+        expect(vismarkt.name).toBe('Vismarkt')
+        expect(vismarkt.area).toBe('Centrum, Groningen')
+        expect(foundPlace(street)!.area).toBe('Centrum, Groningen')
+        expect(foundPlace({lat: 'x', lon: '6'})).toBeNull()
+        // The square and the street beside it are one place to meet at.
+        expect(distinctPlaces([square, street])).toEqual([vismarkt])
+    })
+
+    test('it is the meet-up the app sends, and reads back as one with its proposer going', () => {
+        const json = meetupJson(vismarkt, THU_22_OCT, '  Coffee first? ')
+        const v = JSON.parse(json)
+        expect(v).toEqual({
+            content: 'Coffee first?',
+            location: {latitude: 53.2172209, longitude: 6.5648775, name: 'Vismarkt', type: 'Place'},
+            startTime: '2026-10-22T18:00:00Z',
+            type: 'Event',
+        })
+        const [mu] = readMeetups([line('ann@cartopolis.org', json)])
+        expect(mu.name).toBe('Vismarkt')
+        expect(mu.startMs).toBe(THU_22_OCT)
+        expect(mu.going).toEqual(['ann@cartopolis.org'])
+        // No line, no `content`.
+        expect(JSON.parse(meetupJson(vismarkt, THU_22_OCT, '  ')).content).toBeUndefined()
     })
 })

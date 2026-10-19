@@ -944,9 +944,9 @@ export class Chat extends MithrilComponent {
                 const sum = c.chats.find((x) => x.channel === channel)
                 return [...new Set([...(c.address ? [c.address] : []), ...(sum?.people ?? [])])]
             },
-            plan: (channel, day) => {
+            plan: (channel, day, at) => {
                 this.open(channel)
-                this.planMeeting(day)
+                this.planMeeting(day, at)
             },
             shown: (address) => shown(address, c.address),
             sources: () =>
@@ -1705,7 +1705,7 @@ export class Chat extends MithrilComponent {
      * or on `day` (a local midnight, from the calendar), at the next whole
      * hour if that is today and at 20:00 otherwise.
      */
-    planMeeting(day: number | null = null) {
+    planMeeting(day: number | null = null, at: number | null = null) {
         const next = new Date()
         next.setMinutes(0, 0, 0)
         next.setHours(next.getHours() + 1)
@@ -1713,6 +1713,8 @@ export class Chat extends MithrilComponent {
             next.setTime(day)
             next.setHours(20)
         }
+        // A time clicked in the calendar's week: exactly that.
+        if (at !== null) next.setTime(at)
         this.s.plan = emptyPlan(localInput(next.getTime()))
         this.dialog('plan')
     }
