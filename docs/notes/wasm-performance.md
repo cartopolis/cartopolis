@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
-triggers: [platform/workers.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
-updated: 2026-10-16
+triggers: [platform/workers.rs, crates/wgpu, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+updated: 2026-10-19
 ---
 
 # What actually costs frames on the web build
@@ -91,7 +91,8 @@ Re-preparing was so expensive on the web for a second reason: almost all of it w
 call, marshalling a string each way, and bevy's `AsBindGroup` asks it several times
 per material prepare. It is not cached anywhere in wgpu 30. With the churn gone it is
 ~0.4 s a load, which did not justify vendoring wgpu to cache it; if a new hot path
-calls `RenderDevice::features()` per item, it is worth reconsidering.
+calls `RenderDevice::features()` per item, it is worth reconsidering. *(2026-10-19: one did, and
+wgpu is vendored — next section.)*
 
 The rest was CPU work running *between awaits* in futures on the `IoTaskPool` —
 on the web, the main thread. `workers::compute` existed for exactly this, and three
@@ -112,6 +113,76 @@ the page blocks on it (`GpuChannel::WaitForGetOffsetInRange` in a `--trace`), an
 neither the debugger nor the profiler can reach the main thread meanwhile. On the
 Mac's GPU the same build never froze. Use a node with a GPU for anything about
 time.
+
+## Moving the camera, and the wgpu fork (2026-10-19)
+
+A load with the camera standing still under-reports what a person feels: a
+settled scene streams nothing. `cdp_probe --drive 25` repeats a fixed script from
+25 s on (pan, turn, zoom in and back out, pan), so runs compare. Same setup as
+above: release build kept unstripped, Chrome for Testing on `mac-1`'s Apple GPU,
+1600×900, 100 s, Groningen.
+
+Without the fixes, a 75 s drive held ~53 fps on that machine (60 is vsync), with
+100–700 ms freezes most seconds and the odd 1.5 s one. Each of these was found
+inside those freezes and moved:
+
+- **`map_wgt_features` was the largest single item: 3–8 s a run.** The paragraph
+  above said to vendor wgpu once a hot path called `features()` per item, and
+  material preparation is that path: tiles land all through a drive, each with a
+  ground material, and each prepare asks several times. bevy also asks the
+  *adapter* every frame (`prepare_prepass_textures` and
+  `prepare_mip_generator_pipelines` through `get_texture_format_features`).
+  `crates/wgpu` is wgpu 30.0.1 with `WebDevice::features`/`limits` and
+  `WebAdapter::features` cached (every change marked `cartopolis:`), patched in
+  with `[patch.crates-io]`. Preparing ground materials went from 4.0 s to 0.9 s a
+  run.
+- **`water_common.wesl` and `cloud_field.wesl` were each registered twice**: once
+  by the shader loader, resolving `super::…` imports, and once by hand. Bevy then
+  recompiled every pipeline built against the first copy
+  ([shaders-are-wesl.md](shaders-are-wesl.md)).
+- **The AHN height patch's TIFF inflate ran in a future**, so on the main thread:
+  0.06–1 s a run, and `height::decode_patch` moves it to a worker. **A tile retired
+  while its fetch was in flight dropped its payload in the future**, and that can be
+  the last reference to its source's `Survey`. It is dropped on a worker now.
+- `debug_switches::query_value` re-parsed `location.search` on every call, and some
+  switches are read every frame. It now parses the query once.
+
+Two runs each side, alternated:
+
+| per 100 s run | before | after |
+|---|---|---|
+| main-thread busy | 47.2 s, 51.4 s | 38.8 s, 41.1 s |
+| in stretches ≥100 ms with no idle | 13.7 s, 21.2 s | 9.0 s, 11.1 s |
+| mean fps while driving | 53.2, 54.6 | 55.5, 53.9 |
+
+The fps barely moves because this machine is vsync-bound. The busy time is the
+headroom a slower machine would spend.
+
+**This instrument is noisy, and it shows how noisy.** The Mac mini hosts both
+Mac nodes, and while another session renders on the other one the host's load
+average sits at 7–8 on 6 cores. V8's sampler then misses ticks: 12–30 s of each
+100 s profile is gaps between samples, not code. A run-to-run spread of ±20 % on the
+same build is normal under that load. Look at `ioreg -r -c IOAccelerator` and
+`uptime` before trusting one run, alternate the builds, and run each at least twice.
+
+**Still costing, in order:**
+
+1. **Shader compiles, 2 s a run, some mid-drive.** `?pipeline_log` logs each new
+   pipeline with its shaders and defs (`pipeline_health.rs`). One run built 69
+   pipelines and compiled 56 distinct (shader, defs) pairs. Most mid-drive compiles
+   are `mesh.wesl` + `ground_detail.wesl` again for a new vertex layout:
+   ground-detail meshes arrive with and without `VERTEX_COLORS` and `VERTEX_UVS`,
+   three combinations each compiled separately. Giving every ground-detail mesh one
+   layout would remove two of them. Compiled WGSL keyed by a hash of its sources and
+   defs could be kept in `platform::storage`, so a second visit compiles nothing.
+   That needs bevy_shader vendored: `wesl::Resolver` has no hook to cache a parsed
+   module, and each compile re-parses every import, which is half its cost.
+2. **The render schedule itself**: `render_system`, `camera_driver` and extraction
+   are ~40 % of busy time while driving. They scale with draws and entities, and on
+   the web they share the one thread with everything else.
+3. **One 790 ms `writeTexture`** inside `GpuImage::prepare_asset`, seen once,
+   during a frame that also queued 10–14 MB of uploads. `upload_meter` warns about
+   those frames. Which image it was is not established.
 
 ## The phone tier (2026-08-09)
 
