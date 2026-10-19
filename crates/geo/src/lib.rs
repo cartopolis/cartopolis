@@ -15,6 +15,9 @@
 // for it too — it cannot depend on `cartopolis`, and looking at the real ground
 // is the thing it exists for.
 pub mod ahn;
+// The moving traffic's models — car bodies and an articulated walker — shared
+// once by the whole pool, unlike the parked cars' merged furniture boxes.
+pub mod agent_models;
 pub mod building_design;
 pub mod crops;
 // The installations standing on ProRail's registered level crossings. Split from

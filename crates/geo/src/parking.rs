@@ -92,11 +92,15 @@ struct Lot {
 /// this map is pale cartographic paper (`crate::furniture` says why), so these are
 /// the colours a car park actually reads as from across it — silver, white and
 /// graphite are most of any Dutch lot — with two desaturated hues to break up the
-/// grey and nothing brighter.
+/// grey and nothing brighter. Black and a dark blue are here because they are
+/// two of the four commonest car colours in the Netherlands, and a street
+/// without a single dark car reads as a showroom.
 pub const CAR_PAINTS: &[u32] = &[
     0xC6_C8_CA, // silver
     0xE2_E0_DC, // white
     0x7E_81_85, // graphite
+    0x2A_2C_30, // black
+    0x34_3F_55, // dark blue
     0xA9_AC_AE, // pale grey
     0x78_88_98, // slate blue
     0xA3_79_74, // muted red
