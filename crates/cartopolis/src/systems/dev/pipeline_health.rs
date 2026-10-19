@@ -17,6 +17,12 @@
 //! pipeline is also logged at ERROR once, from here, with its label: bevy's own
 //! creation-time log line names the *shader*, and by the time somebody reads
 //! logcat that line is gone.
+//!
+//! `CARTO_PIPELINE_LOG` (`?pipeline_log` on the web) also logs every pipeline
+//! the cache gains: its label, its shaders and their defs. On the web each one is
+//! a WESL compile on the page thread, hundreds of milliseconds, so a pipeline that
+//! first appears mid-session is a hitch. This log says which one it was, and which
+//! def differs from the variant before it.
 
 use crate::platform::sync::{Mutex, OnceLock};
 
@@ -68,11 +74,23 @@ impl Plugin for PipelineHealthPlugin {
 /// Scan the cache and publish the tally. Cheap — a state match per entry, a few
 /// hundred entries — but throttled anyway: nothing reading it needs per-frame
 /// freshness.
-fn watch_pipelines(cache: Res<PipelineCache>, mut frame: Local<u32>) {
+fn watch_pipelines(
+    cache: Res<PipelineCache>,
+    mut frame: Local<u32>,
+    mut logged: Local<Option<(bool, usize)>>,
+) {
     const EVERY: u32 = 30;
     *frame = frame.wrapping_add(1);
     if !frame.is_multiple_of(EVERY) {
         return;
+    }
+    let (log_new, seen) =
+        logged.get_or_insert_with(|| (crate::debug_switches::env_flag("CARTO_PIPELINE_LOG"), 0));
+    if *log_new {
+        for pipeline in cache.pipelines().skip(*seen) {
+            tracing::info!(pipeline = %describe(&pipeline.descriptor), "new GPU pipeline");
+        }
+        *seen = cache.pipelines().count();
     }
 
     let mut ready = 0usize;
@@ -117,4 +135,43 @@ fn watch_pipelines(cache: Res<PipelineCache>, mut frame: Local<u32>) {
         building,
         errored,
     };
+}
+
+/// One pipeline for the `CARTO_PIPELINE_LOG` line: its label, then each stage's
+/// shader and that stage's defs.
+fn describe(descriptor: &PipelineDescriptor) -> String {
+    use bevy::shader::{Shader, ShaderDefVal};
+    fn stage(name: &str, shader: &Handle<Shader>, defs: &[ShaderDefVal]) -> String {
+        let path = shader
+            .path()
+            .map_or_else(|| format!("{:?}", shader.id()), ToString::to_string);
+        let defs: Vec<String> = defs
+            .iter()
+            .map(|d| match d {
+                ShaderDefVal::Bool(k, true) => k.to_string(),
+                ShaderDefVal::Bool(k, false) => format!("!{k}"),
+                ShaderDefVal::Int(k, v) => format!("{k}={v}"),
+                ShaderDefVal::UInt(k, v) => format!("{k}={v}"),
+            })
+            .collect();
+        format!(" {name}={path} [{}]", defs.join(" "))
+    }
+    let label = |l: &Option<std::borrow::Cow<'static, str>>| {
+        l.as_deref().unwrap_or("(unlabelled)").to_string()
+    };
+    match descriptor {
+        PipelineDescriptor::RenderPipelineDescriptor(d) => {
+            let mut out = label(&d.label) + &stage("vs", &d.vertex.shader, &d.vertex.shader_defs);
+            if let Some(f) = &d.fragment {
+                out += &stage("fs", &f.shader, &f.shader_defs);
+            }
+            out
+        }
+        PipelineDescriptor::ComputePipelineDescriptor(d) => {
+            label(&d.label) + &stage("cs", &d.shader, &d.shader_defs)
+        }
+        PipelineDescriptor::MeshPipelineDescriptor(d) => {
+            label(&d.label) + &stage("ms", &d.mesh.shader, &d.mesh.shader_defs)
+        }
+    }
 }

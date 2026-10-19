@@ -33,6 +33,12 @@
  *   bun tools/cdp_probe.ts --trace /tmp/web.json   # a Chrome trace of every process (chrome://tracing, Perfetto)
  *   bun tools/cdp_probe.ts --remote --port 9444    # drive a browser already listening there (e.g. an
  *                                                  # ssh -L to a machine with a real GPU) instead of spawning one
+ *   bun tools/cdp_probe.ts --drive 20              # from t=20 s, move the camera the way a person does
+ *
+ * A still camera hides most of what a person calls stutter: a settled scene
+ * streams nothing. `--drive` repeats a fixed script — pan (left drag), turn
+ * (middle drag), zoom in and back out (wheel) — so two runs move through the same
+ * places and their frame stats compare.
  *
  * A main thread that stops answering for `--hang-after` seconds is paused in
  * the debugger and its stack printed, a few times over, so a spin and a hang
@@ -54,6 +60,7 @@ const { values: opt } = parseArgs({
     "hang-after": { type: "string", default: "8" },
     trace: { type: "string" },
     remote: { type: "boolean", default: false },
+    drive: { type: "string" },
   },
 });
 
@@ -324,6 +331,42 @@ if (PROFILING) {
   await send("Profiler.setSamplingInterval", { interval: 1000 }); // µs
   await send("Profiler.start");
 }
+
+/**
+ * The `--drive` script, started in the background so the heartbeat watch below
+ * keeps running. Every event is awaited, so a stalled page slows the script down
+ * rather than queueing a backlog of input it then replays all at once.
+ */
+async function drive(fromMs: number) {
+  await Bun.sleep(Math.max(0, fromMs - (Date.now() - started)));
+  const cx = 800, cy = 450;
+  const mouse = (type: string, x: number, y: number, button = "none", extra: Record<string, unknown> = {}) =>
+    sendWithin("Input.dispatchMouseEvent", { type, x, y, button, ...extra }, 2000);
+  const drag = async (button: "left" | "middle", dx: number, dy: number, steps: number) => {
+    const buttons = button === "left" ? 1 : 4;
+    await mouse("mouseMoved", cx, cy);
+    await mouse("mousePressed", cx, cy, button, { buttons, clickCount: 1 });
+    for (let i = 1; i <= steps; i++) {
+      await mouse("mouseMoved", cx + (dx * i) / steps, cy + (dy * i) / steps, button, { buttons });
+      await Bun.sleep(16);
+    }
+    await mouse("mouseReleased", cx + dx, cy + dy, button, { buttons: 0, clickCount: 1 });
+  };
+  const wheel = async (deltaY: number, steps: number) => {
+    for (let i = 0; i < steps; i++) {
+      await mouse("mouseWheel", cx, cy, "none", { deltaX: 0, deltaY });
+      await Bun.sleep(16);
+    }
+  };
+  while (Date.now() - started < RUN_MS - 2000) {
+    for (let i = 0; i < 4; i++) await drag("left", -500, 0, 60); // pan east, ~4 s
+    await drag("middle", 600, 0, 120); // turn, ~2 s
+    await wheel(-100, 40); // zoom in
+    await wheel(100, 40); // and back out
+    for (let i = 0; i < 4; i++) await drag("left", 0, -300, 60); // pan north
+  }
+}
+if (opt.drive !== undefined) drive(Number(opt.drive) * 1000);
 
 /**
  * Watch the heartbeat for the rest of the run. A main thread that has not run a
