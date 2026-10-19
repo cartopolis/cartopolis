@@ -13,7 +13,9 @@
  * `--serve --mock` is the exception, and only for looking at the UI: `/api/*`
  * is answered in-process by `mock.ts` instead of proxied, so the pages render
  * with realistic data on a machine with no simulator and no atlas — a screenshot,
- * a layout check on a phone. It is not how anything is tested.
+ * a layout check on a phone. It is not how anything is tested. With
+ * `?mock-chat` the page is the same app over a stand-in chat worker
+ * (`mock-chat.ts`), so Community and its calendar draw with people in them.
  */
 import {existsSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import path from 'node:path'
@@ -104,7 +106,28 @@ async function build() {
     const bytes = (await Bun.file(path.join(dist, appJs)).arrayBuffer()).byteLength
     console.log(`built dist/ (${appJs.slice(1)} ${Math.round(bytes / 1024)} KB)`)
 
+    if (mock) await buildMockChat()
     if (!serve) precompress()
+}
+
+/**
+ * `--mock`'s second app: the same entry behind `mock-chat.ts`, which stands a
+ * chat worker in with invented chats, so `?mock-chat` draws Community and its
+ * calendar with nobody to chat with. Built only here; it never ships.
+ */
+async function buildMockChat() {
+    const result = await Bun.build({
+        entrypoints: [path.join(root, 'mock-chat.ts')],
+        external: ['/fonts/*', '/img/*'],
+        naming: 'mock-chat.[ext]',
+        outdir: dist,
+        sourcemap: 'inline',
+        target: 'browser',
+    })
+    if (!result.success) {
+        for (const log of result.logs) console.error(log)
+        throw new Error('mock chat build failed')
+    }
 }
 
 /**
@@ -204,7 +227,7 @@ async function buildChatWorker() {
  * not a class, so it survives the layout changing around it. Both exist only
  * here: the real server never sees this script.
  */
-async function mockIndex(): Promise<Response> {
+async function mockIndex(url: URL): Promise<Response> {
     const {MOCK_ADMIN_TOKEN, MOCK_PLAYER, MOCK_PLAYER_TOKEN} = await import('./mock')
     const seed = `<script>
 (() => {
@@ -235,7 +258,8 @@ async function mockIndex(): Promise<Response> {
   }
 })()
 </script>`
-    const html = (await Bun.file(path.join(dist, 'index.html')).text()).replace('<head>', `<head>\n${seed}`)
+    let html = (await Bun.file(path.join(dist, 'index.html')).text()).replace('<head>', `<head>\n${seed}`)
+    if (url.searchParams.has('mock-chat')) html = html.replace(/src="\/app-[^"]+\.js"/, 'src="/mock-chat.js"')
     return new Response(html, {headers: {'Content-Type': 'text/html'}})
 }
 
@@ -328,7 +352,7 @@ if (serve) {
             }
             // Single-page app: an unknown path is a route, not a 404.
             if (mock) {
-                return mockIndex()
+                return mockIndex(url)
             }
             return new Response(Bun.file(path.join(dist, 'index.html')), {
                 headers: {'Content-Type': 'text/html'},

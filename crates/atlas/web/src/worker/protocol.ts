@@ -185,7 +185,8 @@ export type Command =
     | {type: 'start_direct'; username: string}
     | {members: string[]; name: string; type: 'start_group'}
     | {body: string; channel: string; parent: number | null; type: 'send_text'}
-    | {channel: string; point: string; type: 'send_point'}
+    /** A place, or a meet-up's "I'm going", with the words a reader that shows only text sees. */
+    | {body: string; channel: string; point: string; type: 'send_point'}
     | {body: string; channel: string; object: string; type: 'send_meeting'}
     | {channel: string; emoji: string; remove: boolean; target: number; type: 'react'}
     | {body: string; channel: string; target: number; type: 'edit'}
@@ -233,6 +234,8 @@ export type Command =
     | {channel: string; id: number; type: 'call_keys'}
     /** The page is showing this chat: send its history, and count it read. */
     | {channel: string; type: 'open'}
+    /** Send every chat's history, read or not (the calendar gathers plans from all of them). */
+    | {type: 'histories'}
 
 /** Worker → page. */
 export type Update =

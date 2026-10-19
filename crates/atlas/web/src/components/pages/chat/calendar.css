@@ -1,0 +1,823 @@
+/* ── The calendar (`calendar.tsx`, `docs/mockups/calendar/`) ─────────────── */
+
+/*
+ * Two kinds, told apart by colour everywhere: a meet-up (a place and a time)
+ * has the brand's orange edge, a meeting (a call) the pale accent. Not yet
+ * answered is outlined in orange; "can't come" fades and is struck through; a
+ * date the planner skipped fades and says so. Tokens only (`theme.css`).
+ */
+
+/* Room for the week: the topic list steps aside while the calendar is open. */
+@media (min-width: 761px) {
+    .chat.is-calendar .chat-side {
+        display: none;
+    }
+}
+
+.home-tile-face.is-calendar {
+    color: var(--m-text-dim);
+}
+
+.chat-count.is-today {
+    background: var(--c-brand);
+    color: #fff;
+}
+
+.cal {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.cal-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    padding: 12px 16px 6px;
+}
+
+.cal-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.cal-title {
+    color: var(--m-text-strong);
+    font-size: 1.15rem;
+    margin: 0 4px 0 0;
+}
+
+.cal-nav {
+    display: flex;
+    gap: 2px;
+}
+
+.chat .cal-icon-btn,
+.cal-settings > summary {
+    align-items: center;
+    border: 1px solid var(--m-border) !important;
+    border-radius: 8px;
+    color: var(--m-text-dim);
+    cursor: pointer;
+    display: inline-flex;
+    height: 30px;
+    justify-content: center;
+    list-style: none;
+    width: 30px;
+}
+
+.cal-settings > summary::-webkit-details-marker {
+    display: none;
+}
+
+.chat .cal-icon-btn:hover,
+.cal-settings > summary:hover {
+    background: var(--m-hover);
+    color: var(--m-text-strong);
+}
+
+.cal-icon-btn .chat-icon,
+.cal-settings .chat-icon {
+    height: 18px;
+    width: 18px;
+}
+
+.cal-spacer {
+    flex: 1;
+}
+
+.cal-head .m-field {
+    margin: 0;
+}
+
+.cal-settings {
+    position: relative;
+}
+
+.cal-settings-menu {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: 12px;
+    box-shadow: 0 12px 30px var(--m-shadow-color);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    position: absolute;
+    right: 0;
+    top: 36px;
+    width: 280px;
+    z-index: 15;
+}
+
+.cal-settings-menu h3,
+.cal-mine h3,
+.cal-agenda h3,
+.cal-plan-h {
+    color: var(--m-text-dim);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    margin: 4px 0 0;
+    text-transform: uppercase;
+}
+
+.cal-foot {
+    color: var(--m-text-faint);
+    font-size: 0.72rem;
+    margin: 6px 0 0;
+}
+
+/* ── A plan, in any view ── */
+
+.chat .cal-block,
+.chat .cal-row {
+    background: var(--m-accent-soft);
+    border-left: 3px solid var(--m-accent) !important;
+    color: var(--m-text);
+    text-align: left;
+}
+
+.chat .cal-block.is-meetup,
+.chat .cal-row.is-meetup {
+    background: color-mix(in srgb, var(--c-brand) 14%, var(--m-surface));
+    border-left-color: var(--c-brand) !important;
+}
+
+.chat .cal-block.is-unanswered,
+.chat .cal-row.is-unanswered {
+    background: var(--m-surface);
+    box-shadow: inset 0 0 0 1.5px var(--c-brand);
+}
+
+.chat .cal-block.is-declined,
+.chat .cal-row.is-declined,
+.chat .cal-block.is-skipped,
+.chat .cal-row.is-skipped {
+    opacity: 0.5;
+}
+
+.cal-block.is-declined b,
+.cal-row.is-declined .cal-row-what b,
+.cal-row.is-skipped .cal-row-what b,
+.cal-detail-title.is-skipped {
+    text-decoration: line-through;
+}
+
+.chat .cal-block.is-selected,
+.chat .cal-row.is-selected {
+    box-shadow: 0 0 0 2px var(--m-text-strong);
+}
+
+/* ── Week ── */
+
+.cal-week {
+    border: 1px solid var(--m-border);
+    border-radius: 12px;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.cal-week-head,
+.cal-week-body {
+    display: grid;
+    grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+}
+
+.cal-week-head {
+    background: var(--m-surface);
+    border-bottom: 1px solid var(--m-border);
+}
+
+.chat .cal-colh {
+    border-left: 1px solid var(--m-border) !important;
+    color: var(--m-text-dim);
+    display: flex;
+    flex-direction: column;
+    font-size: 0.72rem;
+    padding: 6px 8px !important;
+    text-align: left;
+}
+
+.cal-colh b {
+    color: var(--m-text-strong);
+    font-size: 1.05rem;
+}
+
+.cal-colh.is-today,
+.cal-colh.is-today b {
+    color: var(--c-brand);
+}
+
+.chat .cal-colh.is-day {
+    background: var(--m-hover);
+}
+
+.cal-week-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.cal-hours {
+    position: relative;
+}
+
+.cal-hours span {
+    color: var(--m-text-faint);
+    font-size: 0.68rem;
+    position: absolute;
+    right: 8px;
+    transform: translateY(-50%);
+}
+
+.cal-hours span:first-child {
+    transform: none;
+}
+
+.cal-col {
+    background-image: linear-gradient(var(--m-border) 1px, transparent 1px);
+    background-size: 100% var(--cal-hour);
+    border-left: 1px solid var(--m-border);
+    position: relative;
+}
+
+.cal-col.is-today {
+    background-color: color-mix(in srgb, var(--c-brand) 4%, transparent);
+}
+
+.chat .cal-block {
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    font-size: 0.75rem;
+    gap: 1px;
+    overflow: hidden;
+    padding: 3px 6px !important;
+    position: absolute;
+}
+
+.cal-block b {
+    color: var(--m-text-strong);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cal-block small {
+    color: var(--m-text-dim);
+    font-size: 0.68rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Now: a line across today, with a dot at its start. */
+.cal-now {
+    border-top: 2px solid var(--c-brand);
+    left: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+    z-index: 2;
+}
+
+.cal-now::before {
+    background: var(--c-brand);
+    border-radius: 50%;
+    content: "";
+    height: 8px;
+    left: -4px;
+    position: absolute;
+    top: -5px;
+    width: 8px;
+}
+
+/* ── Month ── */
+
+.cal-month-wrap {
+    display: grid;
+    flex: 1;
+    gap: 16px;
+    grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.cal-month {
+    align-content: start;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.cal-dow {
+    color: var(--m-text-dim);
+    font-size: 0.7rem;
+    padding: 0 6px 4px;
+    text-transform: uppercase;
+}
+
+.chat .cal-cell {
+    align-items: flex-start;
+    background: var(--m-surface);
+    border: 1px solid var(--m-border) !important;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 64px;
+    padding: 6px 8px !important;
+}
+
+.chat .cal-cell:hover {
+    background: var(--m-hover);
+}
+
+.cal-cell b {
+    color: var(--m-text-strong);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.cal-cell.is-other {
+    opacity: 0.4;
+}
+
+.cal-cell.is-past b {
+    color: var(--m-text-dim);
+}
+
+.cal-cell.is-today b {
+    color: var(--c-brand);
+}
+
+.chat .cal-cell.is-day {
+    border-color: var(--m-accent) !important;
+    box-shadow: 0 0 0 1px var(--m-accent);
+}
+
+.cal-dots {
+    display: flex;
+    gap: 4px;
+}
+
+.cal-dots i {
+    border-radius: 50%;
+    height: 7px;
+    width: 7px;
+}
+
+.cal-dots .is-meetup {
+    background: var(--c-brand);
+}
+
+.cal-dots .is-meeting {
+    background: var(--m-accent);
+}
+
+/* ── List ── */
+
+.cal-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.cal-day h3 {
+    color: var(--m-text-dim);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    margin: 14px 0 6px;
+    text-transform: uppercase;
+}
+
+.cal-day:first-child h3 {
+    margin-top: 2px;
+}
+
+.chat .cal-row {
+    align-items: center;
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    margin-bottom: 6px;
+    max-width: 760px;
+    padding: 8px 12px !important;
+    width: 100%;
+}
+
+.cal-row-time {
+    color: var(--m-text-strong);
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    font-size: 0.9rem;
+    font-weight: 600;
+    white-space: nowrap;
+    width: 72px;
+}
+
+.cal-row-time small {
+    color: var(--m-text-dim);
+    font-size: 0.68rem;
+    font-weight: 400;
+}
+
+.cal-row-what {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.cal-row-what b {
+    color: var(--m-text-strong);
+}
+
+.cal-row-what small {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.75rem;
+    gap: 3px;
+}
+
+.cal-row-what .chat-icon {
+    height: 13px;
+    width: 13px;
+}
+
+.cal-pill {
+    border-radius: 999px;
+    flex: none;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+}
+
+.cal-pill.is-going {
+    background: var(--m-success-soft);
+    color: var(--m-success);
+}
+
+.cal-pill.is-maybe {
+    background: var(--m-warning-soft);
+    color: var(--m-warning);
+}
+
+.cal-pill.is-no,
+.cal-pill.is-skipped {
+    background: var(--m-surface-sunken);
+    color: var(--m-text-dim);
+}
+
+.cal-pill.is-open {
+    box-shadow: inset 0 0 0 1px var(--c-brand);
+    color: var(--c-brand);
+}
+
+/* ── The plan picked, on the right ── */
+
+.cal-detail {
+    background: var(--m-surface);
+    border-left: 1px solid var(--m-border);
+    flex: none;
+    overflow-y: auto;
+    width: 340px;
+}
+
+.cal-detail-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 18px;
+    position: relative;
+}
+
+.chat .cal-detail-close {
+    position: absolute;
+    right: 12px;
+    top: 12px;
+}
+
+.cal-kind {
+    align-items: center;
+    color: var(--m-accent-text);
+    display: flex;
+    font-size: 0.7rem;
+    font-weight: 600;
+    gap: 5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.cal-kind.is-meetup {
+    color: var(--c-brand);
+}
+
+.cal-kind .chat-icon,
+.cal-rule .chat-icon {
+    height: 15px;
+    width: 15px;
+}
+
+.cal-detail-title {
+    color: var(--m-text-strong);
+    font-size: 1.25rem;
+    margin: 0;
+    padding-right: 36px;
+}
+
+.cal-when {
+    color: var(--m-text-strong);
+}
+
+.cal-rule,
+.cal-from {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.82rem;
+    gap: 6px;
+}
+
+.cal-skipped {
+    background: var(--m-surface-sunken);
+    border-radius: 8px;
+    color: var(--m-text-dim);
+    font-size: 0.82rem;
+    margin: 0;
+    padding: 8px 10px;
+}
+
+.cal-rsvp {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.chat .cal-answer {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border) !important;
+    border-radius: 8px;
+    font-weight: 600;
+    padding: 8px 4px !important;
+}
+
+.chat .cal-answer:hover {
+    background: var(--m-hover);
+}
+
+.chat .cal-answer.is-on.is-going {
+    background: var(--m-success-soft);
+    border-color: var(--m-success) !important;
+    color: var(--m-success);
+}
+
+.chat .cal-answer.is-on.is-maybe {
+    background: var(--m-warning-soft);
+    border-color: var(--m-warning) !important;
+    color: var(--m-warning);
+}
+
+.chat .cal-answer.is-on.is-no {
+    background: var(--m-surface-sunken);
+    border-color: var(--m-border-strong) !important;
+}
+
+.cal-who {
+    background: var(--m-surface-sunken);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+}
+
+.cal-who-line {
+    align-items: flex-start;
+    display: flex;
+    font-size: 0.78rem;
+    gap: 8px;
+}
+
+.cal-who-label {
+    color: var(--m-text-dim);
+    flex: none;
+    width: 86px;
+}
+
+.cal-who-faces {
+    display: flex;
+    flex: none;
+}
+
+.cal-who-faces .chat-avatar + .chat-avatar {
+    margin-left: -5px;
+}
+
+.cal-who-names {
+    color: var(--m-text);
+    min-width: 0;
+}
+
+.cal-agenda {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cal-agenda-item {
+    display: flex;
+    font-size: 0.85rem;
+    justify-content: space-between;
+}
+
+.cal-agenda-item small {
+    color: var(--m-text-dim);
+}
+
+.cal-text {
+    font-size: 0.85rem;
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.cal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.cal-mine {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 10px;
+}
+
+/* ── Plan: what kind, and in which chat ── */
+
+.cal-plan-kinds,
+.cal-plan-chats {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cal-plan-chats {
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.cal-plan-kind {
+    align-items: center;
+    border: 1px solid var(--m-border);
+    border-radius: 10px;
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+}
+
+.cal-plan-kind.is-on {
+    border-color: var(--m-accent);
+}
+
+.cal-plan-kind.is-off {
+    opacity: 0.55;
+}
+
+.cal-plan-kind > span {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+}
+
+.cal-plan-kind small {
+    color: var(--m-text-dim);
+    font-size: 0.75rem;
+}
+
+.chat .cal-plan-chat {
+    align-items: center;
+    border-radius: 8px;
+    display: flex;
+    gap: 10px;
+    padding: 6px 8px !important;
+    text-align: left;
+}
+
+.chat .cal-plan-chat:hover {
+    background: var(--m-hover);
+}
+
+.cal-plan-hash {
+    align-items: center;
+    background: var(--m-surface-sunken);
+    border-radius: 6px;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    width: 24px;
+}
+
+/* ── In the chat: a series on its card, a change as a line ── */
+
+.chat-change {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.78rem;
+    gap: 6px;
+    justify-content: center;
+    padding: 6px 18px;
+}
+
+.chat-change > span {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: 999px;
+    padding: 3px 12px;
+}
+
+.chat-change .chat-icon {
+    height: 14px;
+    width: 14px;
+}
+
+.chat-mcard-sub .chat-icon {
+    display: inline-block;
+    height: 13px;
+    vertical-align: -2px;
+    width: 13px;
+}
+
+.chat-plan-mine {
+    border-top: 1px solid var(--m-border);
+    padding-top: 8px;
+}
+
+.chat-repeat {
+    border: 1px dashed var(--m-border-strong);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+}
+
+.chat-repeat-until {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.chat-repeat-label {
+    color: var(--m-text-dim);
+    font-size: 0.8rem;
+    margin-right: 4px;
+}
+
+.chat-repeat-until b {
+    color: var(--m-text-strong);
+    font-size: 0.85rem;
+    min-width: 140px;
+    text-align: center;
+}
+
+/* ── A phone: the list, and the plan as a sheet over it ── */
+@media (max-width: 760px) {
+    .cal-main {
+        padding: 8px 10px 4px;
+    }
+
+    .cal-head .chat-back {
+        display: inline-flex;
+    }
+
+    .cal.has-detail .cal-main {
+        display: none;
+    }
+
+    .cal-detail {
+        border-left: 0;
+        width: 100%;
+    }
+
+    .cal-month-wrap {
+        grid-template-columns: 1fr;
+    }
+}

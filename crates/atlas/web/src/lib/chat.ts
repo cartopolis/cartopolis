@@ -137,6 +137,16 @@ export class ChatClient {
         this.send({body: caption(object), channel, object: toJson(object), type: 'send_meeting'})
     }
 
+    /** Send a point (`cartopolis_core::point`): here, a meet-up's "I'm going". */
+    sendPoint(channel: string, point: string, body: string): void {
+        this.send({body, channel, point, type: 'send_point'})
+    }
+
+    /** Ask for every chat's history, without counting any of it read. */
+    wantHistories(): void {
+        this.send({type: 'histories'})
+    }
+
     react(channel: string, target: number, emoji: string, remove: boolean): void {
         this.send({channel, emoji, remove, target, type: 'react'})
     }
@@ -289,7 +299,12 @@ export class ChatClient {
                 // Each connection registers this browser's push address anew:
                 // it is what the server keys "take it back" on, and it moves
                 // the address to whoever is signed in here now.
-                if (update.status === 'connected' && this.status !== 'connected') void this.push.enable()
+                if (update.status === 'connected' && this.status !== 'connected') {
+                    void this.push.enable()
+                    // Every chat's history, not only the ones opened: the
+                    // calendar is made from the plans in all of them.
+                    this.wantHistories()
+                }
                 this.address = update.address
                 this.chats = update.chats
                 this.status = update.status

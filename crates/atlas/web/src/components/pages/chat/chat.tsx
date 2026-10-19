@@ -1,5 +1,5 @@
 import m, {MithrilComponent} from '@garage44/mithril'
-import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSelect, FieldText, FieldTextarea, ThemeSwitch} from '@garage44/mithril/components'
+import {Button, Card, CloseButton, Dialog, FieldCheckbox, FieldSegmented, FieldSelect, FieldText, FieldTextarea, ThemeSwitch} from '@garage44/mithril/components'
 import {required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s, signupApi} from '@/app'
@@ -15,6 +15,7 @@ import {
 import {type CallMember, callName, readGuestLink} from '@/lib/call'
 import {CAPTION_LANGUAGES} from '@/lib/call-captions'
 import {
+    type AnswerFor,
     type Meetings,
     type MeetingObject,
     type NoteKind,
@@ -24,13 +25,23 @@ import {
     NOTE_WORDS,
     RSVP_WORDS,
     agendaLine,
-    currentPlan,
+    changeWords,
+    dateCount,
+    dates,
+    durationMs,
     ics,
+    isSkipped,
+    localZone,
     newId,
+    nextDate,
+    planChange,
+    planNow,
     readMeetings,
     recordText,
+    rsvpsFor,
     tally,
 } from '@/lib/meeting'
+import {type Meetup, dayStart, longDate, readMeetups, ruleWords} from '@/lib/calendar'
 import {bind, local} from '@/lib/reactive'
 import {ADMIN} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
@@ -40,6 +51,7 @@ import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
 import {Icon} from '@/lib/icons'
 import {CommunityStats} from './community-stats'
 import {Posts, Tabs, tabOf} from './posts'
+import {Calendar, type CalendarCtx, openCalendar, todayCount} from './calendar'
 
 /**
  * Chat: cartopolis.org's front door (`docs/mockups/communities/`).
@@ -450,19 +462,22 @@ function day(ms: number): string {
     return d.toLocaleDateString([], {day: 'numeric', month: 'long', weekday: 'long'})
 }
 
-/** When a planned meeting is: "Tue 21 Oct, 14:00–15:00". */
-function when(plan: Plan): string {
-    const d = new Date(plan.startMs)
-    const date = d.toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})
-    return `${date}, ${time(plan.startMs)}${plan.endMs ? `–${time(plan.endMs)}` : ''}`
+/** When one date of a planned meeting is: "Tue 21 Oct, 14:00–15:00". */
+function when(plan: Plan, startMs = plan.startMs): string {
+    const date = new Date(startMs).toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})
+    return `${date}, ${time(startMs)}${plan.endMs ? `–${time(startMs + durationMs(plan))}` : ''}`
 }
 
-/** How far off a planned meeting is: "in 2 days", "in 25 min", "now", "ended". */
-function relative(plan: Plan, now = Date.now()): string {
-    const end = plan.endMs ?? plan.startMs + 3600_000
-    if (now > end) return 'Ended'
-    if (now >= plan.startMs) return 'Now'
-    const mins = Math.round((plan.startMs - now) / 60000)
+/** A date in a button: "5 November". */
+function shortDate(ms: number): string {
+    return new Date(ms).toLocaleDateString([], {day: 'numeric', month: 'long'})
+}
+
+/** How far off a planned date is: "in 2 days", "in 25 min", "now", "ended". */
+function relative(startMs: number, endMs: number, now = Date.now()): string {
+    if (now > endMs) return 'Ended'
+    if (now >= startMs) return 'Now'
+    const mins = Math.round((startMs - now) / 60000)
     if (mins < 60) return `In ${mins} min`
     const hours = Math.round(mins / 60)
     if (hours < 24) return `In ${hours} h`
@@ -485,13 +500,19 @@ function localInput(ms: number): string {
 }
 
 /** Meeting objects read once per history, not once per line drawn. */
-const meetingsCache = new WeakMap<Message[], {length: number; meetings: Meetings}>()
-function meetingsOf(messages: Message[]): Meetings {
+const meetingsCache = new WeakMap<Message[], {length: number; meetings: Meetings; meetups: Meetup[]}>()
+function readOnce(messages: Message[]): {meetings: Meetings; meetups: Meetup[]} {
     const hit = meetingsCache.get(messages)
-    if (hit && hit.length === messages.length) return hit.meetings
-    const meetings = readMeetings(messages)
-    meetingsCache.set(messages, {length: messages.length, meetings})
-    return meetings
+    if (hit && hit.length === messages.length) return hit
+    const read = {length: messages.length, meetings: readMeetings(messages), meetups: readMeetups(messages)}
+    meetingsCache.set(messages, read)
+    return read
+}
+function meetingsOf(messages: Message[]): Meetings {
+    return readOnce(messages).meetings
+}
+function meetupsOf(messages: Message[]): Meetup[] {
+    return readOnce(messages).meetups
 }
 
 const RULE: Record<string, string> = {ask: 'Asks first', invite: 'Invite only', open: 'Open'}
@@ -522,6 +543,7 @@ function Body(text: string, me: string | null) {
 
 /** What the middle of the page shows. */
 type Pane =
+    | {kind: 'calendar'}
     | {kind: 'chat'; channel: string}
     | {kind: 'community'; id: string}
     | {kind: 'edit'; id: string}
@@ -597,7 +619,7 @@ interface PageState {
     /** A ringing call folded down to a banner, by channel. */
     ringFolded: string | null
     /** A meeting being planned, a poll being written (`lib/meeting.ts`). */
-    plan: {agenda: string; length: number; text: string; title: string; when: string}
+    plan: PlanDraft
     poll: {multiple: boolean; options: string; question: string}
     /** The meeting's notes panel: which tab, and the note being written. */
     notesTab: 'notes' | 'polls' | 'agenda'
@@ -609,6 +631,53 @@ interface PageState {
     meet: {code: string; secret: Uint8Array} | null
     guestName: string
     guestCamera: boolean
+}
+
+/** A meeting being planned, as its dialog holds it. */
+interface PlanDraft {
+    agenda: string
+    length: number
+    /** How it repeats: never, every week, every 2 weeks, every month. */
+    repeat: 'never' | 'week' | 'week2' | 'month'
+    text: string
+    title: string
+    /** The last date, as weeks after the first; `null` for no end. */
+    untilWeeks: number | null
+    /** A `datetime-local` value. */
+    when: string
+}
+
+function emptyPlan(when: string): PlanDraft {
+    return {agenda: '', length: 60, repeat: 'never', text: '', title: '', untilWeeks: null, when}
+}
+
+/**
+ * The plan a draft makes. Its last date is the first's local clock time
+ * `untilWeeks` weeks on, counted in days rather than milliseconds, so it is a
+ * date of the series across a change to summer time and `until` (inclusive)
+ * keeps it.
+ */
+function planOf(p: PlanDraft, id: string): Plan {
+    const start = Date.parse(p.when)
+    let untilMs: number | null = null
+    if (p.repeat !== 'never' && p.untilWeeks !== null) {
+        const u = new Date(start)
+        u.setDate(u.getDate() + 7 * p.untilWeeks)
+        untilMs = u.getTime()
+    }
+    return {
+        agenda: p.agenda.split('\n').map(agendaLine).filter((x) => x !== null).slice(0, 12),
+        endMs: start + Number(p.length) * 60000,
+        id,
+        kind: 'plan',
+        repeat: p.repeat === 'never'
+            ? null
+            : {every: p.repeat === 'month' ? 'month' : 'week', interval: p.repeat === 'week2' ? 2 : 1, untilMs},
+        skip: [],
+        startMs: start,
+        text: p.text.trim() || null,
+        title: p.title.trim(),
+    }
 }
 
 function emptyDraft(): Draft {
@@ -672,7 +741,7 @@ export class Chat extends MithrilComponent {
         person: {address: '', channel: null},
         query: '',
         ringFolded: null,
-        plan: {agenda: '', length: 60, text: '', title: '', when: ''},
+        plan: emptyPlan(''),
         poll: {multiple: false, options: '', question: ''},
         notesTab: 'notes',
         note: {kind: 'note', text: ''},
@@ -699,7 +768,12 @@ export class Chat extends MithrilComponent {
             history.replaceState(null, '', location.pathname)
             this.openInvite(code)
         }
-        this.reminders = setInterval(() => this.remind(), 30_000)
+        if (onCalendarPath()) this.showCalendar()
+        this.reminders = setInterval(() => {
+            this.remind()
+            // The calendar's line for now, and its Join buttons, move with the clock.
+            if (this.s.pane.kind === 'calendar') m.redraw()
+        }, 30_000)
     }
 
     onremove() {
@@ -709,13 +783,14 @@ export class Chat extends MithrilComponent {
     reminders: ReturnType<typeof setInterval> | undefined
 
     /** The meeting about to start that this person said they come to. */
-    upcoming: {channel: string; plan: Plan} | null = null
+    upcoming: {channel: string; plan: Plan; startMs: number} | null = null
 
     /**
      * Ten minutes before a planned meeting this person answered Going or Maybe
      * to: a notice on the page, and a notification when the tab is not looked
      * at. Made here, on this device, from chats this page has open; the server
-     * cannot remind anybody of a meeting it cannot read.
+     * cannot remind anybody of a meeting it cannot read. A repeating plan is
+     * reminded of date by date, by the answer for that date.
      */
     remind() {
         const c = chat()
@@ -724,18 +799,19 @@ export class Chat extends MithrilComponent {
         const now = Date.now()
         for (const [channel, messages] of c.histories) {
             const meetings = meetingsOf(messages)
-            for (const o of meetings.objects.values()) {
-                if (o.kind !== 'plan' || this.s.reminded.has(o.id)) continue
-                const until = o.startMs - now
-                if (until <= 0 || until > 10 * 60000) continue
-                const answer = meetings.answers.get(o.id)?.get(me)
-                if (answer !== 'going' && answer !== 'maybe') continue
-                this.s.reminded.add(o.id)
-                this.upcoming = {channel, plan: o}
-                if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                    new Notification(o.title, {body: `Starts in ${Math.round(until / 60000)} min`, tag: `plan-${o.id}`})
+            for (const {plan} of meetings.plans.values()) {
+                for (const date of dates(plan, now + 1, now + 10 * 60000 + 1)) {
+                    const key = `${plan.id}@${date}`
+                    if (this.s.reminded.has(key) || isSkipped(plan, date)) continue
+                    const answer = rsvpsFor(meetings, plan, date).get(me)
+                    if (answer !== 'going' && answer !== 'maybe') continue
+                    this.s.reminded.add(key)
+                    this.upcoming = {channel, plan, startMs: date}
+                    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                        new Notification(plan.title, {body: `Starts in ${Math.round((date - now) / 60000)} min`, tag: `plan-${key}`})
+                    }
+                    m.redraw()
                 }
-                m.redraw()
             }
         }
     }
@@ -745,7 +821,8 @@ export class Chat extends MithrilComponent {
         const u = this.upcoming
         if (!u) return null
         const c = chat()
-        if (c.calls.active?.channel === u.channel || Date.now() > (u.plan.endMs ?? u.plan.startMs + 3600_000)) {
+        const endMs = u.startMs + durationMs(u.plan)
+        if (c.calls.active?.channel === u.channel || Date.now() > endMs) {
             this.upcoming = null
             return null
         }
@@ -753,7 +830,7 @@ export class Chat extends MithrilComponent {
             <div class="chat-reminder" role="status">
                 {Icon('event')}
                 <span>
-                    <b>{u.plan.title}</b> · {relative(u.plan)} · {this.chatTitle(u.channel)}
+                    <b>{u.plan.title}</b> · {relative(u.startMs, endMs)} · {this.chatTitle(u.channel)}
                 </span>
                 <button class="chat-mcard-btn is-primary" onclick={() => this.startCall(u.channel, true)} type="button">
                     Join
@@ -813,6 +890,7 @@ export class Chat extends MithrilComponent {
 
     /** Open a chat; `null` shows the welcome. Its community becomes the rail's choice. */
     open(channel: string | null) {
+        leaveCalendarPath()
         if (channel) this.s.space = chat().topicOf(channel)?.community.id ?? 'home'
         this.s.pane = channel ? {kind: 'chat', channel} : {kind: 'welcome'}
         this.s.thread = null
@@ -823,10 +901,66 @@ export class Chat extends MithrilComponent {
 
     show(pane: Pane) {
         closeMenus()
+        leaveCalendarPath()
         if (pane.kind === 'community' || pane.kind === 'edit') this.s.space = pane.id
         this.s.pane = pane
         this.s.thread = null
         chat().open(null)
+    }
+
+    /**
+     * The calendar (`docs/mockups/calendar/`): every plan from every chat, at
+     * `/calendar`. It asks the worker for every chat's history again, so a
+     * chat that changed while this page was elsewhere is current.
+     */
+    showCalendar() {
+        closeMenus()
+        if (!onCalendarPath()) m.route.set('/calendar')
+        openCalendar()
+        this.s.space = 'calendar'
+        this.s.pane = {kind: 'calendar'}
+        this.s.thread = null
+        chat().open(null)
+        if (chat().status === 'connected') chat().wantHistories()
+    }
+
+    /** What the calendar borrows from this page. */
+    calendarCtx(): CalendarCtx {
+        const c = chat()
+        return {
+            avatar: Avatar,
+            back: () => {
+                leaveCalendarPath()
+                this.s.space = null
+                this.s.pane = {kind: 'welcome'}
+            },
+            client: c,
+            communities: () => c.communities.filter((x) => x.role !== null).map((x) => ({id: x.id, name: x.settings.name})),
+            join: (channel) => this.startCall(channel, true),
+            openChat: (channel) => this.open(channel),
+            people: (channel) => {
+                const topic = c.topicOf(channel)
+                if (topic) return topic.community.members.map((x) => x.address)
+                const sum = c.chats.find((x) => x.channel === channel)
+                return [...new Set([...(c.address ? [c.address] : []), ...(sum?.people ?? [])])]
+            },
+            plan: (channel, day) => {
+                this.open(channel)
+                this.planMeeting(day)
+            },
+            shown: (address) => shown(address, c.address),
+            sources: () =>
+                [...c.histories].map(([channel, messages]) => ({
+                    channel,
+                    community: c.topicOf(channel)?.community.id ?? null,
+                    meetings: meetingsOf(messages),
+                    meetups: meetupsOf(messages),
+                })),
+            where: (channel) => {
+                const topic = c.topicOf(channel)
+                return topic ? `${topic.community.settings.name} · # ${topic.topic.name}` : this.chatTitle(channel)
+            },
+        }
     }
 
     find() {
@@ -1035,6 +1169,7 @@ export class Chat extends MithrilComponent {
                     inCall ? 'is-in-call' : '',
                     inCall && s.callFocus ? 'is-call-focus' : '',
                     inCall && s.callFocus && s.callPanel !== null ? 'is-call-people' : '',
+                    pane.kind === 'calendar' ? 'is-calendar' : '',
                 ].join(' ')}
             >
                 {this.rail()}
@@ -1043,6 +1178,7 @@ export class Chat extends MithrilComponent {
                     {inCall && this.callBar()}
                     {this.reminderBanner()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
+                    {pane.kind === 'calendar' && Calendar(this.calendarCtx())}
                     {pane.kind === 'community' && this.communityPane(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
                     {pane.kind === 'find' && this.findView()}
@@ -1187,6 +1323,8 @@ export class Chat extends MithrilComponent {
                 parts.push({go: () => this.show({id: community.id, kind: 'community'}), label: community.settings.name})
             } else if (space === 'home') {
                 parts.push({go: () => this.open(null), label: 'Home'})
+            } else if (space === 'calendar') {
+                parts.push({label: 'Calendar'})
             }
             const pane = s.pane
             if (pane.kind === 'chat') {
@@ -1336,6 +1474,7 @@ export class Chat extends MithrilComponent {
                     <span class="home-tile-name">Home<span class="chat-sub">People and groups</span></span>
                     {homeUnread > 0 && <span class="chat-count home-tile-badge">{homeUnread}</span>}
                 </button>
+                {this.calendarTile(here === 'calendar')}
                 {c.communities.map((community) => {
                     const unread = community.topics.filter((t) => !c.isMuted(t.channel)).reduce(
                         (n, t) => n + (c.chats.find((x) => x.channel === t.channel)?.unread ?? 0), 0)
@@ -1391,6 +1530,26 @@ export class Chat extends MithrilComponent {
                     </div>
                 </details>
             </nav>
+        )
+    }
+
+    /** The calendar's place on the rail, under Home, with how many plans are today. */
+    calendarTile(current: boolean) {
+        const today = todayCount(this.calendarCtx())
+        return (
+            <button
+                class={current ? 'home-tile is-current' : 'home-tile'}
+                onclick={() => this.showCalendar()}
+                title={today ? `Calendar · ${today} today` : 'Calendar'}
+                type="button"
+            >
+                <span class="home-tile-face is-calendar">{Icon('calendar_month')}</span>
+                <span class="home-tile-name">
+                    Calendar
+                    <span class="chat-sub">{today ? `${today} today` : 'Every plan you are in'}</span>
+                </span>
+                {today > 0 && <span class="chat-count is-today home-tile-badge">{today}</span>}
+            </button>
         )
     }
 
@@ -1541,12 +1700,20 @@ export class Chat extends MithrilComponent {
         closeMenus()
     }
 
-    /** Plan a meeting in the chat open now: the next whole hour, an hour long. */
-    planMeeting() {
+    /**
+     * Plan a meeting in the chat open now: the next whole hour, an hour long;
+     * or on `day` (a local midnight, from the calendar), at the next whole
+     * hour if that is today and at 20:00 otherwise.
+     */
+    planMeeting(day: number | null = null) {
         const next = new Date()
         next.setMinutes(0, 0, 0)
         next.setHours(next.getHours() + 1)
-        this.s.plan = {agenda: '', length: 60, text: '', title: '', when: localInput(next.getTime())}
+        if (day !== null && day !== dayStart(Date.now())) {
+            next.setTime(day)
+            next.setHours(20)
+        }
+        this.s.plan = emptyPlan(localInput(next.getTime()))
         this.dialog('plan')
     }
 
@@ -2402,7 +2569,7 @@ export class Chat extends MithrilComponent {
         const during = [...meetings.objects.entries()].filter(([msg]) => msg.sentAtMs >= from || msg.seq === null)
         const notes = during.filter(([, o]) => o.kind === 'note') as [Message, Extract<MeetingObject, {kind: 'note'}>][]
         const polls = during.filter(([, o]) => o.kind === 'poll') as [Message, Poll][]
-        const plan = currentPlan(meetings)
+        const plan = planNow(meetings)?.plan ?? null
         const hosting = calls.hosting()
         const tab = s.notesTab
         const tabButton = (t: PageState['notesTab'], label: string, n: number | null) => (
@@ -3418,6 +3585,9 @@ export class Chat extends MithrilComponent {
             // An answer or a vote is counted on what it answers, not a line.
             const o = meetings.objects.get(msg)
             if (o && (o.kind === 'answer' || o.kind === 'vote')) continue
+            // An update from anybody but the planner changes nothing, so it
+            // says nothing either (`currentPlan`).
+            if (o?.kind === 'update' && !meetings.changes.has(msg)) continue
             // History from before this device joined is somebody's copy, not
             // the log, and says so once, above the first of it.
             if (msg.sharedBy && !toldShared) {
@@ -3433,6 +3603,20 @@ export class Chat extends MithrilComponent {
                 out.push(<div class="chat-day" key={`day-${d}`}>{d}</div>)
                 lastDay = d
                 prev = null
+            }
+            // A skip or a stop is said once, small, rather than as a second
+            // card (`docs/mockups/calendar/v2-repeat.html`, L).
+            const change = meetings.changes.get(msg)
+            if (change) {
+                const words = changeWords(planChange(change.before, change.after), change.after.title, longDate)
+                out.push(
+                    <div class="chat-change" key={msg.seq !== null ? `s${msg.seq}` : `l${msg.local}`}>
+                        {Icon('event_busy')}
+                        <span>{msg.from === me ? 'You' : shown(msg.from, me)} {words}</span>
+                    </div>,
+                )
+                prev = null
+                continue
             }
             // A run of lines from one person within five minutes reads as one.
             const continued = !!prev && prev.from === msg.from && msg.sentAtMs - prev.sentAtMs < 5 * 60000
@@ -3607,7 +3791,7 @@ export class Chat extends MithrilComponent {
         const meetings = meetingsOf(chat().histories.get(channel) ?? [])
         switch (o.kind) {
             case 'plan':
-                return this.planCard(channel, o, meetings, me)
+                return this.planCard(channel, msg, o, meetings, me)
             case 'poll':
                 return this.pollCard(channel, o, meetings, me)
             case 'note':
@@ -3689,33 +3873,60 @@ export class Chat extends MithrilComponent {
         }
     }
 
-    planCard(channel: string, plan: Plan, meetings: Meetings, me: string | null) {
+    /**
+     * A plan's card. A repeating one names its rule and its next date, and
+     * the answers on it are for that date (`docs/mockups/calendar/v2-repeat.html`,
+     * L); the planner also gets Skip and Stop after, sent as an update.
+     */
+    planCard(channel: string, msg: Message, posted: Plan, meetings: Meetings, me: string | null) {
         const c = chat()
-        const answers = meetings.answers.get(plan.id) ?? new Map<string, Rsvp>()
+        // As its planner last left it: a later line may have skipped a date or ended it.
+        const line = meetings.plans.get(posted.id)
+        const plan = line?.plan ?? posted
+        const planner = line?.from ?? msg.from
+        const now = Date.now()
+        const date = plan.repeat ? nextDate(plan, now) : plan.startMs
+        const shownDate = date ?? plan.startMs
+        const end = shownDate + durationMs(plan)
+        const answers = rsvpsFor(meetings, plan, shownDate)
         const mine = me ? (answers.get(me) ?? null) : null
         const who = (r: Rsvp) => [...answers.entries()].filter(([, a]) => a === r).map(([w]) => w)
         const going = who('going')
-        const now = Date.now()
-        const end = plan.endMs ?? plan.startMs + 3600_000
-        const live = now >= plan.startMs - 15 * 60000 && now <= end
+        const over = date === null || now > end
+        const live = !over && now >= shownDate - 15 * 60000
         const inCall = c.calls.active?.channel === channel
+        // The date an answer here is for: none named for a one-off plan, as
+        // every build before repeats sent.
+        const answerFor: AnswerFor = plan.repeat ? shownDate : null
         const choice = (r: Rsvp, icon: string) => (
             <button
                 class={mine === r ? 'chat-mcard-btn is-on' : 'chat-mcard-btn'}
-                onclick={() => c.sendMeeting(channel, {kind: 'answer', plan: plan.id, rsvp: r})}
+                onclick={() => c.sendMeeting(channel, {date: answerFor, kind: 'answer', plan: plan.id, rsvp: r})}
                 type="button"
             >
                 {Icon(icon)} {RSVP_WORDS[r]}
                 {who(r).length > 0 && <span class="chat-mcard-count">{who(r).length}</span>}
             </button>
         )
+        const mineToChange = !!me && planner === me && !!plan.repeat && date !== null
         return (
             <div class={live ? 'chat-mcard chat-plan is-live' : 'chat-mcard chat-plan'}>
                 <div class="chat-mcard-kicker">
-                    {Icon('event')} Meeting · <span class={live ? 'is-now' : ''}>{relative(plan, now)}</span>
+                    {Icon('event')} Meeting · <span class={live ? 'is-now' : ''}>{over ? 'Ended' : relative(shownDate, end, now)}</span>
                 </div>
                 <b class="chat-mcard-title">{plan.title}</b>
-                <div class="chat-mcard-sub">{when(plan)}</div>
+                {plan.repeat ? (
+                    <>
+                        <div class="chat-mcard-sub">{Icon('repeat')} {ruleWords(plan)}</div>
+                        <div class="chat-mcard-sub">
+                            {date === null
+                                ? 'No dates left'
+                                : `Next: ${longDate(date)}${going.length ? ` · ${going.length} going` : ''}`}
+                        </div>
+                    </>
+                ) : (
+                    <div class="chat-mcard-sub">{when(plan)}</div>
+                )}
                 {plan.text && <p class="chat-mcard-text">{Body(plan.text, me)}</p>}
                 {plan.agenda.length > 0 && (
                     <ol class="chat-plan-agenda">
@@ -3739,18 +3950,47 @@ export class Chat extends MithrilComponent {
                             {Icon('videocam')} Join
                         </button>
                     )}
-                    {now <= end && [choice('going', 'check'), choice('maybe', 'help'), choice('no', 'close')]}
+                    {!over && [choice('going', 'check'), choice('maybe', 'help'), choice('no', 'close')]}
                     <button
                         class="chat-mcard-btn"
-                        onclick={() => download(`${plan.title || 'meeting'}.ics`, 'text/calendar', ics(plan, this.chatTitle(channel)))}
+                        onclick={() => download(`${plan.title || 'meeting'}.ics`, 'text/calendar', ics(plan, this.chatTitle(channel), localZone()))}
                         title="A calendar file, with a reminder ten minutes before"
                         type="button"
                     >
                         {Icon('calendar_add_on')} Add to calendar
                     </button>
                 </div>
+                {mineToChange && (
+                    <div class="chat-mcard-actions chat-plan-mine">
+                        <button class="chat-mcard-btn" onclick={() => this.skipDate(channel, plan, date)} type="button">
+                            {Icon('block')} Skip {shortDate(date)}
+                        </button>
+                        {plan.repeat!.untilMs !== date && (
+                            <button class="chat-mcard-btn" onclick={() => this.stopAfter(channel, plan, date)} type="button">
+                                {Icon('stop')} Stop after {shortDate(date)}
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
         )
+    }
+
+    /** Take one date out of a series: the plan again, with it skipped. Only its planner's counts. */
+    skipDate(channel: string, plan: Plan, date: number) {
+        if (isSkipped(plan, date)) return
+        chat().sendMeeting(channel, {kind: 'update', plan: {...plan, skip: [...plan.skip, date].sort((a, b) => a - b)}})
+    }
+
+    /** End a series with this date. */
+    stopAfter(channel: string, plan: Plan, date: number) {
+        if (!plan.repeat) return
+        if (!confirm(`Stop ${plan.title} after ${longDate(date)}? Everybody in the chat sees it end.`)) return
+        chat().sendMeeting(channel, {
+            kind: 'update',
+            // The skips stay as they are, so the line reads "ended … after", not "changed".
+            plan: {...plan, repeat: {...plan.repeat, untilMs: date}},
+        })
     }
 
     pollCard(channel: string, poll: Poll, meetings: Meetings, me: string | null) {
@@ -4009,21 +4249,14 @@ export class Chat extends MithrilComponent {
                                 options={[15, 30, 45, 60, 90, 120].map((v) => ({label: v < 60 ? `${v} min` : `${v / 60} h`, value: v}))}
                             />
                         </div>
+                        {this.repeatFields(p)}
                         <FieldTextarea label="Agenda (one item a line; a number at the end is its minutes)" model={bind(s.plan, 'agenda')} placeholder={'Budget 10\nStage and sound 15\nWho does what 5'} />
                         <FieldTextarea label="Anything else (optional)" model={bind(s.plan, 'text')} />
                     </>,
                     'Post the plan',
                     () => {
                         if (!channel) return
-                        c.sendMeeting(channel, {
-                            agenda: p.agenda.split('\n').map(agendaLine).filter((x) => x !== null).slice(0, 12),
-                            endMs: start + Number(p.length) * 60000,
-                            id: newId(),
-                            kind: 'plan',
-                            startMs: start,
-                            text: p.text.trim() || null,
-                            title: p.title.trim(),
-                        })
+                        c.sendMeeting(channel, planOf(p, newId()))
                     },
                     !!channel && !!p.title.trim() && Number.isFinite(start),
                 )
@@ -4049,6 +4282,53 @@ export class Chat extends MithrilComponent {
             }
         }
         return null
+    }
+
+    /**
+     * Repeats and Until in the plan dialog (`docs/mockups/calendar/v2-repeat.html`,
+     * I): never, every week, every 2 weeks or every month (the same weekday of
+     * the month), and a last date stepped by a week, or no end.
+     */
+    repeatFields(p: PlanDraft) {
+        const start = Date.parse(p.when)
+        const draft = Number.isFinite(start) ? planOf(p, '') : null
+        const until = draft?.repeat?.untilMs ?? null
+        const step = (by: number) => {
+            // From no end, the first step lands on a month or so: a series of five.
+            const from = p.untilWeeks ?? (by > 0 ? 3 : 5)
+            p.untilWeeks = Math.max(1, Math.min(104, from + by))
+        }
+        return (
+            <div class="chat-repeat">
+                <FieldSegmented
+                    label="Repeats"
+                    model={bind(p, 'repeat')}
+                    options={[
+                        {label: 'Never', value: 'never'},
+                        {label: 'Every week', value: 'week'},
+                        {label: 'Every 2 weeks', value: 'week2'},
+                        {label: 'Every month', value: 'month'},
+                    ]}
+                    size="sm"
+                />
+                {p.repeat !== 'never' && (
+                    <div class="chat-repeat-until">
+                        <span class="chat-repeat-label">Until</span>
+                        <Button onclick={() => step(-1)} size="sm" variant="ghost">−1 week</Button>
+                        <b>
+                            {until === null || !draft
+                                ? 'No end'
+                                : `${new Date(until).toLocaleDateString([], {day: 'numeric', month: 'short', weekday: 'short'})} · ${dateCount(draft)} times`}
+                        </b>
+                        <Button onclick={() => step(1)} size="sm" variant="ghost">+1 week</Button>
+                        {p.untilWeeks !== null && (
+                            <Button onclick={() => (p.untilWeeks = null)} size="sm" variant="ghost">No end</Button>
+                        )}
+                    </div>
+                )}
+                {draft?.repeat && <p class="chat-hint">{ruleWords(draft, false)}. Everybody answers each date, or every date at once.</p>}
+            </div>
+        )
     }
 
     /**
@@ -4151,6 +4431,16 @@ export class Chat extends MithrilComponent {
 }
 
 /** A <details> menu stays open after a choice unless it is told. */
+/** Whether the address is the calendar's. */
+function onCalendarPath(): boolean {
+    return (m.route.get() ?? '/').split('?')[0] === '/calendar'
+}
+
+/** Leaving the calendar for anything else in Community: the address goes back to `/`. */
+function leaveCalendarPath(): void {
+    if (onCalendarPath()) m.route.set('/')
+}
+
 function closeMenus() {
     for (const el of document.querySelectorAll('details.chat-new[open]')) el.removeAttribute('open')
 }

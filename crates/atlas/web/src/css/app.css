@@ -12,6 +12,7 @@
 @import '../components/pages/tokens/tokens.css';
 @import '../components/pages/chat/chat.css';
 @import '../components/pages/chat/home.css';
+@import '../components/pages/chat/calendar.css';
 @import '../components/pages/claims/claims.css';
 @import '../components/pages/library/library.css';
 @import '../components/pages/login/login.css';

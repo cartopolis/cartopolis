@@ -29,6 +29,7 @@
     "src/**/*",
     "build.ts",
     "mock.ts",
+    "mock-chat.ts",
     "build-chat-core.ts"
   ],
   "exclude": [

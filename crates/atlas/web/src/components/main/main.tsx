@@ -105,6 +105,8 @@ export function mountRoutes(root: Element) {
         '/tokens': page(Tokens),
         '/chat': chatPage,
         '/world': chatPage,
+        // Community's calendar: every plan from every chat (`docs/mockups/calendar/`).
+        '/calendar': chatPage,
         [ADMIN]: chatPage,
         '/:rest...': chatPage,
     })

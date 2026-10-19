@@ -358,6 +358,10 @@ async function run(command: Command, from: Port): Promise<void> {
         history(command.channel, from)
         return
     }
+    if (command.type === 'histories') {
+        for (const channel of histories.keys()) history(channel, from)
+        return
+    }
     if (command.type === 'call_keys') {
         post({id: command.id, keys: conn?.callKeys(command.channel) ?? null, type: 'call_keys'}, from)
         return
@@ -374,9 +378,11 @@ async function run(command: Command, from: Port): Promise<void> {
             sending(command.channel, request, command.body, command.parent)
             return
         }
-        case 'send_point':
-            await c.sendPoint(command.channel, command.point)
+        case 'send_point': {
+            const request = await c.sendPoint(command.channel, command.point)
+            sending(command.channel, request, command.body, null, command.point)
             return
+        }
         case 'send_meeting': {
             const request = await c.sendMeeting(command.channel, command.object)
             sending(command.channel, request, command.body, null, command.object)
