@@ -726,11 +726,21 @@ fn spawn_map_tile(
             let tile_px = crate::quality::tile_px();
             let fetched = bevy::platform::time::Instant::now();
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
-                Ok(_) if !tile_still_wanted(key, gen, &live_gen, &wanted) => {
+                Ok(payload) if !tile_still_wanted(key, gen, &live_gen, &wanted) => {
                     // Retired or re-anchored while the fetch was in flight. Nothing
                     // is listening for this key any more (`forget` already gave its
                     // slot back), so push nothing: the decode below is the expensive
                     // half and its result would be discarded.
+                    //
+                    // Dropped on a worker, not here: the payload can hold the last
+                    // reference to its source's overlays, and freeing a surveyed
+                    // `Survey` is tens of milliseconds. Panning retires tiles in
+                    // flight all the time, and on the web this future runs on the
+                    // page thread (`wasm-performance.md`).
+                    crate::platform::workers::submit(
+                        "map_tiles",
+                        Box::new(move || drop(payload)),
+                    );
                 }
                 Ok(payload) => {
                     // A tile drawn on an earlier visit is read here, where the

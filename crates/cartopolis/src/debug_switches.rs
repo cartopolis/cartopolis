@@ -291,13 +291,41 @@ mod android_property_tests {
 
 /// Look `name` up in `window.location.search`, accepting the `CARTO_`-prefixed
 /// spelling and the bare one, in either case.
+///
+/// The query is parsed once, on the first call from the page thread. Some
+/// switches are read every frame, and asking the browser to parse
+/// `location.search` again each time showed up in the main-thread profile. A
+/// worker has no `window`, so it gets `None`, as it always did. It must not be
+/// the call that fills the cache, or the page would read an empty query after it.
 #[cfg(target_arch = "wasm32")]
 fn query_value(name: &str) -> Option<String> {
-    let search = web_sys::window().and_then(|w| w.location().search().ok())?;
-    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    static PARAMS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    let params = match PARAMS.get() {
+        Some(p) => p,
+        None => {
+            let search = web_sys::window().and_then(|w| w.location().search().ok())?;
+            let parsed = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+            let mut pairs = Vec::new();
+            let entries = js_sys::try_iter(&parsed).ok().flatten()?;
+            for entry in entries.flatten() {
+                let entry: js_sys::Array = entry.into();
+                if let (Some(k), Some(v)) = (entry.get(0).as_string(), entry.get(1).as_string()) {
+                    pairs.push((k, v));
+                }
+            }
+            PARAMS.get_or_init(|| pairs)
+        }
+    };
+    // First match wins, as `URLSearchParams::get` answers a repeated key.
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+    };
     let short = name.strip_prefix("CARTO_").unwrap_or(name);
     [name, short]
         .iter()
         .flat_map(|k| [k.to_ascii_uppercase(), k.to_ascii_lowercase()])
-        .find_map(|k| params.get(&k))
+        .find_map(|k| get(&k))
 }

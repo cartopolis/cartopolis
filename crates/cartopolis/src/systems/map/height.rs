@@ -660,7 +660,29 @@ async fn cached_patch(req: HeightRequest) -> Option<HeightPatch> {
         &device_key(req.key(), device_source()),
     )
     .await?;
-    patch_from(req, &bytes).ok()
+    decode_patch(req, bytes).await.0.ok()
+}
+
+/// [`patch_from`] on a worker, handing the bytes back for the cache to keep.
+///
+/// Not inline in the future: on the web an `IoTaskPool` future runs on the page
+/// thread, and inflating a patch's deflate-compressed TIFF there was ~0.5 s of
+/// main-thread time over a minute of panning (`wasm-performance.md`).
+async fn decode_patch(
+    req: HeightRequest,
+    bytes: Vec<u8>,
+) -> (Result<HeightPatch, String>, Vec<u8>) {
+    crate::platform::workers::compute("height patch", move || {
+        let patch = patch_from(req, &bytes);
+        (patch, bytes)
+    })
+    .await
+    .unwrap_or_else(|| {
+        (
+            Err("height decode worker went away".to_string()),
+            Vec::new(),
+        )
+    })
 }
 
 fn patch_from(req: HeightRequest, bytes: &[u8]) -> Result<HeightPatch, String> {
@@ -733,8 +755,8 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
             // kilometre, and a terrain field spans 6.4 km.
             let request = http::Request::get(url).timeout(std::time::Duration::from_secs(90));
             match http::fetch_optional(request).await {
-                Ok(Some(bytes)) => match patch_from(req, &bytes) {
-                    Ok(patch) => {
+                Ok(Some(bytes)) => match decode_patch(req, bytes).await {
+                    (Ok(patch), bytes) => {
                         ATLAS_HEIGHTS.store(ATLAS_SERVES, Ordering::Relaxed);
                         crate::platform::storage::put(
                             crate::platform::storage::Namespace::Cache,
@@ -746,11 +768,11 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
                     }
                     // Not a height raster at all: a host without the route that
                     // answers every path with a page.
-                    Err(e) if state == ATLAS_UNKNOWN => {
+                    (Err(e), _) if state == ATLAS_UNKNOWN => {
                         tracing::info!(error = %e, "atlas serves no heights; asking PDOK");
                         ATLAS_HEIGHTS.store(ATLAS_ABSENT, Ordering::Relaxed);
                     }
-                    Err(e) => return Err(e),
+                    (Err(e), _) => return Err(e),
                 },
                 Ok(None) => {
                     tracing::info!("atlas serves no heights; asking PDOK");
@@ -777,7 +799,8 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
     );
     let url = http::upstream_url("ahn", AHN_ORIGIN, &path);
     let bytes = http::fetch(http::Request::get(url)).await?;
-    let patch = patch_from(req, &bytes)?;
+    let (patch, bytes) = decode_patch(req, bytes).await;
+    let patch = patch?;
     // Only what decoded: a service exception arrives as a 200, and keeping it
     // would answer every later launch with the same refusal.
     crate::platform::storage::put(
