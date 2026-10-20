@@ -45,6 +45,8 @@ export class ChatClient {
     communities: CommunityView[] = []
     /** The last directory search's answer. */
     directory: CommunityListing[] = []
+    /** Which contacts are signed in, by full address; one who hides it is absent. */
+    online: Record<string, boolean> = {}
     /** The last thing the worker or the server refused, for the page to show. */
     notice: string | null = null
     /** Histories of the chats this page has opened, by channel key. */
@@ -186,6 +188,11 @@ export class ChatClient {
         this.send({code, type: 'join_invite'})
     }
 
+    /** Whether `address` is signed in: `null` when they are no contact, or do not show it. */
+    presence(address: string): boolean | null {
+        return this.online[address] ?? null
+    }
+
     isMuted(channel: string): boolean {
         return this.muted.has(channel)
     }
@@ -311,6 +318,7 @@ export class ChatClient {
                 this.username = update.username
                 this.communities = update.communities
                 this.directory = update.directory
+                this.online = update.online
                 break
             case 'history':
                 this.histories.set(update.channel, update.messages)

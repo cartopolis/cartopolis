@@ -480,6 +480,24 @@ impl ChatCore {
                 // A refused host action, not the call failing (protocol 41).
                 "control": request_id == CALL_CONTROL_REQUEST,
             })),
+            // Who among this account's contacts is signed in, for the list's
+            // dots. The server sends it whole at the handshake and again
+            // whenever a contact comes or goes; `online` is null for somebody
+            // who does not show it. Requests and settings are the app's.
+            NetMessage::ContactsState { contacts, .. } => {
+                let server = self
+                    .address
+                    .as_deref()
+                    .and_then(cartopolis_core::address::split)
+                    .map_or("", |(_, server)| server);
+                self.events.push(json!({
+                    "kind": "contacts",
+                    "contacts": contacts.iter().map(|c| json!({
+                        "address": cartopolis_core::address::person(&c.username, server),
+                        "online": c.online,
+                    })).collect::<Vec<_>>(),
+                }));
+            }
             msg if cartopolis_chat::is_private_message(&msg) => {
                 if let Some(engine) = self.engine.as_mut() {
                     let mut out = Vec::new();
@@ -1379,6 +1397,35 @@ mod tests {
         assert_eq!(ev[0]["username"], "ann");
         assert_eq!(ev[0]["address"], "ann@test.example");
         assert!(!core.is_open(), "chats wait for the caller to open them");
+    }
+
+    #[test]
+    fn contacts_arrive_as_full_addresses_with_their_presence() {
+        let mut core = ChatCore::new();
+        core.receive(&ack("ann")).unwrap();
+        events(&mut core);
+        let contact = |username: &str, online| cartopolis_core::ContactDto {
+            username: username.into(),
+            since_ms: 0,
+            met: None,
+            online,
+        };
+        let state = encode_app_frame(&NetMessage::ContactsState {
+            contacts: vec![contact("Bob", Some(true)), contact("cy", None)],
+            incoming: vec![],
+            outgoing: vec![],
+            settings: Default::default(),
+        })
+        .unwrap();
+        core.receive(&state).unwrap();
+        let ev = events(&mut core);
+        assert_eq!(ev[0]["kind"], "contacts");
+        assert_eq!(ev[0]["contacts"][0]["address"], "bob@test.example");
+        assert_eq!(ev[0]["contacts"][0]["online"], true);
+        assert!(
+            ev[0]["contacts"][1]["online"].is_null(),
+            "hidden, not offline"
+        );
     }
 
     #[test]

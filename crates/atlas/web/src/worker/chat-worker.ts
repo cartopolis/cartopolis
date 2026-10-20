@@ -72,6 +72,8 @@ let status: 'connected' | 'connecting' | 'signed_out' | 'waiting' = 'signed_out'
 let me: string | null = null
 let communities: CommunityView[] = []
 let directory: CommunityListing[] = []
+/** Which contacts are signed in, by full address; a contact who hides it is absent. */
+let online: Record<string, boolean> = {}
 const histories = new Map<string, Chat>()
 const dirty = new Set<string>()
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -153,6 +155,7 @@ function state(to?: Port): void {
         username: conn?.username ?? null,
         communities,
         directory,
+        online,
     }, to)
 }
 
@@ -193,6 +196,11 @@ async function handle(event: ChatEvent): Promise<void> {
             break
         case 'directory':
             directory = event.listings
+            break
+        case 'contacts':
+            online = Object.fromEntries(event.contacts
+                .filter((x) => x.online !== null)
+                .map((x) => [x.address, x.online as boolean]))
             break
         case 'history_wanted':
             void shareHistory(event.channel)
@@ -289,6 +297,7 @@ function signOut(): void {
     status = 'signed_out'
     communities = []
     directory = []
+    online = {}
     histories.clear()
     release?.()
     release = null

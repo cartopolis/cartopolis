@@ -118,6 +118,8 @@ export type ChatEvent =
     | {communities: CommunityView[]; kind: 'communities'}
     | {id: string; kind: 'community_created'}
     | {kind: 'directory'; listings: CommunityListing[]}
+    /** This account's contacts; `online` is null for one who does not show it. */
+    | {contacts: {address: string; online: boolean | null}[]; kind: 'contacts'}
     | {code: string; id: string; kind: 'invite'}
     | {by: string; channel: string; kind: 'redacted'; seq: number}
     | {by: string; channel: string; community: string; kind: 'left'}
@@ -249,6 +251,8 @@ export type Update =
         username: string | null
         communities: CommunityView[]
         directory: CommunityListing[]
+        /** Which contacts are signed in, by full address; one who hides it is absent. */
+        online: Record<string, boolean>
     }
     | {channel: string; messages: Message[]; type: 'history'}
     | {id: number; keys: {epoch: number; index: number; key: string} | null; type: 'call_keys'}
