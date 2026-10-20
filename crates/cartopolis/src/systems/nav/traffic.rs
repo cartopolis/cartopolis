@@ -1822,7 +1822,7 @@ const CAR_RIDE_HEIGHT: f32 = 0.02;
 ///
 /// Local rather than reaching into `map_geometry::build_mesh`, which also folds in
 /// the terrain refinement a cell's ground needs and an agent's model does not.
-fn model_mesh_to_bevy(m: &cartopolis_geo::agent_models::ModelMesh) -> Mesh {
+pub(crate) fn model_mesh_to_bevy(m: &cartopolis_geo::agent_models::ModelMesh) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     let mut mesh = Mesh::new(

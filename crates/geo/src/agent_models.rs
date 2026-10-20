@@ -1,4 +1,4 @@
-//! The traffic's models: four car bodies, and a walker with limbs.
+//! The moving models: four car bodies, a walker with limbs, and a crow.
 //!
 //! The same bodies serve two very different costs. The ambient pool
 //! (`cartopolis`'s `systems::traffic`) is a fixed set of entities sharing **one
@@ -21,7 +21,8 @@
 //!
 //! A walker is a torso (with the head), and a leg and an arm mesh each hung from
 //! its pivot, so the client can swing them. The head stays the neutral grey of
-//! [`crate::furniture::form::PERSON`], for the reason given there.
+//! [`crate::furniture::form::PERSON`], for the reason given there. A crow
+//! (`systems::crows`) is a body and a head with two jointed wings ([`crow`]).
 //!
 //! All models: origin on the ground, +y up, **+z the front**.
 
@@ -719,6 +720,300 @@ pub fn gait(phase: f32, pace: f32) -> (f32, f32, f32, f32, f32) {
     (swing, -swing, -arm, arm, (lift - 1.0) * 0.035 * k)
 }
 
+// ─── Crows ───────────────────────────────────────────────────────────────────
+
+/// The crow's neck joint on its body, which is where the head mesh's origin
+/// hangs. The body's origin is on the ground between the feet, `+z` the beak.
+pub const CROW_NECK: [f32; 3] = [0.0, 0.205, 0.105];
+/// The `+x` wing's shoulder on the body; the `-x` one is its mirror.
+pub const CROW_SHOULDER: [f32; 3] = [0.034, 0.205, 0.045];
+/// How far along its own `±x` the inner wing reaches: where the outer one hangs.
+pub const CROW_ARM_M: f32 = 0.19;
+
+/// Plumage. Not black but a very dark blue-grey, which is what a crow is in
+/// daylight; pure black reads as a hole in the picture rather than a bird.
+const CROW_FEATHER: u32 = 0x1B_1C_21;
+/// The flight feathers and the tail, a shade lighter, so a spread wing reads
+/// against the body it crosses.
+const CROW_PRIMARY: u32 = 0x23_25_2A;
+const CROW_BEAK: u32 = 0x16_16_18;
+const CROW_LEG: u32 = 0x1C_1C_1E;
+
+/// A carrion crow, low-poly, about 46 cm beak to tail and 95 cm across the
+/// wings — the bird a Dutch lawn actually has.
+///
+/// Six meshes, because six things move: the body (with the tail and legs), the
+/// head on its neck, and each wing in two segments — the arm from the shoulder
+/// and the hand hung from the arm's tip. One flat panel per wing would flap like
+/// a hinged board; the hand trailing the arm through the beat is most of what
+/// makes it a wingbeat. `[0]` is the `+x` side, `[1]` its mirror. Each part's
+/// origin is its joint, and the wings span along their own `±x` with the plane
+/// of the feathers in x–z, so a rotation about z raises them.
+#[derive(Debug, Clone)]
+pub struct CrowModel {
+    pub body: ModelMesh,
+    pub head: ModelMesh,
+    pub arm: [ModelMesh; 2],
+    pub hand: [ModelMesh; 2],
+}
+
+impl ModelMesh {
+    /// One flat-shaded triangle, wound and lit to face along `out`.
+    fn tri(&mut self, t: [[f32; 3]; 3], out: [f32; 3], rgba: [f32; 4]) {
+        let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+        let len = dot(n, n).sqrt();
+        if len < 1e-9 {
+            return;
+        }
+        let (n, t) = if dot(n, out) < 0.0 {
+            (scale(n, -1.0 / len), [t[0], t[2], t[1]])
+        } else {
+            (scale(n, 1.0 / len), t)
+        };
+        let base = self.positions.len() as u32;
+        for p in t {
+            self.positions.push(p);
+            self.normals.push(n);
+            self.colors.push(rgba);
+        }
+        self.indices.extend([base, base + 1, base + 2]);
+    }
+
+    /// A body of revolution along `z`, hexagonal in section: each station is
+    /// `(z, y, half width, half height, colour of the band behind it)`, and a
+    /// station of zero size closes the end to a point.
+    fn loft(&mut self, stations: &[(f32, f32, f32, f32, [f32; 4])]) {
+        const SIDES: usize = 6;
+        let ring = |(z, y, w, h, _): (f32, f32, f32, f32, [f32; 4])| {
+            std::array::from_fn::<[f32; 3], SIDES, _>(|k| {
+                // A vertex on top, so the back has a ridge and the belly a keel.
+                let a = std::f32::consts::FRAC_PI_2 + k as f32 * std::f32::consts::TAU / 6.0;
+                [w * a.cos(), y + h * a.sin(), z]
+            })
+        };
+        for pair in stations.windows(2) {
+            let (a, b) = (ring(pair[0]), ring(pair[1]));
+            let axis = [
+                0.0,
+                (pair[0].1 + pair[1].1) * 0.5,
+                (pair[0].0 + pair[1].0) * 0.5,
+            ];
+            let rgba = pair[0].4;
+            for k in 0..SIDES {
+                let j = (k + 1) % SIDES;
+                for t in [[a[k], a[j], b[j]], [a[k], b[j], b[k]]] {
+                    let c = scale(add(add(t[0], t[1]), t[2]), 1.0 / 3.0);
+                    self.tri(t, sub(c, axis), rgba);
+                }
+            }
+        }
+    }
+
+    /// A flat polygon seen from both sides — a wing, a tail, a foot — fanned
+    /// from `hub`, which every edge of `poly` must be visible from.
+    fn plate(&mut self, hub: [f32; 3], poly: &[[f32; 3]], rgba: [f32; 4]) {
+        for i in 0..poly.len() {
+            let t = [hub, poly[i], poly[(i + 1) % poly.len()]];
+            let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+            self.tri(t, n, rgba);
+            self.tri(t, scale(n, -1.0), rgba);
+        }
+    }
+}
+
+#[must_use]
+pub fn crow() -> CrowModel {
+    let feather = lin(CROW_FEATHER);
+    let primary = lin(CROW_PRIMARY);
+
+    let mut body = ModelMesh::default();
+    // Rump to the base of the neck: a deep chest, a back that falls to the tail.
+    body.loft(&[
+        (-0.125, 0.150, 0.0, 0.0, feather),
+        (-0.090, 0.148, 0.030, 0.028, feather),
+        (-0.030, 0.152, 0.052, 0.050, feather),
+        (0.035, 0.160, 0.056, 0.058, feather),
+        (0.085, 0.180, 0.045, 0.048, feather),
+        (0.120, 0.200, 0.026, 0.028, feather),
+        (0.135, 0.205, 0.0, 0.0, feather),
+    ]);
+    // The tail: a wedge that widens to its tip and droops a little.
+    body.plate(
+        [0.0, 0.137, -0.17],
+        &[
+            [-0.022, 0.150, -0.085],
+            [0.022, 0.150, -0.085],
+            [0.044, 0.124, -0.245],
+            [0.0, 0.120, -0.255],
+            [-0.044, 0.124, -0.245],
+        ],
+        primary,
+    );
+    let leg = lin(CROW_LEG);
+    for x in [-0.022, 0.022] {
+        body.frustum(
+            [x, 0.0, 0.006],
+            [0.006, 0.006],
+            [x, 0.112, 0.0],
+            [0.010, 0.014],
+            leg,
+        );
+        // Three toes forward and one back, flat on the ground.
+        body.plate(
+            [x, 0.004, 0.012],
+            &[
+                [x, 0.004, -0.032],
+                [x + 0.022, 0.004, 0.040],
+                [x, 0.004, 0.056],
+                [x - 0.022, 0.004, 0.040],
+            ],
+            leg,
+        );
+    }
+
+    let mut head = ModelMesh::default();
+    // Crown to the tip of a heavy beak, which is the crow's silhouette.
+    head.loft(&[
+        (-0.040, 0.000, 0.0, 0.0, feather),
+        (-0.025, 0.004, 0.026, 0.028, feather),
+        (0.012, 0.012, 0.030, 0.031, feather),
+        (0.040, 0.006, 0.018, 0.019, lin(CROW_BEAK)),
+        (0.100, -0.004, 0.0, 0.0, lin(CROW_BEAK)),
+    ]);
+
+    // The arm: from the shoulder, a little arched along its leading edge.
+    let arm_poly = [
+        [0.0, 0.0, 0.060],
+        [0.10, 0.008, 0.062],
+        [CROW_ARM_M, 0.0, 0.045],
+        [CROW_ARM_M, 0.0, -0.085],
+        [0.0, 0.0, -0.100],
+    ];
+    let arm_hub = [0.09, 0.004, -0.015];
+    // The hand, ending in the fingered primaries a crow is told apart by.
+    let hand_poly = [
+        [0.0, 0.0, 0.045],
+        [0.14, 0.0, 0.025],
+        [0.235, 0.0, -0.015],
+        [0.205, 0.0, -0.035],
+        [0.225, 0.0, -0.050],
+        [0.185, 0.0, -0.065],
+        [0.200, 0.0, -0.080],
+        [0.150, 0.0, -0.085],
+        [0.0, 0.0, -0.085],
+    ];
+    let hand_hub = [0.05, 0.0, -0.02];
+    let mirror = |p: [f32; 3]| [-p[0], p[1], p[2]];
+    let side = |hub: [f32; 3], poly: &[[f32; 3]], sign: f32, rgba| {
+        let flip = |p: [f32; 3]| if sign < 0.0 { mirror(p) } else { p };
+        let mut m = ModelMesh::default();
+        let poly: Vec<[f32; 3]> = poly.iter().map(|&p| flip(p)).collect();
+        m.plate(flip(hub), &poly, rgba);
+        m
+    };
+    CrowModel {
+        body,
+        head,
+        arm: [
+            side(arm_hub, &arm_poly, 1.0, feather),
+            side(arm_hub, &arm_poly, -1.0, feather),
+        ],
+        hand: [
+            side(hand_hub, &hand_poly, 1.0, primary),
+            side(hand_hub, &hand_poly, -1.0, primary),
+        ],
+    }
+}
+
+/// One wing's joint angles, for the `+x` wing (the client mirrors them).
+///
+/// The `+x` shoulder of a folded wing: lower and a little in, so the folded
+/// wing's leading edge lies along the back rather than standing above it.
+pub const CROW_SHOULDER_FOLDED: [f32; 3] = [0.030, 0.172, 0.040];
+
+/// One wing's joint angles, for the `+x` wing (the client mirrors them).
+///
+/// The arm is turned `Ry(sweep) · Rz(raise) · Rx(twist)` about its shoulder:
+/// twisted about its own span, raised about the body's long axis, then swept
+/// back. The hand is `Ry(hand_sweep) · Rz(hand_raise)` about the arm's tip, and
+/// `hand_span` scales its length — a hand folding on the upstroke is one
+/// shortening in span, which is all it is from any distance. `tuck` moves the
+/// shoulder from [`CROW_SHOULDER`] (0) to [`CROW_SHOULDER_FOLDED`] (1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WingPose {
+    pub sweep: f32,
+    pub raise: f32,
+    pub twist: f32,
+    pub hand_sweep: f32,
+    pub hand_raise: f32,
+    pub hand_span: f32,
+    pub tuck: f32,
+}
+
+impl WingPose {
+    /// Folded on a standing bird: swept back along the body and twisted so the
+    /// feathers hang down the flank from a leading edge along the back — the
+    /// two wings a ridge over the bird, the way a crow's wings sit. Without the
+    /// twist the folded plates lay flat and wide across the back, and a crow
+    /// seen from above was a dark mushroom. The hand is tucked short so the
+    /// primaries end near the tail's tip.
+    pub const FOLDED: Self = Self {
+        sweep: 1.45,
+        raise: -0.2,
+        twist: -2.1,
+        hand_sweep: 0.12,
+        hand_raise: 0.0,
+        hand_span: 0.42,
+        tuck: 1.0,
+    };
+
+    #[must_use]
+    pub fn lerp(self, to: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        // Exact at both ends, so a fully folded or fully open wing is the pose.
+        let l = |a: f32, b: f32| a * (1.0 - t) + b * t;
+        Self {
+            sweep: l(self.sweep, to.sweep),
+            raise: l(self.raise, to.raise),
+            twist: l(self.twist, to.twist),
+            hand_sweep: l(self.hand_sweep, to.hand_sweep),
+            hand_raise: l(self.hand_raise, to.hand_raise),
+            hand_span: l(self.hand_span, to.hand_span),
+            tuck: l(self.tuck, to.tuck),
+        }
+    }
+
+    /// The `+x` shoulder for this pose.
+    #[must_use]
+    pub fn shoulder(self) -> [f32; 3] {
+        let t = self.tuck.clamp(0.0, 1.0);
+        std::array::from_fn(|i| CROW_SHOULDER[i] * (1.0 - t) + CROW_SHOULDER_FOLDED[i] * t)
+    }
+}
+
+/// The open wing at `phase` (radians, one wingbeat per turn) and `beat`, how
+/// hard it is flapping: 0 is a glide — wings out, held in a shallow V, whatever
+/// the phase — and 1 a full stroke, up to about 55° and down to about 30°.
+///
+/// The hand lags the arm, so the tip is still going down as the arm starts up,
+/// and on the upstroke (rising, where `cos(phase) > 0`) the wing sweeps back
+/// and shortens. That lag and that fold are the difference between a bird
+/// rowing through the air and a board on a hinge.
+#[must_use]
+pub fn wingbeat(phase: f32, beat: f32) -> WingPose {
+    let k = beat.clamp(0.0, 1.0);
+    let rising = phase.cos().max(0.0);
+    WingPose {
+        sweep: 0.10 + k * 0.12 * rising,
+        raise: 0.10 + k * (0.75 * phase.sin() + 0.08),
+        twist: 0.0,
+        hand_sweep: 0.10 + k * 0.30 * rising,
+        hand_raise: 0.05 + k * 0.45 * (phase - 0.8).sin(),
+        hand_span: 1.0 - k * 0.28 * rising,
+        tuck: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,5 +1142,68 @@ mod tests {
             "the foot reaches the ground: {}",
             HIP_Y + foot
         );
+    }
+
+    #[test]
+    fn a_crow_is_crow_sized_and_stands_on_its_feet() {
+        let c = crow();
+        for part in [
+            &c.body, &c.head, &c.arm[0], &c.arm[1], &c.hand[0], &c.hand[1],
+        ] {
+            assert!(!part.indices.is_empty());
+            closed_enough(part);
+        }
+        let zs = || c.body.positions.iter().map(|p| p[2]);
+        let length = zs().fold(f32::MIN, f32::max) - zs().fold(f32::MAX, f32::min)
+            + (CROW_NECK[2] + 0.10 - 0.135);
+        assert!((0.40..0.52).contains(&length), "{length} m beak to tail");
+        let span_x = |m: &ModelMesh| m.positions.iter().map(|p| p[0].abs()).fold(0.0, f32::max);
+        let span = 2.0 * (CROW_SHOULDER[0] + span_x(&c.arm[0]) + span_x(&c.hand[0]));
+        assert!((0.85..1.05).contains(&span), "{span} m across the wings");
+        let low = c
+            .body
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::MAX, f32::min);
+        assert!(low.abs() < 1e-3, "the feet are on the ground: {low}");
+    }
+
+    /// The `-x` wing is the `+x` one mirrored, and each face of a plate is lit
+    /// from its own side: a wing that vanishes from below under back-face
+    /// culling is the failure this would otherwise hide.
+    #[test]
+    fn the_wings_mirror_and_show_both_faces() {
+        let c = crow();
+        for (a, b) in [(&c.arm[0], &c.arm[1]), (&c.hand[0], &c.hand[1])] {
+            assert_eq!(a.positions.len(), b.positions.len());
+            assert!(a.positions.iter().all(|p| p[0] >= -1e-6));
+            assert!(b.positions.iter().all(|p| p[0] <= 1e-6));
+            let up = a.normals.iter().filter(|n| n[1] > 0.9).count();
+            let down = a.normals.iter().filter(|n| n[1] < -0.9).count();
+            assert_eq!(up, down, "as many faces up as down");
+        }
+    }
+
+    #[test]
+    fn a_glide_holds_still_and_a_beat_strokes() {
+        let glide = wingbeat(0.0, 0.0);
+        for k in 0..16 {
+            assert_eq!(
+                wingbeat(k as f32 * 0.4, 0.0),
+                glide,
+                "a glide ignores the phase"
+            );
+        }
+        let raises: Vec<f32> = (0..64)
+            .map(|k| wingbeat(k as f32 / 64.0 * std::f32::consts::TAU, 1.0).raise)
+            .collect();
+        let (hi, lo) = (
+            raises.iter().copied().fold(f32::MIN, f32::max),
+            raises.iter().copied().fold(f32::MAX, f32::min),
+        );
+        assert!(hi > 0.8 && lo < -0.4, "stroke {lo}..{hi}");
+        assert_eq!(WingPose::FOLDED.lerp(glide, 0.0), WingPose::FOLDED);
+        assert_eq!(WingPose::FOLDED.lerp(glide, 1.0), glide);
     }
 }

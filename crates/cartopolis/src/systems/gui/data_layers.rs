@@ -487,6 +487,11 @@ pub struct DataLayers {
     /// want exactly one of them. Cheap, too — a hidden pool costs a transform
     /// write it never makes.
     pub people_enabled: bool,
+    /// Feature toggle (under Life): the crows (`systems::crows`) flying over
+    /// and feeding on the lawns. Its own row because it is its own kind of
+    /// motion — in the sky, not on the street — and the first thing someone
+    /// judging a skyline still would switch off.
+    pub birds_enabled: bool,
     /// Your contacts on the map, wherever their avatars are, with or without a
     /// chat open (`contacts::drive_contacts` asks, `place_pins` draws). Only
     /// contacts who show they are online are ever answered for.
@@ -621,6 +626,12 @@ impl DataLayers {
         self.people_enabled
     }
 
+    /// Should the crows be drawn and flown? (`systems::crows`)
+    #[must_use]
+    pub fn birds_visible(&self) -> bool {
+        self.birds_enabled
+    }
+
     /// Should the live vehicle feed be polled and drawn?
     /// (`systems::transit_vehicles`)
     #[must_use]
@@ -674,6 +685,7 @@ impl DataLayers {
             furniture,
             traffic: self.traffic_enabled,
             people: self.people_enabled,
+            birds: self.birds_enabled,
             friends: self.friends_enabled,
             community_posts: self.community_posts_enabled,
             street_detail,
@@ -763,6 +775,7 @@ impl DataLayers {
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
+        self.birds_enabled = p.birds;
         self.friends_enabled = p.friends;
         self.community_posts_enabled = p.community_posts;
         self.street_detail_enabled = p.street_detail;
@@ -829,6 +842,7 @@ impl Default for DataLayers {
             // draw on the one platform whose schedule has no second thread.
             traffic_enabled: detail,
             people_enabled: detail,
+            birds_enabled: detail,
             friends_enabled: true,
             community_posts_enabled: true,
             roads_textured: detail,
@@ -2277,7 +2291,12 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
             dl.flood_defences,
         ]),
         n(&places),
-        n(&[dl.traffic_enabled, dl.people_enabled, dl.vehicles_enabled]),
+        n(&[
+            dl.traffic_enabled,
+            dl.people_enabled,
+            dl.birds_enabled,
+            dl.vehicles_enabled,
+        ]),
         n(&under),
         n(&[dl.satellites_enabled]),
     ]
@@ -2461,7 +2480,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
         LayerCategory::Moving => {
             ui.label(
                 egui::RichText::new(
-                    "Traffic and people are made up from the streets; buses and trains are real.",
+                    "Traffic, people and birds are made up; buses and trains are real.",
                 )
                 .size(theme::SIZE_SUB)
                 .color(theme::TEXT_DIM),
@@ -2477,6 +2496,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     (
                         tile(icons::WALK, "People", false, false, low),
                         &mut dl.people_enabled,
+                    ),
+                    (
+                        tile(icons::CROW, "Birds", false, false, low),
+                        &mut dl.birds_enabled,
                     ),
                     (
                         tile(icons::BUS, "Live buses & trains", true, false, low),
@@ -2741,6 +2764,7 @@ pub fn render_data_layers_panel(
         // toggle that has stuck.
         dl.traffic_enabled = fresh.traffic_enabled;
         dl.people_enabled = fresh.people_enabled;
+        dl.birds_enabled = fresh.birds_enabled;
         dl.friends_enabled = fresh.friends_enabled;
         dl.community_posts_enabled = fresh.community_posts_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;

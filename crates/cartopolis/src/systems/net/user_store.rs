@@ -304,6 +304,10 @@ pub struct LayerPrefs {
     /// which is what the one toggle they *did* have meant for the walkers too.
     #[serde(default = "detail_default")]
     pub people: bool,
+    /// Ambient crows (`systems::crows`). Absent in a file written before they
+    /// existed, so it reads as the tier's default like the rows beside it.
+    #[serde(default = "detail_default")]
+    pub birds: bool,
     /// Your contacts on the map, where their avatars are (`systems::chat_people`).
     /// On by default: seeing where your friends are is the point of having them.
     #[serde(default = "yes")]

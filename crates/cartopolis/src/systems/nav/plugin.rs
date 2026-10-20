@@ -47,6 +47,11 @@ impl Plugin for NavPlugin {
             Startup,
             systems::traffic::setup_traffic.after(systems::free_camera::setup_camera),
         );
+        // The crows: the same terms and the same ordering, for the same root.
+        app.add_systems(
+            Startup,
+            systems::crows::setup_crows.after(systems::free_camera::setup_camera),
+        );
         // The receiver comes up with the app when it was left on: it takes tens
         // of seconds to converge, which is better spent before anybody asks.
         app.add_systems(Startup, systems::gnss_receiver::load_receiver_prefs);
@@ -226,6 +231,8 @@ impl Plugin for NavPlugin {
                 // Ambient traffic: one transform write per car per frame, and no
                 // asset touched after startup (`systems::traffic`).
                 systems::traffic::drive_traffic,
+                // After it, because a passing walker can flush a feeding crow.
+                systems::crows::drive_crows.after(systems::traffic::drive_traffic),
             )
                 .in_set(ClientPhase::Present),
         );
