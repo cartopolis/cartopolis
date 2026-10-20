@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
-triggers: [platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
-updated: 2026-10-19
+triggers: [crates/mvt_reader, mvt-reader, platform/heap.rs, heap_labels, frame_split.rs, gpu_log.ts, firefox_probe, rust_oom, "out of memory", platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+updated: 2026-10-20
 ---
 
 # What actually costs frames on the web build
@@ -222,6 +222,70 @@ Two things to know when working on shaders:
   run is a first visit, because the browser profile is deleted. The probe kills the
   browser at the end, and a save from the last seconds of a run can be lost with
   it. That costs the next run one recompose, not a wrong shader.
+
+## Zooming out ran the heap out (2026-10-20)
+
+**What a user saw**: the viewer hung on loading in Firefox, every reload, and
+zooming out "almost always" broke it. **What it was**: the wasm heap reaching
+wasm32's 4 GiB ceiling. An allocation then fails, Rust aborts under `rust_oom`,
+and Chrome logs `RuntimeError: unreachable`. Firefox shows its slow-page banner
+instead. GPU memory was not the cause: resident stayed under 0.8 GB throughout.
+
+**Reproducing it** takes a scripted flight, because a hand zoom is not
+repeatable. `cdp_probe --drive-script flight` and `firefox_probe --flight <s>`
+post `cartopolis.place` messages through `gpu_log.ts`'s `FLIGHT_ALTITUDES`
+(1200 → 300 → 50 → 12 → … → 40 000 → 5000 → 1200 → 12 m over the Groningen
+centre, 8 s apart). Before the fixes Chrome died about 89 s in, a few seconds
+after coming down from 40 km.
+
+**The instruments the client now logs**, every five seconds, and the probes
+tabulate:
+
+- the `gpu` line gains `heap_mb` / `heap_peak_mb` / `wasm_memory_mb`. The heap is
+  counted by `platform::heap`, a counting global allocator on wasm only (two
+  atomic adds per allocation). Linear memory only grows, so `wasm_memory_mb` is
+  the high-water mark plus fragmentation. Also `cpu_meshes_mb`, `cpu_images_mb`
+  (the main world's mesh and image assets) and `storage_view_mb`.
+- `frame split` (`systems::frame_split`): each frame as main world, render world
+  (extract to present), and other. On the web "other" is the browser, the
+  `IoTaskPool` futures between frames and the wait for the next animation frame.
+- **Heap by label**, in a diagnostic build only: `CARTO_HEAP_LABELS=1 trunk build
+  …` sets `cfg(heap_labels)` (`build.rs`). Each allocation gets a 16-byte header
+  naming what was running: a worker job's submission label, `render`, `main`, or a
+  stage inside a job (`globe: draw layers`, `surfaces: after roads`). The line
+  then carries `heap_by` (live) and `heap_peak_by` (the most each label held
+  since the last line, which is what catches a burst). The thread is told apart by
+  its stack address, not a thread-local, which crashed LLVM inside the allocator,
+  and the name table is lock-free, because the page's thread may not
+  `Atomics.wait`.
+
+**What held the heap**, found with the labels, and what was done:
+
+| holder | size | fix |
+|---|---|---|
+| finished ground cells queued behind the upload ceiling, for cells the ring no longer wanted | ~1.3 GB | `CellStream::keep_only` drops them each frame; `Budget::surface_jobs` (3 browser, 2 phone, 9 desktop) caps how many are built at once |
+| decoding one zoomed-out globe tile (`globe: draw layers` peaked at 2231 MB) | 214 MB for a 108 kB z8 tile | `crates/mvt_reader`: upstream reserved the whole feature's command count for every ring, and kept it |
+| `platform::storage`'s in-memory view, which kept every cache entry read or written | grew without bound | only `Data` is kept now (`web-persistence.md`) |
+
+The decoder one is the general lesson: **a compact input can decode to a hundred
+times its size.** `vector_tiles::raster::render_peak` (an ignored test,
+`CARTO_PEAK_TILES=<dir of z_x_y.mvt>`) measures each tile's retained decode and
+render peak natively through `cartopolis_geo::perf`'s counting allocator. That is
+the place to check a new tile source, not the browser.
+
+After all three, same flight, Chrome on mac-2 (M5 Pro): it completed the whole
+125 s, `wasm_memory_mb` stopped at 1478, the heap swung between 0.34 and 1.19 GB,
+mean frames 17–20 ms. Firefox on the same node completed it too and stopped
+at 1485 MB, but drew only 8–50 frames in each 2 s while the map streamed, against
+120 once it settled; its frame split puts that in both the main world and "other".
+**What the rest of the heap is**, from a labelled build over the same flight: no
+holder grows any more. The swings to ~1 GB are working memory. The three ground
+cells being built at once peak at 400–520 MB together (`surfaces: after bridges`
+and `after paving`, ~150 MB a cell). The first 3DBAG cells parse at up to 480 MB
+(`lod22`) in the first 15 s. `main` settles at 200–240 MB and `render` at 70–90 MB.
+The 1478 MB high-water mark is those two overlapping at startup. Lowering it
+means fewer ground jobs at once (`Budget::surface_jobs`), or a cell build that
+holds less between its stages.
 
 ## The phone tier (2026-08-09)
 
