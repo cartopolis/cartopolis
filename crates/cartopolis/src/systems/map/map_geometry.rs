@@ -816,6 +816,14 @@ const DECK_GRID_MAX: u32 = 384;
 pub struct MapSurfaces {
     /// Live cells → their spawned mesh entities (one per surface group).
     loaded: HashMap<Cell, Vec<Entity>>,
+    /// Mesh bytes each live cell was built with, for the ring's GPU cap
+    /// ([`surface_ring_ceiling`]).
+    cell_bytes: HashMap<Cell, usize>,
+    /// The last measured cost of every cell built this session, live or not, so
+    /// the cap can tell whether a cell fits *before* building it, and the set of
+    /// cells it keeps does not flip as cells come and go. Emptied by [`Self::clear`],
+    /// because a retear changes what a cell is built with.
+    cell_cost: HashMap<Cell, usize>,
     /// The terrain revision each live cell stands on. **A new field retires only
     /// the cells built on an older one** — the ring used to be torn down whole,
     /// which also threw away cells still waiting for the very field that landed.
@@ -891,12 +899,21 @@ impl MapSurfaces {
     pub fn loaded_cells(&self) -> usize {
         self.loaded.len()
     }
+
+    /// The mesh bytes the live cells were built with, together: what the ring's
+    /// GPU ceiling (`quality::surface_ring_ceiling`) holds down.
+    #[must_use]
+    pub fn ring_bytes(&self) -> usize {
+        self.cell_bytes.values().sum()
+    }
 }
 
 impl Default for MapSurfaces {
     fn default() -> Self {
         Self {
             loaded: HashMap::new(),
+            cell_bytes: HashMap::new(),
+            cell_cost: HashMap::new(),
             built_rev: HashMap::new(),
             built_digest: HashMap::new(),
             complete: HashSet::new(),
@@ -2810,6 +2827,8 @@ impl MapSurfaces {
         for (_, entities) in self.loaded.drain() {
             self.stream.retire_all(entities);
         }
+        self.cell_bytes.clear();
+        self.cell_cost.clear();
         self.built_rev.clear();
         self.built_digest.clear();
         self.complete.clear();
@@ -2822,12 +2841,57 @@ impl MapSurfaces {
     }
 }
 
+/// The ring's cells that fit under `ceiling`, nearest to `at` (the stream
+/// centre, in tile units) first.
+///
+/// The cell under the centre is always kept, whatever it costs: it is the ground
+/// you are standing on, and without it there is no ground mesh at all. A cell
+/// whose cost is not yet known counts as the mean of those that are (as nothing,
+/// before any is), so the first cells of a session are built and the ceiling
+/// takes hold as soon as one has been measured. Costs are remembered after a cell
+/// leaves, so the kept set does not change as cells are built and retired.
+fn within_ceiling(
+    ring: &[Cell],
+    at: (f64, f64),
+    cost: &HashMap<Cell, usize>,
+    ceiling: Option<usize>,
+) -> HashSet<Cell> {
+    let Some(ceiling) = ceiling else {
+        return ring.iter().copied().collect();
+    };
+    let mean = if cost.is_empty() {
+        0
+    } else {
+        cost.values().sum::<usize>() / cost.len()
+    };
+    let mut by_distance = ring.to_vec();
+    let dist = |c: &Cell| {
+        let (dx, dy) = (c.0 as f64 + 0.5 - at.0, c.1 as f64 + 0.5 - at.1);
+        dx * dx + dy * dy
+    };
+    by_distance.sort_by(|a, b| dist(a).total_cmp(&dist(b)).then(a.cmp(b)));
+    let mut kept = HashSet::new();
+    let mut total = 0usize;
+    for c in by_distance {
+        let bytes = cost.get(&c).copied().unwrap_or(mean);
+        if !kept.is_empty() && total + bytes > ceiling {
+            // Not `break`: a cheaper cell further out (water, open land) may
+            // still fit after a dense one did not.
+            continue;
+        }
+        total += bytes;
+        kept.insert(c);
+    }
+    kept
+}
+
 /// Retire one live cell and everything that lives and dies with it; a cell still
 /// in the ring is asked for again.
 fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     if let Some(entities) = surfaces.loaded.remove(&c) {
         surfaces.stream.retire_all(entities);
     }
+    surfaces.cell_bytes.remove(&c);
     surfaces.built_rev.remove(&c);
     surfaces.built_digest.remove(&c);
     surfaces.complete.remove(&c);
@@ -3078,7 +3142,11 @@ pub fn update_map_surfaces(
     let ccx = (f64::from(world_x) / f64::from(tile_m) + fcx).floor() as i64;
     let ccy = (f64::from(world_z) / f64::from(tile_m) + fcy).floor() as i64;
 
-    let wanted = retire_outside_ring(&mut surfaces, &mut stores, (ccx, ccy));
+    let at = (
+        f64::from(world_x) / f64::from(tile_m) + fcx,
+        f64::from(world_z) / f64::from(tile_m) + fcy,
+    );
+    let wanted = retire_outside_ring(&mut surfaces, &mut stores, (ccx, ccy), at);
     dispatch_cells(
         &mut surfaces,
         &stream,
@@ -3120,12 +3188,19 @@ fn retire_outside_ring(
     mut surfaces: &mut MapSurfaces,
     mut stores: &mut CellStores,
     (ccx, ccy): Cell,
+    at: (f64, f64),
 ) -> HashSet<Cell> {
-    // 1. Retire cells that fell outside the ring.
-    let wanted: HashSet<Cell> = (-CELL_RADIUS..=CELL_RADIUS)
+    // 1. Retire cells that fell outside the ring, or outside its GPU cap.
+    let ring: Vec<Cell> = (-CELL_RADIUS..=CELL_RADIUS)
         .flat_map(|b| (-CELL_RADIUS..=CELL_RADIUS).map(move |a| (a, b)))
         .map(|(a, b)| (ccx + a, ccy + b))
         .collect();
+    let wanted = within_ceiling(
+        &ring,
+        at,
+        &surfaces.cell_cost,
+        crate::quality::surface_ring_ceiling(),
+    );
     let stale: Vec<Cell> = surfaces
         .loaded
         .keys()
@@ -3425,6 +3500,7 @@ fn upload_finished_cells(
             .iter()
             .any(|m| is_flat_ground(m.group) && m.group.layer().is_sheet());
         let mut entities = Vec::with_capacity(surface_meshes.len());
+        let mut built_bytes = 0usize;
         for sm in surface_meshes {
             let stand = if placed {
                 Stand::Placed
@@ -3437,6 +3513,7 @@ fn upload_finished_cells(
             // back to the cap (`build_meshes_owned`).
             for piece in build_meshes_owned(sm, wx, wz, stand) {
                 let mesh = meshes.reserve_handle();
+                built_bytes += crate::systems::stream_ledger::mesh_cost(&piece);
                 surfaces.pending_meshes.push_back((c, mesh.clone(), piece));
                 let world = Vec3::new(wx, group.y_offset(), wz);
                 let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
@@ -3559,6 +3636,8 @@ fn upload_finished_cells(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        surfaces.cell_bytes.insert(c, built_bytes);
+        surfaces.cell_cost.insert(c, built_bytes);
         // Complete once its ground is in, not when it lands (`awaiting_complete`).
         surfaces.complete.remove(&c);
         if complete {
@@ -5835,6 +5914,50 @@ mod tests {
     /// this is what stops the two drifting. A shader that believed the ring was
     /// bigger would put the fade's end past the last cell: waves right up to a
     /// hard line again.
+    fn ring_around(c: Cell) -> Vec<Cell> {
+        (-1..=1)
+            .flat_map(|b| (-1..=1).map(move |a| (c.0 + a, c.1 + b)))
+            .collect()
+    }
+
+    /// No ceiling is the whole ring, as before the ceiling existed.
+    #[test]
+    fn no_ceiling_keeps_the_whole_ring() {
+        let ring = ring_around((10, 10));
+        let kept = within_ceiling(&ring, (10.5, 10.5), &HashMap::new(), None);
+        assert_eq!(kept.len(), 9);
+    }
+
+    /// Nearest first, and the cell under the camera even when it alone is over.
+    #[test]
+    fn the_ceiling_keeps_the_nearest_cells_that_fit() {
+        let ring = ring_around((10, 10));
+        let mb = 1024 * 1024;
+        let cost: HashMap<Cell, usize> = ring.iter().map(|c| (*c, 140 * mb)).collect();
+        // Standing near the east edge of the centre cell: its east neighbour is next.
+        let kept = within_ceiling(&ring, (10.9, 10.5), &cost, Some(320 * mb));
+        assert_eq!(kept, [(10, 10), (11, 10)].into_iter().collect());
+        let kept = within_ceiling(&ring, (10.5, 10.5), &cost, Some(100 * mb));
+        assert_eq!(kept, [(10, 10)].into_iter().collect());
+    }
+
+    /// An unmeasured cell counts as the mean of the measured ones, and a cheap
+    /// cell further out still fits after a dear one nearer in did not.
+    #[test]
+    fn unmeasured_cells_cost_the_mean_and_cheap_ones_still_fit() {
+        let ring = ring_around((10, 10));
+        let mb = 1024 * 1024;
+        let mut cost = HashMap::new();
+        cost.insert((10, 10), 100 * mb);
+        cost.insert((11, 10), 300 * mb);
+        cost.insert((9, 10), 2 * mb);
+        // Mean 134 MB. The edge neighbours tie on distance and go in cell order:
+        // the cheap west one (102 MB so far), one unmeasured (236 MB), then
+        // nothing more under 250 MB, the dear east one included.
+        let kept = within_ceiling(&ring, (10.5, 10.5), &cost, Some(250 * mb));
+        assert_eq!(kept, [(10, 10), (9, 10), (10, 9)].into_iter().collect());
+    }
+
     #[test]
     fn the_water_shader_knows_the_ring_radius() {
         let src = include_str!("../../../../../assets/shaders/water.wesl");

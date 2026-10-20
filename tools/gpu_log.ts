@@ -14,8 +14,8 @@ export type Mark = { t: number; label: string };
 
 /** The `mesh owners` line's text, or `null`. */
 export function parseOwnersLine(line: string): string | null {
-  const m = /\bmesh owners owners = (.*?);\s*surface_cells = (\d+);\s*altitude_m = (-?\d+)/.exec(line);
-  return m ? `at ${m[3]} m: ${m[1]} (surface cells ${m[2]})` : null;
+  const m = /\bmesh owners owners = (.*?);\s*surface_cells = (\d+);\s*surface_ring_mb = (\d+);\s*altitude_m = (-?\d+)/.exec(line);
+  return m ? `at ${m[4]} m: ${m[1]} (surface cells ${m[2]}, ${m[3]} MB)` : null;
 }
 
 /** The fields of a `gpu` or `mesh memory` line, or `null` for any other line. */

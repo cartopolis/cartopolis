@@ -294,15 +294,18 @@ pub fn log_mesh_owners(
         .take(6)
         .map(|(name, (bytes, n))| format!("{name}={}MB/{n}", bytes / (1024 * 1024)))
         .collect();
-    let cells = world
+    let (cells, ring_mb) = world
         .get_resource::<crate::systems::map_geometry::MapSurfaces>()
-        .map_or(0, crate::systems::map_geometry::MapSurfaces::loaded_cells);
+        .map_or((0, 0), |s| {
+            (s.loaded_cells(), s.ring_bytes() / (1024 * 1024))
+        });
     let altitude_m = camera
         .get()
         .map_or(f64::NAN, |(cell, tf)| globe.altitude_m(cell, tf));
     tracing::info!(
         owners = %line.join(" "),
         surface_cells = cells,
+        surface_ring_mb = ring_mb,
         altitude_m = altitude_m as i64,
         "mesh owners",
     );

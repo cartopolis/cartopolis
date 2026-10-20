@@ -279,3 +279,33 @@ Two traps from taking it:
   once a page touches WebGPU.** A twenty-line clear-the-canvas page does the same,
   so it is not the client. A reused profile works. Warm the profile with one short
   run before measuring.
+
+### The ground ring has a ceiling (2026-10-20)
+
+`Budget::surface_ring_bytes` caps what map_geometry's cells hold together:
+**320 MB** on the default rung (Android, and the browser, which inherits it),
+**160 MB** on the phone rung, the handset guard keeps one on any rung a handset
+picks, and the desktop has none. `CARTO_SURFACE_MB` overrides it and `0` is none.
+`load_control` could not do this: it narrows rings by radius, and this one is
+already at radius 1.
+
+`within_ceiling` keeps the cells nearest the stream centre that fit. The cell
+under you is always kept. The test uses each cell's measured cost, remembered
+after it leaves, so the kept set does not flip as cells come and go. An unmeasured
+cell counts as the mean of the measured ones. A cell left out is simply not built,
+and the basemap image carries that ground, as it does beyond the ring. That cell is
+not "complete", so `update_tile_occlusion` keeps drawing the tile there.
+
+Measured with the meter, same viewpoints, cap off against cap on:
+
+| | GPU resident | ground cells |
+|---|---|---|
+| web, Chrome, camera at 12 m | 1.84 GB → 0.75 GB | 9 → 1 (192 MB) |
+| native, 40 m over the Oosterpoort | 1.94 GB → 0.65 GB | 9 → 1 (183 MB) |
+| native, 15 m looking across a cell edge | 1.93 GB → 0.65 GB | 8 → 1 (183 MB) |
+
+The native captures could not be told apart from 40 m or 15 m, with buildings in
+the foreground. At ~180 MB a cell the 320 MB ceiling holds only the cell you are
+in. When the cells get cheaper (another session's vertex weld before
+`refine_for_terrain`), more of the ring fits under the same ceiling without any
+change here.

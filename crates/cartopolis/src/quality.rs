@@ -392,6 +392,18 @@ pub struct Budget {
     /// streaming, and a ring that narrowed itself on a workstation would be
     /// taking away a view nobody was struggling to render.
     pub resident_bytes_target: Option<usize>,
+    /// The most graphics memory `map_geometry`'s ground cells may hold together.
+    ///
+    /// [`Self::resident_bytes_target`] cannot bound them, and the reason is in
+    /// `systems::load_control`: that controller narrows rings by radius, and this
+    /// ring is already at its narrowest (3×3, radius 1). At street level over
+    /// Groningen each cell's terrain-draped ground came to ~140 MB, and the ring to
+    /// 1.27 GB of a 1.84 GB residency (`wgpu::meter`, 2026-10-20,
+    /// `docs/notes/upload-bursts.md`), against a 700 MB target that could not
+    /// touch it. With a ceiling the ring keeps the cells nearest the camera that
+    /// fit, measured, and the basemap image carries the rest, as it does past the
+    /// ring anyway. `CARTO_SURFACE_MB` overrides it; `0` is none.
+    pub surface_ring_bytes: Option<usize>,
     /// How much **system memory** the streamers may spend keeping the finished
     /// form of a retired cell, so returning to it costs an upload instead of a
     /// rebuild (`platform::warm`).
@@ -571,6 +583,7 @@ impl Budget {
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
             resident_bytes_target: None,
+            surface_ring_bytes: None,
             // 512 MiB, which at 1,365 kB per 512² ground tile is roughly 380 of
             // them — a clipmap's worth of city held behind the live one, so
             // flying out and back costs an upload rather than another 68 ms of
@@ -670,6 +683,10 @@ impl Budget {
             // the gigabyte that lost a device. Set here rather than left `None`
             // because this is the rung Android's automatic answer resolves to.
             resident_bytes_target: Some(700 * 1024 * 1024),
+            // Under half of that target, so the clipmap, the buildings and the
+            // globe keep the rest: at the measured ~140 MB a cell, the cell under
+            // you and its nearest neighbour.
+            surface_ring_bytes: Some(320 * 1024 * 1024),
             // A quarter of the desktop allowance. This is the rung Android's
             // automatic answer resolves to, so the ceiling has to suit a phone
             // with a good GPU rather than a workstation: 256 MiB is ~190 ground
@@ -813,6 +830,8 @@ impl Budget {
             upload_bytes_per_frame: Some(PHONE_UPLOAD_BYTES_PER_FRAME),
             // 350 MB, against the 307 MB this rung measured over Groningen.
             resident_bytes_target: Some(350 * 1024 * 1024),
+            // The same share of a smaller target: about one cell.
+            surface_ring_bytes: Some(160 * 1024 * 1024),
             // Leave pacing to FIFO. See the field's own comment: a sleep-based
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
@@ -1021,6 +1040,7 @@ pub fn report_budget() {
         upload_kb = upload_ceiling().map_or(0, |bytes| bytes / 1024),
         warm_mb = warm_ceiling() / (1024 * 1024),
         warm_gpu_mb = warm_gpu_ceiling() / (1024 * 1024),
+        surface_mb = surface_ring_ceiling().map_or(0, |bytes| bytes / (1024 * 1024)),
         "render budget in force"
     );
 }
@@ -1158,6 +1178,21 @@ pub fn upload_ceiling() -> Option<usize> {
             Some(0) => None,
             Some(kb) => Some(kb * 1024),
             None => budget().upload_bytes_per_frame,
+        }
+    })
+}
+
+/// The most graphics memory `map_geometry`'s ground cells may hold together,
+/// with `CARTO_SURFACE_MB` folded in (`0` is no ceiling). Memoised for the
+/// reason [`upload_ceiling`] is.
+#[must_use]
+pub fn surface_ring_ceiling() -> Option<usize> {
+    static CEILING: OnceLock<Option<usize>> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        match crate::env_value("CARTO_SURFACE_MB").and_then(|v| v.parse::<usize>().ok()) {
+            Some(0) => None,
+            Some(mb) => Some(mb * 1024 * 1024),
+            None => budget().surface_ring_bytes,
         }
     })
 }
@@ -1641,6 +1676,15 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         // needs. The minimum, not an overwrite, so a rung asking for less keeps
         // its own number.
         resident_bytes_target: Some(resident),
+        // The ground cells, on the rule of the two above: a rung picked by hand
+        // keeps a ceiling, the smaller of its own and the handset rung's.
+        surface_ring_bytes: Some(
+            budget
+                .surface_ring_bytes
+                .map_or(HANDSET_SURFACE_RING_BYTES, |own| {
+                    own.min(HANDSET_SURFACE_RING_BYTES)
+                }),
+        ),
         // System memory, guarded on the same principle as the two above but for
         // a different scarcity: a handset's risk is the low-memory killer, not
         // the graphics device. The minimum, so the phone rung's own `0` survives
@@ -1655,6 +1699,10 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         ..budget
     }
 }
+
+/// The most a handset's ground cells may hold, whatever rung it is on: the
+/// default rung's own figure (`Budget::surface_ring_bytes`).
+const HANDSET_SURFACE_RING_BYTES: usize = 320 * 1024 * 1024;
 
 /// What a handset may keep in system memory for a return journey, whatever rung
 /// it is on.
