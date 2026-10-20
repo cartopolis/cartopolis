@@ -928,6 +928,82 @@ pub struct MapSurfaces {
     /// When this anchor began waiting for the BGT and crop coverage answers
     /// before dispatching (`COVERAGE_WAIT_S`).
     coverage_wait: Option<(u32, bevy::platform::time::Instant)>,
+    /// How fast the camera is climbing or descending ([`ClimbRate`]), which
+    /// holds the ring still while a zoom sweeps through the detail bands.
+    climb: ClimbRate,
+    /// The ring was held this frame: the settle test must not mistake a ring
+    /// waiting for the camera to stop for a finished one.
+    held: bool,
+}
+
+/// Above this rate of change of altitude — in e-folds a second, so 0.3 is the
+/// distance changing by a third every second — a zoom is sweeping through
+/// [`DetailWants`]' bands, and the ring neither changes its detail nor starts
+/// cells until it slows.
+///
+/// **Why hold rather than follow.** A descent from orbit crosses three bands
+/// (trees at 2 km, furniture at 450 m, the flat ground at 250 m), and each one
+/// retore the ring: every cell's job run again, road cut and all, while the
+/// orphans of the band before still held the heavy lane — a running job is never
+/// interrupted. None of those builds could land before the camera was past them.
+/// Held, a brisk zoom pays for one ring, built for where it stops; a slow one
+/// (under this rate) still gains its detail band by band on the way down.
+const SWEEP_RATE: f32 = 0.3;
+
+/// Whether a sweeping zoom holds the ring ([`SWEEP_RATE`]).
+/// `CARTO_NO_SWEEP_HOLD=1` puts back the band-by-band rebuild, and lets an
+/// orphaned cell job run to its end as it used to: the before half of
+/// `cargo perf --only descent`, from the same binary as the after.
+fn sweep_hold_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !crate::debug_switches::env_flag("CARTO_NO_SWEEP_HOLD"))
+}
+
+/// Smoothing of [`ClimbRate`], seconds: long enough that one slow frame or the
+/// last few metres of the glide do not release the hold, short enough that the
+/// ring starts building a moment after the camera stops.
+const CLIMB_SMOOTH_S: f32 = 0.25;
+
+/// A smoothed `d ln(altitude) / dt`, per second, from the altitude this system
+/// sees each frame. Wall clock, since the system has no parameter to spare for
+/// `Time` (and virtual time is clamped per frame, which would read a slow
+/// device's zoom as a slow zoom).
+#[derive(Default)]
+struct ClimbRate {
+    last: Option<(f32, bevy::platform::time::Instant)>,
+    rate: f32,
+}
+
+impl ClimbRate {
+    /// Take this frame's altitude; true while it is sweeping.
+    fn sample(&mut self, alt: f32) -> bool {
+        let now = bevy::platform::time::Instant::now();
+        if let Some((was, then)) = self.last {
+            let dt = now.duration_since(then).as_secs_f32();
+            self.rate = climb_step(self.rate, was, alt, dt);
+        }
+        self.last = Some((alt, now));
+        self.rate.abs() > SWEEP_RATE
+    }
+}
+
+/// One step of [`ClimbRate`]: the rate after moving from `was` to `alt` metres
+/// in `dt` seconds.
+///
+/// A step of more than a factor of two in one frame is a jump — a teleport, a
+/// re-anchor — not a zoom, and is read as standing still: a jump retears the
+/// ring anyway, and an exponential average fed a jump's rate would hold the new
+/// ring for a second after it landed.
+fn climb_step(rate: f32, was: f32, alt: f32, dt: f32) -> f32 {
+    if dt <= 0.0 {
+        return rate;
+    }
+    let step = (alt.max(1.0) / was.max(1.0)).ln();
+    if step.abs() > std::f32::consts::LN_2 {
+        return 0.0;
+    }
+    let k = 1.0 - (-dt / CLIMB_SMOOTH_S).exp();
+    rate + (step / dt - rate) * k
 }
 
 impl MapSurfaces {
@@ -976,6 +1052,8 @@ impl Default for MapSurfaces {
             detail_wants: None,
             ground_finish: None,
             coverage_wait: None,
+            climb: ClimbRate::default(),
+            held: false,
         }
     }
 }
@@ -1419,6 +1497,12 @@ fn spawn_geometry_task(
                 return;
             }
             crate::platform::workers::submit_heavy_ranked("surfaces", urgency, Box::new(move || {
+                // …and again between the dear stages below, because a running job
+                // is never interrupted and holds a heavy-lane thread for seconds.
+                // A zoom tears the ring down mid-build (a detail band, a terrain
+                // bake), and the cells that replace it queue behind the orphans.
+                let torn =
+                    || sweep_hold_enabled() && !live.load(std::sync::atomic::Ordering::Relaxed);
                 let mut lap = Lap::new();
                 let mut shore = None;
                 let mut grass = None;
@@ -1609,6 +1693,9 @@ fn spawn_geometry_task(
                                 .cloned()
                                 .collect();
                             lap.mark("paving");
+                            if torn() {
+                                return;
+                            }
                             match vector_tiles::tessellate_roads_surveyed(
                                 &tile,
                                 tile_m,
@@ -1714,6 +1801,9 @@ fn spawn_geometry_task(
                                 }
                             }
                             lap.mark("roads");
+                            if torn() {
+                                return;
+                            }
                             // A cell whose roads failed still has its pavements,
                             // uncut because there is nothing to cut them against.
                             // `take` above makes this the empty vector on the
@@ -1745,6 +1835,9 @@ fn spawn_geometry_task(
                                 meshes.push(fill);
                             }
                             lap.mark("gap fill");
+                            if torn() {
+                                return;
+                            }
                             // The roads that are *not* on the road sheet, because
                             // they run below the ground (`cartopolis_geo::tunnels`):
                             // a tunnel, its ramps and the cuttings between, each a
@@ -2405,6 +2498,10 @@ fn spawn_geometry_task(
                     }
                 };
                 let mut outcome = outcome;
+                // The placement onto the terrain is the other dear stage.
+                if torn() {
+                    return;
+                }
                 // Before the refinement below multiplies them.
                 let road_tris = outcome
                     .as_deref()
@@ -2757,7 +2854,10 @@ impl MapSurfaces {
     /// capture taken on the imagery alone shows a city with no buildings in it.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.stream.busy() || !self.pending_decks.is_empty() || !self.pending_meshes.is_empty()
+        self.stream.busy()
+            || !self.pending_decks.is_empty()
+            || !self.pending_meshes.is_empty()
+            || self.held
     }
 
     /// The shared material for a surface group, once some cell has created it.
@@ -3179,6 +3279,15 @@ pub fn update_map_surfaces(
         modelled: stores.placeholders.mask(),
         flat_ground: flat_ground && ground_meshes_enabled(),
     };
+    // A zoom sweeping through the bands keeps the ring as it is and starts no
+    // cells until it slows (`SWEEP_RATE`): whatever it built now would be the
+    // wrong detail by the time it landed.
+    let sweeping = surfaces.climb.sample(alt) && sweep_hold_enabled();
+    surfaces.held = sweeping && alt <= crate::systems::globe::GLOBE_SHOW_ALT;
+    let wants = match was {
+        Some(was) if sweeping => was,
+        _ => wants,
+    };
     if surfaces.detail_wants != Some(wants) {
         // Said for the reason the two retears above are: a descent crosses three
         // of these bands, and each one re-runs every cell's job.
@@ -3228,19 +3337,21 @@ pub fn update_map_surfaces(
     // when the upload queue next lets results through: each finished cell holds
     // its meshes (`CellStream::keep_only`).
     surfaces.stream.keep_only(|c| wanted.contains(c));
-    dispatch_cells(
-        &mut surfaces,
-        &stream,
-        &terrain,
-        &wanted,
-        &template,
-        wants,
-        bgt_revision,
-        (ccx, ccy),
-        (fcx, fcy),
-        tile_m,
-        now,
-    );
+    if !sweeping {
+        dispatch_cells(
+            &mut surfaces,
+            &stream,
+            &terrain,
+            &wanted,
+            &template,
+            wants,
+            bgt_revision,
+            (ccx, ccy),
+            (fcx, fcy),
+            tile_m,
+            now,
+        );
+    }
     upload_finished_cells(
         &mut commands,
         &mut surfaces,
@@ -5958,6 +6069,35 @@ mod tests {
         assert!(near_ground(Some(false), 440.0, on, off));
         assert!(near_ground(None, 480.0, on, off));
         assert!(!near_ground(None, 520.0, on, off));
+    }
+
+    /// A brisk scroll holds the ring, a slow one does not, a jump is not a
+    /// zoom, and the hold lets go soon after the camera stops.
+    #[test]
+    fn a_zoom_sweeps_and_a_jump_does_not() {
+        let run = |per_s: f32, fps: f32, secs: f32, mut alt: f32| {
+            let (dt, mut rate) = (1.0 / fps, 0.0);
+            for _ in 0..(secs * fps) as usize {
+                let next = alt * (-per_s * dt).exp();
+                rate = climb_step(rate, alt, next, dt);
+                alt = next;
+            }
+            (rate, alt)
+        };
+        // ×2 a second, at 60 fps and at 5 fps: sweeping either way.
+        let (fast, alt) = run(std::f32::consts::LN_2, 60.0, 2.0, 40_000.0);
+        assert!(fast.abs() > SWEEP_RATE, "{fast}");
+        assert!(run(std::f32::consts::LN_2, 5.0, 2.0, 40_000.0).0.abs() > SWEEP_RATE);
+        // ×1.2 a second is a person easing in: the bands follow it.
+        assert!(run(0.18, 60.0, 2.0, 40_000.0).0.abs() < SWEEP_RATE);
+        // Stopped: released within half a second.
+        let mut rate = fast;
+        for _ in 0..30 {
+            rate = climb_step(rate, alt, alt, 1.0 / 60.0);
+        }
+        assert!(rate.abs() < SWEEP_RATE, "{rate}");
+        // A teleport from orbit to the street in one frame.
+        assert_eq!(climb_step(0.0, 40_000.0, 120.0, 1.0 / 60.0), 0.0);
     }
 
     /// A surface far over the mesh cap reaches the spawn loop as several meshes,
