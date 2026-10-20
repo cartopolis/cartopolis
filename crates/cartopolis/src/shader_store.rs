@@ -102,6 +102,11 @@ pub struct ShaderStorePlugin;
 
 impl Plugin for ShaderStorePlugin {
     fn build(&self, app: &mut App) {
+        // `CARTO_NO_SHADER_STORE` (`?no_shader_store`): compose everything, read
+        // and write nothing — the bisecting switch for "is it the stored shaders".
+        if crate::debug_switches::env_flag("CARTO_NO_SHADER_STORE") {
+            return;
+        }
         // Installed here, before any pipeline exists, so the first compose asks.
         // A second app in the same process (a test) finds it installed already.
         bevy::shader::set_compiled_shader_store(Box::new(Store));
