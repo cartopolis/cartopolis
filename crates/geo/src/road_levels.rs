@@ -1210,6 +1210,33 @@ impl LevelMap {
     }
 }
 
+/// How far from the street it carries a deck's outline may lie and still take
+/// that street's height — a canal bridge's parapets and footways either side of
+/// the carriageway.
+pub const FLAT_DECK_ROAD_REACH_M: f32 = 6.0;
+
+/// The height a deck laid flat stands at where atlas solved the street it
+/// carries: the median of that street's height nearest each `outline` vertex.
+/// **One function for both sides**: the client draws the deck at it and atlas
+/// lays the ground off its ends to it. Each with a median of its own, the
+/// Oosterbrug's south end was graded 0.1 m under the deck drawn on it and its
+/// edge stood out of the pavement (2026-10-20).
+#[must_use]
+pub fn flat_deck_level(
+    outline: impl IntoIterator<Item = [f32; 2]>,
+    levels: &LevelMap,
+) -> Option<f32> {
+    let mut hs: Vec<f32> = outline
+        .into_iter()
+        .filter_map(|p| levels.y_at(p, |level| level == 1, FLAT_DECK_ROAD_REACH_M))
+        .collect();
+    if hs.is_empty() {
+        return None;
+    }
+    hs.sort_by(f32::total_cmp);
+    Some(hs[hs.len() / 2])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

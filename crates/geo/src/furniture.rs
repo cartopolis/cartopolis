@@ -1748,6 +1748,118 @@ pub fn build_line_meshes_footed(
     out
 }
 
+/// A bridge railing's height over its deck, metres: the Dutch minimum for a
+/// parapet beside a footway or cycle path is 1.0 m, and most stand a little over.
+pub const RAILING_HEIGHT_M: f32 = 1.1;
+
+/// How far apart a railing's posts stand, metres.
+const RAILING_POST_M: f32 = 2.5;
+
+/// Longest rail drawn as one box, metres. A deck that slopes has its meshes cut
+/// to its profile's own step after this (`terrain_refine`), so the rail follows
+/// it either way; this only keeps a long straight one from being one box whose
+/// ends are tens of metres from its middle.
+const RAIL_PIECE_M: f32 = 6.0;
+
+/// Mesh a bridge's railings along `runs` (`vector_tiles::railing_runs`), at
+/// `y = 0` for the deck's surface: a post every [`RAILING_POST_M`] and at every
+/// corner, a handrail along the top and a rail at mid-height, in painted steel.
+///
+/// Drawn as the posts and rails a railing is, not as a slab, because a slab a
+/// metre high down both sides of a canal bridge walls off the water it crosses —
+/// which is the view a bridge is for.
+#[must_use]
+pub fn build_railing_meshes(runs: &[Vec<[f32; 2]>], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
+    let mut out = Vec::new();
+    let mut buf = MeshBuf::default();
+    let tone = Tone::Metal;
+    let tint = {
+        let m = tone.multiplier();
+        [m[0], m[1], m[2], 1.0]
+    };
+    let h = RAILING_HEIGHT_M;
+    let mut push = |buf: &mut MeshBuf, at: [f32; 2], (sn, cs): (f32, f32), part: Part| {
+        if let Some(max) = max_bytes {
+            if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
+                out.push(std::mem::take(buf).finish(SurfaceGroup::Furniture));
+            }
+        }
+        push_box(buf, at[0], at[1], (sn, cs), &part, tint);
+    };
+    for run in runs {
+        // Distance walked since the last post, so posts keep their spacing
+        // round a corner instead of restarting at every vertex.
+        let mut since_post = f32::INFINITY;
+        for (k, w) in run.windows(2).enumerate() {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dz);
+            if len < MIN_SEGMENT_M {
+                continue;
+            }
+            let (ux, uz) = (dx / len, dz / len);
+            // The rotation that lays a box's local +x along `(dx, dz)`; see
+            // `build_line_meshes_footed`.
+            let rot = (-uz, ux);
+            let pieces = (len / RAIL_PIECE_M).ceil().max(1.0) as usize;
+            let piece = len / pieces as f32;
+            for p in 0..pieces {
+                let t = (p as f32 + 0.5) * piece;
+                let mid = [a[0] + ux * t, a[1] + uz * t];
+                push(
+                    &mut buf,
+                    mid,
+                    rot,
+                    part([0.0, h - 0.04, 0.0], [piece * 0.5, 0.04, 0.05], tone),
+                );
+                push(
+                    &mut buf,
+                    mid,
+                    rot,
+                    part([0.0, h * 0.5, 0.0], [piece * 0.5, 0.025, 0.02], tone),
+                );
+            }
+            // A post at the corner this segment starts from, and along it.
+            if k == 0 || since_post >= RAILING_POST_M * 0.5 {
+                push(
+                    &mut buf,
+                    a,
+                    rot,
+                    part([0.0, h * 0.5, 0.0], [0.04, h * 0.5, 0.04], tone),
+                );
+                since_post = 0.0;
+            }
+            let mut d = RAILING_POST_M - since_post;
+            while d < len - RAILING_POST_M * 0.5 {
+                let at = [a[0] + ux * d, a[1] + uz * d];
+                push(
+                    &mut buf,
+                    at,
+                    rot,
+                    part([0.0, h * 0.5, 0.0], [0.04, h * 0.5, 0.04], tone),
+                );
+                d += RAILING_POST_M;
+            }
+            since_post = len - (d - RAILING_POST_M);
+        }
+        // …and the one the run ends on.
+        if let (Some(&last), Some(&prev)) = (run.last(), run.iter().rev().nth(1)) {
+            let (dx, dz) = (last[0] - prev[0], last[1] - prev[1]);
+            let len = dx.hypot(dz).max(1e-6);
+            push(
+                &mut buf,
+                last,
+                (-dz / len, dx / len),
+                part([0.0, h * 0.5, 0.0], [0.04, h * 0.5, 0.04], tone),
+            );
+        }
+    }
+    if !buf.positions.is_empty() {
+        out.push(buf.finish(SurfaceGroup::Furniture));
+    }
+    out
+}
+
 /// What one [`Part`] costs to upload: [`push_box`] emits 24 vertices and 36
 /// indices, flat-shaded, every time.
 pub(crate) const BOX_BYTES: usize = 24 * VERTEX_BYTES + 36 * INDEX_BYTES;

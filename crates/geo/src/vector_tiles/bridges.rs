@@ -544,6 +544,710 @@ pub fn wall_of_a_bridge(
     near * 5 >= samples * 3
 }
 
+/// How close to a carriageway on the deck a point of the outline may lie and
+/// still be the deck's side rather than the place the road runs off it, metres.
+/// The split lands the road exactly on the outline where it leaves
+/// (`split_by_deck`), and a deck built from the ways is the carriageway plus
+/// [`STREET_DECK_MARGIN_M`] either side, so anything under that margin is a road
+/// crossing the edge.
+const RAILING_ROAD_CLEAR_M: f32 = 0.6;
+
+/// How far along a deck's outline the railing's samples are taken, metres.
+const RAILING_STEP_M: f32 = 0.5;
+
+/// Shortest railing worth standing, metres: under this it is a corner of an
+/// outline between two openings.
+const RAILING_MIN_M: f32 = 2.0;
+
+/// How far an edge may lie from a road end of the deck, metres, and how nearly
+/// parallel to it (cosine), and still be part of that end: the pavement and the
+/// verge either side of where the carriageway runs off, which a railing must not
+/// close off.
+const RAILING_END_REACH_M: f32 = 8.0;
+const RAILING_END_PARALLEL: f32 = 0.9;
+
+/// **Where a deck's railings run**: the stretches of its outline that the
+/// carriageway does not cross, tile-local.
+///
+/// A deck was a slab with nothing along its edge, and from street level a slab
+/// over a canal reads as a pontoon rather than a bridge (reported 2026-10-19). An
+/// outline is the structure, parapets included (`area_decks`), so its edge is
+/// where the parapet stands — except at the ends, where the road runs off it, and
+/// along a tile border, where the deck goes on in the next cell. The ends are
+/// found from the roads the deck carries (`carriageways`, the on-deck meshes the
+/// road tessellation cut out of it) and the streets running off it
+/// (`approaches`, abutment first): an outline edge a carriageway reaches or an
+/// approach crosses is an end, and so is a nearly parallel edge close beside one — the pavement and the
+/// verge at the same abutment. A road only grazing a corner does not count, or
+/// a street along the quay would open the whole side it touches. A deck no road
+/// reaches is railed down its long sides only ([`long_sides`]). Only the
+/// exterior ring: a hole is a gap between carriageways, not an edge anyone walks
+/// along.
+#[must_use]
+pub fn railing_runs(
+    deck: &BridgeDeck,
+    carriageways: &[&SurfaceMesh],
+    approaches: &[&[[f32; 2]]],
+    tile_m: f32,
+) -> Vec<Vec<[f32; 2]>> {
+    let Some((pts, kinds)) = edge_kinds(deck, carriageways, approaches, tile_m) else {
+        return Vec::new();
+    };
+    let open: Vec<bool> = kinds.iter().map(|k| *k != Edge::Side).collect();
+    join_runs(&pts, &open)
+}
+
+/// **Where a deck's abutments are**: the stretches of its outline where the road
+/// runs off it onto the land — the ends [`railing_runs`] leaves open, less the
+/// tile-border cuts. What a canal bridge stands on at each end is a wall from its
+/// deck down into the water, and a deck drawn without one was open underneath to
+/// whatever the field put at the bank (2026-10-19).
+#[must_use]
+pub fn abutment_runs(
+    deck: &BridgeDeck,
+    carriageways: &[&SurfaceMesh],
+    approaches: &[&[[f32; 2]]],
+    tile_m: f32,
+) -> Vec<Vec<[f32; 2]>> {
+    let Some((pts, kinds)) = edge_kinds(deck, carriageways, approaches, tile_m) else {
+        return Vec::new();
+    };
+    let open: Vec<bool> = kinds.iter().map(|k| *k != Edge::End).collect();
+    join_runs(&pts, &open)
+}
+
+/// How far an abutment wall reaches below its deck, metres: past a canal's bed
+/// under any deck a city bridge stands at, and buried in the ground where the
+/// ground is higher.
+const ABUTMENT_WALL_DEPTH_M: f32 = 12.0;
+
+/// The abutment wall along `run` ([`abutment_runs`]), at `y = 0` for the deck's
+/// top and reaching [`ABUTMENT_WALL_DEPTH_M`] down: one vertical face per
+/// segment, facing in under `deck`, where the canal sees it. Lifted onto the
+/// deck with its carriageways, and bent along its profile.
+///
+/// **Not a face toward the street**: the street meets the deck's top there, and
+/// wherever it dipped a few centimetres between its vertices that face stood out
+/// of it as a brown band along the Oosterbrug's south end (2026-10-20).
+#[must_use]
+pub fn abutment_wall_mesh(deck: &BridgeDeck, run: &[[f32; 2]]) -> SurfaceMesh {
+    let centre = [
+        (deck.min[0] + deck.max[0]) * 0.5,
+        (deck.min[1] + deck.max[1]) * 0.5,
+    ];
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let d = ABUTMENT_WALL_DEPTH_M;
+    for w in run.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz);
+        if len < 1e-3 {
+            continue;
+        }
+        let n = [-dz / len, dx / len];
+        // In: toward the middle of the deck. The run may stand a few metres out
+        // over the lip (`reach_the_quay`), so not a probe off the outline.
+        let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        let inward = (centre[0] - mid[0]) * n[0] + (centre[1] - mid[1]) * n[1] >= 0.0;
+        for face in [if inward { n } else { [-n[0], -n[1]] }] {
+            let base = positions.len() as u32;
+            positions.extend_from_slice(&[
+                [a[0], 0.0, a[1]],
+                [b[0], 0.0, b[1]],
+                [b[0], -d, b[1]],
+                [a[0], -d, a[1]],
+            ]);
+            normals.extend_from_slice(&[[face[0], 0.0, face[1]]; 4]);
+            // Wound to face `face`, whichever way round the run goes.
+            let (v0, v1, v2) = (
+                positions[base as usize],
+                positions[base as usize + 1],
+                positions[base as usize + 2],
+            );
+            let (e1, e2) = (
+                [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]],
+                [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]],
+            );
+            let cross = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            if cross[0] * face[0] + cross[2] * face[1] >= 0.0 {
+                indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            } else {
+                indices.extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
+            }
+        }
+    }
+    SurfaceMesh {
+        group: SurfaceGroup::QuayWall,
+        positions,
+        indices,
+        uvs: Vec::new(),
+        normals,
+        colors: Vec::new(),
+        rungs: Vec::new(),
+    }
+}
+
+/// Furthest a deck's end is carried out over water to meet its quay, metres.
+const ABUTMENT_REACH_M: f32 = 3.0;
+
+/// Step the water is probed at along an end's outward normal, metres.
+const ABUTMENT_PROBE_M: f32 = 0.25;
+
+/// **An end that stops short of its quay is carried out to it.** OSM's outline
+/// and the register's water seldom meet: the Oosterbrug's ends stop a metre or
+/// so over the canal, and with the slab ending there the gap was open water
+/// between the deck and the street (2026-10-19). Each vertex of an abutment run
+/// is moved outward — away from the deck — for as long as `water` says the
+/// ground beyond is water, up to [`ABUTMENT_REACH_M`], and one probe further so
+/// the deck lands on the quay rather than at its edge. Where the end already sits
+/// on land the run comes back as it was.
+#[must_use]
+pub fn reach_the_quay(
+    deck: &BridgeDeck,
+    run: &[[f32; 2]],
+    water: &dyn Fn([f32; 2]) -> bool,
+) -> Vec<[f32; 2]> {
+    let n = run.len();
+    if n < 2 {
+        return run.to_vec();
+    }
+    let seg_normal = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz);
+        (len > 1e-3).then(|| {
+            let nrm = [-dz / len, dx / len];
+            // Outward: the side the deck is not on.
+            let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            if deck.contains([mid[0] + nrm[0] * 0.5, mid[1] + nrm[1] * 0.5]) {
+                [-nrm[0], -nrm[1]]
+            } else {
+                nrm
+            }
+        })
+    };
+    (0..n)
+        .map(|i| {
+            let p = run[i];
+            let before = (i > 0).then(|| seg_normal(run[i - 1], p)).flatten();
+            let after = (i + 1 < n).then(|| seg_normal(p, run[i + 1])).flatten();
+            let nrm = match (before, after) {
+                (Some(a), Some(b)) => {
+                    let s = [a[0] + b[0], a[1] + b[1]];
+                    let l = s[0].hypot(s[1]);
+                    if l > 1e-3 {
+                        [s[0] / l, s[1] / l]
+                    } else {
+                        a
+                    }
+                }
+                (Some(a), None) | (None, Some(a)) => a,
+                (None, None) => return p,
+            };
+            let mut d = 0.0;
+            while d < ABUTMENT_REACH_M
+                && water([
+                    p[0] + nrm[0] * (d + ABUTMENT_PROBE_M),
+                    p[1] + nrm[1] * (d + ABUTMENT_PROBE_M),
+                ])
+            {
+                d += ABUTMENT_PROBE_M;
+            }
+            if d > 0.0 {
+                d += ABUTMENT_PROBE_M;
+            }
+            [p[0] + nrm[0] * d, p[1] + nrm[1] * d]
+        })
+        .collect()
+}
+
+/// The strip of deck between an end as outlined and where it meets its quay
+/// ([`reach_the_quay`]), at `y = 0` for the deck's top: the slab's own surface,
+/// carried on. `None` where the two coincide.
+#[must_use]
+pub fn quay_lip_mesh(inner: &[[f32; 2]], outer: &[[f32; 2]]) -> Option<SurfaceMesh> {
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    for k in 0..inner.len().min(outer.len()).saturating_sub(1) {
+        let (a, b, c, d) = (inner[k], inner[k + 1], outer[k + 1], outer[k]);
+        let reach = (d[0] - a[0])
+            .hypot(d[1] - a[1])
+            .max((c[0] - b[0]).hypot(c[1] - b[1]));
+        if reach < 1e-3 {
+            continue;
+        }
+        let base = positions.len() as u32;
+        positions.extend_from_slice(&[
+            [a[0], 0.0, a[1]],
+            [b[0], 0.0, b[1]],
+            [c[0], 0.0, c[1]],
+            [d[0], 0.0, d[1]],
+        ]);
+        // Wound to face up whichever way round the end runs.
+        let up = (b[0] - a[0]) * (d[1] - a[1]) - (b[1] - a[1]) * (d[0] - a[0]);
+        if up <= 0.0 {
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        } else {
+            indices.extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
+        }
+    }
+    (!indices.is_empty()).then(|| SurfaceMesh {
+        group: SurfaceGroup::BridgeDeck,
+        normals: vec![[0.0, 1.0, 0.0]; positions.len()],
+        positions,
+        indices,
+        uvs: Vec::new(),
+        colors: Vec::new(),
+        rungs: Vec::new(),
+    })
+}
+
+/// How far outside a deck's edge the water it spans is looked for, metres: past
+/// the metre by which the register and OSM disagree about a bank, short of the
+/// far bank of the narrowest canal.
+const SPANNED_WATER_PROBE_M: f32 = 1.5;
+
+/// Shortest outline edge asked whether water lies beyond it, metres: a notch in
+/// a parapet is not a side.
+const SPANNED_WATER_EDGE_M: f32 = 2.0;
+
+/// How closely the water on a deck's two sides must agree to be one canal,
+/// metres. Two levels further apart are a lock or a weir, and the ground under
+/// the structure between them is not either's to claim.
+const SPANNED_WATER_LEVEL_M: f32 = 0.25;
+
+/// **The water a bridge stands over that the register leaves out**: the level of
+/// the water just outside two opposite edges of `deck`, where it spans one body
+/// of water, or `None`.
+///
+/// The Kadaster's water stops at a bridge's outline, the BGT's water and its
+/// bridge decks tiling the ground between them, while OSM's canal runs on under
+/// the bridge. So under the Oosterbrug the client drew OSM's canal with no level,
+/// at the height of the ground, and atlas graded that ground as land up to its
+/// quays: mounds and slanted walls under the span, and water climbing to meet
+/// them (2026-10-20). The deck's outline is that gap. Each exterior edge is
+/// probed [`SPANNED_WATER_PROBE_M`] outward at a quarter, a half and three
+/// quarters of its length; two edges facing apart with water beyond both, at
+/// levels within [`SPANNED_WATER_LEVEL_M`], make the deck span it. `level_at`
+/// answers the registered water's level at a tile-local point.
+#[must_use]
+pub fn spanned_water(deck: &BridgeDeck, level_at: impl Fn([f32; 2]) -> Option<f32>) -> Option<f32> {
+    let ring = deck.rings.first()?;
+    let mut wet: Vec<([f32; 2], f32)> = Vec::new();
+    for e in ring.windows(2) {
+        let (a, b) = (e[0], e[1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz);
+        if len < SPANNED_WATER_EDGE_M {
+            continue;
+        }
+        let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        let nrm = [dz / len, -dx / len];
+        // Outward: probed 5 cm off the edge, never read from the winding.
+        let out = if deck.contains([mid[0] + nrm[0] * 0.05, mid[1] + nrm[1] * 0.05]) {
+            [-nrm[0], -nrm[1]]
+        } else {
+            nrm
+        };
+        let mut levels: Vec<f32> = [0.25f32, 0.5, 0.75]
+            .iter()
+            .filter_map(|t| {
+                let p = [
+                    a[0] + dx * t + out[0] * SPANNED_WATER_PROBE_M,
+                    a[1] + dz * t + out[1] * SPANNED_WATER_PROBE_M,
+                ];
+                if deck.contains(p) {
+                    return None;
+                }
+                level_at(p)
+            })
+            .collect();
+        if levels.len() >= 2 {
+            levels.sort_by(f32::total_cmp);
+            wet.push((out, levels[levels.len() / 2]));
+        }
+    }
+    let mut spanned: Option<f32> = None;
+    for (i, (n1, l1)) in wet.iter().enumerate() {
+        for (n2, l2) in &wet[i + 1..] {
+            if n1[0] * n2[0] + n1[1] * n2[1] < -0.7 && (l1 - l2).abs() <= SPANNED_WATER_LEVEL_M {
+                let l = l1.min(*l2);
+                spanned = Some(spanned.map_or(l, |s: f32| s.min(l)));
+            }
+        }
+    }
+    spanned
+}
+
+/// What one outline edge of a deck is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    /// Along the structure: where its parapet runs.
+    Side,
+    /// Where the road runs off it onto the land.
+    End,
+    /// A tile-border cut, or nothing that can be told: neither.
+    Neither,
+}
+
+/// Each edge of a deck's exterior ring, without its closing repeat — see
+/// [`railing_runs`] for the rule.
+fn edge_kinds(
+    deck: &BridgeDeck,
+    carriageways: &[&SurfaceMesh],
+    approaches: &[&[[f32; 2]]],
+    tile_m: f32,
+) -> Option<(Vec<[f32; 2]>, Vec<Edge>)> {
+    let Some(ring) = deck.rings.first() else {
+        return None;
+    };
+    // The ring without its closing repeat, so every edge is `ring[k]→ring[k+1]`
+    // with the last wrapping round to the first.
+    let mut pts: Vec<[f32; 2]> = ring.clone();
+    if pts.len() > 1 && pts[0] == pts[pts.len() - 1] {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 3 {
+        return None;
+    }
+    let tris: Vec<[[f32; 2]; 3]> = carriageways
+        .iter()
+        .flat_map(|m| {
+            m.indices.chunks_exact(3).filter_map(move |t| {
+                let q = |i: u32| m.positions.get(i as usize).map(|v| [v[0], v[2]]);
+                Some([q(t[0])?, q(t[1])?, q(t[2])?])
+            })
+        })
+        .collect();
+    let near_road = |p: [f32; 2]| {
+        tris.iter().any(|t| {
+            let r = RAILING_ROAD_CLEAR_M;
+            let (lo_x, hi_x) = (
+                t[0][0].min(t[1][0]).min(t[2][0]),
+                t[0][0].max(t[1][0]).max(t[2][0]),
+            );
+            let (lo_z, hi_z) = (
+                t[0][1].min(t[1][1]).min(t[2][1]),
+                t[0][1].max(t[1][1]).max(t[2][1]),
+            );
+            if p[0] < lo_x - r || p[0] > hi_x + r || p[1] < lo_z - r || p[1] > hi_z + r {
+                return false;
+            }
+            point_in_triangle(p, t)
+                || segment_distance(p, t[0], t[1]) <= r
+                || segment_distance(p, t[1], t[2]) <= r
+                || segment_distance(p, t[2], t[0]) <= r
+        })
+    };
+    let on_border = |a: [f32; 2], b: [f32; 2]| {
+        let e = 0.05;
+        [0.0, tile_m].iter().any(|&v| {
+            ((a[0] - v).abs() < e && (b[0] - v).abs() < e)
+                || ((a[1] - v).abs() < e && (b[1] - v).abs() < e)
+        })
+    };
+    let edge = |k: usize| (pts[k], pts[(k + 1) % n]);
+
+    // An edge the road reaches is an end; so is a border cut.
+    let mut open = vec![false; n];
+    let mut border = vec![false; n];
+    let mut ends: Vec<usize> = Vec::new();
+    for k in 0..n {
+        let (a, b) = edge(k);
+        if on_border(a, b) {
+            open[k] = true;
+            border[k] = true;
+            continue;
+        }
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let steps = (len / RAILING_STEP_M).ceil().max(1.0) as usize;
+        let reached = (0..=steps)
+            .filter(|&s| {
+                let t = s as f32 / steps as f32;
+                near_road([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+            })
+            .count();
+        // A road *crossing* the edge, not grazing a corner of it: a street along
+        // the quay touches the corner where a side meets an end, and that must
+        // not open the whole side.
+        let reached_m = reached as f32 * len / steps as f32;
+        // …or the street running off it: OSM's bridge way often stops short of
+        // the outline (the Oosterbrug's, 2026-10-19), so the carriageway on the
+        // deck reaches no edge, and the street carries on as the approach.
+        let crossed = approaches.iter().any(|run| {
+            run.first()
+                .is_some_and(|&p| segment_distance(p, a, b) <= RAILING_ROAD_CLEAR_M)
+                || run.windows(2).any(|w| segments_cross(w[0], w[1], a, b))
+        });
+        if crossed || (reached > 0 && reached_m >= RAILING_MIN_M.min(len * 0.5)) {
+            open[k] = true;
+            ends.push(k);
+        }
+    }
+    if ends.is_empty() {
+        let kinds = long_sides(&pts, &border);
+        return Some((pts, kinds));
+    }
+    // …and an edge lying beside an end and along it.
+    for k in 0..n {
+        if open[k] {
+            continue;
+        }
+        let (a, b) = edge(k);
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len < 1e-3 {
+            open[k] = true;
+            continue;
+        }
+        let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        open[k] = ends.iter().any(|&j| {
+            let (c, d) = edge(j);
+            let lj = (d[0] - c[0]).hypot(d[1] - c[1]);
+            if lj < 1e-3 {
+                return false;
+            }
+            let cos =
+                ((b[0] - a[0]) * (d[0] - c[0]) + (b[1] - a[1]) * (d[1] - c[1])).abs() / (len * lj);
+            cos >= RAILING_END_PARALLEL
+                && segment_distance(mid, c, d)
+                    .min(segment_distance(a, c, d))
+                    .min(segment_distance(b, c, d))
+                    <= RAILING_END_REACH_M
+        });
+    }
+    let kinds = (0..n)
+        .map(|k| {
+            if border[k] {
+                Edge::Neither
+            } else if open[k] {
+                Edge::End
+            } else {
+                Edge::Side
+            }
+        })
+        .collect();
+    Some((pts, kinds))
+}
+
+/// How much longer than wide a deck no road reaches must be for its long sides
+/// to be told from its ends.
+const RAILING_LONG_ASPECT: f32 = 1.5;
+
+/// The edges of a deck no road reaches: its two long sides are the edges within
+/// 45° of its long axis and the rest are its ends, and a deck about as wide as it
+/// is long has neither — railing it all round would wall off whatever the tiles
+/// failed to draw crossing it, and there is no telling which way that runs.
+fn long_sides(pts: &[[f32; 2]], border: &[bool]) -> Vec<Edge> {
+    let n = pts.len() as f32;
+    let c = [
+        pts.iter().map(|p| p[0]).sum::<f32>() / n,
+        pts.iter().map(|p| p[1]).sum::<f32>() / n,
+    ];
+    let (mut sxx, mut szz, mut sxz) = (0.0f32, 0.0f32, 0.0f32);
+    for p in pts {
+        let (x, z) = (p[0] - c[0], p[1] - c[1]);
+        sxx += x * x;
+        szz += z * z;
+        sxz += x * z;
+    }
+    let th = 0.5 * (2.0 * sxz).atan2(sxx - szz);
+    let axis = [th.cos(), th.sin()];
+    let (mut lo, mut hi, mut wlo, mut whi) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for p in pts {
+        let (x, z) = (p[0] - c[0], p[1] - c[1]);
+        let along = x * axis[0] + z * axis[1];
+        let across = -x * axis[1] + z * axis[0];
+        (lo, hi) = (lo.min(along), hi.max(along));
+        (wlo, whi) = (wlo.min(across), whi.max(across));
+    }
+    let k = pts.len();
+    if hi - lo < RAILING_LONG_ASPECT * (whi - wlo) {
+        return vec![Edge::Neither; k];
+    }
+    (0..k)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % k]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dz);
+            if border[i] || len < 1e-3 {
+                Edge::Neither
+            } else if (dx * axis[0] + dz * axis[1]).abs() / len < std::f32::consts::FRAC_1_SQRT_2 {
+                Edge::End
+            } else {
+                Edge::Side
+            }
+        })
+        .collect()
+}
+
+/// The edges of a ring `open` does not mark, joined into runs.
+fn join_runs(pts: &[[f32; 2]], open: &[bool]) -> Vec<Vec<[f32; 2]>> {
+    let n = pts.len();
+    let edge = |k: usize| (pts[k], pts[(k + 1) % n]);
+    // Start just after an open edge so no run is split by the ring's own seam.
+    let Some(start) = (0..n).find(|&k| open[k]) else {
+        let mut all = pts.to_vec();
+        all.push(pts[0]);
+        return vec![all];
+    };
+    let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut run: Vec<[f32; 2]> = Vec::new();
+    for s in 1..=n {
+        let k = (start + s) % n;
+        if open[k] {
+            if run.len() >= 2 {
+                runs.push(std::mem::take(&mut run));
+            }
+            run.clear();
+            continue;
+        }
+        let (a, b) = edge(k);
+        if run.is_empty() {
+            run.push(a);
+        }
+        run.push(b);
+    }
+    if run.len() >= 2 {
+        runs.push(run);
+    }
+    runs.retain(|r| crate::tunnels::polyline_len(r) >= RAILING_MIN_M);
+    runs.into_iter().map(|r| skip_notches(&r)).collect()
+}
+
+/// Deepest and longest detour in an outline a railing runs straight across,
+/// metres. The Oosterbrug's outline steps in ~2.6 m on each side where its
+/// bascule's mechanism stands, ~6 m of outline in all, and a railing following
+/// it in and out read from the quay as a break in it (2026-10-19). Bounded by
+/// length as well as depth so a curved deck keeps its curve: over 8 m of a
+/// 20 m radius the chord is 0.4 m off the arc.
+const RAILING_NOTCH_DEEP_M: f32 = 3.0;
+const RAILING_NOTCH_LONG_M: f32 = 8.0;
+
+/// Up to this much outline is crossed straight too, metres, where it is a
+/// *detour* — its path [`RAILING_DETOUR_RATIO`] times the straight line or more,
+/// which a smooth curve never is (16 m round a 20 m radius: 1.03). The
+/// Oosterbrug's north notch starts 8.6 m along its side, past the short reach,
+/// and left a metre's step in the railing.
+const RAILING_DETOUR_LONG_M: f32 = 16.0;
+const RAILING_DETOUR_RATIO: f32 = 1.05;
+
+/// `run` with its short detours cut straight: from each kept vertex, the
+/// farthest vertex within [`RAILING_NOTCH_LONG_M`] of path — or
+/// [`RAILING_DETOUR_LONG_M`] where the path is a detour — whose in-between
+/// vertices all lie within [`RAILING_NOTCH_DEEP_M`] of the straight line to it.
+fn skip_notches(run: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if run.len() < 3 {
+        return run.to_vec();
+    }
+    let dist = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let mut out = vec![run[0]];
+    let mut i = 0;
+    while i < run.len() - 1 {
+        let mut next = i + 1;
+        let mut path = 0.0f32;
+        for j in i + 1..run.len() {
+            path += dist(run[j - 1], run[j]);
+            if path > RAILING_DETOUR_LONG_M {
+                break;
+            }
+            let short = path <= RAILING_NOTCH_LONG_M;
+            let detour = path >= RAILING_DETOUR_RATIO * dist(run[i], run[j]);
+            if (short || detour)
+                && (i + 1..j)
+                    .all(|k| segment_distance(run[k], run[i], run[j]) <= RAILING_NOTCH_DEEP_M)
+            {
+                next = j;
+            }
+        }
+        out.push(run[next]);
+        i = next;
+    }
+    out
+}
+
+/// Cut out of `runs` every stretch for which `keep(point, direction)` says no,
+/// the direction being the unit vector of the run there, sampled every
+/// [`RAILING_STEP_M`]; what is left shorter than [`RAILING_MIN_M`] is dropped.
+/// How a railing gives way to a parapet the register already surveys.
+#[must_use]
+pub fn cut_runs(
+    runs: Vec<Vec<[f32; 2]>>,
+    keep: impl Fn([f32; 2], [f32; 2]) -> bool,
+) -> Vec<Vec<[f32; 2]>> {
+    let mut out = Vec::new();
+    for r in runs {
+        let mut cur: Vec<[f32; 2]> = Vec::new();
+        // Whether `cur`'s last point is a sample partway along the current
+        // segment, which the next kept sample of that segment replaces: a run
+        // keeps its corners and its ends, not every sample.
+        let mut mid_segment;
+        for w in r.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let steps = (len / RAILING_STEP_M).ceil().max(1.0) as usize;
+            let dir = if len > 0.0 {
+                [(b[0] - a[0]) / len, (b[1] - a[1]) / len]
+            } else {
+                [1.0, 0.0]
+            };
+            mid_segment = false;
+            // Sample 0 is the corner the previous segment already ended on.
+            for s in usize::from(!cur.is_empty())..=steps {
+                let t = s as f32 / steps as f32;
+                let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                if !keep(p, dir) {
+                    if cur.len() >= 2 {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                    mid_segment = false;
+                    continue;
+                }
+                if mid_segment {
+                    if let Some(last) = cur.last_mut() {
+                        *last = p;
+                    }
+                } else {
+                    cur.push(p);
+                }
+                mid_segment = cur.len() >= 2 && s < steps;
+            }
+        }
+        if cur.len() >= 2 {
+            out.push(cur);
+        }
+    }
+    out.retain(|r: &Vec<[f32; 2]>| {
+        r.len() >= 2 && crate::tunnels::polyline_len(r) >= RAILING_MIN_M
+    });
+    out
+}
+
+/// Whether segments `p`–`q` and `a`–`b` cross.
+fn segments_cross(p: [f32; 2], q: [f32; 2], a: [f32; 2], b: [f32; 2]) -> bool {
+    let side = |o: [f32; 2], d: [f32; 2], x: [f32; 2]| {
+        (d[0] - o[0]) * (x[1] - o[1]) - (d[1] - o[1]) * (x[0] - o[0])
+    };
+    let (d1, d2) = (side(a, b, p), side(a, b, q));
+    let (d3, d4) = (side(p, q, a), side(p, q, b));
+    (d1 > 0.0) != (d2 > 0.0) && (d3 > 0.0) != (d4 > 0.0)
+}
+
+fn point_in_triangle(p: [f32; 2], t: &[[f32; 2]; 3]) -> bool {
+    let s =
+        |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    let (d0, d1, d2) = (s(t[0], t[1]), s(t[1], t[2]), s(t[2], t[0]));
+    let neg = d0 < 0.0 || d1 < 0.0 || d2 < 0.0;
+    let pos = d0 > 0.0 || d1 > 0.0 || d2 > 0.0;
+    !(neg && pos)
+}
+
 /// Distance from `p` to the segment `a`–`b`.
 fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
@@ -564,6 +1268,393 @@ mod tests {
     // A real z14 tile over Groningen, from the VersaTiles Shortbread source
     // (now self-hosted at tiles.cartopolis.org; the archive is identical).
     use crate::testdata::GRONINGEN_Z14;
+
+    fn rect_deck(ring: &[[f32; 2]]) -> BridgeDeck {
+        let mut min = [f32::MAX, f32::MAX];
+        let mut max = [f32::MIN, f32::MIN];
+        for p in ring {
+            min = [min[0].min(p[0]), min[1].min(p[1])];
+            max = [max[0].max(p[0]), max[1].max(p[1])];
+        }
+        let mut closed = ring.to_vec();
+        closed.push(ring[0]);
+        BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![closed],
+            min,
+            max,
+        }
+    }
+
+    fn rect_road(x0: f32, z0: f32, x1: f32, z1: f32) -> SurfaceMesh {
+        SurfaceMesh {
+            group: SurfaceGroup::Road(RoadClass::Minor),
+            positions: vec![[x0, 0.0, z0], [x1, 0.0, z0], [x1, 0.0, z1], [x0, 0.0, z1]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        }
+    }
+
+    /// **A canal bridge's railings run down its sides and stop at its ends.** A
+    /// 30 × 12 m deck carrying a 6 m road end to end: two runs, each the whole
+    /// length of a long side, and nothing across the road at either end.
+    #[test]
+    fn railings_run_down_the_sides_not_across_the_road() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 112.0],
+            [100.0, 112.0],
+        ]);
+        let road = rect_road(100.0, 103.0, 130.0, 109.0);
+        let runs = railing_runs(&deck, &[&road], &[], 1465.0);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        for r in &runs {
+            let len = crate::tunnels::polyline_len(r);
+            assert!((len - 30.0).abs() < 1e-3, "a side is {len} m: {r:?}");
+            assert!(
+                r.iter()
+                    .all(|p| (p[1] - 100.0).abs() < 1e-3 || (p[1] - 112.0).abs() < 1e-3),
+                "a run crosses an end: {r:?}"
+            );
+        }
+    }
+
+    /// **A deck spanning a canal whose register stops at its outline takes the
+    /// canal's level under it** — the Oosterbrug's shape: the canal runs along x,
+    /// the deck crosses it, water beyond both its sides and land beyond its ends.
+    /// Not between two levels (a lock), and not where water lies beside one side.
+    #[test]
+    fn a_deck_across_a_canal_spans_its_water() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [112.0, 100.0],
+            [112.0, 130.0],
+            [100.0, 130.0],
+        ]);
+        let canal = |p: [f32; 2]| (p[1] > 100.0 && p[1] < 130.0).then_some(0.8);
+        assert_eq!(spanned_water(&deck, canal), Some(0.8));
+        let lock = |p: [f32; 2]| {
+            (p[1] > 100.0 && p[1] < 130.0).then_some(if p[0] < 106.0 { 0.8 } else { 2.0 })
+        };
+        assert_eq!(spanned_water(&deck, lock), None);
+        let beside = |p: [f32; 2]| (p[0] > 112.0).then_some(0.8);
+        assert_eq!(spanned_water(&deck, beside), None);
+        assert_eq!(spanned_water(&deck, |_| None), None);
+    }
+
+    /// **The abutments are the ends the railings leave open**, and each stands as
+    /// a wall facing both ways from the deck down.
+    #[test]
+    fn a_deck_stands_on_an_abutment_at_each_end() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 112.0],
+            [100.0, 112.0],
+        ]);
+        let road = rect_road(100.0, 103.0, 130.0, 109.0);
+        let ends = abutment_runs(&deck, &[&road], &[], 1465.0);
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        for e in &ends {
+            assert!(
+                e.iter()
+                    .all(|p| (p[0] - 100.0).abs() < 1e-3 || (p[0] - 130.0).abs() < 1e-3),
+                "{e:?}"
+            );
+            assert!(
+                (crate::tunnels::polyline_len(e) - 12.0).abs() < 1e-3,
+                "{e:?}"
+            );
+            let wall = abutment_wall_mesh(&deck, e);
+            assert_eq!(wall.group, SurfaceGroup::QuayWall);
+            // One segment, one face of two triangles, facing in under the deck.
+            assert_eq!(wall.indices.len(), 6);
+            assert!(wall
+                .positions
+                .iter()
+                .all(|p| p[1] <= 0.0 && p[1] >= -ABUTMENT_WALL_DEPTH_M));
+            let inward = if (e[0][0] - 100.0).abs() < 1e-3 {
+                1.0
+            } else {
+                -1.0
+            };
+            assert!(
+                wall.normals.iter().all(|v| v[0] * inward > 0.9),
+                "{:?}",
+                wall.normals
+            );
+        }
+    }
+
+    /// **An end over water is carried out to its quay**, a probe onto the land,
+    /// and no further than the reach; an end on land stays where it is.
+    #[test]
+    fn an_end_short_of_its_quay_reaches_it() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 112.0],
+            [100.0, 112.0],
+        ]);
+        let east = [[130.0, 100.0], [130.0, 112.0]];
+        // Water for a metre and a half past the east end, then the quay.
+        let water = |p: [f32; 2]| p[0] > 130.0 && p[0] < 131.5;
+        let out = reach_the_quay(&deck, &east, &water);
+        for p in &out {
+            assert!((p[0] - 131.5).abs() <= 0.26, "{out:?}");
+        }
+        let lip = quay_lip_mesh(&east, &out).expect("a lip");
+        assert_eq!(lip.group, SurfaceGroup::BridgeDeck);
+        assert_eq!(lip.indices.len(), 6);
+        // An open canal past it is crossed no further than the reach.
+        let sea = |p: [f32; 2]| p[0] > 130.0;
+        let far = reach_the_quay(&deck, &east, &sea);
+        assert!(
+            far.iter()
+                .all(|p| p[0] <= 130.0 + ABUTMENT_REACH_M + ABUTMENT_PROBE_M + 1e-3),
+            "{far:?}"
+        );
+        // An end already on its quay stays put, and makes no lip.
+        let dry = |_: [f32; 2]| false;
+        let same = reach_the_quay(&deck, &east, &dry);
+        assert_eq!(same, east.to_vec());
+        assert!(quay_lip_mesh(&east, &same).is_none());
+    }
+
+    /// The pavement either side of the road at an end is part of that end: an
+    /// outline whose end is three edges (verge, carriageway, verge) gets no
+    /// railing across any of them.
+    #[test]
+    fn an_end_split_into_several_edges_stays_open() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 103.0],
+            [130.0, 109.0],
+            [130.0, 112.0],
+            [100.0, 112.0],
+            [100.0, 109.0],
+            [100.0, 103.0],
+        ]);
+        let road = rect_road(100.0, 103.0, 130.0, 109.0);
+        let runs = railing_runs(&deck, &[&road], &[], 1465.0);
+        let total: f32 = runs.iter().map(|r| crate::tunnels::polyline_len(r)).sum();
+        assert!((total - 60.0).abs() < 1e-3, "railing {total} m: {runs:?}");
+    }
+
+    /// **A bridge way that stops short of its outline still opens the ends.** The
+    /// Oosterbrug's road ends a few metres inside the deck on both sides, and the
+    /// deck was railed shut all round (2026-10-19); the street running on off
+    /// it — the approach — is what crosses the end.
+    #[test]
+    fn an_approach_crossing_an_end_opens_it() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [124.0, 100.0],
+            [124.0, 122.0],
+            [100.0, 122.0],
+        ]);
+        // The carriageway stops 3 m short of both ends.
+        let road = rect_road(103.0, 106.0, 121.0, 116.0);
+        let west: &[[f32; 2]] = &[[103.0, 111.0], [80.0, 111.0]];
+        let east: &[[f32; 2]] = &[[121.0, 111.0], [150.0, 111.0]];
+        let runs = railing_runs(&deck, &[&road], &[west, east], 1465.0);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        for r in &runs {
+            assert!(
+                r.iter()
+                    .all(|p| (p[1] - 100.0).abs() < 1e-3 || (p[1] - 122.0).abs() < 1e-3),
+                "a railing closes an end: {r:?}"
+            );
+        }
+    }
+
+    /// **A notch in the outline is not a break in the railing.** The Oosterbrug's
+    /// sides step in about two and a half metres where the bascule's mechanism
+    /// stands; the railing runs straight past, and keeps its real corners.
+    #[test]
+    fn a_railing_runs_straight_across_a_shallow_notch() {
+        // The Oosterbrug's south side as logged, tile-local metres.
+        let side = [
+            [253.0, 1345.0],
+            [247.0, 1338.0],
+            [247.0, 1339.0],
+            [245.0, 1339.0],
+            [244.0, 1338.0],
+            [245.0, 1337.0],
+            [240.0, 1329.0],
+        ];
+        let s = skip_notches(&side);
+        for notch in [[247.0, 1339.0], [245.0, 1339.0], [244.0, 1338.0]] {
+            assert!(
+                !s.contains(&notch),
+                "the railing goes into the notch: {s:?}"
+            );
+        }
+        assert_eq!((s[0], s[s.len() - 1]), (side[0], side[side.len() - 1]));
+        // The north side, whose notch starts 8.6 m along it: no step left.
+        let north = [
+            [256.0, 1315.0],
+            [261.0, 1322.0],
+            [262.0, 1322.0],
+            [263.0, 1324.0],
+            [263.0, 1325.0],
+            [262.0, 1326.0],
+            [267.0, 1334.0],
+        ];
+        let s = skip_notches(&north);
+        // Every turn the railing makes along it is a few degrees at most: the
+        // kink into the notch's first vertex was 16°, and read as a step.
+        for w in s.windows(3) {
+            let (u, v) = (
+                [w[1][0] - w[0][0], w[1][1] - w[0][1]],
+                [w[2][0] - w[1][0], w[2][1] - w[1][1]],
+            );
+            let cos = (u[0] * v[0] + u[1] * v[1]) / (u[0].hypot(u[1]) * v[0].hypot(v[1]));
+            assert!(cos > 0.99, "a {}° kink: {s:?}", cos.acos().to_degrees());
+        }
+        let corner = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        assert_eq!(skip_notches(&corner), corner.to_vec());
+        // A gentle curve, 2 m vertices round a 20 m radius, stays within
+        // half a metre of itself.
+        let arc: Vec<[f32; 2]> = (0..16)
+            .map(|k| {
+                let t = k as f32 * 0.1;
+                [20.0 * t.cos(), 20.0 * t.sin()]
+            })
+            .collect();
+        for p in &arc {
+            let s = skip_notches(&arc);
+            let off = s
+                .windows(2)
+                .map(|w| segment_distance(*p, w[0], w[1]))
+                .fold(f32::MAX, f32::min);
+            assert!(off < 0.5, "{p:?} is {off} m off the railing");
+        }
+    }
+
+    /// A street along the quay that only touches a corner of the deck does not
+    /// open the side it touches.
+    #[test]
+    fn a_road_grazing_a_corner_leaves_the_side_railed() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 112.0],
+            [100.0, 112.0],
+        ]);
+        let road = rect_road(100.0, 103.0, 130.0, 109.0);
+        // A quay street running across the deck's west end, reaching 0.5 m onto
+        // both long sides at their corners.
+        let quay = rect_road(94.0, 90.0, 100.5, 122.0);
+        let runs = railing_runs(&deck, &[&road, &quay], &[], 1465.0);
+        let total: f32 = runs.iter().map(|r| crate::tunnels::polyline_len(r)).sum();
+        assert!(total > 55.0, "railing {total} m: {runs:?}");
+    }
+
+    /// A deck no road reaches is railed down its long sides, and not at all if
+    /// it is about square: enclosing it would wall off a road the tiles did not
+    /// draw onto it.
+    #[test]
+    fn a_deck_no_road_reaches_is_railed_down_its_long_sides_only() {
+        let long = rect_deck(&[
+            [100.0, 100.0],
+            [130.0, 100.0],
+            [130.0, 106.0],
+            [100.0, 106.0],
+        ]);
+        let runs = railing_runs(&long, &[], &[], 1465.0);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert!(
+            runs.iter()
+                .all(|r| (crate::tunnels::polyline_len(r) - 30.0).abs() < 1e-3),
+            "{runs:?}"
+        );
+        let square = rect_deck(&[
+            [100.0, 100.0],
+            [120.0, 100.0],
+            [120.0, 118.0],
+            [100.0, 118.0],
+        ]);
+        assert!(railing_runs(&square, &[], &[], 1465.0).is_empty());
+    }
+
+    /// Where the tile border cuts a deck, the deck goes on next door: no railing
+    /// along the cut.
+    #[test]
+    fn no_railing_along_a_tile_border() {
+        let tile_m = 1465.0;
+        let deck = rect_deck(&[
+            [tile_m - 20.0, 100.0],
+            [tile_m, 100.0],
+            [tile_m, 112.0],
+            [tile_m - 20.0, 112.0],
+        ]);
+        let road = rect_road(tile_m - 20.0, 103.0, tile_m, 109.0);
+        let runs = railing_runs(&deck, &[&road], &[], tile_m);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert!(runs.iter().flatten().all(|p| p[1] != 105.0));
+        let total: f32 = runs.iter().map(|r| crate::tunnels::polyline_len(r)).sum();
+        assert!((total - 40.0).abs() < 1e-3, "railing {total} m: {runs:?}");
+    }
+
+    /// A railing gives way where `keep` says, and keeps its corners elsewhere.
+    #[test]
+    fn cut_runs_removes_a_stretch_and_keeps_corners() {
+        let run = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        let cut = cut_runs(vec![run], |p, _| !(p[0] > 3.9 && p[0] < 6.1 && p[1] < 0.5));
+        assert_eq!(cut.len(), 2, "{cut:?}");
+        assert!(
+            (cut[0][0][0]).abs() < 1e-4 && (cut[0][cut[0].len() - 1][0] - 3.5).abs() < 1e-4,
+            "{cut:?}"
+        );
+        // The second piece turns the corner at (10, 0).
+        assert!(
+            cut[1]
+                .iter()
+                .any(|p| (p[0] - 10.0).abs() < 1e-4 && p[1].abs() < 1e-4),
+            "{cut:?}"
+        );
+        assert!((cut[1][cut[1].len() - 1][1] - 10.0).abs() < 1e-4, "{cut:?}");
+        assert_eq!(cut[1].len(), 3, "samples along a segment collapse: {cut:?}");
+    }
+
+    /// Over the fixture tile every deck the tiles draw a road onto gets a
+    /// railing, and none of it lies on the road.
+    #[test]
+    fn every_fixture_deck_with_a_road_gets_a_railing_beside_it() {
+        let tile_m = 1465.3;
+        let decks = tessellate_bridges(GRONINGEN_Z14, tile_m).expect("bridges");
+        let (roads, decks) = roads_and_decks(GRONINGEN_Z14, tile_m, &decks).expect("roads");
+        let mut railed = 0;
+        let mut with_road = 0;
+        for (i, d) in decks.iter().enumerate() {
+            let ways: Vec<&SurfaceMesh> = roads
+                .on_deck
+                .iter()
+                .filter(|(di, _)| *di as usize == i)
+                .map(|(_, m)| m)
+                .collect();
+            if ways.is_empty() {
+                continue;
+            }
+            with_road += 1;
+            let runs = railing_runs(d, &ways, &[], tile_m);
+            if !runs.is_empty() {
+                railed += 1;
+            }
+        }
+        assert!(with_road > 0);
+        assert!(
+            railed * 10 >= with_road * 8,
+            "{railed} of {with_road} decks with a road got a railing"
+        );
+    }
 
     /// **A bridge OSM maps only as flagged ways still gets a deck.** The ring
     /// fixture's Europaplein flyover is four `bridge=yes` trunk carriageways with

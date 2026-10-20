@@ -720,8 +720,21 @@ impl TerrainField {
     /// the lawn they were standing on. The half-metre tier is carved too and knows no
     /// banks, so its correction fades out wherever the land was lifted
     /// ([`FINE_BANK_FADE_M`]).
+    ///
+    /// **And on a bridge laid flat it is the deck**, where that is higher: what
+    /// stands on the Oosterbrug stands on it, not on the canal bed under it
+    /// (`map_geometry::walk_deck_top`).
     #[must_use]
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
+        let ground = self.ground_only_at(wx, wz);
+        match crate::systems::map_geometry::walk_deck_top(wx, wz) {
+            Some(top) => ground.max(top),
+            None => ground,
+        }
+    }
+
+    /// [`ground_at`](Self::ground_at) without the decks.
+    fn ground_only_at(&self, wx: f32, wz: f32) -> f32 {
         let land = self.ground.land_at(wx, wz);
         if !self.fine.is_ready() {
             return land;
@@ -1303,30 +1316,37 @@ impl TerrainSnapshot {
     }
 
     /// The street-side value of sample `i`: itself if it is dry, else the mean of
-    /// the dry samples within two spacings — the level the quay stands at. A sample
-    /// with none (the middle of a wide canal) keeps its own, which no dry surface
-    /// is drawn over anyway.
+    /// the nearest dry samples — those one spacing away, or failing any, two — the
+    /// level the quay stands at. A sample with none (the middle of a wide canal)
+    /// keeps its own, which no dry surface is drawn over anyway.
+    ///
+    /// **The nearest, not all within two.** Two spacings is six metres on a
+    /// desktop, and at a canal bridge's end that reached past the street laid
+    /// level with the deck to the grass bank falling to the water beside it: the
+    /// Oosterbrug's south end met a street a tenth to a fifth of a metre under
+    /// its edge (2026-10-20).
     fn land_value(&self, i: usize) -> f32 {
         if self.banks[i] == 0 {
             return self.samples[i];
         }
         let n = self.grid;
         let (x, z) = (i % n, i / n);
-        let (mut sum, mut count) = (0.0f32, 0u32);
-        for zz in z.saturating_sub(2)..=(z + 2).min(n - 1) {
-            for xx in x.saturating_sub(2)..=(x + 2).min(n - 1) {
-                let j = zz * n + xx;
-                if self.banks[j] == 0 {
-                    sum += self.samples[j];
-                    count += 1;
+        for r in 1..=2usize {
+            let (mut sum, mut count) = (0.0f32, 0u32);
+            for zz in z.saturating_sub(r)..=(z + r).min(n - 1) {
+                for xx in x.saturating_sub(r)..=(x + r).min(n - 1) {
+                    let j = zz * n + xx;
+                    if self.banks[j] == 0 {
+                        sum += self.samples[j];
+                        count += 1;
+                    }
                 }
             }
+            if count > 0 {
+                return sum / count as f32;
+            }
         }
-        if count == 0 {
-            self.samples[i]
-        } else {
-            sum / count as f32
-        }
+        self.samples[i]
     }
 
     /// The canal-side value of sample `i`: a bank sample takes the lowest wet sample
@@ -3352,6 +3372,36 @@ mod tests {
         // Away from the water the half-metre tier still has its say.
         let h = field.ground_at(25.0, 0.0);
         assert!((h - 2.3).abs() < 1e-3, "fine tier away from the bank: {h}");
+    }
+
+    /// The street beside the water is the dry ground next to it, not a bank
+    /// further off: a street at 2 m along the quay and a lawn falling to -1 m two
+    /// spacings behind it — a canal bridge's end with the bank beside it.
+    #[test]
+    fn the_street_at_the_quay_is_not_averaged_with_the_bank_behind_it() {
+        let water = crate::systems::water_levels::WaterLevelField::build_for_test(
+            -3.0,
+            &[
+                [-10.0, -300.0],
+                [10.0, -300.0],
+                [10.0, 300.0],
+                [-10.0, 300.0],
+            ],
+        );
+        let mut field = snapshot_of(100.0, 3.125, |x, _| {
+            if x.abs() < 10.0 {
+                -3.5
+            } else if x < 16.0 {
+                2.0
+            } else {
+                -1.0
+            }
+        });
+        field.banks = Arc::new(bank_flags(field.grid, field.half_m, field.centre, &water));
+        for x in [10.0, 11.0, 12.5] {
+            let h = field.land_at(x, 0.0);
+            assert!((h - 2.0).abs() < 1e-4, "street at x = {x}: {h}");
+        }
     }
 
     /// With nothing registered, both readings are the field to the bit.

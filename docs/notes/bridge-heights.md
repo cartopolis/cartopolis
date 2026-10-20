@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
-triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-10-11
+triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at]
+updated: 2026-10-20
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -351,6 +351,121 @@ wall. Atlas's `lod22` now measures a building whose foot is mostly inside a
 registered water body, and whose shell reaches at least half a metre below it,
 from the water's level (`Water` in `pipeline/lod22.rs`), and the client's cell
 cache keys moved to `v3` so a cached cell does not keep the old one.
+
+## The heights are right; what read as "too low" was a bare slab (2026-10-19)
+
+A phone report ("in reality this bridge is higher", the Berlagebrug from its
+quay) was checked bridge by bridge before anything was changed. A temporary log
+of every deck `resolve_bridge_decks` placed, over 31 of Groningen's largest
+named bridges' cells, matched to OSM outlines and set against the AHN surface's
+median inside each outline: **53 of 56 drawn within 0.5 m of the survey**,
+lifted and flat alike — the Berlagebrug at 5.35 m NAP, exactly. The three out
+were the Emmaviaduct (−1.2 m, its median against a profile that runs 6.7 → 9.5),
+the Visserbrug (+0.8, flat on its street) and one mismatch of the instrument.
+Two traps in checking it:
+
+- **A shot's altitude counts from the field's datum, not the ground, unless the
+  shot says `on_ground = true`.** Over Groningen the datum is ~7.2 m NAP, so a
+  "2 m above the canal" camera stood at 9 m, above the deck it was meant to look
+  up at, and the deck read as low.
+- The log fires once before the terrain field is ready (`levels` are then the
+  bare clearance) and again after; only the `terrain.is_ready()` pass is the
+  drawn height.
+
+What the comparison against the aerial photographs did show is that a deck was a
+slab and nothing else: no railing, no structure above the road. From the street
+a slab over a canal reads as a pontoon. So decks carry **railings** now
+(`vector_tiles::railing_runs`, meshed by `furniture::build_railing_meshes`):
+posts every 2.5 m with a handrail and a mid rail, 1.1 m, along the outline —
+which is the parapet's line, since an outline is the structure — and open where
+the road runs off. The ends are found from the carriageways on the deck **and**
+from the approaches: the Oosterbrug's bridge way stops a few metres inside its
+outline at both ends, its carriageway reached no edge, and the first cut railed
+it shut on all four sides. A border cut, a pavement beside an end and a road
+only grazing a corner stay open; a surveyed wall or fence running along the
+line (within 20°, not just near it) wins over the railing; a notch in the
+outline under 3 m deep and 8 m of outline long is crossed straight — the
+Oosterbrug's sides step in ~2.6 m where the bascule's mechanism stands, and a
+railing following that in and out read from the quay as gaps in it; a deck no road reaches at all is railed down its long sides
+only, or not at all when about square. The meshes ride `PendingDecks::roads`
+with the carriageways, so they stand on the deck's height and bend along its
+profile, and they are `SurfaceGroup::Furniture` — the street furniture's
+material and its altitude fade.
+
+## Where OSM's bridge way, its outline and its water disagree (2026-10-19)
+
+The three are drawn by different hands and rarely meet. At the Oosterbrug the
+bridge way stops a few metres inside the outline at the north, and starts a
+metre over the canal before the outline does at the south. Each mismatch had a
+visible fault, all three hidden by one another until the first was fixed:
+
+- **Mounds under the deck.** The street at grade that carries on from a bridge
+  way inside its outline was conformed to like any road, so the canal bed under
+  the deck rose to it with a 1:2 shoulder: two humps meeting at 1.37 m NAP over
+  a bed at 0.30, an arch seen from the water. Atlas's grading now leaves the
+  ground **in registered water inside any bridge's outline** alone — every
+  outline, `Cell::outlines`, not only the decks it pins roads to: the
+  Oosterbrug is flat with no profile kept, and the first cut missed it.
+- **A hole across the deck's end.** That same street was drawn on the ground,
+  cut out of the slab like any road on it, and once the mound was gone it lay
+  on the canal bed under open water. `roads::carried_onto_deck` puts a street
+  on the deck from an end that meets a bridge way's end inside the outline, to
+  the outline's edge. A street meeting no bridge end — one passing under a
+  viaduct — stays on the ground.
+- **A strip of water between the deck and its quay.** The bridge way's own
+  overhang past the outline stood on nothing. Atlas lays the ground to a bridge
+  way's end stretch outside every outline that runs into one, up to
+  `ABUTMENT_MAX_M` (6 m) — an abutment. A footbridge with no outline is not
+  dammed.
+
+Checked by grading 25 cells round the Oosterbrug on a build node into a scratch
+tree (`atlas run --out … --bbox … --datasets terrain`, water and BGT paving
+copied in from the live host first) and pointing the client at a loopback
+stand-in for `/terrain`, `/roads` and `/decks` that proxies everything else.
+Over that window the node's AHN6 index answered 400 and atlas fell back to
+AHN4, which the live grading does not use; a local grade of unchanged code
+matched the live tile under the Oosterbrug to 2 cm, so the edition did not
+matter there, but a stand-in elsewhere should be compared against a local
+"before", not the live host.
+
+## A flat bridge stands on abutments, over its canal, flush with its street (2026-10-20)
+
+What a canal bridge laid flat needs, from the water up, and where each piece is:
+
+- **The canal runs on under it.** The Kadaster's water (`pipeline/water.rs`)
+  stops at a bridge's outline, since the BGT's water and its bridge decks tile
+  the ground between them, while OSM's canal, which the client draws, runs on
+  underneath. So under the Oosterbrug the drawn water had no level and stood at
+  the ground's height, and atlas graded that ground as land up to its quays:
+  mounds and slanted walls under the span. The water dataset now files a ring
+  at the canal's level over every bridge outline with the same water beyond two
+  opposite sides (`vector_tiles::spanned_water`, `water::bridge_gaps`: 94 over
+  the Groningen window). Not between two levels more than 0.25 m apart, which
+  is a lock. **The client's water and the grading both read it, so it needs
+  the water dataset re-run before the terrain grade.**
+- **An abutment at each end**: a wall from the deck's top 12 m down along each
+  end (`abutment_wall_mesh`), with **one face, toward the canal**. A second
+  face toward the street showed wherever the pavement dipped a few
+  centimetres between its vertices, as a brown band along the end. An end
+  that stops short of the register's water is first carried out over it to the
+  quay, up to 3 m (`reach_the_quay`), with the slab continued as a lip.
+- **The street meets the deck's top.** Atlas lays the ground off each flat end
+  to the height the client draws the deck at: its measured top, else its
+  street's (`road_levels::flat_deck_level`, shared by both sides so the two
+  medians cannot differ). Then it holds a landing at that height, the end's
+  width and 6 m deep (`ABUTMENT_LANDING_M`). That is still not exact on the
+  client's 3.125 m field: the first sample past the end is carved with the
+  canal under the deck, and `land_at` averaged dry samples two spacings away,
+  which reached the grass bank falling to the water beside the bridge. So
+  `land_at` now takes the nearest dry ring first, and the surfaces off a flat
+  end are stood on the deck's height for 3 m, fading into the field over 2 m
+  more (`map_geometry::Landing`). Measured off the Oosterbrug's south end before
+  this: the street 0.1–0.5 m under a deck at 4.66 m NAP.
+- **Walkable**: `walk_deck_top` puts a flat deck's top into `ground_at`, so the
+  avatar stands on the slab, not on the canal bed beneath it.
+
+Checked with the same loopback stand-in as above, now also serving `/water`
+from the scratch tree after `water::bridge_gaps` ran over it.
 
 ## Storage, if the raster is ever baked instead of proxied
 

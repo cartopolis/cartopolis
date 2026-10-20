@@ -114,6 +114,26 @@ pub fn tessellate_roads_surveyed(
         (0..decks.len()).map(|_| Vec::new()).collect();
     // The ground stretches that run up to a deck — see [`Approach`].
     let mut approaches: Vec<Approach> = Vec::new();
+    // Where a bridge-flagged street ends *inside* a deck's outline, metres: the
+    // street that carries on from there is still on the structure
+    // ([`carried_onto_deck`]).
+    let bridge_ends: Vec<(usize, [f32; 2])> = if decks.is_empty() {
+        Vec::new()
+    } else {
+        features
+            .iter()
+            .filter(|f| flag_of(f, "bridge") && drawn_street(f).is_some())
+            .flat_map(|f| match &f.geometry {
+                Geometry::LineString(ls) => vec![ls],
+                Geometry::MultiLineString(mls) => mls.iter().collect(),
+                _ => Vec::new(),
+            })
+            .flat_map(|ls| [ls.0.first().copied(), ls.0.last().copied()])
+            .flatten()
+            .map(|c| [c.x * scale, c.y * scale])
+            .filter_map(|p| decks.iter().position(|d| d.contains(p)).map(|d| (d, p)))
+            .collect()
+    };
 
     for (fi, feature) in features.iter().enumerate() {
         // A tunnel is refused by `drawn_street` because it is not on the ground —
@@ -237,10 +257,12 @@ pub fn tessellate_roads_surveyed(
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
                 // A bridge's span is carried *by* the deck: the same ribbon, at the
                 // deck's height. `split_by_deck` says which stretches those are.
-                let parts = if bridge && !decks.is_empty() {
+                let parts = if decks.is_empty() {
+                    vec![(None, metres)]
+                } else if bridge {
                     split_by_deck(&metres, decks)
                 } else {
-                    vec![(None, metres)]
+                    carried_onto_deck(metres, decks, &bridge_ends)
                 };
                 // A run that was split at a deck edge now ends *at* the deck, which
                 // is not a junction — extending there would push tarmac out past
@@ -262,7 +284,13 @@ pub fn tessellate_roads_surveyed(
                     // cannot be followed down the road, and standing in as the
                     // approach it stopped `extend_approaches` from seeding the
                     // real one: the Europaplein's west ramp went unfound.
-                    if on_deck.is_some()
+                    //
+                    // Only a bridge-flagged way's: a street carried onto a deck
+                    // from a bridge end (`carried_onto_deck`) is found from that
+                    // end by `extend_approaches`, which bounds the walk; its own
+                    // ground stretch runs as far as the street does.
+                    if !bridge
+                        || on_deck.is_some()
                         || part.len() < 2
                         || crate::tunnels::polyline_len(part) < MIN_APPROACH_M
                     {
@@ -855,6 +883,52 @@ const DECK_EDGE_BISECTIONS: u32 = 12;
 /// ends just off a deck is ordinary in a generalised tile. Every segment is probed
 /// each [`DECK_PROBE_M`], and a change of owner between two probes is bisected to
 /// the edge as before.
+/// How close a street's end must be to a bridge-flagged street's end to be the
+/// same node, metres — a few tile units at z14.
+const BRIDGE_END_JOIN_M: f32 = 0.5;
+
+/// **A street at grade that runs on from a bridge's way inside its outline is
+/// still on the bridge**, from that end to where it leaves the deck.
+///
+/// OSM's bridge way routinely stops short of the structure: the Oosterbrug's
+/// ends a few metres inside its outline at the south, and the street that
+/// carries on from there was drawn on the ground — cut out of the deck like any
+/// road on it, and laid on the canal bed under it, so the slab had a hole of
+/// open water across its end (2026-10-19). Only from an end that meets a bridge
+/// way inside that deck: a street passing under a viaduct meets no bridge end,
+/// and stays on the ground it runs on. `bridge_ends` is every bridge-flagged
+/// street's end that lies inside a deck, with that deck.
+fn carried_onto_deck(
+    points: Vec<[f32; 2]>,
+    decks: &[BridgeDeck],
+    bridge_ends: &[(usize, [f32; 2])],
+) -> Vec<(Option<usize>, Vec<[f32; 2]>)> {
+    let joined = |p: Option<&[f32; 2]>| -> Option<usize> {
+        let p = p?;
+        bridge_ends
+            .iter()
+            .find(|(_, e)| (e[0] - p[0]).hypot(e[1] - p[1]) <= BRIDGE_END_JOIN_M)
+            .map(|(d, _)| *d)
+    };
+    let (head, tail) = (joined(points.first()), joined(points.last()));
+    if head.is_none() && tail.is_none() {
+        return vec![(None, points)];
+    }
+    let parts = split_by_deck(&points, decks);
+    let last = parts.len().saturating_sub(1);
+    let mut out: Vec<(Option<usize>, Vec<[f32; 2]>)> = Vec::new();
+    for (i, (owner, part)) in parts.into_iter().enumerate() {
+        let kept = owner.filter(|&d| (i == 0 && head == Some(d)) || (i == last && tail == Some(d)));
+        match out.last_mut() {
+            // Consecutive ground stretches are one, as they were before the
+            // split: a street under a second deck it does not join stays whole.
+            Some((None, prev)) if kept.is_none() => prev.extend(part.into_iter().skip(1)),
+            _ => out.push((kept, part)),
+        }
+    }
+    out
+}
+
 pub(super) fn split_by_deck(
     points: &[[f32; 2]],
     decks: &[BridgeDeck],
@@ -971,6 +1045,64 @@ mod tests {
                 .sum();
             assert!(on > 59.0, "only {on:.1} m of a 60 m span is on its deck");
         }
+    }
+
+    /// **The street that runs on from a bridge way inside its outline is on the
+    /// deck to the outline's edge**, and a street meeting no bridge end — one
+    /// passing under the structure — stays on the ground whole.
+    #[test]
+    fn a_street_carrying_on_from_a_bridge_way_rides_the_deck_to_its_edge() {
+        let ring = vec![
+            [0.0, -5.0],
+            [24.0, -5.0],
+            [24.0, 5.0],
+            [0.0, 5.0],
+            [0.0, -5.0],
+        ];
+        let deck = BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![ring],
+            min: [0.0, -5.0],
+            max: [24.0, 5.0],
+        };
+        let decks = std::slice::from_ref(&deck);
+        // The bridge way stops at x = 4, four metres inside the deck; the street
+        // carries on west from there.
+        let ends = [(0usize, [4.0, 0.0]), (0usize, [20.0, 0.0])];
+        let parts = carried_onto_deck(vec![[4.0, 0.0], [-30.0, 0.0]], decks, &ends);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[0].0, Some(0));
+        assert!(
+            (crate::tunnels::polyline_len(&parts[0].1) - 4.0).abs() < 0.1,
+            "{parts:?}"
+        );
+        assert_eq!(parts[1].0, None);
+        // Joined at its *tail*, the same.
+        let parts = carried_onto_deck(vec![[-30.0, 0.0], [4.0, 0.0]], decks, &ends);
+        assert_eq!(parts.last().map(|p| p.0), Some(Some(0)), "{parts:?}");
+        // A street under the deck, crossing it, joins no bridge end.
+        let under = carried_onto_deck(vec![[12.0, -30.0], [12.0, 30.0]], decks, &ends);
+        assert_eq!(under.len(), 1, "{under:?}");
+        assert_eq!(under[0].0, None);
+        // A street that joins at one end and crosses a second deck further on
+        // keeps that crossing on the ground, in one piece with the rest.
+        let far = BridgeDeck {
+            rings: vec![vec![
+                [-20.0, -5.0],
+                [-14.0, -5.0],
+                [-14.0, 5.0],
+                [-20.0, 5.0],
+                [-20.0, -5.0],
+            ]],
+            min: [-20.0, -5.0],
+            max: [-14.0, 5.0],
+            ..deck.clone()
+        };
+        let two = [deck.clone(), far];
+        let parts = carried_onto_deck(vec![[4.0, 0.0], [-30.0, 0.0]], &two, &ends);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!((parts[0].0, parts[1].0), (Some(0), None));
     }
 
     /// **A bridge's approach runs along the road beyond its abutment**, not only

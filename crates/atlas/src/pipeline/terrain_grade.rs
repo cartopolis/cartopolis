@@ -39,7 +39,7 @@ use cartopolis_geo::deck_profile::{DeckMeasure, DeckProfile};
 use cartopolis_geo::road_levels::{self, Height, RoadHeights, StreetRun};
 use cartopolis_geo::terrain_grade::{self, ConformRoad, DeckPlate, Lattice};
 use cartopolis_geo::terrain_tile::{TerrainTile, DENSE_GRID};
-use cartopolis_geo::vector_tiles::{self, BridgeDeck, TileData};
+use cartopolis_geo::vector_tiles::{self, BridgeDeck, SurfaceMesh, TileData};
 
 use super::{Ctx, Outcome};
 use crate::terrain::{graded_dir, read_stored, store_dir, write_stored, Answer, HeightSource};
@@ -56,6 +56,26 @@ pub const DEFAULT_VECTOR_TILES: &str = "https://tiles.cartopolis.org/tiles/osm/{
 /// measured more coarsely rather than not at all.
 const DECK_SAMPLE_M: f64 = 1.0;
 const DECK_RASTER_MAX: usize = 1024;
+
+/// Longest end of a bridge way short of its outline that is laid on the ground
+/// as an abutment, metres: the gap between where OSM's outline and its water
+/// begin, never a span of its own (see the grading's `abutments`).
+const ABUTMENT_MAX_M: f32 = 6.0;
+
+/// How far outside a flat deck's outline its quay is read, metres — past the
+/// structure's own survey hole, short of the next street.
+const ABUTMENT_QUAY_M: f32 = 6.0;
+
+/// How deep the landing off a flat deck's end is, metres: the ground laid
+/// exactly at the deck's height across the end's width — past the two field
+/// spacings over which the client finds the street beside a canal
+/// (`TerrainSnapshot::land_at`), so a bank falling away beside the bridge is
+/// not averaged into the street that meets its edge.
+const ABUTMENT_LANDING_M: f32 = 6.0;
+
+/// How far from a flat deck's end its own street's solved height is looked for,
+/// metres — the level the end is laid to.
+const DECK_END_ROAD_M: f32 = 12.0;
 
 /// Where a tile's road shapes come from.
 pub trait VectorSource {
@@ -132,6 +152,14 @@ struct Cell {
     /// The decks laid flat whose measured surface passed
     /// [`terrain_grade::flat_profile_fits`]: height 0, a profile, no top.
     flat: Vec<Deck>,
+    /// Every deck's outline, lifted, flat and profiled or not, and whether it is
+    /// lifted: where the ground in the water under a bridge is left as the water
+    /// left it, and the land under one laid flat is its abutment.
+    outlines: Vec<(BridgeDeck, bool)>,
+    /// The ends of every deck laid flat, tile-local (`vector_tiles::abutment_runs`),
+    /// each with the index of its deck in [`Cell::outlines`] and the deck's
+    /// measured top, metres NAP — what the client draws it at, where there is one.
+    ends: Vec<(usize, Option<f32>, Vec<[f32; 2]>)>,
 }
 
 pub struct Grader<'a> {
@@ -298,6 +326,8 @@ impl<'a> Grader<'a> {
             runs: Vec::new(),
             decks: Vec::new(),
             flat: Vec::new(),
+            outlines: Vec::new(),
+            ends: Vec::new(),
         };
         if let Some(bytes) = self.vector.mvt(x, y)? {
             let tile = TileData::parse(&bytes)?;
@@ -308,12 +338,31 @@ impl<'a> Grader<'a> {
             for (i, deck) in decks.into_iter().enumerate() {
                 let mut measured = self.measure_deck(x, y, tile_m, &deck)?;
                 let height = measured.height;
+                cell.outlines.push((deck.clone(), height > 0.0));
                 let approaches: Vec<Vec<[f32; 2]>> = roads
                     .approaches
                     .iter()
                     .filter(|a| a.deck as usize == i)
                     .map(|a| a.points.clone())
                     .collect();
+                // A flat deck's ends, where the street is laid to meet it
+                // (`grade_tile`'s `deck_ends`) — the same ends the client stands
+                // its abutments at.
+                if height <= 0.0 {
+                    let ways: Vec<&SurfaceMesh> = roads
+                        .on_deck
+                        .iter()
+                        .filter(|(di, _)| *di as usize == i)
+                        .map(|(_, m)| m)
+                        .collect();
+                    let runs: Vec<&[[f32; 2]]> = approaches.iter().map(Vec::as_slice).collect();
+                    let (outline, top) = (cell.outlines.len() - 1, measured.top);
+                    cell.ends.extend(
+                        vector_tiles::abutment_runs(&deck, &ways, &runs, tile_m)
+                            .into_iter()
+                            .map(|r| (outline, top, r)),
+                    );
+                }
                 // **A flat deck keeps its measured surface only where that
                 // surface is the deck's**: under trees the survey is the canopy,
                 // and only the bare ground off its ends can tell the two apart.
@@ -549,14 +598,49 @@ impl<'a> Grader<'a> {
             Option<DeckProfile>,
             Vec<Vec<[f32; 2]>>,
         )> = Vec::new();
+        // Every bridge's outline in this tile's metres, offset into its frame.
+        let mut outlines: Vec<(BridgeDeck, [f32; 2], bool)> = Vec::new();
+        // The ends of the flat decks, in this tile's frame, each with its deck's
+        // index in `outlines` and its measured top.
+        let mut deck_ends: Vec<(usize, Option<f32>, Vec<[f32; 2]>)> = Vec::new();
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 self.cell(tx + dx, ty + dy)?;
                 let cell = &self.cells[&(tx + dx, ty + dy)];
                 let s = tile_m / cell.tile_m;
                 let off = [dx as f32 * tile_m, dy as f32 * tile_m];
+                let sc = |p: [f32; 2]| [p[0] * s, p[1] * s];
+                let base = outlines.len();
+                for (d, lifted) in &cell.outlines {
+                    outlines.push((
+                        BridgeDeck {
+                            positions: Vec::new(),
+                            indices: Vec::new(),
+                            rings: d
+                                .rings
+                                .iter()
+                                .map(|r| r.iter().map(|&p| sc(p)).collect())
+                                .collect(),
+                            min: sc(d.min),
+                            max: sc(d.max),
+                        },
+                        off,
+                        *lifted,
+                    ));
+                }
+                for (outline, top, end) in &cell.ends {
+                    deck_ends.push((
+                        base + outline,
+                        *top,
+                        end.iter()
+                            .map(|&p| {
+                                let q = sc(p);
+                                [q[0] + off[0], q[1] + off[1]]
+                            })
+                            .collect(),
+                    ));
+                }
                 for d in cell.decks.iter().chain(&cell.flat) {
-                    let sc = |p: [f32; 2]| [p[0] * s, p[1] * s];
                     let deck = BridgeDeck {
                         positions: Vec::new(),
                         indices: Vec::new(),
@@ -631,7 +715,7 @@ impl<'a> Grader<'a> {
                 }
             }
         }
-        let levels = terrain_grade::water_level_grid(&rings, lattice);
+        let mut levels = terrain_grade::water_level_grid(&rings, lattice);
 
         // **The surveyed paving under the window** (the BGT's road surfaces,
         // `bgt`), for how wide a sunken road's trench is — see [`Paving`].
@@ -650,6 +734,40 @@ impl<'a> Grader<'a> {
                             })
                             .collect(),
                     );
+                }
+            }
+        }
+        // **Beside a flat bridge, the paved quay is land.** The register's water
+        // and the BGT's paving overlap by a metre or two at a canal bridge's
+        // abutments, and carved as water the paved corner beside the Oosterbrug's
+        // south end fell to the canal bed — the pavement draped down into it, the
+        // deck's edge standing above (2026-10-19). Within `ABUTMENT_QUAY_M` of a
+        // flat deck's outline, a sample the survey paves is not water.
+        for (deck, world, lifted) in &outlines {
+            if *lifted {
+                continue;
+            }
+            let idx = |v: f32, o: f32| ((v - o) / step).round() as i64;
+            let last = n as i64 - 1;
+            let (x0, x1) = (
+                idx(deck.min[0] + world[0] - ABUTMENT_QUAY_M, lattice.origin[0]).max(0),
+                idx(deck.max[0] + world[0] + ABUTMENT_QUAY_M, lattice.origin[0]).min(last),
+            );
+            let (z0, z1) = (
+                idx(deck.min[1] + world[1] - ABUTMENT_QUAY_M, lattice.origin[1]).max(0),
+                idx(deck.max[1] + world[1] + ABUTMENT_QUAY_M, lattice.origin[1]).min(last),
+            );
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    let i = z as usize * n + x as usize;
+                    if !levels[i].is_finite() {
+                        continue;
+                    }
+                    let p = lattice.at(x as usize, z as usize);
+                    let local = [p[0] - world[0], p[1] - world[1]];
+                    if !deck.contains(local) && paving.covers(p) {
+                        levels[i] = f32::NAN;
+                    }
                 }
             }
         }
@@ -1173,6 +1291,9 @@ impl<'a> Grader<'a> {
 
         // Water carved and holes filled as before; the roads are not flattened
         // into the ground any more — the ground is laid to them.
+        // The survey as flown, before its holes are filled: what an abutment's
+        // quay is read from below.
+        let surveyed = raw.clone();
         terrain_grade::grade(
             &mut raw,
             lattice,
@@ -1201,10 +1322,196 @@ impl<'a> Grader<'a> {
             cartopolis_geo::tunnels::DATUM_M,
             &|p| level_at(p[0], p[1]).is_some(),
         );
+        // **The land under a bridge laid flat is its abutment**, at the level of
+        // the quay it stands on. AHN cuts the structure out, so under a canal
+        // bridge's ends the survey has a hole, and filling it from around let the
+        // carved canal into it: the Oosterbrug's ends stood on banks sloping down
+        // to the water, open under the deck, where the quay walls stop
+        // (2026-10-19). Every sample inside the outline that is not water, and
+        // every unsurveyed one beside it, is put at the median surveyed ground
+        // just outside it; the water stays
+        // carved, and the client stands its quay wall in the step between. Not
+        // under a lifted deck, where what lies beneath is a road or a yard.
+        for (deck, world, lifted) in &outlines {
+            if *lifted {
+                continue;
+            }
+            let idx = |v: f32, o: f32| ((v - o) / lattice.step).round() as i64;
+            let (lo, hi) = (
+                [
+                    deck.min[0] + world[0] - ABUTMENT_QUAY_M,
+                    deck.min[1] + world[1] - ABUTMENT_QUAY_M,
+                ],
+                [
+                    deck.max[0] + world[0] + ABUTMENT_QUAY_M,
+                    deck.max[1] + world[1] + ABUTMENT_QUAY_M,
+                ],
+            );
+            let last = n as i64 - 1;
+            let (x0, x1) = (
+                idx(lo[0], lattice.origin[0]).max(0),
+                idx(hi[0], lattice.origin[0]).min(last),
+            );
+            let (z0, z1) = (
+                idx(lo[1], lattice.origin[1]).max(0),
+                idx(hi[1], lattice.origin[1]).min(last),
+            );
+            if x0 > x1 || z0 > z1 {
+                continue;
+            }
+            let near_outline = |p: [f32; 2]| {
+                deck.rings.iter().any(|r| {
+                    r.windows(2).any(|w| {
+                        let (a, b) = (w[0], w[1]);
+                        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                        let len2 = dx * dx + dz * dz;
+                        let t = if len2 > 1e-9 {
+                            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= ABUTMENT_QUAY_M
+                    })
+                })
+            };
+            let (mut quay, mut under) = (Vec::new(), Vec::new());
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    let i = z as usize * n + x as usize;
+                    let p = lattice.at(x as usize, z as usize);
+                    if level_at(p[0], p[1]).is_some() {
+                        continue;
+                    }
+                    let local = [p[0] - world[0], p[1] - world[1]];
+                    if deck.contains(local) {
+                        under.push(i);
+                    } else if !near_outline(local) {
+                        continue;
+                    } else if surveyed[i].is_finite() {
+                        quay.push(surveyed[i]);
+                    } else {
+                        // The survey's hole round a structure is wider than its
+                        // outline, and the land in it beside the outline is the
+                        // same abutment: filled from around, it took the canal
+                        // bed and sloped the Oosterbrug's approach into the water
+                        // on both sides.
+                        under.push(i);
+                    }
+                }
+            }
+            if under.is_empty() || quay.is_empty() {
+                continue;
+            }
+            quay.sort_by(f32::total_cmp);
+            let level = quay[quay.len() / 2];
+            for i in under {
+                raw[i] = level;
+            }
+        }
         // **At grade the ground is laid to the road.** Every stretch of every
         // street at level 0 that is not a structure: the embankments up to the
         // decks and the banks down to a shallow dip. Not inside a structure's
         // corridor, which the client opens and walls itself.
+        let in_an_outline = |p: [f32; 2]| {
+            outlines
+                .iter()
+                .any(|(deck, world, _)| deck.contains([p[0] - world[0], p[1] - world[1]]))
+        };
+        // **…and the end of a bridge's way short of its structure is on the
+        // ground too: an abutment.** OSM's outline and its water rarely meet, and
+        // the Oosterbrug's way runs a metre over the canal before its outline
+        // starts. Not laid to anything, that metre stood on the canal bed, and the
+        // deck ended in a strip of open water short of its quay (2026-10-19). Only
+        // a stretch that runs into an outline, and only up to
+        // `ABUTMENT_MAX_M`: a footbridge with no outline at all is not dammed.
+        let mut abutments: Vec<(Vec<[f32; 2]>, Vec<f32>, f32)> = Vec::new();
+        for ((l, o), ys) in lines.iter().zip(&owners).zip(&solved.heights) {
+            if o.3 <= 0 || l.points.len() < 2 || ys.len() != l.points.len() {
+                continue;
+            }
+            let n = l.points.len();
+            for from_tail in [false, true] {
+                let at = |k: usize| if from_tail { n - 1 - k } else { k };
+                let Some(first_in) = (0..n).find(|&k| in_an_outline(l.points[at(k)])) else {
+                    break;
+                };
+                if first_in == 0 {
+                    continue;
+                }
+                let idx: Vec<usize> = (0..=first_in).map(at).collect();
+                let pts: Vec<[f32; 2]> = idx.iter().map(|&k| l.points[k]).collect();
+                let len: f32 = pts
+                    .windows(2)
+                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .sum();
+                if len > ABUTMENT_MAX_M {
+                    continue;
+                }
+                abutments.push((pts, idx.iter().map(|&k| ys[k]).collect(), o.2));
+            }
+        }
+        // **…and the whole width of a flat deck's end, at the deck's height.** The
+        // street is laid to its centre line with its shoulders falling away, and a
+        // canal bridge's end is wider than its carriageway: across the
+        // Oosterbrug's ends the pavement fell from the deck to its sides and left
+        // the deck's edge standing above it (2026-10-19). Each end is laid to like
+        // a road of no width, at the height the client draws the deck at: its
+        // measured top, else its street's (`road_levels::flat_deck_level`), else
+        // the solved height of the bridge's own street nearest each of its
+        // points.
+        let mut road_map = road_levels::LevelMap::default();
+        for ((l, o), ys) in lines.iter().zip(&owners).zip(&solved.heights) {
+            road_map.add(l.level, o.2, l.points.clone(), ys.clone());
+        }
+        let mut landings: Vec<(&[[f32; 2]], usize, f32)> = Vec::new();
+        for (outline, top, end) in &deck_ends {
+            let mut pts: Vec<[f32; 2]> = Vec::new();
+            for w in end.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let steps = ((b[0] - a[0]).hypot(b[1] - a[1])).ceil().max(1.0) as usize;
+                for s in 0..steps {
+                    let t = s as f32 / steps as f32;
+                    pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+                }
+            }
+            if let Some(&last) = end.last() {
+                pts.push(last);
+            }
+            let ys: Vec<Option<f32>> = pts
+                .iter()
+                .map(|&p| {
+                    lines
+                        .iter()
+                        .zip(&solved.heights)
+                        .filter(|(l, _)| l.level > 0)
+                        .flat_map(|(l, ys)| l.points.iter().zip(ys))
+                        .map(|(q, &y)| ((q[0] - p[0]).hypot(q[1] - p[1]), y))
+                        .filter(|(d, y)| *d <= DECK_END_ROAD_M && y.is_finite())
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .map(|(_, y)| y)
+                })
+                .collect();
+            let (deck, world, _) = &outlines[*outline];
+            let drawn = road_levels::flat_deck_level(
+                deck.rings
+                    .iter()
+                    .flatten()
+                    .map(|p| [p[0] + world[0], p[1] + world[1]]),
+                &road_map,
+            );
+            let mut known: Vec<f32> = ys.iter().flatten().copied().collect();
+            // One height for the end: the deck is laid flat at its street's.
+            let level = match top.or(drawn) {
+                Some(y) => y,
+                None if known.is_empty() => continue,
+                None => {
+                    known.sort_by(f32::total_cmp);
+                    known[known.len() / 2]
+                }
+            };
+            abutments.push((pts.clone(), vec![level; pts.len()], 0.0));
+            landings.push((end.as_slice(), *outline, level));
+        }
         let conform: Vec<ConformRoad<'_>> = lines
             .iter()
             .zip(&owners)
@@ -1215,6 +1522,11 @@ impl<'a> Grader<'a> {
                 ys,
                 half_w: o.2,
             })
+            .chain(abutments.iter().map(|(points, ys, half_w)| ConformRoad {
+                points,
+                ys,
+                half_w: *half_w,
+            }))
             .collect();
         // Out to the wall on a walled side; on a side that is a bank the ground
         // is laid to the road like any road's.
@@ -1242,7 +1554,88 @@ impl<'a> Grader<'a> {
                 })
             })
         };
-        terrain_grade::conform_to_roads(&mut raw, lattice, &conform, &in_a_structure);
+        // **Nor in the water under a bridge.** OSM's bridge way routinely stops
+        // a few metres inside its outline, so the street at grade runs on over
+        // the canal under the deck, and laid to it the canal bed rose to the
+        // road with a shoulder sloping back down: two mounds under the
+        // Oosterbrug meeting at 1.37 m NAP over a bed at 0.30 (2026-10-19). Only
+        // in registered water: a road passing under a lifted deck is still laid
+        // to its own ground. Every bridge's outline, not only the decks the
+        // grading pins roads to: the Oosterbrug is flat with no profile kept,
+        // and the first cut of this left it out.
+        // Within `ABUTMENT_QUAY_M` of the outline too: the ends are laid to now,
+        // and their shoulders must not climb into the canal either side.
+        let under_a_bridge = |p: [f32; 2]| {
+            level_at(p[0], p[1]).is_some()
+                && outlines.iter().any(|(deck, world, _)| {
+                    let local = [p[0] - world[0], p[1] - world[1]];
+                    deck.contains(local)
+                        || deck.rings.iter().any(|r| {
+                            r.windows(2).any(|w| {
+                                let (a, b) = (w[0], w[1]);
+                                let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                                let len2 = dx * dx + dz * dz;
+                                let t = if len2 > 1e-9 {
+                                    (((local[0] - a[0]) * dx + (local[1] - a[1]) * dz) / len2)
+                                        .clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                };
+                                (local[0] - a[0] - dx * t).hypot(local[1] - a[1] - dz * t)
+                                    <= ABUTMENT_QUAY_M
+                            })
+                        })
+                })
+        };
+        let leave = |p: [f32; 2]| in_a_structure(p) || under_a_bridge(p);
+        terrain_grade::conform_to_roads(&mut raw, lattice, &conform, &leave);
+        // **Off each flat deck's end, a landing at the deck's own height**, the
+        // end's whole width and [`ABUTMENT_LANDING_M`] deep: laid to like a road,
+        // the end still met a street a tenth of a metre under it, and the grass
+        // bank falling to the canal beside the Oosterbrug's south end, two metres
+        // within five of its corners, dragged the street down to it as the
+        // client found the land beside the water (2026-10-20). Not in the water.
+        for (end, outline, level) in &landings {
+            let (deck, world, _) = &outlines[*outline];
+            let reach = ABUTMENT_LANDING_M + lattice.step;
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in end.iter() {
+                lo = [lo[0].min(p[0] - reach), lo[1].min(p[1] - reach)];
+                hi = [hi[0].max(p[0] + reach), hi[1].max(p[1] + reach)];
+            }
+            let last = n as i64 - 1;
+            let idx = |v: f32, o: f32| ((v - o) / lattice.step).round() as i64;
+            for z in idx(lo[1], lattice.origin[1]).max(0)..=idx(hi[1], lattice.origin[1]).min(last)
+            {
+                for x in
+                    idx(lo[0], lattice.origin[0]).max(0)..=idx(hi[0], lattice.origin[0]).min(last)
+                {
+                    let p = lattice.at(x as usize, z as usize);
+                    if level_at(p[0], p[1]).is_some()
+                        || deck.contains([p[0] - world[0], p[1] - world[1]])
+                    {
+                        continue;
+                    }
+                    // Across the end's span — a sample's width past either
+                    // corner — and within the landing's depth of it.
+                    let on = end.windows(2).any(|w| {
+                        let (a, b) = (w[0], w[1]);
+                        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                        let len = dx.hypot(dz);
+                        if len < 1e-3 {
+                            return false;
+                        }
+                        let along = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len;
+                        let across = ((p[0] - a[0]) * dz - (p[1] - a[1]) * dx).abs() / len;
+                        (-lattice.step..=len + lattice.step).contains(&along)
+                            && across <= ABUTMENT_LANDING_M
+                    });
+                    if on {
+                        raw[z as usize * n + x as usize] = *level;
+                    }
+                }
+            }
+        }
 
         let k = k as usize;
         let mut heights = Vec::with_capacity(DENSE_GRID * DENSE_GRID);
@@ -1906,6 +2299,19 @@ impl Paving {
             }
         }
         self.rings.push((b, ring));
+    }
+
+    /// Whether a surveyed road surface covers `p`.
+    fn covers(&self, p: [f32; 2]) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
+        let key = (
+            (p[0] / Self::BUCKET_M).floor() as i32,
+            (p[1] / Self::BUCKET_M).floor() as i32,
+        );
+        self.grid.get(&key).into_iter().flatten().any(|&ri| {
+            let (bb, ring) = &self.rings[ri];
+            p[0] >= bb[0] && p[1] >= bb[1] && p[0] <= bb[2] && p[1] <= bb[3] && contains(ring, p)
+        })
     }
 
     /// How far out from point `i` of a line its trench reaches before the bank

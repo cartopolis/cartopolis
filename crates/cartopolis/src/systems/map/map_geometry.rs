@@ -337,6 +337,57 @@ pub struct DeckPlates {
     pub revision: u32,
 }
 
+/// **A deck laid flat is walked and driven on, not the ground under it.** Such a
+/// deck was never a plate — there was "nothing to climb onto" — because the ground
+/// under a canal bridge was graded up to its road and everything stood on that.
+/// Once the canal stayed open under the deck (2026-10-19) the avatar and the
+/// traffic crossing the Oosterbrug stood on its bed, so each streamed cell's flat
+/// decks are kept here, in the world frame, and
+/// [`TerrainField::ground_at`](crate::systems::terrain::TerrainField::ground_at) —
+/// the point consumers' ground, never a mesh's — answers the deck's top within
+/// one. Process-wide rather than a resource so that one read reaches every
+/// caller of `ground_at` without a parameter added to each; set with the cell's
+/// decks and cleared with them ([`DeckPlates::remove_cell`], [`DeckPlates::clear`]).
+struct WalkDeck {
+    deck: BridgeDeck,
+    /// Cell origin in world metres; the outline is tile-local.
+    world: Vec2,
+    /// World `y` of the deck as drawn.
+    top: f32,
+    shape: Option<Arc<DeckShape>>,
+}
+
+static WALK_DECKS: std::sync::RwLock<Option<HashMap<Cell, Vec<WalkDeck>>>> =
+    std::sync::RwLock::new(None);
+
+/// Replace one cell's walkable flat decks.
+fn set_walk_decks(cell: Cell, decks: Vec<WalkDeck>) {
+    if let Ok(mut w) = WALK_DECKS.write() {
+        let map = w.get_or_insert_with(HashMap::new);
+        if decks.is_empty() {
+            map.remove(&cell);
+        } else {
+            map.insert(cell, decks);
+        }
+    }
+}
+
+/// World `y` of the top of a flat deck over a world point, if one is there.
+#[must_use]
+pub fn walk_deck_top(wx: f32, wz: f32) -> Option<f32> {
+    let w = WALK_DECKS.read().ok()?;
+    w.as_ref()?
+        .values()
+        .flatten()
+        .filter_map(|d| {
+            let local = [wx - d.world.x, wz - d.world.y];
+            d.deck
+                .contains(local)
+                .then(|| d.shape.as_ref().map_or(d.top, |s| s.world_y(local)))
+        })
+        .reduce(f32::max)
+}
+
 /// One lifted deck: its outline as the tile drew it, where that tile sits in the
 /// world, and how high the structure stands.
 struct Plate {
@@ -551,6 +602,7 @@ impl DeckPlates {
 
     /// Drop one cell's decks (cell retired).
     pub fn remove_cell(&mut self, cell: &Cell) {
+        set_walk_decks(*cell, Vec::new());
         self.piers.remove(cell);
         self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
@@ -560,6 +612,9 @@ impl DeckPlates {
 
     /// Drop every deck (re-anchor, or the source stopped being a vector one).
     pub fn clear(&mut self) {
+        if let Ok(mut w) = WALK_DECKS.write() {
+            *w = None;
+        }
         self.piers.clear();
         if !self.plates.is_empty() {
             self.plates.clear();
@@ -728,7 +783,8 @@ impl DeckPlates {
 /// sheet of paper floating over the tracks.
 const DECK_THICKNESS_M: f32 = 0.9;
 
-/// Below this height a deck gets no fascia: a flat deck is a piece of road
+/// Within this of the ground under it a deck's fascia collapses to nothing: a deck
+/// on its own street is a piece of road
 /// surface, and a skirt around it would read as a kerb.
 const FASCIA_MIN_M: f32 = 0.4;
 
@@ -1306,6 +1362,14 @@ fn spawn_geometry_task(
                 let mut grass = None;
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
+                // `(deck index, run)`: where each deck's railings stand
+                // (`vector_tiles::railing_runs`), meshed into `deck_roads` at the
+                // end so they are lifted onto the deck with its carriageways.
+                let mut railings: Vec<(u32, Vec<[f32; 2]>)> = Vec::new();
+                // `(deck index, run)`: each deck's ends, where an abutment wall
+                // stands from the deck down into the water
+                // (`vector_tiles::abutment_runs`), lifted with it the same way.
+                let mut abutments: Vec<(u32, Vec<[f32; 2]>)> = Vec::new();
                 let mut levels: Option<Arc<cartopolis_geo::road_levels::LevelMap>> = None;
                 let mut approaches = Vec::new();
                 // Needs no tile: the piers are the register's, and only become
@@ -1404,6 +1468,46 @@ fn spawn_geometry_task(
                             // See `paving::cut_paving_under_roads` below.
                             let mut paving_meshes =
                                 crate::systems::paving::build_paving_meshes(&paved, mesh_bytes);
+                            // **Nor under a bridge laid flat.** The survey maps the
+                            // road surface across a canal bridge as it does the
+                            // street, and stood on the ground under the deck that
+                            // paving lay on the canal bed: pale slopes falling
+                            // from each quay into the water under the Oosterbrug,
+                            // and on the mounds before them (2026-10-19). The deck
+                            // is that surface. Only where atlas measured the decks
+                            // and this one is flat: under a viaduct the paving is
+                            // the street that runs beneath it.
+                            let flat_decks: Vec<SurfaceMesh> = atlas_decks
+                                .as_deref()
+                                .and_then(|a| {
+                                    crate::systems::terrain_tiles::match_atlas_decks(
+                                        &decks, tile_m, a,
+                                    )
+                                })
+                                .map(|m| {
+                                    m.iter()
+                                        .zip(&decks)
+                                        .filter(|(d, _)| {
+                                            d.height < cartopolis_geo::terrain_grade::MIN_LIFT_M
+                                        })
+                                        .map(|(_, deck)| SurfaceMesh {
+                                            group: SurfaceGroup::BridgeDeck,
+                                            positions: deck.positions.clone(),
+                                            indices: deck.indices.clone(),
+                                            uvs: Vec::new(),
+                                            normals: Vec::new(),
+                                            colors: Vec::new(),
+                                            rungs: Vec::new(),
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if !flat_decks.is_empty() {
+                                cartopolis_geo::road_stitch::cut_under_roads(
+                                    &mut paving_meshes,
+                                    &flat_decks,
+                                );
+                            }
                             // The registered crops go down over the generic green
                             // and under everything else on the ground stack
                             // (`SurfaceGroup::Crop`), so a field takes its own
@@ -1468,6 +1572,46 @@ fn spawn_geometry_task(
                                         &paving_meshes,
                                     );
                                     meshes.extend(std::mem::take(&mut paving_meshes));
+                                    // Where each deck's railings run: off the
+                                    // roads it carries, or — for a deck the
+                                    // tiles put no road on, whose street is
+                                    // drawn on the ground across it — off the
+                                    // streets that reach it.
+                                    let ground_ways: Vec<&SurfaceMesh> = roads
+                                        .ground
+                                        .iter()
+                                        .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
+                                        .collect();
+                                    // …and where its abutments stand: the ends
+                                    // the railings leave open.
+                                    for (i, d) in decks.iter().enumerate() {
+                                        let mut ways: Vec<&SurfaceMesh> = roads
+                                            .on_deck
+                                            .iter()
+                                            .filter(|(di, _)| *di as usize == i)
+                                            .map(|(_, m)| m)
+                                            .collect();
+                                        let runs: Vec<&[[f32; 2]]> = roads
+                                            .approaches
+                                            .iter()
+                                            .filter(|a| a.deck as usize == i)
+                                            .map(|a| a.points.as_slice())
+                                            .collect();
+                                        if ways.is_empty() && runs.is_empty() {
+                                            ways.clone_from(&ground_ways);
+                                        }
+                                        let i = i as u32;
+                                        railings.extend(
+                                            vector_tiles::railing_runs(d, &ways, &runs, tile_m)
+                                                .into_iter()
+                                                .map(|r| (i, r)),
+                                        );
+                                        abutments.extend(
+                                            vector_tiles::abutment_runs(d, &ways, &runs, tile_m)
+                                                .into_iter()
+                                                .map(|r| (i, r)),
+                                        );
+                                    }
                                     meshes.extend(roads.ground);
                                     // The stretches on a deck cannot be placed
                                     // yet — they are at y = 0 and the deck's
@@ -1811,6 +1955,36 @@ fn spawn_geometry_task(
                                             }
                                         }
                                         cell_places.surveyed.2 = lines.len();
+                                        // A parapet the register surveys on a
+                                        // deck is drawn from it; the railing
+                                        // gives way there rather than stand
+                                        // beside it.
+                                        if !railings.is_empty() {
+                                            let parapets: Vec<&[[f32; 2]]> = lines
+                                                .iter()
+                                                .filter(|l| {
+                                                    matches!(
+                                                        l.kind,
+                                                        furniture::LineKind::Wall | furniture::LineKind::Fence
+                                                    )
+                                                })
+                                                .map(|l| l.points.as_slice())
+                                                .collect();
+                                            if !parapets.is_empty() {
+                                                railings = std::mem::take(&mut railings)
+                                                    .into_iter()
+                                                    .flat_map(|(i, run)| {
+                                                        vector_tiles::cut_runs(vec![run], |p, dir| {
+                                                            !parapets.iter().any(|l| {
+                                                                along_polyline(l, p, dir, PARAPET_REACH_M)
+                                                            })
+                                                        })
+                                                        .into_iter()
+                                                        .map(move |r| (i, r))
+                                                    })
+                                                    .collect();
+                                            }
+                                        }
                                         // …and the kerbstones, standing along the
                                         // surveyed edge between a pavement and the
                                         // street (`paving_edges::kerb_lines`).
@@ -2159,6 +2333,48 @@ fn spawn_geometry_task(
                         meshes.retain(|m| !is_flat_ground(m.group));
                     }
                 }
+                // Each deck's ends carried out over the register's water to its
+                // quay (`vector_tiles::reach_the_quay`): `(deck, as outlined, as
+                // reached)`.
+                let reached_ends: Vec<(u32, Vec<[f32; 2]>, Vec<[f32; 2]>)> = abutments
+                    .into_iter()
+                    .map(|(i, run)| {
+                        let reached = match (ground.as_ref(), decks.get(i as usize)) {
+                            (Some((g, origin)), Some(deck)) => {
+                                let water = |p: [f32; 2]| {
+                                    g.water_surface_at(origin.x + p[0], origin.y + p[1]).is_some()
+                                };
+                                vector_tiles::reach_the_quay(deck, &run, &water)
+                            }
+                            _ => run.clone(),
+                        };
+                        (i, run, reached)
+                    })
+                    .collect();
+                // The street off each flat deck's end, at the height the deck is
+                // drawn at (`Landing`): its measured top, else its street's.
+                let landings: Vec<Landing> = match (
+                    ground.as_ref(),
+                    atlas_decks.as_deref().and_then(|a| {
+                        crate::systems::terrain_tiles::match_atlas_decks(&decks, tile_m, a)
+                    }),
+                ) {
+                    (Some((g, _)), Some(measures)) => reached_ends
+                        .iter()
+                        .filter_map(|(i, _, run)| {
+                            let deck = decks.get(*i as usize)?;
+                            let m = measures.get(*i as usize)?;
+                            if m.height >= cartopolis_geo::terrain_grade::MIN_LIFT_M {
+                                return None;
+                            }
+                            let nap = m.top.or_else(|| {
+                                levels.as_deref().and_then(|l| flat_deck_road_level(deck, l))
+                            })?;
+                            Some(Landing::new(deck, run, nap - g.datum_m()))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 let placed = stand_cell_on_ground(
                     &mut outcome,
                     ground.as_ref(),
@@ -2168,6 +2384,8 @@ fn spawn_geometry_task(
                     levels.as_deref(),
                     tile_m,
                     &mut floating,
+                    &decks,
+                    &landings,
                 );
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
@@ -2181,6 +2399,25 @@ fn spawn_geometry_task(
                     verts = split[3],
                     "surface cell stages"
                 );
+                // The railings travel as the deck's own meshes: lifted onto its
+                // height, and bent along its profile, as its carriageways are.
+                for (i, run) in railings {
+                    deck_roads.extend(
+                        furniture::build_railing_meshes(std::slice::from_ref(&run), mesh_bytes)
+                            .into_iter()
+                            .map(|m| (i, m)),
+                    );
+                }
+                // Each end carried out to its quay (above), and its wall stood
+                // where it lands.
+                for (i, run, reached) in reached_ends {
+                    if let Some(lip) = vector_tiles::quay_lip_mesh(&run, &reached) {
+                        deck_roads.push((i, lip));
+                    }
+                    if let Some(deck) = decks.get(i as usize) {
+                        deck_roads.push((i, vector_tiles::abutment_wall_mesh(deck, &reached)));
+                    }
+                }
                 if let Ok(mut g) = results.lock() {
                     g.push((
                         cell,
@@ -2325,6 +2562,8 @@ fn stand_cell_on_ground(
     levels: Option<&cartopolis_geo::road_levels::LevelMap>,
     tile_m: f32,
     floating: &mut Vec<SurfaceMesh>,
+    decks: &[BridgeDeck],
+    landings: &[Landing],
 ) -> bool {
     let mut placed = false;
     if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground) {
@@ -2354,7 +2593,46 @@ fn stand_cell_on_ground(
                 ground,
                 &tunnels,
                 levels,
+                landings,
             );
+        }
+        // **No water climbs a bridge's abutment.** Where the register's water
+        // runs a metre or two past a deck's end, the strip is narrower than the
+        // field can carve, and the surface rose to the quay in pale reflecting
+        // banks either side of the Oosterbrug's ends (2026-10-19). Away from a
+        // bridge that climb is what keeps a narrow canal drawn at all, so only
+        // here — within `ABUTMENT_WATER_REACH_M` of an outline — is the water
+        // that stands clear of its level dropped — every triangle with a corner
+        // up there, or the ones left over stood as spikes of water — and the
+        // abutment wall and the land close the gap. Before the walls, which
+        // bound the water as drawn.
+        if !decks.is_empty() {
+            for sm in meshes.iter_mut().filter(|m| m.group == SurfaceGroup::Water) {
+                let climbed: Vec<bool> = sm
+                    .positions
+                    .iter()
+                    .map(|p| {
+                        let local = [p[0], p[2]];
+                        let raised = ground
+                            .water_surface_at(origin.x + p[0], origin.y + p[2])
+                            .is_some_and(|l| p[1] > l + ABUTMENT_WATER_CLIMB_M);
+                        raised
+                            && decks
+                                .iter()
+                                .any(|d| near_deck(d, local, ABUTMENT_WATER_REACH_M))
+                    })
+                    .collect();
+                if climbed.iter().any(|&c| c) {
+                    let kept: Vec<u32> = sm
+                        .indices
+                        .chunks_exact(3)
+                        .filter(|t| !t.iter().any(|&i| climbed[i as usize]))
+                        .flatten()
+                        .copied()
+                        .collect();
+                    sm.indices = kept;
+                }
+            }
         }
         if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
             meshes.push(walls);
@@ -3400,6 +3678,7 @@ pub fn resolve_bridge_decks(
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<TerrainField>,
     mut plates: ResMut<DeckPlates>,
+    furniture_lod: Res<FurnitureLod>,
 ) {
     if surfaces.pending_decks.is_empty() {
         return;
@@ -3539,14 +3818,7 @@ pub fn resolve_bridge_decks(
                 f32::NEG_INFINITY
             }
         };
-        let mut mesh = build_deck_mesh(
-            &pending.decks,
-            &levels,
-            &heights,
-            &shapes,
-            deck_level,
-            &ground,
-        );
+        let mut mesh = build_deck_mesh(&pending.decks, &levels, &shapes, deck_level, &ground);
         let piers = if terrain.is_ready() {
             add_piers(
                 &mut mesh,
@@ -3562,6 +3834,28 @@ pub fn resolve_bridge_decks(
             0
         };
         plates.set_cell_piers(c, piers);
+        // The flat ones, for what walks and drives on them ([`WalkDeck`]) —
+        // only once the field has placed them, or their tops are in no frame.
+        set_walk_decks(
+            c,
+            if terrain.is_ready() {
+                pending
+                    .decks
+                    .iter()
+                    .zip(&heights)
+                    .enumerate()
+                    .filter(|(_, (_, &h))| h <= 0.0)
+                    .map(|(i, (deck, _))| WalkDeck {
+                        deck: deck.clone(),
+                        world: cell_world,
+                        top: deck_level + levels[i],
+                        shape: shapes[i].clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        );
         // Publish before the mesh is spawned rather than after, so the two cannot
         // disagree about a cell: this is the same `heights` the vertices were built
         // from, and a deck that reached the screen but not the resource is a route
@@ -3657,6 +3951,70 @@ pub fn resolve_bridge_decks(
             let Some(&h) = levels.get(*di as usize) else {
                 continue;
             };
+            let stand = match shapes.get(*di as usize).and_then(Option::as_deref) {
+                Some(shape) => Stand::Deck(shape),
+                None => Stand::Lifted(deck_level + h),
+            };
+            // A railing rides the deck as its carriageway does, in the street
+            // furniture's material and under the same altitude fade.
+            if sm.group == SurfaceGroup::Furniture {
+                let material = surfaces.group_material(SurfaceGroup::Furniture, &mut mats.plain);
+                let id = commands
+                    .spawn((
+                        Mesh3d(meshes.add(build_mesh(sm, cell_world.x, cell_world.y, stand))),
+                        MeshMaterial3d(material),
+                        placement(),
+                        FurnitureSurface,
+                        furniture_lod.visibility(),
+                    ))
+                    .id();
+                if !debug_hide_tokens().is_empty() {
+                    commands
+                        .entity(id)
+                        .insert(DebugSurfaceGroup(SurfaceGroup::Furniture));
+                }
+                spawned.push(id);
+                continue;
+            }
+            // The lip carrying an end out to its quay is the slab's own surface,
+            // in the slab's material.
+            if sm.group == SurfaceGroup::BridgeDeck {
+                if let Some(material) = surfaces.materials.get(&SurfaceGroup::BridgeDeck).cloned() {
+                    let id = commands
+                        .spawn((
+                            Mesh3d(meshes.add(build_mesh(sm, cell_world.x, cell_world.y, stand))),
+                            MeshMaterial3d(material),
+                            placement(),
+                        ))
+                        .id();
+                    if !debug_hide_tokens().is_empty() {
+                        commands
+                            .entity(id)
+                            .insert(DebugSurfaceGroup(SurfaceGroup::BridgeDeck));
+                    }
+                    spawned.push(id);
+                }
+                continue;
+            }
+            // An abutment rides it too, in the quay walls' own material: it is
+            // the same masonry, and the walls along the canal run into it.
+            if sm.group == SurfaceGroup::QuayWall {
+                let material = surfaces.group_material(SurfaceGroup::QuayWall, &mut mats.plain);
+                let id = commands
+                    .spawn((
+                        Mesh3d(meshes.add(build_mesh(sm, cell_world.x, cell_world.y, stand))),
+                        MeshMaterial3d(material),
+                        placement(),
+                    ))
+                    .id();
+                if !debug_hide_tokens().is_empty() {
+                    commands
+                        .entity(id)
+                        .insert(DebugSurfaceGroup(SurfaceGroup::QuayWall));
+                }
+                spawned.push(id);
+                continue;
+            }
             let material = surfaces
                 .road_materials
                 .entry(sm.group)
@@ -3671,15 +4029,7 @@ pub fn resolve_bridge_decks(
             spawned.push(
                 commands
                     .spawn((
-                        Mesh3d(meshes.add(build_mesh(
-                            sm,
-                            cell_world.x,
-                            cell_world.y,
-                            match shapes.get(*di as usize).and_then(Option::as_deref) {
-                                Some(shape) => Stand::Deck(shape),
-                                None => Stand::Lifted(deck_level + h),
-                            },
-                        ))),
+                        Mesh3d(meshes.add(build_mesh(sm, cell_world.x, cell_world.y, stand))),
                         MeshMaterial3d(material),
                         placement(),
                     ))
@@ -3793,30 +4143,28 @@ fn tile_frac_to_lat_lng(fx: f64, fy: f64) -> (f64, f64) {
 /// The fascia is what makes a deck a *structure*. Without it a raised deck is a
 /// sheet with no thickness, and from any angle but straight down it reads as a
 /// texture floating in mid-air rather than as something a road runs over.
-/// `levels` is where each slab is drawn relative to the cell's level; `clearance`
-/// is how far the structure stands over its own ground, which is what decides
-/// whether it has a fascia at all.
+/// `levels` is where each slab is drawn relative to the cell's level; the
+/// ground under it decides how much of its fascia shows.
 fn build_deck_mesh(
     decks: &[BridgeDeck],
     levels: &[f32],
-    clearance: &[f32],
     shapes: &[Option<Arc<DeckShape>>],
     deck_level: f32,
     ground: &dyn Fn(f32, f32) -> f32,
 ) -> SurfaceMesh {
-    let mut out = deck_slab(&[], &[], &[]);
+    let mut out = deck_slab(&[], &[]);
     for (i, deck) in decks.iter().enumerate() {
-        let (Some(&level), Some(&lift)) = (levels.get(i), clearance.get(i)) else {
+        let Some(&level) = levels.get(i) else {
             continue;
         };
         let one = std::slice::from_ref(deck);
         let slab = match shapes.get(i).and_then(Option::as_deref) {
-            None => deck_slab(one, &[level], &[lift]),
+            None => deck_slab(one, &[level]),
             // A profiled deck: built level at 0, subdivided so its slope has
             // vertices to follow, then stood on the profile. Fascia and surface
             // move together, so the slab keeps its thickness all the way along.
             Some(shape) => {
-                let mut slab = deck_slab(one, &[0.0], &[lift]);
+                let mut slab = deck_slab(one, &[0.0]);
                 let (mut uvs, mut colors, mut rungs) = (Vec::new(), Vec::new(), Vec::new());
                 cartopolis_geo::terrain_refine::refine_for_terrain(
                     &mut slab.positions,
@@ -3852,7 +4200,12 @@ fn build_deck_mesh(
                 None => level,
             };
             if p[1] < surface - 1e-3 {
-                p[1] = p[1].max(ground(p[0], p[2]).min(surface));
+                let g = ground(p[0], p[2]);
+                p[1] = if surface - g < FASCIA_MIN_M {
+                    surface
+                } else {
+                    p[1].max(g.min(surface))
+                };
             }
         }
         let base = out.positions.len() as u32;
@@ -3961,12 +4314,12 @@ const DECK_PROFILE_EDGE_M: f32 = 3.0;
 
 /// Level slabs, each deck at its own level: the surface and, for a deck lifted
 /// far enough to have one, the fascia down its sides.
-fn deck_slab(decks: &[BridgeDeck], levels: &[f32], clearance: &[f32]) -> SurfaceMesh {
+fn deck_slab(decks: &[BridgeDeck], levels: &[f32]) -> SurfaceMesh {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
-    for ((deck, &h), &lift) in decks.iter().zip(levels).zip(clearance) {
+    for (deck, &h) in decks.iter().zip(levels) {
         // Surface.
         let base = positions.len() as u32;
         for p in &deck.positions {
@@ -3975,9 +4328,11 @@ fn deck_slab(decks: &[BridgeDeck], levels: &[f32], clearance: &[f32]) -> Surface
         }
         indices.extend(deck.indices.iter().map(|i| base + i));
 
-        if lift < FASCIA_MIN_M {
-            continue;
-        }
+        // A fascia for every deck, flat or lifted: a canal bridge at street
+        // level still stands metres over its water, and without one it read
+        // from the canal as a sheet of paper (2026-10-19). Where the ground is
+        // within [`FASCIA_MIN_M`] of the deck the band collapses to nothing
+        // (`build_deck_mesh`), so on its own street it is no kerb.
         let bottom = h - DECK_THICKNESS_M;
         for ring in &deck.rings {
             // The ring's own centroid orients each face outward — cheaper and more
@@ -4437,6 +4792,7 @@ fn stand_surface(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> (Surfac
                 terrain,
                 tunnels,
                 None,
+                &[],
             );
         }
     }
@@ -4691,6 +5047,161 @@ const QUAY_WALL_MIN_M: f32 = 0.3;
 /// 2.5 m reach it found no water, stood its full height on the walkway and read
 /// as a grey screen down the bank (2026-10-01). Short of the next street.
 const WALL_FOOT_PROBE_M: f32 = 7.0;
+
+/// How far from a deck's outline the water that climbs above its level is
+/// dropped, metres (`stand_cell_on_ground`): the strip of registered water past a
+/// canal bridge's end, a metre or two in Groningen, with a field spacing to spare.
+const ABUTMENT_WATER_REACH_M: f32 = 4.0;
+
+/// How far above its registered level the water must stand there to be dropped,
+/// metres: past the refinement's own noise, short of the lowest quay.
+const ABUTMENT_WATER_CLIMB_M: f32 = 0.3;
+
+/// How far off a flat deck's end the street is stood at the deck's own height,
+/// metres, and how much further it takes to rejoin the field.
+const LANDING_FULL_M: f32 = 3.0;
+const LANDING_FADE_M: f32 = 2.0;
+
+/// **The street off a flat deck's end, at the deck's height.** Atlas lays a
+/// landing at the deck's height off each end (`terrain_grade`'s
+/// `ABUTMENT_LANDING_M`), but the field holds it only at its sample spacing,
+/// three metres here, and the first sample past the end is carved with the canal
+/// under the deck: read from the field, the pavement met the Oosterbrug's south
+/// end a tenth to half a metre under its edge, its fascia standing out of the
+/// street as a brown band (2026-10-20). Each segment of an end, tile-local, its
+/// outward normal, and the deck's drawn height in the field's frame.
+pub(crate) struct Landing {
+    segments: Vec<([f32; 2], [f32; 2], [f32; 2])>,
+    level: f32,
+}
+
+impl Landing {
+    fn new(deck: &BridgeDeck, run: &[[f32; 2]], level: f32) -> Self {
+        let segments = run
+            .windows(2)
+            .filter_map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                let len = dx.hypot(dz);
+                if len < 1e-3 {
+                    return None;
+                }
+                let n = [dz / len, -dx / len];
+                // Outward: probed 5 cm off the edge.
+                let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+                let out = if deck.contains([mid[0] + n[0] * 0.05, mid[1] + n[1] * 0.05]) {
+                    [-n[0], -n[1]]
+                } else {
+                    n
+                };
+                Some((a, b, out))
+            })
+            .collect();
+        Self { segments, level }
+    }
+
+    /// How much of the deck's height a tile-local point takes: 1 within
+    /// [`LANDING_FULL_M`] outward of a segment and across its span, falling to 0
+    /// over [`LANDING_FADE_M`] more.
+    fn weight(&self, p: [f32; 2]) -> f32 {
+        let mut w = 0.0f32;
+        for &(a, b, out) in &self.segments {
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dz * dz;
+            let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2;
+            if !(0.0..=1.0).contains(&t) {
+                continue;
+            }
+            let o = (p[0] - a[0]) * out[0] + (p[1] - a[1]) * out[1];
+            if o < 0.0 {
+                continue;
+            }
+            w = w.max((1.0 - (o - LANDING_FULL_M) / LANDING_FADE_M).clamp(0.0, 1.0));
+        }
+        w
+    }
+}
+
+/// A ground field with the street off every flat deck's end at the deck's height
+/// ([`Landing`]).
+struct Landed<'a> {
+    under: &'a dyn cartopolis_geo::terrain_refine::GroundField,
+    landings: &'a [Landing],
+    origin: Vec2,
+}
+
+impl cartopolis_geo::terrain_refine::GroundField for Landed<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.under.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let here = self.under.at(x, z);
+        let p = [x - self.origin.x, z - self.origin.y];
+        let (mut w, mut level) = (0.0f32, here);
+        for l in self.landings {
+            let lw = l.weight(p);
+            if lw > w {
+                (w, level) = (lw, l.level);
+            }
+        }
+        here + w * (level - here)
+    }
+}
+
+/// Whether a tile-local point is on `deck` or within `reach` of its outline.
+fn near_deck(deck: &BridgeDeck, p: [f32; 2], reach: f32) -> bool {
+    if p[0] < deck.min[0] - reach
+        || p[0] > deck.max[0] + reach
+        || p[1] < deck.min[1] - reach
+        || p[1] > deck.max[1] + reach
+    {
+        return false;
+    }
+    deck.contains(p) || deck.rings.iter().any(|r| near_polyline_any(r, p, reach))
+}
+
+/// Whether `p` lies within `reach` of the polyline `line`, in any direction.
+fn near_polyline_any(line: &[[f32; 2]], p: [f32; 2], reach: f32) -> bool {
+    line.windows(2).any(|w| {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dz * dz;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= reach
+    })
+}
+
+/// How close to a surveyed wall or fence a deck's railing gives way to it,
+/// metres: the survey's line and OSM's outline of the same parapet agree to
+/// about this.
+const PARAPET_REACH_M: f32 = 1.5;
+
+/// How nearly parallel (cosine) a surveyed wall must run to a railing to be its
+/// parapet. **Near is not enough**: the quay walls curving round a canal
+/// bridge's abutments come within the reach of its railing end-on, and cut the
+/// Oosterbrug's into pieces (2026-10-19).
+const PARAPET_PARALLEL: f32 = 0.94;
+
+/// Whether `p` lies within `reach` of a segment of the polyline `line` that runs
+/// along the unit direction `dir` — a parapet beside a railing, not a wall
+/// meeting it.
+fn along_polyline(line: &[[f32; 2]], p: [f32; 2], dir: [f32; 2], reach: f32) -> bool {
+    line.windows(2).any(|w| {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dz * dz;
+        if len2 <= 0.0 || (dx * dir[0] + dz * dir[1]).abs() < PARAPET_PARALLEL * len2.sqrt() {
+            return false;
+        }
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0);
+        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= reach
+    })
+}
 /// Tallest wall stood. Groningen's tallest registered quay wall is 4.45 m
 /// (`walls-have-a-measured-height.md`); past this a step is a bad join, not masonry.
 const QUAY_WALL_MAX_M: f32 = 8.0;
@@ -4940,6 +5451,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     terrain: &G,
     tunnels: &crate::systems::tunnels::Tunnels,
     levels: Option<&cartopolis_geo::road_levels::LevelMap>,
+    landings: &[Landing],
 ) {
     // Volumetric things keep their own normals and are not refined against the
     // field: a tree's normals describe the tree, and a tunnel's walls are vertical.
@@ -5030,6 +5542,13 @@ fn stand_on_terrain<G: MeasuredGround>(
         Some(f) => f,
         None => &lidded,
     };
+    let landed = Landed {
+        under: field,
+        landings,
+        origin,
+    };
+    let field: &dyn cartopolis_geo::terrain_refine::GroundField =
+        if landings.is_empty() { field } else { &landed };
     let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
         crate::systems::terrain::refine_for_terrain(
@@ -5134,33 +5653,19 @@ const UNDER_WATER_M: f32 = 0.3;
 /// How far out along an approach [`DeckPlates::approach_steps`] reads the ground.
 const APPROACH_PROBE_M: f32 = 3.0;
 
-/// How far from the street it carries a deck's outline may lie and still take
-/// that street's height — a canal bridge's parapets and footways either side of
-/// the carriageway.
-const FLAT_DECK_ROAD_REACH_M: f32 = 6.0;
-
 /// The height a deck laid flat stands at where atlas solved the street it
 /// carries (`road_levels`), metres NAP: the median of that street's height
 /// nearest each outline vertex. **The first choice, because it is one answer for
 /// both halves of a bridge the tile border cut**: atlas solves the network over a
 /// window wider than a tile, and a span with no survey under it is bridged along
 /// the street from both quays — where [`flat_deck_level`], asking only the
-/// approaches this tile can see, stands each half at its own end.
+/// approaches this tile can see, stands each half at its own end. The rule is
+/// `road_levels::flat_deck_level`, shared with atlas's grading of the ends.
 fn flat_deck_road_level(
     deck: &BridgeDeck,
     levels: &cartopolis_geo::road_levels::LevelMap,
 ) -> Option<f32> {
-    let mut hs: Vec<f32> = deck
-        .rings
-        .iter()
-        .flatten()
-        .filter_map(|&p| levels.y_at(p, |level| level == 1, FLAT_DECK_ROAD_REACH_M))
-        .collect();
-    if hs.is_empty() {
-        return None;
-    }
-    hs.sort_by(f32::total_cmp);
-    Some(hs[hs.len() / 2])
+    cartopolis_geo::road_levels::flat_deck_level(deck.rings.iter().flatten().copied(), levels)
 }
 
 /// The height a deck laid flat stands at: the median ground [`APPROACH_PROBE_M`]
@@ -5434,6 +5939,38 @@ mod tests {
         }
     }
 
+    /// The street off a flat deck's end stands at the deck's height for
+    /// `LANDING_FULL_M`, rejoins the field over `LANDING_FADE_M`, and nothing on
+    /// the deck's side of the end or beyond its span is touched.
+    #[test]
+    fn the_street_off_a_flat_deck_end_meets_the_deck() {
+        struct Flat;
+        impl cartopolis_geo::terrain_refine::GroundField for Flat {
+            fn min_ground_edge_m(&self) -> f32 {
+                1.0
+            }
+            fn at(&self, _: f32, _: f32) -> f32 {
+                4.0
+            }
+        }
+        let deck = square_deck(20.0);
+        // The east end, run along x = 20.
+        let landings = [Landing::new(&deck, &[[20.0, 0.0], [20.0, 20.0]], 5.0)];
+        let landed = Landed {
+            under: &Flat,
+            landings: &landings,
+            origin: Vec2::new(100.0, 100.0),
+        };
+        use cartopolis_geo::terrain_refine::GroundField;
+        let at = |x: f32, z: f32| landed.at(100.0 + x, 100.0 + z);
+        assert!((at(20.5, 10.0) - 5.0).abs() < 1e-5);
+        assert!((at(23.0, 10.0) - 5.0).abs() < 1e-5);
+        assert!((at(24.0, 10.0) - 4.5).abs() < 1e-5);
+        assert!((at(26.0, 10.0) - 4.0).abs() < 1e-5);
+        assert!((at(19.0, 10.0) - 4.0).abs() < 1e-5, "on the deck");
+        assert!((at(21.0, -2.0) - 4.0).abs() < 1e-5, "beside the end");
+    }
+
     /// A flat deck stands at the street off its ends — not at the ground under
     /// it (a canal carved metres down) and not at anything else in the cell.
     #[test]
@@ -5531,7 +6068,6 @@ mod tests {
         let mesh = build_deck_mesh(
             std::slice::from_ref(&deck),
             &[5.0],
-            &[5.0],
             &[Some(shape.clone())],
             0.0,
             &|_, _| f32::NEG_INFINITY,
@@ -5577,7 +6113,6 @@ mod tests {
         let away = vec![[80.0, 80.0], [84.0, 80.0], [84.0, 84.0], [80.0, 84.0]];
         let mut mesh = build_deck_mesh(
             std::slice::from_ref(&deck),
-            &[6.0],
             &[6.0],
             &[None],
             1.0,
