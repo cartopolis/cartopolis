@@ -1749,7 +1749,9 @@ impl ShotHarness {
             // photographed in place.
             let walks = matches!(
                 clip,
-                Some(crate::systems::avatar::ClipName::Walk | crate::systems::avatar::ClipName::Run)
+                Some(
+                    crate::systems::avatar::ClipName::Walk | crate::systems::avatar::ClipName::Run
+                )
             );
             shots = if frames > 0 && walks {
                 walk_along(&waypoints, frames)

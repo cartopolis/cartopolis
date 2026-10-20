@@ -282,11 +282,7 @@ const RECORDED_STEP_GAIN: f32 = 1.6;
 
 #[cfg(feature = "audio")]
 /// Play each queued echo once its delay has run out.
-pub fn play_step_echoes(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut echoes: ResMut<StepEchoes>,
-) {
+pub fn play_step_echoes(mut commands: Commands, time: Res<Time>, mut echoes: ResMut<StepEchoes>) {
     let dt = time.delta_secs();
     echoes.0.retain_mut(|(delay, clip, volume, speed)| {
         *delay -= dt;

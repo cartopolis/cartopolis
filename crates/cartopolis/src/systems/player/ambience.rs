@@ -326,7 +326,9 @@ pub use playback::*;
 #[cfg(feature = "audio")]
 mod playback {
     use super::*;
-    use bevy::audio::{AudioPlayer, AudioSink, AudioSource, PlaybackMode, PlaybackSettings, Volume};
+    use bevy::audio::{
+        AudioPlayer, AudioSink, AudioSource, PlaybackMode, PlaybackSettings, Volume,
+    };
     use bevy::prelude::*;
     use std::collections::HashMap;
 
@@ -604,7 +606,10 @@ mod tests {
                 daylight,
                 ..Default::default()
             });
-            assert!(mix.iter().sum::<f32>() > 0.2, "silent at daylight {daylight}");
+            assert!(
+                mix.iter().sum::<f32>() > 0.2,
+                "silent at daylight {daylight}"
+            );
         }
     }
 
@@ -613,10 +618,7 @@ mod tests {
         let s = day();
         assert!(level(&s, Bed::Residential) > 0.5);
         assert_eq!(level(&s, Bed::Night), 0.0);
-        let dark = Surroundings {
-            daylight: 0.0,
-            ..s
-        };
+        let dark = Surroundings { daylight: 0.0, ..s };
         assert_eq!(level(&dark, Bed::Residential), 0.0);
         assert!(level(&dark, Bed::Night) >= 0.5);
     }
@@ -642,8 +644,20 @@ mod tests {
         // One place at a time: with two, the ceiling rescales them both, and
         // the one that fell would take back what the other gave up.
         for (bed, place) in [
-            (Bed::Park, Surroundings { green: 1.0, ..day() }),
-            (Bed::Shopping, Surroundings { shops: 1.0, ..day() }),
+            (
+                Bed::Park,
+                Surroundings {
+                    green: 1.0,
+                    ..day()
+                },
+            ),
+            (
+                Bed::Shopping,
+                Surroundings {
+                    shops: 1.0,
+                    ..day()
+                },
+            ),
         ] {
             let wet = Surroundings { rain: 1.0, ..place };
             let dark = Surroundings {
@@ -687,17 +701,35 @@ mod tests {
         use PavingKind as K;
         use PavingMaterial as M;
         let s = |p, g, i| step_surface(p, g, i);
-        assert_eq!(s(Some((K::Footway, Some(M::Brick))), false, false), StepSurface::Brick);
-        assert_eq!(s(Some((K::Footway, Some(M::Tiles))), false, false), StepSurface::Stone);
-        assert_eq!(s(Some((K::Yard, Some(M::Gravel))), false, false), StepSurface::Gravel);
+        assert_eq!(
+            s(Some((K::Footway, Some(M::Brick))), false, false),
+            StepSurface::Brick
+        );
+        assert_eq!(
+            s(Some((K::Footway, Some(M::Tiles))), false, false),
+            StepSurface::Stone
+        );
+        assert_eq!(
+            s(Some((K::Yard, Some(M::Gravel))), false, false),
+            StepSurface::Gravel
+        );
         assert_eq!(s(Some((K::Verge, None)), false, false), StepSurface::Grass);
-        assert_eq!(s(Some((K::Street, None)), false, false), StepSurface::Asphalt);
-        assert_eq!(s(Some((K::Footway, None)), false, false), StepSurface::Brick);
+        assert_eq!(
+            s(Some((K::Street, None)), false, false),
+            StepSurface::Asphalt
+        );
+        assert_eq!(
+            s(Some((K::Footway, None)), false, false),
+            StepSurface::Brick
+        );
         // Off the survey: the lawns, else the OSM carriageway.
         assert_eq!(s(None, true, false), StepSurface::Grass);
         assert_eq!(s(None, false, false), StepSurface::Asphalt);
         // Indoors wins over whatever the ground outside was surveyed as.
-        assert_eq!(s(Some((K::Footway, Some(M::Brick))), false, true), StepSurface::Indoor);
+        assert_eq!(
+            s(Some((K::Footway, Some(M::Brick))), false, true),
+            StepSurface::Indoor
+        );
     }
 
     #[test]
