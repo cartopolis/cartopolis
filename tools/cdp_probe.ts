@@ -34,6 +34,7 @@
  *   bun tools/cdp_probe.ts --remote --port 9444    # drive a browser already listening there (e.g. an
  *                                                  # ssh -L to a machine with a real GPU) instead of spawning one
  *   bun tools/cdp_probe.ts --drive 20              # from t=20 s, move the camera the way a person does
+ *   bun tools/cdp_probe.ts --drive 20 --drive-script zoomout   # …or zoom out in steps, pausing at each
  *   bun tools/cdp_probe.ts --keep-profile          # a returning visitor: keep the browser profile (its
  *                                                  # IndexedDB cache) from the run before, and after this one
  *
@@ -47,6 +48,7 @@
  * read differently (see "main thread hung" in the report).
  */
 import { parseArgs } from "node:util";
+import { parseGpuLine, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
 
 const { values: opt } = parseArgs({
   options: {
@@ -63,6 +65,7 @@ const { values: opt } = parseArgs({
     trace: { type: "string" },
     remote: { type: "boolean", default: false },
     drive: { type: "string" },
+    "drive-script": { type: "string", default: "wander" },
     "keep-profile": { type: "boolean", default: false },
   },
 });
@@ -165,6 +168,10 @@ let traceDone: (() => void) | undefined;
 let onPaused: ((frames: any[]) => void) | undefined;
 
 const console_: string[] = [];
+/** The client's `gpu` lines and the camera script's moves, for the GPU table. */
+const gpuRows: GpuRow[] = [];
+const marks: Mark[] = [];
+const since = () => (Date.now() - started) / 1000;
 const errors: string[] = [];
 const requests = new Map<string, { url: string; bytes: number; status?: number }>();
 
@@ -216,6 +223,10 @@ ws.onmessage = (ev) => {
     case "Runtime.consoleAPICalled": {
       const line = formatConsole(msg.params.args);
       if (line) console_.push(line);
+      const gpu = line && parseGpuLine(line);
+      if (gpu) gpuRows.push({ t: since(), f: gpu });
+      const owners = line && parseOwnersLine(line);
+      if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
       if (opt.raw) console.log("  │", line);
       break;
     }
@@ -361,6 +372,18 @@ async function drive(fromMs: number) {
       await Bun.sleep(16);
     }
   };
+  if (opt["drive-script"] === "zoomout") {
+    // Out in four steps with a pause at each, so a streaming burst and the
+    // residency it leaves behind can be told apart; then all the way back in.
+    for (let step = 0; step < 4 && Date.now() - started < RUN_MS - 2000; step++) {
+      await wheel(-100, 40); // a negative deltaY zooms out here
+      marks.push({ t: since(), label: `zoomed out, step ${step + 1}` });
+      await Bun.sleep(10_000);
+    }
+    await wheel(100, 160);
+    marks.push({ t: since(), label: "zoomed back in" });
+    return;
+  }
   while (Date.now() - started < RUN_MS - 2000) {
     for (let i = 0; i < 4; i++) await drag("left", -500, 0, 60); // pan east, ~4 s
     await drag("middle", 600, 0, 120); // turn, ~2 s
@@ -605,6 +628,8 @@ if (!fps.length) {
   for (const f of fps) console.log(`  fps=${f.fps}  mean=${f.mean}ms  worst=${f.worst}ms`);
   console.log(`  ── median ${median} fps over ${fps.length} samples`);
 }
+
+printGpuTable(gpuRows, marks);
 
 if (hangStacks.length) {
   console.log(`\n══ main thread hung at t=${hungAt!.toFixed(0)}s ═════════════════════════════`);
