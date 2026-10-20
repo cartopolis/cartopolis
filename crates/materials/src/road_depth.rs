@@ -23,6 +23,9 @@ use crate::ground_detail::{GroundKey, GroundUniform};
 pub const ATTRIBUTE_ROAD_RUNG: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadRung", 970_412_233, VertexFormat::Float32);
 
+/// `GroundUniform::water_sea.w` on a road: `ground_detail.wesl` tests `> 0.5`.
+const ROAD_FLAG: f32 = 1.0;
+
 /// The shader location `road_depth.wesl` reads the rung from. Bevy's own mesh
 /// attributes occupy 0–7, so this is the first free one.
 const RUNG_SHADER_LOCATION: u32 = 8;
@@ -82,7 +85,9 @@ impl From<&RoadDepthExtension> for GroundUniform {
             detail: e.detail,
             lod: e.lod,
             water_body: e.water_body,
-            water_sea: e.water_sea,
+            // w says "a road ribbon" to the shared shader, which gives a
+            // carriageway its aggregate in relief; every ground surface leaves it 0.
+            water_sea: e.water_sea.with_w(ROAD_FLAG),
         }
     }
 }
