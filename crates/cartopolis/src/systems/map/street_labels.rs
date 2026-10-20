@@ -100,6 +100,9 @@ const MAX_FOCUS_M: f32 = 1200.0;
 /// crossing a city does not accumulate every street it has ever shown.
 const CACHE_MAX: usize = 400;
 
+/// Names kept measured ([`StreetLabelSigns::extents`]) before the cache starts over.
+const EXTENT_CACHE_MAX: usize = 20_000;
+
 /// Above this altitude the layer switches off: the streets are a hairline each
 /// and their names stop being a map and become a block of text laid over one.
 const MAX_LABEL_ALT: f32 = 1200.0;
@@ -324,6 +327,11 @@ pub struct StreetLabelSigns {
     font: Option<fontdue::Font>,
     quad: Option<Handle<Mesh>>,
     signs: HashMap<String, Handle<Image>>,
+    /// [`text_extent`] per name. The fit test asks it of every street in reach on
+    /// every placement, and a placement re-runs every frame until the chosen
+    /// names' textures are all built, four a frame: measuring each name glyph by
+    /// glyph each time was most of the placer's cost at street level.
+    extents: HashMap<String, (u32, u32)>,
     pool: Vec<Entity>,
     /// State the pool currently reflects, so a frame that changes nothing does
     /// nothing at all.
@@ -447,7 +455,25 @@ pub fn update_street_labels(
     // Choose what to write, in world space. The camera decides only *which* part
     // of the map is written and which way round the letters run — where a name
     // sits on its street is the street's business, and does not move.
-    let mut chosen = choose_labels(&store, &font, height_m, cam_right, view_at);
+    // Measured names are a few bytes each and a ring holds a few thousand; past
+    // that the city crossed was a big one, and starting over costs one measure each.
+    if signs.extents.len() > EXTENT_CACHE_MAX {
+        signs.extents.clear();
+    }
+    let mut chosen = choose_labels(
+        &store,
+        &mut |name| {
+            if let Some(e) = signs.extents.get(name) {
+                return *e;
+            }
+            let e = text_extent(&font, name);
+            signs.extents.insert(name.to_string(), e);
+            e
+        },
+        height_m,
+        cam_right,
+        view_at,
+    );
 
     // Crossing a city would otherwise accumulate every name it has ever shown.
     // Trimming to the live selection is exact and only costs a re-raster of
@@ -640,7 +666,7 @@ fn angle_delta(a: f32, b: f32) -> f32 {
 /// letters run.
 fn choose_labels<'a>(
     store: &'a StreetLabelStore,
-    font: &fontdue::Font,
+    extent: &mut dyn FnMut(&str) -> (u32, u32),
     height_m: f32,
     cam_right: Vec2,
     view_at: Vec2,
@@ -650,7 +676,7 @@ fn choose_labels<'a>(
         if line.points[0].distance(view_at) > SELECT_RADIUS_M + line.length {
             continue; // nowhere near the view; cheap enough to test per line
         }
-        let (tw, th) = text_extent(font, &line.name);
+        let (tw, th) = extent(&line.name);
         let width_m = height_m * tw as f32 / th as f32;
         if width_m > line.length * FIT_MARGIN {
             continue; // the street cannot carry its own name at this size
@@ -934,25 +960,7 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
     }
 
     // 2. Halo: a disc dilation of the coverage.
-    let mut halo = vec![0u8; cov.len()];
-    for y in 0..hi {
-        for x in 0..wi {
-            let mut best = 0u8;
-            for dy in -HALO_PX..=HALO_PX {
-                for dx in -HALO_PX..=HALO_PX {
-                    if dx * dx + dy * dy > HALO_PX * HALO_PX {
-                        continue;
-                    }
-                    let (sx, sy) = (x + dx, y + dy);
-                    if sx < 0 || sx >= wi || sy < 0 || sy >= hi {
-                        continue;
-                    }
-                    best = best.max(cov[(sy * wi + sx) as usize]);
-                }
-            }
-            halo[(y * wi + x) as usize] = best;
-        }
-    }
+    let halo = dilate_disc(&cov, wi, hi, HALO_PX);
 
     // 3. Ink over halo, source-over onto transparent.
     let mut px = vec![0u8; cov.len() * 4];
@@ -971,6 +979,69 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
         px[j + 3] = (out_a * 255.0) as u8;
     }
     (px, w, h)
+}
+
+/// The largest value within `r` pixels (Euclidean, `dx² + dy² ≤ r²`) of each
+/// pixel, off-image counting as zero.
+///
+/// A disc is a stack of horizontal runs, one per row offset, so this takes each
+/// row's running maximum over every run width the disc has, and then the maximum
+/// down the disc's rows: ~2r + 1 reads a pixel per width instead of the disc's ~πr².
+/// Exactly the brute-force disc's answer (`the_disc_dilation_matches_the_brute_force_one`),
+/// and the raster runs on the main thread, four names a frame.
+fn dilate_disc(src: &[u8], w: i32, h: i32, r: i32) -> Vec<u8> {
+    // Half-width of the disc's run at each row offset |dy|.
+    let half: Vec<i32> = (0..=r)
+        .map(|dy| {
+            let mut dx = 0;
+            while (dx + 1) * (dx + 1) + dy * dy <= r * r {
+                dx += 1;
+            }
+            dx
+        })
+        .collect();
+    let mut widths = half.clone();
+    widths.sort_unstable();
+    widths.dedup();
+    let (wu, hu) = (w as usize, h as usize);
+    // Row maxima per distinct half-width.
+    let rows: Vec<(i32, Vec<u8>)> = widths
+        .iter()
+        .map(|&k| {
+            let mut out = vec![0u8; src.len()];
+            for y in 0..hu {
+                let row = &src[y * wu..(y + 1) * wu];
+                for x in 0..wu {
+                    let lo = x.saturating_sub(k as usize);
+                    let hi_x = (x + k as usize).min(wu - 1);
+                    out[y * wu + x] = row[lo..=hi_x].iter().copied().max().unwrap_or(0);
+                }
+            }
+            (k, out)
+        })
+        .collect();
+    let row_max = |k: i32| {
+        &rows
+            .iter()
+            .find(|(w, _)| *w == k)
+            .expect("every width built")
+            .1
+    };
+    let mut out = vec![0u8; src.len()];
+    for dy in -r..=r {
+        let m = row_max(half[dy.unsigned_abs() as usize]);
+        for y in 0..h {
+            let sy = y + dy;
+            if sy < 0 || sy >= h {
+                continue;
+            }
+            let (dst, from) = ((y as usize) * wu, (sy as usize) * wu);
+            for x in 0..wu {
+                out[dst + x] = out[dst + x].max(m[from + x]);
+            }
+        }
+    }
+    out
 }
 
 /// Which chosen label each pool slot shows: `Some(index into chosen)` per slot.
@@ -1051,6 +1122,11 @@ mod tests {
         assert!(dealt.iter().flatten().all(|i| *i < 4));
     }
 
+    /// The placer's measure with no cache in front of it.
+    fn measure(font: &fontdue::Font) -> impl FnMut(&str) -> (u32, u32) + '_ {
+        move |name| text_extent(font, name)
+    }
+
     fn font() -> fontdue::Font {
         load_font().expect("egui ships an embedded font")
     }
@@ -1081,8 +1157,8 @@ mod tests {
             vec![Vec2::new(0.0, 0.0), Vec2::new(300.0, 0.0)],
         )]);
         let font = font();
-        let east = choose_labels(&store, &font, 5.0, Vec2::X, Vec2::ZERO);
-        let west = choose_labels(&store, &font, 5.0, -Vec2::X, Vec2::ZERO);
+        let east = choose_labels(&store, &mut measure(&font), 5.0, Vec2::X, Vec2::ZERO);
+        let west = choose_labels(&store, &mut measure(&font), 5.0, -Vec2::X, Vec2::ZERO);
         assert_eq!(east.len(), 1);
         assert_eq!(east[0].centre, west[0].centre, "the name stays on its spot");
         assert_eq!(
@@ -1103,11 +1179,11 @@ mod tests {
             vec![Vec2::ZERO, Vec2::new(40.0, 0.0)],
         )]);
         assert!(
-            choose_labels(&short, &font, 14.0, Vec2::X, Vec2::ZERO).is_empty(),
+            choose_labels(&short, &mut measure(&font), 14.0, Vec2::X, Vec2::ZERO).is_empty(),
             "a 40 m street cannot carry an 18-character name at 14 m tall"
         );
         assert_eq!(
-            choose_labels(&short, &font, 3.4, Vec2::X, Vec2::ZERO).len(),
+            choose_labels(&short, &mut measure(&font), 3.4, Vec2::X, Vec2::ZERO).len(),
             1,
             "at the street-level size it can"
         );
@@ -1127,7 +1203,7 @@ mod tests {
         );
         b.rank = 4;
         let store = store_with(vec![a, b]);
-        let chosen = choose_labels(&store, &font(), 8.0, Vec2::X, Vec2::ZERO);
+        let chosen = choose_labels(&store, &mut measure(&font()), 8.0, Vec2::X, Vec2::ZERO);
         assert_eq!(chosen.len(), 1, "both were written over each other");
         assert_eq!(chosen[0].name, "Grote Markt", "the bigger road wins");
     }
@@ -1146,7 +1222,7 @@ mod tests {
             vec![Vec2::new(0.0, 400.0), Vec2::new(300.0, 400.0)],
         );
         let store = store_with(vec![a, b, far]);
-        let chosen = choose_labels(&store, &font(), 5.0, Vec2::X, Vec2::ZERO);
+        let chosen = choose_labels(&store, &mut measure(&font()), 5.0, Vec2::X, Vec2::ZERO);
         assert_eq!(chosen.len(), 2, "near repeat dropped, far one kept");
         assert!(
             chosen[0].centre.distance(chosen[1].centre) >= SAME_NAME_GAP_M,
@@ -1183,6 +1259,72 @@ mod tests {
             .collect();
         assert!(heights.windows(2).all(|w| w[1] > w[0]), "{heights:?}");
         assert_eq!(label_height(60.0), label_height(119.0), "inside one band");
+    }
+
+    /// The fast halo is the disc it replaced, pixel for pixel — on a real name and
+    /// on noise reaching every edge, at the shipped radius and either side of it.
+    #[test]
+    fn the_disc_dilation_matches_the_brute_force_one() {
+        fn brute(src: &[u8], w: i32, h: i32, r: i32) -> Vec<u8> {
+            let mut out = vec![0u8; src.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut best = 0u8;
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            let (sx, sy) = (x + dx, y + dy);
+                            if dx * dx + dy * dy > r * r || sx < 0 || sx >= w || sy < 0 || sy >= h {
+                                continue;
+                            }
+                            best = best.max(src[(sy * w + sx) as usize]);
+                        }
+                    }
+                    out[(y * w + x) as usize] = best;
+                }
+            }
+            out
+        }
+        let font = font();
+        let (w, h) = text_extent(&font, "Oude Ebbingestraat");
+        let mut cov = vec![0u8; (w * h) as usize];
+        let mut pen = 4.0;
+        for ch in "Oude Ebbingestraat".chars() {
+            let (m, bitmap) = font.rasterize(ch, GLYPH_PX);
+            for row in 0..m.height {
+                for col in 0..m.width {
+                    let (x, y) = (pen as usize + col, 8 + row);
+                    if x < w as usize && y < h as usize {
+                        cov[y * w as usize + x] = bitmap[row * m.width + col];
+                    }
+                }
+            }
+            pen += m.advance_width;
+        }
+        let mut seed = 0x9E37_79B9u32;
+        let noise: Vec<u8> = (0..23 * 17)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                if seed % 7 == 0 {
+                    (seed >> 8) as u8
+                } else {
+                    0
+                }
+            })
+            .collect();
+        for r in [HALO_PX - 1, HALO_PX, HALO_PX + 2] {
+            assert_eq!(
+                dilate_disc(&cov, w as i32, h as i32, r),
+                brute(&cov, w as i32, h as i32, r),
+                "a name, r = {r}"
+            );
+            assert_eq!(
+                dilate_disc(&noise, 23, 17, r),
+                brute(&noise, 23, 17, r),
+                "noise, r = {r}"
+            );
+        }
     }
 
     /// The raster has to be legible against anything: ink in the middle of a
