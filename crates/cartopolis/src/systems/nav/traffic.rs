@@ -358,6 +358,9 @@ pub struct WorldDriveLine {
     pub on_deck: bool,
     /// Which sides have a pavement (`cartopolis_geo::traffic::keep_walkers_off`).
     pub pavements: Pavements,
+    /// The corners of the line's bounding box, so a proximity query can skip
+    /// a line without reading its points.
+    pub bounds: (Vec2, Vec2),
 }
 
 impl WorldDriveLine {
@@ -523,7 +526,12 @@ impl DriveNetwork {
                 } else {
                     vec![f32::NAN; points.len()]
                 };
+                let bounds = points.iter().fold(
+                    (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+                    |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+                );
                 (run > 1.0).then_some(WorldDriveLine {
+                    bounds,
                     points,
                     flow: l.flow,
                     speed: l.speed,
@@ -559,6 +567,39 @@ impl DriveNetwork {
 
     fn is_empty(&self) -> bool {
         self.cells.values().all(Vec::is_empty)
+    }
+
+    /// Every drivable line within `reach` of `at`, as `(speed in m/s, distance
+    /// to its nearest vertex in m)` — what the street ambience is mixed from
+    /// (`systems::ambience`).
+    ///
+    /// The road hum that scanned every vertex of the ring every frame was
+    /// removed for that cost (`ambient-traffic.md`). This rejects a line on its
+    /// bounding box before reading a point, and is called by a sampler a few
+    /// times a second, not per frame. The nearest vertex rather than segment: a
+    /// simplified line has one every few metres, finer than the ear places a
+    /// road.
+    pub fn drivable_near(&self, at: Vec2, reach: f32) -> impl Iterator<Item = (f32, f32)> + '_ {
+        let r2 = reach * reach;
+        self.cells
+            .values()
+            .flatten()
+            .filter(|l| l.uses.drive)
+            .filter(move |l| {
+                let (lo, hi) = l.bounds;
+                at.x >= lo.x - reach
+                    && at.x <= hi.x + reach
+                    && at.y >= lo.y - reach
+                    && at.y <= hi.y + reach
+            })
+            .filter_map(move |l| {
+                let d2 = l
+                    .points
+                    .iter()
+                    .map(|p| p.distance_squared(at))
+                    .fold(f32::MAX, f32::min);
+                (d2 <= r2).then(|| (l.speed, d2.sqrt()))
+            })
     }
 
     /// Every line with a point within `radius` of `near`, as keys.

@@ -49,6 +49,9 @@ pub struct CellPlaces {
     /// has to be retired with the same cell; `insert_cell` hands it straight on to
     /// `DriveNetwork` and keeps none of it.
     pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
+    /// The surveyed paving, kept as polygons so a footstep can ask what it
+    /// lands on (`systems::soundscape`). The meshes have merged it by then.
+    pub paving: cartopolis_geo::paving::PavingIndex,
     /// How much of this cell was **surveyed** rather than generated: trees,
     /// street objects, boundary lines and paved surfaces taken from the BGT
     /// (`systems::surveyed`), crop parcels taken from the RVO's register
@@ -353,6 +356,8 @@ pub struct WorldPlaces {
     props: HashMap<(i64, i64), Vec<(Vec2, f32)>>,
     /// House-number points per cell, for the "where am I" readout.
     addresses: HashMap<(i64, i64), Vec<(Vec2, String)>>,
+    /// The surveyed paving per cell, at the cell's world origin.
+    paving: HashMap<(i64, i64), (Vec2, cartopolis_geo::paving::PavingIndex)>,
     /// Bumped whenever the contents change, so consumers that cache a nearest
     /// answer know to recompute rather than diffing the maps.
     pub revision: u32,
@@ -427,6 +432,11 @@ impl WorldPlaces {
         self.cells.insert(cell, interactables);
         self.props.insert(cell, props);
         self.addresses.insert(cell, addresses);
+        if places.paving.is_empty() {
+            self.paving.remove(&cell);
+        } else {
+            self.paving.insert(cell, (origin, places.paving));
+        }
         self.surveyed.insert(cell, places.surveyed);
         self.revision = self.revision.wrapping_add(1);
     }
@@ -435,6 +445,7 @@ impl WorldPlaces {
         let had = self.cells.remove(cell).is_some()
             | self.props.remove(cell).is_some()
             | self.addresses.remove(cell).is_some()
+            | self.paving.remove(cell).is_some()
             | self.surveyed.remove(cell).is_some();
         if had {
             self.revision = self.revision.wrapping_add(1);
@@ -442,12 +453,17 @@ impl WorldPlaces {
     }
 
     pub fn clear(&mut self) {
-        if self.cells.is_empty() && self.props.is_empty() && self.addresses.is_empty() {
+        if self.cells.is_empty()
+            && self.props.is_empty()
+            && self.addresses.is_empty()
+            && self.paving.is_empty()
+        {
             return;
         }
         self.cells.clear();
         self.props.clear();
         self.addresses.clear();
+        self.paving.clear();
         self.surveyed.clear();
         self.revision = self.revision.wrapping_add(1);
     }
@@ -486,6 +502,22 @@ impl WorldPlaces {
                 )
             },
         )
+    }
+
+    /// The surveyed paving under a point in anchored world XZ: its kind and,
+    /// where the survey says, what it is made of. `None` off the survey.
+    #[must_use]
+    pub fn paving_at(
+        &self,
+        p: Vec2,
+    ) -> Option<(
+        cartopolis_geo::paving::PavingKind,
+        Option<cartopolis_geo::paving::PavingMaterial>,
+    )> {
+        self.paving.values().find_map(|(origin, index)| {
+            let local = p - *origin;
+            index.at(local.x, local.y)
+        })
     }
 
     /// Every solid prop, for the collider index.

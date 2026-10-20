@@ -1463,6 +1463,8 @@ fn spawn_geometry_task(
                                 cartopolis_geo::road_texture::SurveyedCover::Paths
                             };
                             cell_places.surveyed.3 = paved.len();
+                            cell_places.paving =
+                                cartopolis_geo::paving::PavingIndex::new(&paved, tile_m);
                             // Held back rather than appended here: the carriageways
                             // have to come out of it, and they do not exist yet.
                             // See `paving::cut_paving_under_roads` below.

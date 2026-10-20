@@ -458,6 +458,112 @@ pub fn cut_ground_under_paving(meshes: &mut Vec<SurfaceMesh>, paving: &[SurfaceM
     meshes.extend(rest);
 }
 
+/// What one cell's paving is at a point: the survey's polygons kept past the
+/// mesh build, so a footstep can ask what it is landing on.
+///
+/// The meshes merge every area into one group with its tone per vertex, which
+/// is right for drawing and loses the kind and the material; this keeps both,
+/// bucketed on a coarse grid so a point query reads a handful of rings rather
+/// than the cell's thousands.
+#[derive(Debug, Default)]
+pub struct PavingIndex {
+    areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<[f32; 2]>>)>,
+    /// Area indices per bucket, row-major over `cols × rows` buckets of
+    /// [`Self::BUCKET_M`] from the tile's corner.
+    buckets: Vec<Vec<u32>>,
+    cols: usize,
+    rows: usize,
+}
+
+impl PavingIndex {
+    /// Bucket edge in metres. A Dutch street's paving is a mosaic of areas a
+    /// few metres across, so a small bucket keeps each to a few candidates.
+    pub const BUCKET_M: f32 = 16.0;
+
+    /// Index a cell's areas, in tile-local metres over a tile of `tile_m`.
+    #[must_use]
+    pub fn new(paved: &[PavedArea], tile_m: f32) -> Self {
+        if paved.is_empty() || !(tile_m > 0.0) {
+            return Self::default();
+        }
+        let n = (tile_m / Self::BUCKET_M).ceil().max(1.0) as usize;
+        let mut buckets = vec![Vec::new(); n * n];
+        let mut areas = Vec::with_capacity(paved.len());
+        for a in paved {
+            let Some(outer) = a.rings.first() else {
+                continue;
+            };
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in outer {
+                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+            }
+            let cell = |v: f32| ((v / Self::BUCKET_M).floor().max(0.0) as usize).min(n - 1);
+            let index = areas.len() as u32;
+            for row in cell(lo[1])..=cell(hi[1]) {
+                for col in cell(lo[0])..=cell(hi[0]) {
+                    buckets[row * n + col].push(index);
+                }
+            }
+            areas.push((a.kind, a.material, a.rings.clone()));
+        }
+        Self {
+            areas,
+            buckets,
+            cols: n,
+            rows: n,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.areas.is_empty()
+    }
+
+    /// The kind and material of the area under a tile-local point, if any.
+    /// Where two overlap (they should not; the survey is a partition) the one
+    /// listed last wins, as it is the one drawn on top.
+    #[must_use]
+    pub fn at(&self, x: f32, z: f32) -> Option<(PavingKind, Option<PavingMaterial>)> {
+        if self.areas.is_empty() || x < 0.0 || z < 0.0 {
+            return None;
+        }
+        let col = (x / Self::BUCKET_M) as usize;
+        let row = (z / Self::BUCKET_M) as usize;
+        if col >= self.cols || row >= self.rows {
+            return None;
+        }
+        self.buckets[row * self.cols + col]
+            .iter()
+            .rev()
+            .map(|&i| &self.areas[i as usize])
+            .find(|(_, _, rings)| inside_rings([x, z], rings))
+            .map(|(kind, material, _)| (*kind, *material))
+    }
+}
+
+/// Even-odd over every ring, so a hole takes its part back out of the outer.
+fn inside_rings(p: [f32; 2], rings: &[Vec<[f32; 2]>]) -> bool {
+    let mut inside = false;
+    for ring in rings {
+        let n = ring.len();
+        if n < 3 {
+            continue;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[j]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,5 +957,34 @@ mod tests {
         let before = roads[0].positions.clone();
         cut_paving_under_roads(&mut paving, &roads);
         assert_eq!(roads[0].positions, before);
+    }
+
+    /// A point finds the area it stands in, a hole gives its ground back, and
+    /// anything off the survey answers nothing rather than a neighbour.
+    #[test]
+    fn the_index_answers_what_is_underfoot() {
+        let mut path = square(PavingKind::Footway, 40.0);
+        path.material = Some(PavingMaterial::Brick);
+        // A planted bed cut out of the middle of it.
+        path.rings
+            .push(vec![[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]]);
+        let mut lawn = square(PavingKind::Verge, 30.0);
+        lawn.rings[0].iter_mut().for_each(|p| p[0] += 60.0);
+        lawn.material = Some(PavingMaterial::Grass);
+        let index = PavingIndex::new(&[path, lawn], 100.0);
+
+        assert_eq!(
+            index.at(5.0, 5.0),
+            Some((PavingKind::Footway, Some(PavingMaterial::Brick)))
+        );
+        assert_eq!(index.at(15.0, 15.0), None, "the hole is not brick");
+        assert_eq!(
+            index.at(75.0, 5.0),
+            Some((PavingKind::Verge, Some(PavingMaterial::Grass)))
+        );
+        assert_eq!(index.at(50.0, 5.0), None);
+        assert_eq!(index.at(-1.0, 5.0), None);
+        assert_eq!(index.at(5.0, 500.0), None);
+        assert!(PavingIndex::new(&[], 100.0).at(5.0, 5.0).is_none());
     }
 }

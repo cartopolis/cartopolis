@@ -473,6 +473,19 @@ impl GrassAreas {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Whether a point in anchored world XZ is lawn or other grass land. Only
+    /// knows the cells the grass layer built, so `false` means "not known to
+    /// be grass", not "paved".
+    #[must_use]
+    pub fn grass_at(&self, p: Vec2) -> bool {
+        self.cells.values().any(|(origin, tile_m, area)| {
+            let local = p - *origin;
+            (0.0..*tile_m).contains(&local.x)
+                && (0.0..*tile_m).contains(&local.y)
+                && area.plantable(local.x, local.y)
+        })
+    }
+
     fn snapshot(&self) -> Vec<((i64, i64), Vec2, f32, Arc<GrassArea>)> {
         self.cells
             .iter()
