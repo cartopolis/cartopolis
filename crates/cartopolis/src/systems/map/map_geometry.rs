@@ -130,6 +130,31 @@ impl Lap {
             now.duration_since(self.last).as_millis()
         );
         self.last = now;
+        // In a `heap_labels` build, what the job allocates from here on is
+        // charged to the stage that just ended (`platform::heap::labels`).
+        #[cfg(heap_labels)]
+        crate::platform::heap::labels::set(after_stage(stage));
+    }
+}
+
+/// The heap label for what a surface job allocates after `stage`.
+#[cfg(heap_labels)]
+fn after_stage(stage: &str) -> &'static str {
+    match stage {
+        "parse" => "surfaces: after parse",
+        "fills" => "surfaces: after fills",
+        "bridges" => "surfaces: after bridges",
+        "roads" => "surfaces: after roads",
+        "paving" => "surfaces: after paving",
+        "ground" => "surfaces: after ground",
+        "gap fill" => "surfaces: after gap fill",
+        "tunnels" => "surfaces: after tunnels",
+        "shore" => "surfaces: after shore",
+        "grass" => "surfaces: after grass",
+        "trees" => "surfaces: after trees",
+        "furniture" => "surfaces: after furniture",
+        "extract" => "surfaces: after extract",
+        _ => "surfaces: after another stage",
     }
 }
 
@@ -919,7 +944,7 @@ impl Default for MapSurfaces {
             built_digest: HashMap::new(),
             complete: HashSet::new(),
             stream: CellStream::new(Policy {
-                max_in_flight: SURFACE_MAX_IN_FLIGHT,
+                max_in_flight: crate::quality::budget().surface_jobs,
                 min_interval_secs: 0.0,
                 // One attempt while the ring sits over the cell: a tile that failed
                 // to fetch or tessellate would fail again the same way, and the
@@ -3170,6 +3195,10 @@ pub fn update_map_surfaces(
         f64::from(world_z) / f64::from(tile_m) + fcy,
     );
     let wanted = retire_outside_ring(&mut surfaces, &mut stores, (ccx, ccy), at);
+    // Finished or queued work for cells the ring no longer wants goes now, not
+    // when the upload queue next lets results through: each finished cell holds
+    // its meshes (`CellStream::keep_only`).
+    surfaces.stream.keep_only(|c| wanted.contains(c));
     dispatch_cells(
         &mut surfaces,
         &stream,

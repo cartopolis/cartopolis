@@ -404,6 +404,15 @@ pub struct Budget {
     /// fit, measured, and the basemap image carries the rest, as it does past the
     /// ring anyway. `CARTO_SURFACE_MB` overrides it; `0` is none.
     pub surface_ring_bytes: Option<usize>,
+    /// How many ground cells may be in progress at once (`map_geometry`): fetched,
+    /// tessellated, or finished and waiting to be built.
+    ///
+    /// A finished cell holds its meshes in the heap until it is built, ~150 MB
+    /// near the ground, and the build waits for the previous cell's upload. Nine
+    /// at once (`map_geometry::SURFACE_MAX_IN_FLIGHT`, the whole ring) was ~1.3 GB
+    /// of the web build's 4 GiB heap, and with [`Self::surface_ring_bytes`]
+    /// keeping one or two cells there was nothing to gain from it.
+    pub surface_jobs: usize,
     /// How much **system memory** the streamers may spend keeping the finished
     /// form of a retired cell, so returning to it costs an upload instead of a
     /// rebuild (`platform::warm`).
@@ -584,6 +593,7 @@ impl Budget {
             upload_bytes_per_frame: None,
             resident_bytes_target: None,
             surface_ring_bytes: None,
+            surface_jobs: crate::systems::map_geometry::SURFACE_MAX_IN_FLIGHT,
             // 512 MiB, which at 1,365 kB per 512² ground tile is roughly 380 of
             // them — a clipmap's worth of city held behind the live one, so
             // flying out and back costs an upload rather than another 68 ms of
@@ -687,6 +697,7 @@ impl Budget {
             // globe keep the rest: at the measured ~140 MB a cell, the cell under
             // you and its nearest neighbour.
             surface_ring_bytes: Some(320 * 1024 * 1024),
+            surface_jobs: 3,
             // A quarter of the desktop allowance. This is the rung Android's
             // automatic answer resolves to, so the ceiling has to suit a phone
             // with a good GPU rather than a workstation: 256 MiB is ~190 ground
@@ -832,6 +843,7 @@ impl Budget {
             resident_bytes_target: Some(350 * 1024 * 1024),
             // The same share of a smaller target: about one cell.
             surface_ring_bytes: Some(160 * 1024 * 1024),
+            surface_jobs: 2,
             // Leave pacing to FIFO. See the field's own comment: a sleep-based
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
@@ -1678,6 +1690,8 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         resident_bytes_target: Some(resident),
         // The ground cells, on the rule of the two above: a rung picked by hand
         // keeps a ceiling, the smaller of its own and the handset rung's.
+        // And the cells in progress, on the same rule: the smaller of the two.
+        surface_jobs: budget.surface_jobs.min(3),
         surface_ring_bytes: Some(
             budget
                 .surface_ring_bytes

@@ -309,3 +309,19 @@ the foreground. At ~180 MB a cell the 320 MB ceiling holds only the cell you are
 in. When the cells get cheaper (another session's vertex weld before
 `refine_for_terrain`), more of the ring fits under the same ceiling without any
 change here.
+
+### Finished cells waiting to upload are memory too (2026-10-20)
+
+The ceiling bounds the cells **built**, not the ones **finished and waiting**. A
+worker's finished cell sits in `CellStream` until the upload ledger admits it,
+holding its meshes in the wasm heap. During a zoom the ring moves on while those
+wait, so they were cells nobody wanted any more, and they added up to ~1.3 GB of
+the heap that ran the web build out of memory (`wasm-performance.md`). Two
+changes:
+
+- `CellStream::keep_only`, called right after `retire_outside_ring`, drops
+  finished results and not-yet-started requests for cells the ring no longer
+  wants. A job already running finishes and keeps its slot until then.
+- `Budget::surface_jobs` caps how many cells are built at once: 3 on the default
+  rung (and the browser), 2 on the phone rung, 9 (the old fixed figure) on the
+  desktop; the handset guard keeps it at 3 or fewer.

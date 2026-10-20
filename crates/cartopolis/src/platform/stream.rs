@@ -260,6 +260,41 @@ where
         }
     }
 
+    /// Let go of everything for cells `keep` refuses: finished results not yet
+    /// taken, and requests not yet started. Jobs still running are left alone and
+    /// keep their slot, so the concurrency bound holds; what they deliver for a
+    /// refused cell is dropped the next time this runs.
+    ///
+    /// For a caller that defers results while a queue downstream drains
+    /// (`stream_ledger::take_admitted`): without this a finished cell the camera
+    /// has moved away from waits there, meshes and all, until the queue clears.
+    /// `map_geometry` held up to nine such cells, ~1.3 GB of the web build's heap
+    /// (2026-10-20, `docs/notes/wasm-performance.md`).
+    pub fn keep_only(&mut self, keep: impl Fn(&K) -> bool) {
+        let dropped: Vec<K> = match self.results.lock() {
+            Ok(mut g) => {
+                let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut *g)
+                    .into_iter()
+                    .partition(|(k, _)| keep(k));
+                *g = kept;
+                dropped.into_iter().map(|(k, _)| k).collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        for k in &dropped {
+            self.forget(k);
+        }
+        let idle: Vec<K> = self
+            .requested
+            .iter()
+            .filter(|k| !keep(k) && !self.in_flight.contains(*k))
+            .cloned()
+            .collect();
+        for k in &idle {
+            self.forget(k);
+        }
+    }
+
     /// This cell is done and good: clear any failure history, keep it `requested`
     /// so it is not fetched again.
     pub fn succeeded(&mut self, key: &K) {
