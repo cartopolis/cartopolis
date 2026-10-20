@@ -63,5 +63,8 @@ To hear a change, render a walk: `--clip walk --frames N` with two or more
 `--at` walks the avatar along the path (frames spaced by distance, the clip's
 phase from distance over the pack's stride), and
 `RUST_LOG=cartopolis::ambience=debug` logs what the game chose at each frame,
-from which a soundtrack is built and muxed under the frames. A 1280×720 frame
-takes ~6 s on the Deck once the street has streamed.
+from which a soundtrack is built and muxed under the frames. Measured on the
+Deck, 2026-10-20: 407 frames at 1280×720 in 17 min (~2.5 s a frame) for a
+34 s walk at 12 fps. Pick the path from OSM's way geometry, not address
+points (those sit on facades), and check the turns with a still first — the
+first try walked into a building, which the sampler duly reported as indoors.

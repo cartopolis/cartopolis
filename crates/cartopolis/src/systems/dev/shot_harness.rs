@@ -192,6 +192,11 @@ pub struct ShotSpec {
     /// Where in the `--clip` cycle the avatar is held for this capture, as a
     /// fraction of the clip's length ([`ShotHarness::clip`]).
     pub clip_phase: Option<f32>,
+    /// A walk (`--clip walk` with `--frames`): how far along the path this
+    /// frame stands, in metres, and the avatar's facing there
+    /// (`AvatarState::facing_yaw`). The clip's phase is the distance over the
+    /// pack's own stride, so the feet keep pace with the ground.
+    pub walk: Option<(f32, f32)>,
 }
 
 impl ShotSpec {
@@ -233,6 +238,7 @@ impl ShotSpec {
             day_of_year: a.day_of_year,
             on_ground: a.on_ground,
             clip_phase: a.clip_phase,
+            walk: None,
         }
     }
 }
@@ -1529,6 +1535,58 @@ fn expand_clip(viewpoints: &[ShotSpec], frames: u32) -> Vec<ShotSpec> {
         .collect()
 }
 
+/// Turn a `--frames` path into a walk: `frames` captures spaced evenly **by
+/// distance** along the waypoints (so the pace does not change at a corner, as
+/// `densify_path`'s per-segment spacing would), each flown to (a short jump
+/// keeps the map's frame, so this re-streams nothing), the avatar facing along
+/// the path and carrying how far it has come, from which `hold_scripted_clip`
+/// sets the clip's phase. Pick `--frames` as length ÷ walking speed × frame rate.
+fn walk_along(waypoints: &[ShotSpec], frames: u32) -> Vec<ShotSpec> {
+    // Metres per degree, locally: plenty for a walk of a few hundred metres.
+    let lat0 = waypoints.first().map_or(0.0, |s| s.lat).to_radians();
+    let to_xz = |s: &ShotSpec| {
+        (
+            (s.lng * 111_320.0 * lat0.cos()) as f32,
+            (-s.lat * 110_540.0) as f32,
+        )
+    };
+    let mut lengths = Vec::with_capacity(waypoints.len());
+    let mut total = 0.0f32;
+    for w in waypoints.windows(2) {
+        let (a, b) = (to_xz(&w[0]), to_xz(&w[1]));
+        let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        lengths.push(len);
+        total += len;
+    }
+    let frames = frames.max(2);
+    (0..frames)
+        .map(|k| {
+            let along = total * k as f32 / (frames - 1) as f32;
+            // The segment this distance falls in, and how far into it.
+            let mut start = 0.0;
+            let mut seg = 0;
+            while seg + 1 < lengths.len() && along > start + lengths[seg] {
+                start += lengths[seg];
+                seg += 1;
+            }
+            let t = if lengths[seg] > 0.0 {
+                ((along - start) / lengths[seg]).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (a, b) = (&waypoints[seg], &waypoints[seg + 1]);
+            let mut f = ShotSpec::lerp(a, b, f64::from(t));
+            let (pa, pb) = (to_xz(a), to_xz(b));
+            f.walk = Some((along, f32::atan2(pb.0 - pa.0, pb.1 - pa.1)));
+            if k > 0 {
+                f.settle = Some(CLIP_STEP_SETTLE);
+                f.wait = Some(CLIP_STEP_WAIT);
+            }
+            f
+        })
+        .collect()
+}
+
 /// Tile size in a `--clip` contact sheet: frames are scaled to this width.
 const SHEET_TILE_W: u32 = 240;
 /// Columns before a viewpoint's cycle wraps onto another row.
@@ -1654,7 +1712,8 @@ impl ShotHarness {
         if frames > 0 && shots.len() < 2 {
             return Err("--frames needs at least two --at waypoints to interpolate between".into());
         }
-        let mut shots = densify_path(&shots, frames);
+        let waypoints = shots;
+        let mut shots = densify_path(&waypoints, frames);
         let clip = clip
             .map(|name| {
                 crate::systems::avatar::ClipName::parse(name).ok_or_else(|| {
@@ -1686,7 +1745,17 @@ impl ShotHarness {
             if clip_frames < 2 {
                 return Err("--clip-frames wants at least 2 frames for a cycle".into());
             }
-            shots = expand_clip(&shots, clip_frames);
+            // With a path, a walking clip walks it; otherwise it is a cycle
+            // photographed in place.
+            let walks = matches!(
+                clip,
+                Some(crate::systems::avatar::ClipName::Walk | crate::systems::avatar::ClipName::Run)
+            );
+            shots = if frames > 0 && walks {
+                walk_along(&waypoints, frames)
+            } else {
+                expand_clip(&shots, clip_frames)
+            };
         }
         if flicker {
             // Every viewpoint becomes a pair: itself, then itself nudged north.
@@ -1823,6 +1892,7 @@ impl ShotHarness {
                     day_of_year: p.day_of_year().ok().flatten(),
                     on_ground: p.on_ground.unwrap_or(false),
                     clip_phase: None,
+                    walk: None,
                 }
             })
             .collect();
@@ -1996,7 +2066,8 @@ impl ShotHarness {
     /// from disk rather than kept in memory: every frame has been saved by the
     /// time the last capture lands, and a missing one is a grey tile.
     fn write_clip_sheet(&self) {
-        if self.clip.is_none() {
+        // A walk is a film, read frame by frame, not a cycle to tile.
+        if self.clip.is_none() || self.shots.iter().any(|s| s.walk.is_some()) {
             return;
         }
         let frames: Vec<Option<image::RgbImage>> = (0..self.shots.len())
@@ -3448,12 +3519,38 @@ pub fn hold_scripted_clip(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
     pinned: Option<Res<crate::systems::avatar::PinnedAnimation>>,
+    mut avatar_state: ResMut<crate::resources::AvatarState>,
+    gaits: Query<&crate::systems::avatar::AvatarAnimations, With<crate::components::Avatar>>,
 ) {
     let Some(clip) = harness.clip else {
         return;
     };
-    let Some(phase) = harness.shots.get(progress.index).and_then(|s| s.clip_phase) else {
-        return;
+    let shot = harness.shots.get(progress.index);
+    let phase = match shot.and_then(|s| s.walk) {
+        // A walk: the distance over one cycle's travel, from the pack the
+        // avatar actually wears (before it has loaded, the fallback stride).
+        Some((along, facing)) => {
+            if avatar_state.facing_yaw != facing {
+                avatar_state.facing_yaw = facing;
+            }
+            let (walk, run) = gaits.single().map_or(
+                (
+                    crate::systems::avatar::ClipGait::CHARACTER_WALK,
+                    crate::systems::avatar::ClipGait::CHARACTER_RUN,
+                ),
+                |a| a.gaits(),
+            );
+            let gait = if clip == crate::systems::avatar::ClipName::Run {
+                run
+            } else {
+                walk
+            };
+            along / (gait.secs * gait.speed).max(0.1)
+        }
+        None => match shot.and_then(|s| s.clip_phase) {
+            Some(p) => p,
+            None => return,
+        },
     };
     let want = crate::systems::avatar::PinnedAnimation { clip, phase };
     if pinned.as_deref() != Some(&want) {
