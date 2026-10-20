@@ -109,11 +109,10 @@ anyway, on their own merits, and their comments say so:
 
 ## Known limits
 
-- **Floors sit on a global height lattice**, not each building's own base — the
-  shader cannot see the base. With the terrain layer off every building stands at
-  y = 0 and it is exact; with it on, Dutch relief moves a base a metre or two and
-  a ground-floor band can sit low on its own wall. Real streets do share floor
-  levels, so it reads as a misalignment rather than a mistake.
+- **Floors sit on each building's own base** since 2026-10-20 (the base rides in
+  two spare vertex bytes — `surface-finish-and-occlusion.md`). The OSM lane
+  carries no base and still sits on a global height lattice, which on Dutch
+  relief puts a ground-floor band a metre or two out.
 - **A wall is identified by its normal**, not by the source's roof/wall flag. The
   flag exists in the 3DBAG payload but is not carried into the mesh, and putting
   it there would cost a vertex attribute on the biggest geometry lane we have.

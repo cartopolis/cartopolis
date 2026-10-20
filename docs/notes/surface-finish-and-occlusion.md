@@ -8,8 +8,9 @@ triggers: [ScreenSpaceAmbientOcclusion, ssao, "ambient occlusion", Fxaa, Msaa,
   density_factor, "the world went dark", "too dark", "everything is dark",
   ContactShadows, "contact shadow", wall_base_tone, wall_shade, ground_texture,
   ground_finish_texture, WALL_FINISH_RANGE, "buildings look like they are floating",
-  "the ground is flat", "paving has no texture"]
-updated: 2026-09-21
+  "the ground is flat", "paving has no texture", "normal map", normal_map_texture,
+  wall_relief, grain_tilt, BEVEL_M, chamfer, ground_detail.wesl, weathering]
+updated: 2026-10-20
 ---
 
 # Why the city read as a model, and the four things that were missing
@@ -261,7 +262,7 @@ fragment, blended by `pane` — the *distance-blurred* coverage, not the raw
 windows have to converge on the wall's finish, or the far half of the city is a
 grid of sparkling glints.
 
-## What is still flat
+## What was still flat on 2026-09-04
 
 Recorded so the next person does not have to re-measure it:
 
@@ -423,10 +424,59 @@ Unlike the other two gates this one is not overridable, because it is not a
 judgement about the picture: asking a rasteriser with no fragment budget for more
 fragment work does not produce a slower picture, it produces no picture.
 
+## Relief without normal maps (2026-10-20)
+
+There are still **no normal-map textures**, and there should not be: bevy's
+`normal_map_texture` needs `ATTRIBUTE_TANGENT`, which would be a new attribute on
+every streamed mesh — the largest uploads in the app, and the ones
+[upload-bursts.md](upload-bursts.md) loses the device to. But the shaders that
+already draw a surface's pattern know its lattice, and the slope of a pattern is
+a few ALU ops on top of it. So relief is a **tilt of `pbr_input.N`** in the
+fragment that already exists, with no texture, no attribute and no upload:
+
+- `ground_detail.wesl`: the half-metre AHN slope (kerbs, camber, ruts), paving
+  stones with a centimetre chamfer into each joint (`stone`, `BEVEL_M` — it was
+  a dome across the whole stone, which read as soft rather than laid), and the
+  asphalt and gravel aggregate (`grain_tilt`). Road
+  ribbons get the same asphalt grain; they are told apart by
+  `GroundUniform::water_sea.w`, which `RoadDepthExtension` sets to 1.
+- `building_windows.wesl`: window frame bevels, roof tile laps and the pantile's
+  S across each tile, and `wall_relief` — brick arrises over a recessed joint,
+  sawn grooves between concrete panels, waves in plaster.
+
+The tilt is in the units the frame bevel already used: (along the wall, up),
+added to `N`, i.e. **minus** the surface's slope. A face rising out of a joint
+tilts away from it. Every term fades on its own lattice's blur, and the relief
+fades *earlier* than the colour does, because a slope that survives at a few
+pixels a course is a highlight crawling over the wall — the moiré the brick
+colour already hit on the Deck at 20–40 m.
+
+Weathering came with it: a kept wall gets the neglected wall's two marks
+(`weathered`, beside `grimed`) — a damp line off the ground and rain streaks —
+at a strength from its era (`era_weathering`) times the block's own draw.
+**The damp is in the mortar.** Darkening the whole wall read as a course of
+different brick, however ragged its top; lime mortar is what drinks and holds
+the dirt, so the joints go dark and green and the bricks only deepen, each by
+its own amount. Paving got the same treatment (`lived_in`): sand and moss in
+the joints as colours of their own, stains, stones rocked and worn unevenly.
+
+**A wall measures from its own foot.** `lod22` records each building's base
+(`MeshData::set_ground`) in the two bytes a facade-coded vertex leaves spare —
+the normal's padding and the colour's alpha (`pack_ground`) — so no attribute
+was added. `building_vertex.wesl` turns it into the height above the base and
+hands that over as the world normal's *length*, the one `VertexOutput` field
+with room; `building_windows.wesl` takes it back off and renormalises before
+lighting, because bevy offsets the shadow lookup along the raw normal. Storeys,
+plinth, damp and eaves all use it. A mesh that carries none (the OSM lane) has
+a unit normal and keeps measuring from the world's zero.
+
+Two traps met on the way. `pow` of a negative base is undefined in WGSL and of
+zero under Metal's fast maths: square by hand. And a Rust half missing from a
+capture (a node rebuilt by another session) renders every 3DBAG wall as one
+constant height — windowless and brickless — which looks exactly like a shader
+NaN.
+
 ### Still flat
 
-- **No normal maps.** Unchanged, and for the unchanged reason: bevy needs
-  `ATTRIBUTE_TANGENT` and none of the streamed meshes carry tangents.
 - **No screen-space reflections, no parallax, no decals.**
-- The ground finish is a *level*, not a pattern. There are still no paving slabs,
-  no kerb detail and no road-to-pavement joint beyond the depth rung.
+- Concrete paving slabs carry no joint relief.
