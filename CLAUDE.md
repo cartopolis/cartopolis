@@ -120,6 +120,7 @@ A Cargo workspace of seventeen crates. Each row's note has the history and numbe
 | `web-task` (`crates/web_task`) | Vendored `web-task` 1.1.3, the browser executor under `bevy_tasks`, patched for a freed-callback bug; drop it when upstream fixes it (`web-task-stale-waiters.md`) |
 | `wgpu` (`crates/wgpu`, not a member) | Vendored wgpu 30.0.1: the browser backend caches `features()`/`limits()`, and `wgpu::meter` counts GPU memory and writes; re-copy it on every wgpu bump (`wasm-performance.md`) |
 | `bevy_shader` (`crates/bevy_shader`, not a member) | Vendored bevy_shader 0.20.0: no WESL validation in release, composed WGSL kept between runs (`shader_store.rs`); re-copy it on every bevy bump (`wasm-performance.md`) |
+| `mvt-reader` (`crates/mvt_reader`, not a member) | Vendored mvt-reader 2.4.0: each ring reserves its own points, not the whole feature's — upstream's made one 108 kB tile hold 214 MB (`wasm-performance.md`) |
 
 **The client** (`crates/cartopolis`). `components.rs` and `resources.rs` hold the ECS
 types. `systems/` is one file per concern in group folders (`geo` `map` `nav`

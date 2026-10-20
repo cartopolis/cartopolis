@@ -23,7 +23,7 @@ members = [
 default-members = ["crates/cartopolis"]
 # Not members, unlike `web_task`: they are dependencies patched in below, and as
 # members `cargo test --workspace` would build and run all of their doctests.
-exclude = ["crates/wgpu", "crates/bevy_shader"]
+exclude = ["crates/wgpu", "crates/bevy_shader", "crates/mvt_reader"]
 
 [workspace.package]
 version = "1.0.0"
@@ -459,3 +459,9 @@ wgpu = { path = "crates/wgpu" }
 # builds and composed shaders kept between runs (`shader_store.rs`). Re-copy it
 # on every bevy bump. `docs/notes/wasm-performance.md`.
 bevy_shader = { path = "crates/bevy_shader" }
+# mvt-reader 2.4.0 reserved a whole feature's command count for every ring it
+# decoded and kept it, so a 108 kB zoomed-out tile with 695 water polygons held
+# 214 MB, and a few of them at once ran the web build's 4 GiB heap out
+# (`rust_oom`, a hang in Firefox). `crates/mvt_reader` reserves exactly. Drop it
+# when upstream does the same. `docs/notes/wasm-performance.md`.
+mvt-reader = { path = "crates/mvt_reader" }

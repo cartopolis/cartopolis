@@ -1,0 +1,24 @@
+# mvt-reader 2.4.0 (https://github.com/codeart1st/mvt-reader, MIT), vendored for
+# one fix in `parse_geometry`: it reserved the whole feature's command count for
+# every ring, so a polygon of R rings held R times its own size. The root
+# `Cargo.toml`'s `[patch.crates-io]` says why that mattered. Only the library is
+# kept: upstream's `wasm` bindings, its protoc build step and its tests are not.
+[package]
+edition = "2024"
+name = "mvt-reader"
+version = "2.4.0"
+authors = ["Paul Lange <paul.lange@data-experts.de>"]
+description = "A library for decoding and reading mapbox vector tiles in Rust and WebAssembly"
+license = "MIT"
+repository = "https://github.com/codeart1st/mvt-reader"
+publish = false
+
+[lib]
+name = "mvt_reader"
+path = "src/lib.rs"
+
+[dependencies]
+geo-types = { version = "0.7", default-features = false }
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }
+prost = { version = "0.13", default-features = false, features = ["prost-derive", "std"] }
+thiserror = { version = "2.0", default-features = false }
