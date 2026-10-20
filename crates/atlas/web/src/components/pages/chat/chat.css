@@ -28,9 +28,11 @@
 /*
  * The chat's own small controls (list rows, reaction pills) are
  * plain buttons drawn by the rules below; everything with a label is the
- * library's `Button`, which this leaves alone.
+ * library's `Button`, which this leaves alone. `:where` gives it no weight, so
+ * any one class below beats it: as `.chat button:not(.m-button)` it outranked
+ * `.chat-item`, and every sidebar row lost its padding and its highlight.
  */
-.chat button:not(.m-button) {
+:where(.chat button:not(.m-button)) {
     background: none;
     border: none;
     color: inherit;
@@ -150,6 +152,97 @@
     font-size: 0.85rem;
 }
 
+/* Home's people and groups: a face, then who and what was said last. */
+.chat-item.is-person {
+    gap: 12px;
+    margin-bottom: 2px;
+    padding: 8px 10px;
+}
+
+.chat-person-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.chat-person-line {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+}
+
+.chat-item.is-person .chat-label {
+    color: var(--m-text-strong);
+}
+
+.chat-person-when {
+    color: var(--m-text-faint);
+    flex: none;
+    font-size: 0.75rem;
+    font-weight: 400;
+}
+
+.chat-person-preview {
+    flex: 1;
+    font-size: 0.85rem;
+    font-weight: 400;
+    min-height: 1.2em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-item.is-unread .chat-person-preview {
+    color: var(--m-text);
+}
+
+.chat-group-face {
+    align-items: center;
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: 50%;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    flex: none;
+    height: 36px;
+    justify-content: center;
+    width: 36px;
+}
+
+.chat-group-face .chat-icon {
+    height: 20px;
+    width: 20px;
+}
+
+/* An avatar with whether they are signed in, at its lower right. */
+.chat-face {
+    display: inline-flex;
+    flex: none;
+    position: relative;
+}
+
+.chat-presence {
+    border: 2px solid var(--m-surface);
+    border-radius: 50%;
+    bottom: -2px;
+    box-sizing: content-box;
+    height: 8px;
+    position: absolute;
+    right: -2px;
+    width: 8px;
+    /* Offline: a hollow ring, so the dot's absence is never the only signal. */
+    background: var(--m-surface);
+    box-shadow: inset 0 0 0 2px var(--m-text-faint);
+}
+
+.chat-presence.is-online {
+    background: var(--call-green);
+    box-shadow: none;
+}
+
 .chat-label {
     flex: 1;
     overflow: hidden;
@@ -227,8 +320,9 @@
     padding: 8px 18px;
 }
 
+/* The title takes only its own width, so the keys after it sit beside it. */
 .chat-head-title {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
 }
 
@@ -236,6 +330,19 @@
     color: var(--m-text-strong);
     display: block;
     font-size: 1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A pane's actions: round `Key`s, a hair-line apart from the title. */
+.chat-head-keys {
+    align-items: center;
+    border-left: 1px solid var(--m-border);
+    display: flex;
+    flex: none;
+    gap: 8px;
+    padding-left: 14px;
 }
 
 .chat-welcome {
@@ -583,12 +690,6 @@
     position: relative;
 }
 
-.chat-head-tools {
-    align-items: center;
-    display: flex;
-    gap: 6px;
-}
-
 /* "+": one question — a person, a group, or a community. */
 .chat-new {
     position: static;
@@ -886,7 +987,11 @@
     color: #fff;
 }
 
-.chat-key.is-hangup .chat-key-disc {
+.chat-key.is-accent .chat-key-disc {
+    background: var(--m-accent);
+    color: var(--m-on-accent);
+}
+.chat-key.is-danger .chat-key-disc {
     background: var(--call-red);
     color: #fff;
 }

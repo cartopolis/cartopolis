@@ -69,6 +69,11 @@ const SANNE = 'dm:sanne'
 const FIETS = 'dm:fietsclub'
 const BANKJES = 'dm:gorecht-bankjes'
 const GENERAL = 'dm:oost-general'
+const BAS = 'dm:bas'
+const KARIM = 'dm:karim'
+
+/** Which contacts are signed in; Karim does not show it. */
+const ONLINE: Record<string, boolean> = {[at('sanne')]: true, [at('bas')]: false, [at('anna')]: true, [at('lotte')]: true}
 
 const q4: Plan = {
     agenda: [{minutes: 10, name: 'Nieuwe bankjes'}, {minutes: 15, name: 'Budget'}, {minutes: 20, name: 'Wie doet wat'}],
@@ -140,6 +145,13 @@ const histories = new Map<string, Message[]>([
         answer(ME, on(-2, 11, 5), buurt.id, 'maybe', on(24, 20)),
         line(at('fatima'), on(-2, 12), 'Top, dank!'),
     ]],
+    [BAS, [
+        line(at('bas'), on(-3, 20), 'Heb jij die pomp nog?'),
+        line(ME, on(-3, 20, 10), 'Ja, ligt in de schuur'),
+    ]],
+    [KARIM, [
+        line(at('karim'), on(0, 7, 40), 'Bij welke brug sta ik nu eigenlijk? Ik zie de Oosterhaven aan de ene kant'),
+    ]],
 ])
 
 const members = (names: string[]) => names.map((n) => ({address: at(n), role: 'member' as const}))
@@ -170,13 +182,15 @@ const communities: CommunityView[] = [
 ]
 
 function summaries(): ChatSummary[] {
-    const sum = (channel: string, label: string, group: boolean, people: string[]): ChatSummary => {
+    const sum = (channel: string, label: string, group: boolean, people: string[], unread = 0): ChatSummary => {
         const h = histories.get(channel) ?? []
         const last = h[h.length - 1]
-        return {channel, group, label, lastAtMs: last?.sentAtMs ?? 0, mentioned: false, people, preview: last?.body ?? '', unread: 0}
+        return {channel, group, label, lastAtMs: last?.sentAtMs ?? 0, mentioned: false, people, preview: last?.body ?? '', unread}
     }
     return [
         sum(SANNE, at('sanne'), false, [at('sanne')]),
+        sum(BAS, at('bas'), false, [at('bas')]),
+        sum(KARIM, at('karim'), false, [at('karim')], 1),
         sum(FIETS, 'Fietsclub', true, [at('bas'), at('lotte'), at('tom')]),
         sum(BANKJES, 'bankjes', true, communities[0].members.map((x) => x.address).filter((a) => a !== ME)),
         sum(GENERAL, 'general', true, communities[1].members.map((x) => x.address).filter((a) => a !== ME)),
@@ -197,7 +211,7 @@ class StandInPort {
     }
 
     private state(): void {
-        this.post({address: ME, chats: summaries(), communities, directory: [], status: 'connected', type: 'state', username: 'annekedijkstra'})
+        this.post({address: ME, chats: summaries(), communities, directory: [], online: ONLINE, status: 'connected', type: 'state', username: 'annekedijkstra'})
     }
 
     private history(channel: string): void {

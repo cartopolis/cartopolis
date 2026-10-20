@@ -121,6 +121,41 @@ function hue(s: string): number {
     return h
 }
 
+/**
+ * A person's avatar with a dot for whether they are signed in: green when
+ * they are, a hollow ring when not, and nothing when nobody may know (not a
+ * contact, or they hide it — `ContactSettings::show_online`).
+ */
+function Face(who: string, size = 32) {
+    const online = chat().presence(who)
+    return (
+        <span class="chat-face">
+            {Avatar(who, size)}
+            {online !== null && (
+                <span
+                    class={online ? 'chat-presence is-online' : 'chat-presence'}
+                    title={online ? 'Online' : 'Offline'}
+                />
+            )}
+        </span>
+    )
+}
+
+/** " · online" or " · offline" after a header's other facts, or nothing when unknown. */
+function presenceWords(online: boolean | null): string {
+    return online === null ? '' : online ? ' · online' : ' · offline'
+}
+
+/** "14:05" today, "Tue" this week, "3 Oct" before: a list row's when. */
+function shortWhen(ms: number): string {
+    if (!ms) return ''
+    const d = new Date(ms)
+    const now = new Date()
+    if (d.toDateString() === now.toDateString()) return time(ms)
+    if (now.getTime() - ms < 6 * 86400000) return d.toLocaleDateString([], {weekday: 'short'})
+    return d.toLocaleDateString([], {day: 'numeric', month: 'short'})
+}
+
 function Avatar(who: string, size = 32) {
     const name = who.split('@')[0]
     const url = pictureUrl(faceHash(who))
@@ -154,15 +189,18 @@ function Media(stream: MediaStream, kind: 'audio' | 'video', muted: boolean) {
 
 
 /**
- * A round call key with its label under it — `theme::call_button` in the app,
- * with the same four tones: green to answer, red to hang up, frosted glass for
- * a switch that is on, and the solid cream plate for one that is off (the
- * state worth noticing).
+ * The page's one round action button, with its label under it or (`sm`) as
+ * its tooltip — `theme::call_button` in the app. The tone says what pressing it
+ * does, the same everywhere: teal for the owner's own move (edit, manage),
+ * green to start or answer a call, red to leave, hang up or decline, frosted
+ * glass for anything that only opens or shows, and the solid cream plate for a
+ * switch that is off (the state worth noticing). A pane's keys sit beside its
+ * title (`head`), so they are found where the eye already is.
  */
-function CallKey(
+function Key(
     icon: string,
     label: string,
-    tone: 'accept' | 'hangup' | 'glass' | 'off',
+    tone: 'accent' | 'accept' | 'danger' | 'glass' | 'off',
     onclick: () => void,
     size: 'sm' | 'md' | 'lg' = 'md',
 ) {
@@ -1679,14 +1717,36 @@ export class Chat extends MithrilComponent {
                 {status && <div class="chat-status">{status}</div>}
                 <section class="chat-section">
                     {outside.length === 0 && <p class="chat-empty">No chats yet. Start one with the + on the left.</p>}
-                    {outside.map((x) => item(
-                        x.channel,
-                        <>
-                            {x.group ? <span class="chat-hash">⧉</span> : Avatar(x.people[0] ?? x.label, 22)}
-                            <span class="chat-label">{x.group ? x.label : shown(x.label, me)}</span>
-                        </>,
-                        x.unread,
-                        x.mentioned,
+                    {/* Two lines a row, as a phone's chat list: who, and what was said last. */}
+                    {outside.map((x) => (
+                        <button
+                            class={[
+                                'chat-item is-person',
+                                current === x.channel ? 'is-current' : '',
+                                x.unread > 0 ? 'is-unread' : '',
+                            ].join(' ')}
+                            key={x.channel}
+                            onclick={() => this.open(x.channel)}
+                            type="button"
+                        >
+                            {x.group
+                                ? <span class="chat-group-face">{Icon('group')}</span>
+                                : Face(x.people[0] ?? x.label, 36)}
+                            <span class="chat-person-text">
+                                <span class="chat-person-line">
+                                    <span class="chat-label">{x.group ? x.label : shown(x.label, me)}</span>
+                                    <span class="chat-person-when">{shortWhen(x.lastAtMs)}</span>
+                                </span>
+                                <span class="chat-person-line">
+                                    <span class="chat-person-preview">
+                                        {x.preview || (x.group ? `${x.people.length + 1} people` : '')}
+                                    </span>
+                                    {x.unread > 0 && (
+                                        <span class={x.mentioned ? 'chat-count is-mention' : 'chat-count'}>{x.unread}</span>
+                                    )}
+                                </span>
+                            </span>
+                        </button>
                     ))}
                 </section>
             </>
@@ -1764,16 +1824,21 @@ export class Chat extends MithrilComponent {
         )
     }
 
-    /** A pane's header: back (on a phone), a title, and a line under it. */
-    head(title: m.Children, sub: m.Children, tools: m.Children = null) {
+    /**
+     * A pane's header: back (on a phone), a title, a line under it, and the
+     * pane's actions as round `Key`s right beside the title — not pushed to
+     * the window's far edge, where on a wide screen they were a long way from
+     * everything else in the pane.
+     */
+    head(title: m.Children, sub: m.Children, keys: m.Children = null) {
         return (
             <header class="chat-head">
-                <Button class="chat-back" iconOnly onclick={() => this.open(null)} title="Back" variant="ghost">‹</Button>
+                <Button class="chat-back" icon={Icon('chevron_left')} iconOnly onclick={() => this.open(null)} title="Back" variant="ghost" />
                 <div class="chat-head-title">
                     <b>{title}</b>
                     <span class="chat-sub">{sub}</span>
                 </div>
-                {tools}
+                {keys && <div class="chat-head-keys">{keys}</div>}
             </header>
         )
     }
@@ -1804,8 +1869,8 @@ export class Chat extends MithrilComponent {
         }
         return (
             <>
-                {CallKey('videocam', 'Video call', 'glass', () => this.startCall(channel, true), 'sm')}
-                {CallKey('call', 'Call', 'accept', () => this.startCall(channel, false), 'sm')}
+                {Key('videocam', 'Video call', 'glass', () => this.startCall(channel, true), 'sm')}
+                {Key('call', 'Call', 'accept', () => this.startCall(channel, false), 'sm')}
             </>
         )
     }
@@ -2912,8 +2977,8 @@ export class Chat extends MithrilComponent {
                             <span class="chat-sub">{what}</span>
                         </span>
                     </button>
-                    {CallKey('call_end', 'Decline', 'hangup', decline, 'sm')}
-                    {CallKey('call', 'Answer', 'accept', () => this.answer(channel, false), 'sm')}
+                    {Key('call_end', 'Decline', 'danger', decline, 'sm')}
+                    {Key('call', 'Answer', 'accept', () => this.answer(channel, false), 'sm')}
                 </div>
             )
         }
@@ -2928,9 +2993,9 @@ export class Chat extends MithrilComponent {
                     <p>{what}</p>
                     <p class="chat-sub">🔐 End-to-end encrypted</p>
                     <div class="chat-ring-keys">
-                        {CallKey('call_end', 'Decline', 'hangup', decline, 'lg')}
-                        {CallKey('videocam', 'Video', 'glass', () => this.answer(channel, true), 'lg')}
-                        {CallKey('call', 'Answer', 'accept', () => this.answer(channel, false), 'lg')}
+                        {Key('call_end', 'Decline', 'danger', decline, 'lg')}
+                        {Key('videocam', 'Video', 'glass', () => this.answer(channel, true), 'lg')}
+                        {Key('call', 'Answer', 'accept', () => this.answer(channel, false), 'lg')}
                     </div>
                 </section>
             </div>
@@ -2967,7 +3032,8 @@ export class Chat extends MithrilComponent {
             : (
                 <>
                     <span class="chat-lock" title="End-to-end encrypted">🔐 encrypted</span>
-                    {sum ? ` · ${sum.people.length + 1} people` : ''}
+                    {sum && !sum.group ? presenceWords(c.presence(sum.people[0] ?? '')) : ''}
+                    {sum?.group ? ` · ${sum.people.length + 1} people` : ''}
                 </>
             )
         return (
@@ -2977,9 +3043,7 @@ export class Chat extends MithrilComponent {
                     sub,
                     <>
                         {this.callButtons(channel)}
-                        {!topic && sum?.group && (
-                            <Button onclick={() => this.dialog('members')} size="sm" variant="ghost">People</Button>
-                        )}
+                        {!topic && sum?.group && Key('group', 'People', 'glass', () => this.dialog('members'), 'sm')}
                     </>,
                 )}
                 <div class="chat-messages" onupdate={stickToBottom} oncreate={stickToBottom}>
@@ -3324,27 +3388,33 @@ export class Chat extends MithrilComponent {
             )
         }
         const mod = moderates(community)
+        const leave = () => {
+            if (confirm(`Leave ${settings.name}? You leave every topic in it.`)) {
+                c.leaveCommunity(id)
+                this.show({kind: 'welcome'})
+            }
+        }
         return (
             <>
                 {this.head(
                     settings.name,
                     `${community.members.length} people · ${RULE[settings.join]} · ${settings.listed ? 'listed' : 'unlisted'}`,
-                    mod && (
-                        <Button
-                            onclick={() => {
-                                s.community = {
-                                    ...emptyDraft(),
-                                    ...settings,
-                                    topicEdits: community.topics.map((t) => ({archived: t.archived, channel: t.channel, name: t.name})),
-                                }
-                                this.show({id, kind: 'edit'})
-                            }}
-                            size="sm"
-                            variant="ghost"
-                        >
-                            Edit
-                        </Button>
-                    ),
+                    <>
+                        {mod && Key('edit', 'Edit the community', 'accent', () => {
+                            s.community = {
+                                ...emptyDraft(),
+                                ...settings,
+                                topicEdits: community.topics.map((t) => ({archived: t.archived, channel: t.channel, name: t.name})),
+                            }
+                            this.show({id, kind: 'edit'})
+                        }, 'sm')}
+                        {mod && Key('person_add', 'Make an invite link', 'glass', () => {
+                            c.createInvite(id)
+                            document.querySelector('.chat-invite')?.scrollIntoView({behavior: 'smooth', block: 'center'})
+                        }, 'sm')}
+                        {settings.place && Key('location_on', 'See it in World', 'glass', () => m.route.set('/world'), 'sm')}
+                        {community.role !== 'owner' && Key('logout', 'Leave the community', 'danger', leave, 'sm')}
+                    </>,
                 )}
                 <div class="chat-pane">
                     {this.hero(settings.name, settings.picture, settings.about, settings.place)}
@@ -3463,7 +3533,7 @@ export class Chat extends MithrilComponent {
                             onclick={() => p.address !== me && this.person(p.address, null)}
                             type="button"
                         >
-                            {Avatar(p.address, 28)}
+                            {Face(p.address, 28)}
                             <span class="chat-label">{shown(p.address, me)}{p.address === me ? ' (you)' : ''}</span>
                             {p.role !== 'member' && <span class="chat-role">{ROLE[p.role]}</span>}
                         </button>
@@ -3508,15 +3578,7 @@ export class Chat extends MithrilComponent {
                         {community.role === 'owner'
                             ? <p class="chat-hint">You own this community. Hand it over (a person's menu) before leaving.</p>
                             : (
-                                <Button
-                                    onclick={() => {
-                                        if (confirm(`Leave ${settings.name}? You leave every topic in it.`)) {
-                                            c.leaveCommunity(id)
-                                            this.show({kind: 'welcome'})
-                                        }
-                                    }}
-                                    variant="ghost"
-                                >
+                                <Button onclick={leave} variant="ghost">
                                     Leave the community
                                 </Button>
                             )}
@@ -4198,7 +4260,7 @@ export class Chat extends MithrilComponent {
                     <>
                         <ul class="chat-people">
                             {me && <li>{Avatar(me, 22)} {shown(me, me)} (you)</li>}
-                            {(sum?.people ?? []).map((p) => <li key={p}>{Avatar(p, 22)} {shown(p, me)}</li>)}
+                            {(sum?.people ?? []).map((p) => <li key={p}>{Face(p, 22)} {shown(p, me)}</li>)}
                         </ul>
                         {input('Add somebody', 'field', 'username')}
                     </>,
