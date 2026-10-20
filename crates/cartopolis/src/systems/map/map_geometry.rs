@@ -99,6 +99,7 @@ fn is_flat_ground(group: SurfaceGroup) -> bool {
         SurfaceGroup::Canopy
             | SurfaceGroup::Trunk
             | SurfaceGroup::Furniture
+            | SurfaceGroup::Kerb
             | SurfaceGroup::TunnelRoad(_)
             | SurfaceGroup::TunnelStructure
             | SurfaceGroup::BridgeDeck
@@ -2729,7 +2730,7 @@ impl MapSurfaces {
     /// same reason the handles are shared in the first place.
     #[must_use]
     pub fn material(&self, group: SurfaceGroup) -> Option<&Handle<GroundMaterial>> {
-        self.materials.get(&group)
+        self.materials.get(&group.material_group())
     }
 
     /// The shared ground-finish map, minting it on first use.
@@ -2757,6 +2758,7 @@ impl MapSurfaces {
             ),
             "road materials carry a texture and are created by update_map_surfaces"
         );
+        let group = group.material_group();
         self.materials
             .entry(group)
             .or_insert_with(|| {
@@ -3533,6 +3535,11 @@ fn upload_finished_cells(
             // out of the refinement several times its measured size, and is cut
             // back to the cap (`build_meshes_owned`).
             for piece in build_meshes_owned(sm, wx, wz, stand) {
+                let piece_bounds = if group == SurfaceGroup::Kerb {
+                    crate::systems::kerb_shadows::xz_bounds(&piece)
+                } else {
+                    [0.0; 4]
+                };
                 let mesh = meshes.reserve_handle();
                 built_bytes += crate::systems::stream_ledger::mesh_cost(&piece);
                 surfaces.pending_meshes.push_back((c, mesh.clone(), piece));
@@ -3595,7 +3602,9 @@ fn upload_finished_cells(
                         .then(|| surfaces.ground_finish(&mut mats.images));
                     let material = surfaces
                         .materials
-                        .entry(group)
+                        // The kerbs share the furniture's handle, so the fade that
+                        // repaints it repaints them (`SurfaceGroup::material_group`).
+                        .entry(group.material_group())
                         .or_insert_with(|| {
                             let [r, g, b] = group.base_color();
                             // Times the headroom the vertex tints were packed under
@@ -3637,11 +3646,21 @@ fn upload_finished_cells(
                         .entity(id)
                         .insert((VegetationSurface, veg_lod.visibility()));
                 }
-                if group == SurfaceGroup::Furniture {
+                if group.material_group() == SurfaceGroup::Furniture {
                     // Same contract, its own (much lower) band.
                     commands
                         .entity(id)
                         .insert((FurnitureSurface, furniture_lod.visibility()));
+                }
+                if group == SurfaceGroup::Kerb {
+                    // Casting until `kerb_shadows` has placed it against the camera.
+                    commands
+                        .entity(id)
+                        .insert(crate::systems::kerb_shadows::KerbPiece::new(
+                            &piece_bounds,
+                            wx,
+                            wz,
+                        ));
                 }
                 if matches!(
                     group,
@@ -4498,6 +4517,7 @@ fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
         SurfaceGroup::Canopy
             | SurfaceGroup::Trunk
             | SurfaceGroup::Furniture
+            | SurfaceGroup::Kerb
             | SurfaceGroup::TunnelRoad(_)
             | SurfaceGroup::TunnelStructure
             | SurfaceGroup::QuayWall
@@ -4606,6 +4626,7 @@ pub fn casts_shadow(group: SurfaceGroup) -> bool {
         | SurfaceGroup::Canopy
         | SurfaceGroup::Trunk
         | SurfaceGroup::Furniture
+        | SurfaceGroup::Kerb
         | SurfaceGroup::TunnelStructure
         | SurfaceGroup::QuayWall => true,
         SurfaceGroup::Water
@@ -5570,6 +5591,7 @@ fn stand_on_terrain<G: MeasuredGround>(
         SurfaceGroup::Canopy
             | SurfaceGroup::Trunk
             | SurfaceGroup::Furniture
+            | SurfaceGroup::Kerb
             | SurfaceGroup::TunnelRoad(_)
             | SurfaceGroup::TunnelStructure
     );

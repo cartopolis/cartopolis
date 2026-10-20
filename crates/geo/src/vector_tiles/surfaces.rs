@@ -39,6 +39,19 @@ pub enum SurfaceGroup {
     /// shelters. Same contract as [`Self::Canopy`]: one group, one material, one
     /// mesh per cell, with the per-object variety carried in vertex colours.
     Furniture,
+    /// The kerbstones along the surveyed paving's edges — street furniture in
+    /// every respect, the same material, fade and layer, and its own group for
+    /// one reason: **its shadow is smaller than the far cascades' texels**.
+    ///
+    /// A kerb is a 10 cm box, so its shadow is a hand's width, and a cell has tens
+    /// of thousands of them — more triangles than every other street object
+    /// together. Drawn into the outer cascades, where a texel is 35 cm and then a
+    /// metre, they cost most of a street-level frame's shadow work and could not
+    /// put a single dark texel down. The client lets the kerbs near the camera
+    /// cast and the rest not (`systems::kerb_shadows`), which needs to know which
+    /// pieces are kerbs. [`Self::material_group`] is what keeps them furniture
+    /// everywhere else.
+    Kerb,
     /// Surveyed paving beside the carriageway (`crate::paving`) — pavements,
     /// cycle paths, parking bays, verges. Same one-group contract again: the
     /// form's tone rides in the vertex colours.
@@ -108,7 +121,7 @@ impl SurfaceGroup {
             // palette entry stays the one place the canopy tone is written down.
             Self::Canopy => palette::CANOPY,
             Self::Trunk => palette::TRUNK,
-            Self::Furniture => palette::FURNITURE,
+            Self::Furniture | Self::Kerb => palette::FURNITURE,
         };
         [
             ((rgb >> 16) & 0xFF) as f32 / 255.0,
@@ -156,7 +169,7 @@ impl SurfaceGroup {
             Self::TunnelRoad(_) | Self::TunnelStructure => GroundLayer::Standing,
             // Vertical, and never coplanar with anything: the standing rung.
             Self::QuayWall => GroundLayer::Standing,
-            Self::Canopy | Self::Trunk | Self::Furniture => GroundLayer::Standing,
+            Self::Canopy | Self::Trunk | Self::Furniture | Self::Kerb => GroundLayer::Standing,
         }
     }
 
@@ -196,6 +209,16 @@ impl SurfaceGroup {
         match self {
             Self::Road(class) => class.perceptual_roughness(),
             _ => 0.95,
+        }
+    }
+
+    /// The group whose material, fade and handling this one shares: itself, but
+    /// for [`Self::Kerb`], which is [`Self::Furniture`] in all but its shadows.
+    #[must_use]
+    pub fn material_group(self) -> Self {
+        match self {
+            Self::Kerb => Self::Furniture,
+            other => other,
         }
     }
 }

@@ -40,6 +40,8 @@ pub mod building_designs;
 pub mod cutaway;
 pub mod ground_probe;
 pub mod load_control;
+// Only the kerbs near the camera go into the shadow maps.
+pub mod kerb_shadows;
 pub mod lod22;
 pub mod lod22_facade;
 pub mod lod3;

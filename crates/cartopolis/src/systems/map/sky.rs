@@ -91,6 +91,22 @@ pub(crate) fn shadow_cascades() -> usize {
     platform_max.min(quality::budget().shadow_cascades)
 }
 
+/// Far bound of the sun's nearest cascade, metres.
+pub(crate) const SUN_FIRST_CASCADE_FAR_M: f32 = 60.0;
+
+/// Far bound of the sun's cascade `i`, metres from the camera along the view —
+/// bevy's own interpolation (`CascadeShadowConfigBuilder::build`): geometric
+/// from [`SUN_FIRST_CASCADE_FAR_M`] to the budget's shadow distance, which the
+/// last cascade ends on.
+pub(crate) fn sun_cascade_far_bound(i: usize) -> f32 {
+    let n = shadow_cascades();
+    let max = quality::budget().shadow_distance_m;
+    if n <= 1 || i + 1 >= n {
+        return max;
+    }
+    SUN_FIRST_CASCADE_FAR_M * (max / SUN_FIRST_CASCADE_FAR_M).powf(i as f32 / (n - 1) as f32)
+}
+
 pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
     let (sun_color, illuminance) =
@@ -107,7 +123,7 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shad
             num_cascades: shadow_cascades(),
             minimum_distance: 2.0,
             maximum_distance: quality::budget().shadow_distance_m,
-            first_cascade_far_bound: 60.0,
+            first_cascade_far_bound: SUN_FIRST_CASCADE_FAR_M,
             overlap_proportion: 0.2,
         }
         .build(),

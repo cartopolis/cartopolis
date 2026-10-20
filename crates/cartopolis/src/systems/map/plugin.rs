@@ -567,6 +567,14 @@ impl Plugin for MapPlugin {
             )
                 .in_set(ClientPhase::Present),
         );
+        // Which kerbs go into the shadow maps: the ones the near cascades can draw
+        // (`systems::kerb_shadows`). After the camera, against where it now is.
+        app.add_systems(
+            Update,
+            systems::kerb_shadows::update_kerb_shadows
+                .after(systems::free_camera::camera_controls)
+                .in_set(ClientPhase::Present),
+        );
         // Satellites round the globe: the catalogue and the snapshot are streamed
         // like any layer; the uniform that carries the snapshot forward is written
         // after the camera, so the points are where this frame's view expects them.

@@ -1683,8 +1683,16 @@ pub fn build_line_meshes_footed(
     // furniture group's triangles at street level, and listed line by line they
     // filled each piece from all over the cell — so every piece went into every
     // shadow cascade and the main pass whatever was in view.
-    let mut boxes: Vec<([f32; 2], (f32, f32), Part, [f32; 4])> = Vec::new();
+    //
+    // Kerbs go into pieces of their own, as `SurfaceGroup::Kerb`: the client lets
+    // only the kerbs near the camera cast, which it can only do per piece.
+    let mut boxes: Vec<([f32; 2], (f32, f32), Part, [f32; 4], SurfaceGroup)> = Vec::new();
     for line in lines {
+        let group = if line.kind == LineKind::Kerb {
+            SurfaceGroup::Kerb
+        } else {
+            SurfaceGroup::Furniture
+        };
         let (nominal, half_thick, tone) = line.kind.spec();
         // A measured height wins, clamped to something a survey could mean. The
         // floor is the important end: 3dfier drapes these objects on AHN, so an
@@ -1742,23 +1750,26 @@ pub fn build_line_meshes_footed(
                     half: [piece * 0.5, height * 0.5, half_thick],
                     tone,
                 };
-                boxes.push((mid, (sn, cs), part, tint));
+                boxes.push((mid, (sn, cs), part, tint, group));
             }
         }
     }
     let mut out = Vec::new();
-    let mut buf = MeshBuf::default();
-    for i in crate::patches::spatial_order(&boxes, |b| b.0) {
-        let (mid, rot, part, tint) = &boxes[i];
-        if let Some(max) = max_bytes {
-            if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
-                out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
+    for group in [SurfaceGroup::Furniture, SurfaceGroup::Kerb] {
+        let of_group: Vec<usize> = (0..boxes.len()).filter(|&i| boxes[i].4 == group).collect();
+        let mut buf = MeshBuf::default();
+        for k in crate::patches::spatial_order(&of_group, |&i| boxes[i].0) {
+            let (mid, rot, part, tint, _) = &boxes[of_group[k]];
+            if let Some(max) = max_bytes {
+                if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
+                    out.push(std::mem::take(&mut buf).finish(group));
+                }
             }
+            push_box(&mut buf, mid[0], mid[1], *rot, part, *tint);
         }
-        push_box(&mut buf, mid[0], mid[1], *rot, part, *tint);
-    }
-    if !buf.positions.is_empty() {
-        out.push(buf.finish(SurfaceGroup::Furniture));
+        if !buf.positions.is_empty() {
+            out.push(buf.finish(group));
+        }
     }
     out
 }
