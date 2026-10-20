@@ -1,7 +1,7 @@
 ---
 topic: performance
 triggers: [tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
-updated: 2026-09-23
+updated: 2026-10-20
 ---
 
 # What one tile costs, stage by stage — and where the instrument does not reach
@@ -117,6 +117,17 @@ What did work was **threading it**: the cut is order-independent by
 construction, so it runs on four threads and the stage went 128.5 → 47.5 ms
 with byte-identical output. The remaining 47.5 ms is still the largest single
 item in the pipeline.
+
+**And at street level it is the whole load (2026-10-20).** A sampling profile of
+the `web-release` build filling the `street` scenario on `deck-1` (nine cells
+with surveyed paving, gap fills and the street objects) puts
+`road_stitch::cut_ribbon_inner` at **62 % of all worker time**, `i_overlay`'s
+`CrossSolver::cross` and `tree_split` at 46 % between them, and the terrain
+refinement at 7 %. A surface cell there is ~21 s of worker CPU; the fixture
+tile's 47.5 ms is not what a street-level cell costs. The profile cannot say which
+`stitch_some` caller pays it — the cut runs on scoped threads, whose stacks
+start at their own closure — so the per-caller split is the first thing to
+instrument (`render-performance-survey.md`, "At street level…").
 
 ## Batching the bank field's building fills — tried, measured, reverted
 

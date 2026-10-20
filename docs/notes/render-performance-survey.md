@@ -1,6 +1,6 @@
 ---
 topic: render-performance-survey
-triggers: [grid.rs, ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+triggers: [grid.rs, patches.rs, split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
 updated: 2026-10-20
 ---
 
@@ -86,6 +86,53 @@ pass list**: bevy_pbr opens `lightprobe_*` spans, and they never reach
 "measured GPU passes" column cannot see the largest cost in the frame.
 `systems::sky_bake` re-bakes only when the sun, the moon or the camera's place
 in the atmosphere has moved.
+
+## At street level the ground is tens of millions of vertices (2026-10-20)
+
+`deck-1`, 1280×800, desktop rung, fresh `CARTO_DATA_DIR`, `cargo perf --only
+street --repeat 2`. The main pass shaded **2.5–3.0 M fragments** for 1.0 M pixels
+and took 22 ms, while the nine `map_geometry` cells around the camera held
+(per-group totals from a temporary log in `stand_on_terrain`):
+
+| group | vertices | triangles | casts |
+|---|---|---|---|
+| Furniture (parked cars are most of it) | 9.4 M | 4.8 M | yes |
+| Paving | 8.9 M | 5.3 M | no |
+| Built | 5.8 M | 2.8 M | no |
+| Canopy + Trunk | 1.4 M | 1.6 M | yes |
+
+Geometry was 1.75–1.96 GB of the street view's ~2 GB residency. Two causes,
+both fixed without changing a pixel:
+
+- **The flat fills arrived with every triangle owning its corners** (3.0 vertices
+  a triangle), and the refinement then minted a midpoint per *index pair*, two
+  per shared edge. `terrain_refine::weld` merges bit-identical vertices before
+  the refinement.
+- **Furniture and trees were cut into upload-sized pieces in source order**, so
+  every piece's box spanned the cell and went into all four cascades and the main
+  pass. They (and `split_by_upload_bytes`) now fill pieces along a Hilbert curve
+  (`cartopolis_geo::patches`): same pieces, small boxes.
+
+Measured with the `web-release` profile (the dev profile's debug assertions
+distort every CPU number here), `main` → this change, two flights each:
+
+| street | `main` | after |
+|---|---|---|
+| steady frame | 54.7 ms | 50.8 ms |
+| `main_opaque_pass_3d` | 21.5 ms | 19.3 ms |
+| GPU residency | 2.16 GB | 1.81 GB |
+| settled in | 57.0 / 54.6 s | 53.2 / 49.7 s |
+
+Before/after captures differ only in the drifting clouds and the moving traffic.
+**What is left of the street frame is unmeasured**: ~23 ms of 50 is in passes
+`RenderDiagnosticsPlugin` does not list (the shadow cascades and the light-shaft
+march). **What is left of the street load is the road cut**: a sampling profile
+of the optimised build (`pprof`, added for one run; `perf_event_paranoid` is 2 on
+the Deck and blocks `samply`) puts `road_stitch::cut_ribbon_inner` at **62 %** of
+worker time and `i_overlay`'s solver at ~45 %, against 7 % for the refinement —
+see `tile-pipeline-stage-costs.md`. A surface cell is ~21 s of worker CPU there.
+In the dev build the refinement looked like the wall instead (hashing its edge
+keys byte by byte was 11 % on its own, fixed with `terrain_refine::Words`).
 
 ## At the Deck's own size the light shafts were the frame (2026-10-19)
 
