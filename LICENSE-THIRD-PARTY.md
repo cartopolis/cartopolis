@@ -188,6 +188,13 @@ license: CC BY-SA 4.0
 url: https://github.com/astronexus/HYG-Database
 notice: Star positions and magnitudes from the HYG Database v4.1 by David Nash, CC BY-SA 4.0 — a compilation of the Hipparcos, Yale Bright Star and Gliese catalogs.
 
+## Freesound and Kenney — city sounds
+
+role: The footsteps and the city's background loops (assets/sounds), cut from field recordings
+license: CC0 1.0
+url: https://freesound.org and https://kenney.nl/assets/impact-sounds (each recording is listed in assets/sounds/LICENSE.md)
+notice: City sounds cut from CC0 recordings by Freesound contributors and Kenney; assets/sounds/LICENSE.md names each one.
+
 ## Plus Jakarta Sans
 
 role: The brand font — the boot splash wordmark and the UI's own family

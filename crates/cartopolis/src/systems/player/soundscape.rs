@@ -44,6 +44,8 @@ use crate::components::Avatar;
 #[cfg(feature = "audio")]
 use crate::resources::{AppPrefs, AvatarState, CameraMode, CameraState};
 #[cfg(feature = "audio")]
+use crate::systems::ambience::{AmbienceSounds, Underfoot};
+#[cfg(feature = "audio")]
 use crate::systems::avatar::{AvatarAnimations, ClipGait};
 use crate::systems::locomotion;
 #[cfg(feature = "audio")]
@@ -164,8 +166,13 @@ pub fn play_avatar_sounds(
     soundscape: Res<Soundscape>,
     prefs: Res<AppPrefs>,
     gaits: Query<&AvatarAnimations, With<Avatar>>,
+    underfoot: Res<Underfoot>,
+    recorded_steps: Option<Res<AmbienceSounds>>,
+    sources: Res<Assets<AudioSource>>,
+    mut echoes: ResMut<StepEchoes>,
     mut stride: Local<f32>,
     mut foot: Local<usize>,
+    mut take: Local<usize>,
 ) {
     // Read once: a clip's volume is fixed when it is spawned, so a slider moved
     // mid-stride affects the next step rather than the one already sounding.
@@ -241,15 +248,79 @@ pub fn play_avatar_sounds(
     // the noise is: a sound that differs between runs cannot be tested, and the
     // ear cannot tell one source of variation from another anyway.
     let (speed_wobble, level_wobble) = step_wobble(*foot, *stride);
+    // A recorded take for the ground underfoot where one has loaded, the
+    // synthesised step otherwise. The pick walks the takes in an order that
+    // never repeats one twice running.
+    *take = take.wrapping_add(1 + (*foot % 2) * 2);
+    let recorded = underfoot.surface.and_then(|surface| {
+        let clip = recorded_steps
+            .as_ref()?
+            .step(surface, underfoot.wet, *take, &sources)?;
+        Some((clip, surface.level() * RECORDED_STEP_GAIN))
+    });
+    let (clip, level) = recorded.unwrap_or((soundscape.steps[*foot].clone(), 1.0));
+    let volume = loudness * level_wobble * level * gain;
     commands.spawn((
-        AudioPlayer(soundscape.steps[*foot].clone()),
+        AudioPlayer(clip.clone()),
         PlaybackSettings {
             mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(loudness * level_wobble * gain),
+            volume: Volume::Linear(volume),
             speed: speed_wobble,
             ..default()
         },
     ));
+    // The facades' answer, a few tens of milliseconds behind.
+    if let Some((delay, echo_level)) = underfoot.echo {
+        echoes.push((delay, clip, volume * echo_level, speed_wobble));
+    }
+}
+
+/// How loud a recorded take plays against the synthesised step's levels
+/// ([`STEP_VOLUME_WALK`]). The takes are normalised to one peak when they are
+/// cut; this is the one knob between them and the old scale.
+const RECORDED_STEP_GAIN: f32 = 1.6;
+
+#[cfg(feature = "audio")]
+/// Play each queued echo once its delay has run out.
+pub fn play_step_echoes(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut echoes: ResMut<StepEchoes>,
+) {
+    let dt = time.delta_secs();
+    echoes.0.retain_mut(|(delay, clip, volume, speed)| {
+        *delay -= dt;
+        if *delay > 0.0 {
+            return true;
+        }
+        commands.spawn((
+            AudioPlayer(clip.clone()),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                volume: Volume::Linear(*volume),
+                speed: *speed,
+                ..default()
+            },
+        ));
+        false
+    });
+}
+
+#[cfg(feature = "audio")]
+/// Echoes waiting to be heard: `(seconds left, clip, volume, speed)`. A
+/// resource rather than a `Local` so the step and its echo can be played by
+/// two systems; bevy cannot schedule a sound to start later.
+#[derive(Resource, Default)]
+pub struct StepEchoes(Vec<(f32, Handle<AudioSource>, f32, f32)>);
+
+#[cfg(feature = "audio")]
+impl StepEchoes {
+    fn push(&mut self, echo: (f32, Handle<AudioSource>, f32, f32)) {
+        // A frame hitch must not queue a burst of them.
+        if self.0.len() < 4 {
+            self.0.push(echo);
+        }
+    }
 }
 
 #[cfg(feature = "audio")]

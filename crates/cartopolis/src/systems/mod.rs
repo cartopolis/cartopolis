@@ -98,4 +98,4 @@ pub use player::{
 // but nothing outside it calls in, and an unconditional re-export would be an
 // unused import rather than a convenience.
 #[cfg(feature = "audio")]
-pub use player::soundscape;
+pub use player::{ambience, soundscape};

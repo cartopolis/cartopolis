@@ -66,15 +66,18 @@ default = ["audio"]
 #   crates/cartopolis/index.html           data-cargo-features="audio"
 #   .forgejo/workflows/ci.yml              --features audio (the wasm check)
 #
-# The clips themselves are synthesised at startup, so this adds no assets and no
-# Git LFS exposure; the only cost is the decoder and the platform backend.
+# The footsteps and the city's background loops are CC0 recordings under
+# `assets/sounds/` (Git LFS, loaded at run time, so a missing object is a
+# synthesised step, not a build failure); the landing, wind and chimes are
+# synthesised at startup. `bevy/vorbis` decodes the recordings: lewton, pure Rust,
+# so it cross-compiles to Android and wasm like the rest.
 #
 # `dep:cpal` is the *capture* half. `bevy_audio` wraps rodio, which is output-only,
 # so the microphone needs cpal directly — but cpal is already in the graph *under*
 # rodio, so this adds a direct edge rather than a new crate. It rides the same
 # feature because it links the same ALSA on Linux: a headless build that opts out
 # of `bevy_audio` must not be given an alsa-sys dependency by the back door.
-audio = ["bevy/bevy_audio", "bevy/wav", "dep:cpal"]
+audio = ["bevy/bevy_audio", "bevy/wav", "bevy/vorbis", "dep:cpal"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # The performance suite's deep instruments (`systems::perf`, `cargo perf`).

@@ -225,7 +225,30 @@ impl Plugin for PlayerPlugin {
         // the `audio` feature (ALSA headers on Linux — see Cargo.toml), and a
         // `#[cfg]` inside a system tuple would have to be repeated per entry.
         #[cfg(feature = "audio")]
-        app.add_systems(Startup, systems::soundscape::setup_soundscape)
+        app.init_resource::<systems::ambience::Underfoot>()
+            .init_resource::<systems::soundscape::StepEchoes>()
+            .add_systems(
+                Startup,
+                (
+                    systems::soundscape::setup_soundscape,
+                    systems::ambience::setup_ambience,
+                ),
+            )
+            // The city around the avatar: sampled after movement, so the
+            // footstep that follows hears the ground it has just reached.
+            .add_systems(
+                Update,
+                (
+                    systems::ambience::sample_surroundings
+                        .after(avatar::handle_avatar_movement)
+                        .before(systems::soundscape::play_avatar_sounds),
+                    systems::ambience::update_bed_volumes
+                        .after(systems::ambience::sample_surroundings),
+                    systems::soundscape::play_step_echoes
+                        .after(systems::soundscape::play_avatar_sounds),
+                )
+                    .in_set(ClientPhase::Present),
+            )
             // The arrival whoosh. After the teleport that causes it, so a jump is
             // heard on the frame it lands rather than the next one.
             .add_systems(
