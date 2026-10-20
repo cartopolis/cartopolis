@@ -5640,6 +5640,9 @@ fn stand_on_terrain<G: MeasuredGround>(
         if landings.is_empty() { field } else { &landed };
     let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
+        // Before the refinement, which mints a midpoint per index pair: the flat
+        // fills arrive with every triangle owning its corners (`weld`).
+        cartopolis_geo::terrain_refine::weld(positions, indices, uvs, normals, colors, rungs);
         crate::systems::terrain::refine_for_terrain(
             positions,
             indices,

@@ -105,6 +105,120 @@ impl std::hash::Hasher for EdgeHasher {
     }
 }
 
+/// A fixed-size key of 32-bit words for the maps here, hashed two words at a time.
+///
+/// **Not an array**, whose `Hash` goes through `hash_slice` and hands the hasher
+/// the words as *bytes*, which [`EdgeHasher::write`] then re-chunks four at a time:
+/// that byte loop was 11 % of a street-level fill's worker time on `deck-1`
+/// (2026-10-20, a sampling profile of the dev build), more than the ground lookups
+/// the edges were keyed to avoid.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Words<const N: usize>([u32; N]);
+
+impl<const N: usize> std::hash::Hash for Words<N> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for pair in self.0.chunks(2) {
+            let hi = pair.get(1).copied().unwrap_or(0);
+            state.write_u64(u64::from(pair[0]) | (u64::from(hi) << 32));
+        }
+    }
+}
+
+/// Merge the vertices that are the same vertex: equal in position and in every
+/// attribute the mesh carries, bit for bit.
+///
+/// **Every flat ground layer reaches the drape with each triangle owning its three
+/// corners** — `flat_fill` emits them so (the surveyed paving, the crop parcels) and
+/// the land fills come out of the road cut the same way. At street level over
+/// Groningen (`deck-1`, 2026-10-20) that was 3.0 vertices a triangle for the paving
+/// and the built land, 11.5 M of them across the nine cells. Everything after this
+/// pays per vertex: [`refine_for_terrain`] mints a midpoint per *index pair*, so an
+/// edge two triangles own is split twice into two coincident vertices; the drape
+/// samples the field once a vertex and the normals do too; and the upload, the
+/// residency and the vertex shader in the main pass are all per vertex.
+///
+/// Exact by construction. Only bit-identical vertices merge, so nothing moves and
+/// nothing is recoloured, and every triangle keeps its corners in the same order,
+/// so the winding `flat_fill` fixed survives. Two vertices that differ in any
+/// attribute — the corners of two parcels of different crops — stay two.
+pub fn weld(
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut [u32],
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
+) {
+    type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<EdgeHasher>>;
+
+    let n = positions.len();
+    let has = |len: usize| len == n && n > 0;
+    let (has_uv, has_normal, has_color, has_rung) = (
+        has(uvs.len()),
+        has(normals.len()),
+        has(colors.len()),
+        has(rungs.len()),
+    );
+    let key = |i: usize| -> [u32; 13] {
+        let mut k = [0u32; 13];
+        for (slot, v) in k.iter_mut().zip(positions[i]) {
+            *slot = v.to_bits();
+        }
+        if has_uv {
+            k[3] = uvs[i][0].to_bits();
+            k[4] = uvs[i][1].to_bits();
+        }
+        if has_normal {
+            for (slot, v) in k[5..8].iter_mut().zip(normals[i]) {
+                *slot = v.to_bits();
+            }
+        }
+        if has_color {
+            for (slot, v) in k[8..12].iter_mut().zip(colors[i]) {
+                *slot = v.to_bits();
+            }
+        }
+        if has_rung {
+            k[12] = rungs[i].to_bits();
+        }
+        k
+    };
+    let mut first: HashMap<Words<13>, u32> =
+        HashMap::with_capacity_and_hasher(n / 2, Default::default());
+    let mut remap = Vec::with_capacity(n);
+    let mut kept: Vec<usize> = Vec::with_capacity(n / 2);
+    for i in 0..n {
+        let next = kept.len() as u32;
+        let to = *first.entry(Words(key(i))).or_insert(next);
+        if to == next {
+            kept.push(i);
+        }
+        remap.push(to);
+    }
+    if kept.len() == n {
+        return;
+    }
+    for i in indices.iter_mut() {
+        *i = remap[*i as usize];
+    }
+    fn compact<T: Copy>(v: &mut Vec<T>, kept: &[usize]) {
+        *v = kept.iter().map(|&i| v[i]).collect();
+    }
+    compact(positions, &kept);
+    if has_uv {
+        compact(uvs, &kept);
+    }
+    if has_normal {
+        compact(normals, &kept);
+    }
+    if has_color {
+        compact(colors, &kept);
+    }
+    if has_rung {
+        compact(rungs, &kept);
+    }
+}
+
 /// Split every triangle edge longer than `max_edge`, repeatedly, so a flat polygon
 /// has vertices to be displaced *by*.
 ///
@@ -140,6 +254,25 @@ pub fn refine_for_terrain(
     max_edge: f32,
     crease: Option<Crease<'_>>,
 ) {
+    refine_mesh(
+        positions, indices, uvs, normals, colors, rungs, max_edge, crease, true,
+    );
+}
+
+/// [`refine_for_terrain`], with the finished-triangle skip switchable so a test
+/// can hold the two against each other.
+#[allow(clippy::too_many_arguments)]
+fn refine_mesh(
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
+    max_edge: f32,
+    crease: Option<Crease<'_>>,
+    skip_settled: bool,
+) {
     type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<EdgeHasher>>;
 
     let limit = max_edge.max(1.0);
@@ -160,10 +293,21 @@ pub fn refine_for_terrain(
     // A refusal charged to an exhausted budget survives too, and must: `spent`
     // only ever grows, so the later pass would refuse it anyway, and answering it
     // consistently is what the per-edge key exists for.
-    let mut decided: HashMap<[i32; 6], bool> = HashMap::default();
+    let mut decided: HashMap<Words<6>, bool> = HashMap::default();
+    // **A triangle none of whose edges split is finished for good**, and is copied
+    // through every later pass without asking again. Each "no" is final: the long-
+    // edge rule is a pure function of the edge's length, a crease refusal is held in
+    // `decided` (which even a neighbour owning the same edge reads), and the budget
+    // only shrinks. So the question has one answer, and re-asking it cost a lookup
+    // in a table of millions of edges per edge per pass — at street level over
+    // Groningen (`deck-1`, 2026-10-20) the paving's refinement was ~12 µs a
+    // triangle and every triangle of a cell was visited five times. Exact: the same
+    // triangles come out in the same order.
+    let mut settled: Vec<bool> = vec![false; indices.len() / 3];
     for _ in 0..MAX_REFINE_PASSES {
+        let open = settled.iter().filter(|&&s| !s).count();
         let mut midpoints: HashMap<(u32, u32), u32> =
-            HashMap::with_capacity_and_hasher(indices.len() / 2, Default::default());
+            HashMap::with_capacity_and_hasher(open * 3 / 2, Default::default());
         // **Whether an edge splits is a property of where it is, not of which
         // vertices happen to name it.**
         //
@@ -199,7 +343,7 @@ pub fn refine_for_terrain(
                      colors: &mut Vec<[f32; 4]>,
                      rungs: &mut Vec<f32>,
                      midpoints: &mut HashMap<(u32, u32), u32>,
-                     decided: &mut HashMap<[i32; 6], bool>,
+                     decided: &mut HashMap<Words<6>, bool>,
                      spent: &mut usize|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
@@ -213,7 +357,7 @@ pub fn refine_for_terrain(
                 [q(pb[0]), q(pb[1]), q(pb[2])],
             );
             let (lo, hi) = if ka <= kb { (ka, kb) } else { (kb, ka) };
-            let edge = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+            let edge = Words([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]].map(|v| v as u32));
             let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
             let len_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             if len_sq <= limit_sq {
@@ -292,16 +436,24 @@ pub fn refine_for_terrain(
         };
 
         let mut out: Vec<u32> = Vec::with_capacity(indices.len());
+        let mut out_settled: Vec<bool> = Vec::with_capacity(settled.len());
         let mut any = false;
-        for tri in indices.chunks_exact(3) {
+        for (tri, &done) in indices.chunks_exact(3).zip(&settled) {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
+            if done && skip_settled {
+                out.extend_from_slice(&[a, b, c]);
+                out_settled.push(true);
+                continue;
+            }
             #[rustfmt::skip]
             let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
             #[rustfmt::skip]
             let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
             #[rustfmt::skip]
             let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
-            any |= ab.is_some() || bc.is_some() || ca.is_some();
+            let cut = ab.is_some() || bc.is_some() || ca.is_some();
+            any |= cut;
+            let before = out.len();
             match (ab, bc, ca) {
                 (None, None, None) => out.extend_from_slice(&[a, b, c]),
                 // One split edge: a straight cut from the midpoint to the opposite
@@ -323,8 +475,11 @@ pub fn refine_for_terrain(
                     out.extend_from_slice(&[a, mab, mca, mab, b, mbc, mca, mbc, c, mab, mbc, mca]);
                 }
             }
+            // An uncut triangle is finished; the pieces of a cut one get asked again.
+            out_settled.resize(out_settled.len() + (out.len() - before) / 3, !cut);
         }
         *indices = out;
+        settled = out_settled;
         if !any {
             return;
         }
@@ -469,6 +624,162 @@ mod tests {
         );
     }
 
+    /// **Skipping the finished triangles changes nothing**: the same vertices, the
+    /// same triangles, in the same order, bit for bit. Over a field bumpy enough to
+    /// spend the whole crease budget, so the refusals that come from an exhausted
+    /// budget are covered as well as the ones that come from the ground.
+    #[test]
+    fn skipping_finished_triangles_refines_exactly_the_same_mesh() {
+        let (n, step) = (150u32, 24.5f32);
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut indices = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let (x, z) = (i as f32 * step, j as f32 * step);
+                let b = positions.len() as u32;
+                positions.extend([
+                    [x, 0.0, z],
+                    [x + step, 0.0, z],
+                    [x + step, 0.0, z + step],
+                    [x, 0.0, z + step],
+                ]);
+                colors.extend([[i as f32 / n as f32, 0.5, 0.5, 1.0]; 4]);
+                indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+            }
+        }
+        let run = |skip: bool| {
+            let (mut p, mut i, mut c) = (positions.clone(), indices.clone(), colors.clone());
+            refine_mesh(
+                &mut p,
+                &mut i,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut c,
+                &mut Vec::new(),
+                12.5,
+                Some(Crease {
+                    field: &Bumpy,
+                    origin: [0.0, 0.0],
+                }),
+                skip,
+            );
+            let bits = |v: &[[f32; 3]]| v.iter().flatten().map(|f| f.to_bits()).collect::<Vec<_>>();
+            let cbits =
+                |v: &[[f32; 4]]| v.iter().flatten().map(|f| f.to_bits()).collect::<Vec<_>>();
+            (bits(&p), i, cbits(&c))
+        };
+        let (with, without) = (run(true), run(false));
+        assert!(
+            with.0.len() / 3 > positions.len() + CREASE_VERTEX_BUDGET,
+            "the field did not spend the crease budget, so its refusals are untested"
+        );
+        assert!(
+            with == without,
+            "skipping finished triangles changed the mesh"
+        );
+    }
+
+    /// **Welding first changes no triangle the refinement draws, and only removes
+    /// vertices.** The mesh is laid out the way `flat_fill` emits one — every
+    /// triangle with its own corners — with a second colour region so that a seam
+    /// between two parcels has to stay unwelded.
+    #[test]
+    fn welding_before_refining_draws_the_same_triangles_with_fewer_vertices() {
+        let (n, step) = (12u32, 20.0f32);
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut indices = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let (x, z) = (i as f32 * step, j as f32 * step);
+                let tone = if i < n / 2 {
+                    [0.2, 0.5, 0.1, 1.0]
+                } else {
+                    [0.6, 0.6, 0.3, 1.0]
+                };
+                for c in [
+                    [x, 0.0, z],
+                    [x + step, 0.0, z],
+                    [x + step, 0.0, z + step],
+                    [x, 0.0, z],
+                    [x + step, 0.0, z + step],
+                    [x, 0.0, z + step],
+                ] {
+                    indices.push(positions.len() as u32);
+                    positions.push(c);
+                    colors.push(tone);
+                }
+            }
+        }
+        let run = |weld_first: bool| {
+            let (mut p, mut i, mut c) = (positions.clone(), indices.clone(), colors.clone());
+            if weld_first {
+                weld(
+                    &mut p,
+                    &mut i,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut c,
+                    &mut Vec::new(),
+                );
+            }
+            refine_for_terrain(
+                &mut p,
+                &mut i,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut c,
+                &mut Vec::new(),
+                12.5,
+                Some(Crease {
+                    field: &Bumpy,
+                    origin: [0.0, 0.0],
+                }),
+            );
+            let mut tris: Vec<[u32; 21]> = i
+                .chunks_exact(3)
+                .map(|t| {
+                    let mut k = [0u32; 21];
+                    for (corner, &v) in t.iter().enumerate() {
+                        let v = v as usize;
+                        for (a, f) in p[v].iter().chain(&c[v]).enumerate() {
+                            k[corner * 7 + a] = f.to_bits();
+                        }
+                    }
+                    k
+                })
+                .collect();
+            tris.sort_unstable();
+            (tris, p.len())
+        };
+        let (plain, plain_verts) = run(false);
+        let (welded, welded_verts) = run(true);
+        assert_eq!(plain, welded, "welding changed what the refinement draws");
+        assert!(
+            welded_verts * 2 < plain_verts,
+            "{welded_verts} vertices welded against {plain_verts}"
+        );
+
+        // And the seam between the two colours is still two vertices a point.
+        let (mut p, mut i, mut c) = (positions.clone(), indices.clone(), colors.clone());
+        weld(
+            &mut p,
+            &mut i,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut c,
+            &mut Vec::new(),
+        );
+        let seam_x = (n / 2) as f32 * step;
+        let on_seam = p.iter().filter(|v| v[0] == seam_x).count();
+        assert_eq!(
+            on_seam,
+            2 * (n as usize + 1),
+            "the colour seam was welded shut"
+        );
+    }
+
     /// A height lands on every vertex the refinement added, not only the corners.
     ///
     /// The refinement is only worth anything if the vertices it adds are then
@@ -495,46 +806,54 @@ mod tests {
     /// Wall-clock for a cell-sized mesh, printed rather than asserted (see
     /// `perf`'s module note on timers). Sized to what a city cell's refinement
     /// adds, ~500k vertices: 24.5 m quads, so the long-edge rule splits every one,
-    /// each quad's corners unshared as `flat_fill` emits them.
+    /// each quad's corners unshared as `flat_fill` emits them — and beside it a
+    /// paving-shaped one, 3 m quads that the long-edge rule never splits, which is
+    /// what most of a street-level cell's ground is. Each with and without the
+    /// finished-triangle skip.
     /// `cargo test -p cartopolis_geo --release refine_a_cell -- --ignored --nocapture`
     #[test]
     #[ignore = "a timing, not a check"]
     fn refine_a_cell() {
-        let (n, step) = (240u32, 24.5f32);
-        let mut positions = Vec::new();
-        let mut indices = Vec::new();
-        for j in 0..n {
-            for i in 0..n {
-                let (x, z) = (i as f32 * step, j as f32 * step);
-                let b = positions.len() as u32;
-                positions.extend([
-                    [x, 0.0, z],
-                    [x + step, 0.0, z],
-                    [x + step, 0.0, z + step],
-                    [x, 0.0, z + step],
-                ]);
-                indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+        for (name, n, step) in [("24.5 m quads", 240u32, 24.5f32), ("3 m quads", 480, 3.0)] {
+            let mut positions = Vec::new();
+            let mut indices = Vec::new();
+            for j in 0..n {
+                for i in 0..n {
+                    let (x, z) = (i as f32 * step, j as f32 * step);
+                    let b = positions.len() as u32;
+                    positions.extend([
+                        [x, 0.0, z],
+                        [x + step, 0.0, z],
+                        [x + step, 0.0, z + step],
+                        [x, 0.0, z + step],
+                    ]);
+                    indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+                }
+            }
+            for skip in [false, true] {
+                let (mut p, mut i) = (positions.clone(), indices.clone());
+                let t = std::time::Instant::now();
+                refine_mesh(
+                    &mut p,
+                    &mut i,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    12.5,
+                    Some(Crease {
+                        field: &Bumpy,
+                        origin: [0.0, 0.0],
+                    }),
+                    skip,
+                );
+                println!(
+                    "{name}, skip {skip}: refined to {} vertices, {} triangles in {:?}",
+                    p.len(),
+                    i.len() / 3,
+                    t.elapsed()
+                );
             }
         }
-        let t = std::time::Instant::now();
-        refine_for_terrain(
-            &mut positions,
-            &mut indices,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-            12.5,
-            Some(Crease {
-                field: &Bumpy,
-                origin: [0.0, 0.0],
-            }),
-        );
-        println!(
-            "refined to {} vertices, {} triangles in {:?}",
-            positions.len(),
-            indices.len() / 3,
-            t.elapsed()
-        );
     }
 }
