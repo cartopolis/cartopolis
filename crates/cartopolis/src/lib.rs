@@ -1200,6 +1200,8 @@ impl Plugin for ShellPlugin {
                 // the cheapest diagnostic is one the phone never registers.
                 render_census::log_render_cost
                     .run_if(|| !quality::is_phone() || env_flag("CARTO_RENDER_COST")),
+                render_census::log_mesh_owners
+                    .run_if(|| !quality::is_phone() || env_flag("CARTO_RENDER_COST")),
             )
                 .in_set(phase::ClientPhase::Present),
         );

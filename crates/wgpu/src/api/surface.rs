@@ -184,6 +184,7 @@ impl Surface<'_> {
                     texture: Texture {
                         inner: texture,
                         descriptor,
+                        meter: crate::meter::Allocation::none(),
                     },
                     presented: false,
                     detail,

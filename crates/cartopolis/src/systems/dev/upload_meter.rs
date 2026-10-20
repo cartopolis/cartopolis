@@ -162,6 +162,20 @@ impl UploadMeter {
         self.resident_mesh_bytes / 1024
     }
 
+    /// One mesh's bytes as measured when it was created, if it is still alive.
+    /// Known for a mesh uploaded `RENDER_WORLD`-only too, whose geometry the main
+    /// world no longer holds.
+    #[must_use]
+    pub fn mesh_bytes(&self, id: AssetId<Mesh>) -> Option<usize> {
+        self.meshes.get(&id).copied()
+    }
+
+    /// Every live mesh's bytes, together.
+    #[must_use]
+    pub fn mesh_bytes_total(&self) -> usize {
+        self.resident_mesh_bytes
+    }
+
     /// What the streamed content occupies right now, in kB.
     #[must_use]
     pub fn resident_kb(&self) -> usize {
@@ -185,6 +199,63 @@ impl UploadMeter {
     fn account(resident: &mut usize, peak: &mut usize, previous: Option<usize>, now: usize) {
         *resident = resident.saturating_sub(previous.unwrap_or(0)) + now;
         *peak = (*peak).max(*resident);
+    }
+}
+
+/// The five-second `gpu` log line: what wgpu holds and was handed
+/// (`wgpu::meter`, counted at the API in the vendored `crates/wgpu`, so on every
+/// backend including the browser's), beside this meter's own asset count.
+///
+/// A log line rather than only a metric because on the web and on a phone the log
+/// is the instrument there is, and the browser probes collect it
+/// (`tools/cdp_probe.ts`, `tools/firefox_probe.ts`): it is how a zoom-out that
+/// loses the device or freezes the page is read afterwards
+/// (`docs/notes/upload-bursts.md`).
+#[derive(Default)]
+pub struct GpuReport {
+    until_next: f32,
+    /// wgpu's cumulative written bytes at the last frame and at the last report.
+    written_at_frame: u64,
+    written_at_report: u64,
+    /// The most any one frame wrote since the last report. Natively the render
+    /// world runs a frame behind the main one, so a "frame" here is the bytes
+    /// written between two main-world frames: the same totals, offset by one.
+    max_frame: u64,
+    /// Seconds covered by this window.
+    window_s: f32,
+}
+
+impl GpuReport {
+    fn observe(&mut self, dt: f32, streamed_assets: usize) {
+        let now = egui_wgpu::wgpu::meter::snapshot();
+        let frame = now.written_bytes.saturating_sub(self.written_at_frame);
+        self.written_at_frame = now.written_bytes;
+        self.max_frame = self.max_frame.max(frame);
+        self.window_s += dt;
+        self.until_next -= dt;
+        if self.until_next > 0.0 {
+            return;
+        }
+        self.until_next = 5.0;
+        let mb = |b: u64| (b as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0;
+        let written = now.written_bytes.saturating_sub(self.written_at_report);
+        tracing::info!(
+            resident_mb = mb(now.resident_bytes()),
+            textures_mb = mb(now.texture_bytes),
+            buffers_mb = mb(now.buffer_bytes),
+            textures = now.textures,
+            buffers = now.buffers,
+            peak_mb = mb(now.peak_bytes),
+            written_mb = mb(written),
+            written_mb_s = mb((written as f64 / f64::from(self.window_s.max(0.001))) as u64),
+            max_frame_mb = mb(self.max_frame),
+            // This meter's own count: the streamed images and meshes only.
+            streamed_assets_mb = mb(streamed_assets as u64),
+            "gpu",
+        );
+        self.written_at_report = now.written_bytes;
+        self.max_frame = 0;
+        self.window_s = 0.0;
     }
 }
 
@@ -242,7 +313,10 @@ pub fn measure_uploads(
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     images: Res<Assets<Image>>,
     meshes: Res<Assets<Mesh>>,
+    time: Res<Time<Real>>,
+    mut report: Local<GpuReport>,
 ) {
+    report.observe(time.delta_secs(), meter.resident_bytes);
     let mut bytes = 0usize;
     // Taken apart so the residency bookkeeping can borrow the two counters and the
     // size map at once; `meter` is put back together at the end of each loop body.

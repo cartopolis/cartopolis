@@ -261,6 +261,8 @@ mod cmp;
 mod dispatch;
 mod macros;
 pub mod util;
+// cartopolis: counts of what the process holds on, and writes to, the GPU.
+pub mod meter;
 
 //
 //

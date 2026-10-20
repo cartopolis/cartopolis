@@ -1279,6 +1279,12 @@ pub struct ShotMetrics {
     ///
     /// [bevyengine/bevy#24722]: https://github.com/bevyengine/bevy/issues/24722
     pub vram_reserved_kb: u64,
+    /// Buffers and textures alive at the shutter, in kB, as counted at wgpu's
+    /// API (`wgpu::meter`, in the vendored `crates/wgpu`). Every backend, the
+    /// browser included, and every caller, bevy's own buffers and render
+    /// targets included. What the client asked for: driver padding is extra.
+    pub gpu_buffers_kb: u64,
+    pub gpu_textures_kb: u64,
 }
 
 /// The `--csv` column order, and the spine the rest of the harness's introspection
@@ -1312,7 +1318,7 @@ approach_abutments,approach_raised,deck_count,decks_unapproached,deck_step_max_m
 fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
-gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
+gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,gpu_buffers_kb,gpu_textures_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
 worker_jobs,worker_busy_ms,worker_wait_ms,worker_threads,worker_utilisation,worker_split";
 
@@ -4662,6 +4668,7 @@ fn record_metrics(
                 r.total_reserved_bytes / 1024,
             )
         });
+    let gpu_meter = egui_wgpu::wgpu::meter::snapshot();
     let deck_steps = readouts.decks.approach_steps(&readouts.terrain);
     let m = ShotMetrics {
         shot: progress.index + 1,
@@ -4918,6 +4925,8 @@ fn record_metrics(
         software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
         vram_allocated_kb: vram.0,
         vram_reserved_kb: vram.1,
+        gpu_buffers_kb: gpu_meter.buffer_bytes / 1024,
+        gpu_textures_kb: gpu_meter.texture_bytes / 1024,
     };
     // One line, but its *level* carries whether the shot is trustworthy: a
     // capture that timed out describes a half-built world, and at INFO it
@@ -5695,6 +5704,8 @@ mod tests {
             software_renderer: true,
             vram_allocated_kb: 0,
             vram_reserved_kb: 0,
+            gpu_buffers_kb: 0,
+            gpu_textures_kb: 0,
             fetch_count: 0,
             fetch_errors: 0,
             fetch_mb: 0.0,

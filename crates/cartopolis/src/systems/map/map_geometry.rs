@@ -885,6 +885,14 @@ pub struct MapSurfaces {
     coverage_wait: Option<(u32, bevy::platform::time::Instant)>,
 }
 
+impl MapSurfaces {
+    /// Cells with built (or building) entities, for the `mesh owners` log line.
+    #[must_use]
+    pub fn loaded_cells(&self) -> usize {
+        self.loaded.len()
+    }
+}
+
 impl Default for MapSurfaces {
     fn default() -> Self {
         Self {

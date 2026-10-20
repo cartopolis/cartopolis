@@ -224,6 +224,8 @@ pub struct Buffer {
     pub(crate) map_context: Arc<Mutex<MapContext>>,
     pub(crate) size: wgt::BufferAddress,
     pub(crate) usage: BufferUsages,
+    // cartopolis: this buffer's share of `crate::meter`, shared by its clones.
+    pub(crate) meter: Arc<crate::meter::Allocation>,
     // Todo: missing map_state https://www.w3.org/TR/webgpu/#dom-gpubuffer-mapstate
 }
 #[cfg(send_sync)]
@@ -332,6 +334,7 @@ impl Buffer {
 
     /// Destroy the associated native resources as soon as possible.
     pub fn destroy(&self) {
+        self.meter.release();
         self.inner.destroy();
     }
 

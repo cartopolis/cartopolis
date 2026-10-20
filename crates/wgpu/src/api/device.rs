@@ -284,6 +284,7 @@ impl Device {
             map_context: Arc::new(Mutex::new(map_context)),
             size: desc.size,
             usage: desc.usage,
+            meter: crate::meter::Allocation::buffer(desc.size, desc.mapped_at_creation),
         }
     }
 
@@ -301,6 +302,7 @@ impl Device {
                 view_formats: &[],
                 ..desc.clone()
             },
+            meter: crate::meter::Allocation::texture(desc),
         }
     }
 
@@ -360,6 +362,7 @@ impl Device {
                 view_formats: &[],
                 ..desc.clone()
             },
+            meter: crate::meter::Allocation::texture(desc),
         }
     }
 
@@ -417,6 +420,8 @@ impl Device {
                 view_formats: &[],
                 ..desc.clone()
             },
+            // cartopolis: external, so the caller's memory, not counted.
+            meter: crate::meter::Allocation::none(),
         }
     }
 
@@ -479,6 +484,7 @@ impl Device {
             map_context: Arc::new(Mutex::new(map_context)),
             size: desc.size,
             usage: desc.usage,
+            meter: crate::meter::Allocation::buffer(desc.size, desc.mapped_at_creation),
         }
     }
 

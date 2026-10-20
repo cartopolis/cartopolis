@@ -12,6 +12,8 @@ use crate::*;
 pub struct Texture {
     pub(crate) inner: dispatch::DispatchTexture,
     pub(crate) descriptor: TextureDescriptor<'static>,
+    // cartopolis: this texture's share of `crate::meter`, shared by its clones.
+    pub(crate) meter: alloc::sync::Arc<crate::meter::Allocation>,
 }
 #[cfg(send_sync)]
 static_assertions::assert_impl_all!(Texture: Send, Sync);
@@ -115,6 +117,7 @@ impl Texture {
 
     /// Destroy the associated native resources as soon as possible.
     pub fn destroy(&self) {
+        self.meter.release();
         self.inner.destroy();
     }
 

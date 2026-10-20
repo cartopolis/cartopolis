@@ -53,6 +53,17 @@ pub struct RenderCounts {
     pub tris_globe: usize,
 }
 
+/// Resident mesh bytes, split as [`RenderCensus::mesh_bytes`] splits them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshBytes {
+    pub lod22: usize,
+    pub buildings: usize,
+    pub tiles: usize,
+    pub globe: usize,
+    pub other: usize,
+    pub unowned: usize,
+}
+
 /// The queries behind [`RenderCounts`], as a `SystemParam` so both readers share
 /// one definition — and so `drive_capture`, which is at Bevy's 16-parameter
 /// ceiling, can take it as a single argument.
@@ -109,6 +120,38 @@ impl RenderCensus<'_, '_> {
         c
     }
 
+    /// Resident mesh bytes by the streamer whose entities hold them, drawn this
+    /// frame or not, each mesh counted once however many entities share it.
+    /// `unowned` is held by no entity at all: the retained-mesh pool
+    /// (`quality::warm_gpu_ceiling`), or a leak.
+    pub fn mesh_bytes(&self, meter: &crate::systems::upload_meter::UploadMeter) -> MeshBytes {
+        let mut seen = bevy::platform::collections::HashSet::new();
+        let mut b = MeshBytes::default();
+        for (mesh, _, _, building, lod22, tile, globe) in &self.drawn {
+            if !seen.insert(mesh.0.id()) {
+                continue;
+            }
+            let Some(bytes) = meter.mesh_bytes(mesh.0.id()) else {
+                continue;
+            };
+            let slot = if lod22 {
+                &mut b.lod22
+            } else if building {
+                &mut b.buildings
+            } else if tile {
+                &mut b.tiles
+            } else if globe {
+                &mut b.globe
+            } else {
+                &mut b.other
+            };
+            *slot += bytes;
+        }
+        let owned = b.lod22 + b.buildings + b.tiles + b.globe + b.other;
+        b.unowned = meter.mesh_bytes_total().saturating_sub(owned);
+        b
+    }
+
     /// Triangles in one mesh, or 0 when the geometry is no longer in the main
     /// world.
     ///
@@ -144,7 +187,12 @@ impl RenderCensus<'_, '_> {
 /// and a scripted capture cannot stand in — Android has no CLI. `CARTO_RENDER_COST`
 /// goes through `env_flag`, so on a device it is `adb shell setprop
 /// debug.carto.render_cost 1` against the shipped APK, no rebuild.
-pub fn log_render_cost(time: Res<Time<Real>>, mut next: Local<f32>, census: RenderCensus) {
+pub fn log_render_cost(
+    time: Res<Time<Real>>,
+    mut next: Local<f32>,
+    census: RenderCensus,
+    meter: Res<crate::systems::upload_meter::UploadMeter>,
+) {
     *next -= time.delta_secs();
     if *next > 0.0 {
         return;
@@ -162,4 +210,138 @@ pub fn log_render_cost(time: Res<Time<Real>>, mut next: Local<f32>, census: Rend
         ktris_globe = c.tris_globe / 1000,
         "render cost",
     );
+    // Where the mesh memory is: the line to read beside `gpu` when the GPU
+    // fills (`upload_meter::GpuReport`).
+    let mb = |b: usize| b / (1024 * 1024);
+    let m = census.mesh_bytes(&meter);
+    tracing::info!(
+        lod22_mb = mb(m.lod22),
+        buildings_mb = mb(m.buildings),
+        tiles_mb = mb(m.tiles),
+        globe_mb = mb(m.globe),
+        other_mb = mb(m.other),
+        unowned_mb = mb(m.unowned),
+        "mesh memory",
+    );
+}
+
+/// The `other` column of [`RenderCensus::mesh_bytes`], named: resident mesh bytes
+/// of every mesh entity no streamer marker covers, grouped by the first of this
+/// crate's components the entity carries. Every five seconds, top six, beside
+/// `mesh memory`.
+///
+/// Introspection rather than a marker per streamer, because a marker answers only
+/// the question someone thought to ask: it was a zoom-out putting 1.3 GB of meshes
+/// in this bucket (2026-10-20) that made it worth naming.
+#[allow(clippy::type_complexity)]
+pub fn log_mesh_owners(
+    world: &World,
+    time: Res<Time<Real>>,
+    mut next: Local<f32>,
+    meter: Res<crate::systems::upload_meter::UploadMeter>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: crate::grid::AnchoredCamera,
+    meshes: Query<
+        (Entity, &Mesh3d),
+        (
+            Without<OsmBuildingMesh>,
+            Without<Lod22Mesh>,
+            Without<StreamTile>,
+            Without<GlobeMesh>,
+        ),
+    >,
+) {
+    *next -= time.delta_secs();
+    if *next > 0.0 {
+        return;
+    }
+    *next = 5.0;
+    let mut seen = bevy::platform::collections::HashSet::new();
+    // (bytes, distinct meshes)
+    let mut by_owner: bevy::platform::collections::HashMap<String, (usize, usize)> =
+        Default::default();
+    for (entity, mesh) in &meshes {
+        if !seen.insert(mesh.0.id()) {
+            continue;
+        }
+        let Some(bytes) = meter.mesh_bytes(mesh.0.id()) else {
+            continue;
+        };
+        // The entity, then its parents: a glTF scene's meshes carry only bevy's
+        // components, and the app's marker is on the scene root above them.
+        // A fixed list rather than component names, which a release build does
+        // not keep (bevy's `debug` feature).
+        let mut owner = "(none of the listed markers)";
+        let mut at = Some(entity);
+        for _ in 0..8 {
+            let Some(e) = at else { break };
+            let Ok(r) = world.get_entity(e) else { break };
+            if let Some(name) = mesh_owner(&r) {
+                owner = name;
+                break;
+            }
+            at = r.get::<ChildOf>().map(ChildOf::parent);
+        }
+        let owner = owner.to_string();
+        let slot = by_owner.entry(owner).or_default();
+        slot.0 += bytes;
+        slot.1 += 1;
+    }
+    let mut top: Vec<(String, (usize, usize))> = by_owner.into_iter().collect();
+    top.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    let line: Vec<String> = top
+        .iter()
+        .take(6)
+        .map(|(name, (bytes, n))| format!("{name}={}MB/{n}", bytes / (1024 * 1024)))
+        .collect();
+    let cells = world
+        .get_resource::<crate::systems::map_geometry::MapSurfaces>()
+        .map_or(0, crate::systems::map_geometry::MapSurfaces::loaded_cells);
+    let altitude_m = camera
+        .get()
+        .map_or(f64::NAN, |(cell, tf)| globe.altitude_m(cell, tf));
+    tracing::info!(
+        owners = %line.join(" "),
+        surface_cells = cells,
+        altitude_m = altitude_m as i64,
+        "mesh owners",
+    );
+}
+
+/// The marker [`log_mesh_owners`] files a mesh entity under, if it has one.
+fn mesh_owner(e: &bevy::ecs::world::EntityRef) -> Option<&'static str> {
+    use crate::components as c;
+    use crate::systems as s;
+    macro_rules! first {
+        ($($t:ty => $name:literal),* $(,)?) => {
+            $(if e.contains::<$t>() { return Some($name); })*
+        };
+    }
+    first!(
+        c::MapSurface => "MapSurface",
+        c::TunnelSurface => "TunnelSurface",
+        c::VegetationSurface => "VegetationSurface",
+        c::FurnitureSurface => "FurnitureSurface",
+        c::GroundSkirt => "GroundSkirt",
+        c::MapBackstop => "MapBackstop",
+        c::PrimMesh => "PrimMesh",
+        c::StreetLabelSign => "StreetLabelSign",
+        c::VehicleBox => "VehicleBox",
+        c::RouteVisual => "RouteVisual",
+        c::DataLayerMarkers => "DataLayerMarkers",
+        c::PlanetAtmosphere => "PlanetAtmosphere",
+        c::Avatar => "Avatar",
+        c::RemoteAvatar => "RemoteAvatar",
+        s::grass::GrassPatch => "GrassPatch",
+        s::interiors::InteriorMesh => "InteriorMesh",
+        s::street_detail::PropNear => "PropNear",
+        s::street_detail::PropFar => "PropFar",
+        s::sky_dome::SkyDome => "SkyDome",
+        s::satellites::SatelliteCloud => "SatelliteCloud",
+        s::traffic::Car => "Car",
+        s::tall_structures::TurbineRotor => "TurbineRotor",
+        s::sewers::Backdrop => "SewerBackdrop",
+        c::HideInSpace => "HideInSpace (other)",
+    );
+    None
 }

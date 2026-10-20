@@ -174,6 +174,7 @@ impl Queue {
     ///   be able to use [`StagingBelt`](crate::util::StagingBelt),
     ///   or buffers you explicitly create, map, and unmap yourself.
     pub fn write_buffer(&self, buffer: &Buffer, offset: BufferAddress, data: &[u8]) {
+        crate::meter::written(data.len() as u64); // cartopolis
         self.inner.write_buffer(&buffer.inner, offset, data);
     }
 
@@ -221,6 +222,7 @@ impl Queue {
         self.inner
             .validate_write_buffer(&buffer.inner, offset, size)?;
         let staging_buffer = self.inner.create_staging_buffer(size)?;
+        crate::meter::written(size.get()); // cartopolis
         Some(QueueWriteBufferView {
             queue: self.clone(),
             buffer: buffer.clone(),
@@ -257,6 +259,7 @@ impl Queue {
         data_layout: TexelCopyBufferLayout,
         size: Extent3d,
     ) {
+        crate::meter::written(data.len() as u64); // cartopolis
         self.inner.write_texture(texture, data, data_layout, size);
     }
 
@@ -268,6 +271,8 @@ impl Queue {
         dest: wgt::CopyExternalImageDestInfo<&api::Texture>,
         size: Extent3d,
     ) {
+        // cartopolis: four bytes a texel, which is what the browser decodes to.
+        crate::meter::written(u64::from(size.width) * u64::from(size.height) * 4);
         self.inner
             .copy_external_image_to_texture(source, dest, size);
     }
