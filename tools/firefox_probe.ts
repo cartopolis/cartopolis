@@ -12,6 +12,7 @@
  *   bun tools/firefox_probe.ts --zoom-out 30          # from t=30 s, zoom out in four steps
  *   bun tools/firefox_probe.ts --zoom-in 30           # …or in, down to street level
  *   bun tools/firefox_probe.ts --fresh                # a first visit: delete the profile first
+ *   bun tools/firefox_probe.ts --size 1400x1300 --dpr 2   # a Retina display: 2× the pixels each way
  *
  * Without `--fresh` the profile is kept, so a second run is a returning visitor
  * (the IndexedDB caches, the stored shaders, the remembered camera).
@@ -46,6 +47,8 @@ const { values: opt } = parseArgs({
     port: { type: "string", default: "9231" },
     raw: { type: "boolean", default: false },
     screenshot: { type: "string" },
+    size: { type: "string", default: "1600x900" },
+    dpr: { type: "string", default: "1" },
   },
 });
 
@@ -135,7 +138,8 @@ const send = (method: string, params: any = {}, ms = 10_000) =>
 await send("session.new", { capabilities: {} });
 await send("session.subscribe", { events: ["log.entryAdded"] });
 const context = (await send("browsingContext.getTree", {})).result.contexts[0].context;
-await send("browsingContext.setViewport", { context, viewport: { width: 1600, height: 900 } });
+const [vw, vh] = opt.size!.split("x").map(Number);
+await send("browsingContext.setViewport", { context, viewport: { width: vw, height: vh }, devicePixelRatio: Number(opt.dpr) });
 await send("browsingContext.navigate", { context, url: opt.url, wait: "none" });
 console.log(`${stamp()} navigated ${opt.url}`);
 
@@ -143,7 +147,7 @@ const scroll = async (deltaY: number, notches: number) => {
   for (let i = 0; i < notches; i++) {
     await send(
       "input.performActions",
-      { context, actions: [{ type: "wheel", id: "wheel", actions: [{ type: "scroll", x: 800, y: 450, deltaX: 0, deltaY }] }] },
+      { context, actions: [{ type: "wheel", id: "wheel", actions: [{ type: "scroll", x: Math.round(vw / 2), y: Math.round(vh / 2), deltaX: 0, deltaY }] }] },
       3000,
     );
     await Bun.sleep(16);
