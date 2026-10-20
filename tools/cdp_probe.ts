@@ -35,6 +35,7 @@
  *                                                  # ssh -L to a machine with a real GPU) instead of spawning one
  *   bun tools/cdp_probe.ts --drive 20              # from t=20 s, move the camera the way a person does
  *   bun tools/cdp_probe.ts --drive 20 --drive-script zoomout   # …or zoom out in steps, pausing at each
+ *   bun tools/cdp_probe.ts --drive 20 --drive-script flight    # …or fly a fixed list of altitudes (`gpu_log.ts`)
  *   bun tools/cdp_probe.ts --keep-profile          # a returning visitor: keep the browser profile (its
  *                                                  # IndexedDB cache) from the run before, and after this one
  *
@@ -48,7 +49,7 @@
  * read differently (see "main thread hung" in the report).
  */
 import { parseArgs } from "node:util";
-import { parseGpuLine, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
+import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
 
 const { values: opt } = parseArgs({
   options: {
@@ -225,6 +226,8 @@ ws.onmessage = (ev) => {
       if (line) console_.push(line);
       const gpu = line && parseGpuLine(line);
       if (gpu) gpuRows.push({ t: since(), f: gpu });
+      const heapBy = line && parseHeapBy(line);
+      if (heapBy) marks.push({ t: since(), label: `heap by label: ${heapBy}` });
       const owners = line && parseOwnersLine(line);
       if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
       if (opt.raw) console.log("  │", line);
@@ -372,6 +375,17 @@ async function drive(fromMs: number) {
       await Bun.sleep(16);
     }
   };
+  if (opt["drive-script"] === "flight") {
+    // Altitudes, not wheel notches: the wheel's direction differs per driver
+    // and per camera mode, and a run has to be read against where it was.
+    for (const alt of FLIGHT_ALTITUDES) {
+      if (Date.now() - started > RUN_MS - 2000) break;
+      await sendWithin("Runtime.evaluate", { expression: flyExpression(alt) }, 3000);
+      marks.push({ t: since(), label: `flew to ${alt} m` });
+      await Bun.sleep(FLIGHT_DWELL_MS);
+    }
+    return;
+  }
   if (opt["drive-script"] === "zoomout") {
     // Out in four steps with a pause at each, so a streaming burst and the
     // residency it leaves behind can be told apart; then all the way back in.

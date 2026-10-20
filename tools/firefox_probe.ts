@@ -11,6 +11,7 @@
  *   bun tools/firefox_probe.ts --url https://cartopolis.org/viewer/ --seconds 90
  *   bun tools/firefox_probe.ts --zoom-out 30          # from t=30 s, zoom out in four steps
  *   bun tools/firefox_probe.ts --zoom-in 30           # …or in, down to street level
+ *   bun tools/firefox_probe.ts --flight 30            # …or fly a fixed list of altitudes (`gpu_log.ts`)
  *   bun tools/firefox_probe.ts --fresh                # a first visit: delete the profile first
  *   bun tools/firefox_probe.ts --size 1400x1300 --dpr 2   # a Retina display: 2× the pixels each way
  *
@@ -34,7 +35,7 @@
  * opposite of what Chrome's `Input.dispatchMouseEvent` does.
  */
 import { parseArgs } from "node:util";
-import { parseGpuLine, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
+import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
 
 const { values: opt } = parseArgs({
   options: {
@@ -44,6 +45,7 @@ const { values: opt } = parseArgs({
     fresh: { type: "boolean", default: false },
     "zoom-out": { type: "string" },
     "zoom-in": { type: "string" },
+    flight: { type: "string" },
     port: { type: "string", default: "9231" },
     raw: { type: "boolean", default: false },
     screenshot: { type: "string" },
@@ -117,6 +119,8 @@ ws.onmessage = (m) => {
   const text: string = (e.text ?? (e.args ?? []).map((a: any) => a.value ?? a.type).join(" ")).replace(/%c/g, "");
   const gpu = parseGpuLine(text);
   if (gpu) gpuRows.push({ t: since(), f: gpu });
+  const heapBy = parseHeapBy(text);
+  if (heapBy) marks.push({ t: since(), label: `heap by label: ${heapBy}` });
   const owners = parseOwnersLine(text);
   if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
   if (e.level === "error") errors.push(`t=${since().toFixed(1)}s ${text.slice(0, 300)}`);
@@ -157,6 +161,8 @@ const zoomFrom = opt["zoom-out"] ?? opt["zoom-in"];
 const zoomDy = opt["zoom-out"] !== undefined ? 100 : -100;
 let nextZoom = zoomFrom !== undefined ? started + Number(zoomFrom) * 1000 : undefined;
 let zoomStep = 0;
+let flightAt = opt.flight !== undefined ? started + Number(opt.flight) * 1000 : undefined;
+let flightStep = 0;
 
 // Frames drawn since the last poll, and the longest gap between two.
 const COUNTER = `(() => {
@@ -179,6 +185,12 @@ while (Date.now() < end) {
     await scroll(zoomDy, 40);
     marks.push({ t: since(), label: `zoomed ${zoomDy > 0 ? "out" : "in"}, step ${zoomStep}` });
     nextZoom = Date.now() + 10_000;
+  }
+  if (flightAt !== undefined && Date.now() >= flightAt && flightStep < FLIGHT_ALTITUDES.length) {
+    const alt = FLIGHT_ALTITUDES[flightStep++];
+    await send("script.evaluate", { expression: flyExpression(alt), target: { context }, awaitPromise: false }, 3000);
+    marks.push({ t: since(), label: `flew to ${alt} m` });
+    flightAt = Date.now() + FLIGHT_DWELL_MS;
   }
   const r = await send("script.evaluate", { expression: COUNTER, target: { context }, awaitPromise: false }, 4000);
   const v = r?.result?.result?.value;
