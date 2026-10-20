@@ -2312,10 +2312,16 @@ pub(crate) struct MeshData {
     /// Split the colour's alpha out as the facade code — see
     /// [`MeshData::with_facade_code`].
     facade_code: bool,
+    /// The base of the building being written — see [`MeshData::set_ground`].
+    ground_y: f32,
+    /// Per-vertex copy of [`Self::ground_y`] on a facade-coded buffer, packed
+    /// into the bytes that layout leaves spare ([`pack_ground`]).
+    grounds: Option<Vec<f32>>,
 }
 
-/// A vertex's position, flat normal, colour and UV, as raw bit patterns.
-type VertexKey = [u32; 12];
+/// A vertex's position, flat normal, colour, UV and building base, as raw bit
+/// patterns.
+type VertexKey = [u32; 13];
 
 /// Hasher for [`VertexKey`], replacing the default `HashMap`'s SipHash-1-3.
 ///
@@ -2428,7 +2434,20 @@ impl MeshData {
     /// holds in graphics memory over a city.
     pub(crate) fn with_facade_code(mut self) -> Self {
         self.facade_code = true;
+        self.grounds = Some(Vec::new());
         self
+    }
+
+    /// Record `ground` as the base of every vertex pushed from now on, without
+    /// moving any — `lod22`'s positions already stand on it.
+    ///
+    /// The facade shader measures a wall from its own foot: storeys, the plinth,
+    /// the damp line, the eaves. Without this it could only measure from the
+    /// world's zero, which is the foot only where the terrain layer is off. Only
+    /// a facade-coded buffer keeps it, and there it costs nothing — see
+    /// [`pack_ground`]. A buffer nobody tells keeps 0, the old datum.
+    pub(crate) fn set_ground(&mut self, ground: f32) {
+        self.ground_y = ground;
     }
 
     /// The vertices written so far, for tests that check where geometry went.
@@ -2473,6 +2492,9 @@ impl MeshData {
                 color[3].to_bits(),
                 uv[0].to_bits(),
                 uv[1].to_bits(),
+                // Two buildings on different ground can meet at a corner of the
+                // same height; that corner is two vertices, one per base.
+                self.ground_y.to_bits(),
             ]
         });
         if let (Some(k), Some(map)) = (&key, &self.dedup) {
@@ -2493,6 +2515,9 @@ impl MeshData {
         }
         if let Some(uvs) = &mut self.uvs {
             uvs.push(uv);
+        }
+        if let Some(grounds) = &mut self.grounds {
+            grounds.push(self.ground_y);
         }
         if let (Some(k), Some(map)) = (key, &mut self.dedup) {
             map.insert(k, idx);
@@ -2678,6 +2703,7 @@ impl MeshData {
             &self.colors,
             self.uvs,
             self.bases,
+            self.grounds,
             self.indices,
             self.facade_code,
         ))
@@ -2762,6 +2788,7 @@ impl MeshData {
             let mut colors = Vec::new();
             let mut uvs = self.uvs.as_ref().map(|_| Vec::new());
             let mut bases = self.bases.as_ref().map(|_| Vec::new());
+            let mut grounds = self.grounds.as_ref().map(|_| Vec::new());
             let mut indices = Vec::with_capacity(triangles.len());
             for &old in triangles {
                 let slot = &mut remap[old as usize];
@@ -2776,6 +2803,9 @@ impl MeshData {
                     if let (Some(out), Some(src)) = (&mut bases, &self.bases) {
                         out.push(src[old as usize]);
                     }
+                    if let (Some(out), Some(src)) = (&mut grounds, &self.grounds) {
+                        out.push(src[old as usize]);
+                    }
                 }
                 indices.push(*slot);
             }
@@ -2785,6 +2815,7 @@ impl MeshData {
                 &colors,
                 uvs,
                 bases,
+                grounds,
                 indices,
                 self.facade_code,
             ));
@@ -2799,6 +2830,26 @@ impl MeshData {
 /// The facade code's own float (`building_windows::ATTRIBUTE_FACADE_CODE`).
 const FACADE_CODE_BYTES: usize = 4;
 
+/// [`pack_ground`]'s datum and step: centimetres above 128 m below the anchor's
+/// zero, 65,279 of them — −128 m to +524.79 m, past anything the Netherlands
+/// (−7 m to 322 m) stands on.
+const GROUND_FLOOR_M: f32 = -128.0;
+const GROUND_STEP_M: f32 = 0.01;
+const GROUND_MAX_STEPS: u32 = 254 * 256 + 255;
+
+/// A building's base as the two bytes a facade-coded vertex leaves spare: the
+/// high byte in the normal's padding (a signed byte, −127..127 — not −128,
+/// which a GPU decodes to −1.0 like −127), the low byte in the colour's alpha,
+/// which that layout never reads because the alpha travels as the facade code.
+/// `building_vertex.wesl` reads them back. Free: no attribute was added, so the
+/// biggest geometry lane in the app uploads not one byte more for it.
+fn pack_ground(ground: f32) -> (i8, u8) {
+    let steps = ((ground - GROUND_FLOOR_M) / GROUND_STEP_M)
+        .round()
+        .clamp(0.0, GROUND_MAX_STEPS as f32) as u32;
+    (((steps >> 8) as i32 - 127) as i8, (steps & 0xff) as u8)
+}
+
 /// One finished mesh from per-vertex arrays — the single place `MeshData`'s
 /// vertex format is decided, so `into_mesh`, `into_meshes` and
 /// [`MeshData::vertex_bytes`] cannot disagree about it. The formats themselves
@@ -2809,6 +2860,7 @@ fn finish_mesh(
     colors: &[[f32; 4]],
     uvs: Option<Vec<[f32; 2]>>,
     bases: Option<Vec<f32>>,
+    grounds: Option<Vec<f32>>,
     indices: Vec<u32>,
     facade_code: bool,
 ) -> Mesh {
@@ -2818,17 +2870,29 @@ fn finish_mesh(
     );
     let vertex_count = positions.len();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(
-        mesh_format::COMPACT_NORMAL,
-        mesh_format::pack_normals(normals),
-    );
+    let mut packed_normals = mesh_format::pack_normals(normals);
     if facade_code {
-        mesh.insert_attribute(mesh_format::COMPACT_COLOR, mesh_format::pack_colors(colors));
+        let mut packed_colors = mesh_format::pack_colors(colors);
+        // The normal's padding byte and the colour's alpha byte (the alpha
+        // travels as the facade code) carry the building's base.
+        if let (
+            Some(grounds),
+            bevy::mesh::VertexAttributeValues::Snorm8x4(n),
+            bevy::mesh::VertexAttributeValues::Unorm8x4(c),
+        ) = (&grounds, &mut packed_normals, &mut packed_colors)
+        {
+            for ((n, c), &g) in n.iter_mut().zip(c.iter_mut()).zip(grounds) {
+                (n[3], c[3]) = pack_ground(g);
+            }
+        }
+        mesh.insert_attribute(mesh_format::COMPACT_NORMAL, packed_normals);
+        mesh.insert_attribute(mesh_format::COMPACT_COLOR, packed_colors);
         mesh.insert_attribute(
             crate::systems::building_windows::ATTRIBUTE_FACADE_CODE,
             colors.iter().map(|c| c[3]).collect::<Vec<f32>>(),
         );
     } else {
+        mesh.insert_attribute(mesh_format::COMPACT_NORMAL, packed_normals);
         // Four floats: on every other buffer the alpha (and on the far tier the
         // colour itself) can run past 1, which a normalised byte would clamp.
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
@@ -4061,6 +4125,72 @@ pub(crate) fn num_from_value(v: &serde_json::Value) -> Option<f32> {
 mod tests {
     use super::*;
     use bevy::render::mesh::Indices;
+
+    /// `building_vertex.wesl`'s decode, in Rust: a snorm byte reads back as
+    /// `round(b / 127 * 127)`, a unorm byte as itself.
+    fn unpack_ground((hi, lo): (i8, u8)) -> f32 {
+        let steps = (i32::from(hi) + 127) * 256 + i32::from(lo);
+        steps as f32 * GROUND_STEP_M + GROUND_FLOOR_M
+    }
+
+    /// The base comes back to the centimetre over the whole range the
+    /// Netherlands stands on, clamps rather than wraps past it, and never uses
+    /// the snorm byte −128, which a GPU decodes to the same −1.0 as −127.
+    #[test]
+    fn a_building_base_survives_the_spare_bytes() {
+        for g in [-128.0, -6.7, 0.0, 0.004, 1.37, 54.21, 322.5, 524.79] {
+            let packed = pack_ground(g);
+            assert_ne!(packed.0, i8::MIN);
+            assert!(
+                (unpack_ground(packed) - g).abs() <= 0.006,
+                "{g} → {}",
+                unpack_ground(packed)
+            );
+        }
+        assert_eq!(unpack_ground(pack_ground(-500.0)), GROUND_FLOOR_M);
+        assert!(unpack_ground(pack_ground(9000.0)) <= 525.0);
+    }
+
+    /// The base rides in the bytes a facade-coded mesh leaves spare and nowhere
+    /// else: no attribute is added, and a buffer without the facade code keeps
+    /// its padding zero.
+    #[test]
+    fn the_base_adds_no_attribute() {
+        let mut coded = MeshData::with_dedup().with_uvs().with_facade_code();
+        coded.set_ground(3.25);
+        coded.tri(Vec3::ZERO, Vec3::X, Vec3::Y, [0.5, 0.5, 0.5, 9.0]);
+        let mesh = coded.into_mesh().expect("one triangle");
+        assert!(mesh
+            .attribute(crate::systems::building_windows::ATTRIBUTE_FACADE_CODE)
+            .is_some());
+        let Some(bevy::mesh::VertexAttributeValues::Snorm8x4(n)) =
+            mesh.attribute(mesh_format::COMPACT_NORMAL)
+        else {
+            panic!("compact normals");
+        };
+        let Some(bevy::mesh::VertexAttributeValues::Unorm8x4(c)) =
+            mesh.attribute(mesh_format::COMPACT_COLOR)
+        else {
+            panic!("compact colours");
+        };
+        assert!((unpack_ground((n[0][3], c[0][3])) - 3.25).abs() <= 0.006);
+        assert_eq!(
+            mesh.attributes().count(),
+            5,
+            "position, normal, uv, colour, facade code"
+        );
+
+        let mut plain = MeshData::with_dedup();
+        plain.set_ground(3.25);
+        plain.tri(Vec3::ZERO, Vec3::X, Vec3::Y, [0.5, 0.5, 0.5, 1.0]);
+        let mesh = plain.into_mesh().expect("one triangle");
+        let Some(bevy::mesh::VertexAttributeValues::Snorm8x4(n)) =
+            mesh.attribute(mesh_format::COMPACT_NORMAL)
+        else {
+            panic!("compact normals");
+        };
+        assert!(n.iter().all(|n| n[3] == 0));
+    }
 
     /// Both of Overpass's refusal channels are refusals — the JSON `remark` and
     /// the HTML page it sends for a duplicate query or a rate limit — and an

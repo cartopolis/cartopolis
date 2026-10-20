@@ -38,12 +38,11 @@
 //   the columns line up across the seam between them. Adjacent walls of a
 //   building meet at a corner where nothing needs to line up.
 //
-// Known limit: floors sit on a global height lattice rather than on each
-// building's own base, because the shader cannot see the base. With the terrain
-// layer off every building stands at y = 0 and it is exact; with it on, Dutch
-// relief moves a base by a metre or two and a ground-floor band can sit low on
-// its own wall. Real streets do share floor levels, so this reads as a minor
-// misalignment rather than as a mistake.
+// Heights are measured from each building's own base, which `lod22` packs into
+// two spare bytes a vertex and `building_vertex.wesl` hands over as the normal's
+// length (`height_code`). A mesh without it — the OSM lane — still measures
+// from the world's zero, which is its foot only with the terrain layer off; on
+// Dutch relief that puts its ground-floor band and plinth a metre or two out.
 
 import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
@@ -228,9 +227,20 @@ fn pane_for_era(era: u32, fallback: vec2<f32>) -> vec2<f32> {
     }
 }
 
-/// What the wall is made of, drawn over its colour `c` (linear): brick where it
-/// is a saturated warm colour, concrete panels where it is a mid grey, render
-/// where it is pale. `brick` is the brick lattice, `floor_f` the continuous
+/// What a wall of colour `c` (linear) is made of, as (brick, concrete, render)
+/// weights summing to 1: brick where it is a saturated warm colour, concrete
+/// panels where it is a mid grey, render where it is pale.
+fn wall_kinds(c: vec3<f32>) -> vec3<f32> {
+    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let hi = max(c.r, max(c.g, c.b));
+    let sat = (hi - min(c.r, min(c.g, c.b))) / max(hi, 1e-4);
+    let brick_w = smoothstep(0.18, 0.32, sat) * (1.0 - smoothstep(0.3, 0.45, luma)) * f32(c.r >= c.b);
+    let pale_w = smoothstep(0.28, 0.42, luma) * (1.0 - brick_w);
+    return vec3<f32>(brick_w, (1.0 - brick_w) * (1.0 - pale_w), pale_w);
+}
+
+/// What the wall is made of, drawn over its colour `c` (linear) — see
+/// [`wall_kinds`]. `brick` is the brick lattice, `floor_f` the continuous
 /// floor coordinate, `brick_px`/`px` how much of each lattice a pixel spans.
 fn wall_finish(
     c: vec3<f32>,
@@ -241,12 +251,10 @@ fn wall_finish(
     brick_px: f32,
     px: f32,
 ) -> vec3<f32> {
-    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let hi = max(c.r, max(c.g, c.b));
-    let sat = (hi - min(c.r, min(c.g, c.b))) / max(hi, 1e-4);
-    let brick_w = smoothstep(0.18, 0.32, sat) * (1.0 - smoothstep(0.3, 0.45, luma)) * f32(c.r >= c.b);
-    let pale_w = smoothstep(0.28, 0.42, luma) * (1.0 - brick_w);
-    let concrete_w = (1.0 - brick_w) * (1.0 - pale_w);
+    let kinds = wall_kinds(c);
+    let brick_w = kinds.x;
+    let concrete_w = kinds.y;
+    let pale_w = kinds.z;
 
     // Brick: stretcher bond, each course half a brick over, every brick its own
     // firing. The face is darkened by just enough that face and mortar together
@@ -261,7 +269,14 @@ fn wall_finish(
     // pixels a course the bond beats against the pixel grid into moiré rings
     // across the whole wall (seen on the Deck at 20–40 m, 2026-09-30).
     let brick_blur = clamp(brick_px * 3.0 - 0.3, 0.0, 1.0);
-    let bricked = mix(mix(face * fired, MORTAR, mortar), c, brick_blur);
+    // The joint is recessed, so the brick over it shades its upper part — from
+    // the sky as much as from the sun, which is why this reads in shade, where
+    // the relief in `wall_relief` does not.
+    let recess = select(0.8, mix(1.0, 0.55, smoothstep(0.04, 0.2, fb.y)), fb.y < 0.2);
+    // Mortar is not one grey either: sandier where a batch was mixed fresh,
+    // darker where rain has carried dirt into it, a metre or so at a time.
+    let pointing = mix(vec3<f32>(1.08, 1.02, 0.9), vec3<f32>(0.8, 0.83, 0.8), value_noise(vec2<f32>(u, v) / 0.6));
+    let bricked = mix(mix(face * fired, MORTAR * recess * pointing, mortar), c, brick_blur);
 
     // Concrete: panel joints a window bay apart and at every floor, and the
     // streaks rain leaves running down from each sill.
@@ -277,19 +292,181 @@ fn wall_finish(
     return bricked * brick_w + panelled * concrete_w + rendered * pale_w;
 }
 
+/// One side of a raised edge, as a slope from 0 to 1 and back: a parabola over
+/// `[a, a + w]`, so the tilt has no step at either end of the edge.
+fn arris(x: f32, a: f32, w: f32) -> f32 {
+    let t = clamp((x - a) / w, 0.0, 1.0);
+    return 4.0 * t * (1.0 - t);
+}
+
+/// The wall's relief, on the lattices [`wall_finish`] colours, as a tilt of its
+/// normal — (along the wall, up) in the units `frame_bevel` uses, i.e. minus the
+/// surface's slope. Nothing is displaced and nothing is stored: under a low sun
+/// a brick wall reads as brick because each course's top arris catches the light
+/// and its lower one does not, and that is shading, not silhouette. `kinds` is
+/// [`wall_kinds`] of the wall's own colour, `m_px` how many metres one pixel
+/// spans on it.
+///
+/// Every term fades out on its own lattice's blur, and earlier than the colour
+/// does: a tilt that survives at a few pixels a course is a highlight crawling
+/// over the wall as the camera moves, which is worse than no relief at all.
+fn wall_relief(
+    kinds: vec3<f32>,
+    u: f32,
+    v: f32,
+    floor_f: f32,
+    brick: vec2<f32>,
+    brick_px: f32,
+    m_px: f32,
+) -> vec2<f32> {
+    var tilt = vec2<f32>(0.0, 0.0);
+
+    // Brick: the face stands a few millimetres proud of a recessed joint, with
+    // rounded arrises — rising out of the joint, falling into the next one. The
+    // joint shares are `wall_finish`'s (0.045 of a brick, 0.2 of a course); an
+    // arris is ~13 mm either way — wider than a real one's rounding, because at
+    // 8 mm it was a pixel line in sun even from 3 m (mac-2, 2026-10-20). Each
+    // brick is also laid a hair off the plane.
+    let brick_k = kinds.x * (1.0 - clamp(brick_px * 5.0 - 0.3, 0.0, 1.0));
+    if brick_k > 0.0 {
+        let course = floor(brick.y);
+        let along = brick.x + 0.5 * course;
+        let fb = vec2<f32>(fract(along), fract(brick.y));
+        let laid = hash_wrapped(vec2<f32>(floor(along), course) + vec2<f32>(11.0, 29.0));
+        let x = arris(fb.x, 1.0 - 0.06, 0.06) - arris(fb.x, 0.045, 0.06);
+        let y = arris(fb.y, 1.0 - 0.2, 0.2) - arris(fb.y, 0.2, 0.2);
+        let face = f32(fb.x > 0.045 && fb.y > 0.2);
+        let jitter = vec2<f32>(fract(laid * 7.3) - 0.5, fract(laid * 13.1) - 0.5) * 0.08 * face;
+        // Some bricks are crisp and some weathered round, and where the joint
+        // was repointed flush the arrises are half lost in it.
+        let worn = mix(0.35, 1.2, fract(laid * 5.71));
+        let flush = mix(1.0, 0.4, smoothstep(0.5, 0.8, value_noise(vec2<f32>(u, v) / 0.31 + vec2<f32>(7.0, 3.0))));
+        tilt += (vec2<f32>(x, y) * worn * flush + jitter) * brick_k;
+    }
+
+    // Concrete: the panel joints are sawn grooves, 3 cm across, whose walls face
+    // into the joint.
+    let groove_k = kinds.y * (1.0 - clamp(m_px / 0.03 * 3.0 - 0.3, 0.0, 1.0));
+    if groove_k > 0.0 {
+        let gx = (fract(u / 2.5 + 0.5) - 0.5) * 2.5;
+        let gy = (fract(floor_f + 0.5) - 0.5) * STOREY_M;
+        let in_x = 1.0 - smoothstep(0.012, 0.018, abs(gx));
+        let in_y = 1.0 - smoothstep(0.012, 0.018, abs(gy));
+        tilt += vec2<f32>(-sign(gx) * in_x, -sign(gy) * in_y) * 0.6 * groove_k;
+    }
+
+    // Render: a hand-floated plaster is not a plane, and a raking light finds the
+    // waves in it. Slope from a finite difference of the noise, a few percent.
+    let render_k = kinds.z * (1.0 - clamp(m_px / 0.4 * 3.0 - 0.3, 0.0, 1.0));
+    if render_k > 0.0 {
+        let p = vec2<f32>(u, v) / 0.4;
+        let h0 = value_noise(p);
+        let slope = vec2<f32>(value_noise(p + vec2<f32>(0.1, 0.0)) - h0, value_noise(p + vec2<f32>(0.0, 0.1)) - h0);
+        tilt -= slope * 1.2 * render_k;
+    }
+    return tilt;
+}
+
+/// How weathered a kept wall of this era is, 0 to 1, before the building's own
+/// draw: the older the brick, the more of a damp line and rain streaks; the
+/// system-built decades' concrete stains as badly as anything older. Unknown
+/// (era 0) takes a middling value rather than none, so it does not read as new.
+fn era_weathering(era: u32) -> f32 {
+    switch era {
+        case 1u: { return 0.6; }
+        case 2u: { return 0.4; }
+        case 3u: { return 0.45; }
+        case 4u: { return 0.15; }
+        default: { return 0.3; }
+    }
+}
+
+/// [`grimed`]'s two marks at a kept building's strength `age` (0–1): a damp
+/// line rising off the ground, and streaks where rain runs down the wall. `v`
+/// is metres above the building's own base, so the line starts at its foot.
+///
+/// The damp line has a floor of its own: every wall standing on a pavement
+/// takes the rain splashing back off it, however new, so even this decade's
+/// building carries half of it.
+///
+/// It has to read as the same wall in different weather, not as a course of
+/// different brick, and a band with an even top did the second (judged on
+/// mac-2, 2026-10-20). So the line is ragged at three scales and soft, and the
+/// wet is patchy inside it. And it is **mostly in the mortar**: lime mortar is
+/// what drinks, holds the dirt and grows the green, so on a brick wall (`brick`
+/// is the brick lattice, `brick_w` how much of one this is, fading with
+/// distance) the joints go dark and the bricks only deepen a little, each by
+/// its own amount. Wet brick is the dry one deepened — darker *and* more
+/// saturated — rather than dimmed. A wall with no joints takes the face's
+/// share alone, a little more of it.
+fn weathered(
+    c: vec3<f32>,
+    u: f32,
+    v: f32,
+    age: f32,
+    fade: f32,
+    brick: vec2<f32>,
+    brick_w: f32,
+) -> vec3<f32> {
+    let wet = clamp(age * 1.8, 0.6, 1.0);
+    let line = 0.55 * value_noise(vec2<f32>(u / 2.9, 3.5))
+        + 0.3 * value_noise(vec2<f32>(u / 0.8, 9.5))
+        + 0.15 * value_noise(vec2<f32>(u / 0.23, 17.5));
+    let rise = mix(0.35, 1.2, line) * mix(0.6, 1.0, wet);
+    let patchy = value_noise(vec2<f32>(u / 0.35, v / 0.25) + vec2<f32>(3.0, 11.0)) - 0.5;
+    // Fully wet over the lower third, then giving out raggedly: soft enough not
+    // to be a course of other brick, full enough below to be seen at all — the
+    // version that faded from the ground up could not be (deck-1, 2026-10-20).
+    let reach = v + 0.3 * rise * patchy;
+    let damp = (1.0 - smoothstep(rise * 0.35, rise, reach)) * wet;
+    let course = floor(brick.y);
+    let along = brick.x + 0.5 * course;
+    let fb = vec2<f32>(fract(along), fract(brick.y));
+    // `wall_finish`'s joint shares.
+    let joint = max(f32(fb.y < 0.2), f32(fb.x < 0.045)) * brick_w;
+    let thirst = hash_wrapped(vec2<f32>(floor(along), course) + vec2<f32>(23.0, 61.0));
+    let face = damp * mix(0.3, mix(0.05, 0.35, thirst), brick_w) * (1.0 - joint);
+    // Darker, and deeper in hue: each channel loses more the further it sits
+    // below the brightest. Not `pow(c, 1.35)`, which says the same thing and is
+    // undefined at 0 under Metal's fast maths.
+    let peak = max(max(c.r, c.g), max(c.b, 1e-4));
+    let soaked = c * (0.55 + 0.25 * c / peak);
+    var out = mix(c, soaked, face);
+    // The joints: wet, dirty, and green where they stay wet longest.
+    let algae = smoothstep(0.5, 0.75, value_noise(vec2<f32>(u / 0.9, v / 0.6) + vec2<f32>(41.0, 5.0)));
+    let grime = mix(vec3<f32>(0.55, 0.53, 0.48), vec3<f32>(0.42, 0.52, 0.34), algae);
+    out = mix(out, out * grime, damp * joint);
+    // …and where the water evaporates it leaves its salt in them: a faint pale
+    // tide along the top of the wet, broken where the line is.
+    // Squared by hand: `pow` of a negative base is undefined in WGSL, and below
+    // the line this one is negative — the NaN it made took the whole wall's
+    // colour, windows and all, on Metal (mac-2, 2026-10-20).
+    let off = (reach - rise) / 0.07;
+    let tide = exp(-off * off) * wet * joint
+        * smoothstep(0.35, 0.65, value_noise(vec2<f32>(u / 0.5, 29.5)));
+    out = mix(out, vec3<f32>(0.72, 0.7, 0.66), 0.25 * tide);
+    let streak = smoothstep(0.6, 0.9, value_noise(vec2<f32>(u / 0.45, v / 7.0) + vec2<f32>(19.0, 0.0)));
+    return out * (1.0 - 0.25 * age * streak * fade);
+}
+
 /// Height of a facade's plinth — the darker, harder-wearing course it stands on.
 const PLINTH_M: f32 = 0.5;
 
-/// A plinth at the foot of any building whose eaves are known, with a thin
-/// ledge along its top; and on a building from before 1920 a stone cornice
-/// under the eaves. `dv` is how many metres of wall one pixel spans.
+/// A plinth at the foot of a building from before 1960 whose eaves are known,
+/// with a thin ledge along its top; and on a building from before 1920 a stone
+/// cornice under the eaves. `dv` is how many metres of wall one pixel spans.
+///
+/// Before 1960 only, since `v` started at each building's real foot
+/// (2026-10-20): until then the band mostly sat under the pavement, and once it
+/// stood on every wall it read as a stripe painted along the whole street.
 fn base_and_cornice(c: vec3<f32>, v: f32, eave: f32, era: u32, dv: f32) -> vec3<f32> {
     if eave <= 0.0 {
         return c;
     }
     let crisp = 1.0 - clamp(dv * 12.0 - 0.5, 0.0, 1.0);
-    let plinth = f32(v < PLINTH_M - 0.04);
-    let ledge = f32(v >= PLINTH_M - 0.04 && v < PLINTH_M);
+    let old = f32(era == 1u || era == 2u);
+    let plinth = f32(v < PLINTH_M - 0.04) * old;
+    let ledge = f32(v >= PLINTH_M - 0.04 && v < PLINTH_M) * old;
     var out = c * mix(1.0, 0.72, plinth) * mix(1.0, 1.3, ledge * crisp);
     if era == 1u && eave > 6.0 {
         let cornice = f32(v > eave - 0.7 && v < eave - 0.32);
@@ -658,6 +835,15 @@ fn in_ghost(p: vec2<f32>) -> bool {
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // The vertex stage hands over this point's height above its building's own
+    // base as the world normal's length (`building_vertex.wesl::height_code`).
+    // Taken off here, before anything lights with it: bevy keeps
+    // `world_normal` unnormalised and offsets the shadow lookup along it.
+    let height_code = length(in.world_normal);
+    pbr_input.world_normal = normalize(pbr_input.world_normal);
+    // A unit normal is a mesh that carries no base (the OSM lane, a mesh built
+    // before the base was packed), which keeps measuring from the world's zero.
+    let knows_base = height_code > 1.5;
 
     let n = normalize(in.world_normal);
     // `abs`, because a wall's normal may point either way and back faces are
@@ -701,7 +887,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let horiz = vec2<f32>(n.x, n.z) / max(horiz_len, 1e-3);
     let tangent = vec2<f32>(-horiz.y, horiz.x);
     let u = dot(in.world_position.xz, tangent);
-    let v = in.world_position.y;
+    // Up the wall from its own foot, so the storeys, the plinth, the damp line
+    // and the eaves sit where they do on this building rather than on the
+    // world's zero — which was its foot only with the terrain layer off.
+    let v = select(in.world_position.y, (height_code - 4.0) * 64.0, knows_base);
 
     // What the vertex colour's alpha says about this building — its night
     // occupancy, a shop, its era and its eaves (`building_windows::Facade`
@@ -824,12 +1013,35 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             base_and_cornice(pbr_input.material.base_color.rgb, v, eave, era, gutter_px * GUTTER_M),
             pbr_input.material.base_color.a,
         );
+        // The block this wall stands in, for the draws that belong to a building
+        // rather than to a window (`liveliness` below, and the weathering here).
+        let bidx = floor(in.world_position.xz / facade.block.x);
+        let bkey = bidx - floor(bidx / facade.block.y) * facade.block.y;
+        // A kept wall weathers by its age as well: a damp line and rain streaks,
+        // at the era's strength, more or less by the block's own draw.
+        let weather = era_weathering(era) * mix(0.5, 1.3, hash2(bkey + vec2<f32>(53.0, 17.0)));
         if neglected {
             pbr_input.material.base_color = vec4<f32>(
                 grimed(pbr_input.material.base_color.rgb, along, v, neglect, 1.0 - clamp(px * 0.8, 0.0, 1.0)),
                 pbr_input.material.base_color.a,
             );
+        } else {
+            pbr_input.material.base_color = vec4<f32>(
+                weathered(
+                    pbr_input.material.base_color.rgb,
+                    along,
+                    v,
+                    weather,
+                    1.0 - clamp(px * 0.8, 0.0, 1.0),
+                    brick,
+                    wall_kinds(plain).x * (1.0 - clamp(brick_px * 3.0 - 0.3, 0.0, 1.0)),
+                ),
+                pbr_input.material.base_color.a,
+            );
         }
+        // What the wall is built of, in relief — `gutter_px * GUTTER_M` is
+        // `fwidth(v)`, metres a pixel up the wall.
+        let relief = wall_relief(wall_kinds(plain), u, v, floor_f, brick, brick_px, gutter_px * GUTTER_M);
 
         // The pane, sized by the building's era and centred in its cell. Written
         // as a half-width test either side of the middle so the window keeps its
@@ -867,11 +1079,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // capture read as decoration rather than as a city. Real streets have
         // whole dark buildings standing between the lit ones.
         //
-        // Taken on the horizontal position only, so all four walls of a building
+        // `bkey` (above) is taken on the horizontal position only, so all four walls of a building
         // agree, and moduloed on its own period for the floating-origin reason
         // the window lattice is.
-        let bidx = floor(in.world_position.xz / facade.block.x);
-        let bkey = bidx - floor(bidx / facade.block.y) * facade.block.y;
         let liveliness = hash2(bkey + vec2<f32>(37.0, 91.0));
 
         // …scaled by what the building is actually *for*. The vertex colour's
@@ -975,8 +1185,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // A frame's inner edge is bevelled down to the glass: tilt the normal
         // there so it catches the light like a moulding rather than a stripe.
         let bevel = frame_bevel(pm, hs, era, shop_front) * detail * glass;
+        // The wall's own relief stops at the opening: a pane is not bricked.
+        let tilt = bevel + relief * (1.0 - pane);
         let t3 = vec3<f32>(tangent.x, 0.0, tangent.y);
-        pbr_input.N = normalize(pbr_input.N + t3 * bevel.x + vec3<f32>(0.0, bevel.y, 0.0));
+        pbr_input.N = normalize(pbr_input.N + t3 * tilt.x + vec3<f32>(0.0, tilt.y, 0.0));
         pbr_input.material.base_color = vec4<f32>(
             mix(wall_col, glazed, pane),
             pbr_input.material.base_color.a,
@@ -1065,7 +1277,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // back up the slope, most at the course's lower edge.
             let down3 = normalize(vec3<f32>(horiz.x, 0.0, horiz.y));
             let tilt = 0.35 * (smoothstep(0.0, 0.25, f) - 0.5) * (1.0 - blur);
-            pbr_input.N = normalize(pbr_input.N - down3 * tilt);
+            // A Dutch pantile is an S across its width — one roll and one
+            // trough a tile — so across the courses each tile's face turns from
+            // the light and back. The slope of a sine over the tile's width.
+            let across3 = vec3<f32>(tangent.x, 0.0, tangent.y);
+            let wave = 0.25 * cos(6.2831853 * g) * (1.0 - blur);
+            pbr_input.N = normalize(pbr_input.N - down3 * tilt - across3 * wave);
         } else {
             // A flat roof: its finish follows from its measured tone, which is
             // what atlas's material classes are cut from too — dark is bitumen,

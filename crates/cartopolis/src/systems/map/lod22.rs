@@ -2300,6 +2300,7 @@ fn build_lod22_from_body(
             && outline.len() >= 3
         {
             let base = ground.level_over(outline.iter().map(|w| [w.x, w.y]));
+            buf.set_ground(base);
             // Only the entrances no wall face could take; the rest are built
             // as doorways further down, once the building's base is known.
             for door in placed.iter().filter(|p| p.0.is_none()).map(|p| p.1) {
@@ -2329,6 +2330,8 @@ fn build_lod22_from_body(
         // walls out of plumb and tilt the roof; a building on a hillside is level,
         // it is the ground that slopes.
         let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
+        // …and the facade shader measures its walls from that foot.
+        buf.set_ground(base);
         let local: Vec<Vec3> =
             b.p.iter()
                 .zip(&world_xz)
@@ -2538,6 +2541,7 @@ fn build_lod22_from_body(
                 );
             }
             let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
+            interior.set_ground(base);
             if let Some(fp) = model_fp {
                 let top = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
                 footprints.push(fp.with_extent(base - 3.0, base + top.max(3.0)));
