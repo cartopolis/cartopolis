@@ -35,6 +35,25 @@ impl Plugin for DevPlugin {
                 First,
                 systems::anim_clock::tick_anim_clock.after(bevy::time::TimeSystems),
             );
+        // Where each frame's time went (`systems::frame_split`), on every platform:
+        // a timestamp at each end of the main world and of the render world.
+        app.add_systems(
+            First,
+            systems::frame_split::begin_main.before(bevy::time::TimeSystems),
+        )
+        .add_systems(Last, systems::frame_split::end_main);
+        if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render_app
+                .add_systems(
+                    bevy::render::ExtractSchedule,
+                    systems::frame_split::begin_render,
+                )
+                .add_systems(
+                    bevy::render::Render,
+                    systems::frame_split::end_render
+                        .in_set(bevy::render::RenderSystems::PostCleanup),
+                );
+        }
         if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render_app.add_systems(
                 bevy::render::Render,

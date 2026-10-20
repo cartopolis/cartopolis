@@ -17,6 +17,7 @@ pub mod desktop_integration;
 pub mod dev_panel;
 pub mod diagnostics;
 pub mod frame_pacing;
+pub mod frame_split;
 #[cfg(mcp)]
 pub mod mcp;
 pub mod perf;
