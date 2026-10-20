@@ -502,8 +502,10 @@ enum Phase {
 }
 
 /// Seconds after arrival at which an `arrive` window saves a picture: what the
-/// person sees on getting there, and on waiting a little.
-const ARRIVE_PICTURES_S: [f32; 3] = [0.0, 2.0, 5.0];
+/// person sees on getting there, and on waiting. Out to 30 s because the street
+/// ground took 25–51 s on the Deck (2026-10-20), and a set that stops at 5 s
+/// shows two identical half-built streets either side of a change.
+const ARRIVE_PICTURES_S: [f32; 5] = [0.0, 5.0, 15.0, 30.0, 45.0];
 
 /// How long every streamer must stay quiet before an `arrive` window closes —
 /// `load_timing`'s rule, so a layer blinking off between two cells does not end it.
@@ -525,7 +527,14 @@ struct Flight {
     last_busy: Vec<(&'static str, f32)>,
     /// What was still working the frame the camera arrived.
     busy_at_arrival: Vec<&'static str>,
+    /// Set once the closing picture's pixels are back
+    /// (`shot_harness::snapshot`); the run waits for it.
+    last_picture: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
+
+/// Frames the closing picture may take to come back before the run moves on
+/// without it.
+const CLOSING_FRAMES_MAX: u32 = 600;
 
 /// Counters a window is measured against, taken at its start.
 #[derive(Clone, Debug, Default)]
@@ -1707,7 +1716,7 @@ pub fn drive_perf_window(
                 break;
             }
             #[cfg(not(target_arch = "wasm32"))]
-            crate::systems::shot_harness::snapshot(
+            let _ = crate::systems::shot_harness::snapshot(
                 &mut commands,
                 target.as_deref(),
                 picture(&format!("{at:.0}s")),
@@ -1741,18 +1750,33 @@ pub fn drive_perf_window(
             );
         }
         #[cfg(not(target_arch = "wasm32"))]
-        crate::systems::shot_harness::snapshot(&mut commands, target.as_deref(), picture("quiet"));
+        let last = Some(crate::systems::shot_harness::snapshot(
+            &mut commands,
+            target.as_deref(),
+            picture("quiet"),
+        ));
+        #[cfg(target_arch = "wasm32")]
+        let last = {
+            let _ = &picture;
+            None
+        };
+        perf.flight.last_picture = last;
         perf.samples.push(window);
-        // A few frames for that last picture's readback to land before the run
-        // moves on — or, after the last scenario, before the process exits.
-        perf.left = 10;
+        // Held until that last picture's pixels are back, before the run moves
+        // on — or, after the last scenario, before the process exits.
+        perf.left = CLOSING_FRAMES_MAX;
         perf.phase = Phase::Closing;
         return;
     }
 
     if perf.phase == Phase::Closing {
         perf.left = perf.left.saturating_sub(1);
-        if perf.left > 0 {
+        let back = perf
+            .flight
+            .last_picture
+            .as_ref()
+            .is_none_or(|b| b.load(std::sync::atomic::Ordering::Relaxed));
+        if !back && perf.left > 0 {
             return;
         }
         perf.phase = Phase::Between;

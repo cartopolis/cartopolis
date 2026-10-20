@@ -5221,18 +5221,28 @@ fn write_frame_in_background(image: Image, path: PathBuf) {
 /// A picture of whatever is on screen now, without waiting for anything: the
 /// performance suite's `arrive` frames (`systems::perf`), whose point is what a
 /// person sees before the world has caught up. Written like a movie frame, so
-/// [`wait_frame_writes`] holds the exit for it.
+/// [`wait_frame_writes`] holds the exit for it once its pixels are back, and the
+/// returned flag says when they are: a run that ends straight after asking
+/// never got its last picture (2026-10-20).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn snapshot(commands: &mut Commands, target: Option<&ShotTarget>, path: PathBuf) {
+pub(crate) fn snapshot(
+    commands: &mut Commands,
+    target: Option<&ShotTarget>,
+    path: PathBuf,
+) -> Arc<AtomicBool> {
     let screenshot = match target {
         Some(t) => Screenshot::image(t.0.clone()),
         None => Screenshot::primary_window(),
     };
+    let back = Arc::new(AtomicBool::new(false));
+    let flag = back.clone();
     commands
         .spawn(screenshot)
         .observe(move |captured: On<ScreenshotCaptured>| {
             write_frame_in_background(captured.image.clone(), path.clone());
+            flag.store(true, Ordering::Relaxed);
         });
+    back
 }
 
 /// Block until every movie frame is on disk.
