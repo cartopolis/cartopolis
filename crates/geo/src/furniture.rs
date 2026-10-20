@@ -1678,8 +1678,12 @@ pub fn build_line_meshes_footed(
     if lines.is_empty() {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let mut buf = MeshBuf::default();
+    // Every box first, then emitted in curve order (`crate::patches`): a cell's
+    // kerbs are tens of thousands of boxes along every paving edge, most of the
+    // furniture group's triangles at street level, and listed line by line they
+    // filled each piece from all over the cell — so every piece went into every
+    // shadow cascade and the main pass whatever was in view.
+    let mut boxes: Vec<([f32; 2], (f32, f32), Part, [f32; 4])> = Vec::new();
     for line in lines {
         let (nominal, half_thick, tone) = line.kind.spec();
         // A measured height wins, clamped to something a survey could mean. The
@@ -1722,11 +1726,6 @@ pub fn build_line_meshes_footed(
             };
             let piece = len / pieces as f32;
             for k in 0..pieces {
-                if let Some(max) = max_bytes {
-                    if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
-                        out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
-                    }
-                }
                 let t = (k as f32 + 0.5) * piece;
                 let mid = [a[0] + ux * t, a[1] + uz * t];
                 // A retaining wall's top *is* the ground at its line, so it is
@@ -1743,9 +1742,20 @@ pub fn build_line_meshes_footed(
                     half: [piece * 0.5, height * 0.5, half_thick],
                     tone,
                 };
-                push_box(&mut buf, mid[0], mid[1], (sn, cs), &part, tint);
+                boxes.push((mid, (sn, cs), part, tint));
             }
         }
+    }
+    let mut out = Vec::new();
+    let mut buf = MeshBuf::default();
+    for i in crate::patches::spatial_order(&boxes, |b| b.0) {
+        let (mid, rot, part, tint) = &boxes[i];
+        if let Some(max) = max_bytes {
+            if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
+                out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
+            }
+        }
+        push_box(&mut buf, mid[0], mid[1], *rot, part, *tint);
     }
     if !buf.positions.is_empty() {
         out.push(buf.finish(SurfaceGroup::Furniture));
