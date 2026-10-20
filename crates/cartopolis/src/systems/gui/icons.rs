@@ -237,6 +237,8 @@ icons! {
     BIKE = "\u{e52f}", "directions_bike";
     /// On foot.
     WALK = "\u{e536}", "directions_walk";
+    /// Birds: the crows under Layers ▸ Life.
+    CROW = "\u{f555}", "raven";
 
     // ─── Turn-by-turn maneuvers ──────────────────────────────────────────────
     /// Carry straight on.
