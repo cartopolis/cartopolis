@@ -1390,7 +1390,7 @@ pub(crate) fn update_horizon_haze(
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_star_sky(
     dev: Res<DevPanelState>,
-    time: Res<Time>,
+    time: Res<crate::systems::anim_clock::AnimClock>, // `systems::anim_clock`
     globe: Res<systems::globe::GlobeState>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
     free_camera: Query<
@@ -1701,7 +1701,7 @@ pub(crate) fn setup_clouds(
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_clouds(
     dev: Res<DevPanelState>,
-    time: Res<Time>,
+    time: Res<crate::systems::anim_clock::AnimClock>, // `systems::anim_clock`
     globe: Res<systems::globe::GlobeState>,
     camera: Query<
         (&GridCell, &GlobalTransform, &Transform, &DistanceFog),
@@ -1956,7 +1956,7 @@ pub(crate) fn setup_rain(
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_rain(
     dev: Res<DevPanelState>,
-    time: Res<Time>,
+    time: Res<crate::systems::anim_clock::AnimClock>, // `systems::anim_clock`
     globe: Res<systems::globe::GlobeState>,
     camera: Query<(&GridCell, &GlobalTransform, &Transform), (With<Camera3d>, Without<Rain>)>,
     mut rain: Query<
@@ -2072,7 +2072,7 @@ pub(crate) fn setup_globe_clouds(
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_globe_clouds(
     dev: Res<DevPanelState>,
-    time: Res<Time>,
+    time: Res<crate::systems::anim_clock::AnimClock>, // `systems::anim_clock`
     globe: Res<systems::globe::GlobeState>,
     camera: Query<
         (&GridCell, &Transform),

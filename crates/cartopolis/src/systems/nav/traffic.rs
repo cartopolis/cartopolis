@@ -1092,7 +1092,9 @@ pub const MAX_WALKERS: usize = 220;
 /// Advance every car, and recycle the ones that have run out of road.
 #[allow(clippy::too_many_arguments)]
 pub fn drive_traffic(
-    time: Res<Time>,
+    // The moving world's clock, not the loaders': frozen between the frames of a
+    // `--video-fps` movie (`systems::anim_clock`), the virtual clock otherwise.
+    time: Res<crate::systems::anim_clock::AnimClock>,
     net: Res<DriveNetwork>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,

@@ -1932,7 +1932,9 @@ fn signal_phase(t: f32, group: u8) -> u8 {
 /// phase transition — six material writes a few times a minute.
 pub fn update_signal_cycle(
     sd: Res<StreetDetail>,
-    time: Res<Time>,
+    // The moving world's clock, not the loaders': frozen between the frames of a
+    // `--video-fps` movie (`systems::anim_clock`), the virtual clock otherwise.
+    time: Res<crate::systems::anim_clock::AnimClock>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut applied: Local<Option<(u8, u8)>>,
 ) {

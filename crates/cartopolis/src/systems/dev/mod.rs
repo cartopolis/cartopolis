@@ -8,6 +8,8 @@ pub use plugin::DevPlugin;
 pub use plugin::McpPlugin;
 pub use plugin::{PerfPlugin, ShotHarnessPlugin};
 
+/// The clock the moving world animates against; frozen between frames of a movie.
+pub mod anim_clock;
 /// The aerial photograph a capture is checked against (`--aerial-reference`).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aerial_reference;

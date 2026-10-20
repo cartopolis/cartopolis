@@ -85,6 +85,21 @@ spawns one when the run says it is photographing one (`--shot-mode avatar`,
 frame for the duration of the capture. Use it at scale 1.0 rather than
 giant-scaling an avatar to find it in a free-camera shot.
 
+### A movie: `--video-fps`
+
+`--video-fps N` treats the `--at`/`--look` list as the frames of a movie at N fps.
+Everything that moves — traffic, walkers, signals, clouds, rotors, and through
+`globals.time` water, grass and particles — reads `systems::anim_clock`, which
+stands still while a frame streams and settles and steps exactly `1/N` s between
+captures. Without it each frame moves the world by however long it took to load
+(0.8 s to 20 s), and a 60 fps movie of it jumps. Frames are encoded on background
+threads and `--settle` drops to 0.1 s, since nothing moves while a frame waits.
+
+Give it one `--at` per frame (compute a smooth path yourself: `--frames` blends
+straight segments and turns at each waypoint), repeat the last one to hold a pose
+with the city still moving, and stitch with ffmpeg at the same rate. The avatar's
+own clips play on Bevy's animation player and are not on this clock yet.
+
 ### Watching an animation: `--clip`
 
 A still cannot show a foot sliding, a knee bending backwards or a pop where a

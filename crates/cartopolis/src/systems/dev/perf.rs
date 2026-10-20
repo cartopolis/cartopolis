@@ -941,6 +941,7 @@ pub fn build(
         expect: Vec::new(),
         flicker: false,
         aerial_reference: false,
+        video_fps: None,
         live: false,
         windowed: false,
         clip: None,

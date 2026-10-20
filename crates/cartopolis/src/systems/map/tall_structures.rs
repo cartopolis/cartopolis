@@ -875,7 +875,9 @@ pub fn update_tall_structures(
 /// Spin the rotors. Speed rides the live wind when there is one; becalmed
 /// turbines still idle slowly, because a stopped wind farm reads as broken.
 pub fn spin_rotors(
-    time: Res<Time>,
+    // The moving world's clock, not the loaders': frozen between the frames of a
+    // `--video-fps` movie (`systems::anim_clock`), the virtual clock otherwise.
+    time: Res<crate::systems::anim_clock::AnimClock>,
     weather: Res<crate::systems::weather::WeatherState>,
     mut rotors: Query<(&TurbineRotor, &mut Transform, &ViewVisibility)>,
 ) {

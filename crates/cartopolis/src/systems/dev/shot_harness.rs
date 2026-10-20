@@ -102,6 +102,11 @@ pub use cartopolis_core::ShotEnv;
 pub const DEFAULT_SIZE: &str = "1280x720";
 pub const DEFAULT_SETTLE: f32 = 0.8;
 pub const DEFAULT_WAIT: f32 = 15.0;
+/// `--settle` under `--video-fps`. The quiet window guards against a capture
+/// catching the world mid-change; in a movie nothing moves while a frame waits
+/// (`systems::anim_clock`), so it only has to see the streamers idle, and at
+/// sixty frames a second the default would be most of the render.
+pub const VIDEO_SETTLE: f32 = 0.1;
 
 /// How long the GPU readback gets *after* the capture fires, before the run is
 /// declared dead. Deliberately a constant and not a function of `--wait`: the
@@ -325,6 +330,9 @@ pub struct ShotHarness {
     /// is there. Off unless `--aerial-reference` or the manifest's
     /// `aerial_reference` asks.
     pub aerial_reference: bool,
+    /// `--video-fps`: the viewpoints are the frames of a movie at this rate, and
+    /// the moving world steps one frame between captures (`systems::anim_clock`).
+    pub video_fps: Option<f32>,
     /// **Viewpoints arrive while the app runs**, instead of being a list fixed on
     /// the command line — the MCP server pushing a [`ShotSpec`] per `view` call
     /// (`systems::mcp`).
@@ -1801,6 +1809,7 @@ impl ShotHarness {
             expect,
             flicker,
             aerial_reference: false,
+            video_fps: None,
             live: false,
             windowed: false,
             clip,
@@ -1836,6 +1845,7 @@ impl ShotHarness {
             expect: Vec::new(),
             flicker: false,
             aerial_reference: false,
+            video_fps: None,
             live: true,
             windowed,
             clip: None,
@@ -1944,6 +1954,7 @@ impl ShotHarness {
             // The flicker instrument is the plain `--shot` path's.
             flicker: false,
             aerial_reference: manifest.aerial_reference.unwrap_or(false),
+            video_fps: None,
             live: false,
             windowed: false,
             clip: None,
@@ -4176,6 +4187,7 @@ pub fn drive_capture(
         With<FreeCamera>,
     >,
     visuals: VisualCounts,
+    mut anim_clock: ResMut<crate::systems::anim_clock::AnimClock>,
 ) {
     if let Some(frames) = progress.exit_in {
         finish_run(frames, &mut progress, &mut exit);
@@ -4189,6 +4201,11 @@ pub fn drive_capture(
     // run for a measurement window after the shutter, and by the time that window
     // closes the one-shot `saved` flag is long consumed. See `ShotProgress::perf_hold`.
     let landed = progress.saved.swap(false, Ordering::Relaxed);
+    if landed {
+        // A movie's next frame is one frame later for everything that moves
+        // (`systems::anim_clock`); a no-op in any other run.
+        anim_clock.step();
+    }
     if landed || progress.perf_release {
         advance_after_capture(&harness, &mut progress);
         return;
@@ -4285,6 +4302,8 @@ fn finish_run(frames: u32, progress: &mut ShotProgress, exit: &mut MessageWriter
     if left == 0 {
         #[cfg(not(target_arch = "wasm32"))]
         crate::systems::aerial_reference::wait_all();
+        #[cfg(not(target_arch = "wasm32"))]
+        wait_frame_writes();
         // The one place the harness gets to have an opinion about the world it
         // photographed. Without `--expect` this is always Success and only a
         // render failure can fail the run — which is exactly why a caller that
@@ -5083,6 +5102,15 @@ fn fire_capture(
             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 let _ = std::fs::create_dir_all(dir);
             }
+            // A movie's frames are encoded off the main thread: at 2560×1440 the
+            // PNG costs more than the frame did, and nothing here reads it back.
+            // `finish_run` waits for the last of them before the process exits.
+            #[cfg(not(target_arch = "wasm32"))]
+            if harness.video_fps.is_some() && !flicker {
+                write_frame_in_background(captured.image.clone(), path);
+                saved.store(true, Ordering::Relaxed);
+                return;
+            }
             match captured.image.clone().try_into_dynamic() {
                 // Alpha carries HDR brightness rather than transparency here
                 // (as in the README capture path), so drop it.
@@ -5147,6 +5175,42 @@ fn fire_capture(
             }
         },
     );
+}
+
+/// Frame writes still encoding, oldest first (`--video-fps`).
+#[cfg(not(target_arch = "wasm32"))]
+static FRAME_WRITES: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// More writes in flight than this and the shutter waits for the oldest, so a
+/// renderer faster than the encoder cannot pile up frames in memory.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_FRAME_WRITES: usize = 6;
+
+/// Encode and write one movie frame on its own thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_frame_in_background(image: Image, path: PathBuf) {
+    let mut writes = FRAME_WRITES.lock().unwrap_or_else(|p| p.into_inner());
+    while writes.len() >= MAX_FRAME_WRITES {
+        let _ = writes.remove(0).join();
+    }
+    writes.push(std::thread::spawn(move || match image.try_into_dynamic() {
+        // Alpha carries HDR brightness, not transparency — as in the main path.
+        Ok(img) => match img.to_rgb8().save(&path) {
+            Ok(()) => tracing::info!(path = %path.display(), "shot harness: saved"),
+            Err(e) => tracing::error!(path = %path.display(), error = %e, "shot save failed"),
+        },
+        Err(e) => tracing::error!(error = %e, "shot decode failed"),
+    }));
+}
+
+/// Block until every movie frame is on disk.
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_frame_writes() {
+    let writes = std::mem::take(&mut *FRAME_WRITES.lock().unwrap_or_else(|p| p.into_inner()));
+    for w in writes {
+        let _ = w.join();
+    }
 }
 
 /// Threshold on the per-pixel max-channel difference that counts as a flip.

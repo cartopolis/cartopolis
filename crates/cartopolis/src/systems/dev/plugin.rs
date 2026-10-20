@@ -24,6 +24,26 @@ impl Plugin for DevPlugin {
             .init_resource::<systems::diagnostics::DiagnosticsRequest>()
             .init_resource::<frame_pacing::PresentationRate>();
 
+        // The moving world's clock (`systems::anim_clock`): the virtual clock in
+        // every run but a `--video-fps` movie, which `ShotHarnessPlugin` swaps in.
+        // Its render-world half hands the shaders that clock as `globals.time`.
+        app.init_resource::<systems::anim_clock::AnimClock>()
+            .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+                systems::anim_clock::AnimClock,
+            >::default())
+            .add_systems(
+                First,
+                systems::anim_clock::tick_anim_clock.after(bevy::time::TimeSystems),
+            );
+        if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render_app.add_systems(
+                bevy::render::Render,
+                systems::anim_clock::shader_time_from_anim_clock
+                    .after(bevy::render::RenderSystems::ExtractCommands)
+                    .before(bevy::render::RenderSystems::PrepareResources),
+            );
+        }
+
         app.add_systems(
             Update,
             (
@@ -128,6 +148,11 @@ impl Plugin for ShotHarnessPlugin {
                 systems::shot_harness::setup_offscreen_target
                     .after(systems::free_camera::setup_camera),
             );
+        }
+        // A movie (`--video-fps`) freezes the moving world between frames; the
+        // capture steps it (`drive_capture`). Replaces `DevPlugin`'s plain clock.
+        if let Some(fps) = self.harness.video_fps {
+            app.insert_resource(systems::anim_clock::AnimClock::video(fps));
         }
         app.insert_resource(self.harness.clone())
             .init_resource::<systems::shot_harness::ShotProgress>()

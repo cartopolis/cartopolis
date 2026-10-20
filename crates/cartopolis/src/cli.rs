@@ -239,6 +239,14 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) aerial_reference: bool,
 
+    /// Render the `--shot` viewpoints as the frames of a movie at this many frames
+    /// a second: the moving world (traffic, walkers, water, grass, clouds) stands
+    /// still while each frame loads and advances exactly one frame between
+    /// captures (`systems::anim_clock`). Lowers the default `--settle` too, since
+    /// nothing moves while a frame waits. Pair it with one `--at` per frame.
+    #[arg(long)]
+    pub(crate) video_fps: Option<f32>,
+
     /// Serve the Model Context Protocol on this Unix socket rather than the
     /// default (`$XDG_RUNTIME_DIR/cartopolis/mcp.sock`), so an editor can drive
     /// this client: move the camera, photograph what it sees, read the scene's
@@ -311,7 +319,9 @@ pub(crate) type ScriptedRun = (
 );
 
 pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
-    use systems::shot_harness::{ShotHarness, DEFAULT_SETTLE, DEFAULT_SIZE, DEFAULT_WAIT};
+    use systems::shot_harness::{
+        ShotHarness, DEFAULT_SETTLE, DEFAULT_SIZE, DEFAULT_WAIT, VIDEO_SETTLE,
+    };
 
     // `--perf` first: a *third* way in, building both a capture harness to fly the
     // scenarios and the suite that measures them. An alternative to the other two
@@ -374,7 +384,11 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
         look: &cli.look,
         look_at: &cli.look_at,
         size: cli.size.as_deref().unwrap_or(DEFAULT_SIZE),
-        settle: cli.settle.unwrap_or(DEFAULT_SETTLE),
+        settle: cli.settle.unwrap_or(if cli.video_fps.is_some() {
+            VIDEO_SETTLE
+        } else {
+            DEFAULT_SETTLE
+        }),
         wait: cli.wait.unwrap_or(DEFAULT_WAIT),
         hide_ui: cli.hide_ui,
         ui: cli.ui.clone(),
@@ -389,6 +403,7 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
     })
     .map(|mut h| {
         h.aerial_reference = cli.aerial_reference;
+        h.video_fps = cli.video_fps;
         (Some(h), None)
     })
     .map_err(|e| format!("--shot: {e}"))

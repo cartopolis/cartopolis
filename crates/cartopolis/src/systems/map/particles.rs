@@ -135,7 +135,9 @@ pub fn sync_particle_emitters(
     mut commands: Commands,
     pool: Option<Res<ParticlePool>>,
     mut materials: ResMut<Assets<ParticleMaterial>>,
-    time: Res<Time>,
+    // The moving world's clock, not the loaders': frozen between the frames of a
+    // `--video-fps` movie (`systems::anim_clock`), the virtual clock otherwise.
+    time: Res<crate::systems::anim_clock::AnimClock>,
     prims: Query<(Entity, &Prim, Option<&Children>)>,
     mut emitters: Query<(
         Entity,
