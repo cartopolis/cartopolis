@@ -261,7 +261,11 @@ mod tests {
             ("bevy_pbr_atmosphere_functions.wesl", 5),
             // The import, the call site, and the helpers.
             ("bevy_pbr_lighting.wesl", 3),
-            ("bevy_pbr_volumetric_fog.wesl", 3),
+            // The import and the helpers, as above (the call site moved into
+            // `sun_through_air`), and nine for the cheaper march: the step
+            // count, its constant, its two loops, the sun's dimming (ends,
+            // blend, helper), the zero-density return and the second march.
+            ("bevy_pbr_volumetric_fog.wesl", 11),
             // The import, and the aerial perspective's clamp to the air.
             ("bevy_pbr_render_sky.wesl", 2),
         ] {
