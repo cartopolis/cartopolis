@@ -357,6 +357,9 @@ impl Plugin for PerfPlugin {
                     systems::perf::drive_perf_window,
                 )
                     .chain()
+                    // After it, so an `arrive` window reads what every streamer
+                    // was left doing this frame.
+                    .after(systems::stream_watch::StreamReport)
                     .before(systems::shot_harness::drive_capture)
                     .in_set(ClientPhase::Present),
             );

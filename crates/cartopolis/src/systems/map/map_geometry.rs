@@ -837,6 +837,17 @@ const DECK_SAMPLE_M: f64 = 1.0;
 /// both sides, at `DECK_SAMPLE_M`, with room to spare.
 const DECK_GRID_MAX: u32 = 384;
 
+/// Times the ring was thrown away with something in it — built cells, or cells
+/// being built — since the process started, for the performance suite's
+/// `descent` window (`systems::perf`). A ring torn down while empty costs nothing
+/// and is not counted.
+pub static RING_RETEARS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Built cells those retears threw away, plus the cells still in flight when
+/// they did — a job past its download runs to the end whatever happens to its
+/// result, so an orphaned one is worker time spent on nothing.
+pub static CELLS_DISCARDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Streaming state for the vector surface meshes.
 #[derive(Resource)]
 pub struct MapSurfaces {
@@ -2872,6 +2883,12 @@ impl MapSurfaces {
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
+        let thrown = self.loaded.len() + self.stream.in_flight();
+        if thrown > 0 {
+            use std::sync::atomic::Ordering::Relaxed;
+            RING_RETEARS.fetch_add(1, Relaxed);
+            CELLS_DISCARDED.fetch_add(thrown as u64, Relaxed);
+        }
         for (_, entities) in self.loaded.drain() {
             self.stream.retire_all(entities);
         }
@@ -3163,6 +3180,18 @@ pub fn update_map_surfaces(
         flat_ground: flat_ground && ground_meshes_enabled(),
     };
     if surfaces.detail_wants != Some(wants) {
+        // Said for the reason the two retears above are: a descent crosses three
+        // of these bands, and each one re-runs every cell's job.
+        if was.is_some() {
+            tracing::info!(
+                cells = surfaces.loaded.len(),
+                in_flight = surfaces.stream.in_flight(),
+                alt_m = alt as i32,
+                was = ?was,
+                now = ?wants,
+                "surface ring retear for detail"
+            );
+        }
         surfaces.detail_wants = Some(wants);
         surfaces.clear();
         stores.places.clear();

@@ -258,6 +258,7 @@ impl PerfPatrol {
                             hide_ui: None,
                             steady_frames: self.steady_frames,
                             patrol: Some(who.clone()),
+                            descend: None,
                         });
                     }
                 }
@@ -303,6 +304,39 @@ pub struct PerfScenario {
     /// The patrol this stop was expanded from; never written in a manifest.
     #[serde(skip)]
     pub patrol: Option<String>,
+    /// Zoom in once the scenario has settled, as a person scrolling would, and
+    /// measure what is missing when the camera gets there. Replaces the `steady`
+    /// and `turn` windows with `descent` and `arrive`. Earth mode only: it drives
+    /// the zoom target the wheel drives.
+    #[serde(default)]
+    pub descend: Option<Descend>,
+}
+
+/// A zoom from the scenario's pose down to `to`, in wall-clock time.
+///
+/// **Wall clock, not frames, and that is the point of it.** Every other window
+/// here waits for the world; this one is the case where the world cannot keep
+/// up, which is what a person zooming in sees and what a `--video-fps` movie
+/// hides by waiting before each frame. So its numbers are properties of the
+/// machine it ran on — run it on a node with a real GPU, and compare runs on
+/// the same one.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Descend {
+    /// Camera distance to end at, in metres from the focus.
+    pub to: f64,
+    /// How long the zoom target takes to get there. The distance falls by the
+    /// same factor every second, as it does under a steadily turned wheel: 40 km
+    /// to 150 m in 8 s is ×2 a second, a brisk scroll.
+    pub seconds: f32,
+}
+
+impl Descend {
+    /// The zoom target `t` seconds in, from a start distance of `from`.
+    fn target_at(self, from: f64, t: f32) -> f64 {
+        let f = f64::from((t / self.seconds.max(0.01)).clamp(0.0, 1.0));
+        from * (self.to / from).powf(f)
+    }
 }
 
 impl PerfManifest {
@@ -342,6 +376,22 @@ impl PerfManifest {
                     path.display(),
                     s.name
                 ));
+            }
+            if let Some(d) = s.descend {
+                if s.mode.as_deref() != Some("earth") {
+                    return Err(format!(
+                        "{}: scenario {:?} descends, which needs mode = \"earth\"",
+                        path.display(),
+                        s.name
+                    ));
+                }
+                if !(d.to > 0.0 && d.to < s.at[2] && d.seconds > 0.0) {
+                    return Err(format!(
+                        "{}: scenario {:?} must descend below its start, over a positive time",
+                        path.display(),
+                        s.name
+                    ));
+                }
             }
         }
         Ok(manifest)
@@ -405,6 +455,14 @@ pub struct PerfRun {
     /// How many times each scenario is flown. `names` and `steady_frames` are
     /// already expanded by it, round-robin; this is kept for the report.
     pub repeat: u32,
+    /// Each flight's zoom, parallel to `names`.
+    pub descents: Vec<Option<Descend>>,
+    /// How long an `arrive` window waits for the streamers before it gives up:
+    /// the manifest's `wait`, so it is as patient as the settle test.
+    pub wait: f32,
+    /// Picture names for each flight, parallel to `names`, so an `arrive`
+    /// window's frames sit beside the scenario's own PNG.
+    pub pictures: Vec<PathBuf>,
     /// Every patrol stop selected, once each, in manifest order — what the
     /// ranking needs to say where a stop is.
     pub stops: Vec<PatrolStop>,
@@ -435,6 +493,38 @@ enum Phase {
     Steady,
     /// The camera yawing on the spot; see the module doc.
     Turn,
+    /// The zoom target falling toward [`Descend::to`] (a `descend` scenario).
+    Descent,
+    /// The camera there, the streamers catching up.
+    Arrive,
+    /// The `arrive` window closed; frames for its last picture to land.
+    Closing,
+}
+
+/// Seconds after arrival at which an `arrive` window saves a picture: what the
+/// person sees on getting there, and on waiting a little.
+const ARRIVE_PICTURES_S: [f32; 3] = [0.0, 2.0, 5.0];
+
+/// How long every streamer must stay quiet before an `arrive` window closes —
+/// `load_timing`'s rule, so a layer blinking off between two cells does not end it.
+const ARRIVE_QUIET_S: f32 = 1.0;
+
+/// The live part of a `descent`/`arrive` pair.
+#[derive(Clone, Debug, Default)]
+struct Flight {
+    /// Camera distance when the zoom began.
+    from: f64,
+    /// Seconds since the current window opened, by the wall clock.
+    t: f32,
+    /// How long every streamer has been quiet, for [`ARRIVE_QUIET_S`].
+    quiet_for: f32,
+    /// The [`ARRIVE_PICTURES_S`] already taken.
+    pictures: usize,
+    /// Each streamer busy at some point after arrival, with the last second it
+    /// was, in order of first appearance.
+    last_busy: Vec<(&'static str, f32)>,
+    /// What was still working the frame the camera arrived.
+    busy_at_arrival: Vec<&'static str>,
 }
 
 /// Counters a window is measured against, taken at its start.
@@ -446,6 +536,8 @@ struct Base {
     workers: Vec<(&'static str, crate::platform::workers::stats::Totals)>,
     mesh_added: u64,
     materials_modified: u64,
+    /// `map_geometry::{RING_RETEARS, CELLS_DISCARDED}` at the window's start.
+    ground_retears: (u64, u64),
     frames: u32,
     wall_s: f32,
     /// The longest single frame in the window, seconds.
@@ -474,6 +566,7 @@ pub struct PerfProgress {
     /// cap running out. Recorded when the `load` window closes and carried into
     /// the `steady` window, which inherits the same doubt.
     settled: bool,
+    flight: Flight,
 }
 
 /// Running count of mesh asset events, for [`Window::mesh_added_per_frame`].
@@ -712,6 +805,32 @@ pub struct Window {
     /// Whether a `steady` window was genuinely quiet — nothing uploading, no
     /// worker jobs, no mesh churn. See the module doc.
     pub quiet: bool,
+    /// Times the ground ring was thrown away and rebuilt in this window, and the
+    /// built or building cells that went with it
+    /// (`map_geometry::RING_RETEARS`). Zero on a still view; on a `descent` it
+    /// is the work a zoom paid for and never saw.
+    #[serde(default)]
+    pub ground_retears: u64,
+    #[serde(default)]
+    pub ground_cells_discarded: u64,
+    /// `arrive` only: seconds after the camera arrived until every streamer had
+    /// gone quiet, or `None` when `wait` ran out first.
+    #[serde(default)]
+    pub quiet_after_s: Option<f32>,
+    /// `arrive` only: every streamer that worked after arrival, and when it
+    /// stopped.
+    #[serde(default)]
+    pub layers: Vec<LayerQuiet>,
+}
+
+/// One streamer in an `arrive` window.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LayerQuiet {
+    pub name: String,
+    /// Still working the frame the camera arrived — what the person saw missing.
+    pub busy_at_arrival: bool,
+    /// Seconds after arrival it was last busy.
+    pub quiet_after_s: f32,
 }
 
 /// What the run was, so a report says what it is comparable with.
@@ -848,6 +967,10 @@ pub struct WindowSummary {
     pub resident_mesh_kb: Stat,
     pub draws: Stat,
     pub tris_total: Stat,
+    pub ground_retears: Stat,
+    pub ground_cells_discarded: Stat,
+    /// `arrive` only, over the flights that went quiet.
+    pub quiet_after_s: Option<Stat>,
     pub gpu_passes: Vec<GpuPassSummary>,
     /// Dearest first by median.
     pub systems: Vec<SystemSummary>,
@@ -955,6 +1078,9 @@ fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary 
         resident_mesh_kb: all(|w| w.resident_mesh_kb as f64),
         draws: all(|w| w.draws as f64),
         tris_total: all(|w| w.tris_total as f64),
+        ground_retears: all(|w| w.ground_retears as f64),
+        ground_cells_discarded: all(|w| w.ground_cells_discarded as f64),
+        quiet_after_s: some(|w| w.quiet_after_s.map(f64::from)),
         gpu_passes,
         systems,
     }
@@ -1360,6 +1486,13 @@ pub fn build(
         out,
         size: format!("{}x{}", parsed.x, parsed.y),
         repeat,
+        descents: flights.iter().map(|(_, s)| s.descend).collect(),
+        wait: harness.wait,
+        pictures: harness
+            .shots
+            .iter()
+            .map(|s| s.out.clone().unwrap_or_default())
+            .collect(),
         stops: selected
             .iter()
             .filter_map(|s| {
@@ -1396,11 +1529,14 @@ pub struct PerfReadouts<'w, 's> {
 /// capture path consumes its `saved` flag, so a system that wants to see the
 /// capture land has to look first.
 pub fn drive_perf_window(
+    mut commands: Commands,
     run: Res<PerfRun>,
     mut progress: ResMut<ShotProgress>,
     mut perf: ResMut<PerfProgress>,
     readouts: PerfReadouts,
     mut camera: ResMut<crate::resources::CameraState>,
+    registry: Res<crate::systems::stream_watch::StreamRegistry>,
+    target: Option<Res<crate::systems::shot_harness::ShotTarget>>,
 ) {
     // The report is out and the capture path is draining to exit. `placed` is not
     // cleared on the final viewpoint, so without this the `load` arm below opens a
@@ -1417,7 +1553,10 @@ pub fn drive_perf_window(
         return;
     }
 
-    if matches!(perf.phase, Phase::Load | Phase::Steady | Phase::Turn) {
+    if matches!(
+        perf.phase,
+        Phase::Load | Phase::Steady | Phase::Turn | Phase::Descent | Phase::Arrive
+    ) {
         perf.base.frames += 1;
         perf.base.wall_s += readouts.real.delta_secs();
         perf.base.frame_max_s = perf.base.frame_max_s.max(readouts.real.delta_secs());
@@ -1453,6 +1592,15 @@ pub fn drive_perf_window(
         // The pool was paused for the readback; a steady window has to be a real
         // idle frame, streamers running and quiet, or it measures the harness.
         crate::platform::workers::set_paused(false);
+        if run.descents.get(perf.index).copied().flatten().is_some() {
+            perf.flight = Flight {
+                from: camera.orbit_distance,
+                ..Flight::default()
+            };
+            perf.phase = Phase::Descent;
+            perf.base = take_base(&readouts);
+            return;
+        }
         perf.left = run
             .steady_frames
             .get(perf.index)
@@ -1493,6 +1641,126 @@ pub fn drive_perf_window(
         }
         progress.perf_hold = false;
         progress.perf_release = true;
+        return;
+    }
+
+    let Some(descend) = run.descents.get(perf.index).copied().flatten() else {
+        return;
+    };
+    let dt = readouts.real.delta_secs();
+    // The pictures are written on threads of their own, which the web has not.
+    #[cfg(target_arch = "wasm32")]
+    let _ = (&mut commands, &target);
+
+    if perf.phase == Phase::Descent {
+        perf.flight.t += dt;
+        camera.orbit_distance_target = descend.target_at(perf.flight.from, perf.flight.t);
+        // There once the target has finished falling and the glide has caught up
+        // with it. The cap is for a camera that cannot get there — a clamp in
+        // `free_camera`, or a mode the harness did not leave it in.
+        let caught_up = camera.orbit_distance <= descend.to * 1.03;
+        if perf.flight.t < descend.seconds || !(caught_up || perf.flight.t > descend.seconds + 10.0)
+        {
+            return;
+        }
+        if !caught_up {
+            tracing::warn!(
+                scenario = %run.names.get(perf.index).map_or("", String::as_str),
+                distance_m = camera.orbit_distance as i64,
+                to_m = descend.to as i64,
+                "perf: the descent never reached its distance — is the camera in Earth mode?"
+            );
+        }
+        perf.settled = true;
+        let window = close(&mut perf, "descent", &run, &readouts);
+        perf.samples.push(window);
+        perf.phase = Phase::Arrive;
+        perf.base = take_base(&readouts);
+        perf.flight.t = 0.0;
+        perf.flight.busy_at_arrival = registry.busy();
+        return;
+    }
+
+    if perf.phase == Phase::Arrive {
+        perf.flight.t += dt;
+        let t = perf.flight.t;
+        let busy = registry.busy();
+        for name in &busy {
+            match perf.flight.last_busy.iter_mut().find(|(n, _)| n == name) {
+                Some(entry) => entry.1 = t,
+                None => perf.flight.last_busy.push((name, t)),
+            }
+        }
+        perf.flight.quiet_for = if busy.is_empty() {
+            perf.flight.quiet_for + dt
+        } else {
+            0.0
+        };
+        let index = perf.index;
+        let picture = |label: &str| {
+            let base = run.pictures.get(index).cloned().unwrap_or_default();
+            let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("perf");
+            base.with_file_name(format!("{stem}-arrive-{label}.png"))
+        };
+        while let Some(&at) = ARRIVE_PICTURES_S.get(perf.flight.pictures) {
+            if t < at {
+                break;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::systems::shot_harness::snapshot(
+                &mut commands,
+                target.as_deref(),
+                picture(&format!("{at:.0}s")),
+            );
+            perf.flight.pictures += 1;
+        }
+        let quiet = busy.is_empty() && perf.flight.quiet_for >= ARRIVE_QUIET_S;
+        if !quiet && t < run.wait {
+            return;
+        }
+        perf.settled = quiet;
+        let mut window = close(&mut perf, "arrive", &run, &readouts);
+        window.quiet_after_s = quiet.then(|| t - perf.flight.quiet_for);
+        window.layers = perf
+            .flight
+            .last_busy
+            .iter()
+            .map(|(name, last)| LayerQuiet {
+                name: (*name).to_string(),
+                busy_at_arrival: perf.flight.busy_at_arrival.contains(name),
+                quiet_after_s: *last,
+            })
+            .collect();
+        for l in &window.layers {
+            tracing::info!(
+                scenario = %window.scenario,
+                layer = %l.name,
+                busy_at_arrival = l.busy_at_arrival,
+                quiet_after_s = format!("{:.1}", l.quiet_after_s),
+                "perf arrive layer"
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::systems::shot_harness::snapshot(&mut commands, target.as_deref(), picture("quiet"));
+        perf.samples.push(window);
+        // A few frames for that last picture's readback to land before the run
+        // moves on — or, after the last scenario, before the process exits.
+        perf.left = 10;
+        perf.phase = Phase::Closing;
+        return;
+    }
+
+    if perf.phase == Phase::Closing {
+        perf.left = perf.left.saturating_sub(1);
+        if perf.left > 0 {
+            return;
+        }
+        perf.phase = Phase::Between;
+        if perf.index + 1 >= run.names.len() {
+            finish(&run, &mut perf, &readouts.adapter);
+        }
+        progress.perf_hold = false;
+        progress.perf_release = true;
     }
 }
 
@@ -1509,6 +1777,13 @@ fn turn_camera(camera: &mut crate::resources::CameraState, step: f32) {
     }
 }
 
+/// `(retears, cells discarded)` of the ground ring since the process started.
+fn ground_retears() -> (u64, u64) {
+    use crate::systems::map_geometry::{CELLS_DISCARDED, RING_RETEARS};
+    use std::sync::atomic::Ordering::Relaxed;
+    (RING_RETEARS.load(Relaxed), CELLS_DISCARDED.load(Relaxed))
+}
+
 fn take_base(readouts: &PerfReadouts) -> Base {
     Base {
         upload_bytes: readouts.uploads.total_bytes,
@@ -1516,6 +1791,7 @@ fn take_base(readouts: &PerfReadouts) -> Base {
         workers: crate::platform::workers::stats::snapshot(),
         mesh_added: readouts.churn.added,
         materials_modified: readouts.churn.materials_modified,
+        ground_retears: ground_retears(),
         frames: 0,
         wall_s: 0.0,
         frame_max_s: 0.0,
@@ -1653,6 +1929,10 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         draws: counts.draws,
         tris_total: counts.tris_total,
         quiet: false,
+        ground_retears: ground_retears().0.saturating_sub(base.ground_retears.0),
+        ground_cells_discarded: ground_retears().1.saturating_sub(base.ground_retears.1),
+        quiet_after_s: None,
+        layers: Vec::new(),
     };
     // Quiet means the three streaming signals are all at rest. Mesh churn is in
     // the test because an arriving mesh is work for the allocator whether or not
@@ -1735,6 +2015,9 @@ fn log_window(w: &Window) {
             w.resident_mesh_kb as f64 / 1024.0
         ),
         draws = w.draws,
+        ground_retears = w.ground_retears,
+        ground_cells_discarded = w.ground_cells_discarded,
+        quiet_after_s = w.quiet_after_s.map_or("-".into(), |s| format!("{s:.1}")),
         "perf window"
     );
     for p in w.gpu_passes.iter().take(8) {
@@ -1876,12 +2159,27 @@ mod tests {
                 hide_ui: None,
                 steady_frames: None,
                 patrol: None,
+                descend: None,
             }],
             patrols: Vec::new(),
         };
         assert!(manifest.select(&["orbti".into()]).is_err());
         assert_eq!(manifest.select(&["orbit".into()]).unwrap().len(), 1);
         assert_eq!(manifest.select(&[]).unwrap().len(), 1);
+    }
+
+    /// The zoom falls by the same factor every second, as a turned wheel does,
+    /// and stops where it was told.
+    #[test]
+    fn a_descent_is_geometric_and_ends_on_its_distance() {
+        let d = Descend {
+            to: 100.0,
+            seconds: 2.0,
+        };
+        assert!((d.target_at(10_000.0, 0.0) - 10_000.0).abs() < 1e-6);
+        assert!((d.target_at(10_000.0, 1.0) - 1_000.0).abs() < 1e-6);
+        assert!((d.target_at(10_000.0, 2.0) - 100.0).abs() < 1e-6);
+        assert!((d.target_at(10_000.0, 9.0) - 100.0).abs() < 1e-6);
     }
 
     #[test]

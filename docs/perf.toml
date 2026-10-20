@@ -144,7 +144,29 @@ clouds = 0.2
 rain = 0.0
 steady_frames = 30
 
-# Five scenarios, and all five have been run. A route view is still missing and an
+[[scenario]]
+name = "descent"
+description = """
+A live zoom from 40 km to street level over Groningen, in 8 s of wall clock — the \
+scroll a person does, which a `--video-fps` movie hides by waiting for the world \
+before every frame. Settles at 40 km, then drives the Earth-mode zoom target down \
+the way a steadily turned wheel does and does not wait for anything. Its windows \
+are `descent` (the zoom) and `arrive` (the camera there, the streamers catching \
+up): read `quiet_after_s` and the `perf arrive layer` lines — what was missing on \
+arrival and how long each layer took — and `ground_retears`, the ground ring \
+thrown away mid-zoom. Pictures at arrival, +2 s, +5 s and quiet sit beside the \
+report. Wall-clock by design, so its numbers are a property of the machine: run \
+it on a real GPU and compare runs on the same node."""
+mode = "earth"
+at = [53.2194, 6.5665, 40000]
+look = [-60.0, 0.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+descend = { to = 150.0, seconds = 8.0 }
+
+# Six scenarios, and the first five have all been run. A route view is still missing and an
 # entry here is a claim that the viewpoint has been measured, so it stays out until
 # somebody measures it.
 #
