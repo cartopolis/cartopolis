@@ -124,15 +124,36 @@ distort every CPU number here), `main` → this change, two flights each:
 | settled in | 57.0 / 54.6 s | 53.2 / 49.7 s |
 
 Before/after captures differ only in the drifting clouds and the moving traffic.
-**What is left of the street frame is unmeasured**: ~23 ms of 50 is in passes
-`RenderDiagnosticsPlugin` does not list (the shadow cascades and the light-shaft
-march). **What is left of the street load is the road cut**: a sampling profile
-of the optimised build (`pprof`, added for one run; `perf_event_paranoid` is 2 on
-the Deck and blocks `samply`) puts `road_stitch::cut_ribbon_inner` at **62 %** of
-worker time and `i_overlay`'s solver at ~45 %, against 7 % for the refinement —
-see `tile-pipeline-stage-costs.md`. A surface cell is ~21 s of worker CPU there.
-In the dev build the refinement looked like the wall instead (hashing its edge
-keys byte by byte was 11 % on its own, fixed with `terrain_refine::Words`).
+
+**The street load was the road cut**: a sampling profile of the optimised build
+(`pprof`, added for one run; `perf_event_paranoid` is 2 on the Deck and blocks
+`samply`) put `road_stitch::cut_ribbon_inner` at **62 %** of worker time against
+7 % for the refinement. In the dev build the refinement looked like the wall
+instead (hashing its edge keys byte by byte was 11 % on its own, fixed with
+`terrain_refine::Words`) — profile the optimised build. Fixed by cutting against
+the sheets as laid (`tile-pipeline-stage-costs.md`); settle, `web-release`,
+two flights each:
+
+| settled in | `main` | after |
+|---|---|---|
+| street | 57.0 / 54.6 s | 29.4 / 29.4 s |
+| city | 78.8 / 33.2 s | 27.5 / 15.0 s |
+| Earth | 61.6 / 42.5 s | 28.1 / 19.8 s |
+
+**The street frame is geometry, and most of it is shadows** (same setup,
+2026-10-20). 640×400 against 1280×800 puts ~34 ms of the 53.6 ms frame in work
+that does not scale with pixels and ~19 ms in work that does; of
+`main_opaque_pass_3d`'s 22.2 ms, ~10 is fixed. `CARTO_NO_SHADOWS=1` takes the
+frame to 24.3 ms (light shafts go with it), two cascades to 46 ms. By caster
+class (dev build): street furniture ~13–20 ms, trees ~1 ms. Furniture is mostly
+**kerbs** — 40–66 k boxes a cell, against ~1,200 parked cars (~200 k triangles)
+and ~1,500 lamps (~55 k) — and leaving the kerbs out entirely took the frame
+from 49.8 to ~33 ms. Emitting them in curve order (as the street objects already
+were) took 53.3 → 49.8; the rest is the outer cascades, where a 10 cm kerb is a
+fraction of a texel (~35 cm at cascade 2, ~1 m at 3) and draws nothing anyone can
+see. Not taken: a per-distance caster rule is a level-of-detail decision, and a
+depth prepass would cut the 3.2× overdraw but add a second geometry pass to a
+frame that is geometry-bound.
 
 ## At the Deck's own size the light shafts were the frame (2026-10-19)
 

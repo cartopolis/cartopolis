@@ -124,10 +124,30 @@ with surveyed paving, gap fills and the street objects) puts
 `road_stitch::cut_ribbon_inner` at **62 % of all worker time**, `i_overlay`'s
 `CrossSolver::cross` and `tree_split` at 46 % between them, and the terrain
 refinement at 7 %. A surface cell there is ~21 s of worker CPU; the fixture
-tile's 47.5 ms is not what a street-level cell costs. The profile cannot say which
-`stitch_some` caller pays it — the cut runs on scoped threads, whose stacks
-start at their own closure — so the per-caller split is the first thing to
-instrument (`render-performance-survey.md`, "At street level…").
+tile's 47.5 ms is not what a street-level cell costs.
+
+**What it was: cuts cutting the output of cuts.** Recording every
+`stitch_some` input of one street-level fill and replaying them (the profile
+cannot attribute the cut to a caller: it runs on scoped threads, whose stacks
+start at their own closure) showed the road sheet's own cut costing 1.4 s of
+277 and the sheet-against-sheet cuts the rest. Each cut re-triangulates what
+it leaves into fans of slivers, and the next took those as subjects or
+blockers: in one gap-fill cut 107,480 of a sheet's 142,499 blocker triangles
+were under 0.05 m², each solve meeting up to 11,587 of them. A smaller gap-fill
+quad did not help (8 m quads still met ~2,600). What did: a cut only removes
+overlaps, so the union of the sheets is unchanged by it, and the fills below the
+paving are now cut once against the roads and the paving *as laid*
+(`paving::cut_ground_under_roads_and_paving`), and the gap fill is asked of the
+laid sheets. `i_overlay` is held to its list solver (`road_stitch::new_overlay`;
+`Auto`'s tree, chosen past 4,000 segments, was slower). The recorded set went
+56.8 → 18.1 s optimised; street, city and Earth settle roughly twice as fast
+(`render-performance-survey.md`). The old two-pass cut had also left ~30 m² of
+`Built` under the paving on the fixture.
+
+**Still open:** `cut_into_ground` cuts the crops against the already-cut sheets
+above them, the same cascade on farmland; and the paving itself is dense (300 k
+triangles a cell as a blocker), so every fill triangle laid under it still meets
+thousands.
 
 ## Batching the bank field's building fills — tried, measured, reverted
 
