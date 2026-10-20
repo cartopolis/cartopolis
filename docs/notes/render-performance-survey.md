@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
 triggers: [grid.rs, ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
-updated: 2026-10-17
+updated: 2026-10-20
 ---
 
 # Where the frames go, and where they do not
@@ -86,6 +86,54 @@ pass list**: bevy_pbr opens `lightprobe_*` spans, and they never reach
 "measured GPU passes" column cannot see the largest cost in the frame.
 `systems::sky_bake` re-bakes only when the sun, the moon or the camera's place
 in the atmosphere has moved.
+
+## At the Deck's own size the light shafts were the frame (2026-10-19)
+
+The table above is at 640×360. Re-run on `deck-1` at **1280×800**, the Deck's
+own panel, desktop rung, fresh `CARTO_DATA_DIR`, `--perf --repeat 2`, every
+steady window `quiet=true`. Light shafts were split from shadows with a
+throwaway switch (shafts follow shadows, so `CARTO_NO_SHADOWS` takes both).
+
+| steady frame | city (3 km) | street (120 m) |
+|---|---|---|
+| defaults | 27.8 ms | 65.3 ms |
+| light shafts off | 10.6 ms | 47.7 ms |
+| shadows and shafts off | 13.7 ms | 28.3 ms |
+| shafts off, 2 cascades | 11.6 ms | 41.4 ms |
+| shafts off, fast shadow filter | 10.9 ms | 47.3 ms |
+| sky lighting off | 26.6 ms | 61.8 ms |
+
+- **The shafts cost ~17 ms at 1 MP**, where the M5 Pro measured ~4 ms per
+  megapixel (`light_shafts::AUTO_MAX_PIXELS`). The phone runs them too, at 3.5 MP,
+  unmeasured.
+- **Sky lighting is no longer the frame**: 1–7 ms across runs since
+  `sky_bake` stopped the every-frame re-bake (`CARTO_SKY_BAKE_EVERY_FRAME=1` puts
+  640×360 city back at 27.4 ms against 10.7). The `balanced` rung still has it
+  off for the old reason; there it adds ~6 ms at city, ~2 ms at street.
+- **Shadows cost ~19 ms at street level** and little at city; four cascades
+  against two is 6 ms of it, the filter nothing.
+
+**What was taken: the march itself** (`assets/shaders/patched/bevy_pbr_volumetric_fog.wesl`,
+2026-10-20). Bevy spends all 48 steps on every ray, and then marches every ray
+*again* for volumetric point lights — this app has none, but that second march is
+where the returned background transmittance comes from, so it always ran. The
+patch steps in proportion to the ray's length (no ray coarser than the longest
+always was), replaces the second march with its closed form when the density is
+constant, and samples the air's dimming of the sun at the ray's two ends instead
+of every step. `light_shafts::altitude_factor` fades the density out between
+300 m and 600 m, where the volume's floor rises above anything that casts, and
+the shader returns before marching at zero density. Same setup:
+
+| steady frame | city (3 km) | street (120 m) | orbit |
+|---|---|---|---|
+| before | 32.8 ms | 65.8 ms | 17.3 ms |
+| after | 13.2 ms | 53.6 ms | 17.1 ms |
+
+Before/after captures at 25 m into a low sun, 120 m and 3 km match within the
+moving traffic and clouds; at 3 km the frame is ~1–2 % lighter, the veil gone.
+What remains at 120 m (~6 ms) is the shadow-map sample per step. A
+reduced-resolution march would take most of that, but bevy's node renders at
+the main pass's size, so it needs the node, not only the shader.
 
 ## On a real GPU the frame is none of the things this note was optimising (2026-09-22)
 

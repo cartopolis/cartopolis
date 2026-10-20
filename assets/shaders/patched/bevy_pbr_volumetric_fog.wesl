@@ -109,6 +109,9 @@ fn henyey_greenstein(neg_LdotV: f32) -> f32 {
     return FRAC_4_PI * (1.0 - g * g) / (denom * sqrt(denom));
 }
 
+// PATCHED (cartopolis): the fewest steps a ray inside the volume is given.
+const MIN_STEPS: u32 = 8u;
+
 @fragment
 fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // Unpack the `volumetric_fog` settings.
@@ -186,8 +189,29 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (ray_length_view == 0.0) {
         return vec4(0.0, 0.0, 0.0, 0.0);
     }
-    let inv_step_count = 1.0 / f32(step_count);
+    // PATCHED (cartopolis): steps in proportion to the ray's length. Upstream
+    // spends `step_count` on every ray, so one that meets a wall 20 m off is
+    // sampled every 0.4 m while one that leaves the volume at its corner gets
+    // one sample per 11 m — and most of a street view is the short kind. Here
+    // the longest ray the volume allows (its bounding radius, since the volume
+    // sits on the camera) keeps all of `step_count`, and no ray is sampled more
+    // coarsely than that one always was. `MIN_STEPS` keeps a shadow edge a few
+    // metres off from turning to slabs. `light_shafts.rs` has the numbers.
+    let max_spacing = bounding_radius / f32(step_count);
+    let step_count_here = clamp(
+        u32(ceil(ray_length_view / max_spacing)), min(MIN_STEPS, step_count), step_count);
+    let inv_step_count = 1.0 / f32(step_count_here);
     let step_size_world = ray_length_view * inv_step_count;
+
+    // PATCHED (cartopolis): clear air marches to nothing, so do not march it.
+    // `light_shafts::follow_camera` fades the density to 0 once the camera is
+    // too high for any shadow to reach the volume. With no density every step
+    // adds nothing and dims nothing, so this is what the march would return:
+    // the ambient term below, and the whole background.
+    if (density_factor <= 0.0) {
+        return vec4(exp(-ray_length_view * (absorption + scattering)) * ambient_color *
+            ambient_intensity, 0.0);
+    }
 
     let directional_light_count = lights.n_directional_lights;
 
@@ -245,11 +269,27 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         let neg_LdotV = dot(normalize(L), Rd_world);
         let phase = henyey_greenstein(neg_LdotV);
 
+        // PATCHED (cartopolis): the air's dimming of the sunlight, worked out at
+        // the two ends of the ray and blended per step, where upstream samples
+        // the transmittance table and the sun's horizon cut at every step. Over
+        // a ray of at most a few hundred metres both change smoothly — the only
+        // fast one is the sun sinking behind the horizon, whose dip grows with
+        // height like sqrt(h), and a straight blend between the ends follows it
+        // to a small fraction of the sun's disc.
+        var sun_at_start = vec3(1.0);
+        var sun_at_end = vec3(1.0);
+@if(ATMOSPHERE) {
+        sun_at_start = sun_through_air(Ro_world + depth_offset, L, (*light).sun_disk_angular_size);
+        sun_at_end = sun_through_air(
+            Ro_world + Rd_world * ray_length_view + depth_offset, L, (*light).sun_disk_angular_size);
+}
+
         // Reset `background_alpha` for a new raymarch.
         background_alpha = 1.0;
 
         // Start raymarching.
-        for (var step = 0u; step < step_count; step += 1u) {
+        // PATCHED (cartopolis): `step_count_here`, see where it is set.
+        for (var step = 0u; step < step_count_here; step += 1u) {
             // As an optimization, break if we've gotten too dark.
             if (background_alpha < 0.001) {
                 break;
@@ -311,21 +351,11 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 var light_factors_per_step = fog_color * light_tint * light_attenuation *
                     scattering * density * step_size_world * light_intensity * exposure;
 
-@if(ATMOSPHERE) {
-                // attenuate by atmospheric scattering
-                let P = P_world + depth_offset;
-                let P_as = (atmosphere.world_to_atmosphere * vec4(P, 1.0)).xyz;
-                // PATCHED (cartopolis): helpers reading the binding's fields,
-                // not the whole struct passed by value.
-                let P_clamped = atmosphere_clamp_to_surface(P_as);
-                let r = length(P_clamped);
-                let local_up = normalize(P_clamped);
-                let mu_light = dot(L, local_up);
-
-                let transmittance = sample_transmittance_lut(r, mu_light);
-                let sun_visibility = atmosphere_visible_sun_ratio(r, mu_light, (*light).sun_disk_angular_size);
-                light_factors_per_step *= transmittance * sun_visibility;
-}
+                // PATCHED (cartopolis): attenuate by atmospheric scattering,
+                // blended from the ray's two ends (see above). Without the
+                // atmosphere both ends are 1.
+                light_factors_per_step *=
+                    mix(sun_at_start, sun_at_end, f32(step) * inv_step_count);
 
                 // Modulate the factor we calculated above by the phase, fog color,
                 // light color, light tint.
@@ -338,6 +368,19 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
     }
 
+    // PATCHED (cartopolis): no second march without a density texture. Upstream
+    // marches every ray again here for volumetric point and spot lights, and
+    // that march is also where the returned `background_alpha` comes from — so
+    // it runs, cluster lookups and all, even when no such light exists, which
+    // in this app is always: only the sun has `VolumetricLight`
+    // (`render_features`). With a constant density the background's survival
+    // along the ray is exactly the closed form below, the product of every
+    // step's attenuation. With a density texture the stock march stays, whole.
+    @if(!DENSITY_TEXTURE) {
+    background_alpha = exp(-ray_length_view * density_factor * (absorption + scattering));
+    }
+
+    @if(DENSITY_TEXTURE) {
     // Point lights and Spot lights
     let is_orthographic = view.clip_from_view[3].w == 1.0;
 
@@ -345,7 +388,8 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     background_alpha = 1.0;
 
     // Start raymarching.
-    for (var step = 0u; step < step_count; step += 1u) {
+    // PATCHED (cartopolis): `step_count_here`, see where it is set.
+    for (var step = 0u; step < step_count_here; step += 1u) {
         // As an optimization, break if we've gotten too dark.
         if (background_alpha < 0.001) {
             break;
@@ -438,6 +482,7 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         // Process absorption and out-scattering.
         background_alpha *= sample_attenuation;
         accumulated_color += sample_color * background_alpha;
+    }
     }
 
     // We're done! Return the color with alpha so it can be blended onto the
@@ -573,4 +618,20 @@ fn sample_transmittance_lut(r: f32, mu: f32) -> vec3<f32> {
     return textureSampleLevel(
         atmosphere_transmittance_texture,
         atmosphere_transmittance_sampler, uv, 0.0).rgb;
+}
+
+// PATCHED (cartopolis): the per-step atmosphere block of the march, as one
+// function the march calls at each end of the ray. `P` is already offset by
+// the light's depth bias. Same arithmetic as the block it replaced.
+@if(ATMOSPHERE)
+fn sun_through_air(P: vec3<f32>, L: vec3<f32>, sun_disk_angular_size: f32) -> vec3<f32> {
+    let P_as = (atmosphere.world_to_atmosphere * vec4(P, 1.0)).xyz;
+    let P_clamped = atmosphere_clamp_to_surface(P_as);
+    let r = length(P_clamped);
+    let local_up = normalize(P_clamped);
+    let mu_light = dot(L, local_up);
+
+    let transmittance = sample_transmittance_lut(r, mu_light);
+    let sun_visibility = atmosphere_visible_sun_ratio(r, mu_light, sun_disk_angular_size);
+    return transmittance * sun_visibility;
 }

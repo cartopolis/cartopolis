@@ -75,6 +75,7 @@ use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
 use crate::resources::DevPanelState;
+use crate::systems::globe::GlobeState;
 
 /// Marks the single fog volume this module owns.
 #[derive(Component)]
@@ -100,6 +101,12 @@ const VOLUME_EDGE_M: f32 = 600.0;
 /// and below, where they cost what they were judged worth, and drops them on
 /// Retina and 4K, where they were most of the frame. A person who asks for them
 /// in Settings still gets them; this only decides what nobody asked about.
+///
+/// The Steam Deck paid far more per pixel: ~17 ms at 1280×800 (2026-10-19), both
+/// over the street and from 3 km. The patched march (`bevy_pbr_volumetric_fog.wesl`:
+/// steps by ray length, no second march for point lights) and [`altitude_factor`]
+/// brought that to ~6 ms at 120 m and nothing at 3 km; this threshold was not
+/// re-tuned after it. `docs/notes/render-performance-survey.md` has the table.
 pub const AUTO_MAX_PIXELS: u64 = 4_000_000;
 
 /// Whether "Automatic" can afford the shafts at a main pass of `pixels`.
@@ -157,6 +164,24 @@ const RAIN_EXTINCTION: f32 = 0.35;
 /// factor of one.
 fn density_for(extinction: f32) -> f32 {
     -(1.0 - extinction).ln() / (HALF_EDGE_M * (SCATTERING + ABSORPTION))
+}
+
+/// Height (m) above which nothing on the ground casts a shadow into the air. The
+/// tallest buildings in the Netherlands stand a little over 200 m.
+const TALLEST_CASTER_M: f32 = 300.0;
+
+/// How much of the volume's density is left at a camera `altitude` (m, from
+/// `GlobeState::altitude_m`): 1 while the volume reaches the ground, 0 once its
+/// floor (`altitude − HALF_EDGE_M`) is above anything that can cast a shadow.
+///
+/// Above that the march finds every sample sunlit, so the "shafts" are a uniform
+/// veil of a few per cent — and it still cost the whole pass: 17 ms of a 28 ms
+/// frame on the Steam Deck at 1280×800, 3 km over Groningen (2026-10-19). At 0
+/// the patched shader (`bevy_pbr_volumetric_fog.wesl`) returns before marching.
+/// A fade rather than a cut, so a climb loses the veil gradually.
+fn altitude_factor(altitude: f32) -> f32 {
+    let t = ((altitude - HALF_EDGE_M) / TALLEST_CASTER_M).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 /// The density to give the volume for a given weather.
@@ -243,6 +268,7 @@ pub fn spawn_volume(commands: &mut Commands, root: Entity) {
 pub fn follow_camera(
     camera: Query<(&GridCell, &Transform), (With<FreeCamera>, Without<ShaftVolume>)>,
     dev: Res<DevPanelState>,
+    globe: Res<GlobeState>,
     mut volume: Query<(&mut GridCell, &mut Transform, &mut FogVolume), With<ShaftVolume>>,
 ) {
     let Ok((mut cell, mut tf, mut fog)) = volume.single_mut() else {
@@ -261,7 +287,8 @@ pub fn follow_camera(
         tf.translation = cam_tf.translation;
     }
 
-    let density = density_factor(dev.fog_density, dev.precipitation);
+    let altitude = globe.altitude_m(cam_cell, cam_tf) as f32;
+    let density = density_factor(dev.fog_density, dev.precipitation) * altitude_factor(altitude);
     if fog.density_factor != density {
         fog.density_factor = density;
     }
@@ -292,6 +319,25 @@ mod tests {
         assert!(affordable_at(2560 * 1440));
         assert!(!affordable_at(3134 * 1952));
         assert!(!affordable_at(3840 * 2160));
+    }
+
+    /// Full shafts while the volume reaches the street, none once its floor is
+    /// above every caster, and never a step on the way between.
+    #[test]
+    fn the_shafts_fade_out_on_a_climb() {
+        assert_eq!(altitude_factor(0.0), 1.0);
+        assert_eq!(altitude_factor(HALF_EDGE_M), 1.0);
+        assert_eq!(altitude_factor(HALF_EDGE_M + TALLEST_CASTER_M), 0.0);
+        assert_eq!(altitude_factor(3000.0), 0.0);
+        let mut previous = 1.0;
+        for metres in (0..1000).step_by(5) {
+            let now = altitude_factor(metres as f32);
+            assert!(
+                now <= previous && previous - now < 0.03,
+                "{metres} m: {previous} → {now}"
+            );
+            previous = now;
+        }
     }
 
     /// Rain must not make the air *clearer*, which is the sign error this

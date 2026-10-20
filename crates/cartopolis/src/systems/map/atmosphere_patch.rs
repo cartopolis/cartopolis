@@ -31,7 +31,11 @@
 //!    air's dimming of sunlight on every lit surface. Without it the phone lit buildings with the sun as it is above
 //!    the atmosphere: too bright, and never orange at sunset.
 //! 3. `bevy_pbr::volumetric_fog::volumetric_fog` — the same dimming for the
-//!    light shafts.
+//!    light shafts. This copy also carries a cheaper march, so unlike the other
+//!    three it is not arithmetic-identical to stock: steps by ray length, no
+//!    second march for point lights, the sun's dimming taken at the ray's ends,
+//!    and no march at zero density (`light_shafts::altitude_factor`). Its hunks
+//!    say why; `render-performance-survey.md` has what they bought.
 //!
 //! **The upgrade guard.** Each patch records the FNV-1a hash of the stock file
 //! it was copied from. A stock shader that no longer matches is *not* replaced:
