@@ -16,6 +16,12 @@ mod grid;
 mod login;
 mod phase;
 mod platform;
+
+// The web build counts its heap (`platform::heap`): its linear memory is the one
+// resource whose exhaustion kills the client outright.
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static HEAP: platform::heap::Counting = platform::heap::Counting;
 mod quality;
 mod render_halt;
 mod render_setup;

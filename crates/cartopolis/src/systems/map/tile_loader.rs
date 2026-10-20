@@ -752,7 +752,11 @@ impl GlobeTilePayload {
                 // every other tile magnified from the same ancestor. The render and
                 // the mask read the same layers, and each used to open its own
                 // `Reader` over this body.
+                #[cfg(heap_labels)]
+                crate::platform::heap::labels::set("globe: parse");
                 let tile = parse_shared(source, &bytes)?;
+                #[cfg(heap_labels)]
+                crate::platform::heap::labels::set("globe: draw layers");
                 let pixels = vector_tiles::render_mvt_layered(
                     &tile,
                     sub,
@@ -764,6 +768,8 @@ impl GlobeTilePayload {
                 .map_err(|e| e.to_string())?;
                 let mut rgba = image::RgbaImage::from_raw(size, size, pixels)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
+                #[cfg(heap_labels)]
+                crate::platform::heap::labels::set("globe: ocean mask");
                 match vector_tiles::ocean_mask_sized(&tile, sub, size) {
                     Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
                         for (px, m) in rgba.pixels_mut().zip(mask) {

@@ -1520,9 +1520,17 @@ fn spawn_globe_tile(
                         "globe",
                         crate::platform::workers::FAR,
                         Box::new(move || {
+                            // Which stage allocated what this job leaves behind, in a
+                            // `heap_labels` build (`platform::heap::labels`).
+                            #[cfg(heap_labels)]
+                            let stage = crate::platform::heap::labels::set;
+                            #[cfg(not(heap_labels))]
+                            let stage = |_: &'static str| {};
+                            stage("globe: stored png");
                             let reused = stored.and_then(|png| {
                                 crate::systems::tile_loader::decode_rendered(&png, GLOBE_TILE_PX)
                             });
+                            stage("globe: mip chain");
                             if let Some(rgba) = reused {
                                 // Decoded *before* the lock. As a `push` argument it
                                 // ran with the sink held, mip chain and all, and the
@@ -1541,11 +1549,14 @@ fn spawn_globe_tile(
                             // aggregate `globe tile fetches failed` warning below as the
                             // only evidence — a count that reads as a rate limit whether
                             // the tile 404'd, arrived truncated or failed to rasterise.
+                            stage("globe: render payload");
                             let outcome = match payload.decode(GLOBE_TILE_PX) {
                                 Ok((rgba, masked)) => {
+                                    stage("globe: store rendered");
                                     if let (true, Some(k)) = (masked, &cache_key) {
                                         crate::systems::tile_loader::store_rendered(k, &rgba);
                                     }
+                                    stage("globe: mip chain");
                                     TileFetch::Ok(decode_globe_tile(rgba, masked))
                                 }
                                 Err(e) => {

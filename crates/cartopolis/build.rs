@@ -37,6 +37,16 @@ fn main() {
         }
     }
 
+    // 3. `CARTO_HEAP_LABELS=1` sets the `heap_labels` cfg: live heap by what
+    //    allocated it (`platform::heap::labels`), for diagnostic web builds. An
+    //    environment variable rather than a feature because trunk builds with the
+    //    feature list `index.html` names, and a `--cfg` in RUSTFLAGS would rebuild
+    //    the standard library with it as well.
+    println!("cargo::rustc-check-cfg=cfg(heap_labels)");
+    println!("cargo:rerun-if-env-changed=CARTO_HEAP_LABELS");
+    if std::env::var("CARTO_HEAP_LABELS").is_ok_and(|v| !v.is_empty() && v != "0") {
+        println!("cargo:rustc-cfg=heap_labels");
+    }
     println!("cargo::rustc-check-cfg=cfg(mcp)");
     if target_family.split(',').any(|f| f == "unix") && target_os != "android" {
         println!("cargo::rustc-cfg=mcp");

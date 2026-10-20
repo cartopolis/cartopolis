@@ -600,6 +600,9 @@ fn dispatch(w: Waiting) {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            #[cfg(heap_labels)]
+            crate::platform::heap::labels::scoped(label, job);
+            #[cfg(not(heap_labels))]
             job();
             stats::record(label, 0, 0);
         }

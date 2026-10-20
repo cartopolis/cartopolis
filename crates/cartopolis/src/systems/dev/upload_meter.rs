@@ -226,7 +226,12 @@ pub struct GpuReport {
 }
 
 impl GpuReport {
-    fn observe(&mut self, dt: f32, streamed_assets: usize) {
+    fn observe(
+        &mut self,
+        dt: f32,
+        streamed_assets: usize,
+        held: impl FnOnce() -> (usize, usize, usize),
+    ) {
         let now = egui_wgpu::wgpu::meter::snapshot();
         let frame = now.written_bytes.saturating_sub(self.written_at_frame);
         self.written_at_frame = now.written_bytes;
@@ -239,6 +244,15 @@ impl GpuReport {
         self.until_next = 5.0;
         let mb = |b: u64| (b as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0;
         let written = now.written_bytes.saturating_sub(self.written_at_report);
+        let heap = crate::platform::heap::usage();
+        let (cpu_meshes, cpu_images, storage_view) = held();
+        #[cfg(heap_labels)]
+        let (heap_by, heap_peak_by) = (
+            crate::platform::heap::labels::top(8),
+            crate::platform::heap::labels::top_peaks(6),
+        );
+        #[cfg(not(heap_labels))]
+        let (heap_by, heap_peak_by) = ("", "");
         tracing::info!(
             resident_mb = mb(now.resident_bytes()),
             textures_mb = mb(now.texture_bytes),
@@ -251,6 +265,18 @@ impl GpuReport {
             max_frame_mb = mb(self.max_frame),
             // This meter's own count: the streamed images and meshes only.
             streamed_assets_mb = mb(streamed_assets as u64),
+            // The web build's own memory (`platform::heap`): live, most ever live,
+            // and the linear memory, which only grows. Zero natively.
+            heap_mb = mb(heap.0 as u64),
+            heap_peak_mb = mb(heap.1 as u64),
+            wasm_memory_mb = mb(heap.2 as u64),
+            // Some of what that heap holds: CPU copies of meshes and images in the
+            // main world, and the storage layer's in-memory view.
+            cpu_meshes_mb = mb(cpu_meshes as u64),
+            cpu_images_mb = mb(cpu_images as u64),
+            storage_view_mb = mb(storage_view as u64),
+            heap_by = %heap_by,
+            heap_peak_by = %heap_peak_by,
             "gpu",
         );
         self.written_at_report = now.written_bytes;
@@ -316,7 +342,21 @@ pub fn measure_uploads(
     time: Res<Time<Real>>,
     mut report: Local<GpuReport>,
 ) {
-    report.observe(time.delta_secs(), meter.resident_bytes);
+    report.observe(time.delta_secs(), meter.resident_bytes, || {
+        // What the main world still holds a CPU copy of. A mesh or image uploaded
+        // `RENDER_WORLD`-only has none left; one kept in both worlds costs its size
+        // twice, once here and once on the GPU.
+        let mesh_bytes: usize = meshes.iter().filter_map(|(_, m)| mesh_bytes(m)).sum();
+        let image_bytes: usize = images
+            .iter()
+            .filter_map(|(_, i)| i.data.as_ref().map(Vec::len))
+            .sum();
+        (
+            mesh_bytes,
+            image_bytes,
+            crate::platform::storage::view_bytes(),
+        )
+    });
     let mut bytes = 0usize;
     // Taken apart so the residency bookkeeping can borrow the two counters and the
     // size map at once; `meter` is put back together at the end of each loop body.
