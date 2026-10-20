@@ -1552,6 +1552,25 @@ fn spawn_geometry_task(
                             let mut crop_meshes = cartopolis_geo::crops::build_crop_meshes(
                                 &parcels, mesh_bytes,
                             );
+                            // **The ground's sheets as laid, before they are cut
+                            // into each other.** A cut only takes out where two
+                            // sheets overlap, so it never changes the ground they
+                            // cover between them — and that union is all the
+                            // paving cut below and the gap fill need. Asked of
+                            // the cut sheets instead, both paid for the slivers
+                            // every earlier cut leaves behind: over half of a
+                            // street-level cell's blocker triangles were under
+                            // 0.05 m² (`paving::cut_ground_under_roads_and_paving`).
+                            // Taken after the paving's cut under the flat decks,
+                            // which does change what is covered.
+                            let paving_whole = paving_meshes.clone();
+                            let mut ground_whole: Vec<SurfaceMesh> = meshes
+                                .iter()
+                                .chain(&paving_meshes)
+                                .chain(&crop_meshes)
+                                .filter(|m| m.group.layer().is_sheet())
+                                .cloned()
+                                .collect();
                             lap.mark("paving");
                             match vector_tiles::tessellate_roads_surveyed(
                                 &tile,
@@ -1588,16 +1607,17 @@ fn spawn_geometry_task(
                                     // the tarmac are `Built`, bent onto the
                                     // measured ground against its own triangles
                                     // rather than the road's.
-                                    cartopolis_geo::road_stitch::cut_under_roads(
+                                    //
+                                    // …and from under the paving, for the same
+                                    // reason, in the same pass and against the
+                                    // paving as laid
+                                    // (`paving::cut_ground_under_roads_and_paving`).
+                                    cartopolis_geo::paving::cut_ground_under_roads_and_paving(
                                         &mut meshes,
                                         &roads.ground,
+                                        &paving_whole,
                                     );
-                                    // …and from under the paving, for the same
-                                    // reason (`paving::cut_ground_under_paving`).
-                                    cartopolis_geo::paving::cut_ground_under_paving(
-                                        &mut meshes,
-                                        &paving_meshes,
-                                    );
+                                    ground_whole.extend(roads.ground.iter().cloned());
                                     meshes.extend(std::mem::take(&mut paving_meshes));
                                     // Where each deck's railings run: off the
                                     // roads it carries, or — for a deck the
@@ -1677,9 +1697,10 @@ fn spawn_geometry_task(
                             // is in by now; what is left of the cell is a hole that
                             // used to show the basemap underneath, and the basemap
                             // is no longer drawn under a built cell
-                            // (`cartopolis_geo::gap_fill`).
+                            // (`cartopolis_geo::gap_fill`). Asked of the sheets as
+                            // laid, which cover exactly what the cut ones do.
                             if let Some(fill) = cartopolis_geo::gap_fill::gap_fill(
-                                &meshes,
+                                &ground_whole,
                                 [0.0, 0.0],
                                 [tile_m, tile_m],
                                 cartopolis_geo::vector_tiles::palette::RESIDENTIAL,

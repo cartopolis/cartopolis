@@ -564,10 +564,290 @@ fn inside_rings(p: [f32; 2], rings: &[Vec<[f32; 2]>]) -> bool {
     inside
 }
 
+/// Cut the ground sheets from under the roads, and those below the paving from
+/// under the paving too — **in one pass, against the paving as it was laid**.
+///
+/// This was two passes, roads then paving, with the paving already cut down to
+/// what the roads left of it. The ground both remove is the same either way:
+/// whatever the roads take out of the paving they also take out of the fills,
+/// so `(fill − roads) − (paving − roads)` and `fill − (roads ∪ paving)` are one
+/// set. What is not the same is the work. Each cut re-triangulates what it
+/// leaves into fans of slivers, and the second pass used both the first pass's
+/// slivers as subjects and the cut paving's as blockers: at street level over
+/// Groningen (`deck-1`, 2026-10-20) more than half of one cell's blocker
+/// triangles were under 0.05 m², and the cuts were most of the cell's worker
+/// time. Laid paving is cut once, against blockers that were never cut.
+pub fn cut_ground_under_roads_and_paving(
+    meshes: &mut Vec<SurfaceMesh>,
+    roads: &[SurfaceMesh],
+    paving: &[SurfaceMesh],
+) {
+    let level = SurfaceGroup::Paving.layer();
+    let (mut below, mut rest): (Vec<_>, Vec<_>) =
+        std::mem::take(meshes).into_iter().partition(|m| {
+            let l = m.group.layer();
+            l.is_sheet() && l < level
+        });
+    let mut both: Vec<SurfaceMesh> = Vec::with_capacity(roads.len() + paving.len());
+    both.extend(roads.iter().cloned());
+    both.extend(paving.iter().cloned());
+    crate::road_stitch::cut_under_roads(&mut below, &both);
+    crate::road_stitch::cut_under_roads(&mut rest, roads);
+    meshes.extend(below);
+    meshes.extend(rest);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::flat_fill::TRI_BYTES;
+
+    fn area_of(meshes: &[SurfaceMesh], group: SurfaceGroup) -> f64 {
+        meshes
+            .iter()
+            .filter(|m| m.group == group)
+            .flat_map(|m| {
+                m.indices.chunks_exact(3).map(move |t| {
+                    let p = |i: u32| m.positions[i as usize];
+                    let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                    f64::from(((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])).abs())
+                        / 2.0
+                })
+            })
+            .sum()
+    }
+
+    /// Which points of a 0.5 m lattice over the tile the meshes of `group` cover.
+    ///
+    /// The two cut orders below snap to the millimetre lattice at different steps,
+    /// so their boundaries can differ by a fraction of a millimetre all the way
+    /// round, which over kilometres of edge is square metres of *area*. A lattice
+    /// point lands inside such a hairline almost never; it lands inside any real
+    /// difference — a patch left uncovered, a sheet cut where it should not be —
+    /// every half metre.
+    fn coverage(meshes: &[SurfaceMesh], group: Option<SurfaceGroup>, tile_m: f32) -> Vec<bool> {
+        const STEP: f32 = 0.5;
+        // Off the round numbers the fixture strips and the tile are laid on, so no
+        // point sits exactly on an edge where the snapping decides which side it is.
+        const OFF: f32 = 0.123_7;
+        let n = (tile_m / STEP).ceil() as usize + 1;
+        let mut hit = vec![false; n * n];
+        for m in meshes.iter().filter(|m| group.is_none_or(|g| m.group == g)) {
+            for t in m.indices.chunks_exact(3) {
+                let p = |i: u32| [m.positions[i as usize][0], m.positions[i as usize][2]];
+                let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                let lo = [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1])];
+                let hi = [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1])];
+                let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
+                    (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])
+                };
+                let (x0, z0) = (
+                    ((lo[0] - OFF) / STEP).ceil().max(0.0) as usize,
+                    ((lo[1] - OFF) / STEP).ceil().max(0.0) as usize,
+                );
+                let (x1, z1) = (
+                    (((hi[0] - OFF) / STEP).floor().max(0.0) as usize).min(n - 1),
+                    (((hi[1] - OFF) / STEP).floor().max(0.0) as usize).min(n - 1),
+                );
+                for zi in z0..=z1 {
+                    for xi in x0..=x1 {
+                        let q = [xi as f32 * STEP + OFF, zi as f32 * STEP + OFF];
+                        let (s0, s1, s2) = (side(a, b, q), side(b, c, q), side(c, a, q));
+                        if (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                            || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
+                        {
+                            hit[zi * n + xi] = true;
+                        }
+                    }
+                }
+            }
+        }
+        hit
+    }
+
+    /// Lattice points where the two coverages disagree.
+    fn disagree(a: &[bool], b: &[bool]) -> usize {
+        a.iter().zip(b).filter(|(x, y)| x != y).count()
+    }
+
+    /// Pavements over Groningen's centre: strips laid across the fixture's streets
+    /// and blocks, so they overlap roads and fills both.
+    fn paving_over_the_fixture(tile_m: f32) -> Vec<SurfaceMesh> {
+        let mut areas = Vec::new();
+        for k in 0..12 {
+            let x = 80.0 + k as f32 * 105.0;
+            areas.push(PavedArea {
+                kind: PavingKind::Footway,
+                material: None,
+                rings: vec![vec![
+                    [x, 30.0],
+                    [x + 9.0, 30.0],
+                    [x + 9.0, tile_m - 30.0],
+                    [x, tile_m - 30.0],
+                ]],
+                measured: None,
+            });
+            let z = 60.0 + k as f32 * 110.0;
+            areas.push(PavedArea {
+                kind: PavingKind::Footway,
+                material: None,
+                rings: vec![vec![
+                    [30.0, z],
+                    [tile_m - 30.0, z],
+                    [tile_m - 30.0, z + 7.0],
+                    [30.0, z + 7.0],
+                ]],
+                measured: None,
+            });
+        }
+        build_paving_meshes(&areas, None)
+    }
+
+    /// **One pass against the laid paving leaves the ground two passes against the
+    /// cut paving meant to** — per ground group, over the real fixture's fills and
+    /// roads. `(fill − roads) − (paving − roads)` is `fill − (roads ∪ paving)`.
+    ///
+    /// "Meant to", because the two passes did not quite manage it: on this fixture
+    /// they left ~30 m² of `Built` under the paving and a few under the roads —
+    /// the slivers the first pass leaves were missed by the second — which is the
+    /// double coverage the cut exists to remove. So the old result is not the
+    /// reference. What is checked is that the new one adds no ground the old did
+    /// not cover, opens no hole that neither a road nor the paving covers, and
+    /// leaves nothing under either.
+    #[test]
+    fn one_cut_against_the_laid_paving_leaves_the_same_ground() {
+        let tile = crate::testdata::groningen();
+        let tile_m = crate::vector_tiles::NOMINAL_Z14_TILE_M;
+        let fills = crate::vector_tiles::tessellate_surfaces(&tile, tile_m, None).unwrap();
+        let mut decks = crate::vector_tiles::tessellate_bridges(&tile, tile_m).unwrap();
+        let roads = crate::vector_tiles::tessellate_roads(&tile, tile_m, &mut decks, None, false)
+            .unwrap()
+            .ground;
+        let laid = paving_over_the_fixture(tile_m);
+
+        let mut before = fills.clone();
+        let mut paving = laid.clone();
+        cut_paving_under_roads(&mut paving, &roads);
+        crate::road_stitch::cut_under_roads(&mut before, &roads);
+        cut_ground_under_paving(&mut before, &paving);
+
+        let mut after = fills.clone();
+        cut_ground_under_roads_and_paving(&mut after, &roads, &laid);
+
+        let groups: std::collections::HashSet<SurfaceGroup> =
+            fills.iter().map(|m| m.group).collect();
+        let (roads_at, paving_at) = (
+            coverage(&roads, None, tile_m),
+            coverage(&laid, None, tile_m),
+        );
+        let mut checked = 0;
+        for g in groups {
+            let (a, b) = (area_of(&before, g), area_of(&after, g));
+            assert!(
+                (a - b).abs() <= 0.5 + a * 1e-3,
+                "{g:?}: two passes left {a:.3} m², one pass {b:.3} m²"
+            );
+            let (old, new) = (
+                coverage(&before, Some(g), tile_m),
+                coverage(&after, Some(g), tile_m),
+            );
+            // A hairline is hit by a lattice point now and then; anything real is
+            // hit every half metre. One in a hundred thousand allows the first.
+            let hairline = old.len() / 100_000;
+            let added = old.iter().zip(&new).filter(|(o, n)| !**o && **n).count();
+            assert!(
+                added <= hairline,
+                "{g:?}: one pass covers {added} lattice points two did not"
+            );
+            let opened = (0..old.len())
+                .filter(|&i| old[i] && !new[i] && !roads_at[i] && !paving_at[i])
+                .count();
+            assert!(
+                opened <= hairline,
+                "{g:?}: one pass opens {opened} lattice points nothing covers"
+            );
+            let under = (0..new.len())
+                .filter(|&i| new[i] && (roads_at[i] || paving_at[i]))
+                .count();
+            let under_old = (0..old.len())
+                .filter(|&i| old[i] && (roads_at[i] || paving_at[i]))
+                .count();
+            assert!(
+                under <= under_old,
+                "{g:?}: one pass leaves {under} lattice points under a road or the paving, two left {under_old}"
+            );
+            checked += usize::from(a > 1_000.0);
+        }
+        assert!(
+            checked >= 2,
+            "the fixture's fills were not what this test is about"
+        );
+        let (tris_before, tris_after) = (
+            before.iter().map(|m| m.indices.len()).sum::<usize>() / 3,
+            after.iter().map(|m| m.indices.len()).sum::<usize>() / 3,
+        );
+        assert!(
+            tris_after < tris_before,
+            "one pass left {tris_after} triangles against two passes' {tris_before}"
+        );
+    }
+
+    /// **The gap fill asked of the laid sheets fills what it did asked of the cut
+    /// ones**: the cuts only take out overlaps, so the ground the sheets cover
+    /// between them, and the holes it leaves, are the same.
+    #[test]
+    fn the_gap_fill_of_the_laid_sheets_is_the_gap_fill_of_the_cut_ones() {
+        let tile = crate::testdata::groningen();
+        let tile_m = crate::vector_tiles::NOMINAL_Z14_TILE_M;
+        let fills = crate::vector_tiles::tessellate_surfaces(&tile, tile_m, None).unwrap();
+        let mut decks = crate::vector_tiles::tessellate_bridges(&tile, tile_m).unwrap();
+        let roads = crate::vector_tiles::tessellate_roads(&tile, tile_m, &mut decks, None, false)
+            .unwrap()
+            .ground;
+        let laid = paving_over_the_fixture(tile_m);
+
+        let mut laid_all = fills.clone();
+        laid_all.extend(laid.iter().cloned());
+        laid_all.extend(roads.iter().cloned());
+
+        let mut cut = fills.clone();
+        cut_ground_under_roads_and_paving(&mut cut, &roads, &laid);
+        let mut paving = laid.clone();
+        cut_paving_under_roads(&mut paving, &roads);
+        cut.extend(paving);
+        cut.extend(roads.iter().cloned());
+
+        let gap = |sheets: &[SurfaceMesh]| {
+            crate::gap_fill::gap_fill(sheets, [0.0, 0.0], [tile_m, tile_m], 0xFF_FF_FF)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let (from_laid, from_cut) = (gap(&laid_all), gap(&cut));
+        let (a_laid, a_cut) = (
+            area_of(&from_laid, SurfaceGroup::Built),
+            area_of(&from_cut, SurfaceGroup::Built),
+        );
+        assert!(
+            a_cut > 1_000.0,
+            "the fixture leaves no holes to fill: {a_cut} m²"
+        );
+        // The cut sheets leave hairlines between them where their snapped edges
+        // part by a fraction of a millimetre, which the old gap fill filled with
+        // slivers; the laid ones do not. Nothing bigger may differ.
+        assert!(
+            (a_laid - a_cut).abs() <= 0.5 + a_cut * 1e-3,
+            "laid sheets leave {a_laid:.3} m² to fill, cut ones {a_cut:.3} m²"
+        );
+        let (ca, cb) = (
+            coverage(&from_laid, None, tile_m),
+            coverage(&from_cut, None, tile_m),
+        );
+        let off = disagree(&ca, &cb);
+        assert!(
+            off * 100_000 <= ca.len(),
+            "the two gap fills cover {off} lattice points differently"
+        );
+    }
 
     /// **The image paints what the meshes draw, averaged.** Each stone pattern's
     /// far-field mean is read out of the shader's own source, so moving one there

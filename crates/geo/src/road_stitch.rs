@@ -174,6 +174,25 @@ fn overlaps(a: &Bbox, b: &Bbox) -> bool {
     a[2] >= b[0] && b[2] >= a[0] && a[3] >= b[1] && b[3] >= a[1]
 }
 
+/// The boolean solver every cut here uses: `i_overlay`'s, held to its **list**
+/// strategy.
+///
+/// Left on `Auto` it switches to its tree past 4,000 segments, which a cut meets
+/// whenever a ground fill's triangle is laid over dense paving, and on those the
+/// tree measured slower, not faster. On six of the heaviest cuts recorded from a
+/// street-level fill (`deck-1`, 2026-10-20, optimised build) the list took them
+/// from 9.8 s to 6.9 s with every output bit-identical; `Frag` was 7.7 s and
+/// changed the output.
+fn new_overlay() -> Overlay<i32> {
+    use i_overlay::core::solver::{Solver, Strategy};
+    let mut overlay = Overlay::new(64);
+    overlay.solver = Solver {
+        strategy: Strategy::List,
+        ..Solver::default()
+    };
+    overlay
+}
+
 fn to_mm(v: f32) -> i32 {
     (v * MM_PER_M).round() as i32
 }
@@ -576,7 +595,7 @@ pub(crate) fn stitch_some(ribbons: &mut [Ribbon], cut_count: usize) {
     let buckets = Buckets::build(ribbons);
     // One overlay reused across the whole tile: building a fresh one per triangle
     // is a large share of what a cut costs, and there are thousands of them.
-    let mut overlay: Overlay<i32> = Overlay::new(64);
+    let mut overlay: Overlay<i32> = new_overlay();
     let mut scratch = Scratch {
         ids: Vec::new(),
         seen: vec![0; buckets.tris.len()],
@@ -726,7 +745,7 @@ fn cut_ribbons_in_parallel(
             .map(|w| {
                 let (lo, hi) = (w[0], w[1]);
                 s.spawn(move || {
-                    let mut overlay: Overlay<i32> = Overlay::new(64);
+                    let mut overlay: Overlay<i32> = new_overlay();
                     let mut scratch = Scratch {
                         ids: Vec::new(),
                         seen: vec![0; buckets.tris.len()],
@@ -788,7 +807,7 @@ fn cut_ribbon_parallel(i: usize, ribbons: &[Ribbon], buckets: &Buckets) -> Optio
                             // Per thread, never shared: the overlay is the
                             // expensive thing to build and the whole point of
                             // keeping one is that it is reused across triangles.
-                            let mut overlay: Overlay<i32> = Overlay::new(64);
+                            let mut overlay: Overlay<i32> = new_overlay();
                             let mut scratch = Scratch {
                                 ids: Vec::new(),
                                 seen: vec![0; buckets.tris.len()],
@@ -814,7 +833,7 @@ fn cut_ribbon_parallel(i: usize, ribbons: &[Ribbon], buckets: &Buckets) -> Optio
         }
     }
 
-    let mut overlay: Overlay<i32> = Overlay::new(64);
+    let mut overlay: Overlay<i32> = new_overlay();
     let mut scratch = Scratch {
         ids: Vec::new(),
         seen: vec![0; buckets.tris.len()],
@@ -1149,7 +1168,7 @@ mod tests {
             snap(r);
         }
         let buckets = Buckets::build(&serial);
-        let mut overlay: Overlay<i32> = Overlay::new(64);
+        let mut overlay: Overlay<i32> = new_overlay();
         let mut scratch = Scratch {
             ids: Vec::new(),
             seen: vec![0; buckets.tris.len()],
@@ -1200,7 +1219,7 @@ mod tests {
             .expect("the fixture has road ribbons");
 
         let split = cut_ribbon_parallel(widest, &staged, &buckets);
-        let mut overlay: Overlay<i32> = Overlay::new(64);
+        let mut overlay: Overlay<i32> = new_overlay();
         let mut scratch = Scratch {
             ids: Vec::new(),
             seen: vec![0; buckets.tris.len()],
