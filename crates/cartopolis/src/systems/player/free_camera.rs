@@ -1725,6 +1725,7 @@ fn follow_mode(ctx: ModeCtx) {
         camera_cell,
         projection,
         prev_cell,
+        terrain,
         ..
     } = ctx;
     // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
@@ -2069,10 +2070,25 @@ fn follow_mode(ctx: ModeCtx) {
     };
     let mut target_position = avatar_pos + camera_offset + lead;
 
-    // Prevent camera from going below ground
-    let min_height = MIN_CAMERA_HEIGHT;
-    if target_position.y < min_height {
-        target_position.y = min_height;
+    // Keep the lens above the ground under it — the measured ground, not
+    // `y = 0`. That plane is the ground at the anchor's tile centre
+    // (`terrain::bake`'s datum), so wherever the street lies more than a
+    // metre below it the old absolute floor lifted the eye off the head: 3 to
+    // 6.6 m up in first person 1–2 km from the Grote Markt (2026-10-20). Never above
+    // the avatar's own feet, which in a tunnel are under the ground sheet.
+    // First person has no floor: the eye is the head, and the head is where
+    // the avatar stands.
+    if !first_person {
+        let base = avatar.map_or(Vec2::ZERO, |(cell, _)| {
+            Vec2::new(
+                cell.x as f32 * WORLD_CELL_EDGE,
+                cell.z as f32 * WORLD_CELL_EDGE,
+            )
+        });
+        let ground = terrain
+            .ground_at(base.x + target_position.x, base.y + target_position.z)
+            .min(avatar_pos.y);
+        target_position.y = target_position.y.max(ground + MIN_CAMERA_HEIGHT);
     }
 
     // Place the rig in *absolute* space rather than lerping the raw

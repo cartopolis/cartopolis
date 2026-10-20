@@ -1042,6 +1042,11 @@ pub struct ShotMetrics {
     /// rather than over it. A picture cannot: from the deck and from the pavement
     /// seven metres up, the same tunnel fills the frame with the same asphalt.
     pub avatar_floor_m: f32,
+    /// The camera's height above the measured ground under it
+    /// (`TerrainField::ground_at`), metres. `alt_m` is above the anchor's
+    /// ground instead, which away from the anchor is metres off: a first-person
+    /// eye 3.2 m above the pavement read as `alt_m` 0 (2026-10-20).
+    pub eye_ground_m: f32,
     /// Measured ground level at the map anchor, metres above NAP, and how many
     /// patches the height layer has fetched (`systems::height`). `NaN` and 0 mean
     /// the layer is off, out of AHN's coverage, or has not answered yet — which is
@@ -1294,7 +1299,7 @@ grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,ground_unopened,backdrop_present,backdrop_visible,backdrop_depth_m,backdrop_half_m,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
-avatar_meshes,avatar_rendered,avatar_floor_m,\
+avatar_meshes,avatar_rendered,avatar_floor_m,eye_ground_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
 approach_abutments,approach_raised,deck_count,decks_unapproached,deck_step_max_m,deck_step_mean_m,deck_profiled,deck_piers,\
@@ -1372,6 +1377,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("furniture_factor", 4),
     ("globe_texture_mb", 2),
     ("avatar_floor_m", 2),
+    ("eye_ground_m", 2),
     ("tunnel_road_m", 2),
     ("tunnel_ahead_m", 1),
     ("tunnel_ahead_road_m", 2),
@@ -4711,6 +4717,7 @@ fn record_metrics(
         avatar_meshes: avatar_counts.0,
         avatar_rendered: avatar_counts.1,
         avatar_floor_m: readouts.avatar_state.floor_lift,
+        eye_ground_m: cam_world.y - readouts.terrain.ground_at(cam_world.x, cam_world.z),
         globe_entities: visuals.globe.iter().count(),
         globe_visible: visuals
             .globe
@@ -4867,6 +4874,7 @@ fn record_metrics(
                 traffic_walkers = m.traffic_walkers,
                 avatar_meshes = m.avatar_meshes,
                 avatar_rendered = m.avatar_rendered,
+                eye_ground_m = format!("{:.2}", m.eye_ground_m),
                 globe_entities = m.globe_entities,
                 globe_visible = m.globe_visible,
                 globe_rendered = m.globe_rendered,
@@ -5553,6 +5561,7 @@ mod tests {
             gizmo_axes_hit: 0,
             avatar_meshes: 0,
             avatar_floor_m: 0.0,
+            eye_ground_m: 0.0,
             avatar_rendered: 0,
             ground_m: f32::NAN,
             height_patches: 0,
