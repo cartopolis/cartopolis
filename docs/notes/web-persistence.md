@@ -1,7 +1,7 @@
 ---
 topic: web-persistence
 triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs, platform::storage, crates/cartopolis/src/lib.rs, std::fs]
-updated: 2026-10-17
+updated: 2026-10-20
 ---
 
 # Everything the client keeps goes through one seam, IndexedDB-backed on the web
@@ -98,6 +98,14 @@ Two things about a clear are worth knowing before writing another one:
   screen. Emptying only the store looks, to the user, like the button did nothing.
   `systems::cache_reset` is where the three are sequenced; anything that adds a
   fourth owes it a line there.
+
+**The web's in-memory view keeps `Data`, not the cache.** It exists for
+`read_now`, and every synchronous reader reads `Data`. Until 2026-10-20 an awaited
+`get` or `put` of the cache kept a copy too, and never dropped one, so every map
+tile, height patch and 3DBAG cell the page ever touched stayed in the wasm heap.
+That was one of the things filling it to the 4 GiB limit (`wasm-performance.md`).
+A cache entry that `read_now` or `write_now` touched is still kept;
+`storage::view_bytes()` is the view's size, and the `gpu` log line reports it.
 
 ## Gaps, deliberately left
 

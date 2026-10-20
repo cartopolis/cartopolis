@@ -151,6 +151,13 @@ pub async fn age_secs(ns: Namespace, key: &str) -> Option<f64> {
     imp::age_secs(ns, key).await
 }
 
+/// Bytes the in-memory view holds, for the client's `gpu` log line. Natively
+/// there is no view, and this is `0`.
+#[must_use]
+pub fn view_bytes() -> usize {
+    imp::view_bytes()
+}
+
 /// Read from a synchronous context — an egui pass, or `App` construction.
 ///
 /// Natively this is the file read, and answers `Ready` or `Missing` in the same
@@ -333,6 +340,10 @@ mod imp {
     }
 
     pub async fn preload(_prefix: &str, _suffix: &str) {}
+
+    pub fn view_bytes() -> usize {
+        0
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -372,6 +383,17 @@ mod imp {
     fn warm() -> &'static Mutex<HashMap<String, Cached>> {
         static WARM: OnceLock<Mutex<HashMap<String, Cached>>> = OnceLock::new();
         WARM.get_or_init(Default::default)
+    }
+
+    pub fn view_bytes() -> usize {
+        warm().lock().map_or(0, |w| {
+            w.values()
+                .map(|c| match c {
+                    Cached::Ready(b) => b.len(),
+                    _ => 0,
+                })
+                .sum()
+        })
     }
 
     fn warm_key(ns: Namespace, key: &str) -> String {
@@ -620,18 +642,41 @@ mod imp {
         stored
     }
 
+    /// Whether an awaited read or write of `ns` keeps a copy in the in-memory
+    /// view.
+    ///
+    /// **Not for the cache.** The view exists for the synchronous readers
+    /// ([`read_now`]), and every one of those reads `Data`: the account, the
+    /// private-chat keys, the calendar, the photo thumbnails. The cache's readers
+    /// all await. Keeping a copy of every cache entry ever read or written, which
+    /// is what this did, held map tiles, height patches and 3DBAG cells of
+    /// several megabytes each in the wasm heap for the life of the page. With
+    /// nothing ever trimmed, that heap reached wasm32's 4 GiB ceiling within two
+    /// minutes of flying around (`rust_oom`, 2026-10-20, `wasm-performance.md`).
+    /// A cache entry a synchronous reader did ask for is still kept, and a write
+    /// drops any copy so it cannot go stale.
+    fn kept_in_view(ns: Namespace) -> bool {
+        ns == Namespace::Data
+    }
+
     pub async fn get(ns: Namespace, key: &str) -> Option<Vec<u8>> {
         if let Cached::Ready(bytes) = peek(ns, key) {
             return Some(bytes);
         }
         let bytes = read_record(ns, key).await.map(|(bytes, _)| bytes);
-        remember(ns, key, bytes.clone());
+        if kept_in_view(ns) {
+            remember(ns, key, bytes.clone());
+        }
         bytes
     }
 
     pub async fn put(ns: Namespace, key: &str, bytes: &[u8]) {
         ensure_persistence(ns);
-        remember(ns, key, Some(bytes.to_vec()));
+        if kept_in_view(ns) {
+            remember(ns, key, Some(bytes.to_vec()));
+        } else if let Ok(mut warm) = warm().lock() {
+            warm.remove(&warm_key(ns, key));
+        }
         write_record(ns, key, bytes).await;
     }
 
