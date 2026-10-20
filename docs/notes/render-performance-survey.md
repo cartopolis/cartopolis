@@ -1,6 +1,6 @@
 ---
 topic: render-performance-survey
-triggers: [grid.rs, patches.rs, split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+triggers: [grid.rs, patches.rs, kerb_shadows.rs, KerbPiece, "kerb", split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
 updated: 2026-10-20
 ---
 
@@ -151,9 +151,12 @@ and ~1,500 lamps (~55 k) — and leaving the kerbs out entirely took the frame
 from 49.8 to ~33 ms. Emitting them in curve order (as the street objects already
 were) took 53.3 → 49.8; the rest is the outer cascades, where a 10 cm kerb is a
 fraction of a texel (~35 cm at cascade 2, ~1 m at 3) and draws nothing anyone can
-see. Not taken: a per-distance caster rule is a level-of-detail decision, and a
-depth prepass would cut the 3.2× overdraw but add a second geometry pass to a
-frame that is geometry-bound.
+see. So the kerbs are their own group now (`SurfaceGroup::Kerb`, furniture in
+every other respect) and only the pieces that can reach the two near cascades
+cast (`systems::kerb_shadows`): street steady frame 49.9 → 41.8 ms (dev build,
+quiet windows only), captures at 20 m and 120 m unchanged but for the walkers.
+Not taken: a depth prepass would cut the 3.2× overdraw but add a second geometry
+pass to a frame that is geometry-bound.
 
 ## At the Deck's own size the light shafts were the frame (2026-10-19)
 
