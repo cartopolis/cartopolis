@@ -2239,3 +2239,78 @@ mod tests {
         );
     }
 }
+
+/// Peak memory of rendering real tiles the way the globe does, for finding a tile
+/// that runs the web build's heap out (`docs/notes/wasm-performance.md`). A
+/// diagnostic, not a gate: point `CARTO_PEAK_TILES` at a directory of
+/// `z_x_y.mvt` bodies and run it with `--ignored --nocapture`.
+#[cfg(test)]
+mod render_peak {
+    use super::*;
+
+    #[test]
+    #[ignore = "diagnostic: CARTO_PEAK_TILES=<dir of z_x_y.mvt>"]
+    fn peak_memory_of_each_tile_in_a_directory() {
+        let Ok(dir) = std::env::var("CARTO_PEAK_TILES") else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("CARTO_PEAK_TILES is a directory") {
+            let path = entry.unwrap().path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let parts: Vec<i64> = stem.split('_').filter_map(|p| p.parse().ok()).collect();
+            let [z, x, y] = parts[..] else { continue };
+            let bytes = std::fs::read(&path).unwrap();
+            let Ok(tile) = TileData::parse(&bytes) else {
+                println!("{stem}: does not parse");
+                continue;
+            };
+            let (_, sub) = SubTile::resolve(z as u32, x, y);
+            let (north, _) = cartopolis_core::world::tile_to_lat_lng(x, y, z as u32);
+            let (south, _) = cartopolis_core::world::tile_to_lat_lng(x, y + 1, z as u32);
+            let source_m =
+                cartopolis_core::world::tile_to_meters(z as u32, (north + south) / 2.0) as f32;
+            // Decoding alone, on a fresh parse: what the memo keeps per layer.
+            let fresh = TileData::parse(&bytes).unwrap();
+            let (per_layer, decode) = crate::perf::Cost::measure(|| {
+                fresh
+                    .layers()
+                    .iter()
+                    .map(|l| (l.name.clone(), fresh.features(l).len()))
+                    .collect::<Vec<_>>()
+            });
+            let busiest = per_layer.iter().max_by_key(|(_, n)| *n).cloned();
+            println!(
+                "{z}/{x}/{y}: decoding every layer keeps {} MB in {} allocations; {} features, most in {:?}",
+                decode.retained_bytes >> 20,
+                decode.allocs,
+                per_layer.iter().map(|(_, n)| n).sum::<usize>(),
+                busiest,
+            );
+            let started = std::time::Instant::now();
+            let (out, cost) = crate::perf::Cost::measure(|| {
+                // One band, as on the web: the counter sees only this thread.
+                render_mvt_banded(&tile, sub, 256, source_m, sub.factor > 1, 1, &[], &[])
+                    .map(|p| p.len())
+            });
+            rows.push((
+                cost.peak_bytes,
+                format!(
+                "{z}/{x}/{y}: {} kB body, peak {} MB, largest {} MB, {} allocations, {} ms, {:?}",
+                bytes.len() / 1024,
+                cost.peak_bytes >> 20,
+                cost.largest_alloc >> 20,
+                cost.allocs,
+                started.elapsed().as_millis(),
+                out.map(|_| "ok"),
+            ),
+            ));
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, row) in rows {
+            println!("{row}");
+        }
+    }
+}

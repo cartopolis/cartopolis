@@ -49,6 +49,7 @@ thread_local! {
     static BYTES: Cell<u64> = const { Cell::new(0) };
     static LIVE: Cell<i64> = const { Cell::new(0) };
     static PEAK: Cell<i64> = const { Cell::new(0) };
+    static LARGEST: Cell<u64> = const { Cell::new(0) };
     static ARMED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -79,6 +80,7 @@ fn bump(size: usize) {
         }
         let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
         let _ = BYTES.try_with(|c| c.set(c.get() + size as u64));
+        let _ = LARGEST.try_with(|c| c.set(c.get().max(size as u64)));
         let _ = LIVE.try_with(|live| {
             let now = live.get() + size as i64;
             live.set(now);
@@ -150,6 +152,9 @@ pub struct Cost {
     /// it counts only allocations made while armed, so freeing pre-existing
     /// memory inside the region can drive it below zero.
     pub retained_bytes: i64,
+    /// The largest single allocation: tells one huge buffer from a pile of
+    /// ordinary ones when `peak_bytes` is surprising.
+    pub largest_alloc: u64,
 }
 
 impl Cost {
@@ -163,6 +168,7 @@ impl Cost {
         BYTES.with(|c| c.set(0));
         LIVE.with(|c| c.set(0));
         PEAK.with(|c| c.set(0));
+        LARGEST.with(|c| c.set(0));
         ARMED.with(|c| c.set(true));
         let value = f();
         ARMED.with(|c| c.set(false));
@@ -171,6 +177,7 @@ impl Cost {
             bytes: BYTES.with(Cell::get),
             peak_bytes: PEAK.with(Cell::get),
             retained_bytes: LIVE.with(Cell::get),
+            largest_alloc: LARGEST.with(Cell::get),
         };
         (value, cost)
     }
