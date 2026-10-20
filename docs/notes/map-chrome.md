@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
-updated: 2026-10-17
+updated: 2026-10-20
 ---
 
 # The map chrome
@@ -73,13 +73,14 @@ What it cost:
 
 ## What it is now: the dock owns the chrome
 
-Five discs along the bottom edge (`dock.rs`), reading outwards from the map:
+Up to six discs along the bottom edge (`dock.rs`), left to right:
 
 | | |
 |---|---|
 | 🔍 Search | a panel (`geo_nav::render_search_panel`), field and hits, `Ctrl+L` |
 | 💬 Chat | only with a session |
-| ⚑ Route | the planner |
+| view mode | Follow → Fly → Earth, one tap a step (`dock::mode_disc`) |
+| 📷 Camera | orange; not on the web, which has no camera (`camera_screen`) |
 | ★ Places | saved places — **and where a place is saved**, "+ Place" |
 | the mark | the main menu (`ui::render_main_menu`) |
 
@@ -169,8 +170,11 @@ look like, and three list rows for it pushed Exit below the fold.
   is five discs = 240 pt, against ≈214 pt on the web phone tier — it overflowed
   symmetrically, losing the Search disc and the mark, which are the two the
   layout exists to place. `dock::disc_spacing` closes the gaps instead of
-  shrinking the targets. A sixth entry does not fit at any spacing, and the
+  shrinking the targets. A sixth entry does not fit the web tier at any spacing, and the
   answer then is that Chat folds into the mark's menu on the narrow tier.
+  The web never has the camera, so its widest row is still five; a phone at
+  274 pt takes the sixth at 7 pt gaps. The mode disc spent 2026-10-18 in the
+  top right corner to make room, and was not found there.
 
 ## The mark and the wordmark are drawn, not shipped
 

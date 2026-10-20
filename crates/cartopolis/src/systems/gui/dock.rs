@@ -67,9 +67,9 @@ const SPACING_MIN: f32 = 3.0;
 /// Tightening the gaps is the cheap half of the fix and the one that costs
 /// nothing: the discs keep their 40 pt (60 dp on Android, 73 on the web tier),
 /// well clear of [`theme::MIN_TOUCH_TARGET_DP`], and only the air between them
-/// goes. If a sixth entry is ever added this will stop being enough and the
-/// answer will have to be that Chat folds into the mark's menu on the narrow
-/// tier — the row cannot hold six.
+/// goes. The web tier cannot hold six: a sixth entry there would have to fold
+/// Chat into the menu. A phone (274 pt) holds six — the camera, which the web
+/// does not have — at 7 pt gaps.
 #[must_use]
 fn disc_spacing(viewport_w: f32, discs: usize) -> f32 {
     let gaps = discs.saturating_sub(1).max(1) as f32;
@@ -89,9 +89,9 @@ const TOP_MARGIN: f32 = theme::OSD_MARGIN;
 /// [`RightPanel::icons`] / [`RightPanel::label`] — the same table the panel
 /// headers wear, so a dock button and the header it opens can never drift apart.
 ///
-/// Three discs in the row are not in this list, because none of them opens a
+/// Four discs in the row are not in this list, because none of them opens a
 /// panel: the Say disc (it opens the chat composer over the map), the
-/// camera-mode disc drawn beside it (it cycles a mode), and the app-mark disc
+/// view-mode disc beside it (it cycles a mode), the camera, and the menu disc
 /// that closes the row on the right (it opens a menu —
 /// `ui::render_main_menu`). **Route lost its disc** when the place card arrived:
 /// a route now starts from a place — the card's Route from / Route to, the ⚑ on
@@ -180,8 +180,8 @@ pub fn render_dock(
     let mut camera_clicked = false;
     let has_camera = crate::systems::camera_screen::available();
     // Say comes and goes with the session, the camera with the platform; the
-    // menu is always there.
-    let disc_count = ENTRIES.len() + 1 + usize::from(has_session) + usize::from(has_camera);
+    // mode disc and the menu are always there.
+    let disc_count = ENTRIES.len() + 2 + usize::from(has_session) + usize::from(has_camera);
     if !covered {
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
@@ -211,11 +211,17 @@ pub fn render_dock(
                     {
                         say_clicked = true;
                     }
-                    // The camera, in the middle and orange: taking a picture
-                    // and posting it is what the dock is for most, out walking
+                    // The view-mode disc (Follow, Fly, Earth): it wears the
+                    // current mode's glyph and a tap steps to the next mode on
+                    // offer — Follow only in a signed-in session
+                    // (`free_camera::follow_available`); the same cycle Tab
+                    // walks. It spent a day in the top right corner
+                    // (2026-10-18) and was not found there.
+                    mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
+                    // The camera, orange: taking a picture and posting it is
+                    // what the dock is for most, out walking
                     // (`docs/mockups/social-camera/`). The same size as every
-                    // other disc. The view-mode disc that sat here is at the
-                    // top right now, with the other view controls.
+                    // other disc.
                     if has_camera && camera_disc(ui).clicked() {
                         camera_clicked = true;
                     }
@@ -243,20 +249,6 @@ pub fn render_dock(
                 {
                     clicked = Some(RightPanel::Layers);
                 }
-            });
-
-        // The view-mode disc (Follow, Fly, Earth), top right, mirroring the
-        // layers disc: it wears the current mode's glyph and a tap steps to the
-        // next mode on offer — Follow only in a signed-in session
-        // (`free_camera::follow_available`); the same cycle Tab walks. It left
-        // the dock's middle to the camera (2026-10-18).
-        egui::Area::new(egui::Id::new("mode_disc"))
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(-LEFT_MARGIN, TOP_MARGIN),
-            )
-            .show(ctx, |ui| {
-                mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
             });
     }
 
@@ -375,10 +367,10 @@ mod tests {
         // overflows the web tier by 13 pt at each end shipped. 274 pt is 411 dp
         // at `ui_scale` 1.5 (an ordinary Android handset); ~214 pt is 393 CSS px
         // on the web phone tier, and it is the binding case.
-        // + Say, the mode disc and the app mark. Say only exists in a session,
-        // which is the widest the row ever gets and therefore the case to pin.
-        let discs = ENTRIES.len() + 3;
-        for viewport in [274.0_f32, 214.0] {
+        // + Say, the mode disc and the menu, and on a phone the camera. Say
+        // only exists in a session, which is the widest the row ever gets and
+        // therefore the case to pin; the web has no camera.
+        for (viewport, discs) in [(274.0_f32, ENTRIES.len() + 4), (214.0, ENTRIES.len() + 3)] {
             let row = discs as f32 * theme::ROUND_BUTTON_SIZE
                 + (discs - 1) as f32 * disc_spacing(viewport, discs);
             assert!(
