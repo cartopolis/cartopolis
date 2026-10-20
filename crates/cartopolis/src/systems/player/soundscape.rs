@@ -1,22 +1,20 @@
 //! The avatar's soundscape: footsteps timed off the gait, a landing thud, and
 //! wind that rises with speed.
 //!
-//! # Why the sounds are synthesised rather than shipped
+//! # Recorded steps, synthesised everything else
 //!
-//! Every one of them is generated into WAV bytes at startup by [`synth`] and
-//! handed to `Assets<AudioSource>`. No `.wav` files enter the tree, which matters
-//! more here than it looks: `.gitattributes` tracks audio by extension, so a
-//! shipped footstep would be a Git LFS object, and a clone without `git lfs
-//! install` gets a 130-byte pointer file instead — the failure mode CLAUDE.md
-//! documents for the brand font and the star catalogue. A footstep that is four
-//! lines of arithmetic cannot fail that way.
+//! A footstep is a recorded take for the ground underfoot
+//! ([`crate::systems::ambience`] chooses it and the city's background loops).
+//! The landing, the wind, the arrival whoosh and the sound test are generated
+//! into WAV bytes at startup by [`synth`], and so are four fallback steps.
 //!
-//! They are placeholders in the sense that a recorded footstep would sound
-//! better. They are *not* placeholders in the sense of being silent: a filtered
-//! noise burst with a fast envelope is recognisably a foot on stone, and having
-//! the timing right matters far more than having the timbre right — a correctly
-//! timed synthetic step reads as walking, and a beautiful sample fired at the
-//! wrong moment reads as broken.
+//! The fallback is there for Git LFS: `.gitattributes` tracks audio by
+//! extension, and a clone without `git lfs install` gets a 130-byte pointer
+//! file for every take (the failure mode CLAUDE.md documents for the brand font
+//! and the star catalogue). A take that never loads plays the synthesised step,
+//! so the failure is a duller walk rather than a silent one. Timing matters more
+//! than timbre either way: a correctly timed step reads as walking, and a
+//! beautiful sample fired at the wrong moment reads as broken.
 //!
 //! # Why footsteps are counted, not triggered by the animation
 //!
