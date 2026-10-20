@@ -1400,7 +1400,12 @@ fn build_furniture_meshes_with(
     }
     let mut out = Vec::new();
     let mut buf = MeshBuf::default();
-    for item in items {
+    // In curve order, so each piece is one patch of the cell and the culling can drop
+    // the ones out of view and out of each shadow cascade (`crate::patches`).
+    for item in crate::patches::spatial_order(items, |i| [i.x, i.z])
+        .into_iter()
+        .map(|i| &items[i])
+    {
         // Flush *before* adding, and only with something to flush — a piece must
         // hold at least one object or a cap under one form's cost would emit
         // empty meshes forever.

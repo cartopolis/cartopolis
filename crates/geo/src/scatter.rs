@@ -763,7 +763,12 @@ pub fn build_vegetation_meshes(
     let mut canopy = MeshBuf::default();
     let mut trunk = MeshBuf::default();
 
-    for t in trees {
+    // In curve order, so each piece is one patch of the cell and the culling can drop
+    // the ones out of view and out of each shadow cascade (`crate::patches`).
+    for t in crate::patches::spatial_order(trees, |t| [t.x, t.z])
+        .into_iter()
+        .map(|i| &trees[i])
+    {
         // Flush before adding, and only when there is something to flush — a piece
         // has to hold at least one tree or a cap below `canopy_step` would emit
         // empty meshes forever.

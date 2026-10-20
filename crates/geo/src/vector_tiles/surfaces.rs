@@ -490,7 +490,8 @@ pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
 }
 
 /// Cut a finished mesh into pieces of at most `max_bytes` each, by
-/// [`mesh_upload_bytes`], keeping every triangle whole and in its original order.
+/// [`mesh_upload_bytes`], keeping every triangle whole and visiting them in
+/// curve order, so that each piece is one compact patch the culling can drop.
 ///
 /// **This is the bound that holds after refinement.** The tessellators cut a cell
 /// to a byte cap and the terrain refinement then subdivides it, by a factor that
@@ -532,7 +533,18 @@ pub fn split_by_upload_bytes(mesh: SurfaceMesh, max_bytes: usize) -> Vec<Surface
     let mut touched: Vec<u32> = Vec::new();
     let mut pieces = Vec::new();
     let mut piece = empty(mesh.group);
-    for tri in mesh.indices.chunks_exact(3) {
+    // In curve order of the triangles' centres, so each piece is one patch of the
+    // cell, and the culling can drop the ones out of view (`crate::patches`).
+    let tris: Vec<&[u32]> = mesh.indices.chunks_exact(3).collect();
+    let order = crate::patches::spatial_order(&tris, |t| {
+        let (a, b, c) = (
+            mesh.positions[t[0] as usize],
+            mesh.positions[t[1] as usize],
+            mesh.positions[t[2] as usize],
+        );
+        [(a[0] + b[0] + c[0]) / 3.0, (a[2] + b[2] + c[2]) / 3.0]
+    });
+    for tri in order.into_iter().map(|i| tris[i]) {
         let new_verts = tri
             .iter()
             .filter(|&&v| remap[v as usize] == u32::MAX)
@@ -960,7 +972,8 @@ mod tests {
     }
 
     /// Every piece fits the cap, and together the pieces draw exactly the same
-    /// triangles — same corners, same attributes at each corner, same order.
+    /// triangles — same corners, same attributes at each corner, each triangle's
+    /// corners in the same order. The triangles themselves come out in curve order.
     #[test]
     fn a_split_mesh_fits_the_cap_and_draws_the_same_triangles() {
         let whole = strip(500);
@@ -969,13 +982,20 @@ mod tests {
         assert!(pieces.len() > 1, "a mesh over the cap must be cut");
         let corner = |m: &SurfaceMesh, i: u32| {
             let i = i as usize;
-            (
-                m.positions[i],
-                m.uvs[i],
-                m.normals[i],
-                m.colors[i],
-                m.rungs[i],
-            )
+            let bits = |v: &[f32]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+            [
+                bits(&m.positions[i]),
+                bits(&m.uvs[i]),
+                bits(&m.normals[i]),
+                bits(&m.colors[i]),
+                bits(&[m.rungs[i]]),
+            ]
+        };
+        let triangles = |m: &SurfaceMesh| -> Vec<Vec<_>> {
+            m.indices
+                .chunks_exact(3)
+                .map(|t| t.iter().map(|&i| corner(m, i)).collect())
+                .collect()
         };
         let mut drawn = Vec::new();
         for p in &pieces {
@@ -984,10 +1004,53 @@ mod tests {
             for len in [p.uvs.len(), p.normals.len(), p.colors.len(), p.rungs.len()] {
                 assert_eq!(len, p.positions.len(), "an attribute fell out of step");
             }
-            drawn.extend(p.indices.iter().map(|&i| corner(p, i)));
+            drawn.extend(triangles(p));
         }
-        let want: Vec<_> = whole.indices.iter().map(|&i| corner(&whole, i)).collect();
+        let mut want = triangles(&whole);
+        drawn.sort();
+        want.sort();
         assert_eq!(drawn, want);
+    }
+
+    /// **The pieces are patches, not stripes.** Each one is culled as a whole by its
+    /// box, so a piece that spans the cell is drawn whenever any of it is in view.
+    #[test]
+    fn a_split_mesh_is_cut_into_compact_patches() {
+        // A 256 m square of 1 m quads, listed row by row: cut in source order
+        // every piece would be a full-width band.
+        let n = 256u32;
+        let mut m = SurfaceMesh {
+            group: SurfaceGroup::Grass,
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        for j in 0..=n {
+            for i in 0..=n {
+                m.positions.push([i as f32, 0.0, j as f32]);
+            }
+        }
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * (n + 1) + i;
+                let (b, c, d) = (a + 1, a + n + 1, a + n + 2);
+                m.indices.extend([a, b, c, b, d, c]);
+            }
+        }
+        let pieces = split_by_upload_bytes(m, mesh_upload_bytes(4_000, 12_000));
+        assert!(pieces.len() >= 8, "{} pieces", pieces.len());
+        for p in &pieces {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in &p.positions {
+                lo = [lo[0].min(v[0]), lo[1].min(v[2])];
+                hi = [hi[0].max(v[0]), hi[1].max(v[2])];
+            }
+            let wide = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+            assert!(wide <= 128.0, "a piece spans {wide} m of a 256 m square");
+        }
     }
 
     /// Under the cap nothing is copied or cut, and an empty attribute stays empty

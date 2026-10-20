@@ -69,6 +69,9 @@ pub mod moorings;
 // one material and one draw call.
 pub mod nav_marks;
 pub mod parking;
+// Curve order for what is cut into upload-sized pieces, so each piece is one patch
+// of ground the culling can take out of view.
+pub mod patches;
 pub mod paving;
 pub mod paving_edges;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not
