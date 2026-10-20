@@ -1,7 +1,7 @@
 ---
 topic: upload-bursts
-triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation, upload_meter.rs, stream_ledger.rs, quality.rs, lod22.rs, osm_buildings.rs, globe.rs, map_stream.rs, map_geometry.rs, DETAIL_FREEZE_ALT, get_mapped_range, CARTO_UPLOAD_KB, report_budget]
-updated: 2026-10-17
+triggers: [wgpu::meter, meter.rs, render_census.rs, firefox_probe.ts, gpu_log.ts, "mesh owners", MapSurface, "gpu memory", "GPU memory", device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation, upload_meter.rs, stream_ledger.rs, quality.rs, lod22.rs, osm_buildings.rs, globe.rs, map_stream.rs, map_geometry.rs, DETAIL_FREEZE_ALT, get_mapped_range, CARTO_UPLOAD_KB, report_budget]
+updated: 2026-10-20
 ---
 
 # A per-frame cap on *items* is not a cap on bytes
@@ -230,3 +230,52 @@ same 45 `single asset above the frame upload budget` lines. What changed is that
 a denser cell than this one can no longer produce an unbounded mesh off the
 phone; what did not change is anything you can see. Do not quote this fix as a
 measured win — the honest claim is bounded-versus-unbounded.
+
+## Counted at wgpu: the ground cells hold 1.3 GB at street level (2026-10-20)
+
+`upload_meter` counts the streamed images and meshes it sees created. It cannot
+see bevy's own buffers or render targets, and a mesh uploaded `RENDER_WORLD`-only
+is only its size at birth. The vendored wgpu counts at the API instead
+(`wgpu::meter`, `crates/wgpu/src/meter.rs`): every buffer and texture from
+creation to drop or `destroy`, and every byte written. That works on every
+backend, the browser's WebGPU included. It is what the client asked for: driver
+padding and the browser's own copies come on top.
+
+The client logs it every five seconds, so a phone, a browser and a native run all
+report it the same way:
+
+- `gpu`: resident MB (textures, buffers), counts, peak, MB/s written, and the most
+  written in any one frame;
+- `mesh memory`: resident mesh bytes by streamer (3DBAG, OSM buildings, tiles,
+  globe, other, held by no entity);
+- `mesh owners`: the `other` bucket by marker component, checked on the mesh
+  entity and up its parents, with the surface-cell count and the camera altitude.
+  It uses a fixed list in `render_census::mesh_owner`, because a release build
+  keeps no component names (bevy's `debug` feature). Add to the list when a new
+  streamer owns meshes.
+
+`tools/cdp_probe.ts` and `tools/firefox_probe.ts` collect the lines into one table
+beside the camera script's moves (`--drive-script zoomout`, `--zoom-out`). The
+shot harness has `gpu_buffers_kb` / `gpu_textures_kb` too.
+
+**The first reading: the ground surface ring.** Chrome on `mac-1`, Groningen,
+with the camera taken down to 12 m. Total residency went from ~500 MB at 1.5 km to
+**1.84 GB**. Of that, **1.27 GB was `MapSurface`**: map_geometry's 3×3 ring of
+z14 cells, 532 meshes, about 140 MB a cell. The ring only builds flat ground below
+`FLAT_GROUND_ON_M` (250 m), and the browser-wide per-frame upload cap does not
+bound a total. At street level the client therefore holds over a gigabyte of
+terrain-refined ground geometry. That is the leading suspect for the web viewer
+freezing in Firefox near the ground (reported on a Mac mini, 2026-10-19). It was
+not reproduced, but nothing else in the census comes close. The cells are only
+released once the camera leaves for orbit (`GLOBE_SHOW_ALT`).
+
+Two traps from taking it:
+
+- **The wheel direction differs per driver.** In Chrome via CDP the first burst of
+  negative `deltaY` took this camera *down* to 12 m. In Firefox via BiDi a
+  positive `deltaY` zooms out. Read the altitude on the `mesh owners` line before
+  reading a run as a zoom-out.
+- **A fresh Firefox profile on the Mac nodes never fires `requestAnimationFrame`
+  once a page touches WebGPU.** A twenty-line clear-the-canvas page does the same,
+  so it is not the client. A reused profile works. Warm the profile with one short
+  run before measuring.
