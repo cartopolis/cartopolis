@@ -1,6 +1,6 @@
 ---
 topic: camera
-triggers: [camera_screen.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, photos.toml, "To phone"]
+triggers: [camera_screen.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, photos.toml, "Retake"]
 updated: 2026-10-18
 ---
 

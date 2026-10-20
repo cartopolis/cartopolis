@@ -16,9 +16,10 @@
 //!
 //! After the shutter (or an upload) the picture is shown with **Post**
 //! (to the community on the map, else a picker), **Send** (to the chat the
-//! camera was opened from, else a list of chats), **To phone** (the gallery)
-//! and **Retake**. Every picture the camera makes carries its whole pose in
-//! its EXIF and XMP (`cartopolis_core::photo_pose`), so the file alone is
+//! camera was opened from, else a list of chats), **Save** (the gallery)
+//! and **Retake**; Back steps out one screen at a time. Every picture the
+//! camera makes carries its whole pose in its EXIF and XMP
+//! (`cartopolis_core::photo_pose`), so the file alone is
 //! enough to put a camera back on the same view; an upload keeps the EXIF it
 //! came with. This replaced the field check (2026-10-18), a developer tool that
 //! did the Mixed picture and nothing else.
@@ -111,6 +112,9 @@ pub struct CameraScreen {
     /// A camera opened from a chat or the composer closed: open the panel it
     /// came from again.
     reopen_chat: bool,
+    /// Open on a stand-in picture's result screen: for a scripted capture
+    /// (`--ui cameraresult`), which has no shutter to press.
+    pub demo_result: bool,
     #[cfg(not(target_arch = "wasm32"))]
     session: Option<Session>,
 }
@@ -436,9 +440,12 @@ mod native {
         /// because a resource must be `Sync` and a receiver is not.
         saving: Option<Mutex<Receiver<Result<String, String>>>>,
         saved: Option<Result<String, String>>,
+        /// An In world polaroid, with the place and date written on it.
+        captioned: bool,
     }
 
-    type Composed = Result<(Vec<u8>, Vec<u8>, [u32; 2], Option<PhotoPose>), String>;
+    /// The file, its pixels, its size, its pose, and whether it is captioned.
+    type Composed = Result<(Vec<u8>, Vec<u8>, [u32; 2], Option<PhotoPose>, bool), String>;
 
     enum Shutter {
         Idle,
@@ -463,6 +470,29 @@ mod native {
     impl Session {
         fn busy(&self) -> bool {
             !matches!(self.shutter, Shutter::Idle) || self.upload.is_some()
+        }
+    }
+
+    impl CameraScreen {
+        /// Back (and Escape): from the list of chats to the picture, from the
+        /// picture to the camera, and from the camera to where it was opened.
+        /// A picture being made takes the press and nothing else, so it is not
+        /// lost. Returns whether the camera was up.
+        pub fn back(&mut self) -> bool {
+            let Some(s) = self.session.as_mut() else {
+                return false;
+            };
+            if s.busy() {
+                return true;
+            }
+            if s.choosing_chat {
+                s.choosing_chat = false;
+            } else if s.result.is_some() {
+                s.retake = true;
+            } else {
+                s.close = true;
+            }
+            true
         }
     }
 
@@ -592,6 +622,9 @@ mod native {
             screen.world_in = None;
             return;
         };
+        if std::mem::take(&mut screen.demo_result) {
+            session.result = demo_result();
+        }
         let Ok((cell, mut tf, projection)) = camera.single_mut() else {
             return;
         };
@@ -699,6 +732,7 @@ mod native {
                                 texture: None,
                                 saving: None,
                                 saved: None,
+                                captioned: false,
                             });
                         }
                         Err(e) => session.error = Some(e),
@@ -1063,7 +1097,7 @@ mod native {
                 },
             },
             Shutter::Composing { done } => match try_take(&done) {
-                Ok(Ok((jpeg, rgba, size, pose))) => {
+                Ok(Ok((jpeg, rgba, size, pose, captioned))) => {
                     session.result = Some(Finished {
                         jpeg,
                         rgba,
@@ -1072,6 +1106,7 @@ mod native {
                         texture: None,
                         saving: None,
                         saved: None,
+                        captioned,
                     });
                     Shutter::Idle
                 }
@@ -1111,7 +1146,7 @@ mod native {
                 _ => (rgba, [photo.width, photo.height]),
             };
             let jpeg = jpeg_with_pose(&out, size, pose.as_ref())?;
-            Ok((jpeg, out, size, pose))
+            Ok((jpeg, out, size, pose, false))
         };
         match spawn("camera-picture", job) {
             Ok(done) => Shutter::Composing { done },
@@ -1120,6 +1155,32 @@ mod native {
                 Shutter::Idle
             }
         }
+    }
+
+    /// A grey polaroid with a place on it, standing in for a picture in a
+    /// scripted capture of the result screen.
+    fn demo_result() -> Option<Finished> {
+        let (w, h) = (480, 450);
+        let grey = [0x8a, 0x8f, 0x92, 0xff].repeat((w * h) as usize);
+        let card = crate::utils::world_polaroid::compose(
+            &grey,
+            w,
+            h,
+            "1, Europaweg, Damsterkwartier",
+            "19 October 2026",
+        )
+        .ok()?;
+        let (rgba, [w, h]) = crate::utils::photo::decode_rgba(&card).ok()?;
+        Some(Finished {
+            jpeg: card,
+            rgba,
+            size: [w as u32, h as u32],
+            pose: None,
+            texture: None,
+            saving: None,
+            saved: None,
+            captioned: true,
+        })
     }
 
     /// An In world picture: the polaroid's frame cut from the capture, framed,
@@ -1150,7 +1211,7 @@ mod native {
                     });
             let jpeg = crate::utils::jpeg_meta::write(&card, &meta);
             let (pixels, [w, h]) = crate::utils::photo::decode_rgba(&jpeg)?;
-            Ok((jpeg, pixels, [w as u32, h as u32], pose))
+            Ok((jpeg, pixels, [w as u32, h as u32], pose, true))
         };
         match spawn("camera-polaroid", job) {
             Ok(done) => Shutter::Composing { done },
@@ -1510,8 +1571,15 @@ mod native {
             });
     }
 
+    /// The result's discs: larger than the map's, because they are the whole
+    /// screen's choice and a thumb is reaching for them.
+    const ACTION_DISC: f32 = 52.0;
+
     /// The picture once it is made: shown as large as fits, with Post, Send,
-    /// To phone and Retake as round buttons beside (or under) it.
+    /// Save and Retake under it (sideways: beside it) and a close button top
+    /// left, as on the camera. The four share the width evenly, laid out by
+    /// rect rather than by egui's row: the row grew past the screen's edge on
+    /// a phone and took Retake, the only way back, with it.
     fn render_result(ctx: &egui::Context, full: egui::Rect, session: &mut Session) {
         let Some(done) = session.result.as_mut() else {
             return;
@@ -1536,7 +1604,12 @@ mod native {
             }
         };
         let saving = done.saving.is_some();
-        let place = done.pose.as_ref().and_then(|p| p.place.clone());
+        // A polaroid has the place written on it already.
+        let place = done
+            .pose
+            .as_ref()
+            .and_then(|p| p.place.clone())
+            .filter(|_| !done.captioned);
         let sideways = full.width() > full.height();
         let target = session.target.clone();
         let chats = session.chats.clone();
@@ -1549,25 +1622,29 @@ mod native {
                 ui.allocate_rect(full, egui::Sense::click_and_drag());
                 painter.rect_filled(full, 0.0, theme::INK);
 
+                let close = egui::Rect::from_min_size(
+                    egui::pos2(full.left() + 14.0, full.top() + 14.0),
+                    egui::Vec2::splat(theme::ROUND_BUTTON_SIZE),
+                );
                 let (room, side) = if sideways {
                     (
                         egui::Rect::from_min_max(
-                            full.min + egui::vec2(16.0, 16.0),
-                            egui::pos2(full.right() - 300.0, full.bottom() - 16.0),
+                            egui::pos2(close.right() + 14.0, full.top() + 16.0),
+                            egui::pos2(full.right() - 316.0, full.bottom() - 16.0),
                         ),
                         egui::Rect::from_min_max(
-                            egui::pos2(full.right() - 284.0, full.top() + 20.0),
+                            egui::pos2(full.right() - 300.0, full.top() + 16.0),
                             full.max - egui::vec2(16.0, 16.0),
                         ),
                     )
                 } else {
                     (
                         egui::Rect::from_min_max(
-                            full.min + egui::vec2(12.0, 64.0),
-                            egui::pos2(full.right() - 12.0, full.bottom() - 240.0),
+                            egui::pos2(full.left() + 12.0, close.bottom() + 10.0),
+                            egui::pos2(full.right() - 12.0, full.bottom() - 212.0),
                         ),
                         egui::Rect::from_min_max(
-                            egui::pos2(full.left() + 16.0, full.bottom() - 224.0),
+                            egui::pos2(full.left() + 16.0, full.bottom() - 196.0),
                             full.max - egui::vec2(16.0, 16.0),
                         ),
                     )
@@ -1582,74 +1659,96 @@ mod native {
                     egui::Color32::WHITE,
                 );
 
-                ui.scope_builder(egui::UiBuilder::new().max_rect(side), |ui| {
-                    ui.vertical(|ui| {
-                        if let Some(place) = &place {
-                            ui.label(
-                                egui::RichText::new(place)
-                                    .size(theme::SIZE_TITLE)
-                                    .color(theme::CREAM),
-                            );
-                            ui.add_space(8.0);
-                        }
-                        if session.choosing_chat {
-                            ui.label(
-                                egui::RichText::new("Send to")
-                                    .size(theme::SIZE_BODY)
-                                    .color(theme::TEXT_DIM),
-                            );
-                            egui::ScrollArea::vertical()
-                                .max_height(180.0)
-                                .show(ui, |ui| {
-                                    if chats.is_empty() {
-                                        theme::note(ui, "No private chats yet.");
-                                    }
-                                    for (key, name) in &chats {
-                                        if theme::action_button(ui, name).clicked() {
-                                            session.send_to = Some(key.clone());
-                                        }
-                                    }
-                                });
-                            if theme::action_button(ui, "Back").clicked() {
-                                session.choosing_chat = false;
-                            }
-                            return;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 18.0;
-                            if labelled(ui, icons::NOTE, "Post", true) {
-                                session.post = true;
-                            }
-                            if labelled(ui, icons::CHAT, "Send", false) {
-                                match &target {
-                                    Target::Chat(key) => session.send_to = Some(key.clone()),
-                                    _ => session.choosing_chat = true,
+                if ui
+                    .put(close, |ui: &mut egui::Ui| {
+                        theme::round_button(ui, icons::CLEAR, "Close the camera", false)
+                    })
+                    .clicked()
+                {
+                    session.close = true;
+                }
+
+                let column = egui::UiBuilder::new()
+                    .max_rect(side)
+                    .layout(egui::Layout::top_down(egui::Align::Center));
+                ui.scope_builder(column, |ui| {
+                    ui.set_width(side.width());
+                    // Held sideways the column has room to spare: centre it.
+                    if sideways {
+                        ui.add_space((side.height() - 200.0).max(0.0) / 2.0);
+                    }
+                    if let Some(place) = &place {
+                        ui.label(
+                            egui::RichText::new(place)
+                                .size(theme::SIZE_TITLE)
+                                .color(theme::CREAM),
+                        );
+                        ui.add_space(10.0);
+                    }
+                    if session.choosing_chat {
+                        ui.label(
+                            egui::RichText::new("Send to")
+                                .size(theme::SIZE_BODY)
+                                .color(theme::TEXT_DIM),
+                        );
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                if chats.is_empty() {
+                                    theme::note(ui, "No private chats yet.");
                                 }
-                            }
-                            if !saving && labelled(ui, icons::DOWNLOAD, "To phone", false) {
-                                session.save = true;
-                            }
-                            if labelled(ui, icons::CLEAR, "Retake", false) {
-                                session.retake = true;
-                            }
-                        });
-                        if let Some((line, bad)) = &save_line {
-                            ui.add_space(6.0);
-                            ui.label(egui::RichText::new(line).size(12.5).color(if *bad {
-                                theme::ERROR
-                            } else {
-                                theme::TEXT_DIM
-                            }));
+                                for (key, name) in &chats {
+                                    if theme::action_button(ui, name).clicked() {
+                                        session.send_to = Some(key.clone());
+                                    }
+                                }
+                            });
+                        if theme::action_button(ui, "Back").clicked() {
+                            session.choosing_chat = false;
                         }
-                        if done.pose.is_some() {
-                            ui.add_space(6.0);
-                            theme::note(
-                                ui,
-                                "Where it was taken, the direction, tilt and lens are in the \
-                                 picture: enough to put the camera back on the same view.",
-                            );
+                        return;
+                    }
+
+                    let row = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(side.width(), ACTION_DISC + 26.0),
+                    );
+                    let actions = [
+                        (icons::NOTE, "Post", true),
+                        (icons::CHAT, "Send", false),
+                        (icons::DOWNLOAD, "Save", false),
+                        (icons::CAMERA, "Retake", false),
+                    ];
+                    let col_w = row.width() / actions.len() as f32;
+                    for (i, (icon, label, hot)) in actions.into_iter().enumerate() {
+                        let col = egui::Rect::from_min_size(
+                            row.min + egui::vec2(col_w * i as f32, 0.0),
+                            egui::vec2(col_w, row.height()),
+                        );
+                        let enabled = !(label == "Save" && saving);
+                        if !action(ui, col, icon, label, hot, enabled) {
+                            continue;
                         }
-                    });
+                        match label {
+                            "Post" => session.post = true,
+                            "Send" => match &target {
+                                Target::Chat(key) => session.send_to = Some(key.clone()),
+                                _ => session.choosing_chat = true,
+                            },
+                            "Save" => session.save = true,
+                            _ => session.retake = true,
+                        }
+                    }
+                    ui.advance_cursor_after_rect(row);
+
+                    if let Some((line, bad)) = &save_line {
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new(line)
+                                .size(theme::SIZE_SUB)
+                                .color(if *bad { theme::ERROR } else { theme::TEXT_DIM }),
+                        );
+                    }
                 });
             });
         // Retake also leaves the result: the close button is the camera's.
@@ -1658,35 +1757,57 @@ mod native {
         }
     }
 
-    /// A round button with its label under it, the same size as every other.
-    fn labelled(ui: &mut egui::Ui, icon: &str, label: &str, hot: bool) -> bool {
-        ui.vertical_centered(|ui| {
-            ui.set_width(theme::ROUND_BUTTON_SIZE + 16.0);
-            let clicked = if hot {
-                let (rect, resp) = ui.allocate_exact_size(
-                    egui::Vec2::splat(theme::ROUND_BUTTON_SIZE),
-                    egui::Sense::click(),
-                );
-                ui.painter().circle_filled(
-                    rect.center(),
-                    theme::ROUND_BUTTON_SIZE / 2.0,
-                    theme::BRAND,
-                );
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    icon,
-                    egui::FontId::proportional(18.0),
-                    egui::Color32::WHITE,
-                );
-                resp.on_hover_text(label).clicked()
+    /// One of the result's actions: a disc with its label under it, centred in
+    /// `col`, the whole column taking the touch.
+    fn action(
+        ui: &mut egui::Ui,
+        col: egui::Rect,
+        icon: &str,
+        label: &str,
+        hot: bool,
+        enabled: bool,
+    ) -> bool {
+        let sense = if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let resp = ui.interact(col, egui::Id::new(("camera_action", label)), sense);
+        let disc = egui::pos2(col.center().x, col.top() + ACTION_DISC / 2.0);
+        let (fill, ring, ink) = if hot {
+            (theme::BRAND, theme::BRAND, egui::Color32::WHITE)
+        } else if enabled && resp.hovered() {
+            (theme::SURFACE_HOVER, theme::ACCENT, theme::CREAM)
+        } else {
+            (theme::SURFACE_RAISED, theme::OVERLAY_LINE, theme::TEXT)
+        };
+        let ink = if enabled { ink } else { theme::TEXT_DIM };
+        let painter = ui.painter();
+        painter.circle(
+            disc,
+            ACTION_DISC / 2.0 - 1.0,
+            fill,
+            egui::Stroke::new(1.5, ring),
+        );
+        painter.text(
+            disc,
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(22.0),
+            ink,
+        );
+        painter.text(
+            egui::pos2(col.center().x, col.top() + ACTION_DISC + 6.0),
+            egui::Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(theme::SIZE_BODY),
+            if enabled {
+                theme::TEXT
             } else {
-                theme::round_button(ui, icon, label, false).clicked()
-            };
-            ui.label(egui::RichText::new(label).size(12.0).color(theme::TEXT));
-            clicked
-        })
-        .inner
+                theme::TEXT_DIM
+            },
+        );
+        enabled && resp.on_hover_text(label).clicked()
     }
 
     /// The right half of a disc, as a polygon.
@@ -1825,6 +1946,14 @@ pub fn drive_camera() {}
 
 #[cfg(target_arch = "wasm32")]
 pub fn render_camera() {}
+
+#[cfg(target_arch = "wasm32")]
+impl CameraScreen {
+    /// Back: there is no camera to put away.
+    pub fn back(&mut self) -> bool {
+        false
+    }
+}
 
 #[cfg(test)]
 mod tests {

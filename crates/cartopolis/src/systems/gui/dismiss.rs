@@ -72,6 +72,7 @@ pub struct Dismissable<'w> {
     pub panel: ResMut<'w, RightPanel>,
     pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
     pub calls: ResMut<'w, crate::systems::calls::Calls>,
+    pub camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -99,6 +100,11 @@ pub enum Rung {
     /// *minimised* to the bar at the top, never ended — hanging up and declining
     /// are buttons, as on every phone, and not a gesture made in passing.
     CallScreen,
+    /// The camera, which is the whole screen: a press steps it back one
+    /// screen (`CameraScreen::back`) — the chat list to the picture, the
+    /// picture to the viewfinder, the viewfinder to the map. Under the call,
+    /// which a ringing call draws over it.
+    Camera,
     /// The prim edit dialog's texture picker: a window opened *from* the dialog,
     /// so the inner of the two.
     TexturePicker,
@@ -138,6 +144,7 @@ pub struct OpenSurfaces {
     pub keyboard: bool,
     pub text_focused: bool,
     pub call_screen: bool,
+    pub camera: bool,
     pub texture_picker: bool,
     pub edit_dialog: bool,
     pub context_menu: bool,
@@ -163,6 +170,8 @@ impl OpenSurfaces {
             Some(Rung::TextFocus)
         } else if self.call_screen {
             Some(Rung::CallScreen)
+        } else if self.camera {
+            Some(Rung::Camera)
         } else if self.edit_dialog && self.texture_picker {
             Some(Rung::TexturePicker)
         } else if self.edit_dialog {
@@ -197,6 +206,7 @@ impl Dismissable<'_> {
             keyboard: self.keyboard.is_open(),
             text_focused,
             call_screen: self.calls.screen_up(),
+            camera: self.camera.is_open(),
             texture_picker: self.dialog.texture_picker_open,
             edit_dialog: self.dialog.visible,
             context_menu: self.context_menu.visible,
@@ -219,6 +229,9 @@ impl Dismissable<'_> {
             // egui already did it; claiming the press is the whole point.
             Rung::TextFocus => {}
             Rung::CallScreen => self.calls.minimized = true,
+            Rung::Camera => {
+                self.camera.back();
+            }
             Rung::TexturePicker => self.dialog.texture_picker_open = false,
             Rung::EditDialog => self.dialog.visible = false,
             Rung::ContextMenu => self.context_menu.visible = false,
@@ -254,6 +267,7 @@ mod tests {
             keyboard: true,
             text_focused: true,
             call_screen: true,
+            camera: true,
             texture_picker: true,
             edit_dialog: true,
             context_menu: true,
@@ -272,6 +286,7 @@ mod tests {
             Rung::Keyboard => s.keyboard = false,
             Rung::TextFocus => s.text_focused = false,
             Rung::CallScreen => s.call_screen = false,
+            Rung::Camera => s.camera = false,
             Rung::TexturePicker => s.texture_picker = false,
             Rung::EditDialog => s.edit_dialog = false,
             Rung::ContextMenu => s.context_menu = false,
@@ -305,6 +320,7 @@ mod tests {
                 Rung::Keyboard,
                 Rung::TextFocus,
                 Rung::CallScreen,
+                Rung::Camera,
                 Rung::TexturePicker,
                 Rung::EditDialog,
                 Rung::ContextMenu,

@@ -2429,6 +2429,8 @@ const UI_ELEMENTS: &[&str] = &[
     // A chat with its + menu open, and the camera (`camera_screen`).
     "chatattach",
     "camera",
+    // The camera with a stand-in picture taken: its result screen.
+    "cameraresult",
     // The You page, Settings' pages and the Admin pages
     // (`docs/mockups/home-and-profile`).
     "you",
@@ -2862,10 +2864,12 @@ pub fn open_scripted_ui(
         cards.chat.overlay.demo = true;
     }
     cards.chat.chats.attach = want("chatattach");
-    if !want("camera") {
+    let result = want("cameraresult");
+    if !want("camera") && !result {
         cards.chat.camera.dismiss();
     } else if !cards.chat.camera.is_open() {
         cards.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
+        cards.chat.camera.demo_result = result;
     }
 
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
