@@ -77,6 +77,9 @@ pub struct RoadDepthExtension {
     /// The ground's screen-door variant (`ground_detail::GroundKey`), so a road
     /// opens onto what is under it exactly where the pavement beside it does.
     pub see_through: bool,
+    /// The ground's fade-in variant (`ground_detail::GroundKey::fade_in`), so a
+    /// road arrives with the pavement beside it.
+    pub fade_in: bool,
 }
 
 impl From<&RoadDepthExtension> for GroundUniform {
@@ -96,6 +99,7 @@ impl From<&RoadDepthExtension> for GroundKey {
     fn from(e: &RoadDepthExtension) -> Self {
         Self {
             see_through: e.see_through,
+            fade_in: e.fade_in,
         }
     }
 }
@@ -114,6 +118,7 @@ impl Default for RoadDepthExtension {
             // nothing (`sky::CLOUD_FIELD_BUFFER`).
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
+            fade_in: false,
         }
     }
 }

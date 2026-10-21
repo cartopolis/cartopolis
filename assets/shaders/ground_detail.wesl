@@ -652,8 +652,40 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             discard;
         }
     }
+    // A streamed cell arriving (`map_geometry`'s fade-in): the same screen door,
+    // closing over `FADE_IN_S`. The cell's own copy of its material says when it
+    // began, in `lod` — free on every surface that is not a clipmap tile, whose
+    // `lod.w` is 0: `lod.y` is 1 once the fade has begun and `lod.x` is the
+    // moment, in seconds of `globals.time`. Before that nothing of the cell is
+    // drawn, so it appears whole rather than piece by piece. The basemap is
+    // still drawn under a fading cell, so the holes show the picture the cell is
+    // replacing. Only in this variant, for the reason the one above is.
+    //
+    // Not a `MeshTag`: a tag rewritten on a live entity never reached the GPU
+    // here (Deck, 2026-10-21 — the spawn value stayed), where a material write is
+    // what the clipmap's blend already relies on.
+    @if(GROUND_FADE_IN) {
+        var shown = 0.0;
+        if lod.y > 0.0 {
+            var elapsed = view_bindings::globals.time - lod.x;
+            if elapsed < 0.0 {
+                elapsed += TIME_WRAP_S;
+            }
+            shown = clamp(elapsed / FADE_IN_S, 0.0, 1.0);
+        }
+        let cell = vec2<u32>(in.position.xy) % vec2<u32>(4u);
+        if bayer4(cell.x, cell.y) >= shown {
+            discard;
+        }
+    }
     return out;
 }
+
+// `ground_detail::FADE_IN_S`; `globals.time` wraps at an hour.
+@if(GROUND_FADE_IN)
+const FADE_IN_S: f32 = 0.5;
+@if(GROUND_FADE_IN)
+const TIME_WRAP_S: f32 = 3600.0;
 
 // How much of the ground opens near the camera. Over half, because the
 // pipes are the point; under all of it, because a street you cannot see is
@@ -669,7 +701,7 @@ const SEE_THROUGH_FAR_M: f32 = 450.0;
 
 // A 4×4 ordered-dither threshold in [0, 1): the pattern with the most even
 // spread of holes at every density.
-@if(GROUND_SEE_THROUGH)
+@if(GROUND_SEE_THROUGH || GROUND_FADE_IN)
 fn bayer4(x: u32, y: u32) -> f32 {
     var m = array<f32, 16>(
         0.0, 8.0, 2.0, 10.0,

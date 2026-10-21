@@ -17,22 +17,24 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundDetailExtensi
 
 /// Which variant of `shaders/ground_detail.wesl` a ground material compiles.
 ///
-/// One flag so far: [`GroundKey::see_through`], the screen-door the underground
-/// layer looks through (`systems::sewers`). It is a *variant* rather than a
-/// uniform because the cost is in the shader's existence, not in its branch: a
-/// fragment shader that can `discard` loses early depth testing for every draw
-/// it is used in, whether or not it ever takes the branch, and the ground is
-/// several stacked sheets deep. So the ordinary ground never has the statement in
-/// it at all.
+/// Two flags: [`GroundKey::see_through`], the screen-door the underground layer
+/// looks through (`systems::sewers`), and [`GroundKey::fade_in`], the one a
+/// streamed cell arrives through. Each is a *variant* rather than a uniform
+/// because the cost is in the shader's existence, not in its branch: a fragment
+/// shader that can `discard` loses early depth testing for every draw it is used
+/// in, whether or not it ever takes the branch, and the ground is several stacked
+/// sheets deep. So the ordinary ground never has the statement in it at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GroundKey {
     pub see_through: bool,
+    pub fade_in: bool,
 }
 
 impl From<&GroundDetailExtension> for GroundKey {
     fn from(e: &GroundDetailExtension) -> Self {
         Self {
             see_through: e.see_through,
+            fade_in: e.fade_in,
         }
     }
 }
@@ -40,12 +42,31 @@ impl From<&GroundDetailExtension> for GroundKey {
 /// Add the shader defs a [`GroundKey`] asks for to a ground pipeline. Shared with
 /// `road_depth`, whose fragment shader is this one.
 pub fn specialize_ground(descriptor: &mut RenderPipelineDescriptor, key: GroundKey) {
-    if key.see_through {
-        if let Some(fragment) = descriptor.fragment.as_mut() {
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        if key.see_through {
             fragment.shader_defs.push("GROUND_SEE_THROUGH".into());
+        }
+        if key.fade_in {
+            fragment.shader_defs.push("GROUND_FADE_IN".into());
         }
     }
 }
+
+/// The `lod` a fade-in copy carries: `x` the moment its fade began, in seconds of
+/// `globals.time`, and `y` 1 once it has — before that every fragment is
+/// discarded. `lod.w` stays 0, which is what keeps the clipmap's cross-fade off
+/// on a surface that is not a tile. `shaders/ground_detail.wesl` reads it.
+#[must_use]
+pub fn fade_lod(began: Option<f32>) -> Vec4 {
+    match began {
+        Some(t) => Vec4::new(t, 1.0, 0.0, 0.0),
+        None => Vec4::ZERO,
+    }
+}
+
+/// How long a fade-in takes, in seconds. `shaders/ground_detail.wesl` has the
+/// same number as `FADE_IN_S`.
+pub const FADE_IN_S: f32 = 0.5;
 
 /// The ground material's four vectors, as the one buffer the shader reads them
 /// from (binding 100; in bindless mode an element of the array at 110).
@@ -137,6 +158,11 @@ pub struct GroundDetailExtension {
     /// Compile the screen-door variant ([`GroundKey`]). Written on every ground
     /// material at once by `sewers::apply_ground_see_through`.
     pub see_through: bool,
+    /// Compile the fade-in variant ([`GroundKey`]): a screen door that closes
+    /// over [`FADE_IN_S`] from the moment in `lod` ([`fade_lod`]). Only on the
+    /// copies `map_geometry` draws an arriving cell with, one per cell and group,
+    /// which it swaps back to the ordinary material once the fade is over.
+    pub fade_in: bool,
 }
 
 impl Default for GroundDetailExtension {
@@ -152,6 +178,7 @@ impl Default for GroundDetailExtension {
             // `CLOUD_FIELD_BUFFER` for what a missing storage buffer costs.
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
+            fade_in: false,
         }
     }
 }

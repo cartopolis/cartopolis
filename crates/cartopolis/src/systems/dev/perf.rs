@@ -532,7 +532,14 @@ struct Flight {
     last_picture: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// When the ground in view was first complete after arrival.
     view_ground: Option<f32>,
+    /// When a cell in view began to fade in, and the [`FADE_PICTURES_S`] taken.
+    fade_began: Option<f32>,
+    fade_pictures: usize,
 }
+
+/// Seconds into the first fade in view at which an `arrive` window saves a
+/// picture (`MapSurfaces::view_fading`): the fade lasts half a second.
+const FADE_PICTURES_S: [f32; 3] = [0.1, 0.25, 0.4];
 
 /// Frames the closing picture may take to come back before the run moves on
 /// without it.
@@ -1746,6 +1753,31 @@ pub fn drive_perf_window(
                 picture(&format!("{at:.0}s")),
             );
             perf.flight.pictures += 1;
+        }
+        // …and the first fade in view, which is too short for any fixed time.
+        if perf.flight.fade_began.is_none() && surfaces.as_ref().is_some_and(|s| s.view_fading()) {
+            perf.flight.fade_began = Some(t);
+            tracing::info!(
+                after_s = format!("{t:.2}"),
+                "perf arrive: a fade in view began"
+            );
+        }
+        // One a frame at most: a long frame would otherwise ask for all of them
+        // at once, and every one would be the same frame.
+        if let Some(began) = perf.flight.fade_began {
+            if let Some(&at) = FADE_PICTURES_S.get(perf.flight.fade_pictures) {
+                if t - began >= at {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = crate::systems::shot_harness::snapshot(
+                        &mut commands,
+                        target.as_deref(),
+                        // The time it was taken at, which a slow frame can put
+                        // well past the one asked for.
+                        picture(&format!("fade-{:.2}s", t - began)),
+                    );
+                    perf.flight.fade_pictures += 1;
+                }
+            }
         }
         let quiet = busy.is_empty() && perf.flight.quiet_for >= ARRIVE_QUIET_S;
         if !quiet && t < run.wait {

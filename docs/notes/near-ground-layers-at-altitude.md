@@ -5,8 +5,10 @@ triggers: [map_geometry.rs, street_furniture.rs, vegetation.rs, globe.rs, traffi
            TREES_BUILD_ON_M, near_ground, update_globe_visibility, HideInSpace,
            pending_meshes, upload_pending, TurbineRotor, "flying higher", altitude,
            residency, "browser rung", SWEEP_RATE, ClimbRate, CARTO_NO_SWEEP_HOLD,
-           "zoom in", "zooming in", "descent", RING_RETEARS]
-updated: 2026-10-20
+           "zoom in", "zooming in", "descent", RING_RETEARS, VIEW_FIRST_CELLS,
+           advance_arrivals, fade_in, fade_lod, GROUND_FADE_IN, PIPELINE_WARM_S,
+           spawn_probe, MeshTag, "fade in", "pop in"]
+updated: 2026-10-21
 ---
 
 # What a climb holds, and why it used to hold the street
@@ -72,7 +74,7 @@ terrain, furniture, trees) is ~170 MB. Cells now land with their meshes on
 reserved handles and the data goes in piece by piece as the ledger admits it
 (`MapSurfaces::upload_pending`); the next cell lands only when the queue is
 empty, and a cell counts as complete ground — hiding the basemap under it — only
-once its last mesh is in. At 40 m: worst frame 173 MB → 26.9 MB (the rest of the
+once its last mesh is in (and, since 2026-10-21, its fade-in is over). At 40 m: worst frame 173 MB → 26.9 MB (the rest of the
 frame is assets that do not go through the ledger), settle 10.1 s → 16.6 s.
 Without a ceiling the queue drains in the frame the cell landed, as before.
 
@@ -110,3 +112,42 @@ At arrival and at +5 s the two look the same — basemap image, LoD2.2 shells
 (already in before the camera arrived, in both), trees; what moved is when the
 street surface lands. The one retear left is at arrival, of the cells built at
 the zoom's starting altitude.
+
+## The ground in view first, and faded in (2026-10-21)
+
+The nine cells landed together because they were built together: each cell's
+road cut already spreads over every core, so nine at once share the machine and
+the one under the view finishes with the eight around it. The cells within
+`VIEW_FIRST_CELLS` (0.25 of a cell, ~370 m) of the ring's centre — in Earth mode
+the point the view is aimed at — are now asked for alone, the rest once they
+have landed. Same Deck setup as above, ground in view complete after arrival:
+16.4 / 26.3 s → 8.8 / 7.8 s; the whole ring unchanged at ~27 s
+(`CARTO_NO_VIEW_FIRST=1`).
+
+And a cell now arrives whole and fades in over half a second instead of
+appearing piece by piece (`advance_arrivals`, `CARTO_NO_FADE_IN=1`): it is drawn
+with its own copies of its groups' materials, compiled as the screen-door
+variant (`GroundKey::fade_in`), and swapped back to the ordinary ones when the
+fade is over, so no settled cell pays for a shader that can `discard`. The
+basemap stays under it until then. Water keeps its own material and does not
+fade. Two traps, both silent:
+
+- **A `MeshTag` rewritten on a live entity never reached the GPU** (Deck,
+  2026-10-21: a diagnostic build painted the tag's value, and it stayed at the
+  spawn value through the whole fade, so every fragment was discarded and the
+  cell appeared at once when the material was swapped back). The fade's start is
+  written into the copy's `lod` instead (`fade_lod`; free on a surface that is
+  not a clipmap tile, whose `lod.w` is 0), the same kind of material write the
+  clipmap's own blend makes.
+- **A pipeline is compiled when something first draws with it, and until then
+  what uses it is not drawn.** The street groups first appear at street level,
+  and their pipelines cost a 340–380 ms frame on the Deck; a fade begun on the
+  landing frame ran out before its variant could draw, and the swap back then
+  waited for the ordinary one. A group met for the first time now gets a probe —
+  the same mesh, the ordinary material, a 10 µm speck a kilometre underground —
+  and a cell's fade waits until its groups are `PIPELINE_WARM_S` (0.75 s) old.
+  Only the first cells of a run wait; after that every group is warm.
+
+`cargo perf --only descent` photographs the first fade in view at 0.1, 0.25 and
+0.4 s into it (`arrive-fade-*.png`); a 4×4 dither at full resolution, so look at
+a crop.
