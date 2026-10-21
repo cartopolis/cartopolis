@@ -38,8 +38,9 @@ pub mod player;
 #[cfg(not(target_arch = "wasm32"))]
 pub use dev::aerial_reference;
 pub use dev::{
-    anim_clock, desktop_integration, dev_panel, diagnostics, frame_pacing, frame_split, perf,
-    pipeline_health, render_census, shot_harness, shot_presets, upload_meter, window_icon,
+    anim_clock, camera_pacing, desktop_integration, dev_panel, diagnostics, frame_pacing,
+    frame_split, perf, pipeline_health, render_census, shot_harness, shot_presets, upload_meter,
+    window_icon,
 };
 // Desktop only — a phone has no editor pointed at it and a browser tab cannot
 // listen on a socket (`build.rs` sets the cfg, `Cargo.toml` gates the

@@ -13,6 +13,7 @@ pub use plugin::{PerfPlugin, ShotHarnessPlugin};
 pub mod aerial_reference;
 /// The clock the moving world animates against; frozen between frames of a movie.
 pub mod anim_clock;
+pub mod camera_pacing;
 pub mod desktop_integration;
 pub mod dev_panel;
 pub mod diagnostics;

@@ -36,6 +36,7 @@
  *   bun tools/cdp_probe.ts --drive 20              # from t=20 s, move the camera the way a person does
  *   bun tools/cdp_probe.ts --drive 20 --drive-script zoomout   # …or zoom out in steps, pausing at each
  *   bun tools/cdp_probe.ts --drive 20 --drive-script flight    # …or fly a fixed list of altitudes (`gpu_log.ts`)
+ *   bun tools/cdp_probe.ts --drive 20 --drive-script drag      # …or drag the map back and forth, steadily
  *   bun tools/cdp_probe.ts --keep-profile          # a returning visitor: keep the browser profile (its
  *                                                  # IndexedDB cache) from the run before, and after this one
  *
@@ -232,6 +233,8 @@ ws.onmessage = (ev) => {
       if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
       const load = line && parseMapLoad(line);
       if (load) marks.push({ t: since(), label: `map load: ${load}` });
+      const pacing = line && /\bcamera pacing (frames\s*=[\s\S]*)$/.exec(line);
+      if (pacing) marks.push({ t: since(), label: `camera pacing: ${pacing[1].replace(/;?\s+/g, " ").replace(/;\s*/g, " ").replace(/\s*=\s*/g, "=")}` });
       if (opt.raw) console.log("  │", line);
       break;
     }
@@ -385,6 +388,25 @@ async function drive(fromMs: number) {
       await sendWithin("Runtime.evaluate", { expression: flyExpression(alt) }, 3000);
       marks.push({ t: since(), label: `flew to ${alt} m` });
       await Bun.sleep(FLIGHT_DWELL_MS);
+    }
+    return;
+  }
+  if (opt["drive-script"] === "drag") {
+    // A steady drag, back and forth: 3 px every 8 ms for 3 s each way, the same
+    // as `firefox_probe --drag`, so the client's `camera pacing` lines compare.
+    let dir = 1;
+    while (Date.now() - started < RUN_MS - 4000) {
+      const x0 = cx - dir * 560;
+      await mouse("mouseMoved", x0, cy);
+      await mouse("mousePressed", x0, cy, "left", { buttons: 1, clickCount: 1 });
+      marks.push({ t: since(), label: `drag ${dir > 0 ? "right" : "left"}, 3 px every 8 ms` });
+      for (let i = 1; i <= 375; i++) {
+        await mouse("mouseMoved", x0 + dir * 3 * i, cy, "left", { buttons: 1 });
+        await Bun.sleep(8);
+      }
+      await mouse("mouseReleased", x0 + dir * 1125, cy, "left", { buttons: 0, clickCount: 1 });
+      dir = -dir;
+      await Bun.sleep(500);
     }
     return;
   }

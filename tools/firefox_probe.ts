@@ -12,6 +12,21 @@
  *   bun tools/firefox_probe.ts --zoom-out 30          # from t=30 s, zoom out in four steps
  *   bun tools/firefox_probe.ts --zoom-in 30           # …or in, down to street level
  *   bun tools/firefox_probe.ts --flight 30            # …or fly a fixed list of altitudes (`gpu_log.ts`)
+ *   bun tools/firefox_probe.ts --drag 30              # …or drag the map back and forth at a steady speed
+ *
+ * `--drag` holds the left button and moves the pointer at a steady speed
+ * (`--drag-px` every `--drag-step-ms`) for three seconds, releases, and comes
+ * back the other way, until the run ends. Each drag's mark says what the page
+ * itself received: pointer events per animation frame.
+ *
+ * **`--drag-os` is the one to judge pacing by** (macOS): the drag is posted as
+ * operating-system mouse events at an even `--drag-hz` (`tools/os_drag.swift`,
+ * compiled on first use), so it reaches Firefox the way a mouse does. A BiDi drag
+ * is dispatched on Firefox's own timers and its events are as uneven in time as
+ * in delivery, which made a pacing fix look like it did nothing. It needs the
+ * window on screen, which the probe has anyway. A steady drag is what makes
+ * judder measurable: the client's `camera pacing` line (`systems::camera_pacing`)
+ * says how evenly each frame moved, and the probe prints it.
  *   bun tools/firefox_probe.ts --fresh                # a first visit: delete the profile first
  *   bun tools/firefox_probe.ts --size 1400x1300 --dpr 2   # a Retina display: 2× the pixels each way
  *   bun tools/firefox_probe.ts --flight 25 --gecko-profile /tmp/ff.json   # …with Firefox's own profiler
@@ -56,6 +71,11 @@ const { values: opt } = parseArgs({
     "zoom-out": { type: "string" },
     "zoom-in": { type: "string" },
     flight: { type: "string" },
+    drag: { type: "string" },
+    "drag-step-ms": { type: "string", default: "8" },
+    "drag-px": { type: "string", default: "3" },
+    "drag-os": { type: "boolean", default: false },
+    "drag-hz": { type: "string", default: "125" },
     port: { type: "string", default: "9231" },
     raw: { type: "boolean", default: false },
     screenshot: { type: "string" },
@@ -148,6 +168,8 @@ ws.onmessage = (m) => {
   if (gpu) gpuRows.push({ t: since(), f: gpu });
   const heapBy = parseHeapBy(text);
   if (heapBy) marks.push({ t: since(), label: `heap by label: ${heapBy}` });
+  const pacing = /\bcamera pacing (frames\s*=[\s\S]*)$/.exec(text);
+  if (pacing) marks.push({ t: since(), label: `camera pacing: ${pacing[1].replace(/;?\s+/g, " ").replace(/;\s*/g, " ").replace(/\s*=\s*/g, "=")}` });
   const load = parseMapLoad(text);
   if (load) marks.push({ t: since(), label: `map load: ${load}` });
   const owners = parseOwnersLine(text);
@@ -193,6 +215,68 @@ let zoomStep = 0;
 let flightAt = opt.flight !== undefined ? started + Number(opt.flight) * 1000 : undefined;
 let flightStep = 0;
 
+const OS_DRAG = "/tmp/os_drag";
+if (opt["drag-os"] && !(await Bun.file(OS_DRAG).exists())) {
+  await Bun.$`swiftc -O ${import.meta.dir}/os_drag.swift -o ${OS_DRAG}`;
+}
+
+// A steady drag, back and forth, beside the poll loop below.
+const dragUntilEnd = async (from: number) => {
+  await Bun.sleep(Math.max(0, from - Date.now()));
+  const step = Number(opt["drag-step-ms"]);
+  const px = Number(opt["drag-px"]);
+  const span = Math.round((px * 3000) / step);
+  // What the page itself receives, per animation frame: pointer events, and
+  // frames that got none mid-drag. Independent of the client, so a drag that
+  // never reaches the canvas, or arrives in bursts, shows here first.
+  await send("script.evaluate", { expression: PAGE_POINTER_COUNTER, target: { context }, awaitPromise: false }, 3000);
+  let dir = 1;
+  while (Date.now() < end - 4000) {
+    const x0 = Math.round(vw / 2 - (dir * span) / 2);
+    // One move with a duration: Firefox interpolates it itself, the way a mouse
+    // streams positions, where 375 separate actions cost ~15 ms of remote
+    // dispatch each and stretched a 3 s drag to 11 s.
+    const pointer: any[] = [
+      { type: "pointerMove", x: x0, y: Math.round(vh / 2), duration: 0 },
+      { type: "pointerDown", button: 0 },
+      { type: "pointerMove", x: x0 + dir * span, y: Math.round(vh / 2), duration: 3000 },
+      { type: "pointerUp", button: 0 },
+    ];
+    const t0 = Date.now();
+    if (opt["drag-os"]) {
+      // Where the page's content is on screen, in points (CSS px at 100% zoom).
+      const at = await send("script.evaluate", { expression: "JSON.stringify([mozInnerScreenX, mozInnerScreenY])", target: { context }, awaitPromise: false }, 3000);
+      const [sx, sy] = JSON.parse(at?.result?.result?.value ?? "[0,0]");
+      await Bun.$`${OS_DRAG} ${sx + x0} ${sy + vh / 2} ${dir * span} 3000 ${opt["drag-hz"]!}`.quiet().nothrow();
+    } else {
+      await send("input.performActions", { context, actions: [{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: pointer }] }, 15_000);
+    }
+    const r = await send("script.evaluate", { expression: "window.__vfPointerReport()", target: { context }, awaitPromise: false }, 3000);
+    marks.push({ t: since(), label: `drag ${dir > 0 ? "right" : "left"} ${span} px in ${Date.now() - t0} ms; page saw ${r?.result?.result?.value ?? "?"}` });
+    dir = -dir;
+    await Bun.sleep(500);
+  }
+};
+
+/** Pointer events per animation frame while a button is down, as the page sees them. */
+const PAGE_POINTER_COUNTER = `(() => {
+  if (window.__vfPointerReport) return;
+  let moves = 0, down = false;
+  const perFrame = [];
+  addEventListener("pointerdown", () => { down = true; }, true);
+  addEventListener("pointerup", () => { down = false; }, true);
+  addEventListener("pointermove", () => { if (down) moves++; }, true);
+  const tick = () => { if (down || moves) { perFrame.push(moves); moves = 0; } requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  window.__vfPointerReport = () => {
+    const h = [0, 0, 0, 0];
+    for (const n of perFrame) h[Math.min(n, 3)]++;
+    const total = perFrame.reduce((a, b) => a + b, 0);
+    perFrame.length = 0;
+    return \`\${total} pointermoves over \${h[0] + h[1] + h[2] + h[3]} frames: 0:\${h[0]} 1:\${h[1]} 2:\${h[2]} 3+:\${h[3]}\`;
+  };
+})()`;
+
 // Frames drawn since the last poll, and the longest gap between two.
 const COUNTER = `(() => {
   if (window.__ffF === undefined) {
@@ -207,6 +291,7 @@ const COUNTER = `(() => {
 })()`;
 const frames: { t: number; frames: number; worst: number }[] = [];
 const end = started + Number(opt.seconds) * 1000;
+const dragging = opt.drag !== undefined ? dragUntilEnd(started + Number(opt.drag) * 1000) : Promise.resolve();
 while (Date.now() < end) {
   await Bun.sleep(2000);
   if (nextZoom !== undefined && Date.now() >= nextZoom && zoomStep < 4) {
@@ -230,6 +315,7 @@ while (Date.now() < end) {
   frames.push({ t: since(), ...JSON.parse(v) });
 }
 
+await dragging;
 if (opt.screenshot) {
   const shot = await send("browsingContext.captureScreenshot", { context }, 15_000);
   if (shot?.result?.data) await Bun.write(opt.screenshot, Buffer.from(shot.result.data, "base64"));
