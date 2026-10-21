@@ -2532,6 +2532,10 @@ const UI_ELEMENTS: &[&str] = &[
     "camera",
     // The camera with a stand-in picture taken: its result screen.
     "cameraresult",
+    // The camera in Video, and in Mixed (its world half shown through the
+    // hole the world camera is aimed into).
+    "cameravideo",
+    "cameramixed",
     // The You page, Settings' pages and the Admin pages
     // (`docs/mockups/home-and-profile`).
     "you",
@@ -2966,11 +2970,16 @@ pub fn open_scripted_ui(
     }
     cards.chat.chats.attach = want("chatattach");
     let result = want("cameraresult");
-    if !want("camera") && !result {
+    let (video, mixed) = (want("cameravideo"), want("cameramixed"));
+    if !want("camera") && !result && !video && !mixed {
         cards.chat.camera.dismiss();
     } else if !cards.chat.camera.is_open() {
         cards.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
         cards.chat.camera.demo_result = result;
+        cards.chat.camera.video = video;
+        if mixed {
+            cards.chat.camera.mode = crate::systems::camera_screen::Mode::Mixed;
+        }
     }
 
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
