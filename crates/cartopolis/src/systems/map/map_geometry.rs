@@ -35,7 +35,6 @@ use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid};
-use cartopolis_materials::ground_detail::fade_lod;
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
@@ -938,102 +937,6 @@ pub struct MapSurfaces {
     /// The ring's cells within [`VIEW_FIRST_CELLS`] of its centre — the ground
     /// the view is on — which are built before the rest are asked for.
     in_view: Vec<Cell>,
-    /// Cells drawn with the fade-in variant, by entity, with what each goes
-    /// back to once the fade is over ([`Arrival`]).
-    arriving: HashMap<Cell, Vec<(Entity, Arrival)>>,
-    /// Of those, the ones whose meshes are all in and whose fade has begun, with
-    /// when (`AnimClock::elapsed_secs_wrapped`).
-    fading: HashMap<Cell, f32>,
-    /// Each arriving cell's own fade-in copies of [`Self::materials`] and
-    /// [`Self::road_materials`], one per group: the moment its fade begins is
-    /// written into them (`fade_lod`), so they cannot be shared between cells.
-    /// Made from the originals as the cell lands and dropped when its fade is
-    /// over, so a copy is never older than the cell it draws (rain, the altitude
-    /// fades and the see-through all write the originals).
-    fade_copies: HashMap<Cell, Vec<FadeCopy>>,
-    /// When each group was first drawn with the fade-in variant and probed with
-    /// the ordinary one (`AnimClock::elapsed_secs_wrapped`): a cell's fade waits
-    /// until all its groups are [`PIPELINE_WARM_S`] old.
-    warming: HashMap<SurfaceGroup, f32>,
-    /// Each arriving cell's groups, for that wait.
-    arriving_groups: HashMap<Cell, Vec<SurfaceGroup>>,
-}
-
-/// How long a group's pipelines get to compile before a cell fades in with
-/// them. Measured on the Deck (2026-10-21): the street groups' first pipelines
-/// cost a 340–380 ms frame, and a fade started on a cell's landing frame ran its
-/// whole half second before the variant could draw — the cell stayed invisible
-/// and then appeared at once, the very pop the fade is for.
-const PIPELINE_WARM_S: f32 = 0.75;
-
-/// One of an arriving cell's fade-in material copies.
-#[derive(Clone)]
-enum FadeCopy {
-    Plain(Handle<GroundMaterial>),
-    Road(Handle<RoadMaterial>),
-}
-
-/// What an arriving entity is drawn with once its fade is over.
-#[derive(Clone)]
-enum Arrival {
-    Plain(Handle<GroundMaterial>, bool),
-    Road(Handle<RoadMaterial>, bool),
-    /// A speck drawn with the ordinary material while the cell arrives, so that
-    /// material's pipeline is compiled by the time the fade hands over to it
-    /// ([`spawn_probe`]). Hidden afterwards, and retired with the cell.
-    Probe,
-}
-
-impl Arrival {
-    /// Whether it casts a shadow once it has arrived — held off until then, or a
-    /// tree's shadow would land before the tree.
-    fn casts(&self) -> bool {
-        match self {
-            Arrival::Plain(_, c) | Arrival::Road(_, c) => *c,
-            Arrival::Probe => false,
-        }
-    }
-}
-
-/// Draw `mesh` with `material` as a speck a kilometre underground, for the one
-/// effect of compiling that pipeline.
-///
-/// **A pipeline compiles when something first draws with it, and until it has,
-/// what uses it is silently not drawn.** The first street-level cell of a run
-/// cost a 375 ms frame on the Deck as its groups' pipelines were built
-/// (2026-10-21), and an arriving cell draws with the fade-in variant and then
-/// the ordinary one: two pipelines per group, met one after the other. Unwarmed,
-/// the cell was invisible through its whole fade and then waited again for the
-/// second. The same mesh handle, so the vertex layout — part of the pipeline's
-/// key — is the real one.
-fn spawn_probe<M: Material>(
-    commands: &mut Commands,
-    mesh: &Handle<Mesh>,
-    material: Handle<M>,
-    grid_cell: big_space::prelude::GridCell,
-    local: Vec3,
-    root: Entity,
-) -> Entity {
-    commands
-        .spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material),
-            // Not zero: a singular transform has no inverse for the normals.
-            Transform::from_translation(local - Vec3::Y * 1000.0).with_scale(Vec3::splat(1e-5)),
-            grid_cell,
-            ChildOf(root),
-            // Drawn wherever the camera looks, and then in no shadow cascade.
-            bevy::camera::visibility::NoFrustumCulling,
-            bevy::light::NotShadowCaster,
-        ))
-        .id()
-}
-
-/// Whether arriving cells fade in rather than appear.
-/// `CARTO_NO_FADE_IN=1` puts them back to appearing piece by piece.
-fn fade_in_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !crate::debug_switches::env_flag("CARTO_NO_FADE_IN"))
 }
 
 /// How close to the ring's centre, in cells, a cell must come to be built
@@ -1191,11 +1094,6 @@ impl Default for MapSurfaces {
             climb: ClimbRate::default(),
             held: false,
             in_view: Vec::new(),
-            arriving: HashMap::new(),
-            fading: HashMap::new(),
-            fade_copies: HashMap::new(),
-            warming: HashMap::new(),
-            arriving_groups: HashMap::new(),
         }
     }
 }
@@ -3002,13 +2900,6 @@ impl MapSurfaces {
             || self.held
     }
 
-    /// Whether a cell in view is fading in right now (`advance_arrivals`) — for
-    /// the performance suite, which photographs the fade.
-    #[must_use]
-    pub fn view_fading(&self) -> bool {
-        self.in_view.iter().any(|c| self.fading.contains_key(c))
-    }
-
     /// Whether the ground in view is drawn in full: every cell within
     /// [`VIEW_FIRST_CELLS`] of the ring's centre is [complete](Self::complete)
     /// or has failed for good. `None` while there is no such cell — above the
@@ -3133,11 +3024,7 @@ impl MapSurfaces {
             };
             // A reserved handle cannot be stale: nothing else inserts into it.
             let _ = meshes.insert(&handle, mesh);
-            // An arriving cell is complete when its fade is over, not when its
-            // last mesh is in (`advance_arrivals`): the basemap shows through
-            // the fade's holes.
             if self.awaiting_complete.contains(&cell)
-                && !self.arriving.contains_key(&cell)
                 && !self.pending_meshes.iter().any(|(c, ..)| *c == cell)
             {
                 self.awaiting_complete.remove(&cell);
@@ -3146,95 +3033,9 @@ impl MapSurfaces {
         }
     }
 
-    /// Start the fade of every arriving cell whose meshes are all in, and finish
-    /// the ones whose fade is over: back to the ordinary materials (whose shader
-    /// has no `discard`), shadows on, and complete. `now` is the shaders' clock,
-    /// `AnimClock::elapsed_secs_wrapped`.
-    fn advance_arrivals(
-        &mut self,
-        commands: &mut Commands,
-        plain: &mut Assets<GroundMaterial>,
-        road: &mut Assets<RoadMaterial>,
-        now: f32,
-    ) {
-        use cartopolis_materials::ground_detail::FADE_IN_S;
-        let ready: Vec<Cell> = self
-            .arriving
-            .keys()
-            .filter(|c| !self.fading.contains_key(c))
-            .filter(|c| !self.pending_meshes.iter().any(|(p, ..)| p == *c))
-            .filter(|c| {
-                self.arriving_groups.get(c).into_iter().flatten().all(|g| {
-                    self.warming
-                        .get(g)
-                        .is_some_and(|since| (now - since).rem_euclid(3600.0) >= PIPELINE_WARM_S)
-                })
-            })
-            .copied()
-            .collect();
-        for c in ready {
-            tracing::info!(
-                cell = ?c,
-                pieces = self.arriving.get(&c).map_or(0, Vec::len),
-                in_view = self.in_view.contains(&c),
-                "surface cell fading in"
-            );
-            // One write per copy, once: the shader does the rest against its clock.
-            let lod = fade_lod(Some(now));
-            for copy in self.fade_copies.get(&c).into_iter().flatten() {
-                match copy {
-                    FadeCopy::Plain(h) => {
-                        if let Some(mut m) = plain.get_mut(h) {
-                            m.extension.lod = lod;
-                        }
-                    }
-                    FadeCopy::Road(h) => {
-                        if let Some(mut m) = road.get_mut(h) {
-                            m.extension.lod = lod;
-                        }
-                    }
-                }
-            }
-            self.fading.insert(c, now);
-        }
-        let done: Vec<Cell> = self
-            .fading
-            .iter()
-            .filter(|(_, start)| (now - **start).rem_euclid(3600.0) >= FADE_IN_S)
-            .map(|(c, _)| *c)
-            .collect();
-        for c in done {
-            self.fading.remove(&c);
-            self.arriving_groups.remove(&c);
-            // Dropped with the last handle, once the entities below let go.
-            self.fade_copies.remove(&c);
-            for (e, arrival) in self.arriving.remove(&c).into_iter().flatten() {
-                let mut entity = commands.entity(e);
-                match &arrival {
-                    Arrival::Plain(m, _) => entity.try_insert(MeshMaterial3d(m.clone())),
-                    Arrival::Road(m, _) => entity.try_insert(MeshMaterial3d(m.clone())),
-                    // Its pipeline is built; drawing it any longer buys nothing.
-                    // Hidden, not despawned: it is one of the cell's entities,
-                    // and the cell's retirement despawns those.
-                    Arrival::Probe => entity.try_insert(Visibility::Hidden),
-                };
-                if arrival.casts() {
-                    entity.try_remove::<bevy::light::NotShadowCaster>();
-                }
-            }
-            if self.awaiting_complete.remove(&c) {
-                self.complete.insert(c);
-            }
-        }
-    }
-
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
-        self.arriving.clear();
-        self.fading.clear();
-        self.arriving_groups.clear();
-        self.fade_copies.clear();
         let thrown = self.loaded.len() + self.stream.in_flight();
         if thrown > 0 {
             use std::sync::atomic::Ordering::Relaxed;
@@ -3315,10 +3116,6 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     surfaces.pending_decks.remove(&c);
     surfaces.pending_meshes.retain(|(cell, ..)| *cell != c);
     surfaces.awaiting_complete.remove(&c);
-    surfaces.arriving.remove(&c);
-    surfaces.fading.remove(&c);
-    surfaces.arriving_groups.remove(&c);
-    surfaces.fade_copies.remove(&c);
     surfaces.stream.forget(&c);
     stores.labels.remove_cell(&c);
     stores.places.remove_cell(&c);
@@ -3345,7 +3142,6 @@ pub fn update_map_surfaces(
     furniture_lod: Res<FurnitureLod>,
     mut stores: CellStores,
     terrain: Res<TerrainField>,
-    anim: Res<crate::systems::anim_clock::AnimClock>,
 ) {
     // Always drain the despawn queue, even on the early returns below — a source
     // switch or a climb into space must still clear steadily rather than stall.
@@ -3353,14 +3149,6 @@ pub fn update_map_surfaces(
     // …and the upload queue, for the same reason: a cell that landed just below
     // the space tier still finishes arriving.
     surfaces.upload_pending(&mut meshes);
-    // …and the fades of the cells that have (`advance_arrivals`), on the clock
-    // the shader reads them against.
-    surfaces.advance_arrivals(
-        &mut commands,
-        &mut mats.plain,
-        &mut mats.road,
-        anim.elapsed_secs_wrapped(),
-    );
     // The surfaces stream has no backoff and no cooldown (`max_attempts: 1`), so
     // it never consults the clock — and `update_map_surfaces` is already at Bevy's
     // system-parameter ceiling, so adding a `Res<Time>` for a value nothing reads
@@ -3635,7 +3423,6 @@ pub fn update_map_surfaces(
         tile_m,
         root,
         now,
-        &anim,
     );
     // In the frame the cell landed, as far as the ledger allows.
     surfaces.upload_pending(&mut meshes);
@@ -3790,7 +3577,6 @@ fn upload_finished_cells(
     tile_m: f32,
     root: Entity,
     now: f64,
-    anim: &crate::systems::anim_clock::AnimClock,
 ) {
     // 3. Land finished tessellations, capped per frame; the rest go back into the
     // sink (still holding their concurrency slots, so the bound keeps bounding
@@ -3973,18 +3759,6 @@ fn upload_finished_cells(
             .iter()
             .any(|m| is_flat_ground(m.group) && m.group.layer().is_sheet());
         let mut entities = Vec::with_capacity(surface_meshes.len());
-        // Arriving whole and faded in (`advance_arrivals`), except under a movie's
-        // clock, which stands still while a frame settles. The copies are this
-        // cell's own, made from the originals as it lands.
-        let fade = fade_in_enabled() && !anim.is_video();
-        let mut plain_copies: HashMap<SurfaceGroup, Handle<GroundMaterial>> = HashMap::new();
-        let mut road_copies: HashMap<SurfaceGroup, Handle<RoadMaterial>> = HashMap::new();
-        let mut arrivals: Vec<(Entity, Arrival)> = Vec::new();
-        // The groups of this cell already given a pipeline probe, and all of
-        // its groups.
-        let mut probed: HashSet<SurfaceGroup> = HashSet::new();
-        let mut cell_groups: Vec<SurfaceGroup> = Vec::new();
-        let anim_now = anim.elapsed_secs_wrapped();
         let mut built_bytes = 0usize;
         for sm in surface_meshes {
             let stand = if placed {
@@ -3993,22 +3767,6 @@ fn upload_finished_cells(
                 Stand::Terrain(&terrain, &stores.tunnels)
             };
             let group = sm.group;
-            // A caster whose shadow waits for it to arrive. Not the water, which
-            // keeps its own material and does not fade, and not the kerbs, whose
-            // casting `kerb_shadows` owns.
-            let arriving_casts = fade
-                && casts_shadow(group)
-                && group != SurfaceGroup::Kerb
-                && !(group == SurfaceGroup::Water && water_material.is_some());
-            // A group met for the first time gets its pipelines warmed, and every
-            // fade waits for its groups to be (`PIPELINE_WARM_S`).
-            let fresh = fade && !surfaces.warming.contains_key(&group);
-            if fade {
-                surfaces.warming.entry(group).or_insert(anim_now);
-                if !cell_groups.contains(&group) {
-                    cell_groups.push(group);
-                }
-            }
             // One entity per piece: a surface stood on the ground here can come
             // out of the refinement several times its measured size, and is cut
             // back to the cap (`build_meshes_owned`).
@@ -4024,8 +3782,6 @@ fn upload_finished_cells(
                 let world = Vec3::new(wx, group.y_offset(), wz);
                 let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                     .translation_to_grid(world.as_dvec3());
-                // Where a pipeline probe for this piece would go (`spawn_probe`).
-                let probe_at = (mesh.clone(), grid_cell.clone(), local);
                 // Shared bundle; only the material component differs by group.
                 let placement = (
                     Mesh3d(mesh),
@@ -4063,34 +3819,7 @@ fn upload_finished_cells(
                             })
                         })
                         .clone();
-                    if fade {
-                        let copy = road_copies
-                            .entry(group)
-                            .or_insert_with(|| {
-                                let mut m =
-                                    mats.road.get(&material).cloned().unwrap_or_else(|| {
-                                        RoadMaterial {
-                                            base: road_base_material(group, &mut mats.images),
-                                            extension: RoadDepthExtension::default(),
-                                        }
-                                    });
-                                m.extension.fade_in = true;
-                                m.extension.lod = fade_lod(None);
-                                mats.road.add(m)
-                            })
-                            .clone();
-                        let id = commands.spawn((placement, MeshMaterial3d(copy))).id();
-                        if fresh && probed.insert(group) {
-                            let (m, g, l) = probe_at;
-                            let p = spawn_probe(commands, &m, material.clone(), g, l, root);
-                            arrivals.push((p, Arrival::Probe));
-                            entities.push(p);
-                        }
-                        arrivals.push((id, Arrival::Road(material, arriving_casts)));
-                        id
-                    } else {
-                        commands.spawn((placement, MeshMaterial3d(material))).id()
-                    }
+                    commands.spawn((placement, MeshMaterial3d(material))).id()
                 } else {
                     // The ground's own finish, for the groups that are walked on. It
                     // *multiplies* `perceptual_roughness` rather than replacing it,
@@ -4140,32 +3869,9 @@ fn upload_finished_cells(
                             })
                         })
                         .clone();
-                    if fade {
-                        let copy = plain_copies
-                            .entry(group.material_group())
-                            .or_insert_with(|| {
-                                let mut m = mats.plain.get(&material).cloned().unwrap_or_default();
-                                m.extension.fade_in = true;
-                                m.extension.lod = fade_lod(None);
-                                mats.plain.add(m)
-                            })
-                            .clone();
-                        let id = commands.spawn((placement, MeshMaterial3d(copy))).id();
-                        if fresh && probed.insert(group) {
-                            let (m, g, l) = probe_at;
-                            let p = spawn_probe(commands, &m, material.clone(), g, l, root);
-                            arrivals.push((p, Arrival::Probe));
-                            entities.push(p);
-                        }
-                        arrivals.push((id, Arrival::Plain(material, arriving_casts)));
-                        id
-                    } else {
-                        commands.spawn((placement, MeshMaterial3d(material))).id()
-                    }
+                    commands.spawn((placement, MeshMaterial3d(material))).id()
                 };
-                if !casts_shadow(group) || arriving_casts {
-                    // …and, while it arrives, every caster too: a tree's shadow
-                    // must not land before the tree (`advance_arrivals`).
+                if !casts_shadow(group) {
                     commands.entity(id).insert(bevy::light::NotShadowCaster);
                 }
                 if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
@@ -4206,18 +3912,6 @@ fn upload_finished_cells(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
-        if !arrivals.is_empty() {
-            surfaces.arriving.insert(c, arrivals);
-            surfaces.arriving_groups.insert(c, cell_groups);
-            surfaces.fade_copies.insert(
-                c,
-                plain_copies
-                    .into_values()
-                    .map(FadeCopy::Plain)
-                    .chain(road_copies.into_values().map(FadeCopy::Road))
-                    .collect(),
-            );
-        }
         surfaces.cell_bytes.insert(c, built_bytes);
         surfaces.cell_cost.insert(c, built_bytes);
         // Complete once its ground is in, not when it lands (`awaiting_complete`).
@@ -6442,33 +6136,6 @@ mod tests {
         assert!(near_ground(Some(false), 440.0, on, off));
         assert!(near_ground(None, 480.0, on, off));
         assert!(!near_ground(None, 520.0, on, off));
-    }
-
-    /// The fade-in's length is written twice, in `ground_detail.rs` and in the
-    /// shader; a mismatch swaps the material back before the shader has finished
-    /// (a pop at the end) or after (a frame of nothing), and nothing else would
-    /// say so. And a copy that has not begun must not read as begun.
-    #[test]
-    fn the_shader_and_the_fade_in_agree() {
-        use cartopolis_materials::ground_detail::FADE_IN_S;
-        let src = include_str!("../../../../../assets/shaders/ground_detail.wesl");
-        let line = src
-            .lines()
-            .find(|l| l.trim_start().starts_with("const FADE_IN_S"))
-            .expect("ground_detail.wesl declares FADE_IN_S");
-        let fade: f32 = line
-            .split('=')
-            .nth(1)
-            .and_then(|v| v.trim().trim_end_matches(';').parse().ok())
-            .expect("FADE_IN_S parses as a float");
-        assert!(
-            (fade - FADE_IN_S).abs() < f32::EPSILON,
-            "{fade} vs {FADE_IN_S}"
-        );
-        // `lod.y > 0` is "begun"; `lod.w` must stay 0 or the clipmap's
-        // cross-fade switches on for a cell.
-        assert_eq!(fade_lod(None).y, 0.0);
-        assert_eq!(fade_lod(Some(12.5)), Vec4::new(12.5, 1.0, 0.0, 0.0));
     }
 
     /// The cell under the view's centre always, a neighbour only when the
