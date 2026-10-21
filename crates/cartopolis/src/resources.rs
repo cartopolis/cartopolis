@@ -962,6 +962,7 @@ pub struct ScreenshotState {
     /// One picture of a clip the camera is recording: the window **with** its
     /// UI, because hiding it at a clip's frame rate would make it blink. The
     /// camera keeps its own drawing out of the part it records.
+    #[cfg(not(target_arch = "wasm32"))]
     pub camera_frame: bool,
     /// A polaroid for your own picture (`systems::faces`): the same capture,
     /// handed back for the viewfinder's square to be cut out of it.
