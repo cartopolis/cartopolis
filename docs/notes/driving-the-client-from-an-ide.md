@@ -1,7 +1,7 @@
 ---
 topic: tooling
 triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose]
-updated: 2026-10-18
+updated: 2026-10-21
 ---
 
 # Driving the client from an editor
@@ -367,10 +367,7 @@ coming step and strolls the last four metres.
 node and answered by an agent of its own. midas runs both:
 
 ```bash
-midas bot start --node <node> --name viberfox \
-  --agent 'npx -y @agentclientprotocol/claude-agent-acp' \
-  --brief tools/bot/viberfox.md --agent-meta @tools/bot/claude-agent-acp.json \
-  --agent-mode default \
+midas bot start --node <node> --name viberfox --agent --brief tools/bot/viberfox.md \
   --mcp 'cargo run -q -p cartopolis -- mcp --socket /tmp/bot/mcp.sock' \
   -- cargo run -q -p cartopolis -- --mcp-headless --mcp-listen /tmp/bot/mcp.sock \
      --connect cartopolis.org --mcp-allow jeroen --mcp-private-only
@@ -381,23 +378,26 @@ midas bot stop --name viberfox          # stops both, gives the node back
 
 The client runs on the node; a **host** process runs in the agent container,
 where the Claude login is, and outlives the session that started it. midas's
-`src/host.rs` and its DESIGN.md (decision 18) have the mechanics. What matters
-on this side:
+`src/host.rs`, `src/acp.rs` and its DESIGN.md (decisions 18, 19) have the
+mechanics. What matters on this side:
 
-- **The agent is anything that speaks the Agent Client Protocol** (ACP: JSON-RPC
-  on stdio, as Zed drives Claude Code, Codex or Gemini CLI). Claude Code comes
-  through its official adapter. Swapping the agent changes `--agent` and
-  `--agent-meta`, nothing here. Native Claude-only mechanisms (Remote Control
+- **midas runs the agent itself.** A bare `--agent` is Claude Code through
+  midas's own Agent Client Protocol adapter (`midas acp`, Rust, driving the
+  installed `claude`): no npm package, no Node. Until 2026-10-21 it was
+  `npx -y @agentclientprotocol/claude-agent-acp`; do not go back to it. ACP
+  (JSON-RPC on stdio, as Zed drives Claude Code, Codex or Gemini CLI) still
+  lets `--agent='<command>'` name another agent, nothing here changing. Native Claude-only mechanisms (Remote Control
   sessions, `--channels`) were rejected for exactly that; MCP's own "sampling"
   is deprecated in the 2026-07-28 spec and Claude Code never supported it.
 - **Its only tools are this client's.** The session has one MCP server, `bot`
   (`midas bot mcp`). The host grants a permission only to that server's tools.
-  `tools/bot/claude-agent-acp.json` also turns off Claude Code's built-in tools,
-  settings files and every other MCP server, so the agent's own fence stands
-  in front of midas's. A chat-driven agent with a shell would be a shell for
-  whoever chats; it has none. `--agent-mode default` matters as much: without
-  it the adapter took "auto" from the container's own Claude settings, and its
-  auto-approval check, not midas, refused the bot's first private `say`.
+  midas also turns off Claude Code's built-in tools, settings files and every
+  other MCP server (`acp::bot_fence`), so the agent's own fence stands in front
+  of midas's. A chat-driven agent with a shell would be a shell for whoever
+  chats; it has none. Mode `default`, which midas sets at every start, matters
+  as much: without it the old adapter took "auto" from the container's own
+  Claude settings, and its auto-approval check, not midas, refused the bot's
+  first private `say`.
 - **Its input is `inbox`**, a tool made for the host and not the model: it
   waits like `read_chat` and answers with the lines as `read_chat` words them,
   then every picture from a private chat as an image. A camera picture
