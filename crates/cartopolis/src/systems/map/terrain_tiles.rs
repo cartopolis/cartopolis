@@ -71,12 +71,47 @@ static DECKS: CoverageSlot = CoverageSlot::new("decks", "/decks/coverage.json", 
 /// (`cartopolis_geo::road_levels`).
 static ROADS: CoverageSlot = CoverageSlot::new("roads", "/roads/coverage.json", TILE_ZOOM);
 
+/// Where atlas publishes which cells it pre-cut the flat ground of
+/// (`cartopolis_geo::ground_sheets`).
+static GROUND: CoverageSlot = CoverageSlot::new("ground", "/ground/coverage.json", TILE_ZOOM);
+
 /// Keep the coverage question moving from startup, so it has usually answered
 /// before the first field is asked for.
 pub fn prefetch_terrain_coverage(time: Res<Time>) {
     COVERAGE.ensure(time.elapsed_secs_f64());
     DECKS.ensure(time.elapsed_secs_f64());
     ROADS.ensure(time.elapsed_secs_f64());
+    GROUND.ensure(time.elapsed_secs_f64());
+}
+
+/// A cell's flat ground as atlas cut it, or `None` where atlas has not
+/// (`cartopolis_geo::ground_sheets`). Whether it may be used is the caller's
+/// question — `PreCut::sheets` answers it against the inputs the cell was
+/// actually built from.
+///
+/// Per extraction run (the manifest's `stamp`), so a re-run is a new file, and
+/// decoded before it is kept, so a bad body is never cached. Anything that goes
+/// wrong is `None`: the cell then cuts its own ground, as it always did.
+pub(crate) async fn load_ground_sheets(
+    cx: i64,
+    cy: i64,
+) -> Option<cartopolis_geo::ground_sheets::PreCut> {
+    if !GROUND.covers(cx, cy) {
+        return None;
+    }
+    let stamp = GROUND.stamp();
+    let key = format!("ground/{stamp}/{TILE_ZOOM}/{cx}/{cy}.bin");
+    if let Some(b) = storage::get(storage::Namespace::Cache, &key).await {
+        return cartopolis_geo::ground_sheets::decode(&b).ok();
+    }
+    let url = format!(
+        "{}/ground/{TILE_ZOOM}/{cx}/{cy}.bin?v={stamp}",
+        crate::systems::osm_buildings::tdbag_url()
+    );
+    let b = http::fetch_optional(http::Request::get(url)).await.ok()??;
+    let cut = cartopolis_geo::ground_sheets::decode(&b).ok()?;
+    storage::put(storage::Namespace::Cache, &key, &b).await;
+    Some(cut)
 }
 
 /// The road heights atlas solved for a cell's streets while grading it, keyed by

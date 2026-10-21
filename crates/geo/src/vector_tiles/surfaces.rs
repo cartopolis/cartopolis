@@ -82,6 +82,98 @@ pub enum SurfaceGroup {
 }
 
 impl SurfaceGroup {
+    /// Whether this group is part of the flat ground — the sheets the basemap
+    /// image stands in for above the flat ground's band, and the ones
+    /// `crate::ground_sheets` builds. Everything with volume (trees, furniture,
+    /// kerbs, tunnels, decks) is not.
+    #[must_use]
+    pub fn is_flat_ground(self) -> bool {
+        !matches!(
+            self,
+            Self::Canopy
+                | Self::Trunk
+                | Self::Furniture
+                | Self::Kerb
+                | Self::TunnelRoad(_)
+                | Self::TunnelStructure
+                | Self::BridgeDeck
+        )
+    }
+
+    /// A stable number for this group in a file (`crate::ground_sheets`).
+    /// **Append, never renumber**: a pre-cut cell on a host outlives the build
+    /// that wrote it. Exhaustive on purpose, so a new group does not compile until
+    /// it has a code.
+    #[must_use]
+    pub fn code(self) -> u16 {
+        let class = |c: RoadClass| -> u16 {
+            match c {
+                RoadClass::Motorway => 0,
+                RoadClass::Carriageway => 1,
+                RoadClass::Major => 2,
+                RoadClass::Minor => 3,
+                RoadClass::Path => 4,
+                RoadClass::Rail => 5,
+            }
+        };
+        match self {
+            Self::Water => 0,
+            Self::Forest => 1,
+            Self::Grass => 2,
+            Self::Sand => 3,
+            Self::Built => 4,
+            Self::BridgeDeck => 5,
+            Self::Canopy => 6,
+            Self::Trunk => 7,
+            Self::Furniture => 8,
+            Self::Kerb => 9,
+            Self::Paving => 10,
+            Self::Crop => 11,
+            Self::TunnelStructure => 12,
+            Self::QuayWall => 13,
+            Self::Road(c) => 32 + class(c),
+            Self::RoadCasing(c) => 48 + class(c),
+            Self::TunnelRoad(c) => 64 + class(c),
+        }
+    }
+
+    /// [`Self::code`] back to a group, or `None` for a code this build does not
+    /// know.
+    #[must_use]
+    pub fn from_code(code: u16) -> Option<Self> {
+        let class = |c: u16| -> Option<RoadClass> {
+            Some(match c {
+                0 => RoadClass::Motorway,
+                1 => RoadClass::Carriageway,
+                2 => RoadClass::Major,
+                3 => RoadClass::Minor,
+                4 => RoadClass::Path,
+                5 => RoadClass::Rail,
+                _ => return None,
+            })
+        };
+        Some(match code {
+            0 => Self::Water,
+            1 => Self::Forest,
+            2 => Self::Grass,
+            3 => Self::Sand,
+            4 => Self::Built,
+            5 => Self::BridgeDeck,
+            6 => Self::Canopy,
+            7 => Self::Trunk,
+            8 => Self::Furniture,
+            9 => Self::Kerb,
+            10 => Self::Paving,
+            11 => Self::Crop,
+            12 => Self::TunnelStructure,
+            13 => Self::QuayWall,
+            32..=47 => Self::Road(class(code - 32)?),
+            48..=63 => Self::RoadCasing(class(code - 48)?),
+            64..=79 => Self::TunnelRoad(class(code - 64)?),
+            _ => return None,
+        })
+    }
+
     /// Base colour for the group's material. Lit by the scene's own sun, unlike the
     /// raster path's baked-in shading — this is the point of ADR-035 option B.
     #[must_use]
@@ -444,10 +536,9 @@ pub fn unhandled_land_kinds(tile: &TileData) -> Vec<(String, usize)> {
 /// the same convention `map_stream` places its ground quads in, so the caller only
 /// has to position the tile's corner.
 ///
-/// `PartialEq` compares the vertex data bit for bit, `NaN` included — which is
-/// what a round trip through [`crate::ground_file`] has to prove, and is the only
-/// thing it is used for. It is not a claim that two meshes drawing the same ground
-/// are equal.
+/// `PartialEq` compares the vertex data bit for bit, `NaN` included — what a
+/// test of a round trip needs. It is not a claim that two meshes drawing the same
+/// ground are equal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMesh {
     pub group: SurfaceGroup,

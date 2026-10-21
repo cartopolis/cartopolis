@@ -32,6 +32,7 @@ pub mod gardens;
 pub mod gasfield;
 pub mod geom;
 pub mod geotop;
+pub mod ground;
 pub mod http;
 pub mod lod22;
 pub mod models;
@@ -672,6 +673,18 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "terrain/coverage.json",
         typical_minutes: 1,
         run: terrain::run,
+    },
+    Dataset {
+        id: "ground",
+        label: "Ground, pre-cut",
+        description: "Every cell's flat ground — fills, paving, crops, roads and the gap fill — \
+                      cut into one partition with the client's own code, so a phone does not \
+                      spend seconds a cell cutting it. Reads the paving, the photo's \
+                      measurements, the parcels and the decks, so it runs after bgt, roofs, brp \
+                      and terrain; a cell whose inputs have moved since is cut by the client.",
+        coverage: "ground/coverage.json",
+        typical_minutes: 5,
+        run: ground::run,
     },
 ];
 

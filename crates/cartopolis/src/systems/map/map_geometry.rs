@@ -92,18 +92,10 @@ pub fn ground_meshes_enabled() -> bool {
     })
 }
 
-/// A group that lies flat on the ground, which the basemap image already shows.
+/// A group that lies flat on the ground, which the basemap image already shows
+/// (`SurfaceGroup::is_flat_ground`, shared with atlas's pre-cut sheets).
 fn is_flat_ground(group: SurfaceGroup) -> bool {
-    !matches!(
-        group,
-        SurfaceGroup::Canopy
-            | SurfaceGroup::Trunk
-            | SurfaceGroup::Furniture
-            | SurfaceGroup::Kerb
-            | SurfaceGroup::TunnelRoad(_)
-            | SurfaceGroup::TunnelStructure
-            | SurfaceGroup::BridgeDeck
-    )
+    group.is_flat_ground()
 }
 
 /// Stage stopwatch for one cell job: which of a dozen passes a cell's second
@@ -1466,6 +1458,11 @@ fn spawn_geometry_task(
             let crop_task = io.spawn(crate::systems::crops::load_crop_cell(cell.0, cell.1));
             let decks_task = io.spawn(crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1));
             let roads_task = io.spawn(crate::systems::terrain_tiles::load_road_heights(cell.0, cell.1));
+            // …and the flat ground, already cut, where atlas has cut it — only
+            // where the flat ground is drawn at all (`ground_sheets`).
+            let precut_task = wants.flat_ground.then(|| {
+                io.spawn(crate::systems::terrain_tiles::load_ground_sheets(cell.0, cell.1))
+            });
             // …and the registered houseboat berths, which ride in the BAG's places
             // file (shared with `building_facts`, which fetches it anyway).
             let berths_task = wants
@@ -1520,6 +1517,10 @@ fn spawn_geometry_task(
             let crop_cell = crop_task.await;
             let atlas_decks = decks_task.await;
             let road_heights = roads_task.await;
+            let precut = match precut_task {
+                Some(task) => task.await,
+                None => None,
+            };
             let berths = match berths_task {
                 Some(task) => task.await,
                 None => Vec::new(),
@@ -1575,6 +1576,18 @@ fn spawn_geometry_task(
                 // clipmap tiles are magnifying this same z14 body right now: the
                 // geometry cell and the basemap ring stream the same ground at the
                 // same moment, and used to decode it twice over.
+                // What this cell's flat ground is built from, to hold atlas's
+                // pre-cut sheets against — only when there are some to hold.
+                let fingerprint = match (&precut, &fetched) {
+                    (Some(_), Ok(bytes)) => Some(cartopolis_geo::ground_sheets::fingerprint(
+                        bytes,
+                        &paving,
+                        &measured,
+                        &crop_cell,
+                        atlas_decks.as_deref(),
+                    )),
+                    _ => None,
+                };
                 let parsed = fetched
                     .map_err(|e| format!("surface tile fetch failed: {e}"))
                     .and_then(|bytes| {
@@ -1635,121 +1648,16 @@ fn spawn_geometry_task(
                             // where the paving file carries carriageways, so a
                             // cell surveyed before atlas took them keeps its
                             // ribbons.
-                            let cover = if paved.iter().any(|a| {
-                                matches!(
-                                    a.kind,
-                                    crate::systems::paving::PavingKind::Street
-                                        | crate::systems::paving::PavingKind::LivingStreet
-                                )
-                            }) {
-                                cartopolis_geo::road_texture::SurveyedCover::Streets
-                            } else if paved.is_empty() {
-                                cartopolis_geo::road_texture::SurveyedCover::Nothing
-                            } else {
-                                cartopolis_geo::road_texture::SurveyedCover::Paths
-                            };
+                            let cover = cartopolis_geo::ground_sheets::surveyed_cover(&paved);
                             cell_places.surveyed.3 = paved.len();
                             cell_places.paving =
                                 cartopolis_geo::paving::PavingIndex::new(&paved, tile_m);
-                            // Held back rather than appended here: the carriageways
-                            // have to come out of it, and they do not exist yet.
-                            // See `paving::cut_paving_under_roads` below.
-                            // **Only where the flat ground is drawn.** Above
-                            // `FLAT_GROUND_OFF_M` every sheet below is dropped
-                            // before the drape, and the cuts that shape them —
-                            // paving against roads, fills against both, crops,
-                            // the gap fill — were 3.5–4.5 s of a cell's worker
-                            // time on the Deck (2026-10-21), all thrown away. The
-                            // roads are still tessellated: the bridges, their
-                            // approaches and the road mask come out of them.
-                            let sheets = wants.flat_ground;
-                            let mut paving_meshes = if sheets {
-                                crate::systems::paving::build_paving_meshes(&paved, mesh_bytes)
-                            } else {
-                                Vec::new()
-                            };
-                            // **Nor under a bridge laid flat.** The survey maps the
-                            // road surface across a canal bridge as it does the
-                            // street, and stood on the ground under the deck that
-                            // paving lay on the canal bed: pale slopes falling
-                            // from each quay into the water under the Oosterbrug,
-                            // and on the mounds before them (2026-10-19). The deck
-                            // is that surface. Only where atlas measured the decks
-                            // and this one is flat: under a viaduct the paving is
-                            // the street that runs beneath it.
-                            let flat_decks: Vec<SurfaceMesh> = atlas_decks
-                                .as_deref()
-                                .and_then(|a| {
-                                    crate::systems::terrain_tiles::match_atlas_decks(
-                                        &decks, tile_m, a,
-                                    )
-                                })
-                                .map(|m| {
-                                    m.iter()
-                                        .zip(&decks)
-                                        .filter(|(d, _)| {
-                                            d.height < cartopolis_geo::terrain_grade::MIN_LIFT_M
-                                        })
-                                        .map(|(_, deck)| SurfaceMesh {
-                                            group: SurfaceGroup::BridgeDeck,
-                                            positions: deck.positions.clone(),
-                                            indices: deck.indices.clone(),
-                                            uvs: Vec::new(),
-                                            normals: Vec::new(),
-                                            colors: Vec::new(),
-                                            rungs: Vec::new(),
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            if !flat_decks.is_empty() {
-                                cartopolis_geo::road_stitch::cut_under_roads(
-                                    &mut paving_meshes,
-                                    &flat_decks,
-                                );
-                            }
-                            // The registered crops go down over the generic green
-                            // and under everything else on the ground stack
-                            // (`SurfaceGroup::Crop`), so a field takes its own
-                            // colour without disturbing a single road, canal or
-                            // pavement. Held past the mesh build because the
-                            // arable ones are the grass keep-out below.
+                            // The parcels, for the grass keep-out and the count;
+                            // their meshes are the flat sheets' (`ground_sheets`).
                             let parcels = crate::systems::crops::crop_parcels(
                                 &crop_cell, cell.0, cell.1, tile_m,
                             );
                             cell_places.surveyed.4 = parcels.len();
-                            // Held back past the road cut below and partitioned
-                            // against the whole finished ground in one pass of
-                            // its own (`crops::cut_into_ground`) once the roads
-                            // and the paving are in.
-                            let mut crop_meshes = if sheets {
-                                cartopolis_geo::crops::build_crop_meshes(&parcels, mesh_bytes)
-                            } else {
-                                Vec::new()
-                            };
-                            // **The ground's sheets as laid, before they are cut
-                            // into each other.** A cut only takes out where two
-                            // sheets overlap, so it never changes the ground they
-                            // cover between them — and that union is all the
-                            // paving cut below and the gap fill need. Asked of
-                            // the cut sheets instead, both paid for the slivers
-                            // every earlier cut leaves behind: over half of a
-                            // street-level cell's blocker triangles were under
-                            // 0.05 m² (`paving::cut_ground_under_roads_and_paving`).
-                            // Taken after the paving's cut under the flat decks,
-                            // which does change what is covered.
-                            let paving_whole = paving_meshes.clone();
-                            let mut ground_whole: Vec<SurfaceMesh> = if sheets {
-                                meshes
-                                    .iter()
-                                    .chain(&paving_meshes)
-                                    .chain(&crop_meshes)
-                                    .filter(|m| m.group.layer().is_sheet())
-                                    .cloned()
-                                    .collect()
-                            } else {
-                                Vec::new()
-                            };
                             lap.mark("paving");
                             if torn() {
                                 return;
@@ -1762,49 +1670,6 @@ fn spawn_geometry_task(
                                 cover,
                             ) {
                                 Ok(roads) => {
-                                    // **The carriageways come out of the paving
-                                    // before either is drawn.** The two sources
-                                    // disagree by centimetres about where a kerb
-                                    // is, and the ground stack held that overlap
-                                    // apart with 1.0 mm of height — which works
-                                    // until the ground is the measured one and
-                                    // each sheet is bent onto it against its own
-                                    // triangles. Removing the overlap is the only
-                                    // thing that has ever held here.
-                                    crate::systems::paving::cut_paving_under_roads(
-                                        &mut paving_meshes,
-                                        &roads.ground,
-                                    );
-                                    // **And the landuse fills come out from under
-                                    // them too.** Measured on the Groningen z14
-                                    // fixture: 67 % of the road sheet's area has
-                                    // built land drawn under it, 7 % grass and 2 %
-                                    // woodland — three quarters of every
-                                    // carriageway in the city was a second opaque
-                                    // coplanar surface, held apart by half a
-                                    // millimetre of `GroundLayer` clearance. That
-                                    // is the largest overlap left anywhere in the
-                                    // stack and it is the one in the phone
-                                    // captures: the pale wedges standing through
-                                    // the tarmac are `Built`, bent onto the
-                                    // measured ground against its own triangles
-                                    // rather than the road's.
-                                    //
-                                    // …and from under the paving, for the same
-                                    // reason, in the same pass and against the
-                                    // paving as laid
-                                    // (`paving::cut_ground_under_roads_and_paving`).
-                                    if sheets {
-                                        cartopolis_geo::paving::cut_ground_under_roads_and_paving(
-                                            &mut meshes,
-                                            &roads.ground,
-                                            &paving_whole,
-                                        );
-                                    }
-                                    if sheets {
-                                        ground_whole.extend(roads.ground.iter().cloned());
-                                    }
-                                    meshes.extend(std::mem::take(&mut paving_meshes));
                                     // Where each deck's railings run: off the
                                     // roads it carries, or — for a deck the
                                     // tiles put no road on, whose street is
@@ -1866,49 +1731,44 @@ fn spawn_geometry_task(
                             if torn() {
                                 return;
                             }
-                            // A cell whose roads failed still has its pavements,
-                            // uncut because there is nothing to cut them against.
-                            // `take` above makes this the empty vector on the
-                            // ordinary path rather than a second copy.
-                            if sheets {
-                                cartopolis_geo::paving::cut_ground_under_paving(
-                                    &mut meshes,
-                                    &paving_meshes,
-                                );
+                            // **The flat sheets — fills, paving, crops, roads and
+                            // the gap fill — cut into one partition**, only where
+                            // the flat ground is drawn (above `FLAT_GROUND_OFF_M`
+                            // the basemap image is the ground, and the cuts were
+                            // 3.5–4.5 s of a cell's worker time thrown away).
+                            // Atlas's copy when it was cut from exactly what this
+                            // cell has (`ground_sheets::PreCut::sheets`), this
+                            // cell's own cut otherwise — one function either way,
+                            // so the two cannot disagree. The roads tessellated
+                            // above stay for their decks, approaches and railings;
+                            // the sheets bring their own.
+                            if wants.flat_ground {
+                                let shipped = precut
+                                    .zip(fingerprint)
+                                    .and_then(|(cut, fp)| cut.sheets(fp, tile_m));
+                                let from_atlas = shipped.is_some();
+                                let sheets = match shipped {
+                                    Some(sheets) => Ok(sheets),
+                                    None => cartopolis_geo::ground_sheets::build_sheets(
+                                        &tile,
+                                        tile_m,
+                                        mesh_bytes,
+                                        &paved,
+                                        &parcels,
+                                        atlas_decks.as_deref(),
+                                    ),
+                                };
+                                match sheets {
+                                    Ok(sheets) => {
+                                        meshes.retain(|m| !m.group.is_flat_ground());
+                                        meshes.extend(sheets);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(cell = ?cell, error = %e, "ground sheets failed");
+                                    }
+                                }
+                                lap.mark(if from_atlas { "sheets(atlas)" } else { "sheets" });
                             }
-                            meshes.extend(std::mem::take(&mut paving_meshes));
-                            // And the crop parcels rejoin here, on both paths,
-                            // with the ground made a partition around them: the
-                            // grass under a field comes out, and the field under
-                            // a canal, a wood or a road does. Without it every
-                            // field was two sheets over one piece of ground and
-                            // drew in blotches once relief bent them apart.
-                            // Position in this vector means nothing: a sheet's
-                            // place in the ground stack is its group's rung.
-                            if sheets {
-                                cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
-                            }
-                            meshes.extend(crop_meshes);
-                            // **And the ground nothing covered.** Every flat sheet
-                            // is in by now; what is left of the cell is a hole that
-                            // used to show the basemap underneath, and the basemap
-                            // is no longer drawn under a built cell
-                            // (`cartopolis_geo::gap_fill`). Asked of the sheets as
-                            // laid, which cover exactly what the cut ones do.
-                            if let Some(fill) = sheets
-                                .then(|| {
-                                    cartopolis_geo::gap_fill::gap_fill(
-                                        &ground_whole,
-                                        [0.0, 0.0],
-                                        [tile_m, tile_m],
-                                        cartopolis_geo::vector_tiles::palette::RESIDENTIAL,
-                                    )
-                                })
-                                .flatten()
-                            {
-                                meshes.push(fill);
-                            }
-                            lap.mark("gap fill");
                             if torn() {
                                 return;
                             }
