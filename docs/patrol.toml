@@ -20,9 +20,15 @@
 # fly it again with `--only <stop> --repeat 3`, and if it holds, move it into
 # `docs/perf.toml` as a scenario with a description of the cost it exercises.
 #
-# Ground level does not settle in reasonable time on a CPU rasteriser; fly this on
-# a node with a GPU (`docs/notes/performance-suite.md`). The counts are evidence
-# anywhere, the frame times only there.
+# Where to fly it, by what the question needs:
+#
+#   counts and frame times  mac-1 / mac-2. Ground level does not settle in
+#                           reasonable time on vps-1's CPU rasteriser.
+#   fill                    vps-1 only: a count, so its CPU arithmetic is the
+#                           handset's. No Mac reports it.
+#   GPU time per pass       the Mac workstation, with `--features perf`. The
+#                           node Macs are VMs whose paravirtual GPU has no Metal
+#                           counters, so the suite cannot time passes there.
 
 tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
 size = "640x360"
