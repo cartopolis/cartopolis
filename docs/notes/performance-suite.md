@@ -4,8 +4,8 @@ triggers: ["cargo perf", perf.toml, "turn window", material_modified_per_frame, 
   "slow", "profiling", "fragment shader invocations", "overdraw", "gpu time",
   RenderDiagnosticsPlugin, MeshAllocatorDiagnosticPlugin, SystemInformationDiagnosticsPlugin,
   "residency", "resident_kb", quiet, "steady window", "perf feature", "--repeat",
-  median, spread]
-updated: 2026-10-16
+  median, spread, patrol, "patrol.toml", hotspot]
+updated: 2026-10-21
 ---
 
 # Measuring what the client costs, and what a measurement here is worth
@@ -181,6 +181,35 @@ That is ~100 MB on a handset. **It is not a free win**: lowering it buys the mem
 back by reallocating more often, and a reallocation is a buffer copy, i.e. exactly
 the upload burst `docs/notes/upload-bursts.md` records as having cost this project
 a device. Worth measuring before it is worth doing.
+
+## Patrols: finding the places nobody named
+
+Every scenario above is a place somebody already suspected. A `[[patrol]]` in a
+perf manifest is a grid over an area (`area`, `step_m`, `altitudes`, `looks`)
+that expands into ordinary scenarios at load, named
+`<patrol>-<alt>m-r<row>c<col>`; `docs/patrol.toml` holds Groningen's centre. The
+report gains a `patrols` section ranking each patrol's stops against each other,
+column by column, with each dearest stop's pose and its ratio to the patrol's
+median (`perf patrol` log lines carry the top three).
+
+Decided (2026-10-21), so nobody re-derives them:
+
+- **A manifest section, not a script driving the client over MCP.** The patrol
+  flies through the same harness as every scenario and inherits its settle,
+  `quiet`, repeats and median/range for nothing. The client's MCP server is for
+  what comes after a stop is flagged: going there, switching things off, looking.
+- **Serpentine, altitude outermost**, so each move is one grid step and the
+  streamers keep most of what they hold. A stop's `load` window is therefore a
+  short move, not a teleport, and is not ranked.
+- **Ranked within one patrol only.** Two patrols' stops were picked for different
+  reasons; the ranking compares like with like, on one build, in one launch.
+- **Counts lead, frame times are listed.** Draws, triangles, residency, fill and
+  material churn transfer; `frame_ms_*` is ranked because it is what a person
+  feels, and means nothing when `meta.software_renderer` is true.
+- **A ranking is a question.** A stop still streaming ranks high for that alone,
+  so each hotspot carries `settled` and `quiet`; a stop whose range overlaps the
+  next one down has not out-ranked it. One that holds under `--only <stop>
+  --repeat 3` earns a `[[scenario]]` in `docs/perf.toml`.
 
 ## What it has found, and what it has withdrawn
 

@@ -79,6 +79,22 @@
 //! And a repeat's `load` window is **not a cold one** — the tiles are already in
 //! the process's memory and on disk — so `load` medians describe a re-teleport.
 //! `steady` is what the flag is for.
+//!
+//! ## Patrols
+//!
+//! A scenario is a place somebody already suspected. A `[[patrol]]` is how to
+//! find the ones nobody did: a grid of stops over an area, at one or more
+//! altitudes and headings, expanded into ordinary scenarios when the manifest
+//! loads (`docs/patrol.toml`). Each stop is flown and measured like any other,
+//! and the report gains a [`PatrolReport`] per patrol — for each column that
+//! transfers, the dearest stops and how far above the patrol's own median they
+//! sit. That ranking is the whole product: a stop that draws three times what
+//! its neighbours draw is a question with a pose attached, and `--only <stop>`
+//! flies it again on its own.
+//!
+//! The stops are flown serpentine, so each move is one grid step and the
+//! streamers keep most of what they hold. A stop's `load` window is therefore
+//! the cost of a short move, not of a teleport, and is left out of the ranking.
 
 use std::path::{Path, PathBuf};
 
@@ -132,6 +148,123 @@ pub struct PerfManifest {
     pub steady_frames: Option<u32>,
     #[serde(default, rename = "scenario")]
     pub scenarios: Vec<PerfScenario>,
+    /// Expanded into `scenarios` by [`PerfManifest::load`]; see the module doc.
+    #[serde(default, rename = "patrol")]
+    pub patrols: Vec<PerfPatrol>,
+}
+
+/// Most stops one patrol may expand to. A `step_m` a decimal place too small
+/// over a city is tens of thousands of stops — days of flying — and the run
+/// should refuse that at startup rather than an hour in.
+pub const MAX_PATROL_STOPS: usize = 1000;
+
+/// A grid of stops over an area. See the module doc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerfPatrol {
+    /// Prefix of every stop's name, and what `--only` takes to fly them all.
+    pub name: String,
+    pub description: Option<String>,
+    /// `[south, west, north, east]` in degrees. The grid starts at the
+    /// south-west corner and stops short of the far edges by less than a step.
+    pub area: [f64; 4],
+    /// Grid spacing, in metres on the ground.
+    pub step_m: f64,
+    /// Every grid point is visited at each of these, in metres above the ground.
+    pub altitudes: Vec<f64>,
+    /// `[pitch, yaw]` per stop, as a scenario's `look`. Default straight down.
+    #[serde(default)]
+    pub looks: Option<Vec<[f32; 2]>>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Required, for the reason [`PerfScenario::time`] gives.
+    #[serde(default)]
+    pub time: Option<f32>,
+    #[serde(default)]
+    pub fog: Option<f32>,
+    #[serde(default)]
+    pub clouds: Option<f32>,
+    #[serde(default)]
+    pub rain: Option<f32>,
+    #[serde(default)]
+    pub steady_frames: Option<u32>,
+}
+
+impl PerfPatrol {
+    /// The stops, in the order they are flown: altitude by altitude, each grid
+    /// row walked in the opposite direction to the last, so every move is one
+    /// step and the streamers keep most of what they hold.
+    pub fn expand(&self) -> Result<Vec<PerfScenario>, String> {
+        let who = &self.name;
+        let [south, west, north, east] = self.area;
+        if !(south < north && west < east) {
+            return Err(format!(
+                "patrol {who:?}: area wants [south, west, north, east], got {:?}",
+                self.area
+            ));
+        }
+        if !(self.step_m > 0.0) {
+            return Err(format!("patrol {who:?}: step_m must be above zero"));
+        }
+        if self.altitudes.is_empty() {
+            return Err(format!("patrol {who:?}: no altitudes"));
+        }
+        if self.time.is_none() {
+            return Err(format!(
+                "patrol {who:?} leaves the time of day to the clock, so its shadow \
+                 cascades differ stop to stop and the ranking is noise; set `time`"
+            ));
+        }
+        let looks = self.looks.clone().unwrap_or_else(|| vec![[-90.0, 0.0]]);
+        if looks.is_empty() {
+            return Err(format!("patrol {who:?}: `looks` is empty"));
+        }
+        let (per_lat, per_lng) = cartopolis_core::geo::degree_scale_m((south + north) / 2.0);
+        let (dlat, dlng) = (self.step_m / per_lat, self.step_m / per_lng);
+        // A millionth of a step of slack, so an area drawn as an exact multiple
+        // of the step keeps its far edge instead of losing it to rounding.
+        let rows = ((north - south) / dlat + 1e-6).floor() as usize + 1;
+        let cols = ((east - west) / dlng + 1e-6).floor() as usize + 1;
+        let total = rows * cols * self.altitudes.len() * looks.len();
+        if total > MAX_PATROL_STOPS {
+            return Err(format!(
+                "patrol {who:?} expands to {total} stops ({rows}×{cols} points × {} \
+                 altitudes × {} looks), over the {MAX_PATROL_STOPS} cap; widen step_m",
+                self.altitudes.len(),
+                looks.len()
+            ));
+        }
+        let mut stops = Vec::with_capacity(total);
+        for &alt in &self.altitudes {
+            for row in 0..rows {
+                for k in 0..cols {
+                    let col = if row % 2 == 0 { k } else { cols - 1 - k };
+                    for (i, look) in looks.iter().enumerate() {
+                        let mut name = format!("{who}-{alt:.0}m-r{row}c{col}");
+                        if looks.len() > 1 {
+                            name.push_str(&format!("-l{i}"));
+                        }
+                        stops.push(PerfScenario {
+                            name,
+                            description: self.description.clone(),
+                            at: [south + row as f64 * dlat, west + col as f64 * dlng, alt],
+                            look: Some(*look),
+                            mode: self.mode.clone(),
+                            time: self.time,
+                            fog: self.fog,
+                            clouds: self.clouds,
+                            rain: self.rain,
+                            ui: None,
+                            hide_ui: None,
+                            steady_frames: self.steady_frames,
+                            patrol: Some(who.clone()),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(stops)
+    }
 }
 
 /// One measured viewpoint.
@@ -167,15 +300,40 @@ pub struct PerfScenario {
     pub hide_ui: Option<bool>,
     #[serde(default)]
     pub steady_frames: Option<u32>,
+    /// The patrol this stop was expanded from; never written in a manifest.
+    #[serde(skip)]
+    pub patrol: Option<String>,
 }
 
 impl PerfManifest {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let manifest: PerfManifest =
+        let mut manifest: PerfManifest =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        for patrol in &manifest.patrols {
+            if manifest
+                .patrols
+                .iter()
+                .filter(|p| p.name == patrol.name)
+                .count()
+                > 1
+            {
+                return Err(format!(
+                    "{}: duplicate patrol {:?}",
+                    path.display(),
+                    patrol.name
+                ));
+            }
+            let stops = patrol
+                .expand()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            manifest.scenarios.extend(stops);
+        }
         if manifest.scenarios.is_empty() {
-            return Err(format!("{}: no [[scenario]] entries", path.display()));
+            return Err(format!(
+                "{}: no [[scenario]] or [[patrol]] entries",
+                path.display()
+            ));
         }
         for (i, s) in manifest.scenarios.iter().enumerate() {
             if manifest.scenarios[..i].iter().any(|o| o.name == s.name) {
@@ -189,12 +347,15 @@ impl PerfManifest {
         Ok(manifest)
     }
 
-    /// The scenarios `--only` names, or all of them.
+    /// The scenarios `--only` names, or all of them. A patrol's name selects
+    /// every one of its stops.
     ///
     /// An unknown name is an error rather than an empty run: `--only orbti` is a
     /// typo, and a suite that answers a typo with "0 scenarios, nothing wrong" is
     /// reporting green for the wrong reason.
     pub fn select(&self, only: &[String]) -> Result<Vec<&PerfScenario>, String> {
+        let named =
+            |s: &PerfScenario, name: &str| s.name == name || s.patrol.as_deref() == Some(name);
         if only.is_empty() {
             return Ok(self.scenarios.iter().collect());
         }
@@ -205,10 +366,17 @@ impl PerfManifest {
             .filter(|s| !s.is_empty())
             .collect();
         for name in &wanted {
-            if !self.scenarios.iter().any(|s| s.name == *name) {
-                let known: Vec<&str> = self.scenarios.iter().map(|s| s.name.as_str()).collect();
+            if !self.scenarios.iter().any(|s| named(s, name)) {
+                // A patrol's stops would bury the list, so name the patrol.
+                let mut known: Vec<&str> = self
+                    .scenarios
+                    .iter()
+                    .filter(|s| s.patrol.is_none())
+                    .map(|s| s.name.as_str())
+                    .collect();
+                known.extend(self.patrols.iter().map(|p| p.name.as_str()));
                 return Err(format!(
-                    "no scenario named {name:?}; the manifest has {}",
+                    "no scenario or patrol named {name:?}; the manifest has {}",
                     known.join(", ")
                 ));
             }
@@ -216,7 +384,7 @@ impl PerfManifest {
         Ok(self
             .scenarios
             .iter()
-            .filter(|s| wanted.contains(&s.name.as_str()))
+            .filter(|s| wanted.iter().any(|name| named(s, name)))
             .collect())
     }
 }
@@ -237,6 +405,20 @@ pub struct PerfRun {
     /// How many times each scenario is flown. `names` and `steady_frames` are
     /// already expanded by it, round-robin; this is kept for the report.
     pub repeat: u32,
+    /// Every patrol stop selected, once each, in manifest order — what the
+    /// ranking needs to say where a stop is.
+    pub stops: Vec<PatrolStop>,
+}
+
+/// Where one patrol stop is, for the ranking.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PatrolStop {
+    pub patrol: String,
+    pub scenario: String,
+    /// `[lat, lng, metres above the ground]`, as the manifest's `at`.
+    pub at: [f64; 3],
+    /// `[pitch, yaw]`, as the manifest's `look`.
+    pub look: [f32; 2],
 }
 
 /// Which window is open.
@@ -557,6 +739,9 @@ pub struct Report {
     /// One per `(scenario, phase)`, aggregated over the repeats. The individual
     /// flights are in the `perf window` log lines, not here.
     pub windows: Vec<WindowSummary>,
+    /// One per patrol flown; see the module doc.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patrols: Vec<PatrolReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +961,221 @@ fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary 
 }
 
 // ---------------------------------------------------------------------------
+// Ranking a patrol
+// ---------------------------------------------------------------------------
+
+/// Stops listed per column in a [`PatrolReport`].
+pub const PATROL_DEAREST: usize = 5;
+
+/// One patrol's stops, ranked column by column.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PatrolReport {
+    pub patrol: String,
+    pub stops: usize,
+    pub columns: Vec<PatrolColumn>,
+}
+
+/// One column across a patrol: what is ordinary there, and the dearest stops.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PatrolColumn {
+    pub phase: String,
+    pub column: String,
+    /// The median of the stops' medians — what this column reads at an
+    /// ordinary stop of this patrol.
+    pub patrol_median: f64,
+    /// Dearest first; stops reading zero are left out.
+    pub dearest: Vec<Hotspot>,
+}
+
+/// One stop that stood out.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Hotspot {
+    pub scenario: String,
+    pub at: [f64; 3],
+    pub look: [f32; 2],
+    /// The stop's own reading over its flights. A range wider than the gap to
+    /// the next stop down means the order between them is not a finding.
+    pub value: Stat,
+    /// `value.median` over [`PatrolColumn::patrol_median`]. Absent when that
+    /// median is zero: a column that is zero almost everywhere (material churn
+    /// on a still view) is read by its value, not by a ratio to nothing.
+    pub ratio: Option<f64>,
+    /// Whether every flight of this stop settled and, for a `steady` window,
+    /// went quiet. A stop that did not is a streaming measurement, and may rank
+    /// high for that reason alone.
+    pub settled: bool,
+    pub quiet: bool,
+}
+
+/// A column a patrol is ranked on.
+struct RankedColumn {
+    phase: &'static str,
+    column: &'static str,
+    read: fn(&WindowSummary) -> Option<Stat>,
+}
+
+/// The counts lead, because they are the same arithmetic on a software
+/// rasteriser as on a handset (`docs/notes/performance-suite.md`). The frame
+/// times are ranked too, being what a person feels, but say something only
+/// when `meta.software_renderer` is false.
+const RANKED: &[RankedColumn] = &[
+    RankedColumn {
+        phase: "steady",
+        column: "draws",
+        read: |w| Some(w.draws),
+    },
+    RankedColumn {
+        phase: "steady",
+        column: "tris_total",
+        read: |w| Some(w.tris_total),
+    },
+    RankedColumn {
+        phase: "steady",
+        column: "resident_kb",
+        read: |w| Some(w.resident_kb),
+    },
+    RankedColumn {
+        phase: "steady",
+        column: "fill",
+        read: fill,
+    },
+    RankedColumn {
+        phase: "steady",
+        column: "material_modified_per_frame",
+        read: |w| Some(w.material_modified_per_frame),
+    },
+    RankedColumn {
+        phase: "steady",
+        column: "frame_ms_mean",
+        read: |w| Some(w.frame_ms_mean),
+    },
+    RankedColumn {
+        phase: "turn",
+        column: "frame_ms_max",
+        read: |w| Some(w.frame_ms_max),
+    },
+    RankedColumn {
+        phase: "turn",
+        column: "material_modified_per_frame",
+        read: |w| Some(w.material_modified_per_frame),
+    },
+    RankedColumn {
+        phase: "turn",
+        column: "mesh_added_per_frame",
+        read: |w| Some(w.mesh_added_per_frame),
+    },
+    RankedColumn {
+        phase: "turn",
+        column: "upload_kb",
+        read: |w| Some(w.upload_kb),
+    },
+    RankedColumn {
+        phase: "turn",
+        column: "stalls",
+        read: |w| Some(w.stalls),
+    },
+];
+
+/// Fragment-shader invocations over every pass that reports them: the
+/// window's whole fill, summed pass by pass (so its median is the sum of the
+/// passes' medians). Absent without the `perf` feature.
+fn fill(w: &WindowSummary) -> Option<Stat> {
+    let passes: Vec<Stat> = w
+        .gpu_passes
+        .iter()
+        .filter_map(|p| p.fragment_invocations)
+        .collect();
+    (!passes.is_empty()).then(|| Stat {
+        runs: passes.iter().map(|s| s.runs).min().unwrap_or(0),
+        min: passes.iter().map(|s| s.min).sum(),
+        median: passes.iter().map(|s| s.median).sum(),
+        max: passes.iter().map(|s| s.max).sum(),
+    })
+}
+
+/// Rank each patrol's stops against each other, one patrol at a time — stops
+/// from two patrols were picked for different reasons and are not comparable.
+#[must_use]
+pub fn rank_patrols(stops: &[PatrolStop], windows: &[WindowSummary]) -> Vec<PatrolReport> {
+    let mut patrols: Vec<&str> = Vec::new();
+    for stop in stops {
+        if !patrols.contains(&stop.patrol.as_str()) {
+            patrols.push(&stop.patrol);
+        }
+    }
+    patrols
+        .into_iter()
+        .map(|patrol| {
+            let mine: Vec<&PatrolStop> = stops.iter().filter(|s| s.patrol == patrol).collect();
+            let columns = RANKED
+                .iter()
+                .filter_map(|c| {
+                    let mut rows: Vec<(&PatrolStop, &WindowSummary, Stat)> = mine
+                        .iter()
+                        .filter_map(|stop| {
+                            let w = windows
+                                .iter()
+                                .find(|w| w.scenario == stop.scenario && w.phase == c.phase)?;
+                            Some((*stop, w, (c.read)(w)?))
+                        })
+                        .collect();
+                    let patrol_median = Stat::of(rows.iter().map(|r| r.2.median))?.median;
+                    rows.sort_by(|a, b| b.2.median.total_cmp(&a.2.median));
+                    let dearest = rows
+                        .into_iter()
+                        .filter(|r| r.2.median > 0.0)
+                        .take(PATROL_DEAREST)
+                        .map(|(stop, w, value)| Hotspot {
+                            scenario: stop.scenario.clone(),
+                            at: stop.at,
+                            look: stop.look,
+                            value,
+                            ratio: (patrol_median > 0.0).then(|| value.median / patrol_median),
+                            settled: w.settled_runs == w.runs,
+                            quiet: w.quiet_runs == w.runs,
+                        })
+                        .collect();
+                    Some(PatrolColumn {
+                        phase: c.phase.to_string(),
+                        column: c.column.to_string(),
+                        patrol_median,
+                        dearest,
+                    })
+                })
+                .collect();
+            PatrolReport {
+                patrol: patrol.to_string(),
+                stops: mine.len(),
+                columns,
+            }
+        })
+        .collect()
+}
+
+/// The top of each ranked column as log lines, so a shell learns where to look
+/// without opening the JSON.
+fn log_patrol(p: &PatrolReport) {
+    for c in &p.columns {
+        for h in c.dearest.iter().take(3) {
+            tracing::info!(
+                patrol = %p.patrol,
+                phase = %c.phase,
+                column = %c.column,
+                scenario = %h.scenario,
+                value = format!("{:.1} ({:.1}..{:.1})", h.value.median, h.value.min, h.value.max),
+                ratio = h.ratio.map_or_else(|| "-".into(), |r| format!("{r:.2}")),
+                patrol_median = format!("{:.1}", c.patrol_median),
+                settled = h.settled,
+                quiet = h.quiet,
+                at = format!("{:.5},{:.5},{:.0}", h.at[0], h.at[1], h.at[2]),
+                look = format!("{:.0},{:.0}", h.look[0], h.look[1]),
+                "perf patrol"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reading Bevy's diagnostics
 // ---------------------------------------------------------------------------
 
@@ -960,6 +1360,17 @@ pub fn build(
         out,
         size: format!("{}x{}", parsed.x, parsed.y),
         repeat,
+        stops: selected
+            .iter()
+            .filter_map(|s| {
+                Some(PatrolStop {
+                    patrol: s.patrol.clone()?,
+                    scenario: s.name.clone(),
+                    at: s.at,
+                    look: s.look.unwrap_or([-90.0, 0.0]),
+                })
+            })
+            .collect(),
     };
     Ok((harness, run))
 }
@@ -1392,6 +1803,7 @@ fn finish(
         return;
     }
     perf.written = true;
+    let windows = summarise(&std::mem::take(&mut perf.samples));
     let report = Report {
         meta: ReportMeta {
             adapter: format!("{:?} {}", adapter.device_type, adapter.name),
@@ -1403,10 +1815,14 @@ fn finish(
             debug_assertions: cfg!(debug_assertions),
             repeat: run.repeat,
         },
-        windows: summarise(&std::mem::take(&mut perf.samples)),
+        patrols: rank_patrols(&run.stops, &windows),
+        windows,
     };
     for w in &report.windows {
         log_summary(w);
+    }
+    for p in &report.patrols {
+        log_patrol(p);
     }
     match serde_json::to_string_pretty(&report) {
         Ok(json) => match std::fs::write(&run.out, json) {
@@ -1459,7 +1875,9 @@ mod tests {
                 ui: None,
                 hide_ui: None,
                 steady_frames: None,
+                patrol: None,
             }],
+            patrols: Vec::new(),
         };
         assert!(manifest.select(&["orbti".into()]).is_err());
         assert_eq!(manifest.select(&["orbit".into()]).unwrap().len(), 1);
@@ -1652,6 +2070,189 @@ mod tests {
         );
 
         assert!(build(&manifest, &[], None, None, 0, out).is_err());
+    }
+
+    fn patrol(area: [f64; 4], step_m: f64) -> PerfPatrol {
+        PerfPatrol {
+            name: "p".into(),
+            description: None,
+            area,
+            step_m,
+            altitudes: vec![100.0],
+            looks: None,
+            mode: None,
+            time: Some(12.0),
+            fog: None,
+            clouds: None,
+            rain: None,
+            steady_frames: None,
+        }
+    }
+
+    #[test]
+    fn a_patrol_walks_its_grid_serpentine_and_keeps_the_far_edge() {
+        // 200 m by 300 m at a 100 m step: 3 rows of 4, edges included. Drawn
+        // with the scale at the area's middle, which is the one `expand` uses.
+        let north = 53.2 + 200.0 / cartopolis_core::geo::degree_scale_m(53.2).0;
+        let (per_lat, per_lng) = cartopolis_core::geo::degree_scale_m((53.2 + north) / 2.0);
+        let area = [53.2, 6.5, 53.2 + 200.0 / per_lat, 6.5 + 300.0 / per_lng];
+        let stops = patrol(area, 100.0).expand().unwrap();
+        let names: Vec<&str> = stops.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "p-100m-r0c0",
+                "p-100m-r0c1",
+                "p-100m-r0c2",
+                "p-100m-r0c3", //
+                "p-100m-r1c3",
+                "p-100m-r1c2",
+                "p-100m-r1c1",
+                "p-100m-r1c0", //
+                "p-100m-r2c0",
+                "p-100m-r2c1",
+                "p-100m-r2c2",
+                "p-100m-r2c3",
+            ]
+        );
+        // Every move is one step.
+        for pair in stops.windows(2) {
+            let (a, b) = (pair[0].at, pair[1].at);
+            let d = cartopolis_core::geo::ground_distance_m(a[0], a[1], b[0], b[1]);
+            assert!(
+                (d - 100.0).abs() < 1.0,
+                "{} → {}: {d} m",
+                pair[0].name,
+                pair[1].name
+            );
+        }
+        assert!(stops
+            .iter()
+            .all(|s| s.patrol.as_deref() == Some("p") && s.time == Some(12.0)));
+    }
+
+    #[test]
+    fn several_looks_name_each_stop_and_altitudes_go_outermost() {
+        let mut p = patrol([53.2, 6.5, 53.2001, 6.5001], 100.0);
+        p.altitudes = vec![50.0, 500.0];
+        p.looks = Some(vec![[-10.0, 0.0], [-10.0, 180.0]]);
+        let names: Vec<String> = p.expand().unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            [
+                "p-50m-r0c0-l0",
+                "p-50m-r0c0-l1",
+                "p-500m-r0c0-l0",
+                "p-500m-r0c0-l1"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_patrol_that_cannot_be_flown_is_refused_at_load() {
+        let mut no_time = patrol([53.2, 6.5, 53.21, 6.51], 100.0);
+        no_time.time = None;
+        assert!(no_time.expand().is_err());
+        // A city at a metre's step.
+        assert!(patrol([53.2, 6.5, 53.25, 6.6], 1.0).expand().is_err());
+        assert!(patrol([53.21, 6.5, 53.2, 6.51], 100.0).expand().is_err());
+        assert!(patrol([53.2, 6.5, 53.21, 6.51], 0.0).expand().is_err());
+    }
+
+    #[test]
+    fn a_patrols_name_selects_all_its_stops_and_one_stop_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("patrol.toml");
+        std::fs::write(
+            &path,
+            "[[scenario]]\nname = \"a\"\nat = [53.2, 6.5, 1000]\n\
+             [[patrol]]\nname = \"grid\"\narea = [53.2, 6.5, 53.2005, 6.5001]\n\
+             step_m = 50\naltitudes = [100]\ntime = 12.0\n",
+        )
+        .unwrap();
+        let manifest = PerfManifest::load(&path).unwrap();
+        assert_eq!(manifest.select(&[]).unwrap().len(), 3);
+        assert_eq!(manifest.select(&["grid".into()]).unwrap().len(), 2);
+        assert_eq!(
+            manifest.select(&["grid-100m-r1c0".into()]).unwrap().len(),
+            1
+        );
+        let err = manifest.select(&["gird".into()]).unwrap_err();
+        assert!(err.contains("a, grid"), "{err}");
+
+        let (_, run) = build(
+            &path,
+            &["grid".into()],
+            None,
+            None,
+            2,
+            dir.path().join("o.json"),
+        )
+        .unwrap();
+        assert_eq!(run.names.len(), 4);
+        // Once per stop, however many times it is flown.
+        assert_eq!(run.stops.len(), 2);
+    }
+
+    #[test]
+    fn the_ranking_puts_the_outlier_first_with_its_ratio() {
+        let stop = |name: &str| PatrolStop {
+            patrol: "grid".into(),
+            scenario: name.into(),
+            at: [53.2, 6.5, 100.0],
+            look: [-90.0, 0.0],
+        };
+        let stops = [stop("s1"), stop("s2"), stop("s3"), stop("s4"), stop("s5")];
+        let mut windows = Vec::new();
+        for (name, draws) in [
+            ("s1", 100),
+            ("s2", 110),
+            ("s3", 400),
+            ("s4", 90),
+            ("s5", 100),
+        ] {
+            windows.push(flight(name, "steady", None, draws));
+            windows.push(flight(name, "turn", None, draws));
+        }
+        let report = rank_patrols(&stops, &summarise(&windows));
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].stops, 5);
+        let draws = report[0]
+            .columns
+            .iter()
+            .find(|c| c.phase == "steady" && c.column == "draws")
+            .unwrap();
+        assert_eq!(draws.patrol_median, 100.0);
+        assert_eq!(draws.dearest[0].scenario, "s3");
+        assert_eq!(draws.dearest[0].ratio, Some(4.0));
+        assert_eq!(draws.dearest.len(), PATROL_DEAREST);
+        // Zero everywhere: ranked, with nothing to list and no ratio to give.
+        let churn = report[0]
+            .columns
+            .iter()
+            .find(|c| c.phase == "steady" && c.column == "material_modified_per_frame")
+            .unwrap();
+        assert_eq!(churn.patrol_median, 0.0);
+        assert!(churn.dearest.is_empty());
+        // No `perf` feature in these windows: no fill column at all.
+        assert!(!report[0].columns.iter().any(|c| c.column == "fill"));
+    }
+
+    #[test]
+    fn the_shipped_patrol_parses_and_fits_under_the_cap() {
+        let path = Path::new("docs/patrol.toml");
+        if !path.exists() {
+            return; // running from somewhere other than the repo root
+        }
+        let manifest = PerfManifest::load(path).expect("docs/patrol.toml parses");
+        assert!(!manifest.patrols.is_empty());
+        for p in &manifest.patrols {
+            assert!(
+                p.description.is_some(),
+                "patrol {:?} says nothing of why",
+                p.name
+            );
+        }
     }
 
     #[test]

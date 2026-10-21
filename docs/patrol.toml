@@ -1,0 +1,46 @@
+# Patrols: grids of stops the performance suite flies to find the dear places
+# nobody has named yet. `docs/perf.toml` holds places somebody already suspected;
+# this file is how to find the next one.
+#
+#     cargo run -p cartopolis -- --perf docs/patrol.toml --perf-out /tmp/patrol.json
+#     cargo run -p cartopolis -- --perf docs/patrol.toml --only centre --repeat 3
+#     cargo run -p cartopolis -- --perf docs/patrol.toml --only centre-120m-r2c1   # one stop again
+#
+#     # + the fill column, the one that transfers to a handset:
+#     cargo run -p cartopolis --features perf -- --perf docs/patrol.toml
+#
+# Each stop is an ordinary scenario, named `<patrol>-<altitude>m-r<row>c<col>`
+# (row 0 is the south edge, column 0 the west), flown serpentine so every move is
+# one grid step. The report's `patrols` section ranks the stops of each patrol
+# against each other, column by column, with the pose of each dearest stop and its
+# ratio to the patrol's median; the `perf patrol` log lines are its top three.
+#
+# A stop that ranks high is a question, not a finding. Before acting on one:
+# check `settled` and `quiet` (a stop still streaming ranks high for that alone),
+# fly it again with `--only <stop> --repeat 3`, and if it holds, move it into
+# `docs/perf.toml` as a scenario with a description of the cost it exercises.
+#
+# Ground level does not settle in reasonable time on a CPU rasteriser; fly this on
+# a node with a GPU (`docs/notes/performance-suite.md`). The counts are evidence
+# anywhere, the frame times only there.
+
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "640x360"
+settle = 2.0
+wait = 90.0
+steady_frames = 30
+
+[[patrol]]
+name = "centre"
+description = """
+Groningen's centre inside the canal ring, 1.2 km square at a 400 m step: 16 \
+points, each at street height and from 600 m. The city the other scenarios \
+measure one view of; here every part of it is compared with the rest."""
+area = [53.2140, 6.5575, 53.2248, 6.5755]
+step_m = 400.0
+altitudes = [120.0, 600.0]
+looks = [[-15.0, 0.0]]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
