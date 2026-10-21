@@ -133,7 +133,9 @@ mod imp {
 }
 
 /// The position at `t` on a time-ordered trail: interpolated between the
-/// samples either side, the first before it, the newest after it.
+/// samples either side, the first before it, the newest after it. Only the web
+/// has a trail to ask, and the tests.
+#[cfg(any(target_arch = "wasm32", test))]
 #[must_use]
 pub fn interpolate(
     trail: &std::collections::VecDeque<(f64, bevy::math::Vec2)>,
