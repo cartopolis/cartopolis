@@ -26,6 +26,14 @@ export function parseOwnersLine(line: string): string | null {
   return m ? `at ${m[4]} m: ${m[1]} (surface cells ${m[2]}, ${m[3]} MB)` : null;
 }
 
+/** A `map load` line's summary (`load_timing`): what set a load off, how long it
+ * took and which layers finished last. Marked in the probes' timelines, it is
+ * how two runs' fill times compare. */
+export function parseMapLoad(line: string): string | null {
+  const m = /\bmap load load = (.*)$/.exec(line);
+  return m ? m[1].replace(/[;"]+\s*$/, "") : null;
+}
+
 /**
  * A flight for the probes' `flight` script: altitudes over one place, each
  * posted to the page as the `cartopolis.place` message the World page uses
@@ -38,7 +46,8 @@ export const FLIGHT_DWELL_MS = 8000;
 /** The expression that sends the camera to `alt` metres over `FLIGHT_PLACE`. */
 export function flyExpression(alt: number): string {
   // On the World page the viewer is the `.home-world-frame` iframe; elsewhere it is the page.
-  return `(document.querySelector("iframe.home-world-frame")?.contentWindow ?? window).postMessage({type: "cartopolis.place", place: "${FLIGHT_PLACE},${alt}m"}, location.origin)`;
+  // The mark names the step in a browser profile (`firefox_probe --gecko-profile`).
+  return `(performance.mark("flew to ${alt} m"), (document.querySelector("iframe.home-world-frame")?.contentWindow ?? window).postMessage({type: "cartopolis.place", place: "${FLIGHT_PLACE},${alt}m"}, location.origin))`;
 }
 
 /** The fields of a `gpu`, `mesh memory` or `frame split` line, or `null` for any other. */

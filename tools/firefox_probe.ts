@@ -14,6 +14,16 @@
  *   bun tools/firefox_probe.ts --flight 30            # …or fly a fixed list of altitudes (`gpu_log.ts`)
  *   bun tools/firefox_probe.ts --fresh                # a first visit: delete the profile first
  *   bun tools/firefox_probe.ts --size 1400x1300 --dpr 2   # a Retina display: 2× the pixels each way
+ *   bun tools/firefox_probe.ts --flight 25 --gecko-profile /tmp/ff.json   # …with Firefox's own profiler
+ *
+ * `--gecko-profile PATH` records Firefox's built-in profiler from startup, with
+ * no person at the profiler's toolbar: the `MOZ_PROFILER_STARTUP` environment
+ * variables start it, and `MOZ_PROFILER_SHUTDOWN` writes the profile when the
+ * browser exits, so this closes Firefox politely and waits for the write. Every
+ * process is in it: the page's own thread, its Web Workers ("DOM Worker"), and
+ * the GPU process that runs WebGPU. Read it with `tools/gecko_profile.ts`, or
+ * load it into https://profiler.firefox.com. A release build kept unstripped
+ * (`CARGO_PROFILE_WEB_RELEASE_STRIP=none`) names the wasm functions.
  *
  * Without `--fresh` the profile is kept, so a second run is a returning visitor
  * (the IndexedDB caches, the stored shaders, the remembered camera).
@@ -35,7 +45,7 @@
  * opposite of what Chrome's `Input.dispatchMouseEvent` does.
  */
 import { parseArgs } from "node:util";
-import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
+import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseMapLoad, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
 
 const { values: opt } = parseArgs({
   options: {
@@ -51,6 +61,8 @@ const { values: opt } = parseArgs({
     screenshot: { type: "string" },
     size: { type: "string", default: "1600x900" },
     dpr: { type: "string", default: "1" },
+    "gecko-profile": { type: "string" },
+    "profile-interval-ms": { type: "string", default: "1" },
   },
 });
 
@@ -78,9 +90,24 @@ await Bun.write(
 );
 
 const port = Number(opt.port);
+const geckoProfile = opt["gecko-profile"];
+if (geckoProfile) await Bun.$`rm -f ${geckoProfile}`.nothrow();
+const profilerEnv: Record<string, string> = geckoProfile
+  ? {
+      MOZ_PROFILER_STARTUP: "1",
+      MOZ_PROFILER_SHUTDOWN: geckoProfile,
+      // 2^27 entries of the ring buffer: about two minutes of every thread below
+      // at 1 ms before the oldest samples are overwritten.
+      MOZ_PROFILER_STARTUP_ENTRIES: String(1 << 27),
+      MOZ_PROFILER_STARTUP_INTERVAL: opt["profile-interval-ms"]!,
+      MOZ_PROFILER_STARTUP_FEATURES: "js,stackwalk,cpu,markersallthreads",
+      MOZ_PROFILER_STARTUP_FILTERS: "GeckoMain,Compositor,Renderer,DOM Worker,WebGPU,wgpu,Canvas,CanvasRenderer,ImageBridgeChld,RenderBackend",
+    }
+  : {};
 const firefox = Bun.spawn([FIREFOX, "--no-remote", "-profile", prof, "--remote-debugging-port", String(port), "about:blank"], {
   stdout: "ignore",
   stderr: "ignore",
+  env: { ...process.env, ...profilerEnv },
 });
 const started = Date.now();
 const since = () => (Date.now() - started) / 1000;
@@ -121,6 +148,8 @@ ws.onmessage = (m) => {
   if (gpu) gpuRows.push({ t: since(), f: gpu });
   const heapBy = parseHeapBy(text);
   if (heapBy) marks.push({ t: since(), label: `heap by label: ${heapBy}` });
+  const load = parseMapLoad(text);
+  if (load) marks.push({ t: since(), label: `map load: ${load}` });
   const owners = parseOwnersLine(text);
   if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
   if (e.level === "error") errors.push(`t=${since().toFixed(1)}s ${text.slice(0, 300)}`);
@@ -206,8 +235,16 @@ if (opt.screenshot) {
   if (shot?.result?.data) await Bun.write(opt.screenshot, Buffer.from(shot.result.data, "base64"));
 }
 await send("browser.close", {}, 5000);
-await Bun.sleep(1500);
-firefox.kill();
+if (geckoProfile) {
+  // Writing a profile of every process takes a while; killing first loses it.
+  const exited = await Promise.race([firefox.exited.then(() => true), Bun.sleep(120_000).then(() => false)]);
+  if (!exited) firefox.kill();
+  const f = Bun.file(geckoProfile);
+  console.log(`${stamp()} gecko profile: ${(await f.exists()) ? `${geckoProfile}, ${(f.size / 1e6).toFixed(1)} MB` : "not written"}`);
+} else {
+  await Bun.sleep(1500);
+  firefox.kill();
+}
 
 console.log("\n══ frames drawn ══════════════════════════════════════════");
 const events = [

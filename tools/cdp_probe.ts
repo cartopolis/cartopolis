@@ -49,7 +49,7 @@
  * read differently (see "main thread hung" in the report).
  */
 import { parseArgs } from "node:util";
-import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
+import { FLIGHT_ALTITUDES, FLIGHT_DWELL_MS, flyExpression, parseGpuLine, parseHeapBy, parseMapLoad, parseOwnersLine, printGpuTable, type GpuRow, type Mark } from "./gpu_log.ts";
 
 const { values: opt } = parseArgs({
   options: {
@@ -230,6 +230,8 @@ ws.onmessage = (ev) => {
       if (heapBy) marks.push({ t: since(), label: `heap by label: ${heapBy}` });
       const owners = line && parseOwnersLine(line);
       if (owners) marks.push({ t: since(), label: `mesh owners: ${owners}` });
+      const load = line && parseMapLoad(line);
+      if (load) marks.push({ t: since(), label: `map load: ${load}` });
       if (opt.raw) console.log("  │", line);
       break;
     }
