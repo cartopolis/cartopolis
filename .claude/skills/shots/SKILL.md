@@ -1,6 +1,6 @@
 ---
 name: shots
-description: Photograph the Cartopolis client headlessly or drive a running one — `--shot` captures, sweeps and metrics, `--expect` gates, `--flicker` z-fight checks, `--aerial-reference`, the `cargo shots` README presets and camera pictures' poses, `--shot-mode avatar`, and the client's MCP server (`view`, `state`, `bun tools/mcp.ts`). Use whenever a change has to be seen rather than tested — "what does it look like from there?", a render bug, a visual before/after, regenerating docs/img — and to pick which build node a capture should run on.
+description: Photograph the Cartopolis client headlessly or drive a running one — `--shot` captures, sweeps and metrics, `--expect` gates, `--flicker` z-fight checks, `--aerial-reference`, the `cargo shots` README presets and camera pictures' poses, `--shot-mode avatar`, the client's MCP server (`view`, `state`, `bun tools/mcp.ts`), and `[[patrol]]` grids that rank places by what they cost. Use whenever a change has to be seen rather than tested — "what does it look like from there?", a render bug, a visual before/after, regenerating docs/img, "find graphics or performance improvements" — and to pick which build node a capture should run on.
 ---
 
 # shots
@@ -20,13 +20,14 @@ without one renders through Mesa lavapipe on the CPU: measured over Groningen at
 viewpoint**, most of it the harness rendering hundreds of frames while the map
 streams. That is trustworthy for **geometry, placement, culling and visibility**,
 and no evidence at all for **colour, exposure, bloom, lighting or frame time**
-(`docs/notes/headless-shots-software-renderer.md`). GPU nodes are few, so take
-one when the question needs it, not by default. Check `midas status` for which
-nodes have one; the session hook lists them too.
+(`docs/notes/headless-shots-software-renderer.md`). The real GPUs in the pool
+are `mac-1` and `mac-2` (Apple M5 Pro, in a VM: no Metal counters, so no per-pass
+GPU timings); `deck-1` is retired. `midas take gpu` does not match the Macs, so
+name one. Check `midas status` for which is free.
 
 ```bash
-midas take gpu
-ssh <node> 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
+midas take --node mac-2
+ssh <node> 'cargo run -p cartopolis -- --shot /tmp/x.png --at …'
 scp <node>:/tmp/x.png /tmp/x.png     # a node's output stays on its machine
 ```
 
@@ -178,6 +179,52 @@ the Netherlands only). Use it whenever a capture is evidence that a structure, r
 or the ground is *right*, not merely drawn: the unified tunnels' first renders
 walled a cycle path across a park by Groningen's ring (2026-09-28) while every
 metric was self-consistent, and only the photograph showed the path at grade.
+
+## Finding what costs, unprompted: patrols
+
+When the task is "find graphics or performance improvements" rather than "measure
+this place", do not pick viewpoints by hand and do not script the MCP server stop
+by stop. Fly a **patrol**: a `[[patrol]]` block in a perf manifest is a grid
+(`area`, `step_m`, `altitudes`, `looks`) that expands into ordinary perf
+scenarios, and the report ranks the stops against each other
+(`docs/notes/performance-suite.md`, "Patrols").
+
+```bash
+# the checked-in patrol: Groningen's centre, 32 stops → /tmp/patrol.json
+cargo run -p cartopolis -- --perf docs/patrol.toml --perf-out /tmp/patrol.json
+# one stop again, three flights, to see whether its rank holds
+cargo run -p cartopolis -- --perf docs/patrol.toml --only centre-120m-r2c1 --repeat 3
+```
+
+Stops are named `<patrol>-<alt>m-r<row>c<col>` (row 0 south, column 0 west);
+`--only <patrol>` flies all of them. A new area is a new `[[patrol]]` block in a
+scratch manifest (copy `docs/patrol.toml`'s header keys); `time` is required.
+
+Read the result in this order:
+
+1. **`patrols[].columns[]`** in the JSON, or the `perf patrol` log lines (top
+   three per column). Each hotspot carries its pose, its value as min/median/max,
+   and `ratio` to the patrol's median. Lead with the counts — `draws`,
+   `tris_total`, `resident_kb`, `material_modified_per_frame`, `upload_kb` — which
+   hold on any machine; `frame_ms_*` only on a real GPU.
+2. **Discard what is not a finding**: `settled: false` or a `steady` hotspot with
+   `quiet: false` is a world still streaming and ranks high for that alone; a
+   range that overlaps the next stop down has not out-ranked it.
+3. **Re-fly the survivor** with `--only <stop> --repeat 3`, then look at it:
+   `view` over MCP or `--shot` at the hotspot's `at` / `look`, and switch layers
+   off one at a time (`CARTO_NO_*`, `--hide-ui`) to name what the count is made of.
+4. **Change the code, re-fly the same stop with the same `--repeat`**, and claim a
+   win only if the median moved by more than the range. A hotspot that held up
+   becomes a `[[scenario]]` in `docs/perf.toml`, with a description of the cost it
+   exercises.
+
+**Which machine**, by what the question needs:
+
+| question | machine |
+|---|---|
+| counts, frame times | `mac-1` / `mac-2` — vps-1 cannot settle ground level |
+| `fill` (fragment invocations) | `vps-1` with `--features perf` — no Mac reports it |
+| GPU time per pass | the owner's Mac workstation, `--features perf`: the node Macs are VMs with no Metal counters. Hand the command over and read back the JSON |
 
 ## The README images and camera pictures: `cargo shots`
 
