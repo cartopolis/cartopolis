@@ -40,6 +40,8 @@ pub mod session;
 pub mod sfu;
 #[cfg(feature = "client")]
 pub mod video;
+#[cfg(feature = "client")]
+pub mod webm;
 
 /// Install the pure-Rust crypto provider (`crypto`) as str0m's process
 /// default. Idempotent, and required: str0m picks none itself when its C

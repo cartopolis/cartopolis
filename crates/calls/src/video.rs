@@ -540,6 +540,16 @@ impl Encoder {
         enc
     }
 
+    /// A VP8 encoder for a recorded clip (`webm`): VP8 because that is what a
+    /// prim plays and every gallery shows, and the pictures kept at the size
+    /// they come in, up to [`screen_size`]'s.
+    #[must_use]
+    pub fn for_clip() -> Self {
+        let mut enc = Self::sized(Codec::Vp8, 1280, 720);
+        enc.screen = true;
+        enc
+    }
+
     /// The codec this encoder writes.
     #[must_use]
     pub fn codec(&self) -> Codec {
