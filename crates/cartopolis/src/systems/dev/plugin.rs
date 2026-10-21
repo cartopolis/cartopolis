@@ -334,8 +334,11 @@ impl Plugin for PerfPlugin {
         // sample buffer, reports it as `DeviceLost`, and `handle_render_error`
         // halts the renderer before the first frame — the suite then times an
         // empty frame at ~570 fps and the capture never completes (M5 Pro,
-        // 2026-10-16). `CARTO_GPU_TIMINGS` still forces it, for anyone checking
-        // whether a newer wgpu has fixed that.
+        // 2026-10-16). The cause is the build nodes' VM, not wgpu: its "Apple
+        // Paravirtual device" lists no counter sets at all, so there is no
+        // `timestamp` set to sample (probed 2026-10-21). Bare-metal Apple GPUs
+        // have one, but no pipeline-statistics set, so `fill` stays absent on any
+        // Mac. `CARTO_GPU_TIMINGS` still forces the plugin on.
         let metal = cfg!(target_vendor = "apple");
         if !metal && !app.is_plugin_added::<bevy::render::diagnostic::RenderDiagnosticsPlugin>() {
             app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
