@@ -216,6 +216,12 @@ Key choices, encoded as env vars:
   the `.osm.bz2` the image expects, so `OVERPASS_PLANET_PREPROCESS` converts the
   `.pbf` to `.bz2` in-place with `osmium` (bundled in the image). Diffs come from
   `OVERPASS_DIFF_URL`, applied daily (`OVERPASS_UPDATE_SLEEP=86400`).
+  **`OVERPASS_ALLOW_DUPLICATE_QUERIES=yes`** (since 2026-10-21): every client
+  reaches the dispatcher through Caddy, so it sees one address for everyone, and
+  with the image's default `no` two players loading the same cell at once got
+  `duplicate_query`. The client then spent its retries and fell back to
+  `overpass-api.de`, which refused all of them; one cold start over the Grote
+  Markt took 34 s against 14–16 s, street detail waiting the whole time.
 - **Nominatim** — imports `PBF_URL`. `IMPORT_STYLE=address` is the lean style
   (address/POI geocoding, faster import). Postgres 16 data lives at
   `/var/lib/postgresql/16/main`. **`FREEZE=true`: no diff updates** — see
@@ -239,6 +245,7 @@ services:
       OVERPASS_DIFF_URL: https://download.geofabrik.de/europe/netherlands-updates/
       OVERPASS_RULES_LOAD: "10"
       OVERPASS_UPDATE_SLEEP: "86400"
+      OVERPASS_ALLOW_DUPLICATE_QUERIES: "yes"
     volumes:
       - overpass_db:/db
     ports:
