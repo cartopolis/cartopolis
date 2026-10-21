@@ -479,6 +479,19 @@ pub fn drive_screenshots(
 ) {
     use bevy::render::view::screenshot::Screenshot;
 
+    // A clip's picture (`camera_screen::recorder`): the window as it is, UI and
+    // all, and nothing hidden, so it goes beside any other capture and does
+    // not return.
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::mem::take(&mut shot.camera_frame) {
+        commands.spawn(Screenshot::primary_window()).observe(
+            |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+             mut camera: ResMut<crate::systems::camera_screen::CameraScreen>| {
+                camera.frame_in =
+                    crate::systems::camera_screen::recorder::Grab::from_image(&captured.image);
+            },
+        );
+    }
     if std::mem::take(&mut shot.post_snapshot) {
         // A public post's polaroid (`community_posts`): the same chrome-free
         // capture as a chat's snapshot, its pixels handed to the post being

@@ -959,6 +959,10 @@ pub struct ScreenshotState {
     /// The world for the camera (`systems::camera_screen`): captured the same
     /// chrome-free way and handed back to it as pixels.
     pub camera_snapshot: bool,
+    /// One picture of a clip the camera is recording: the window **with** its
+    /// UI, because hiding it at a clip's frame rate would make it blink. The
+    /// camera keeps its own drawing out of the part it records.
+    pub camera_frame: bool,
     /// A polaroid for your own picture (`systems::faces`): the same capture,
     /// handed back for the viewfinder's square to be cut out of it.
     pub face_snapshot: bool,

@@ -2715,6 +2715,30 @@ fn start_camera_capture_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Gl
 /// Insert an empty image row named `name` under `Pictures/Cartopolis` and
 /// return its `content://` URI.
 fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<GlobalRef, Fail> {
+    insert_media_row(env, activity, name, crate::platform::gallery::Kind::Picture)
+}
+
+/// Insert an empty row for `kind` named `name`: a picture under
+/// `Pictures/Cartopolis`, a clip under `Movies/Cartopolis`.
+fn insert_media_row(
+    env: &mut JNIEnv,
+    activity: &JObject,
+    name: &str,
+    kind: crate::platform::gallery::Kind,
+) -> Result<GlobalRef, Fail> {
+    use crate::platform::gallery::Kind;
+    let (collection_class, mime, folder) = match kind {
+        Kind::Picture => (
+            "android/provider/MediaStore$Images$Media",
+            "image/jpeg",
+            crate::platform::gallery::FOLDER,
+        ),
+        Kind::Clip => (
+            "android/provider/MediaStore$Video$Media",
+            "video/webm",
+            crate::platform::gallery::VIDEO_FOLDER,
+        ),
+    };
     env.with_local_frame_returning_local(16, |env| {
         let resolver = env
             .call_method(
@@ -2724,11 +2748,12 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<
                 &[],
             )?
             .l()?;
-        // `MediaStore.Images.Media.EXTERNAL_CONTENT_URI`. The nested class spells
-        // as `MediaStore$Images$Media` in JNI's binary-name form.
+        // `MediaStore.Images.Media.EXTERNAL_CONTENT_URI` (or `Video`'s). The
+        // nested class spells as `MediaStore$Images$Media` in JNI's
+        // binary-name form.
         let collection = env
             .get_static_field(
-                "android/provider/MediaStore$Images$Media",
+                collection_class,
                 "EXTERNAL_CONTENT_URI",
                 "Landroid/net/Uri;",
             )?
@@ -2736,13 +2761,13 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<
 
         let values = env.new_object("android/content/ContentValues", "()V", &[])?;
         put_string(env, &values, "_display_name", name)?;
-        put_string(env, &values, "mime_type", "image/jpeg")?;
+        put_string(env, &values, "mime_type", mime)?;
         // `RELATIVE_PATH` arrived with scoped storage in API 29. Below that the
         // column does not exist and inserting it throws, so API 28 gets the
         // gallery's default location instead — which is also why the manifest
         // carries WRITE_EXTERNAL_STORAGE with `maxSdkVersion="28"`.
         if sdk_int(env)? >= 29 {
-            put_string(env, &values, "relative_path", "Pictures/Cartopolis")?;
+            put_string(env, &values, "relative_path", folder)?;
         }
         // Deliberately *not* setting `IS_PENDING`: it restricts the row to the
         // owning app, and the app that has to write here is the camera.
@@ -2757,7 +2782,7 @@ fn insert_photo_row(env: &mut JNIEnv, activity: &JObject, name: &str) -> Result<
             .l()?;
         if uri.is_null() {
             return Err(Fail(
-                "the MediaStore refused a new image row (no storage permission?)".to_string(),
+                "the MediaStore refused a new row (no storage permission?)".to_string(),
             ));
         }
         Ok(uri)
@@ -2777,7 +2802,11 @@ const PERM_WRITE_STORAGE: &str = "android.permission.WRITE_EXTERNAL_STORAGE";
 /// whose write fails is deleted, so a failure leaves no empty picture in the
 /// gallery. **Blocks** (a JNI attach, maybe a permission dialog on API 28):
 /// call it from a worker thread.
-pub fn save_to_gallery(name: &str, jpeg: &[u8]) -> Result<(), String> {
+pub fn save_to_gallery(
+    name: &str,
+    bytes: &[u8],
+    kind: crate::platform::gallery::Kind,
+) -> Result<(), String> {
     let java_vm = vm()?;
     let mut env = java_vm
         .attach_current_thread()
@@ -2789,7 +2818,7 @@ pub fn save_to_gallery(name: &str, jpeg: &[u8]) -> Result<(), String> {
             return Err("storage permission denied".to_string());
         }
     }
-    let uri = insert_photo_row(&mut env, &activity, name).map_err(|Fail(e)| {
+    let uri = insert_media_row(&mut env, &activity, name, kind).map_err(|Fail(e)| {
         clear_pending(&env);
         e
     })?;
@@ -2813,14 +2842,14 @@ pub fn save_to_gallery(name: &str, jpeg: &[u8]) -> Result<(), String> {
         if stream.is_null() {
             return Err(Fail("the gallery gave no stream to write to".to_string()));
         }
-        let bytes = env.byte_array_from_slice(jpeg)?;
-        env.call_method(&stream, "write", "([B)V", &[JValue::Object(&bytes)])?;
+        let array = env.byte_array_from_slice(bytes)?;
+        env.call_method(&stream, "write", "([B)V", &[JValue::Object(&array)])?;
         env.call_method(&stream, "close", "()V", &[])?;
         Ok(())
     });
     match written {
         Ok(()) => {
-            tracing::info!(name, bytes = jpeg.len(), "saved a picture to the gallery");
+            tracing::info!(name, bytes = bytes.len(), ?kind, "saved to the gallery");
             Ok(())
         }
         Err(Fail(e)) => {

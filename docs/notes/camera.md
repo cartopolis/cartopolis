@@ -1,7 +1,7 @@
 ---
 topic: camera
-triggers: [camera_screen.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, photos.toml, "Retake"]
-updated: 2026-10-18
+triggers: [camera_screen.rs, recorder.rs, webm.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, photos.toml, "Retake", camera_frame, hole_view, clip_encoder, save_video]
+updated: 2026-10-21
 ---
 
 # The camera: three modes, and the pose in every picture
@@ -73,8 +73,57 @@ made the Mixed picture (plus an aerial panel) and nothing else
 - **The web build has no camera** (`platform::camera` is not compiled there):
   the dock shows no camera disc, and a post's picture is an upload.
 
+## Video
+
+A **Photo | Video** switch (top right) turns the shutter into record and
+stop, in all three modes (asked for 2026-10-21, for Mixed above all). A clip is
+a WebM of VP8 pictures and mono Opus sound, the format a prim plays, written by
+`cartopolis_calls::webm` (the repo could only read WebM before). It plays round
+on the result screen with its sound, and Save puts it in `Movies/Cartopolis`
+(`~/Videos/Cartopolis` on a desktop). Post and Send are not offered for a clip:
+chats and posts carry pictures only.
+
+- **Mixed is two panes of the photograph's shape, and the world half is a
+  hole the world camera is aimed into** (`hole_view`, a `SubCameraView`). The
+  view a photograph's pose is the pose of is the window's middle at the
+  photograph's shape (`pp::crop_to`, `pp::window_fov_y_deg`); before 2026-10-21
+  the world half on screen showed the right or lower half of the window, i.e.
+  a view turned away from the photograph's, and only the saved picture had
+  the right one. Now what is on screen is what is kept, and a Mixed still is
+  cut from the capture by the same rectangle.
+- **A clip's world comes from a window capture taken with the UI showing**
+  (`ScreenshotState::camera_frame`): hiding the UI for every capture, as a
+  still does, makes it blink at the clip's frame rate. So while recording, the
+  camera keeps its own drawing out of the recorded part (the polaroid's frame,
+  or the hole): close, the switch, the chips and the CARTOPOLIS tag step aside,
+  and the running time sits in the controls' strip. **Anything else drawn
+  over the map there is in the clip** (a place label, a pin), as it is on
+  screen; a still hides it.
+- **15 pictures a second, dropped rather than delayed.** One picture waits
+  for the encoder at most; one that finds it busy is dropped, and the
+  timestamps keep the time, so a slow encoder makes a choppier clip, not a
+  slower one. The photograph of a Mixed picture is the one at the moment the
+  capture was asked for.
+- **The phone's VP8 encoder where it opens** (`hw_video::clip_encoder`:
+  hardware, else `c2.android.vp8.encoder`), up to 1280×720's pixels and 1280
+  on a side, every side a multiple of 16, ~5 bits a pixel a second. Else the
+  pure-Rust VP8 at 480×360's pixels, which is what a desktop records with.
+  VP8 only: the result screen plays it back through `clip::ClipPlayer`, which
+  decodes VP8.
+- **Sound is the microphone at 16 kHz**, the voice path's resampler and
+  Opus encoder, placed at the time it was heard. The microphone is opened in
+  its plain mode, not a call's (whose echo cancellation would duck the
+  scene).
+- **The clip is held in memory** and laid out once it stops; recording stops
+  itself 2 MB short of the video store's 64 MB (`video_limits`), about three
+  minutes of a phone's Mixed clip. The pose at the start is a `CARTOPOLIS_POSE`
+  tag (the caption's JSON line).
+
 ## Not verified
 
 Built and checked on the desktop on 2026-10-18; **none of it has run on a
 phone yet**: the turn with the display, the picker's answer, the selfie's
 heading, and the alignment of the two halves of a Mixed picture held sideways.
+Video (2026-10-21) has run on no device at all: not the phone's VP8 encoder,
+not the microphone, not the MediaStore video row, not the sub-view on the
+phone's render scale.

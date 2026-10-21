@@ -101,6 +101,7 @@ impl Plugin for GuiPlugin {
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
                 systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
+                systems::camera_screen::play_clip_sound.in_set(ClientPhase::Present),
                 // The ring's Post here, and the chip that says only one
                 // community's posts are on the map (`community_posts`): its own
                 // `Area` under the switch, drawn after the switch it sits under.

@@ -98,7 +98,7 @@ fn choose() -> Option<MediaEncoder> {
         (video::HW_WIDTH, video::HW_HEIGHT)
     };
     for kind in [Codec::Vp9, Codec::Vp8] {
-        match MediaEncoder::open(kind, None, large, large.0, large.1) {
+        match MediaEncoder::open(kind, None, large, large.0, large.1, None) {
             Ok(e) if e.hardware => return Some(e),
             Ok(e) => tracing::info!(name = %e.name, "call video: not hardware, passed over"),
             Err(why) => tracing::info!(?kind, %why, "call video: no system encoder"),
@@ -110,6 +110,7 @@ fn choose() -> Option<MediaEncoder> {
         small,
         small.0,
         small.1,
+        None,
     )
     .map_err(|why| tracing::info!(%why, "call video: no system software VP9"))
     .ok()
@@ -141,6 +142,8 @@ struct MediaEncoder {
     base: (u32, u32),
     width: u32,
     height: u32,
+    /// A recorded clip's bitrate, which a call's size rule does not give.
+    clip_bitrate: Option<i32>,
     /// How the codec wants its input laid out, from its input format.
     color: i32,
     stride: usize,
@@ -210,6 +213,7 @@ impl MediaEncoder {
         base: (u32, u32),
         width: u32,
         height: u32,
+        clip_bitrate: Option<i32>,
     ) -> Result<Self, String> {
         // SAFETY: every pointer handed in is a live, NUL-terminated string or
         // a format/codec created just above and not yet freed.
@@ -237,6 +241,7 @@ impl MediaEncoder {
                 hardware: !is_software(&name),
                 name,
                 by_name: by_name.map(str::to_string),
+                clip_bitrate,
                 kind,
                 base,
                 width,
@@ -257,7 +262,10 @@ impl MediaEncoder {
                 f.int(c"width", width as i32);
                 f.int(c"height", height as i32);
                 f.int(c"color-format", color);
-                f.int(c"bitrate", bitrate(kind, width, height));
+                f.int(
+                    c"bitrate",
+                    clip_bitrate.unwrap_or_else(|| bitrate(kind, width, height)),
+                );
                 f.int(c"frame-rate", video::FPS as i32);
                 // Seconds between scheduled keyframes; requests come sooner.
                 f.int(c"i-frame-interval", 4);
@@ -365,14 +373,107 @@ impl MediaEncoder {
 
 impl VideoEncode for MediaEncoder {
     fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error> {
+        let pts = self.pictures * 1_000_000 / u64::from(video::FPS);
+        Ok(self
+            .feed(frame, key, pts)?
+            .into_iter()
+            .map(|(_, f)| f)
+            .collect())
+    }
+
+    fn codec(&self) -> Codec {
+        self.kind
+    }
+
+    fn picture_size(&self) -> (u32, u32) {
+        self.base
+    }
+}
+
+/// A recorded clip's bitrate at `width`×`height`, 15 pictures a second: about
+/// 3 Mbit/s at 1280×480, several times a call's, because a clip is kept and
+/// watched rather than squeezed up a phone's uplink live.
+fn clip_bitrate(width: u32, height: u32) -> i32 {
+    (f64::from(width * height) * 5.0).clamp(500_000.0, 6_000_000.0) as i32
+}
+
+/// The phone's VP8 encoder for a recorded clip of `width`×`height`: the
+/// hardware one where the system's preferred VP8 encoder is hardware, else
+/// Google's software VP8 (libvpx, the system's). `None` when neither opens,
+/// and the clip is encoded in pure Rust. VP8 and nothing else: it is what a
+/// prim plays and what the player that shows the clip back decodes.
+#[must_use]
+pub fn clip_encoder(width: u32, height: u32) -> Option<ClipEncoder> {
+    let rate = Some(clip_bitrate(width, height));
+    let base = (width.max(height), width.min(height));
+    let opened = MediaEncoder::open(Codec::Vp8, None, base, width, height, rate)
+        .map_err(|why| tracing::info!(%why, "camera video: no system VP8 encoder"))
+        .ok()
+        .filter(|e| e.hardware)
+        .or_else(|| {
+            MediaEncoder::open(
+                Codec::Vp8,
+                Some("c2.android.vp8.encoder"),
+                base,
+                width,
+                height,
+                rate,
+            )
+            .map_err(|why| tracing::info!(%why, "camera video: no system software VP8"))
+            .ok()
+        })?;
+    tracing::info!(name = %opened.name, hardware = opened.hardware, width, height, "camera video: encoder chosen");
+    Some(ClipEncoder(opened))
+}
+
+/// A clip's encoder on the phone's codec ([`clip_encoder`]).
+pub struct ClipEncoder(MediaEncoder);
+
+impl ClipEncoder {
+    /// Encode a picture shown `ms` after the clip began. What comes out is
+    /// the frames the codec has finished, each with the time of the picture
+    /// it is: the codec carries the time through, so a frame that comes out a
+    /// call later keeps its own.
+    pub fn encode(&mut self, frame: &I420, ms: u64) -> Result<Vec<(u64, Vec<u8>)>, String> {
+        let key = self.0.pictures == 0;
+        self.0
+            .feed(frame, key, ms * 1000)
+            .map(|out| out.into_iter().map(|(us, f)| (us / 1000, f)).collect())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tell the codec the clip has ended and take what it still holds.
+    pub fn finish(&mut self) -> Vec<(u64, Vec<u8>)> {
+        self.0
+            .end()
+            .into_iter()
+            .map(|(us, f)| (us / 1000, f))
+            .collect()
+    }
+}
+
+/// `MediaCodec`'s end-of-stream flag on a buffer.
+const BUFFER_FLAG_END_OF_STREAM: u32 = 4;
+
+impl MediaEncoder {
+    /// Queue `frame` at presentation time `pts` (µs) and take whatever the
+    /// codec has finished, each with its presentation time.
+    fn feed(&mut self, frame: &I420, key: bool, pts: u64) -> Result<Vec<(u64, Vec<u8>)>, Error> {
         let started = Instant::now();
         let (w, h) = video::oriented(self.base, frame.width, frame.height);
         let mut key = key;
         if (w, h) != (self.width, self.height) {
             // The phone turned: a codec is configured for one size, so a new
             // one, whose first picture is a keyframe.
-            *self = Self::open(self.kind, self.by_name.as_deref(), self.base, w, h)
-                .map_err(Error::new)?;
+            *self = Self::open(
+                self.kind,
+                self.by_name.as_deref(),
+                self.base,
+                w,
+                h,
+                self.clip_bitrate,
+            )
+            .map_err(Error::new)?;
             key = true;
         }
         let scaled;
@@ -405,7 +506,6 @@ impl VideoEncode for MediaEncoder {
                         self.name
                     )));
                 };
-                let pts = self.pictures * 1_000_000 / u64::from(video::FPS);
                 if !ok(sys::AMediaCodec_queueInputBuffer(
                     self.codec,
                     idx as usize,
@@ -419,8 +519,20 @@ impl VideoEncode for MediaEncoder {
                 self.pictures += 1;
             }
             // Whatever the codec has finished: usually this picture's frame.
-            let mut out = Vec::new();
-            let mut wait = OUTPUT_WAIT.as_micros() as i64;
+            let (out, _) = self.drain(OUTPUT_WAIT);
+            self.report(started.elapsed());
+            Ok(out)
+        }
+    }
+
+    /// Take the frames the codec has finished, waiting up to `wait` for the
+    /// first, and whether the end of the stream came out.
+    fn drain(&mut self, wait: Duration) -> (Vec<(u64, Vec<u8>)>, bool) {
+        let mut out = Vec::new();
+        let mut wait = wait.as_micros() as i64;
+        // SAFETY: `self.codec` is live; each output buffer is read between its
+        // dequeue and its release, within the size the codec gave.
+        unsafe {
             loop {
                 let mut info = sys::AMediaCodecBufferInfo {
                     offset: 0,
@@ -430,7 +542,7 @@ impl VideoEncode for MediaEncoder {
                 };
                 let idx = sys::AMediaCodec_dequeueOutputBuffer(self.codec, &mut info, wait);
                 if idx == INFO_TRY_AGAIN_LATER {
-                    break;
+                    return (out, false);
                 }
                 if idx < 0 {
                     // The output format or buffers changed: nothing to read.
@@ -445,21 +557,46 @@ impl VideoEncode for MediaEncoder {
                     && len > 0
                     && start + len <= size
                 {
-                    out.push(std::slice::from_raw_parts(ptr.add(start), len).to_vec());
+                    out.push((
+                        info.presentationTimeUs.max(0) as u64,
+                        std::slice::from_raw_parts(ptr.add(start), len).to_vec(),
+                    ));
                 }
                 sys::AMediaCodec_releaseOutputBuffer(self.codec, idx as usize, false);
+                if info.flags & BUFFER_FLAG_END_OF_STREAM != 0 {
+                    return (out, true);
+                }
             }
-            self.report(started.elapsed());
-            Ok(out)
         }
     }
 
-    fn codec(&self) -> Codec {
-        self.kind
-    }
-
-    fn picture_size(&self) -> (u32, u32) {
-        self.base
+    /// Signal the end of the stream and take every frame still in the codec,
+    /// giving up after a second.
+    fn end(&mut self) -> Vec<(u64, Vec<u8>)> {
+        // SAFETY: as `feed`: an input buffer queued empty, with only a flag.
+        let queued = unsafe {
+            let idx =
+                sys::AMediaCodec_dequeueInputBuffer(self.codec, OUTPUT_WAIT.as_micros() as i64);
+            idx >= 0
+                && ok(sys::AMediaCodec_queueInputBuffer(
+                    self.codec,
+                    idx as usize,
+                    0,
+                    0,
+                    0,
+                    BUFFER_FLAG_END_OF_STREAM,
+                ))
+        };
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            let (got, ended) = self.drain(OUTPUT_WAIT);
+            out.extend(got);
+            if ended || !queued {
+                break;
+            }
+        }
+        out
     }
 }
 
