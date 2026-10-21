@@ -143,6 +143,9 @@ pub mod terrain_refine;
 // code the client grades its field with.
 pub mod terrain_grade;
 pub mod terrain_tile;
+// The surveyed inputs of a ground cell, parsed and in its local frame. Here so
+// atlas can read them with the client's own code.
+pub mod surveyed_ground;
 pub mod tunnels;
 pub mod turf;
 pub mod vector_tiles;

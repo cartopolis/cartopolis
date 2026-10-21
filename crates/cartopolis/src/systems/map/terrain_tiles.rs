@@ -113,18 +113,9 @@ pub(crate) async fn load_road_heights(
     cartopolis_geo::road_levels::RoadHeights::decode(&bytes).ok()
 }
 
-/// One deck as atlas published it (`crates/atlas/src/pipeline/terrain_grade.rs::
-/// write_decks`): `[x, y, height, top?, profile?]` — its bounding-box centre in
-/// fractions of the tile, its clearance in metres (0 for a deck laid flat), and,
-/// trailing so a file from before them still reads, its median top in NAP and its
-/// profile (`DeckProfile::to_wire`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct AtlasDeck {
-    pub at: [f32; 2],
-    pub height: f32,
-    pub top: Option<f32>,
-    pub profile: Option<Vec<f64>>,
-}
+// Atlas's deck rows and their matcher live in `cartopolis_geo`, where atlas
+// builds a cell's ground sheets with them too (`ground_sheets`).
+pub use cartopolis_geo::surveyed_ground::{match_atlas_decks, AtlasDeck};
 
 /// The bridge decks atlas measured in a cell while grading, or `None` where atlas
 /// did not measure the cell.
@@ -160,53 +151,9 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<AtlasDeck
         timeout: None,
         parse: |text| {
             let cell = cartopolis_geo::formats::decks::parse(text).ok()?;
-            let decks = cell
-                .decks
-                .into_iter()
-                .map(|d| AtlasDeck {
-                    at: [d.at[0] as f32, d.at[1] as f32],
-                    height: d.height as f32,
-                    top: d.top.map(|v| v as f32),
-                    profile: d.profile,
-                })
-                .collect();
-            Some(Some(decks))
+            Some(Some(cartopolis_geo::surveyed_ground::atlas_decks(cell)))
         },
     };
-
-/// Every deck of a cell's heights out of atlas's list, by the same index as
-/// `decks`, or `None` if any deck is not in it — the map changed since atlas
-/// measured it, and the cell measures its own as before. Matched on the
-/// bounding-box centre: both sides tessellate the same tile with the same code.
-#[must_use]
-pub fn match_atlas_decks(
-    decks: &[cartopolis_geo::vector_tiles::BridgeDeck],
-    tile_m: f32,
-    atlas: &[AtlasDeck],
-) -> Option<Vec<cartopolis_geo::deck_profile::DeckMeasure>> {
-    // A metre, in tile fractions.
-    let tol = 1.0 / tile_m;
-    decks
-        .iter()
-        .map(|d| {
-            let c = [
-                (d.min[0] + d.max[0]) * 0.5 / tile_m,
-                (d.min[1] + d.max[1]) * 0.5 / tile_m,
-            ];
-            atlas
-                .iter()
-                .find(|a| (a.at[0] - c[0]).abs() < tol && (a.at[1] - c[1]).abs() < tol)
-                .map(|a| cartopolis_geo::deck_profile::DeckMeasure {
-                    height: a.height,
-                    top: a.top.filter(|t| t.is_finite() && a.height > 0.0),
-                    // In tile fractions on the wire; this cell's metres here.
-                    profile: a.profile.as_deref().and_then(|w| {
-                        cartopolis_geo::deck_profile::DeckProfile::from_wire(w, f64::from(tile_m))
-                    }),
-                })
-        })
-        .collect()
-}
 
 /// Whether the coverage manifest has answered, yes or no.
 #[must_use]

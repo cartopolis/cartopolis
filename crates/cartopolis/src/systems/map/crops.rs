@@ -17,12 +17,9 @@
 //! name a form the host never sends is harmless; an extractor that sends one no
 //! client knows is silently dropped content.
 
-use cartopolis_geo::crops::{CropCategory, CropParcel};
-
 use crate::platform::cell_source::CellSource;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::osm_buildings::tdbag_url;
-use crate::systems::surveyed::cell_local_unclamped;
 
 /// Fixed cache/streaming zoom — must match `map_geometry::GEOMETRY_ZOOM` and the
 /// zoom the extractor bins into.
@@ -51,114 +48,9 @@ pub fn brp_attribution() -> Option<String> {
     COVERAGE.attribution()
 }
 
-/// The categories the extractor can name, in wire order. The BRP extractor
-/// (`CATEGORIES` in atlas's `pipeline/brp.rs`) mirrors this list — **append,
-/// never renumber**.
-///
-/// Position 5 is the register's `Landschapselement` and is deliberately **not
-/// drawable**. Sixty per cent of the features in the register are landscape
-/// elements and most of those are ditches, which the Shortbread water layers
-/// already draw — filling one with land puts ground where the register says
-/// water. The extractor drops them; the position is claimed here so nothing can
-/// ever quietly re-use it for a form that *is* drawn, and a record that arrives
-/// in it is dropped rather than drawn as the category next to it.
-const CATEGORIES: [Option<CropCategory>; 6] = [
-    Some(CropCategory::Grassland),
-    Some(CropCategory::Arable),
-    Some(CropCategory::Nature),
-    Some(CropCategory::Fallow),
-    Some(CropCategory::Other),
-    None,
-];
-
-/// One cell's crop parcels, still in lat/lng as the host sent them.
-#[derive(Clone, Debug, Default)]
-pub struct CropCell {
-    pub parcels: Vec<(CropCategory, u32, Vec<Vec<(f64, f64)>>)>,
-}
-
-/// Parse a cell's crop file: `{"parcels":[[category,code,[ring,…]],…]}` — one
-/// parcel on the wire is its category, its `gewascode`, and its rings as
-/// lat/lng, outer first, holes after (`cartopolis_geo::formats::brp`).
-pub fn parse_crop_cell(text: &str) -> Result<CropCell, String> {
-    let wire = cartopolis_geo::formats::brp::parse(text)?;
-    // Every parcel shares one rung of the depth ladder, so two copies of one
-    // polygon are a per-pixel z-fight that re-rolls with the view matrix. The
-    // register serves one year with no superseded versions in it — unlike the
-    // BGT, which is where this fold was first needed (`parse_surveyed_paving`) —
-    // but a cached cell outlives the extractor that wrote it, and the floor costs
-    // one hash set.
-    let mut seen = std::collections::HashSet::new();
-    Ok(CropCell {
-        parcels: wire
-            .parcels
-            .into_iter()
-            // An outer ring under three points is not a parcel. The extractor
-            // drops those; a truncated cache entry can produce one.
-            .filter(|p| p.2.first().is_some_and(|r| r.len() >= 3))
-            .filter(|(c, code, rings)| {
-                seen.insert((
-                    *c,
-                    *code,
-                    rings
-                        .iter()
-                        .map(|r| {
-                            r.iter()
-                                .map(|&(lat, lng)| (lat.to_bits(), lng.to_bits()))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>(),
-                ))
-            })
-            .filter_map(|(c, code, rings)| {
-                // A category this build has no variant for — the reserved
-                // landscape-element position, or a position from an extractor
-                // newer than this client — drops the parcel. Clamping to the last
-                // known category would paint a ditch as farmland.
-                let category = (*CATEGORIES.get(c)?)?;
-                Some((category, code, rings))
-            })
-            .collect(),
-    })
-}
-
-/// This cell's parcels in the local metre frame, ready to triangulate.
-///
-/// **Projected unclamped.** Where the surveyed paving drops any surface whose
-/// outer ring leaves its cell, the extractor cuts a field crossing a cell edge
-/// along it (atlas's `brp::pieces`) — 22 % of a Groningen farmland cell's
-/// parcels cross one, 24 % over Flevoland, measured 2026-08-30 — so each cell
-/// holds exactly the ground it covers and cuts its own grass against all of it
-/// (`crops::cut_into_ground`). A cell written by an older extractor, which binned
-/// whole parcels on their centroid, still draws: its overhang lands over the
-/// neighbour, as it always did.
-#[must_use]
-pub fn crop_parcels(cell: &CropCell, cx: i64, cy: i64, tile_m: f32) -> Vec<CropParcel> {
-    let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
-        (pts.len() >= 3).then(|| {
-            pts.iter()
-                .map(|&(lat, lng)| {
-                    let (x, z) = cell_local_unclamped(lat, lng, cx, cy, BRP_ZOOM, tile_m);
-                    [x, z]
-                })
-                .collect()
-        })
-    };
-    cell.parcels
-        .iter()
-        .filter_map(|(category, code, rings)| {
-            let outer = to_local(rings.first()?)?;
-            let mut local = vec![outer];
-            local.extend(rings[1..].iter().filter_map(to_local));
-            Some(CropParcel {
-                category: *category,
-                code: *code,
-                seed: seed_of(rings),
-                rings: local,
-            })
-        })
-        .collect()
-}
+// The parcels' parse and their local frame live in `cartopolis_geo`, where atlas
+// builds a cell's ground sheets with them too (`ground_sheets`).
+pub use cartopolis_geo::surveyed_ground::{crop_parcels, parse_crop_cell, seed_of, CropCell};
 
 /// Fetch and parse one cell's parcels, through the storage cache.
 ///
@@ -255,19 +147,12 @@ fn overlay_fills(
     })
 }
 
-/// A piece's [`cartopolis_geo::crops::field_seed`], off its first outer vertex
-/// as the host sent it — the one input the mesh and the basemap share.
-fn seed_of(rings: &[Vec<(f64, f64)>]) -> u32 {
-    rings
-        .first()
-        .and_then(|r| r.first())
-        .map_or(0, |&(lat, lng)| cartopolis_geo::crops::field_seed(lat, lng))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use cartopolis_core::world::tile_to_lat_lng;
+    use cartopolis_geo::crops::CropCategory;
+    use cartopolis_geo::surveyed_ground::cell_local_unclamped;
 
     /// A ring around the middle of a cell, `d` degrees on a side.
     fn ring(lat: f64, lng: f64, d: f64) -> String {
