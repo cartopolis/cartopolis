@@ -535,6 +535,25 @@ struct Flight {
     /// When a cell in view began to fade in, and the [`FADE_PICTURES_S`] taken.
     fade_began: Option<f32>,
     fade_pictures: usize,
+    /// Wall-clock seconds since the zoom began, and the next film slot to fill
+    /// (`CARTO_PERF_FILM`).
+    film_clock: f32,
+    film_next_slot: u32,
+}
+
+/// How long after arrival `CARTO_PERF_FILM` keeps filming.
+const FILM_AFTER_ARRIVAL_S: f32 = 14.0;
+
+/// `CARTO_PERF_FILM`, frames a second, when set.
+#[cfg(not(target_arch = "wasm32"))]
+fn film_fps() -> Option<f32> {
+    static FPS: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *FPS.get_or_init(|| {
+        std::env::var("CARTO_PERF_FILM")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|f| *f > 0.0)
+    })
 }
 
 /// Seconds into the first fade in view at which an `arrive` window saves a
@@ -1680,6 +1699,28 @@ pub fn drive_perf_window(
     #[cfg(target_arch = "wasm32")]
     let _ = (&mut commands, &target);
 
+    // `CARTO_PERF_FILM=<fps>`: film the zoom and the arrival as they happen, a
+    // frame per 1/fps of wall clock. Each frame is named by its slot on that
+    // clock, so a slow frame leaves a gap rather than shifting the rest, and a
+    // movie made from them (filling each gap with the frame before) runs at the
+    // speed a person would have seen.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(fps) = film_fps() {
+        if matches!(perf.phase, Phase::Descent | Phase::Arrive) {
+            perf.flight.film_clock += dt;
+            let in_window = perf.phase == Phase::Descent || perf.flight.t <= FILM_AFTER_ARRIVAL_S;
+            let slot = (perf.flight.film_clock * fps) as u32;
+            if in_window && slot >= perf.flight.film_next_slot {
+                let base = run.pictures.get(perf.index).cloned().unwrap_or_default();
+                let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("perf");
+                let path = base.with_file_name(format!("{stem}-film-{slot:05}.png"));
+                let _ =
+                    crate::systems::shot_harness::snapshot(&mut commands, target.as_deref(), path);
+                perf.flight.film_next_slot = slot + 1;
+            }
+        }
+    }
+
     if perf.phase == Phase::Descent {
         perf.flight.t += dt;
         camera.orbit_distance_target = descend.target_at(perf.flight.from, perf.flight.t);
@@ -1706,6 +1747,10 @@ pub fn drive_perf_window(
         perf.base = take_base(&readouts);
         perf.flight.t = 0.0;
         perf.flight.busy_at_arrival = registry.busy();
+        tracing::info!(
+            film_s = format!("{:.3}", perf.flight.film_clock),
+            "perf: arrived"
+        );
         return;
     }
 

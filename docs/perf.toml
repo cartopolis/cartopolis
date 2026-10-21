@@ -154,7 +154,7 @@ the way a steadily turned wheel does and does not wait for anything. Its windows
 are `descent` (the zoom) and `arrive` (the camera there, the streamers catching \
 up): read `quiet_after_s` and the `perf arrive layer` lines — what was missing on \
 arrival and how long each layer took — and `ground_retears`, the ground ring \
-thrown away mid-zoom. Pictures at arrival, +2 s, +5 s and quiet sit beside the \
+thrown away mid-zoom. Pictures at arrival, +5, +15, +30, +45 s and quiet sit beside the \
 report. Wall-clock by design, so its numbers are a property of the machine: run \
 it on a real GPU and compare runs on the same node."""
 mode = "earth"
@@ -165,6 +165,22 @@ fog = 0.1
 clouds = 0.2
 rain = 0.0
 descend = { to = 150.0, seconds = 8.0 }
+
+[[scenario]]
+name = "descent-low"
+description = """
+The same zoom, on down to 40 m: where the street replacing the basemap is the \
+whole picture — paving, kerbs, furniture — rather than a few per cent of it, as \
+it is from 150 m. The scenario the ground's fade-in is judged on; film it with \
+`CARTO_PERF_FILM=15` (and `CARTO_NO_FADE_IN=1` for the other half)."""
+mode = "earth"
+at = [53.21860, 6.56740, 40000]
+look = [-60.0, 20.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+descend = { to = 40.0, seconds = 9.0 }
 
 # Six scenarios, and the first five have all been run. A route view is still missing and an
 # entry here is a claim that the viewpoint has been measured, so it stays out until
