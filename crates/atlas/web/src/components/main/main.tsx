@@ -5,6 +5,7 @@ import {Notifications} from '@/components/elements/notifications/notifications'
 import {Building} from '@/components/pages/building/building'
 import {Chat} from '@/components/pages/chat/chat'
 import {Buildings} from '@/components/pages/buildings/buildings'
+import {PublicCommunity, PublicPerson} from '@/components/pages/public/public'
 import {Register} from '@/components/pages/register/register'
 import {Verify} from '@/components/pages/verify/verify'
 import {Tokens} from '@/components/pages/tokens/tokens'
@@ -103,6 +104,10 @@ export function mountRoutes(root: Element) {
         '/house': page(Buildings),
         '/building/:pand': page(Building, 'wide'),
         '/tokens': page(Tokens),
+        // The public pages other fediverse servers link to: a community's
+        // posts and a person's (`pages/public`, docs/notes/fediverse.md).
+        '/c/:handle': page(PublicCommunity),
+        '/@:name': page(PublicPerson),
         '/chat': chatPage,
         '/world': chatPage,
         // Community's calendar: every plan from every chat (`docs/mockups/calendar/`).

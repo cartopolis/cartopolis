@@ -6,7 +6,7 @@ import {ApiError} from '@/lib/api'
 import type {CommunityView} from '@/lib/chat'
 import {Icon} from '@/lib/icons'
 import {parsePlace, placeParam, suggestHandle} from '@/lib/posts'
-import type {PostDto, PostPlace, PostThread, PublicInfo, WhoPosts} from '@/types'
+import type {FollowLink, PostDto, PostPlace, PostReport, PostThread, PublicInfo, WhoPosts} from '@/types'
 
 /**
  * A community's public posts (`docs/notes/fediverse.md`,
@@ -42,6 +42,17 @@ interface Draft {
     placing: boolean
 }
 
+/**
+ * Where a card is drawn: which community, and whether the reader moderates it
+ * and is signed in. A community page passes its own; the public pages
+ * (`pages/public`) a reader who may be nobody.
+ */
+export interface Where {
+    id: string
+    mod: boolean
+    signedIn: boolean
+}
+
 /** What the page lends this view: pictures, faces, and the World frame. */
 export interface PostsCtx {
     pictureUrl: (hash: string | null | undefined) => string | null
@@ -54,6 +65,8 @@ export interface PostsCtx {
 const st = {
     busy: false,
     draft: null as Draft | null,
+    /** The post being edited, and its words so far. */
+    editing: null as {id: string; text: string} | null,
     error: '',
     feed: new Map<string, PostDto[]>(),
     follow: '',
@@ -61,6 +74,8 @@ const st = {
     info: new Map<string, PublicInfo>(),
     loaded: null as string | null,
     reply: '',
+    /** Reports from other servers, per community, for its moderators. */
+    reports: new Map<string, PostReport[]>(),
     settingsOpen: false,
     tab: new Map<string, Tab>(),
     thread: null as PostThread | null,
@@ -73,8 +88,13 @@ function failed(e: unknown): void {
     m.redraw()
 }
 
+/** What has been read of a community's public half, for the public pages. */
+export function readOf(id: string): {info: PublicInfo | undefined; feed: PostDto[]} {
+    return {feed: st.feed.get(id) ?? [], info: st.info.get(id)}
+}
+
 /** Read a community's public half and its newest posts. */
-async function load(id: string): Promise<void> {
+export async function load(id: string): Promise<void> {
     try {
         const [info, feed] = await Promise.all([
             signupApi.get<PublicInfo>(`/api/communities/${id}/public`),
@@ -83,6 +103,8 @@ async function load(id: string): Promise<void> {
         st.info.set(id, info)
         st.feed.set(id, feed)
         if (!st.handle && info.settings.handle) st.handle = info.settings.handle
+        if (info.open_reports > 0) st.reports.set(id, await signupApi.get<PostReport[]>(`/api/communities/${id}/reports`))
+        else st.reports.delete(id)
     } catch (e) {
         failed(e)
     }
@@ -90,7 +112,7 @@ async function load(id: string): Promise<void> {
 }
 
 /** Open (or close) a post's replies under it. */
-async function toggleThread(post: string): Promise<void> {
+export async function toggleThread(post: string): Promise<void> {
     if (st.threadOpen === post) {
         st.threadOpen = null
         st.thread = null
@@ -107,7 +129,7 @@ async function toggleThread(post: string): Promise<void> {
     m.redraw()
 }
 
-function ago(ms: number): string {
+export function ago(ms: number): string {
     const s = Math.max(0, (Date.now() - ms) / 1000)
     if (s < 60) return 'now'
     if (s < 3600) return `${Math.floor(s / 60)} min`
@@ -203,6 +225,7 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
         ]
     }
     const feed = st.feed.get(id) ?? []
+    const where: Where = {id, mod, signedIn: true}
     return [
         <div class="post-bar">
             <span class="post-public" title="Public: anybody can read these, here and on other servers">
@@ -225,7 +248,9 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
             </span>
         </div>,
         error,
+        info.address && info.federating && FollowFrom(info.address, true),
         mod && st.settingsOpen && Settings(community, info),
+        mod && Reports(id),
         info.may_post && Composer(community, info, me, ctx),
         feed.length === 0 && (
             <div class="post-empty">
@@ -237,8 +262,98 @@ export function Posts(community: CommunityView, me: string, ctx: PostsCtx) {
                 </p>
             </div>
         ),
-        feed.map((p) => Card(community, p, ctx, true)),
+        feed.map((p) => Card(where, p, ctx, true)),
     ]
+}
+
+/** What the box asking for somebody's own server holds, per address. */
+const fromServer = new Map<string, string>()
+
+/**
+ * "Follow from your own server": somebody on Mastodon, Lemmy or elsewhere
+ * types their server, and is sent to the page there that follows this address
+ * — Mastodon's follow screen, Lemmy's search, Misskey's — which the simulator
+ * picks by asking their server what it runs (`/api/fediverse/follow-link`).
+ */
+export function FollowFrom(address: string, group: boolean) {
+    const typed = fromServer.get(address) ?? ''
+    const go = async () => {
+        const server = typed.trim()
+        if (!server) return
+        try {
+            const link = await signupApi.get<FollowLink>(
+                `/api/fediverse/follow-link?server=${encodeURIComponent(server)}&address=${encodeURIComponent(address)}`,
+            )
+            window.open(link.url, '_blank', 'noopener')
+        } catch (e) {
+            failed(e)
+        }
+    }
+    return (
+        <form
+            class="post-follow-from"
+            key={`from-${address}`}
+            onsubmit={(e: Event) => {
+                e.preventDefault()
+                void go()
+            }}
+        >
+            <span class="post-dim">
+                Follow {group ? `@${address} (on Lemmy: !${address})` : `@${address}`} from your own server
+            </span>
+            <span class="post-follow-from-row">
+                <input
+                    aria-label="Your server"
+                    oninput={(e: Event) => fromServer.set(address, (e.target as HTMLInputElement).value)}
+                    placeholder="mastodon.social, lemmy.world, …"
+                    value={typed}
+                />
+                <Button disabled={!typed.trim()} size="sm" type="submit">Follow</Button>
+                <button
+                    class="post-icon"
+                    onclick={() => void navigator.clipboard?.writeText(`@${address}`)}
+                    title="Copy the address"
+                    type="button"
+                >
+                    {Icon('content_copy')}
+                </button>
+            </span>
+        </form>
+    )
+}
+
+/** Reports from other servers about posts here, for the moderators. */
+function Reports(id: string) {
+    const reports = st.reports.get(id) ?? []
+    if (reports.length === 0) return null
+    const resolve = async (report: string, action: 'hide' | 'dismiss') => {
+        try {
+            await signupApi.post(`/api/communities/${id}/reports/${report}`, {action})
+            await load(id)
+        } catch (e) {
+            failed(e)
+        }
+    }
+    return (
+        <div class="post-reports">
+            <h3 class="chat-pane-h">
+                {Icon('flag')} {reports.length} report{reports.length === 1 ? '' : 's'} from other servers
+            </h3>
+            {reports.map((r) => (
+                <div class="post-report" key={r.id}>
+                    <p class="post-dim is-public">{r.reporter} · {ago(r.created_ms)}</p>
+                    {r.reason && <p class="post-report-reason">{r.reason}</p>}
+                    <blockquote class="post-report-post">
+                        <b>{r.post.author.address}</b> {r.post.text}
+                    </blockquote>
+                    <span class="post-report-actions">
+                        <Button onclick={() => void resolve(r.id, 'hide')} size="sm">Hide the post</Button>
+                        <Button onclick={() => void resolve(r.id, 'dismiss')} size="sm" variant="ghost">Leave it</Button>
+                    </span>
+                </div>
+            ))}
+        </div>
+    )
 }
 
 /** A post's place, as a chip that opens it in World. */
@@ -256,8 +371,8 @@ function PlaceChip(place: PostPlace | undefined, ctx: PostsCtx) {
     )
 }
 
-function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean) {
-    const mod = community.role === 'owner' || community.role === 'moderator'
+export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
+    const mod = where.mod
     const url = ctx.pictureUrl(p.picture)
     const snapshot = ctx.pictureUrl(p.snapshot)
     const open = top && st.threadOpen === p.id
@@ -265,12 +380,33 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
         try {
             await run()
             if (st.threadOpen === p.id) st.threadOpen = null
-            await load(community.id)
+            await load(where.id)
         } catch (e) {
             failed(e)
         }
     }
+    const editing = st.editing?.id === p.id ? st.editing : null
+    const saveEdit = async () => {
+        const text = editing?.text.trim()
+        if (!text || st.busy) return
+        st.busy = true
+        try {
+            const changed = await signupApi.put<PostDto>(`/api/posts/${p.id}`, {text})
+            Object.assign(p, changed)
+            st.editing = null
+            st.busy = false
+        } catch (e) {
+            failed(e)
+        }
+        m.redraw()
+    }
     const menu = [
+        p.mine && (
+            <button onclick={() => (st.editing = {id: p.id, text: p.text})} type="button">
+                Edit
+                <small>Other servers get the change, as they do Mastodon's own edits</small>
+            </button>
+        ),
         p.mine && (
             <button onclick={() => void act(() => signupApi.delete(`/api/posts/${p.id}`))} type="button">
                 Delete
@@ -285,7 +421,7 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
         mod && !p.author.local && (
             <button
                 onclick={() =>
-                    void act(() => signupApi.post(`/api/communities/${community.id}/blocks`, {address: p.author.address}))}
+                    void act(() => signupApi.post(`/api/communities/${where.id}/blocks`, {address: p.author.address}))}
                 type="button"
             >
                 Block {p.author.address}
@@ -307,7 +443,10 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
                             {p.author.local ? 'member' : `@${p.author.address}`}
                         </span>
                     </span>
-                    <span class="post-dim" title={new Date(p.created_ms).toLocaleString()}>{ago(p.created_ms)}</span>
+                    <span class="post-dim" title={new Date(p.created_ms).toLocaleString()}>
+                        {ago(p.created_ms)}
+                        {p.edited_ms && <span title={`Edited ${new Date(p.edited_ms).toLocaleString()}`}> · edited</span>}
+                    </span>
                     {menu.length > 0 && (
                         <details class="post-menu">
                             <summary aria-label="More" title="More">{Icon('more_horiz')}</summary>
@@ -316,7 +455,26 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
                     )}
                 </header>
                 {p.via && <div class="post-via">via {p.via}</div>}
-                <p class="post-text">{p.text}</p>
+                {editing ? (
+                    <form
+                        class="post-edit"
+                        onsubmit={(e: Event) => {
+                            e.preventDefault()
+                            void saveEdit()
+                        }}
+                    >
+                        <textarea
+                            maxlength={500}
+                            oninput={(e: Event) => (editing.text = (e.target as HTMLTextAreaElement).value)}
+                            rows={3}
+                            value={editing.text}
+                        />
+                        <span class="post-edit-actions">
+                            <Button onclick={() => (st.editing = null)} size="sm" variant="ghost">Cancel</Button>
+                            <Button disabled={!editing.text.trim() || st.busy} size="sm" type="submit">Save</Button>
+                        </span>
+                    </form>
+                ) : <p class="post-text">{p.text}</p>}
                 {snapshot && (
                     <img alt="A snapshot of the map where this was written" class="post-polaroid" loading="lazy" src={snapshot} />
                 )}
@@ -331,22 +489,37 @@ function Card(community: CommunityView, p: PostDto, ctx: PostsCtx, top: boolean)
                         >
                             {Icon('comment')} {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
                         </button>
+                        {Votes(p)}
                     </footer>
                 )}
-                {open && Replies(community, ctx)}
+                {!top && Votes(p)}
+                {open && Replies(where, ctx)}
             </div>
         </article>
     )
 }
 
-/** A post's replies, under it, with a box to answer in. */
-function Replies(community: CommunityView, ctx: PostsCtx) {
+/** Likes and votes from other servers, when there are any. */
+function Votes(p: PostDto) {
+    if (!p.likes && !p.dislikes) return null
+    const title = 'From other servers: favourites on Mastodon, votes on Lemmy'
+    return (
+        <span class="post-votes" title={title}>
+            {Icon('favorite')} {p.likes}
+            {p.dislikes > 0 && <> · {Icon('thumb_down')} {p.dislikes}</>}
+        </span>
+    )
+}
+
+/** A post's replies, under it, with a box to answer in for somebody signed in. */
+function Replies(where: Where, ctx: PostsCtx) {
     const t = st.thread
     if (!t) return <p class="post-dim post-loading">Reading the replies…</p>
     return (
         <div class="post-thread">
-            {t.replies.map((r) => Card(community, r, ctx, false))}
-            <form
+            {t.replies.map((r) => Card(where, r, ctx, false))}
+            {!where.signedIn && <p class="post-dim">Sign in, or reply from your own fediverse server.</p>}
+            {where.signedIn && <form
                 class="post-reply"
                 onsubmit={async (e: Event) => {
                     e.preventDefault()
@@ -357,7 +530,7 @@ function Replies(community: CommunityView, ctx: PostsCtx) {
                         const reply = await signupApi.post<PostDto>(`/api/posts/${t.post.id}/replies`, {text})
                         t.replies.push(reply)
                         t.post.replies += 1
-                        const inFeed = st.feed.get(community.id)?.find((x) => x.id === t.post.id)
+                        const inFeed = st.feed.get(where.id)?.find((x) => x.id === t.post.id)
                         if (inFeed) inFeed.replies = t.post.replies
                         st.reply = ''
                         st.busy = false
@@ -375,7 +548,7 @@ function Replies(community: CommunityView, ctx: PostsCtx) {
                     value={st.reply}
                 />
                 <Button disabled={!st.reply.trim() || st.busy} size="sm" type="submit">Reply</Button>
-            </form>
+            </form>}
         </div>
     )
 }
@@ -607,7 +780,7 @@ function Settings(community: CommunityView, info: PublicInfo) {
                         onsubmit={async (e: Event) => {
                             e.preventDefault()
                             const address = st.follow.trim()
-                            if (!address.includes('@')) return
+                            if (!address.includes('@') && !address.startsWith('https://')) return
                             try {
                                 st.info.set(id, await signupApi.post<PublicInfo>(`/api/communities/${id}/follows`, {address}))
                                 st.follow = ''
@@ -626,7 +799,7 @@ function Settings(community: CommunityView, info: PublicInfo) {
                                     st.follow = v
                                 },
                             }}
-                            placeholder="groningen@feddit.nl or someone@mastodon.social"
+                            placeholder="groningen@feddit.nl, someone@mastodon.social, or a relay's https:// address"
                         />
                         <Button size="sm" type="submit">Follow</Button>
                     </form>

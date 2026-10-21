@@ -1478,7 +1478,7 @@
     gap: 4px;
 }
 
-.chat .post-icon, .chat button.post-icon {
+:is(.chat, .post-page) .post-icon, :is(.chat, .post-page) button.post-icon {
     align-items: center;
     border-radius: var(--m-radius-full) !important;
     color: var(--m-text-dim);
@@ -1490,8 +1490,8 @@
     width: 32px;
 }
 
-.chat button.post-icon:hover,
-.chat button.post-icon.is-on {
+:is(.chat, .post-page) button.post-icon:hover,
+:is(.chat, .post-page) button.post-icon.is-on {
     background: var(--m-hover) !important;
     color: var(--m-text-strong);
 }
@@ -1527,7 +1527,7 @@
 }
 
 /* The writing box: one line until it is used. */
-.chat button.post-compose, .chat div.post-compose {
+:is(.chat, .post-page) button.post-compose, :is(.chat, .post-page) div.post-compose {
     background: var(--m-surface-raised);
     border: 1px solid var(--m-border);
     border-radius: var(--m-radius-lg);
@@ -1539,12 +1539,12 @@
     width: 100%;
 }
 
-.chat button.post-compose.is-folded {
+:is(.chat, .post-page) button.post-compose.is-folded {
     align-items: center;
     cursor: text;
 }
 
-.chat button.post-compose.is-folded:hover {
+:is(.chat, .post-page) button.post-compose.is-folded:hover {
     border-color: var(--m-border-strong);
 }
 
@@ -1585,7 +1585,7 @@
     position: relative;
 }
 
-.chat .post-compose-picture button {
+:is(.chat, .post-page) .post-compose-picture button {
     background: rgb(0 0 0 / 60%);
     border-radius: var(--m-radius-full);
     color: #fff;
@@ -1609,7 +1609,7 @@
     margin-top: 6px;
 }
 
-.chat .post-placing-choices button {
+:is(.chat, .post-page) .post-placing-choices button {
     border: 1px solid var(--m-border);
     border-radius: var(--m-radius-full);
     font-size: var(--m-font-size-sm);
@@ -1702,8 +1702,8 @@
     margin-top: 10px;
 }
 
-.chat button.post-place-chip,
-.chat button.post-replies {
+:is(.chat, .post-page) button.post-place-chip,
+:is(.chat, .post-page) button.post-replies {
     align-items: center;
     border: 1px solid var(--m-border);
     border-radius: var(--m-radius-full);
@@ -1714,19 +1714,19 @@
     padding: 4px 10px !important;
 }
 
-.chat button.post-place-chip {
+:is(.chat, .post-page) button.post-place-chip {
     background: var(--m-accent-soft);
     border-color: transparent;
     color: var(--m-text-strong);
 }
 
-.chat button.post-place-chip.is-missing {
+:is(.chat, .post-page) button.post-place-chip.is-missing {
     background: var(--m-warning-soft);
 }
 
-.chat button.post-place-chip:hover,
-.chat button.post-replies:hover,
-.chat button.post-replies.is-on {
+:is(.chat, .post-page) button.post-place-chip:hover,
+:is(.chat, .post-page) button.post-replies:hover,
+:is(.chat, .post-page) button.post-replies.is-on {
     border-color: var(--m-border-strong);
     color: var(--m-text-strong);
 }
@@ -1801,7 +1801,7 @@
     z-index: 5;
 }
 
-.chat .post-menu-list button,
+:is(.chat, .post-page) .post-menu-list button,
 .post-menu-list a {
     border-radius: var(--m-radius-sm);
     color: var(--m-text);
@@ -1810,7 +1810,7 @@
     text-decoration: none;
 }
 
-.chat .post-menu-list button:hover,
+:is(.chat, .post-page) .post-menu-list button:hover,
 .post-menu-list a:hover {
     background: var(--m-hover) !important;
 }
@@ -1865,19 +1865,19 @@
 
 .post-public .chat-icon,
 .post-placing-choices .chat-icon,
-.chat button.post-place-chip .chat-icon,
-.chat button.post-replies .chat-icon,
+:is(.chat, .post-page) button.post-place-chip .chat-icon,
+:is(.chat, .post-page) button.post-replies .chat-icon,
 .post-tool .chat-icon {
     height: 1.15em;
     width: 1.15em;
 }
 
-.chat button.post-place-chip .chat-icon {
+:is(.chat, .post-page) button.post-place-chip .chat-icon {
     color: var(--m-accent);
 }
 
 .post-menu summary .chat-icon,
-.chat button.post-icon .chat-icon {
+:is(.chat, .post-page) button.post-icon .chat-icon {
     height: 20px;
     width: 20px;
 }
@@ -3638,4 +3638,134 @@
     font: inherit;
     font-size: 0.78rem;
     padding: 6px 8px;
+}
+
+/* Likes and votes from other servers, beside a post's replies. */
+.post-votes {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+}
+
+.post-votes .chat-icon {
+    height: 1em;
+    width: 1em;
+}
+
+/* An author editing their post, in place. */
+.post-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.post-edit textarea {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text);
+    font: inherit;
+    padding: 8px 10px;
+    resize: vertical;
+}
+
+.post-edit-actions,
+.post-report-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+/* "Follow from your own server", for somebody on Mastodon, Lemmy or elsewhere. */
+.post-follow-from {
+    background: var(--m-surface-sunken);
+    border-radius: var(--m-radius-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 14px;
+    padding: 10px 12px;
+}
+
+.post-follow-from-row {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+}
+
+.post-follow-from input {
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    color: var(--m-text);
+    flex: 1;
+    font: inherit;
+    min-width: 0;
+    padding: 6px 10px;
+}
+
+/* Reports from other servers, for the moderators. */
+.post-reports {
+    border: 1px solid var(--m-warning-soft);
+    border-radius: var(--m-radius-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 10px 12px;
+}
+
+.post-report-reason {
+    color: var(--m-text-strong);
+    margin: 2px 0;
+}
+
+.post-report-post {
+    border-left: 3px solid var(--m-border);
+    color: var(--m-text);
+    margin: 4px 0 8px;
+    overflow-wrap: anywhere;
+    padding: 2px 10px;
+}
+
+/* The public pages (`pages/public`): a community's posts and a person's, for anybody. */
+.post-page {
+    margin: 0 auto;
+    max-width: 640px;
+}
+
+.post-page-hero {
+    align-items: center;
+    display: flex;
+    gap: 14px;
+    margin: 6px 0 14px;
+}
+
+.post-page-hero img,
+.post-page-face {
+    align-items: center;
+    background: var(--m-accent-soft);
+    border-radius: var(--m-radius-full);
+    color: var(--m-text-strong);
+    display: inline-flex;
+    flex: none;
+    font-size: 1.4rem;
+    height: 64px;
+    justify-content: center;
+    object-fit: cover;
+    width: 64px;
+}
+
+.post-page-hero h1 {
+    font-size: 1.4rem;
+    margin: 0;
+}
+
+.post-page-about {
+    color: var(--m-text);
+    margin: 0 0 14px;
+    white-space: pre-wrap;
 }
