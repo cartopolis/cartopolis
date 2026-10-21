@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::posts::PostRow;
-use super::{group_url, key_id, person_url, place_link, post_url};
+use super::{group_url, key_id, person_url, place_link, post_url, PictureFacts};
 
 /// Who may read something addressed to it: everybody.
 pub const PUBLIC: &str = "https://www.w3.org/ns/activitystreams#Public";
@@ -33,6 +33,9 @@ pub fn context() -> Value {
         "https://w3id.org/security/v1",
         {
             "cartopolis": "https://cartopolis.org/ns#",
+            "toot": "http://joinmastodon.org/ns#",
+            "discoverable": "toot:discoverable",
+            "indexable": "toot:indexable",
             "Hashtag": "as:Hashtag",
             "sensitive": "as:sensitive",
             "postingRestrictedToMods": "https://join-lemmy.org/ns#postingRestrictedToMods"
@@ -53,23 +56,127 @@ fn key(actor: &str, pem: &str) -> Value {
     json!({ "id": key_id(actor), "owner": actor, "publicKeyPem": pem })
 }
 
+/// What a person's actor says about them beyond their name.
+pub struct PersonFacts<'a> {
+    pub account: &'a str,
+    pub username: &'a str,
+    /// Their picture, a hash in the store, with what it is.
+    pub picture: Option<(&'a str, PictureFacts)>,
+    /// When the account was made.
+    pub created_ms: Option<i64>,
+    /// The communities they write in, by name and handle.
+    pub communities: &'a [(String, String)],
+    pub pem: &'a str,
+}
+
 /// An account here, as a `Person`. Its id carries the account's id, not its
 /// name, so it means one account for good.
+///
+/// `indexable` lets Mastodon's search find their posts. They are public posts,
+/// sent to other servers under the author's own address, so being searchable
+/// is what posting one means (`docs/notes/fediverse.md`).
 #[must_use]
-pub fn person(base: &str, account: &str, username: &str, pem: &str) -> Value {
-    let id = person_url(base, account);
-    json!({
+pub fn person(base: &str, server: &str, p: &PersonFacts<'_>) -> Value {
+    let id = person_url(base, p.account);
+    let mut v = json!({
         "id": id,
         "type": "Person",
-        "preferredUsername": username,
-        "name": username,
+        "preferredUsername": p.username,
+        "name": p.username,
         "inbox": format!("{id}/inbox"),
         "outbox": format!("{id}/outbox"),
         "followers": format!("{id}/followers"),
         "endpoints": { "sharedInbox": format!("{base}/ap/inbox") },
         "manuallyApprovesFollowers": false,
         "discoverable": true,
-        "url": id,
+        "indexable": true,
+        "url": person_page(base, p.username),
+        "publicKey": key(&id, p.pem),
+    });
+    if !p.communities.is_empty() {
+        let links: Vec<String> = p
+            .communities
+            .iter()
+            .map(|(name, handle)| {
+                format!(
+                    "<a href=\"{}\">{}</a>",
+                    escape_html(&community_page(base, handle)),
+                    escape_html(name)
+                )
+            })
+            .collect();
+        v["summary"] = json!(format!(
+            "<p>Writes in {} on Cartopolis, at {}.</p>",
+            links.join(", "),
+            escape_html(server)
+        ));
+    }
+    if let Some((hash, facts)) = p.picture {
+        v["icon"] = image(base, hash, facts);
+    }
+    if let Some(ms) = p.created_ms {
+        v["published"] = json!(rfc3339_utc(u64::try_from(ms).unwrap_or(0)));
+    }
+    v
+}
+
+/// The web page of a person here, which lists their public posts.
+#[must_use]
+pub fn person_page(base: &str, username: &str) -> String {
+    format!("{base}/@{}", path_segment(username))
+}
+
+/// The web page of a community's public half.
+#[must_use]
+pub fn community_page(base: &str, handle: &str) -> String {
+    format!("{base}/c/{handle}")
+}
+
+/// A username as one path segment: whatever it is, it stays one.
+fn path_segment(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// A picture in the store as an `Image`.
+fn image(base: &str, hash: &str, facts: PictureFacts) -> Value {
+    json!({
+        "type": "Image",
+        "mediaType": facts.mime,
+        "url": format!("{base}/ap/media/{hash}"),
+        "width": facts.width,
+        "height": facts.height,
+    })
+}
+
+/// A community's reader, as a `Service`: a bot account, which is what Lemmy
+/// takes a follow from where it refuses one from a group (`super::reader_url`).
+#[must_use]
+pub fn reader(base: &str, community: Uuid, handle: &str, name: &str, pem: &str) -> Value {
+    let id = super::reader_url(base, community);
+    json!({
+        "id": id,
+        "type": "Service",
+        "preferredUsername": super::reader_name(handle),
+        "name": format!("{name} (reader)"),
+        "summary": format!(
+            "<p>Follows accounts and communities for <a href=\"{}\">{}</a>, so what they post shows in it.</p>",
+            escape_html(&community_page(base, handle)),
+            escape_html(name)
+        ),
+        "inbox": format!("{id}/inbox"),
+        "outbox": format!("{id}/outbox"),
+        "endpoints": { "sharedInbox": format!("{base}/ap/inbox") },
+        "manuallyApprovesFollowers": true,
+        "discoverable": false,
+        "url": community_page(base, handle),
         "publicKey": key(&id, pem),
     })
 }
@@ -80,7 +187,7 @@ pub struct GroupFacts<'a> {
     pub handle: &'a str,
     pub name: &'a str,
     pub about: &'a str,
-    pub picture: Option<&'a str>,
+    pub picture: Option<(&'a str, PictureFacts)>,
     pub place: Option<(f64, f64, Option<&'a str>)>,
     pub who_posts: WhoPosts,
     pub pem: &'a str,
@@ -107,15 +214,11 @@ pub fn group(base: &str, g: &GroupFacts<'_>) -> Value {
         "discoverable": true,
         "postingRestrictedToMods": g.who_posts == WhoPosts::Moderators,
         "published": rfc3339_utc(u64::try_from(g.created_ms).unwrap_or(0)),
-        "url": id,
+        "url": community_page(base, g.handle),
         "publicKey": key(&id, g.pem),
     });
-    if let Some(hash) = g.picture {
-        v["icon"] = json!({
-            "type": "Image",
-            "mediaType": "image/jpeg",
-            "url": format!("{base}/ap/media/{hash}"),
-        });
+    if let Some((hash, facts)) = g.picture {
+        v["icon"] = image(base, hash, facts);
     }
     if let Some((lat, lng, name)) = g.place {
         v["location"] = json!({
@@ -207,16 +310,100 @@ fn tag_url(base: &str, tag: &str) -> String {
     format!("{base}/tags/{}", tag.to_lowercase())
 }
 
-/// Plain text as HTML paragraphs, the form every server's `content` takes, with
-/// each hashtag a link as Mastodon writes one.
+/// Where a mention `@user@server` written at `i` ends, if one does, and the
+/// address without its `@`: an `@` not glued to the word before it, a name of
+/// letters, digits, `_`, `.` and `-`, then `@` and a server name with a dot
+/// in it. A full stop after the server ends the sentence, not the name.
+fn mention_end(chars: &[char], i: usize) -> Option<(usize, String)> {
+    if chars.get(i) != Some(&'@') {
+        return None;
+    }
+    if i > 0 && (chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '@' | '/' | '.')) {
+        return None;
+    }
+    let name_ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-');
+    let mut at = i + 1;
+    while at < chars.len() && name_ok(chars[at]) {
+        at += 1;
+    }
+    if at == i + 1 || chars.get(at) != Some(&'@') {
+        return None;
+    }
+    let host_ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-');
+    let mut end = at + 1;
+    while end < chars.len() && host_ok(chars[end]) {
+        end += 1;
+    }
+    while end > at + 1 && matches!(chars[end - 1], '.' | '-') {
+        end -= 1;
+    }
+    let host: String = chars[at + 1..end].iter().collect();
+    if !host.contains('.') || host.starts_with('.') {
+        return None;
+    }
+    let name: String = chars[i + 1..at].iter().collect();
+    Some((end, format!("{name}@{}", host.to_ascii_lowercase())))
+}
+
+/// The addresses a text mentions (`anna@mastodon.social`, no `@` in front),
+/// each once, in order.
 #[must_use]
-pub fn text_to_html(text: &str, base: &str) -> String {
+pub fn mentions(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((end, address)) = mention_end(&chars, i) {
+            if !out.iter().any(|a| a.eq_ignore_ascii_case(&address)) {
+                out.push(address);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// An account elsewhere that a post names, as resolved when it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mention {
+    /// Their actor.
+    pub actor: String,
+    /// `@user@server`, as written.
+    pub name: String,
+    /// Their profile page, which the mention links to.
+    pub href: String,
+}
+
+/// Plain text as HTML paragraphs, the form every server's `content` takes, with
+/// each hashtag and each mention a link as Mastodon writes one. A mention that
+/// did not resolve to anybody stays text.
+#[must_use]
+pub fn text_to_html(text: &str, base: &str, mentioned: &[Mention]) -> String {
     let mut out = String::new();
     for p in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
         out.push_str("<p>");
         let chars: Vec<char> = p.chars().collect();
         let mut i = 0;
         while i < chars.len() {
+            if let Some((end, address)) = mention_end(&chars, i) {
+                let found = mentioned.iter().find(|m| {
+                    m.name
+                        .trim_start_matches('@')
+                        .eq_ignore_ascii_case(&address)
+                });
+                if let Some(m) = found {
+                    let user = address.split('@').next().unwrap_or_default();
+                    out.push_str(&format!(
+                        "<span class=\"h-card\" translate=\"no\"><a href=\"{}\" class=\"u-url mention\">@<span>{}</span></a></span>",
+                        escape_html(&m.href),
+                        escape_html(user)
+                    ));
+                    i = end;
+                    continue;
+                }
+            }
             if let Some(end) = hashtag_end(&chars, i) {
                 let tag: String = chars[i + 1..end].iter().collect();
                 out.push_str(&format!(
@@ -255,6 +442,23 @@ pub fn author_url(base: &str, row: &PostRow) -> String {
     }
 }
 
+/// What a note says beyond its row: who it mentions, and what its pictures
+/// are (a hash with no facts is left out: the store no longer has it).
+#[derive(Debug, Clone, Default)]
+pub struct NoteExtras {
+    pub mentions: Vec<Mention>,
+    pub pictures: Vec<(String, PictureFacts)>,
+}
+
+impl NoteExtras {
+    fn picture(&self, hash: &str) -> Option<PictureFacts> {
+        self.pictures
+            .iter()
+            .find(|(h, _)| h == hash)
+            .map(|(_, f)| *f)
+    }
+}
+
 /// A post or reply written here, as a `Note`.
 #[must_use]
 pub fn note(
@@ -263,6 +467,7 @@ pub fn note(
     handle: &str,
     server: &str,
     reply_to: Option<&ReplyTo<'_>>,
+    extras: &NoteExtras,
 ) -> Value {
     let author = author_url(base, row);
     let group = group_url(base, row.community);
@@ -278,6 +483,13 @@ pub fn note(
             tag.push(json!({ "type": "Mention", "href": parent_author }));
         }
     }
+    // The accounts the text names, so their servers tell them.
+    for m in &extras.mentions {
+        if !cc.iter().any(|c| c == m.actor.as_str()) {
+            cc.push(json!(m.actor));
+        }
+        tag.push(json!({ "type": "Mention", "href": m.actor, "name": m.name }));
+    }
     // Hashtags: a link in the text and a `Hashtag` tag, both of which Mastodon
     // needs before it makes one clickable and files the post under it.
     for t in hashtags(&row.text) {
@@ -287,7 +499,7 @@ pub fn note(
             "name": format!("#{}", t.to_lowercase()),
         }));
     }
-    let mut content = text_to_html(&row.text, base);
+    let mut content = text_to_html(&row.text, base, &extras.mentions);
     let link = row.place.as_ref().map(|p| place_link(base, p));
     if let (Some(place), Some(link)) = (&row.place, &link) {
         let label = place.name.as_deref().unwrap_or("Open on the map");
@@ -337,21 +549,18 @@ pub fn note(
     // The snapshot first: it is what a post written here is about, and the
     // first attachment is the one a timeline shows largest.
     let mut attachments = Vec::new();
-    if let Some(hash) = &row.snapshot {
-        attachments.push(json!({
-            "type": "Image",
-            "mediaType": "image/jpeg",
-            "url": format!("{base}/ap/media/{hash}"),
-            "name": snapshot_alt(row.place.as_ref()),
-        }));
-    }
-    if let Some(hash) = &row.picture {
-        attachments.push(json!({
-            "type": "Image",
-            "mediaType": "image/jpeg",
-            "url": format!("{base}/ap/media/{hash}"),
-            "name": place_alt(row.place.as_ref()),
-        }));
+    let pictures = [
+        (&row.snapshot, snapshot_alt(row.place.as_ref())),
+        (&row.picture, place_alt(row.place.as_ref())),
+    ];
+    for (hash, alt) in pictures {
+        let Some(hash) = hash else { continue };
+        let Some(facts) = extras.picture(hash) else {
+            continue;
+        };
+        let mut a = image(base, hash, facts);
+        a["name"] = json!(alt);
+        attachments.push(a);
     }
     if !attachments.is_empty() {
         v["attachment"] = Value::Array(attachments);
@@ -412,9 +621,18 @@ pub fn activity(kind: &str, id: &str, actor: &str, object: Value) -> Value {
 /// (FEP-1b12), or a bare object id, Mastodon's.
 #[must_use]
 pub fn announce(base: &str, community: Uuid, object: Value) -> Value {
+    let id = format!("{}/announce/{}", group_url(base, community), Uuid::new_v4());
+    announce_as(&id, base, community, object)
+}
+
+/// `announce` under a chosen id. A boost of a post written here has one id for
+/// good (`post_boost_id`), so the copy in the community's outbox and the copy
+/// delivered are one activity to a server that sees both.
+#[must_use]
+pub fn announce_as(id: &str, base: &str, community: Uuid, object: Value) -> Value {
     let group = group_url(base, community);
     json!({
-        "id": format!("{group}/announce/{}", Uuid::new_v4()),
+        "id": id,
         "type": "Announce",
         "actor": group,
         "to": [PUBLIC],
@@ -422,6 +640,17 @@ pub fn announce(base: &str, community: Uuid, object: Value) -> Value {
         "audience": group,
         "object": object,
     })
+}
+
+/// The id of the community's boost of a post written here: of the activity
+/// (`Create`, for Lemmy) or of the object itself (`None`, for Mastodon).
+#[must_use]
+pub fn post_boost_id(base: &str, row: &PostRow, activity: Option<&str>) -> String {
+    let group = group_url(base, row.community);
+    match activity {
+        Some(kind) => format!("{group}/announce/{}/{}", kind.to_ascii_lowercase(), row.id),
+        None => format!("{group}/boosts/{}", row.id),
+    }
 }
 
 /// `actor` follows `object`.
@@ -464,6 +693,34 @@ pub fn delete(base: &str, row: &PostRow) -> Value {
         "cc": [group_url(base, row.community)],
         "audience": group_url(base, row.community),
         "object": { "id": row.ap_id, "type": "Tombstone" },
+    })
+}
+
+/// A post written here changed: its author says so with the note as it is now.
+#[must_use]
+pub fn update(base: &str, note: Value, row: &PostRow) -> Value {
+    let at = row.edited_ms.unwrap_or(row.created_ms);
+    activity(
+        "Update",
+        &format!("{}#update-{at}", post_url(base, row.id)),
+        &author_url(base, row),
+        note,
+    )
+}
+
+/// An account here is gone, said by itself to every server that knew it.
+/// `removeData` asks Lemmy to take what it wrote with it, as Mastodon does
+/// with a deleted account's posts anyway.
+#[must_use]
+pub fn delete_person(base: &str, account: &str) -> Value {
+    let id = person_url(base, account);
+    json!({
+        "id": format!("{id}#delete"),
+        "type": "Delete",
+        "actor": id,
+        "to": [PUBLIC],
+        "object": id,
+        "removeData": true,
     })
 }
 
@@ -727,7 +984,33 @@ pub fn object_text(v: &Value) -> String {
         }
     }
     text.push_str(&content);
+    // What a Lemmy link post links to is in neither its title nor its body.
+    if let Some(link) = shared_link(v) {
+        if !text.contains(&link) {
+            if !text.trim().is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&link);
+        }
+    }
     text.trim().to_string()
+}
+
+/// The page a post shares, Lemmy's way: an attachment of type `Link`. Only an
+/// `https` one: it is shown as a link.
+#[must_use]
+pub fn shared_link(v: &Value) -> Option<String> {
+    let attachments: Vec<&Value> = match v.get("attachment") {
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(a) => vec![a],
+        None => Vec::new(),
+    };
+    attachments
+        .into_iter()
+        .filter(|a| kind(a) == "Link")
+        .filter_map(|a| a.get("href").and_then(Value::as_str))
+        .find(|h| h.starts_with("https://") && !h.contains(char::is_whitespace))
+        .map(str::to_string)
 }
 
 /// Where a post from elsewhere was written: its `location`, or a Cartopolis
@@ -877,6 +1160,28 @@ mod tests {
         }
     }
 
+    /// What the store says of the test row's two pictures.
+    fn extras() -> NoteExtras {
+        let jpeg = PictureFacts {
+            mime: "image/jpeg",
+            width: 800,
+            height: 600,
+        };
+        NoteExtras {
+            mentions: Vec::new(),
+            pictures: vec![
+                ("ab".repeat(32), jpeg),
+                (
+                    "cd".repeat(32),
+                    PictureFacts {
+                        mime: "image/png",
+                        ..jpeg
+                    },
+                ),
+            ],
+        }
+    }
+
     #[test]
     fn a_post_is_a_note_with_a_place_a_title_and_a_link() {
         let n = note(
@@ -885,6 +1190,7 @@ mod tests {
             "oost",
             "c.test",
             None,
+            &extras(),
         );
         assert_eq!(n["type"], "Note");
         assert_eq!(n["name"], "Plant swap <Saturday>");
@@ -907,6 +1213,19 @@ mod tests {
             "the snapshot comes first"
         );
         assert_eq!(n["attachment"].as_array().unwrap().len(), 2);
+        // Each picture says what it is, so a timeline can lay it out unloaded.
+        assert_eq!(n["attachment"][0]["mediaType"], "image/png");
+        assert_eq!(n["attachment"][1]["width"], 800);
+        // A picture the store no longer has is left out rather than broken.
+        let bare = note(
+            "https://c.test",
+            &row("x"),
+            "oost",
+            "c.test",
+            None,
+            &NoteExtras::default(),
+        );
+        assert!(bare.get("attachment").is_none());
         // What we write is what we read: text, place and all.
         assert_eq!(object_text(&n), "Plant swap <Saturday>\nBring cuttings");
         assert_eq!(object_place(&n), row("x").place);
@@ -918,7 +1237,14 @@ mod tests {
             ap_id: "https://m.test/statuses/1",
             author: Some("https://m.test/users/anna"),
         };
-        let n = note("https://c.test", &row("yes"), "oost", "c.test", Some(&r));
+        let n = note(
+            "https://c.test",
+            &row("yes"),
+            "oost",
+            "c.test",
+            Some(&r),
+            &extras(),
+        );
         assert_eq!(n["inReplyTo"], "https://m.test/statuses/1");
         assert!(n.get("name").is_none());
         assert!(addressees(&n).contains(&"https://m.test/users/anna".to_string()));
@@ -932,7 +1258,7 @@ mod tests {
         );
         // Glued to a word, a number, or an HTML entity: not hashtags.
         assert!(hashtags("a#b #1 &#39; c#").is_empty());
-        let html = text_to_html("Bankjes <hier>\n#groningen!", "https://c.test");
+        let html = text_to_html("Bankjes <hier>\n#groningen!", "https://c.test", &[]);
         assert_eq!(
             html,
             "<p>Bankjes &lt;hier&gt;<br><a href=\"https://c.test/tags/groningen\" class=\"mention hashtag\" rel=\"tag\">#<span>groningen</span></a>!</p>"
@@ -943,6 +1269,7 @@ mod tests {
             "oost",
             "c.test",
             None,
+            &extras(),
         );
         let tags = n["tag"].as_array().unwrap();
         assert!(tags.iter().any(|t| t["type"] == "Hashtag"
@@ -950,6 +1277,66 @@ mod tests {
             && t["href"] == "https://c.test/tags/groningen"));
         // What another server sends back reads as the words written.
         assert!(object_text(&json!({"type": "Note", "content": html})).contains("#groningen!"));
+    }
+
+    #[test]
+    fn a_mention_tells_who_it_names_as_mastodon_writes_one() {
+        assert_eq!(
+            mentions("Thanks @anna@Mastodon.Social. And @bob@lemmy.world, @anna@mastodon.social!"),
+            ["anna@mastodon.social", "bob@lemmy.world"]
+        );
+        // An e-mail address, a bare @name and a server with no dot are not.
+        assert!(mentions("mail me@home.nl, ask @tom, or @x@localhost").is_empty());
+        let anna = Mention {
+            actor: "https://mastodon.social/users/anna".into(),
+            name: "@anna@mastodon.social".into(),
+            href: "https://mastodon.social/@anna".into(),
+        };
+        let html = text_to_html(
+            "Hoi @anna@mastodon.social en @nobody@x.test.",
+            "https://c.test",
+            std::slice::from_ref(&anna),
+        );
+        assert_eq!(
+            html,
+            "<p>Hoi <span class=\"h-card\" translate=\"no\"><a href=\"https://mastodon.social/@anna\" class=\"u-url mention\">@<span>anna</span></a></span> en @nobody@x.test.</p>"
+        );
+        let n = note(
+            "https://c.test",
+            &row("Hoi @anna@mastodon.social"),
+            "oost",
+            "c.test",
+            None,
+            &NoteExtras {
+                mentions: vec![anna.clone()],
+                pictures: Vec::new(),
+            },
+        );
+        assert!(addressees(&n).contains(&anna.actor));
+        assert!(n["tag"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["type"] == "Mention" && t["href"] == anna.actor.as_str()));
+        // Read back, it is the words written.
+        assert_eq!(object_text(&n), "Hoi @anna@mastodon.social");
+    }
+
+    #[test]
+    fn a_boost_of_our_own_post_has_one_id_for_good() {
+        let r = row("x");
+        let a = post_boost_id("https://c.test", &r, Some("Create"));
+        assert_eq!(a, post_boost_id("https://c.test", &r, Some("Create")));
+        assert_ne!(a, post_boost_id("https://c.test", &r, None));
+        assert_ne!(a, post_boost_id("https://c.test", &r, Some("Update")));
+        let ann = announce_as(
+            &a,
+            "https://c.test",
+            r.community,
+            json!("https://c.test/ap/p/1"),
+        );
+        assert_eq!(ann["id"], a);
+        assert_eq!(ann["actor"], group_url("https://c.test", r.community));
     }
 
     #[test]
@@ -987,7 +1374,7 @@ mod tests {
         });
         assert_eq!(
             object_text(&v),
-            "Bike parking at the Oosterpoort\n\nThe council plans 300 places."
+            "Bike parking at the Oosterpoort\n\nThe council plans 300 places.\n\nhttps://x.test"
         );
         assert_eq!(image_url(&v).as_deref(), Some("https://l.test/pic.jpg"));
     }

@@ -963,9 +963,11 @@ pub fn erase_account_traces(
     // and visible to no one — the worst of both, so deletion frees it.
     crate::buildings::erase_for(conn, principal)?;
     // Public posts are the account's own words and go with it. Other servers
-    // keep the copies they were sent; telling them is `fediverse`'s job when
-    // it is told, and an account deleted from the shell is not.
-    crate::fediverse::posts::forget_account(conn, principal).map_err(|e| anyhow::anyhow!(e))?;
+    // that were sent them are told by the delivery worker, which this records
+    // the deletion for: it knows the server's public address, which an account
+    // deleted from the shell does not have here.
+    crate::fediverse::posts::forget_account(conn, principal, crate::fediverse::now_ms())
+        .map_err(|e| anyhow::anyhow!(e))?;
     // Communities first: leaving one needs the topic memberships the next
     // step deletes. A community the account owned passes on or goes.
     crate::communities::erase_account(conn, principal)?;

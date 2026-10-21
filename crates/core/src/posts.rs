@@ -127,8 +127,75 @@ pub struct PostDto {
     pub edited_ms: Option<i64>,
     /// Replies under a post; 0 on a reply.
     pub replies: u32,
-    /// Whether the caller wrote it (and so may delete it).
+    /// Whether the caller wrote it (and so may edit or delete it).
     pub mine: bool,
+    /// Likes from other servers: Mastodon's favourites, Lemmy's upvotes.
+    #[serde(default)]
+    pub likes: u32,
+    /// Lemmy's downvotes.
+    #[serde(default)]
+    pub dislikes: u32,
+}
+
+/// What an author sends to change a post or reply's words. The place and the
+/// pictures stay as they were.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditPost {
+    pub text: String,
+}
+
+/// A report about a post, sent by another server for the community's
+/// moderators.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostReport {
+    pub id: Uuid,
+    pub post: PostDto,
+    /// Who sent it: an account's address, or a server when it reports for
+    /// one of its people without naming them (Mastodon does).
+    pub reporter: String,
+    /// Their words, which may be empty.
+    pub reason: String,
+    pub created_ms: i64,
+}
+
+/// What a moderator does with a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportAction {
+    /// Hide the post from the community, and close the report.
+    Hide,
+    /// Leave the post, and close the report.
+    Dismiss,
+}
+
+/// Where to send somebody to follow an address from their own fediverse
+/// server: Mastodon's follow screen, Lemmy's search, Misskey's, …
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowLink {
+    pub url: String,
+    /// What their server runs (`mastodon`, `lemmy`), when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub software: Option<String>,
+}
+
+/// A community as its public page shows it to anybody, signed in or not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicCommunity {
+    pub id: Uuid,
+    pub name: String,
+    pub about: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
+/// A person's public posts, for their page (`/@name`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonPosts {
+    /// `name@server`.
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    pub posts: Vec<PostDto>,
 }
 
 /// A post and the replies under it, oldest first.
@@ -199,6 +266,13 @@ pub struct PublicInfo {
     /// Whether this server talks to other servers at all. A development server
     /// on `localhost` keeps posts to itself.
     pub federating: bool,
+    /// The community itself, for a page that shows it to somebody who is not a
+    /// member or not signed in (`/c/{handle}`). Present while posts are on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community: Option<PublicCommunity>,
+    /// Reports from other servers waiting for a moderator; 0 for anybody else.
+    #[serde(default)]
+    pub open_reports: u32,
 }
 
 /// Whether `s` may be a community's handle: lower-case letters, digits and

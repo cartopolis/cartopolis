@@ -342,6 +342,20 @@ impl Stats {
         self.live().open.values().collect::<HashSet<_>>().len()
     }
 
+    /// Different accounts that were connected at some point since `since`
+    /// (unix seconds), as far back as sessions are kept ([`KEEP_DAYS`]): the
+    /// fediverse's "active users", which NodeInfo publishes. A count, never who.
+    #[must_use]
+    pub fn active_since(&self, since: i64) -> Option<i64> {
+        let c = self.conn().lock().ok()?;
+        c.query_row(
+            "SELECT COUNT(DISTINCT account) FROM sessions WHERE COALESCE(ended, last_seen) >= ?1",
+            [since],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
     /// A handshake was turned away. `caller` is the address and browser, for
     /// counting devices; never stored.
     pub fn refused(

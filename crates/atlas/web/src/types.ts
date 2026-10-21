@@ -600,8 +600,36 @@ export interface PostDto {
     edited_ms?: number
     /** Replies under a post; 0 on a reply. */
     replies: number
-    /** Whether the caller wrote it. */
+    /** Whether the caller wrote it (and so may edit or delete it). */
     mine: boolean
+    /** Likes from other servers: Mastodon's favourites, Lemmy's upvotes. */
+    likes: number
+    /** Lemmy's downvotes. */
+    dislikes: number
+}
+
+/** A report about a post, sent by another server for the moderators. */
+export interface PostReport {
+    id: string
+    post: PostDto
+    /** An account's address, or a server reporting for one of its people. */
+    reporter: string
+    reason: string
+    created_ms: number
+}
+
+/** A person's public posts, for their page (`/@name`). */
+export interface PersonPosts {
+    address: string
+    picture?: string
+    posts: PostDto[]
+}
+
+/** Where to follow an address from somebody's own fediverse server. */
+export interface FollowLink {
+    url: string
+    /** What their server runs, when it says. */
+    software?: string
 }
 
 export interface PostThread {
@@ -625,6 +653,14 @@ export interface FollowDto {
     accepted: boolean
 }
 
+/** A community as its public page shows it to anybody. */
+export interface PublicCommunity {
+    id: string
+    name: string
+    about: string
+    picture?: string
+}
+
 export interface PublicInfo {
     settings: PublicSettings
     /** `handle@server`, once there is a handle. */
@@ -634,6 +670,10 @@ export interface PublicInfo {
     may_post: boolean
     may_moderate: boolean
     federating: boolean
+    /** The community itself, while posts are on. */
+    community?: PublicCommunity
+    /** Reports from other servers waiting for a moderator; 0 for anybody else. */
+    open_reports: number
 }
 
 /**

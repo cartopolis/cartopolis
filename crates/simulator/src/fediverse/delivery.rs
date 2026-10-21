@@ -7,6 +7,11 @@
 //! and a restart must not lose what was queued. The worker sends what is due,
 //! a few at a time, and retries a failure with a growing delay — a minute, then
 //! doubling, up to six hours, for about three days — before giving up.
+//!
+//! The worker also tells other servers about accounts deleted here
+//! (`fedi_gone_accounts`, `posts::forget_account`), and learns what software a
+//! server runs the first time it delivers there (`servers`), so a server that
+//! followed before that was asked still gets each boost in its own shape.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +20,8 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 
 use super::fetch::{host_of, Client};
-use super::{blocklist, signer_url, signing, Federation};
+use super::servers::{self, Family};
+use super::{blocklist, objects, posts, signer_url, signing, Federation};
 
 /// Deliveries tried at once.
 const BATCH: usize = 16;
@@ -94,6 +100,75 @@ pub fn fan_out(
     Ok(n)
 }
 
+/// Queue a community's boost for each inbox in the shape its server reads
+/// (`servers`): `of_activity` (the boost of a `Create`, `Update` or
+/// `Delete`) for Lemmy's kind, `of_object` (the boost of the post's id) for
+/// Mastodon's, and both for a server that never said. When only one is given,
+/// everybody gets that one.
+pub fn fan_out_boost(
+    conn: &Connection,
+    inboxes: &[String],
+    signer: &str,
+    of_activity: Option<&Value>,
+    of_object: Option<&Value>,
+    now_ms: i64,
+) -> rusqlite::Result<usize> {
+    let mut n = 0;
+    for inbox in inboxes {
+        let family = match host_of(inbox) {
+            Some(h) => servers::family(conn, &h)?,
+            None => continue,
+        };
+        let bodies: Vec<&Value> = match (family, of_activity, of_object) {
+            (Family::Threads, Some(a), _) | (Family::Timelines, Some(a), None) => vec![a],
+            (Family::Timelines, _, Some(o)) | (Family::Threads, None, Some(o)) => vec![o],
+            (_, a, o) => a.into_iter().chain(o).collect(),
+        };
+        for body in bodies {
+            if enqueue(conn, inbox, signer, body, now_ms)? {
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Queue what tells other servers that an account here is gone: each of its
+/// posts deleted, then the account itself, all signed with its own key. Then
+/// its record and its followers go; its key stays, so its actor answers Gone.
+fn tell_gone_accounts(conn: &Connection, base: &str, now_ms: i64) -> rusqlite::Result<usize> {
+    let mut stmt =
+        conn.prepare("SELECT account, inboxes, posts FROM fedi_gone_accounts LIMIT 16")?;
+    let gone: Vec<(String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let n = gone.len();
+    for (account, inboxes, post_ids) in gone {
+        let inboxes: Vec<String> = serde_json::from_str(&inboxes).unwrap_or_default();
+        let post_ids: Vec<String> = serde_json::from_str(&post_ids).unwrap_or_default();
+        let signer = posts::person_local(&account);
+        let actor = super::person_url(base, &account);
+        for ap_id in post_ids {
+            let del = serde_json::json!({
+                "id": format!("{ap_id}#delete"),
+                "type": "Delete",
+                "actor": actor,
+                "to": [objects::PUBLIC],
+                "object": { "id": ap_id, "type": "Tombstone" },
+            });
+            fan_out(conn, &inboxes, &signer, &objects::document(del), now_ms)?;
+        }
+        let body = objects::document(objects::delete_person(base, &account));
+        fan_out(conn, &inboxes, &signer, &body, now_ms)?;
+        conn.execute(
+            "DELETE FROM fedi_gone_accounts WHERE account = ?1",
+            params![account],
+        )?;
+        tracing::info!(%account, servers = inboxes.len(), "fediverse: deleted account announced");
+    }
+    Ok(n)
+}
+
 /// How long to wait before the `attempt`th retry.
 #[must_use]
 pub fn backoff(attempt: i64) -> Duration {
@@ -123,6 +198,12 @@ pub async fn run(conn: Arc<Mutex<Connection>>, fed: Federation) {
     let client: Client = fed.client.clone();
     loop {
         let now = super::now_ms();
+        if fed.enabled {
+            let Ok(c) = conn.lock() else { return };
+            if let Err(e) = tell_gone_accounts(&c, &fed.base, now) {
+                tracing::warn!("fediverse: deleted accounts not announced: {e}");
+            }
+        }
         let due: Vec<Due> = {
             let Ok(c) = conn.lock() else { return };
             let mut stmt = match c.prepare(
@@ -158,12 +239,30 @@ pub async fn run(conn: Arc<Mutex<Connection>>, fed: Federation) {
                 signing::private_key(&c, &d.signer, now)
             };
             let client = client.clone();
+            let conn = conn.clone();
             let key_id = signer_url(&fed.base, &d.signer).map(|u| super::key_id(&u));
             tasks.push(tokio::task::spawn_blocking(move || {
                 let outcome = match (key, key_id) {
                     (Ok(key), Some(key_id)) => {
                         match client.post_activity(&d.inbox, d.body.as_bytes(), &key, &key_id) {
-                            Ok(_) => Outcome::Sent,
+                            Ok(_) => {
+                                // A server delivered to and never asked: ask
+                                // now, while it is plainly up.
+                                if let Some(host) = host_of(&d.inbox) {
+                                    let known = conn.lock().is_ok_and(|c| {
+                                        c.query_row(
+                                            "SELECT 1 FROM fedi_servers WHERE host = ?1",
+                                            params![host],
+                                            |_| Ok(()),
+                                        )
+                                        .is_ok()
+                                    });
+                                    if !known {
+                                        servers::software(&conn, &client, &host, super::now_ms());
+                                    }
+                                }
+                                Outcome::Sent
+                            }
                             Err(e) => match e.status() {
                                 Some(s) if (400..500).contains(&s) && s != 408 && s != 429 => {
                                     Outcome::Refused(e.to_string())
@@ -253,5 +352,71 @@ mod tests {
             inboxes(&conn, Some("c:x"), &[]).unwrap(),
             ["https://l.test/u/c/inbox", "https://m.test/inbox"]
         );
+    }
+
+    #[test]
+    fn each_server_gets_the_boost_it_reads() {
+        let conn = crate::db::open_and_migrate(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO fedi_servers (host, software, checked_ms)
+             VALUES ('l.test', 'lemmy', 0), ('m.test', 'mastodon', 0)",
+            [],
+        )
+        .unwrap();
+        let activity = serde_json::json!({"type": "Announce", "object": {"type": "Create"}});
+        let object = serde_json::json!({"type": "Announce", "object": "https://c.test/ap/p/1"});
+        let inboxes = [
+            "https://l.test/inbox".to_string(),
+            "https://m.test/inbox".to_string(),
+            "https://new.test/inbox".to_string(),
+        ];
+        let n = fan_out_boost(&conn, &inboxes, "c:x", Some(&activity), Some(&object), 1).unwrap();
+        assert_eq!(
+            n, 4,
+            "one each for Lemmy and Mastodon, both for the unknown"
+        );
+        let sent = |inbox: &str| -> Vec<String> {
+            let mut stmt = conn
+                .prepare("SELECT body FROM fedi_deliveries WHERE inbox = ?1 ORDER BY id")
+                .unwrap();
+            stmt.query_map(params![inbox], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(sent("https://l.test/inbox"), [activity.to_string()]);
+        assert_eq!(sent("https://m.test/inbox"), [object.to_string()]);
+        assert_eq!(sent("https://new.test/inbox").len(), 2);
+        // Only one shape to give: everybody gets it.
+        let del = serde_json::json!({"type": "Announce", "object": {"type": "Delete"}});
+        assert_eq!(
+            fan_out_boost(&conn, &inboxes, "c:x", Some(&del), None, 2).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_deleted_account_is_announced_once_with_its_posts() {
+        let conn = crate::db::open_and_migrate(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO fedi_gone_accounts (account, inboxes, posts, gone_ms)
+             VALUES ('a1', '[\"https://m.test/inbox\"]', '[\"https://c.test/ap/p/1\"]', 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(tell_gone_accounts(&conn, "https://c.test", 1).unwrap(), 1);
+        let bodies: Vec<String> = conn
+            .prepare("SELECT body FROM fedi_deliveries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(bodies.len(), 2);
+        let person: Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(person["type"], "Delete");
+        assert_eq!(person["object"], "https://c.test/ap/u/a1");
+        assert_eq!(person["removeData"], true);
+        assert_eq!(tell_gone_accounts(&conn, "https://c.test", 2).unwrap(), 0);
     }
 }

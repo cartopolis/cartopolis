@@ -1,7 +1,7 @@
 ---
 topic: fediverse
-triggers: [ActivityPub, fediverse, Mastodon, Lemmy, webfinger, "public posts", "crates/simulator/src/fediverse", posts.rs, community_public, fedi_deliveries, blocklist, "HTTP signatures"]
-updated: 2026-10-13
+triggers: [ActivityPub, fediverse, Mastodon, Lemmy, webfinger, "public posts", "crates/simulator/src/fediverse", posts.rs, community_public, fedi_deliveries, blocklist, "HTTP signatures", fedi_servers, post_votes, post_reports, fedi_gone_accounts, "pages/public", reader_url]
+updated: 2026-10-21
 ---
 
 # Public posts and the fediverse
@@ -38,6 +38,69 @@ ActivityPub for it. Design: `docs/mockups/communities/v4-public-posts.html`.
   the only scheme every server verifies. The `rsa` timing advisory
   (RUSTSEC-2023-0071) is discussed in `fediverse::signing`.
 
+## Speaking Mastodon's and Lemmy's dialects (2026-10-21)
+
+Until then it had been tested only between two Cartopolis servers. What was
+checked against Lemmy's source (0.19) and changed:
+
+- **A community follows elsewhere as its _reader_**, a `Service` actor at
+  `/ap/c/{id}/reader`, named `{handle}.reader`. Lemmy's `Follow` takes its
+  actor as a person (Person, Service, Organization) and refuses a group, so a
+  community here could not follow a Lemmy community as itself. A follow made
+  before this, as the group, is still undone as the group (the follow's id
+  names who made it). The dot in the name is what no handle has; registration
+  and `handle_free` keep usernames off `{handle}.reader` too.
+- **A community's outbox lists its `Announce`s of each `Create`**, not the
+  `Create`s: Lemmy reads a group outbox as `Vec<AnnounceActivity>`, so with
+  `Create`s the community showed empty when a Lemmy user first found it. The
+  boost of a post written here has one id for good (`post_boost_id`), the
+  same in the outbox and in the delivery.
+- **Each follower's server gets the boost it reads**, by what its NodeInfo
+  says it runs (`fediverse::servers`, `fedi_servers`): Lemmy's kind the
+  `Announce` of the activity, Mastodon's kind the `Announce` of the object
+  id; a server that never said gets both, as every server used to. Lemmy
+  fetches a bare id and fails to read a `Note` as an activity, so every boost
+  was an error there. The software is asked for when a server follows, and by
+  the delivery worker the first time it delivers somewhere unasked.
+- **An edit to a note goes out from its author**, to the community's followers
+  as well as the author's: Mastodon believes an `Update` only from whoever
+  wrote the note, and ignores one inside a group's boost. Lemmy gets the
+  group's boost of it too.
+- **Mentions of accounts elsewhere** (`@anna@mastodon.social` in the text) are
+  looked up by WebFinger when the post is written or edited, kept in
+  `post_mentions` so the note reads the same each time it is fetched, and
+  written as Mastodon writes them: an `h-card` link, a `Mention` tag and a
+  `cc`. At most ten per post; one that does not resolve stays words. A
+  mention of somebody on this server is not resolved.
+- **Likes and Lemmy's votes are counted** (`post_votes`, on the post's
+  fediverse id, once per account), and **reports (`Flag`) wait for the
+  community's moderators** (`post_reports`): Hide closes every open report on
+  that post, Leave it closes one. A report naming only an account is dropped:
+  a community's report is about a post. Reports from here still go nowhere.
+- **A deleted account is withdrawn.** `posts::forget_account` records whom to
+  tell in `fedi_gone_accounts` (it runs without the public address, from the
+  shell as well as the app), and the delivery worker sends a `Delete` of each
+  post and of the account (`removeData`, for Lemmy). The account's key stays:
+  the deletion is signed with it, and its actor answers 410 Gone while it is
+  there.
+- **Profiles say who they are.** A person's actor has their picture, their
+  join date, the communities they write in and `indexable: true` (Mastodon's
+  search; their posts are public and sent out under their name already). A
+  person's and a community's `url` are web pages, `/@{name}` and
+  `/c/{handle}` (`crates/atlas/web/src/components/pages/public`), readable
+  signed out, with "Follow from your own server", which asks
+  `/api/fediverse/follow-link` for that server's own follow page.
+- **Pictures say what they are**: the real type and size, read from the stored
+  file, where every attachment used to claim `image/jpeg` with no size.
+- **A Lemmy link post keeps its link** (an `attachment` of type `Link`),
+  appended to the text.
+- **A community can follow a hashtag through a relay**: the follow box takes
+  an actor's `https://` URL as well as an address, for a relay with no
+  address (`https://relay.fedi.buzz/tag/groningen`).
+- **Discovery**: `/.well-known/host-meta` (Friendica and older Pleroma look
+  there first), and NodeInfo's `activeMonth` (from `stats.db`, not published
+  below `MIN_PEOPLE`) and `localComments`.
+
 ## Things that must stay true
 
 - **Every request to another server goes through `fetch::Client`.** Its resolver
@@ -60,24 +123,25 @@ ActivityPub for it. Design: `docs/mockups/communities/v4-public-posts.html`.
 
 ## Deploying it
 
-Caddy must send `/.well-known/webfinger`, `/.well-known/nodeinfo`, `/nodeinfo/*`
-and `/ap/*` to the simulator. Without them, other servers get the web UI's
+Caddy must send `/.well-known/webfinger`, `/.well-known/host-meta`,
+`/.well-known/nodeinfo`, `/nodeinfo/*` and `/ap/*` to the simulator. Without them, other servers get the web UI's
 `index.html` and nothing federates. The live Caddyfile also lists player `/api`
 paths one by one rather than `/api/*` (its comment says why), so
-`/api/communities/*/public`, `…/posts`, `…/follows*`, `…/blocks` and
-`/api/posts` + `/api/posts/*` need adding to its `@models` matcher, or the app
-and the web page get a 404 from the file server. Federation switches on by
+`/api/communities/*/public`, `…/posts`, `…/follows*`, `…/blocks`,
+`…/reports*`, `/api/posts` + `/api/posts/*` and `/api/fediverse/*` need adding
+to its `@models` matcher, or the app and the web page get a 404 from the file
+server. `/c/*` and `/@*` are web pages and need nothing: the file server
+answers them with `index.html`. Federation switches on by
 itself when `public_base_url` is a public `https` origin, which on the live
 server is `https://cartopolis.org`. The address of everything is fixed by that
 origin, so it must not change once anybody follows anything.
 
 ## Not done
 
-- A deleted account's posts are deleted here but **not withdrawn from other
-  servers**. `db::erase_account_traces` has no federation context to send the
-  `Delete`s with.
-- **Reports from other servers (`Flag`) are dropped**, and reports go out
-  nowhere. The community's own report path is topic-shaped (a group id and a
-  sequence number) and has no slot for a post.
-- **No `Like` counts**, no editing of a post written here, no following of
-  hashtags (a server-to-server follow cannot follow a hashtag).
+- **Reports go out nowhere**: a member here cannot report a post from elsewhere
+  to its server. The community's own report path is topic-shaped (a group id
+  and a sequence number) and has no slot for a post.
+- **Nobody here can like a post.** Likes are counted from elsewhere only.
+- **Not yet tried against a live Lemmy.** The shapes above were checked
+  against Lemmy's source; the first follow of a Lemmy community and the first
+  Lemmy follower are the test.

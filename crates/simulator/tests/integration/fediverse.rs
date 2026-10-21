@@ -213,6 +213,48 @@ async fn a_post_crosses_to_a_following_server_and_a_reply_comes_back() {
     )
     .await;
     assert_eq!(v["followers"], 1, "{v}");
+    // B followed as its community's reader, a bot account: Lemmy takes a
+    // follow only from a person or a bot, never from a group.
+    let (status, reader) = call(
+        "GET",
+        format!("{}/ap/c/{}/reader", b.base, b.community),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{reader}");
+    assert_eq!(reader["type"], "Service");
+    let host_b = b.base.trim_start_matches("http://").to_string();
+    let (status, finger) = call(
+        "GET",
+        format!(
+            "{}/.well-known/webfinger?resource=acct:bobs.reader@{host_b}",
+            b.base
+        ),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{finger}");
+    assert_eq!(finger["links"][0]["href"], reader["id"]);
+    // And the public page finds the community by its handle, for anybody.
+    let (status, v) = call(
+        "GET",
+        format!("{}/api/communities/oost/public", a.base),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["community"]["name"], "Buurt Oosterpoort");
+    let (status, _) = call(
+        "GET",
+        format!("{}/.well-known/host-meta", a.base),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
 
     // Sanne posts on A, with a place.
     let place = PostPlace {
@@ -256,6 +298,53 @@ async fn a_post_crosses_to_a_following_server_and_a_reply_comes_back() {
     let p = arrived.place.clone().unwrap();
     assert!((p.latitude - place.latitude).abs() < 1e-9);
     assert_eq!(p.view.unwrap().yaw, 15.0);
+
+    // A's outbox lists the community's boost of each post, the shape Lemmy
+    // reads a community's past posts in.
+    let (status, outbox) = call(
+        "GET",
+        format!("{}/ap/c/{}/outbox", a.base, a.community),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{outbox}");
+    let item = &outbox["orderedItems"][0];
+    assert_eq!(item["type"], "Announce", "{outbox}");
+    assert_eq!(item["object"]["type"], "Create");
+    assert_eq!(
+        item["object"]["object"]["id"],
+        format!("{}/ap/p/{}", a.base, posted.id)
+    );
+    // Her page lists it.
+    let (status, page) = call(
+        "GET",
+        format!("{}/api/posts?author=sanne", a.base),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["posts"][0]["text"], new.text);
+
+    // Sanne edits it; B's copy changes too.
+    let (status, edited) = call(
+        "PUT",
+        format!("{}/api/posts/{}", a.base, posted.id),
+        Some(sanne.clone()),
+        Some(json!({ "text": "Plant swap on the corner this Sunday" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{edited}");
+    assert!(edited["edited_ms"].is_number());
+    eventually("the edit reaches B", async || {
+        let (_, v) = call("GET", feed_b.clone(), Some(bob.clone()), None).await;
+        let feed: Vec<PostDto> = serde_json::from_value(v).ok()?;
+        feed.into_iter()
+            .next()
+            .filter(|p| p.text.contains("Sunday") && p.edited_ms.is_some())
+    })
+    .await;
 
     // Now Sanne is findable: she has posted.
     let (status, _) = call(

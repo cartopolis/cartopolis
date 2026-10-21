@@ -17,13 +17,17 @@
 //!    post written here always has a place.
 //! 3. **Anybody signed in may reply**, here or on another server: a public post
 //!    is public.
-//! 4. **The author deletes; a moderator hides.** Deleting is the author taking
-//!    it back everywhere; hiding is the community saying "not here".
+//! 4. **The author edits and deletes; a moderator hides.** Deleting is the
+//!    author taking it back everywhere; hiding is the community saying "not
+//!    here".
+//! 5. **Reports from other servers wait for a moderator**, who hides the post
+//!    or dismisses the report.
 
 use cartopolis_core::point::PointView;
 use cartopolis_core::posts::{
-    is_handle, FollowDto, NewPost, PostAuthor, PostDto, PostPlace, PostThread, PublicInfo,
-    PublicSettings, SourceKind, WhoPosts, MAX_PLACE_NAME, MAX_POST_TEXT, POSTS_PAGE,
+    is_handle, FollowDto, NewPost, PersonPosts, PostAuthor, PostDto, PostPlace, PostReport,
+    PostThread, PublicCommunity, PublicInfo, PublicSettings, ReportAction, SourceKind, WhoPosts,
+    MAX_PLACE_NAME, MAX_POST_TEXT, POSTS_PAGE,
 };
 use cartopolis_core::CommunityRole;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -62,8 +66,12 @@ pub enum Refusal {
     BadPicture,
     #[error("no such post")]
     NoSuchPost,
-    #[error("only its author may delete a post")]
+    #[error("only its author may change or delete a post")]
     NotYours,
+    #[error("no such report")]
+    NoSuchReport,
+    #[error("no such person")]
+    NoSuchPerson,
     #[error("the server could not store that: {0}")]
     Storage(String),
 }
@@ -149,12 +157,14 @@ fn community_exists(conn: &Connection, community: Uuid) -> Result<bool, Refusal>
 
 /// Whether a handle is free: not another community's, not a retired one, and
 /// not anybody's username (folded, since a username may have capitals and
-/// `@name@server` is looked up without them).
+/// `@name@server` is looked up without them) — nor its reader's name
+/// (`{handle}.reader`).
 pub fn handle_free(conn: &Connection, handle: &str) -> Result<bool, Refusal> {
     let taken: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = ?1)
              OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = ?1)
-             OR EXISTS (SELECT 1 FROM accounts WHERE lower(username) = ?1)",
+             OR EXISTS (SELECT 1 FROM accounts
+                        WHERE lower(username) = ?1 OR lower(username) = ?1 || '.reader')",
         params![handle],
         |r| r.get(0),
     )?;
@@ -253,6 +263,32 @@ pub fn info(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    let card = match &p {
+        Some(p) if p.enabled => conn
+            .query_row(
+                "SELECT name, about, picture FROM communities WHERE id = ?1",
+                params![community.to_string()],
+                |r| {
+                    Ok(PublicCommunity {
+                        id: community,
+                        name: r.get(0)?,
+                        about: r.get(1)?,
+                        picture: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?,
+        _ => None,
+    };
+    let open_reports: i64 = if role.is_some_and(CommunityRole::moderates) {
+        conn.query_row(
+            "SELECT COUNT(*) FROM post_reports WHERE community = ?1 AND resolved_ms IS NULL",
+            params![community.to_string()],
+            |r| r.get(0),
+        )?
+    } else {
+        0
+    };
     let may_post = match (&p, role) {
         (Some(p), Some(r)) if p.enabled => match p.who_posts {
             WhoPosts::Members => true,
@@ -272,6 +308,8 @@ pub fn info(
         may_post,
         may_moderate: role.is_some_and(CommunityRole::moderates),
         federating,
+        community: card,
+        open_reports: u32::try_from(open_reports).unwrap_or(u32::MAX),
     })
 }
 
@@ -279,6 +317,12 @@ pub fn info(
 #[must_use]
 pub fn group_local(community: Uuid) -> String {
     format!("c:{community}")
+}
+
+/// The key-table name of a community's reader (`super::reader_url`).
+#[must_use]
+pub fn reader_local(community: Uuid) -> String {
+    format!("r:{community}")
 }
 
 /// The follower-table key for an account.
@@ -588,6 +632,12 @@ pub fn dto(
         Some(a) => actor_label(conn, a)?.map(|l| l.address),
         None => None,
     };
+    let (likes, dislikes): (i64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(value > 0), 0), COALESCE(SUM(value < 0), 0)
+         FROM post_votes WHERE object = ?1",
+        params![row.ap_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
     Ok(PostDto {
         id: row.id,
         community: row.community,
@@ -603,6 +653,8 @@ pub fn dto(
         edited_ms: row.edited_ms,
         replies: u32::try_from(replies).unwrap_or(0),
         mine: caller.is_some() && row.author_account.as_deref() == caller,
+        likes: u32::try_from(likes).unwrap_or(0),
+        dislikes: u32::try_from(dislikes).unwrap_or(0),
     })
 }
 
@@ -694,10 +746,311 @@ fn remove_with_replies(conn: &Connection, post: &PostRow) -> Result<Vec<PostRow>
     }
     let tx = conn.unchecked_transaction()?;
     for p in &gone {
-        tx.execute("DELETE FROM posts WHERE id = ?1", params![p.id.to_string()])?;
+        let id = p.id.to_string();
+        tx.execute("DELETE FROM posts WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM post_mentions WHERE post = ?1", params![id])?;
+        tx.execute("DELETE FROM post_reports WHERE post = ?1", params![id])?;
+        // Votes are on the object, which another community here may still hold.
+        tx.execute(
+            "DELETE FROM post_votes WHERE object = ?1
+                 AND NOT EXISTS (SELECT 1 FROM posts WHERE ap_id = ?1)",
+            params![p.ap_id],
+        )?;
     }
     tx.commit()?;
     Ok(gone)
+}
+
+/// The author changes the words of a post or reply written here. Answers the
+/// row as it is now, so the caller can tell other servers.
+pub fn edit(
+    conn: &Connection,
+    by: &str,
+    id: Uuid,
+    text: &str,
+    now_ms: i64,
+) -> Result<PostRow, Refusal> {
+    let post = row(conn, id)?
+        .filter(|r| !r.hidden)
+        .ok_or(Refusal::NoSuchPost)?;
+    if post.author_account.as_deref() != Some(by) {
+        return Err(Refusal::NotYours);
+    }
+    if !public(conn, post.community)?.is_some_and(|p| p.enabled) {
+        return Err(Refusal::PostsOff);
+    }
+    let text = clean_text(text)?;
+    conn.execute(
+        "UPDATE posts SET text = ?2, edited_ms = ?3 WHERE id = ?1",
+        params![id.to_string(), text, now_ms],
+    )?;
+    row(conn, id)?.ok_or(Refusal::NoSuchPost)
+}
+
+/// Keep who a post written here mentions, as resolved when it was written or
+/// edited: what was there before is replaced.
+pub fn set_mentions(
+    conn: &Connection,
+    post: Uuid,
+    mentions: &[super::objects::Mention],
+) -> Result<(), Refusal> {
+    let id = post.to_string();
+    conn.execute("DELETE FROM post_mentions WHERE post = ?1", params![id])?;
+    for m in mentions {
+        conn.execute(
+            "INSERT OR IGNORE INTO post_mentions (post, actor, name, href) VALUES (?1, ?2, ?3, ?4)",
+            params![id, m.actor, m.name, m.href],
+        )?;
+    }
+    Ok(())
+}
+
+/// Who a post written here mentions.
+pub fn mentions_of(conn: &Connection, post: Uuid) -> Result<Vec<super::objects::Mention>, Refusal> {
+    let mut stmt =
+        conn.prepare("SELECT actor, name, href FROM post_mentions WHERE post = ?1 ORDER BY rowid")?;
+    let rows = stmt.query_map(params![post.to_string()], |r| {
+        Ok(super::objects::Mention {
+            actor: r.get(0)?,
+            name: r.get(1)?,
+            href: r.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Somebody elsewhere likes (`value` 1) or dislikes (-1) a post here. Answers
+/// whether the post is here at all; a vote on anything else is not kept.
+pub fn vote(
+    conn: &Connection,
+    object: &str,
+    actor: &str,
+    activity: &str,
+    value: i64,
+    now_ms: i64,
+) -> Result<bool, Refusal> {
+    if rows_by_ap_id(conn, object)?.is_empty() {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO post_votes (object, actor, activity, value, created_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (object, actor) DO UPDATE SET activity = ?3, value = ?4, created_ms = ?5",
+        params![object, actor, activity, value.signum(), now_ms],
+    )?;
+    Ok(true)
+}
+
+/// Somebody takes a vote back, named by the vote's own id or by what it was on.
+pub fn unvote(
+    conn: &Connection,
+    actor: &str,
+    activity: Option<&str>,
+    object: Option<&str>,
+) -> Result<usize, Refusal> {
+    let mut n = 0;
+    if let Some(a) = activity {
+        n += conn.execute(
+            "DELETE FROM post_votes WHERE activity = ?1 AND actor = ?2",
+            params![a, actor],
+        )?;
+    }
+    if let Some(o) = object {
+        n += conn.execute(
+            "DELETE FROM post_votes WHERE object = ?1 AND actor = ?2",
+            params![o, actor],
+        )?;
+    }
+    Ok(n)
+}
+
+/// Another server reports a post here: a report for the moderators of each
+/// community it is in. Answers how many were filed.
+pub fn report(
+    conn: &Connection,
+    object: &str,
+    reporter: &str,
+    reason: &str,
+    now_ms: i64,
+) -> Result<usize, Refusal> {
+    let reason: String = reason.trim().chars().take(MAX_POST_TEXT * 2).collect();
+    let mut n = 0;
+    for post in rows_by_ap_id(conn, object)? {
+        if post.hidden {
+            continue;
+        }
+        // One open report per post and reporter: a server that sends its
+        // report twice has still made one.
+        let open: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM post_reports
+                            WHERE post = ?1 AND reporter = ?2 AND resolved_ms IS NULL)",
+            params![post.id.to_string(), reporter],
+            |r| r.get(0),
+        )?;
+        if open {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO post_reports (id, community, post, reporter, reason, created_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                Uuid::new_v4().to_string(),
+                post.community.to_string(),
+                post.id.to_string(),
+                reporter,
+                reason,
+                now_ms
+            ],
+        )?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+fn must_moderate(conn: &Connection, community: Uuid, by: &str) -> Result<(), Refusal> {
+    match communities::role(conn, community, by)? {
+        Some(r) if r.moderates() => Ok(()),
+        None if !community_exists(conn, community)? => Err(Refusal::NoSuchCommunity),
+        _ => Err(Refusal::NotAModerator),
+    }
+}
+
+/// The open reports in a community, oldest first, for its moderators.
+pub fn open_reports(
+    conn: &Connection,
+    by: &str,
+    community: Uuid,
+    server: &str,
+) -> Result<Vec<PostReport>, Refusal> {
+    must_moderate(conn, community, by)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, post, reporter, reason, created_ms FROM post_reports
+         WHERE community = ?1 AND resolved_ms IS NULL ORDER BY created_ms",
+    )?;
+    let rows: Vec<(String, String, String, String, i64)> = stmt
+        .query_map(params![community.to_string()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    let mut out = Vec::new();
+    for (id, post, reporter, reason, created_ms) in rows {
+        let (Ok(id), Ok(post)) = (Uuid::parse_str(&id), Uuid::parse_str(&post)) else {
+            continue;
+        };
+        let Some(post) = row(conn, post)? else {
+            continue;
+        };
+        let reporter = match actor_label(conn, &reporter)? {
+            Some(l) => l.address,
+            None => super::fetch::host_of(&reporter).unwrap_or(reporter),
+        };
+        out.push(PostReport {
+            id,
+            post: dto(conn, &post, Some(by), server)?,
+            reporter,
+            reason,
+            created_ms,
+        });
+    }
+    Ok(out)
+}
+
+/// A moderator closes a report: hiding the post, or leaving it. Hiding closes
+/// every open report on that post. Answers the post when it was hidden, so the
+/// caller can withdraw one written here.
+pub fn resolve_report(
+    conn: &Connection,
+    by: &str,
+    community: Uuid,
+    report: Uuid,
+    action: ReportAction,
+    now_ms: i64,
+) -> Result<Option<PostRow>, Refusal> {
+    must_moderate(conn, community, by)?;
+    let post: String = conn
+        .query_row(
+            "SELECT post FROM post_reports WHERE id = ?1 AND community = ?2",
+            params![report.to_string(), community.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(Refusal::NoSuchReport)?;
+    match action {
+        ReportAction::Dismiss => {
+            conn.execute(
+                "UPDATE post_reports SET resolved_by = ?2, resolved = 'dismissed', resolved_ms = ?3
+                 WHERE id = ?1",
+                params![report.to_string(), by, now_ms],
+            )?;
+            Ok(None)
+        }
+        ReportAction::Hide => {
+            let id = Uuid::parse_str(&post).map_err(|_| Refusal::NoSuchPost)?;
+            let row = hide(conn, by, id)?;
+            conn.execute(
+                "UPDATE post_reports SET resolved_by = ?2, resolved = 'hidden', resolved_ms = ?3
+                 WHERE post = ?1 AND resolved_ms IS NULL",
+                params![post, by, now_ms],
+            )?;
+            Ok(Some(row))
+        }
+    }
+}
+
+/// A person's public posts, newest first, for their page. Only somebody who has
+/// written one has a page: everybody else is not findable from outside.
+pub fn person_posts(
+    conn: &Connection,
+    username: &str,
+    caller: Option<&str>,
+    server: &str,
+) -> Result<PersonPosts, Refusal> {
+    let found: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, username, picture FROM accounts
+             WHERE lower(username) = lower(?1) AND disabled = 0",
+            params![username],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (account, username, picture) = found.ok_or(Refusal::NoSuchPerson)?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM posts p JOIN community_public c ON c.community = p.community
+         WHERE p.author_account = ?1 AND p.parent IS NULL AND p.hidden_by IS NULL
+             AND c.enabled = 1
+         ORDER BY p.created_ms DESC LIMIT ?2",
+        POST_COLUMNS
+            .split(',')
+            .map(|c| format!("p.{}", c.trim()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))?;
+    let rows = stmt
+        .query_map(
+            params![account, i64::try_from(POSTS_PAGE).unwrap_or(30)],
+            read_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    // A moderator of a public community is findable before they post (they
+    // answer for it), so their page is there, empty.
+    let moderates_public: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM community_members m
+                        JOIN community_public p ON p.community = m.community
+                        WHERE m.account = ?1 AND m.role < 2 AND p.enabled = 1)",
+        params![account],
+        |r| r.get(0),
+    )?;
+    if rows.is_empty() && !moderates_public {
+        return Err(Refusal::NoSuchPerson);
+    }
+    Ok(PersonPosts {
+        address: format!("{username}@{server}"),
+        picture,
+        posts: rows
+            .iter()
+            .map(|r| dto(conn, r, caller, server))
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 /// A moderator hides a post or reply from the community. It stays in the
@@ -711,6 +1064,12 @@ pub fn hide(conn: &Connection, by: &str, id: Uuid) -> Result<PostRow, Refusal> {
     conn.execute(
         "UPDATE posts SET hidden_by = ?2 WHERE id = ?1",
         params![id.to_string(), by],
+    )?;
+    // Hidden is what any report on it asked for.
+    conn.execute(
+        "UPDATE post_reports SET resolved_by = ?2, resolved = 'hidden', resolved_ms = ?3
+         WHERE post = ?1 AND resolved_ms IS NULL",
+        params![id.to_string(), by, super::now_ms()],
     )?;
     Ok(post)
 }
@@ -898,23 +1257,71 @@ pub fn forget_community(conn: &Connection, community: Uuid, now_ms: i64) -> Resu
         "DELETE FROM fedi_followers WHERE local = ?1",
         params![group_local(community)],
     )?;
-    conn.execute(
-        "DELETE FROM fedi_keys WHERE actor = ?1",
-        params![group_local(community)],
-    )?;
+    for key in [group_local(community), reader_local(community)] {
+        conn.execute("DELETE FROM fedi_keys WHERE actor = ?1", params![key])?;
+    }
+    conn.execute("DELETE FROM post_reports WHERE community = ?1", params![id])?;
     Ok(())
 }
 
 /// An account is deleted: what it wrote goes (with the replies under its
-/// posts), and so do its followers and its key. Answers the rows, so the caller
-/// can tell other servers.
-pub fn forget_account(conn: &Connection, account: &str) -> Result<Vec<PostRow>, Refusal> {
+/// posts), and so do its followers. Answers the rows.
+///
+/// When other servers know the account (it has a key: it posted, or answered
+/// for a public community), what to tell them is kept in `fedi_gone_accounts`
+/// for the delivery worker, which knows this server's address where the caller
+/// may not (an account deleted from the shell). The key stays: the deletion
+/// is signed with it, and the account's actor answers 410 Gone while it is
+/// there.
+pub fn forget_account(
+    conn: &Connection,
+    account: &str,
+    now_ms: i64,
+) -> Result<Vec<PostRow>, Refusal> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {POST_COLUMNS} FROM posts WHERE author_account = ?1"
     ))?;
     let rows = stmt
         .query_map(params![account], read_row)?
         .collect::<Result<Vec<_>, _>>()?;
+    let known: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM fedi_keys WHERE actor = ?1)",
+        params![person_local(account)],
+        |r| r.get(0),
+    )?;
+    if known {
+        // Everybody who was sent anything of theirs: their followers, the
+        // followers of each community they wrote in, and whoever they answered
+        // or named.
+        let mut also: Vec<String> = Vec::new();
+        let mut communities: Vec<Uuid> = Vec::new();
+        for r in &rows {
+            if !communities.contains(&r.community) {
+                communities.push(r.community);
+            }
+            if let Some(parent) = r.parent.and_then(|p| row(conn, p).ok().flatten()) {
+                also.extend(parent.author_actor);
+            }
+            also.extend(mentions_of(conn, r.id)?.into_iter().map(|m| m.actor));
+        }
+        let mut inboxes = super::delivery::inboxes(conn, Some(&person_local(account)), &also)?;
+        for c in communities {
+            inboxes.extend(super::delivery::inboxes(conn, Some(&group_local(c)), &[])?);
+        }
+        inboxes.sort();
+        inboxes.dedup();
+        let posts: Vec<&str> = rows.iter().map(|r| r.ap_id.as_str()).collect();
+        conn.execute(
+            "INSERT OR REPLACE INTO fedi_gone_accounts (account, inboxes, posts, gone_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                account,
+                serde_json::to_string(&inboxes).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&posts).unwrap_or_else(|_| "[]".into()),
+                now_ms
+            ],
+        )?;
+    }
     let mut gone = Vec::new();
     for r in &rows {
         if row(conn, r.id)?.is_some() {
@@ -925,11 +1332,18 @@ pub fn forget_account(conn: &Connection, account: &str) -> Result<Vec<PostRow>, 
         "DELETE FROM fedi_followers WHERE local = ?1",
         params![person_local(account)],
     )?;
-    conn.execute(
-        "DELETE FROM fedi_keys WHERE actor = ?1",
-        params![person_local(account)],
-    )?;
     Ok(gone)
+}
+
+/// Whether an account that is gone was known to other servers: its actor
+/// answers 410 Gone rather than 404.
+pub fn account_gone(conn: &Connection, account: &str) -> Result<bool, Refusal> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM fedi_keys WHERE actor = ?1)
+            AND NOT EXISTS (SELECT 1 FROM accounts WHERE id = ?2)",
+        params![person_local(account), account],
+        |r| r.get(0),
+    )?)
 }
 
 #[cfg(test)]
@@ -1311,8 +1725,225 @@ mod tests {
         on(&w, "oosterpoort");
         let p = create_post(&w.conn, &w.member, w.community, &post("mine"), BASE, 1).unwrap();
         let (r, _) = create_reply(&w.conn, &w.outsider, p, "yours", BASE, 2).unwrap();
-        let gone = forget_account(&w.conn, &w.member).unwrap();
+        let gone = forget_account(&w.conn, &w.member, 3).unwrap();
         assert_eq!(gone.len(), 2);
         assert!(row(&w.conn, r).unwrap().is_none());
+        // Nobody elsewhere knew the account (it has no key): nothing to tell.
+        let queued: i64 = w
+            .conn
+            .query_row("SELECT COUNT(*) FROM fedi_gone_accounts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(queued, 0);
+    }
+
+    /// A remote actor, stored as an inbox would store it.
+    fn remote(w: &World, id: &str) {
+        w.conn
+            .execute(
+                "INSERT INTO fedi_actors (id, kind, username, host, name, inbox, shared_inbox, key_id, public_pem, fetched_ms)
+                 VALUES (?1, 'Person', 'anna', 'm.test', 'Anna', ?1 || '/inbox', 'https://m.test/inbox', 'k', 'p', 0)",
+                params![id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_known_account_leaves_word_for_the_servers_that_knew_it() {
+        let w = world();
+        on(&w, "oosterpoort");
+        let p = create_post(&w.conn, &w.member, w.community, &post("mine"), BASE, 1).unwrap();
+        let ap = row(&w.conn, p).unwrap().unwrap().ap_id;
+        crate::fediverse::signing::public_pem(&w.conn, &person_local(&w.member), 1).unwrap();
+        remote(&w, "https://m.test/users/anna");
+        w.conn
+            .execute(
+                "INSERT INTO fedi_followers (local, actor, followed_ms) VALUES (?1, 'https://m.test/users/anna', 0)",
+                params![group_local(w.community)],
+            )
+            .unwrap();
+        forget_account(&w.conn, &w.member, 3).unwrap();
+        let (inboxes, posts): (String, String) = w
+            .conn
+            .query_row(
+                "SELECT inboxes, posts FROM fedi_gone_accounts WHERE account = ?1",
+                params![w.member],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(inboxes, r#"["https://m.test/inbox"]"#);
+        assert_eq!(posts, format!("[\"{ap}\"]"));
+        // The key stays to sign the deletion with; the actor is gone, not unknown.
+        w.conn
+            .execute("DELETE FROM accounts WHERE id = ?1", params![w.member])
+            .unwrap();
+        assert!(account_gone(&w.conn, &w.member).unwrap());
+        assert!(!account_gone(&w.conn, &w.owner).unwrap());
+    }
+
+    #[test]
+    fn only_its_author_edits_a_post() {
+        let w = world();
+        on(&w, "oosterpoort");
+        let p = create_post(&w.conn, &w.member, w.community, &post("old"), BASE, 1).unwrap();
+        assert_eq!(edit(&w.conn, &w.owner, p, "new", 2), Err(Refusal::NotYours));
+        assert_eq!(edit(&w.conn, &w.member, p, "  ", 2), Err(Refusal::Empty));
+        let r = edit(&w.conn, &w.member, p, " new ", 5).unwrap();
+        assert_eq!((r.text.as_str(), r.edited_ms), ("new", Some(5)));
+    }
+
+    #[test]
+    fn likes_count_once_per_account_and_go_when_taken_back() {
+        let w = world();
+        on(&w, "oosterpoort");
+        let p = create_post(&w.conn, &w.member, w.community, &post("x"), BASE, 1).unwrap();
+        let ap = row(&w.conn, p).unwrap().unwrap().ap_id;
+        assert!(vote(
+            &w.conn,
+            &ap,
+            "https://m.test/users/a",
+            "https://m.test/l/1",
+            1,
+            2
+        )
+        .unwrap());
+        assert!(vote(
+            &w.conn,
+            &ap,
+            "https://m.test/users/a",
+            "https://m.test/l/2",
+            1,
+            3
+        )
+        .unwrap());
+        assert!(vote(
+            &w.conn,
+            &ap,
+            "https://l.test/u/b",
+            "https://l.test/d/1",
+            -1,
+            3
+        )
+        .unwrap());
+        assert!(!vote(
+            &w.conn,
+            "https://x.test/p/9",
+            "https://l.test/u/b",
+            "a",
+            1,
+            3
+        )
+        .unwrap());
+        let d = dto(&w.conn, &row(&w.conn, p).unwrap().unwrap(), None, SERVER).unwrap();
+        assert_eq!((d.likes, d.dislikes), (1, 1));
+        // Taken back by the like's id, as Mastodon does, and by its object.
+        unvote(
+            &w.conn,
+            "https://m.test/users/a",
+            Some("https://m.test/l/2"),
+            None,
+        )
+        .unwrap();
+        unvote(&w.conn, "https://l.test/u/b", None, Some(&ap)).unwrap();
+        let d = dto(&w.conn, &row(&w.conn, p).unwrap().unwrap(), None, SERVER).unwrap();
+        assert_eq!((d.likes, d.dislikes), (0, 0));
+    }
+
+    #[test]
+    fn a_report_from_elsewhere_waits_for_a_moderator() {
+        let w = world();
+        on(&w, "oosterpoort");
+        let p = create_post(&w.conn, &w.member, w.community, &post("x"), BASE, 1).unwrap();
+        let ap = row(&w.conn, p).unwrap().unwrap().ap_id;
+        remote(&w, "https://m.test/users/anna");
+        assert_eq!(
+            report(&w.conn, &ap, "https://m.test/users/anna", "spam", 2).unwrap(),
+            1
+        );
+        // The same report twice is one report.
+        assert_eq!(
+            report(&w.conn, &ap, "https://m.test/users/anna", "spam", 3).unwrap(),
+            0
+        );
+        assert_eq!(
+            report(&w.conn, &ap, "https://m.test/actor", "", 3).unwrap(),
+            1
+        );
+        assert_eq!(
+            open_reports(&w.conn, &w.member, w.community, SERVER),
+            Err(Refusal::NotAModerator)
+        );
+        let open = open_reports(&w.conn, &w.owner, w.community, SERVER).unwrap();
+        assert_eq!(open.len(), 2);
+        assert_eq!(open[0].reporter, "anna@m.test");
+        assert_eq!(open[1].reporter, "m.test");
+        assert_eq!(
+            info(&w.conn, Some(&w.owner), w.community, SERVER, true)
+                .unwrap()
+                .open_reports,
+            2
+        );
+        assert_eq!(
+            resolve_report(
+                &w.conn,
+                &w.owner,
+                w.community,
+                open[0].id,
+                ReportAction::Dismiss,
+                4
+            )
+            .unwrap(),
+            None
+        );
+        let hidden = resolve_report(
+            &w.conn,
+            &w.owner,
+            w.community,
+            open[1].id,
+            ReportAction::Hide,
+            5,
+        )
+        .unwrap();
+        assert_eq!(hidden.map(|r| r.id), Some(p));
+        assert!(open_reports(&w.conn, &w.owner, w.community, SERVER)
+            .unwrap()
+            .is_empty());
+        assert!(row(&w.conn, p).unwrap().unwrap().hidden);
+    }
+
+    #[test]
+    fn a_person_page_lists_public_posts_only_for_somebody_who_wrote_one() {
+        let w = world();
+        on(&w, "oosterpoort");
+        assert_eq!(
+            person_posts(&w.conn, "sanne", None, SERVER),
+            Err(Refusal::NoSuchPerson)
+        );
+        // The owner moderates a public community: findable, so a page, empty.
+        assert!(person_posts(&w.conn, "karim", None, SERVER)
+            .unwrap()
+            .posts
+            .is_empty());
+        create_post(&w.conn, &w.member, w.community, &post("hello"), BASE, 1).unwrap();
+        let page = person_posts(&w.conn, "SANNE", None, SERVER).unwrap();
+        assert_eq!(page.address, "Sanne@cartopolis.test");
+        assert_eq!(page.posts[0].text, "hello");
+    }
+
+    #[test]
+    fn a_public_community_shows_itself_to_anybody() {
+        let w = world();
+        assert!(info(&w.conn, None, w.community, SERVER, true)
+            .unwrap()
+            .community
+            .is_none());
+        on(&w, "oosterpoort");
+        let card = info(&w.conn, None, w.community, SERVER, true)
+            .unwrap()
+            .community
+            .unwrap();
+        assert_eq!(
+            (card.id, card.name.as_str()),
+            (w.community, "Buurt Oosterpoort")
+        );
     }
 }

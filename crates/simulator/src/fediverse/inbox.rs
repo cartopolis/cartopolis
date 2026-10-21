@@ -19,8 +19,11 @@
 //!   own server vouches for is believed: an object hosted elsewhere than the
 //!   booster is fetched from its origin rather than taken from the boost.
 //! - **Update / Delete**: only from the author's own server.
+//! - **Like / Dislike / Undo**: a vote on a post here (Mastodon's favourite,
+//!   Lemmy's up- and downvote), counted on the post.
+//! - **Flag**: a report about a post here, for the community's moderators.
 //!
-//! Everything else (likes, reports, moves) is acknowledged and dropped.
+//! Everything else (emoji reactions, moves) is acknowledged and dropped.
 
 use std::sync::Mutex;
 
@@ -33,7 +36,7 @@ use uuid::Uuid;
 use super::fetch::{host_of, Client, FetchError};
 use super::objects::{self, addressees, id_of, kind, Actor};
 use super::posts::{self, Remote};
-use super::{delivery, local_actor, signing, Federation, Local};
+use super::{delivery, local_actor, servers, signing, Federation, Local};
 
 /// How long a fetched actor is believed before it is fetched again.
 const ACTOR_FRESH_MS: i64 = 24 * 3600 * 1000;
@@ -201,6 +204,9 @@ pub fn handle(ctx: &Ctx<'_>, sender: &Actor, activity: &Value) -> anyhow::Result
         "Update" => on_update(ctx, sender, activity),
         "Delete" => on_delete(ctx, sender, activity),
         "Announce" => on_announce(ctx, sender, activity),
+        "Like" => on_vote(ctx, sender, activity, 1),
+        "Dislike" => on_vote(ctx, sender, activity, -1),
+        "Flag" => on_flag(ctx, sender, activity),
         other => {
             tracing::debug!(kind = other, from = %sender.id, "fediverse: activity ignored");
             Ok(())
@@ -250,8 +256,12 @@ fn on_follow(ctx: &Ctx<'_>, sender: &Actor, act: &Value) -> anyhow::Result<()> {
             }
             (posts::person_local(&a), posts::person_local(&a))
         }
+        // A community's reader follows; nobody follows it.
         _ => return Ok(()),
     };
+    // Which boost the follower's server reads (`servers`), learned now so the
+    // first one it is sent is in its shape.
+    let _ = servers::software(ctx.conn, ctx.client, &sender.host, now);
     let accept = objects::document(objects::answer_follow("Accept", &object, act.clone()));
     ctx.db(|conn| {
         conn.execute(
@@ -270,7 +280,21 @@ fn on_undo(ctx: &Ctx<'_>, sender: &Actor, act: &Value) -> anyhow::Result<()> {
     let Some(inner) = act.get("object") else {
         return Ok(());
     };
-    // Only a follow can be undone here; a like or a boost undone means nothing
+    // A vote taken back.
+    if matches!(kind(inner), "Like" | "Dislike") {
+        let activity = id_of(inner);
+        let object = inner.get("object").and_then(id_of);
+        ctx.db(|c| {
+            Ok(posts::unvote(
+                c,
+                &sender.id,
+                activity.as_deref(),
+                object.as_deref(),
+            )?)
+        })?;
+        return Ok(());
+    }
+    // Otherwise only a follow can be undone here; a boost undone means nothing
     // to this server.
     if inner.is_object() && kind(inner) != "Follow" {
         return Ok(());
@@ -293,13 +317,16 @@ fn on_undo(ctx: &Ctx<'_>, sender: &Actor, act: &Value) -> anyhow::Result<()> {
                     params![posts::person_local(&a), sender.id],
                 )?;
             }
-            // The follow was given only by its id: whatever it followed, this
-            // sender follows less now.
+            // Given only by its id: a vote's, if it was one, and otherwise a
+            // follow's, of whatever it followed.
             _ if !inner.is_object() => {
-                conn.execute(
-                    "DELETE FROM fedi_followers WHERE actor = ?1",
-                    params![sender.id],
-                )?;
+                let id = id_of(inner).unwrap_or_default();
+                if posts::unvote(conn, &sender.id, Some(&id), None)? == 0 {
+                    conn.execute(
+                        "DELETE FROM fedi_followers WHERE actor = ?1",
+                        params![sender.id],
+                    )?;
+                }
             }
             _ => {}
         }
@@ -328,7 +355,7 @@ fn on_answer(ctx: &Ctx<'_>, sender: &Actor, act: &Value) -> anyhow::Result<()> {
         // Some servers answer with a follow of their own making rather than
         // ours; its `actor` still names the community that asked.
         if n == 0 {
-            if let Some(Local::Group(c)) = inner
+            if let Some(Local::Group(c) | Local::Reader(c)) = inner
                 .get("actor")
                 .and_then(id_of)
                 .and_then(|a| local_actor(&ctx.fed.base, &a))
@@ -517,8 +544,8 @@ fn accept_object(
     Ok(())
 }
 
-/// A community boosts something to its followers, both ways servers read a
-/// boost: the activity (Lemmy) and the object's id (Mastodon).
+/// A community boosts something to its followers, each server the way it reads
+/// a boost (`servers`): the activity (Lemmy) or the object's id (Mastodon).
 pub fn announce_to_followers(
     ctx: &Ctx<'_>,
     community: Uuid,
@@ -532,23 +559,76 @@ pub fn announce_to_followers(
         if inboxes.is_empty() {
             return Ok(());
         }
-        if let Some(a) = activity {
-            let body = objects::document(objects::announce(
+        let of_activity = activity.map(|a| {
+            objects::document(objects::announce(
                 &ctx.fed.base,
                 community,
                 strip_context(a),
-            ));
-            delivery::fan_out(conn, &inboxes, &local, &body, now)?;
-        }
-        let body = objects::document(objects::announce(
+            ))
+        });
+        let of_object = objects::document(objects::announce(
             &ctx.fed.base,
             community,
             Value::String(object_id.to_string()),
         ));
-        delivery::fan_out(conn, &inboxes, &local, &body, now)?;
+        delivery::fan_out_boost(
+            conn,
+            &inboxes,
+            &local,
+            of_activity.as_ref(),
+            Some(&of_object),
+            now,
+        )?;
         Ok(())
     })?;
     ctx.fed.wake.notify_one();
+    Ok(())
+}
+
+/// A like or a dislike of a post here. Lemmy sends a vote to the community, and
+/// Mastodon a favourite to the author; both reach the one inbox.
+fn on_vote(ctx: &Ctx<'_>, sender: &Actor, act: &Value, value: i64) -> anyhow::Result<()> {
+    let (Some(activity), Some(object)) = (id_of(act), act.get("object").and_then(id_of)) else {
+        return Ok(());
+    };
+    ctx.db(|c| {
+        Ok(posts::vote(
+            c,
+            &object,
+            &sender.id,
+            &activity,
+            value,
+            super::now_ms(),
+        )?)
+    })?;
+    Ok(())
+}
+
+/// A report from another server. Mastodon sends one as its server's own actor,
+/// naming the account and the posts reported; Lemmy as the person who reported,
+/// naming the post. Each post here that it names becomes a report for that
+/// community's moderators. One that names only an account is dropped: a
+/// community's report is about a post.
+fn on_flag(ctx: &Ctx<'_>, sender: &Actor, act: &Value) -> anyhow::Result<()> {
+    let objects_named = objects::ids(act.get("object"));
+    let reason = act
+        .get("content")
+        .or_else(|| act.get("summary"))
+        .and_then(Value::as_str)
+        .map(objects::html_to_text)
+        .unwrap_or_default();
+    let (reason, _) = ctx.filter.mask(&reason);
+    let now = super::now_ms();
+    let n = ctx.db(|c| {
+        let mut n = 0;
+        for o in &objects_named {
+            n += posts::report(c, o, &sender.id, &reason, now)?;
+        }
+        Ok(n)
+    })?;
+    if n > 0 {
+        tracing::info!(from = %sender.id, reports = n, "fediverse: report received");
+    }
     Ok(())
 }
 

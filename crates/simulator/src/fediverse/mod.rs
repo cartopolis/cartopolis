@@ -30,6 +30,8 @@
 //! - [`inbox`]: what to do with an activity another server sends.
 //! - [`delivery`]: the queue of activities waiting to go out, retried.
 //! - [`blocklist`]: the servers nobody here hears from.
+//! - [`servers`]: what software another server runs, and so which boost it
+//!   reads and where its people follow from.
 //! - [`routes`]: the HTTP surface, both the fediverse's and the apps'.
 
 pub mod blocklist;
@@ -39,6 +41,7 @@ pub mod inbox;
 pub mod objects;
 pub mod posts;
 pub mod routes;
+pub mod servers;
 pub mod signing;
 
 use std::sync::Arc;
@@ -65,6 +68,9 @@ pub struct Federation {
     pub wake: Arc<tokio::sync::Notify>,
     /// Every request to another server goes through this.
     pub client: fetch::Client,
+    /// The picture store, to say what a public picture is (its type and size)
+    /// in the objects that name it.
+    pub asset_dir: String,
 }
 
 impl Federation {
@@ -84,6 +90,7 @@ impl Federation {
             server,
             wake: Arc::new(tokio::sync::Notify::new()),
             client: fetch::Client::new(config.fediverse_allow_private),
+            asset_dir: config.asset_dir.clone(),
         }
     }
 }
@@ -151,6 +158,24 @@ pub fn group_url(base: &str, community: Uuid) -> String {
     format!("{base}/ap/c/{community}")
 }
 
+/// A community's reader: the account it follows sources elsewhere with. Lemmy
+/// takes a follow only from a person (or a bot, `Service`), never from a
+/// group, so a community here could not follow a Lemmy community as itself.
+#[must_use]
+pub fn reader_url(base: &str, community: Uuid) -> String {
+    format!("{}/reader", group_url(base, community))
+}
+
+/// The name a community's reader goes by, `{handle}.reader`: a dot, which no
+/// handle has, so it is never a community's address.
+#[must_use]
+pub fn reader_name(handle: &str) -> String {
+    format!("{handle}{READER_SUFFIX}")
+}
+
+/// What a reader's name ends with.
+pub const READER_SUFFIX: &str = ".reader";
+
 /// This server's own actor, which signs the requests nobody in particular makes
 /// (fetching an account's profile, say).
 #[must_use]
@@ -164,7 +189,8 @@ pub fn key_id(actor_url: &str) -> String {
     format!("{actor_url}#main-key")
 }
 
-/// The actor URL for a signer row in `fedi_keys` (`instance`, `u:…`, `c:…`).
+/// The actor URL for a signer row in `fedi_keys` (`instance`, `u:…`, `c:…`,
+/// `r:…`).
 #[must_use]
 pub fn signer_url(base: &str, signer: &str) -> Option<String> {
     if signer == "instance" {
@@ -172,6 +198,9 @@ pub fn signer_url(base: &str, signer: &str) -> Option<String> {
     }
     if let Some(account) = signer.strip_prefix("u:") {
         return Some(person_url(base, account));
+    }
+    if let Some(community) = signer.strip_prefix("r:") {
+        return Some(reader_url(base, Uuid::parse_str(community).ok()?));
     }
     let community = Uuid::parse_str(signer.strip_prefix("c:")?).ok()?;
     Some(group_url(base, community))
@@ -182,6 +211,7 @@ pub fn signer_url(base: &str, signer: &str) -> Option<String> {
 pub enum Local {
     Person(String),
     Group(Uuid),
+    Reader(Uuid),
     Instance,
 }
 
@@ -196,8 +226,11 @@ pub fn local_actor(base: &str, url: &str) -> Option<Local> {
         let id = Uuid::parse_str(id).ok()?;
         return Some(Local::Person(id.to_string()));
     }
-    let id = Uuid::parse_str(rest.strip_prefix("c/")?).ok()?;
-    Some(Local::Group(id))
+    let rest = rest.strip_prefix("c/")?;
+    if let Some(id) = rest.strip_suffix("/reader") {
+        return Some(Local::Reader(Uuid::parse_str(id).ok()?));
+    }
+    Some(Local::Group(Uuid::parse_str(rest).ok()?))
 }
 
 /// Whether `url` is one of this server's posts, and which.
@@ -259,6 +292,38 @@ pub fn place_from_link(url: &str) -> Option<cartopolis_core::posts::PostPlace> {
     place.in_range().then_some(place)
 }
 
+/// What a public picture is, for the objects that name it: Mastodon lays a
+/// timeline out from the size before the picture loads, and both it and Lemmy
+/// believe the type they are told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureFacts {
+    pub mime: &'static str,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The facts of a picture in the store, read from its header.
+#[must_use]
+pub fn picture_facts(asset_dir: &str, hash: &str) -> Option<PictureFacts> {
+    let bytes = crate::pictures::load(asset_dir, hash)?;
+    let format = image::guess_format(&bytes).ok()?;
+    let mime = match format {
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::WebP => "image/webp",
+        image::ImageFormat::Gif => "image/gif",
+        _ => return None,
+    };
+    let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format)
+        .into_dimensions()
+        .ok()?;
+    Some(PictureFacts {
+        mime,
+        width,
+        height,
+    })
+}
+
 /// Milliseconds since the Unix epoch.
 #[must_use]
 pub fn now_ms() -> i64 {
@@ -294,6 +359,14 @@ mod tests {
         assert_eq!(
             signer_url(base, &format!("c:{id}")),
             Some(group_url(base, id))
+        );
+        assert_eq!(
+            local_actor(base, &reader_url(base, id)),
+            Some(Local::Reader(id))
+        );
+        assert_eq!(
+            signer_url(base, &format!("r:{id}")),
+            Some(reader_url(base, id))
         );
     }
 

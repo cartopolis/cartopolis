@@ -106,9 +106,30 @@ fn post_dto() {
         edited_ms: Some(0),
         replies: 0,
         mine: false,
+        likes: 0,
+        dislikes: 0,
+    };
+    let report = cartopolis_core::posts::PostReport {
+        id: uuid::Uuid::nil(),
+        post: post.clone(),
+        reporter: String::new(),
+        reason: String::new(),
+        created_ms: 0,
+    };
+    let person = cartopolis_core::posts::PersonPosts {
+        address: String::new(),
+        picture: Some(String::new()),
+        posts: vec![post.clone()],
+    };
+    let link = cartopolis_core::posts::FollowLink {
+        url: String::new(),
+        software: Some(String::new()),
     };
     let drift = "atlas/web/src/types.ts has drifted from cartopolis_core::posts";
     assert_eq!(web_fields("PostDto"), keys(&post), "{drift}");
+    assert_eq!(web_fields("PostReport"), keys(&report), "{drift}");
+    assert_eq!(web_fields("PersonPosts"), keys(&person), "{drift}");
+    assert_eq!(web_fields("FollowLink"), keys(&link), "{drift}");
     assert_eq!(web_fields("PostPlace"), keys(&place), "{drift}");
     assert_eq!(web_fields("PostAuthor"), keys(&author), "{drift}");
     assert_eq!(
@@ -140,9 +161,21 @@ fn public_info() {
         may_post: false,
         may_moderate: false,
         federating: false,
+        community: Some(cartopolis_core::posts::PublicCommunity {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            about: String::new(),
+            picture: Some(String::new()),
+        }),
+        open_reports: 0,
     };
     let drift = "atlas/web/src/types.ts has drifted from cartopolis_core::posts";
     assert_eq!(web_fields("PublicInfo"), keys(&info), "{drift}");
+    assert_eq!(
+        web_fields("PublicCommunity"),
+        keys(info.community.as_ref().unwrap()),
+        "{drift}"
+    );
     assert_eq!(web_fields("PublicSettings"), keys(&settings), "{drift}");
     assert_eq!(web_fields("FollowDto"), keys(&follow), "{drift}");
 }

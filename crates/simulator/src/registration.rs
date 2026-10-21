@@ -144,10 +144,13 @@ pub fn begin(
         return Ok(Begin::UsernameTaken);
     }
     // A community's fediverse address is found the same way a person's is
-    // (`@name@server`), so one may not take the other's name.
+    // (`@name@server`), so one may not take the other's name, nor its
+    // reader's (`{handle}.reader`, `fediverse::reader_name`).
     let handle_taken: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = lower(?1))
-             OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = lower(?1))",
+        "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = lower(?1)
+                            OR handle || '.reader' = lower(?1))
+             OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = lower(?1)
+                            OR handle || '.reader' = lower(?1))",
         [username],
         |r| r.get(0),
     )?;

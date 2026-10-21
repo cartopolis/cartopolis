@@ -128,6 +128,12 @@ pub struct Client {
 }
 
 impl Client {
+    /// Tests only: whether this client talks to private addresses over `http`.
+    #[must_use]
+    pub fn allows_private(&self) -> bool {
+        self.allow_private
+    }
+
     #[must_use]
     pub fn new(allow_private: bool) -> Self {
         let agent = ureq::AgentBuilder::new()
