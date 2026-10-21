@@ -31,6 +31,71 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Files smaller than this are served as they are: Caddy's `encode` does not
+/// bother below 512 bytes either, and a sidecar would cost more than it saves.
+const BROTLI_MIN_BYTES: usize = 1024;
+
+/// Where a served file's Brotli copy goes: `x.json` → `x.json.br`, which Caddy's
+/// `file_server { precompressed br … }` sends to a client that accepts `br`.
+#[must_use]
+pub fn brotli_sidecar(path: &Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".br");
+    name.into()
+}
+
+/// The `.br` body for a served file, or `None` when it is too small or does not
+/// shrink.
+///
+/// Quality 10, not 11: on a 1.9 MB BGT cell (2026-10-21) 11 took 4.7 s for
+/// 347 KB, 10 took 1.9 s for 364 KB and 9 gave 491 KB, barely under gzip's
+/// 536 KB. Done once per write and read by every client, so it is worth the
+/// time; Caddy cannot do it on the fly at a level that wins anything.
+#[must_use]
+pub fn brotli(body: &[u8]) -> Option<Vec<u8>> {
+    if body.len() < BROTLI_MIN_BYTES {
+        return None;
+    }
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: 10,
+        lgwin: 22,
+        size_hint: body.len(),
+        ..Default::default()
+    };
+    let mut out = Vec::with_capacity(body.len() / 4);
+    brotli::BrotliCompress(&mut &body[..], &mut out, &params).ok()?;
+    (out.len() < body.len()).then_some(out)
+}
+
+/// [`write_atomic`] for a file Caddy serves: its Brotli copy first, then the
+/// file, so a client that finds the new file also finds its new copy.
+///
+/// A file too small for a copy removes any old one, which would otherwise be
+/// served in its place for ever — `precompressed` checks only that the sidecar
+/// exists, never that it is as new as the file.
+pub fn write_served(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let sidecar = brotli_sidecar(path);
+    match brotli(bytes) {
+        Some(compressed) => write_atomic(&sidecar, &compressed)?,
+        None => remove_if_present(&sidecar)?,
+    }
+    write_atomic(path, bytes)
+}
+
+/// Remove a served file and its Brotli copy, the copy first.
+pub fn remove_served(path: &Path) -> std::io::Result<()> {
+    remove_if_present(&brotli_sidecar(path))?;
+    remove_if_present(path)
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Milliseconds since the epoch.
 #[must_use]
 pub fn now_ms() -> u64 {
@@ -72,12 +137,8 @@ pub fn publish_cell(
         .join(cell.0.to_string())
         .join(format!("{}.json", cell.1));
     match body {
-        Some(b) => write_atomic(&path, b)?,
-        None => match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        },
+        Some(b) => write_served(&path, b)?,
+        None => remove_served(&path)?,
     }
     let manifest_path = root.join("coverage.json");
     let mut cells = read_cells(&manifest_path);
@@ -110,7 +171,7 @@ pub fn write_manifest(
         extra,
         ..coverage::Manifest::default()
     };
-    write_atomic(manifest_path, &coverage::to_vec(&manifest)?)
+    write_served(manifest_path, &coverage::to_vec(&manifest)?)
 }
 
 #[cfg(test)]
@@ -153,5 +214,25 @@ mod tests {
         let cells = read_cells(&m);
         assert_eq!(cells[&(3, 4)], 0);
         assert_eq!(cells[&(5, 6)], 9);
+    }
+
+    #[test]
+    fn a_served_file_carries_a_brotli_copy_until_it_is_too_small_for_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("14/1/2.json");
+        let big = br#"{"buildings":[1,2,3]}"#.repeat(200);
+        write_served(&path, &big).unwrap();
+        let sidecar = std::fs::read(brotli_sidecar(&path)).unwrap();
+        assert!(sidecar.len() < big.len());
+        let mut back = Vec::new();
+        brotli::BrotliDecompress(&mut &sidecar[..], &mut back).unwrap();
+        assert_eq!(back, big);
+        // Rewritten too small for a copy: the old copy must go, or Caddy would
+        // keep serving it in place of the new file.
+        write_served(&path, b"{}").unwrap();
+        assert!(!brotli_sidecar(&path).exists());
+        write_served(&path, &big).unwrap();
+        remove_served(&path).unwrap();
+        assert!(!path.exists() && !brotli_sidecar(&path).exists());
     }
 }

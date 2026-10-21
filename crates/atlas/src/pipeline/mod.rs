@@ -310,13 +310,28 @@ impl Ctx {
             .write_all(body)
             .and_then(|()| gz.finish())
             .map_err(|e| PipelineError::Failed(format!("{relative}: gzip: {e}")))?;
-        // The plain file second, so that a reader who sees it can also find the
-        // sidecar — Caddy looks for the `.gz` only once the plain file exists.
-        self.write_bytes(&format!("{relative}.gz"), &compressed)?;
+        // The plain file last, so that a reader who sees it can also find the
+        // sidecars — Caddy looks for them only once the plain file exists.
+        self.write_raw(&format!("{relative}.gz"), &compressed)?;
         self.write_bytes(relative, body)
     }
 
+    /// Write a served file and its Brotli copy (`crate::stamped::write_served`
+    /// has why the copy, and why a small file removes an old one).
     fn write_bytes(&self, relative: &str, body: &[u8]) -> Outcome<()> {
+        let sidecar = format!("{relative}.br");
+        match crate::stamped::brotli(body) {
+            Some(compressed) => self.write_raw(&sidecar, &compressed)?,
+            None => match std::fs::remove_file(self.out_root.join(&sidecar)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(PipelineError::Failed(format!("{sidecar}: {e}"))),
+            },
+        }
+        self.write_raw(relative, body)
+    }
+
+    fn write_raw(&self, relative: &str, body: &[u8]) -> Outcome<()> {
         let file = self.out_root.join(relative);
         let dir = file
             .parent()

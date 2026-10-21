@@ -181,6 +181,16 @@ Three things about serving it:
   out as `application/octet-stream`, so only `file_server { precompressed gzip }`
   finding `x.bin.gz` serves it gzipped. atlas writes it (`Ctx::write_bytes_gzipped`,
   best compression — done once per run, read by everybody).
+- **Every served file also gets an `x.br`** (since 2026-10-21,
+  `stamped::write_served`, and `Ctx::write_bytes` for the pipelines), served by
+  `precompressed br gzip`. Brotli at quality 10 is 30–35 % smaller than the gzip
+  Caddy sends (a BGT cell 536 → 364 KB, a roof cell 382 → 275 KB); Caddy has no
+  on-the-fly Brotli, and a fast level would win nothing. Two rules follow from
+  `precompressed` checking only that a sidecar *exists*: **every writer into the
+  site tree goes through one of those two**, or a rewritten file keeps being
+  served as its old `.br`; and a file too small for a copy removes the old one.
+  The host's `precompressed br` must not be switched on ahead of an atlas that
+  writes them, for the same reason.
 - **A host that has not re-run `lod22` since then has no `.bin`s**, and that is
   fine: the client asks for the binary first, falls back to the JSON on any
   failure, and after six failures (one wave of the streamer's concurrency) stops

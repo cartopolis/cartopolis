@@ -560,7 +560,7 @@ and the `Caddyfile` has:
 	root * /srv/3dbag
 	encode gzip
 	file_server {
-		precompressed gzip
+		precompressed br gzip
 	}
 	header Access-Control-Allow-Origin "*"
 	header /coverage.json Cache-Control "public, max-age=3600"
@@ -575,8 +575,14 @@ and the `Caddyfile` has:
 `precompressed gzip` is load-bearing for the LoD2.2 **binary** cells
 (`lod22/14/{x}/{y}.bin`): `encode gzip` compresses only a default list of text
 content types and a `.bin` goes out as `application/octet-stream`, so it is
-served compressed only because atlas writes `x.bin.gz` beside it. The JSON has no
-sidecar and is compressed on the fly, as before.
+served compressed only because atlas writes `x.bin.gz` beside it.
+
+`br` first: atlas writes an `x.br` beside every served file of 1 KB or more,
+30–35 % smaller than gzip, and a client that does not accept Brotli gets the
+`.gz` or the on-the-fly gzip as before (`docs/notes/atlas.md`). Caddy checks
+only that a sidecar exists, so switch `br` on only once the deployed atlas
+writes them; a tree from an older atlas is backfilled once with
+`brotli -q 10` over every `.json` and `.bin`.
 
 Adding the bind mount needs a **recreate** (not reload):
 `docker compose up -d --force-recreate caddy`. A DNS record

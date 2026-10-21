@@ -38,6 +38,9 @@ earcutr.workspace = true
 # the same overlay the geo crate cuts its ground sheets with.
 i_overlay.workspace = true
 url = "2.5"
+# The `.br` copy of every served file (`stamped::write_served`). 7, not 8: it
+# shares `brotli-decompressor` 4 with ureq's `brotli` feature.
+brotli = "7"
 # Already in the lockfile through winit; streams the BGT extract's GML, which is
 # hundreds of megabytes and never held whole.
 quick-xml = "0.41"
