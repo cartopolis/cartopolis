@@ -250,5 +250,15 @@ impl Plugin for NavPlugin {
                 .after(systems::driver::drive_driver_mode)
                 .in_set(ClientPhase::Present),
         );
+        // The crows' calls: after the birds have moved, so a flush is heard the
+        // frame it happens (`systems::crows`).
+        #[cfg(feature = "audio")]
+        app.add_systems(Startup, systems::crows::setup_crow_calls)
+            .add_systems(
+                Update,
+                systems::crows::play_crow_calls
+                    .after(systems::crows::drive_crows)
+                    .in_set(ClientPhase::Present),
+            );
     }
 }

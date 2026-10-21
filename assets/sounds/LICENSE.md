@@ -35,3 +35,15 @@ How they were cut is in `docs/notes/city-soundscape.md`.
 | `night.ogg` | Quiet residential street, Amsterdam, 1 a.m. | [Yuval](https://freesound.org/people/Yuval/sounds/191451/) |
 | `indoor.ogg` | House room tone | [aleclubin](https://freesound.org/people/aleclubin/sounds/641306/) |
 | `rain.ogg` | Light rain, Groningen city centre | [hz37](https://freesound.org/people/hz37/sounds/395685/) |
+
+## Crows
+
+`crows/caw-<n>.ogg` are single caws, mono, peak-normalised to −1.5 dBFS, with a
+15 ms fade in and an 80 ms fade out; `systems::crows` plays them. Cut at the
+quiet between calls (each caw is 18–20 dB over the recording's background),
+and checked as spectrograms — a twelfth take was another bird and was dropped.
+
+| Files | Recording | Author |
+|---|---|---|
+| `caw-1`–`caw-4` | Call of a carrion crow (Germany) | [cfrooos](https://freesound.org/people/cfrooos/sounds/181088/) |
+| `caw-5`–`caw-11` | Crows sounding the alarm at a fox in a garden | [richwise](https://freesound.org/people/richwise/sounds/521019/) |

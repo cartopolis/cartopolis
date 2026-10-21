@@ -12,7 +12,7 @@ pecking — natural and lively". Under **Layers ▸ Life ▸ Birds**, on the det
 tier's default like Traffic and People.
 
 It is built on the ambient traffic's terms (`ambient-traffic.md`) and for the
-same reason: a fixed pool of 34 birds, six shared meshes and one material made
+same reason: a fixed pool of 78 birds, six shared meshes and one material made
 at startup, and after that only transforms are written. A group that drifts
 past 330 m from the camera is placed again near it, never despawned.
 
@@ -44,6 +44,13 @@ if the layer starts to look mechanical:
 - **Groups decide, members steer.** Group sizes 11, 7, 5, 4, 3, 2, 2: crows are
   mostly pairs and handfuls. A group roams between waypoints within 170 m of the
   camera, lands together, feeds 25–90 s, and leaves together.
+- **One flock stays high** (added 2026-10-21, asked for as "a flock of birds
+  flying high in the sky"): 44 birds, 60–120 m up, waypoints up to 300 m out
+  and at least 160 m apart, 5 m spacing and four times the low groups' height
+  spread so it reads as a loose spray of dots. It never lands, is recycled
+  only past 650 m, and casts no shadows. The first version (36 birds,
+  80–170 m, 450 m out) put three specks of 3–4 pixels in a street-level view
+  of the sky on a real GPU: there, but not a flock.
 - **Loose flocking with a turn-rate limit** (1.3 rad/s), so flocks arc round a
   waypoint and bank into the turn. Spacing ~4 m: crows are not starlings.
 - **Flap–glide bouts per bird**, glide on descent, beat on the climb. The wing
@@ -61,7 +68,25 @@ if the layer starts to look mechanical:
 
 No perching on roofs or lamp posts, no avoidance of tall buildings (flocks cruise
 18–45 m over the ground, above most Dutch roofs; the Martinitoren is flown
-through), no calls, no night roost.
+through), no night roost.
+
+## Calls (2026-10-21)
+
+Asked for as "a subtle crow sound mixed in once in a while, when they are
+near". Every 7–20 s, if any bird is within 55 m of the camera (straight-line,
+so the high flock is never heard), one series of 1–3 caws plays at
+`caw_level(distance)` — full within 6 m, gone by 55 m, on a square — times
+0.35 and the effects volume. A flushed group within earshot gives 2–4 quicker
+caws at 1.3×. Plain volume, no panning: the client has no spatial listener, and
+adding one for one sound was not worth the unknowns on Android and the web.
+
+Twelve caws were cut from two CC0 carrion-crow recordings on Freesound (the
+UK alarm and a German single bird; `assets/sounds/LICENSE.md`) with ffmpeg on
+the VPS (installed 2026-10-21 for this; the container has none). None was
+heard: each was checked as a level against its background and as a
+spectrogram, which is how a twelfth take showed up as another species. Carrion
+crow only — American crow recordings, the most common on Freesound, sound
+different and were not used.
 
 ## Checking it
 

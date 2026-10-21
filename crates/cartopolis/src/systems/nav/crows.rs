@@ -21,6 +21,9 @@
 //!   limited turn rate — so a flock arcs round a waypoint rather than snapping
 //!   to the next, and banks into the turn. Crows are not starlings: the spacing
 //!   is wide and the flock is ragged on purpose.
+//! * **And one flock high up.** [`HIGH_FLOCK`] birds cross the sky 60–120 m up
+//!   in loops up to 300 m out, and never come down: the crowd going over the
+//!   town, against which the low groups are the birds working the street.
 //! * **Flap, flap, glide.** Each bird has its own bouts of beating and gliding,
 //!   glides when it is coming down and beats when it climbs; the wing is two
 //!   segments whose hand lags the arm ([`wingbeat`]).
@@ -30,13 +33,17 @@
 //! * **They spook.** The avatar, a low camera or one of the ambient walkers
 //!   coming within a few metres flushes the nearest bird, and the rest follow a
 //!   beat later — the cascade is what a real flock taking off looks like.
+//! * **And they are heard, a little.** Every 7–20 s a crow within [`HEAR_M`]
+//!   of the camera gives one to three caws, quieter with distance, and a
+//!   flushed group an alarm as it goes (`play_crow_calls`, recordings).
 //!
 //! # Where they land, and what that is not
 //!
 //! Crows come down only where the paving survey says there is open ground a crow
 //! can be seen on — a square, a wide path, a car park, a yard, or a lawn the
-//! grass layer has not grown its knee-high blades on ([`CrowGround::feeding_ground`])
-//! — and only where the last 30 m of the glide in clears the walls. That is a *texture* over real data, as the soundscape's
+//! grass layer has not grown its knee-high blades on
+//! ([`CrowGround::feeding_ground`]) — and only where the last 30 m of the glide
+//! in clears the walls. That is a *texture* over real data, as the soundscape's
 //! birdsong is: it places nothing and claims nothing about a particular bird.
 //! Like the walkers, the birds themselves are invented.
 //!
@@ -44,8 +51,9 @@
 //!
 //! No roosting on roofs or wires, no flying round buildings (the flocks cruise
 //! above the roofs of a Dutch city, which is most of them; a tower is flown
-//! through), no calls, no night roost.
+//! through), no night roost.
 
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::f32::consts::{PI, TAU};
@@ -58,6 +66,19 @@ use crate::grid::{anchored_position, AnchoredCamera};
 
 /// The groups, by size: pairs and handfuls, and one larger flock. 34 birds.
 pub const GROUP_SIZES: [usize; 7] = [11, 7, 5, 4, 3, 2, 2];
+
+/// The high flock: a crowd of 44 crossing the sky 60–120 m up in wide loops,
+/// never landing — the flock seen going over a Dutch town on a winter
+/// afternoon, where the low groups are the birds working the street. It is the
+/// last group, after [`GROUP_SIZES`].
+pub const HIGH_FLOCK: usize = 44;
+/// The high flock's waypoints are drawn this far out, so it crosses the whole
+/// sky and is sometimes far off rather than always overhead.
+const HIGH_ROAM_M: f32 = 300.0;
+const HIGH_RECYCLE_M: f32 = 650.0;
+/// How far apart the high flock's birds keep: wider than a low group's, so at
+/// 100 m it reads as a loose spray of birds and not one blot.
+const HIGH_SPACING_M: f32 = 5.0;
 
 /// Above this the layer is hidden: a 46 cm bird is under a pixel well before.
 const HIDE_ALT: f32 = 450.0;
@@ -186,12 +207,37 @@ struct Flock {
     spawn_on_ground: bool,
     tries: u32,
     rng: Rng,
+    size: usize,
+    /// The high flock: roams wide, cruises high, never lands ([`HIGH_FLOCK`]).
+    high: bool,
+}
+
+impl Flock {
+    fn roam_m(&self) -> f32 {
+        if self.high {
+            HIGH_ROAM_M
+        } else {
+            ROAM_M
+        }
+    }
+
+    fn recycle_m(&self) -> f32 {
+        if self.high {
+            HIGH_RECYCLE_M
+        } else {
+            RECYCLE_M
+        }
+    }
 }
 
 /// The groups' shared state. Per-bird state is on [`Crow`].
 #[derive(Resource, Default)]
 pub struct Crows {
     flocks: Vec<Flock>,
+    /// Bumped each time a feeding group is flushed, with where: the calls
+    /// (`play_crow_calls`) answer it with an alarm.
+    flushes: u32,
+    flush_at: Vec3,
 }
 
 /// A small deterministic generator, one per bird and per group, so the pool
@@ -340,21 +386,31 @@ pub fn setup_crows(
 
     let mut flocks = Vec::new();
     let mut i = 0u64;
-    for (g, &size) in GROUP_SIZES.iter().enumerate() {
+    let sizes = GROUP_SIZES
+        .iter()
+        .map(|&s| (s, false))
+        .chain([(HIGH_FLOCK, true)]);
+    for (g, (size, high)) in sizes.enumerate() {
         let mut rng = Rng::new(0xC0_0C + g as u64);
         flocks.push(Flock {
             mode: FlockMode::Unplaced,
             goal: Vec2::ZERO,
-            height: rng.range(20.0, 42.0),
+            height: if high {
+                rng.range(70.0, 110.0)
+            } else {
+                rng.range(20.0, 42.0)
+            },
             timer: 0.0,
             site: Vec2::ZERO,
             flushed_from: None,
             seq: 0,
             // About half the groups start out feeding, so a street has birds on
             // its squares from the start rather than only once a flock comes down.
-            spawn_on_ground: g % 2 == 1 || size <= 2,
+            spawn_on_ground: !high && (g % 2 == 1 || size <= 2),
             tries: 0,
             rng,
+            size,
+            high,
         });
         for _ in 0..size {
             let mut rng = Rng::new(0xC2_0F_F1 + i * 7919);
@@ -420,13 +476,31 @@ pub fn setup_crows(
             for p in [parts.head, parts.arm[0], parts.arm[1]] {
                 commands.entity(p).insert(ChildOf(id));
             }
+            // A bird 150 m up casts a smudge no bigger than itself somewhere far off
+            // across the town; not worth a place in every shadow cascade.
+            if high {
+                for e in [
+                    id,
+                    parts.head,
+                    parts.arm[0],
+                    parts.arm[1],
+                    parts.hand[0],
+                    parts.hand[1],
+                ] {
+                    commands.entity(e).insert(NotShadowCaster);
+                }
+            }
             // The hands hang from the arms' tips.
             for s in 0..2 {
                 commands.entity(parts.hand[s]).insert(ChildOf(parts.arm[s]));
             }
         }
     }
-    commands.insert_resource(Crows { flocks });
+    commands.insert_resource(Crows {
+        flocks,
+        flushes: 0,
+        flush_at: Vec3::ZERO,
+    });
 }
 
 /// What the members of one group are doing this frame, summed before any of
@@ -530,9 +604,10 @@ pub fn drive_crows(
         }
     }
 
-    // `CARTO_CROWS_HERE=1`: a group feeding 7 m in front of the camera and the
-    // big flock circling just past it, so a capture can be aimed at birds
-    // instead of hoping one is in frame. Read once; a dev switch, not a mode.
+    // `CARTO_CROWS_HERE=1`: a group feeding 7 m in front of the camera, the
+    // big flock circling just past it and the high flock further out, so a
+    // capture can be aimed at birds instead of hoping one is in frame. Read
+    // once; a dev switch, not a mode.
     let here = *here.get_or_insert_with(|| crate::debug_switches::env_flag("CARTO_CROWS_HERE"));
     let ahead = {
         let f = cam_tf.forward().as_vec3().xz().normalize_or(Vec2::NEG_Y);
@@ -549,6 +624,26 @@ pub fn drive_crows(
                 flock.seq = flock.seq.wrapping_add(1);
             }
             flock.timer = f32::MAX;
+            continue;
+        }
+        if here && flock.high {
+            // ...and the high flock wheeling 120 m out in front, 70 m up.
+            let out = cam_xz + (ahead - cam_xz).normalize_or(Vec2::NEG_Y) * 120.0;
+            flock.height = 70.0;
+            flock.timer = f32::MAX;
+            if flock.mode != FlockMode::Roam {
+                flock.mode = FlockMode::Roam;
+                flock.goal = out;
+                flock.seq = flock.seq.wrapping_add(1);
+            }
+            let at = if s.air > 0 {
+                s.air_centre.xz()
+            } else {
+                s.centre
+            };
+            if at.distance(flock.goal) < 15.0 || flock.goal.distance(out) > 60.0 {
+                flock.goal = out + flock.rng.disc(50.0);
+            }
             continue;
         }
         if here && g == 0 {
@@ -568,7 +663,7 @@ pub fn drive_crows(
             }
             continue;
         }
-        let far = s.members > s.hidden && s.centre.distance(cam_xz) > RECYCLE_M;
+        let far = s.members > s.hidden && s.centre.distance(cam_xz) > flock.recycle_m();
         if far && flock.mode != FlockMode::Unplaced {
             flock.mode = FlockMode::Unplaced;
             flock.tries = 0;
@@ -605,7 +700,14 @@ pub fn drive_crows(
                     // seconds to find its ground before it takes to the air.
                     None if flock.spawn_on_ground && flock.tries < 12 => continue,
                     None => {
-                        flock.goal = cam_xz + Vec2::from_angle(flock.rng.range(0.0, TAU)) * ROAM_M;
+                        // The high flock starts well inside its range, so it is in
+                        // the sky from the start rather than arriving from 450 m off.
+                        let r = if flock.high {
+                            HIGH_ROAM_M * 0.4
+                        } else {
+                            ROAM_M
+                        };
+                        flock.goal = cam_xz + Vec2::from_angle(flock.rng.range(0.0, TAU)) * r;
                         flock.site = flock.goal;
                         flock.mode = FlockMode::Roam;
                         flock.timer = flock.rng.range(15.0, 45.0);
@@ -622,19 +724,37 @@ pub fn drive_crows(
                 } else {
                     s.centre
                 };
-                if at.distance(flock.goal) < 25.0 {
+                let (arrive, leg) = if flock.high {
+                    (40.0, 160.0)
+                } else {
+                    (25.0, 70.0)
+                };
+                if at.distance(flock.goal) < arrive {
                     flock.flushed_from = None;
-                    let mut next = cam_xz + flock.rng.disc(ROAM_M);
+                    let roam = flock.roam_m();
+                    let mut next = cam_xz + flock.rng.disc(roam);
                     for _ in 0..4 {
-                        if next.distance(at) > 70.0 {
+                        if next.distance(at) > leg {
                             break;
                         }
-                        next = cam_xz + flock.rng.disc(ROAM_M);
+                        next = cam_xz + flock.rng.disc(roam);
                     }
                     flock.goal = next;
-                    flock.height = (flock.height + flock.rng.range(-8.0, 8.0)).clamp(18.0, 45.0);
+                    if flock.high {
+                        tracing::debug!(
+                            east_m = at.x - cam_xz.x,
+                            south_m = at.y - cam_xz.y,
+                            up_m = s.air_centre.y - cam.y,
+                            "high flock at a waypoint"
+                        );
+                    }
+                    flock.height = if flock.high {
+                        (flock.height + flock.rng.range(-15.0, 15.0)).clamp(60.0, 120.0)
+                    } else {
+                        (flock.height + flock.rng.range(-8.0, 8.0)).clamp(18.0, 45.0)
+                    };
                 }
-                if flock.timer <= 0.0 && s.air == s.members {
+                if flock.timer <= 0.0 && s.air == s.members && !flock.high {
                     // Ahead, and far enough ahead to glide down to rather than
                     // drop on: a site straight under the flock is none.
                     let ahead = at + s.air_vel.xz().normalize_or_zero() * 70.0;
@@ -680,6 +800,7 @@ pub fn drive_crows(
     }
 
     // ── The birds ────────────────────────────────────────────────────────────
+    let mut flushed: Option<Vec3> = None;
     for (i, (mut crow, mut tf, mut cell, mut vis)) in crows.iter_mut().enumerate() {
         let crow = &mut *crow;
         let g = crow.group;
@@ -692,13 +813,13 @@ pub fn drive_crows(
         }
         if crow.seq != flock.seq {
             crow.seq = flock.seq;
-            place(crow, flock, GROUP_SIZES[g], cam_xz, &ground);
+            place(crow, flock, flock.size, cam_xz, &ground);
         }
         // The group's decisions reach its members.
         match (flock.mode, crow.mode) {
             (FlockMode::Land, Mode::Air) => {
                 crow.mode = Mode::Landing;
-                crow.slot = flock_slot(&mut crow.rng, GROUP_SIZES[g]);
+                crow.slot = flock_slot(&mut crow.rng, flock.size);
             }
             (FlockMode::Roam, Mode::Ground) => {
                 crow.mode = Mode::TakeOff;
@@ -728,7 +849,7 @@ pub fn drive_crows(
             Mode::TakeOff => take_off(crow, &ground, dt),
             Mode::Ground => {
                 let leash = flock.site;
-                walk_about(crow, leash, GROUP_SIZES[g], &snapshot, i, &ground, dt);
+                walk_about(crow, leash, flock.size, &snapshot, i, &ground, dt);
                 // Flushed: this bird goes now and tells the group.
                 let p = crow.pos;
                 if let Some(&(t, _)) = threats
@@ -744,6 +865,8 @@ pub fn drive_crows(
                         flock.flushed_from = Some(t.xz());
                         flock.goal = p.xz() + (p.xz() - t.xz()).normalize_or(Vec2::X) * 80.0;
                         flock.timer = flock.rng.range(25.0, 60.0);
+                        // Once per group: the first bird up raises the alarm.
+                        flushed = Some(p);
                     }
                 }
             }
@@ -752,12 +875,22 @@ pub fn drive_crows(
         draw(crow, &mut tf, &mut cell, grid, &mut parts);
         vis.set_if_neq(Visibility::Inherited);
     }
+    if let Some(p) = flushed {
+        state.flushes = state.flushes.wrapping_add(1);
+        state.flush_at = p;
+    }
 }
 
 impl Crow {
     #[must_use]
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Anchored world position of the feet.
+    #[must_use]
+    pub fn position(&self) -> Vec3 {
+        self.pos
     }
 
     /// In the air: cruising, coming in to land, or climbing out.
@@ -857,6 +990,7 @@ fn fly(
     dt: f32,
 ) {
     let p = crow.pos;
+    let spacing = if flock.high { HIGH_SPACING_M } else { 4.0 };
     let to_goal = flock.goal - p.xz();
     let mut want = to_goal.normalize_or_zero() * CRUISE * crow.speed_scale;
     if s.air > 1 {
@@ -868,12 +1002,19 @@ fn fly(
         }
         let d = p - q;
         let l = d.length();
-        if l > 1e-3 && l < 4.0 {
-            want += d.xz() / l * (4.0 - l) * 1.6;
+        if l > 1e-3 && l < spacing {
+            want += d.xz() / l * (spacing - l) * 1.6;
         }
     }
     let floor = ground.height(p.xz());
-    let target_y = (ground.height(flock.goal) + flock.height + crow.lift).max(floor + 12.0);
+    // The high flock is deeper as well as wider: a crowd at 150 m with every
+    // bird at one height reads as a flat sheet.
+    let lift = if flock.high {
+        crow.lift * 4.0
+    } else {
+        crow.lift
+    };
+    let target_y = (ground.height(flock.goal) + flock.height + lift).max(floor + 12.0);
     let climb = ((target_y - p.y) * 0.35).clamp(-2.5, 2.5);
     // A crow cannot hover: whatever the sum, it keeps flying forward.
     let want = if want.length_squared() < 1e-4 {
@@ -1211,9 +1352,204 @@ fn draw(
     }
 }
 
+/// Beyond this a crow is not heard, metres from the camera. Short on purpose:
+/// the calls are a detail of the birds you can see, not a layer of their own.
+pub const HEAR_M: f32 = 55.0;
+/// Within this a caw plays at full level.
+const NEAR_M: f32 = 6.0;
+
+/// How loud a caw `d` metres away plays, 0–1: full within [`NEAR_M`], falling
+/// off on a square to nothing at [`HEAR_M`]. Not the inverse square of free
+/// field — a city absorbs and the mix is quiet anyway — but its shape: most of
+/// the level goes in the first tens of metres.
+#[must_use]
+pub fn caw_level(d: f32) -> f32 {
+    let k = ((HEAR_M - d) / (HEAR_M - NEAR_M)).clamp(0.0, 1.0);
+    k * k
+}
+
+#[cfg(feature = "audio")]
+pub use calls::*;
+
+/// Now and then a crow near the camera calls: a series of one to three caws.
+/// A flushed group gives a quicker, louder alarm as it goes.
+///
+/// The takes are single caws cut from CC0 recordings of carrion crows
+/// (`assets/sounds/LICENSE.md`): `caw-1`–`4` one bird calling in Germany,
+/// `caw-5`–`11` crows mobbing a fox in an English garden. A series keeps to
+/// one recording, so a call does not change voice halfway through.
+#[cfg(feature = "audio")]
+mod calls {
+    use super::*;
+    use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, Volume};
+
+    /// The takes on disk, `assets/sounds/crows/caw-<n>.ogg`, and where the
+    /// second recording's start.
+    const TAKES: usize = 11;
+    const SECOND_BIRD: usize = 4;
+    /// Overall level: a detail under the city's beds, not over them.
+    const CALL_GAIN: f32 = 0.35;
+    /// A flushed group's alarm, relative to an ordinary call.
+    const ALARM_GAIN: f32 = 1.3;
+
+    #[derive(Resource)]
+    pub struct CrowCalls {
+        takes: Vec<Handle<AudioSource>>,
+        /// Caws waiting for their moment: `(seconds left, take, volume, speed)`.
+        queue: Vec<(f32, usize, f32, f32)>,
+        next_in: f32,
+        flushes_seen: u32,
+        rng: Rng,
+    }
+
+    pub fn setup_crow_calls(mut commands: Commands, assets: Res<AssetServer>) {
+        let takes = (1..=TAKES)
+            .map(|n| assets.load(format!("sounds/crows/caw-{n}.ogg")))
+            .collect();
+        commands.insert_resource(CrowCalls {
+            takes,
+            queue: Vec::new(),
+            next_in: 4.0,
+            flushes_seen: 0,
+            rng: Rng::new(0xCA_77),
+        });
+    }
+
+    impl CrowCalls {
+        /// Queue a series of `n` caws from one recording, `gap` seconds apart.
+        fn series(&mut self, n: usize, gap: (f32, f32), volume: f32) {
+            let (lo, hi) = if self.rng.chance(0.5) {
+                (0, SECOND_BIRD)
+            } else {
+                (SECOND_BIRD, TAKES)
+            };
+            // One bird, one voice: the pitch is set for the series.
+            let speed = self.rng.range(0.94, 1.06);
+            let mut at = 0.05;
+            let mut take = lo + (self.rng.unit() * (hi - lo) as f32) as usize;
+            for _ in 0..n {
+                self.queue.push((
+                    at,
+                    take.min(hi - 1),
+                    volume * self.rng.range(0.85, 1.0),
+                    speed,
+                ));
+                at += self.rng.range(gap.0, gap.1);
+                take = lo + (take + 1 - lo) % (hi - lo);
+            }
+        }
+    }
+
+    /// Choose and play the calls. After [`drive_crows`], so it hears this
+    /// frame's flush.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_crow_calls(
+        mut commands: Commands,
+        time: Res<Time>,
+        layers: Res<crate::systems::data_layers::DataLayers>,
+        prefs: Res<crate::resources::AppPrefs>,
+        camera: AnchoredCamera,
+        state: Option<Res<Crows>>,
+        calls: Option<ResMut<CrowCalls>>,
+        crows: Query<&Crow>,
+        sources: Res<Assets<AudioSource>>,
+    ) {
+        let (Some(state), Some(mut calls)) = (state, calls) else {
+            return;
+        };
+        let calls = &mut *calls;
+        let dt = time.delta_secs();
+        let gain = CALL_GAIN * prefs.effects_gain();
+
+        // What is due.
+        let mut due = Vec::new();
+        calls.queue.retain_mut(|(left, take, volume, speed)| {
+            *left -= dt;
+            if *left > 0.0 {
+                return true;
+            }
+            due.push((*take, *volume, *speed));
+            false
+        });
+        for (take, volume, speed) in due {
+            let Some(h) = calls.takes.get(take).filter(|h| sources.contains(*h)) else {
+                continue;
+            };
+            commands.spawn((
+                AudioPlayer(h.clone()),
+                PlaybackSettings {
+                    mode: PlaybackMode::Despawn,
+                    volume: Volume::Linear(volume),
+                    speed,
+                    ..default()
+                },
+            ));
+        }
+
+        let Some((cell, tf)) = camera.get() else {
+            return;
+        };
+        if !layers.birds_visible() {
+            calls.flushes_seen = state.flushes;
+            return;
+        }
+        let ear = anchored_position(cell, tf.translation);
+
+        // A flush near enough to hear: the alarm, now.
+        if state.flushes != calls.flushes_seen {
+            calls.flushes_seen = state.flushes;
+            let level = caw_level(state.flush_at.distance(ear));
+            if level > 0.0 {
+                let n = 2 + (calls.rng.unit() * 3.0) as usize;
+                calls.series(n, (0.22, 0.4), level * gain * ALARM_GAIN);
+                calls.next_in = calls.next_in.max(5.0);
+                return;
+            }
+        }
+
+        calls.next_in -= dt;
+        if calls.next_in > 0.0 || !calls.queue.is_empty() {
+            return;
+        }
+        let near: Vec<f32> = crows
+            .iter()
+            .filter(|c| c.mode() != Mode::Hidden)
+            .map(|c| c.position().distance(ear))
+            .filter(|d| *d < HEAR_M)
+            .collect();
+        if near.is_empty() {
+            calls.next_in = 3.0;
+            return;
+        }
+        let d = near[(calls.rng.unit() * near.len() as f32) as usize % near.len()];
+        let n = 1 + (calls.rng.unit() * 3.0) as usize;
+        calls.series(n, (0.5, 0.85), caw_level(d) * gain);
+        calls.next_in = calls.rng.range(7.0, 20.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_caw_is_loud_close_and_gone_out_of_earshot() {
+        assert_eq!(caw_level(0.0), 1.0);
+        assert_eq!(caw_level(NEAR_M), 1.0);
+        assert_eq!(caw_level(HEAR_M), 0.0);
+        assert_eq!(caw_level(HEAR_M * 2.0), 0.0);
+        let mut last = 1.0;
+        for d in 0..60 {
+            let l = caw_level(d as f32);
+            assert!(l <= last, "louder further off at {d} m");
+            last = l;
+        }
+        assert!(
+            caw_level(30.0) < 0.3,
+            "half way out is quiet: {}",
+            caw_level(30.0)
+        );
+    }
 
     #[test]
     fn steering_turns_at_a_bounded_rate_and_keeps_its_speed_bounded() {
