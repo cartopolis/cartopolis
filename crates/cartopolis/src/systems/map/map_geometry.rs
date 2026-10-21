@@ -1654,8 +1654,20 @@ fn spawn_geometry_task(
                             // Held back rather than appended here: the carriageways
                             // have to come out of it, and they do not exist yet.
                             // See `paving::cut_paving_under_roads` below.
-                            let mut paving_meshes =
-                                crate::systems::paving::build_paving_meshes(&paved, mesh_bytes);
+                            // **Only where the flat ground is drawn.** Above
+                            // `FLAT_GROUND_OFF_M` every sheet below is dropped
+                            // before the drape, and the cuts that shape them —
+                            // paving against roads, fills against both, crops,
+                            // the gap fill — were 3.5–4.5 s of a cell's worker
+                            // time on the Deck (2026-10-21), all thrown away. The
+                            // roads are still tessellated: the bridges, their
+                            // approaches and the road mask come out of them.
+                            let sheets = wants.flat_ground;
+                            let mut paving_meshes = if sheets {
+                                crate::systems::paving::build_paving_meshes(&paved, mesh_bytes)
+                            } else {
+                                Vec::new()
+                            };
                             // **Nor under a bridge laid flat.** The survey maps the
                             // road surface across a canal bridge as it does the
                             // street, and stood on the ground under the deck that
@@ -1710,9 +1722,11 @@ fn spawn_geometry_task(
                             // against the whole finished ground in one pass of
                             // its own (`crops::cut_into_ground`) once the roads
                             // and the paving are in.
-                            let mut crop_meshes = cartopolis_geo::crops::build_crop_meshes(
-                                &parcels, mesh_bytes,
-                            );
+                            let mut crop_meshes = if sheets {
+                                cartopolis_geo::crops::build_crop_meshes(&parcels, mesh_bytes)
+                            } else {
+                                Vec::new()
+                            };
                             // **The ground's sheets as laid, before they are cut
                             // into each other.** A cut only takes out where two
                             // sheets overlap, so it never changes the ground they
@@ -1725,13 +1739,17 @@ fn spawn_geometry_task(
                             // Taken after the paving's cut under the flat decks,
                             // which does change what is covered.
                             let paving_whole = paving_meshes.clone();
-                            let mut ground_whole: Vec<SurfaceMesh> = meshes
-                                .iter()
-                                .chain(&paving_meshes)
-                                .chain(&crop_meshes)
-                                .filter(|m| m.group.layer().is_sheet())
-                                .cloned()
-                                .collect();
+                            let mut ground_whole: Vec<SurfaceMesh> = if sheets {
+                                meshes
+                                    .iter()
+                                    .chain(&paving_meshes)
+                                    .chain(&crop_meshes)
+                                    .filter(|m| m.group.layer().is_sheet())
+                                    .cloned()
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
                             lap.mark("paving");
                             if torn() {
                                 return;
@@ -1776,12 +1794,16 @@ fn spawn_geometry_task(
                                     // reason, in the same pass and against the
                                     // paving as laid
                                     // (`paving::cut_ground_under_roads_and_paving`).
-                                    cartopolis_geo::paving::cut_ground_under_roads_and_paving(
-                                        &mut meshes,
-                                        &roads.ground,
-                                        &paving_whole,
-                                    );
-                                    ground_whole.extend(roads.ground.iter().cloned());
+                                    if sheets {
+                                        cartopolis_geo::paving::cut_ground_under_roads_and_paving(
+                                            &mut meshes,
+                                            &roads.ground,
+                                            &paving_whole,
+                                        );
+                                    }
+                                    if sheets {
+                                        ground_whole.extend(roads.ground.iter().cloned());
+                                    }
                                     meshes.extend(std::mem::take(&mut paving_meshes));
                                     // Where each deck's railings run: off the
                                     // roads it carries, or — for a deck the
@@ -1848,7 +1870,12 @@ fn spawn_geometry_task(
                             // uncut because there is nothing to cut them against.
                             // `take` above makes this the empty vector on the
                             // ordinary path rather than a second copy.
-                            cartopolis_geo::paving::cut_ground_under_paving(&mut meshes, &paving_meshes);
+                            if sheets {
+                                cartopolis_geo::paving::cut_ground_under_paving(
+                                    &mut meshes,
+                                    &paving_meshes,
+                                );
+                            }
                             meshes.extend(std::mem::take(&mut paving_meshes));
                             // And the crop parcels rejoin here, on both paths,
                             // with the ground made a partition around them: the
@@ -1858,7 +1885,9 @@ fn spawn_geometry_task(
                             // drew in blotches once relief bent them apart.
                             // Position in this vector means nothing: a sheet's
                             // place in the ground stack is its group's rung.
-                            cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
+                            if sheets {
+                                cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
+                            }
                             meshes.extend(crop_meshes);
                             // **And the ground nothing covered.** Every flat sheet
                             // is in by now; what is left of the cell is a hole that
@@ -1866,12 +1895,17 @@ fn spawn_geometry_task(
                             // is no longer drawn under a built cell
                             // (`cartopolis_geo::gap_fill`). Asked of the sheets as
                             // laid, which cover exactly what the cut ones do.
-                            if let Some(fill) = cartopolis_geo::gap_fill::gap_fill(
-                                &ground_whole,
-                                [0.0, 0.0],
-                                [tile_m, tile_m],
-                                cartopolis_geo::vector_tiles::palette::RESIDENTIAL,
-                            ) {
+                            if let Some(fill) = sheets
+                                .then(|| {
+                                    cartopolis_geo::gap_fill::gap_fill(
+                                        &ground_whole,
+                                        [0.0, 0.0],
+                                        [tile_m, tile_m],
+                                        cartopolis_geo::vector_tiles::palette::RESIDENTIAL,
+                                    )
+                                })
+                                .flatten()
+                            {
                                 meshes.push(fill);
                             }
                             lap.mark("gap fill");

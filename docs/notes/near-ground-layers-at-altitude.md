@@ -147,3 +147,16 @@ both silent and both still true:
 
 If arrival needs softening, the place is the objects that pop — labels,
 walkers, furniture — not the ground.
+
+## Above the flat ground's band the cuts were thrown away (2026-10-21)
+
+Above `FLAT_GROUND_OFF_M` every flat sheet is dropped before the drape, but the
+cell job still built the paving and crop meshes and cut them, the landuse fills
+and the roads into each other and closed the gap fill — 3.5–4.5 s of worker time
+per cell on the Deck, for nothing. Those steps now run only when the flat ground
+is wanted; the roads are still tessellated, because the bridges, their
+approaches and the road mask come out of them (and the road tessellation itself
+turned out cheap — the cost was the cuts). `cargo perf --only city` (3 km) on
+`mac-1`, web-release, two runs each: load 10.1 / 10.5 s → 6.1 / 6.4 s, worker
+time 24–25 s → 7–8 s; the settled picture matched to within the moving traffic
+(mean absolute difference 6e-6).
