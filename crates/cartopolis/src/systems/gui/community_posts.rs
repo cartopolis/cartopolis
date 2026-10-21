@@ -17,8 +17,8 @@ use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use cartopolis_core::point::{Point, PointView};
 use cartopolis_core::posts::{
-    suggest_handle, NewPost, NewReply, PostDto, PostPlace, PostThread, PublicInfo, PublicSettings,
-    SourceKind, WhoPosts, MAX_POST_TEXT,
+    suggest_handle, EditPost, NewPost, NewReply, PostDto, PostPlace, PostReport, PostThread,
+    PublicInfo, PublicSettings, ReportAction, SourceKind, WhoPosts, MAX_POST_TEXT,
 };
 use cartopolis_core::{CommunityDto, CommunityRole};
 use std::collections::HashMap;
@@ -62,6 +62,8 @@ enum Done {
     Replied(Uuid, Result<PostDto, String>),
     /// Something changed in a community: read it again.
     Changed(Uuid, Result<(), String>),
+    /// A community's reports from other servers, for its moderators.
+    Reports(Uuid, Result<Vec<PostReport>, String>),
 }
 
 /// Everything the Posts half of the panel holds.
@@ -96,6 +98,10 @@ pub struct Posts {
     settings_open: bool,
     /// The post whose actions are open.
     menu_for: Option<Uuid>,
+    /// The post or reply being edited, and its words so far.
+    editing: Option<(Uuid, String)>,
+    /// Reports from other servers, per community, while there are any.
+    reports: HashMap<Uuid, Vec<PostReport>>,
     /// Layers ▸ Community posts: every community's posts on the map, not only
     /// the one whose page asked. Copied from `DataLayers` each frame.
     pub layer: bool,
@@ -322,7 +328,20 @@ impl Posts {
                             self.handle.clone_from(h);
                         }
                     }
+                    if info.open_reports > 0 {
+                        self.spawn(async move {
+                            Done::Reports(
+                                id,
+                                json(api_get(&format!("/api/communities/{id}/reports")).await),
+                            )
+                        });
+                    } else {
+                        self.reports.remove(&id);
+                    }
                     self.info.insert(id, info);
+                }
+                Done::Reports(id, Ok(reports)) => {
+                    self.reports.insert(id, reports);
                 }
                 Done::Feed(id, Ok(feed)) => {
                     self.feeds.insert(id, feed);
@@ -349,7 +368,13 @@ impl Posts {
                         t.post.replies += 1;
                     }
                 }
-                Done::Changed(id, Ok(())) => self.refresh(id),
+                Done::Changed(id, Ok(())) => {
+                    self.refresh(id);
+                    // A thread open on what changed shows it changed.
+                    if let Some(post) = self.thread_open {
+                        self.open_thread(post);
+                    }
+                }
                 Done::Snapshot(Ok(hash)) => {
                     self.snapshot_busy = false;
                     if let Some(d) = self.draft.as_mut() {
@@ -365,6 +390,7 @@ impl Posts {
                 | Done::Thread(Err(e))
                 | Done::Posted(_, Err(e))
                 | Done::Replied(_, Err(e))
+                | Done::Reports(_, Err(e))
                 | Done::Changed(_, Err(e)) => {
                     self.sending = false;
                     self.note = Some(said(&e));
@@ -546,6 +572,9 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
     if cs.posts.settings_open && role.moderates() {
         settings_form(ui, cs, c, &info);
     }
+    if role.moderates() {
+        reports_list(ui, cs, id);
+    }
     let feed = cs.posts.feeds.get(&id).cloned().unwrap_or_default();
     if feed.is_empty() {
         theme::empty_state(
@@ -564,6 +593,69 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
             cs.posts.open_thread(p.id);
         }
         ui.add_space(6.0);
+    }
+}
+
+/// Reports from other servers waiting for a moderator: each post with who
+/// reported it and why, to hide or to leave.
+fn reports_list(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
+    let Some(reports) = cs.posts.reports.get(&id).cloned().filter(|r| !r.is_empty()) else {
+        return;
+    };
+    theme::section(
+        ui,
+        &format!(
+            "{}  {} report{} from other servers",
+            icons::FLAG,
+            reports.len(),
+            if reports.len() == 1 { "" } else { "s" }
+        ),
+    );
+    for r in &reports {
+        raised_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(format!("{} · {}", r.reporter, ago(r.created_ms, now_ms())))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::PUBLIC),
+            );
+            if !r.reason.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(&r.reason).color(theme::CREAM)).wrap());
+            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}: {}",
+                    r.post.author.address,
+                    first_line(&r.post.text, 120)
+                ))
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+            );
+            ui.horizontal_wrapped(|ui| {
+                for (action, label) in [
+                    (
+                        ReportAction::Hide,
+                        format!("{} Hide the post", icons::DELETE),
+                    ),
+                    (ReportAction::Dismiss, "Leave it".to_string()),
+                ] {
+                    if theme::action_button(ui, label).clicked() {
+                        let report = r.id;
+                        let body = serde_json::json!({ "action": action }).to_string();
+                        cs.posts.spawn(async move {
+                            let r = api_post(
+                                &format!("/api/communities/{id}/reports/{report}"),
+                                Some(body),
+                            )
+                            .await
+                            .map(|_| ());
+                            Done::Changed(id, r)
+                        });
+                    }
+                }
+            });
+        });
+        ui.add_space(4.0);
     }
 }
 
@@ -602,6 +694,9 @@ fn post_card(
                     line.push_str(&format!(" · via {via}"));
                 }
                 line.push_str(&format!(" · {}", ago(p.created_ms, now)));
+                if p.edited_ms.is_some() {
+                    line.push_str(" · edited");
+                }
                 ui.label(
                     egui::RichText::new(line)
                         .size(theme::SIZE_SUB)
@@ -620,7 +715,11 @@ fn post_card(
                 }
             });
         });
-        ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::TEXT)).wrap());
+        if cs.posts.editing.as_ref().is_some_and(|(e, _)| *e == p.id) {
+            edit_box(ui, cs, c.id, p.id);
+        } else {
+            ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::TEXT)).wrap());
+        }
         // The polaroid keeps its own proportions: its frame is
         // part of the picture, and a crop would cut them off.
         if let Some(t) = &snapshot {
@@ -660,6 +759,15 @@ fn post_card(
                     );
                 }
             }
+            // Votes from other servers: Mastodon's favourites, Lemmy's votes.
+            let votes = match (p.likes, p.dislikes) {
+                (0, 0) => None,
+                (l, 0) => Some(format!("{l} like{}", if l == 1 { "" } else { "s" })),
+                (l, d) => Some(format!("{l} up · {d} down")),
+            };
+            if let Some(v) = votes {
+                ui.label(egui::RichText::new(v).size(theme::SIZE_SUB).color(theme::TEXT_DIM));
+            }
             if p.parent.is_none() && tappable {
                 let n = p.replies;
                 if theme::chip(
@@ -676,6 +784,10 @@ fn post_card(
         if cs.posts.menu_for == Some(p.id) {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
+                if p.mine && theme::action_button(ui, format!("{} Edit", icons::RENAME)).clicked() {
+                    cs.posts.editing = Some((p.id, p.text.clone()));
+                    cs.posts.menu_for = None;
+                }
                 if p.mine
                     && theme::confirm_button(
                         ui,
@@ -745,6 +857,48 @@ fn post_card(
         tapped = true;
     }
     tapped
+}
+
+/// The words of a post being edited, with Save and Cancel. A change reaches
+/// other servers as an edit, as Mastodon's own do.
+fn edit_box(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, post: Uuid) {
+    let Some((_, text)) = cs.posts.editing.as_mut() else {
+        return;
+    };
+    crate::systems::text_touch::field(
+        ui,
+        egui::TextEdit::multiline(text)
+            .id(egui::Id::new(("post_edit", post)))
+            .desired_rows(3)
+            .desired_width(ui.available_width())
+            .char_limit(MAX_POST_TEXT),
+    );
+    let ready = !text.trim().is_empty();
+    let body = serde_json::to_string(&EditPost {
+        text: text.trim().to_string(),
+    })
+    .unwrap_or_default();
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled_ui(ready, |ui| {
+                theme::action_button(ui, format!("{} Save", icons::RENAME))
+            })
+            .inner
+            .clicked()
+        {
+            cs.posts.editing = None;
+            // POST, the edit's alias: the app's HTTP layer has no PUT.
+            cs.posts.spawn(async move {
+                let r = api_post(&format!("/api/posts/{post}"), Some(body))
+                    .await
+                    .map(|_| ());
+                Done::Changed(community, r)
+            });
+        }
+        if theme::action_button(ui, "Cancel").clicked() {
+            cs.posts.editing = None;
+        }
+    });
 }
 
 fn thread_view(
@@ -1181,10 +1335,11 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
             egui::TextEdit::singleline(&mut cs.posts.follow)
                 .id(egui::Id::new(("post_follow", id)))
                 .desired_width(ui.available_width())
-                .hint_text("groningen@feddit.nl or someone@mastodon.social"),
+                .hint_text("groningen@feddit.nl, someone@mastodon.social, or a relay's address"),
         );
+        let typed = cs.posts.follow.trim();
         if theme::action_button(ui, format!("{} Follow", icons::ADD)).clicked()
-            && cs.posts.follow.contains('@')
+            && (typed.contains('@') || typed.starts_with("https://"))
         {
             let body = serde_json::json!({ "address": cs.posts.follow.trim() }).to_string();
             cs.posts.follow.clear();
@@ -1536,6 +1691,8 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
             may_post: true,
             may_moderate: true,
             federating: true,
+            community: None,
+            open_reports: 0,
         },
     );
     let now = now_ms();
@@ -1568,6 +1725,8 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
                 edited_ms: None,
                 replies,
                 mine: false,
+                likes: replies * 2,
+                dislikes: 0,
             }
         };
     let mut feed = vec![
@@ -1682,6 +1841,8 @@ mod tests {
             edited_ms: None,
             replies: 0,
             mine: false,
+            likes: 0,
+            dislikes: 0,
         };
         posts
             .feeds
