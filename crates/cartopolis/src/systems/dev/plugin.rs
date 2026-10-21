@@ -41,7 +41,10 @@ impl Plugin for DevPlugin {
             First,
             systems::frame_split::begin_main.before(bevy::time::TimeSystems),
         )
-        .add_systems(Last, systems::frame_split::end_main);
+        .add_systems(Last, systems::frame_split::end_main)
+        // How evenly a drag moves the camera (`systems::camera_pacing`).
+        .init_resource::<systems::camera_pacing::AppliedDrag>()
+        .add_systems(Last, systems::camera_pacing::measure_camera_pacing);
         if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render_app
                 .add_systems(

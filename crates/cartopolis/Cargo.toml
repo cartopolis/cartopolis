@@ -506,6 +506,10 @@ web-sys = { version = "0.3", features = [
     "MessageEvent",
     "CloseEvent",
     "Event",
+    # The pointer's timed trail (`platform::pointer_trail`): each event's position and
+    # `timeStamp`, so a drag can be replayed at an even pace.
+    "MouseEvent",
+    "AddEventListenerOptions",
 ] }
 # `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
 # off a rejected permission promise. Already in the graph under web-sys; named

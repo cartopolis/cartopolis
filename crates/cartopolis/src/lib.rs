@@ -246,6 +246,9 @@ fn run_client() {
             .unwrap_or(workers),
     );
 
+    // The pointer's timed trail, before the first frame can drag (web only).
+    platform::pointer_trail::init();
+
     let cli = cli::parse_cli();
 
     // Desktop: our own `tracing_subscriber` (env-filtered fmt to stderr). On wasm we

@@ -1414,6 +1414,9 @@ struct RigSmoothing {
     pivot: Option<f32>,
     /// Current boom stretch ([`pullback_for_speed`]).
     pullback: f32,
+    /// Earth mode's drag, replayed from the pointer's timed trail. Here rather
+    /// than a `Local` of its own for the parameter ceiling above.
+    drag: DragReplay,
 }
 
 impl Default for RigSmoothing {
@@ -1425,6 +1428,109 @@ impl Default for RigSmoothing {
             idle_s: 0.0,
             pivot: None,
             pullback: 1.0,
+            drag: DragReplay::default(),
+        }
+    }
+}
+
+/// A drag that moves the camera as evenly as the hand moved the pointer.
+///
+/// Applying each frame's `CursorMoved` deltas as they come moves the camera by
+/// however many pointer events the browser happened to deliver before that
+/// frame: in Firefox, 27% of the frames of a steady drag got none and 7% got
+/// two, so the map stood still and then jumped (`platform::pointer_trail`). This
+/// replays the pointer's path instead, from samples that carry the browser's own
+/// timestamps, `delay` behind the present, and each frame moves the camera by
+/// the path between last frame's moment and this one's. The delay is how stale
+/// the newest sample tends to be when a frame looks, plus half a sample's gap, so
+/// the moment replayed almost always has a sample after it to interpolate
+/// towards: it rises at once when samples arrive late and eases back slowly, and
+/// stays between 8 and 50 ms.
+///
+/// What it costs is that delay, and the last `delay` of a drag: the replay
+/// stops at release. Natively there is no trail and the events are used as they
+/// come, as before.
+///
+/// `?no_drag_replay` (`CARTO_NO_DRAG_REPLAY`) turns it off, to compare.
+#[derive(Default)]
+struct DragReplay {
+    /// The trail moment the camera has been moved up to; `None` between drags.
+    at_ms: Option<f64>,
+    /// The newest sample seen and the trail's sample count then, and a running
+    /// mean of the gap between samples.
+    seen: Option<(f64, u64)>,
+    gap_ms: f64,
+    /// How far behind `now` the newest sample has lately been.
+    late_ms: f64,
+}
+
+impl DragReplay {
+    /// This frame's drag movement, in logical pixels, or `None` to use the
+    /// cursor events as they came (no trail on this platform, or switched off).
+    fn step(&mut self, dragging: bool) -> Option<Vec2> {
+        use crate::platform::pointer_trail;
+        if crate::env_flag("CARTO_NO_DRAG_REPLAY") {
+            return None;
+        }
+        let now = pointer_trail::now_ms()?;
+        Some(self.advance(
+            now,
+            pointer_trail::newest(),
+            dragging,
+            pointer_trail::position_at,
+        ))
+    }
+
+    /// [`Self::step`] without the platform: `now` and the trail's newest sample
+    /// (its time and the running sample count) in, the movement out, positions
+    /// asked of `position_at`.
+    fn advance(
+        &mut self,
+        now: f64,
+        newest: Option<(f64, u64)>,
+        dragging: bool,
+        position_at: impl Fn(f64) -> Option<Vec2>,
+    ) -> Vec2 {
+        if self.gap_ms == 0.0 {
+            self.gap_ms = 16.0;
+        }
+        if dragging {
+            if let (Some((t, n)), Some((seen_t, seen_n))) = (newest, self.seen) {
+                if n > seen_n && t > seen_t {
+                    // Per sample, not per frame; and a pause in the hand's
+                    // movement is not the sampling rate.
+                    let gap = ((t - seen_t) / (n - seen_n) as f64).min(50.0);
+                    self.gap_ms += (gap - self.gap_ms) * 0.1;
+                    // Measured only when samples arrived: a hand held still
+                    // sends none, and that is not lateness.
+                    let late = (now - t).clamp(0.0, 60.0);
+                    self.late_ms = if late > self.late_ms {
+                        late
+                    } else {
+                        self.late_ms + (late - self.late_ms) * 0.02
+                    };
+                }
+            }
+        }
+        self.seen = newest;
+        if !dragging {
+            self.at_ms = None;
+            return Vec2::ZERO;
+        }
+        let delay = (self.late_ms + 0.5 * self.gap_ms + 2.0).clamp(8.0, 50.0);
+        let q = now - delay;
+        let Some(at) = self.at_ms else {
+            // A drag begins here: nothing before the press may move the camera.
+            self.at_ms = Some(now);
+            return Vec2::ZERO;
+        };
+        if q <= at {
+            return Vec2::ZERO;
+        }
+        self.at_ms = Some(q);
+        match (position_at(q), position_at(at)) {
+            (Some(b), Some(a)) => b - a,
+            _ => Vec2::ZERO,
         }
     }
 }
@@ -1436,6 +1542,8 @@ pub struct FollowRig<'w, 's> {
     colliders: Res<'w, crate::systems::collision::BuildingColliders>,
     layers: Res<'w, crate::systems::data_layers::DataLayers>,
     smoothing: Local<'s, RigSmoothing>,
+    /// What the drag moved the camera by this frame, for `systems::camera_pacing`.
+    applied_drag: Option<ResMut<'w, crate::systems::camera_pacing::AppliedDrag>>,
 }
 
 /// Publish where the ring streamers should centre (`grid::StreamCentre`): the
@@ -2639,6 +2747,7 @@ fn earth_mode(ctx: ModeCtx) {
         mouse_wheel_events,
         touch,
         osd,
+        rig,
         camera_state,
         delta_time,
         gizmo_state,
@@ -2768,6 +2877,7 @@ fn earth_mode(ctx: ModeCtx) {
     {
         camera_state.pan_offset = None;
         cursor_moved_events.clear();
+        rig.smoothing.drag.step(false);
     } else {
         let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
             || keyboard_input.pressed(KeyCode::ControlRight);
@@ -2780,22 +2890,30 @@ fn earth_mode(ctx: ModeCtx) {
         let rotating = turning || (space && mouse_input.pressed(MouseButton::Left));
         let panning = !rotating && !space && mouse_input.pressed(MouseButton::Left);
         if rotating || panning {
+            let mut events = Vec2::ZERO;
             for event in cursor_moved_events.read() {
                 if let Some(last) = camera_state.pan_offset {
-                    let delta = event.position - last;
-                    if turning && space {
-                        heading_delta += delta.x;
-                    } else if rotating {
-                        rot_delta += delta;
-                    } else {
-                        pan_delta += delta;
-                    }
+                    events += event.position - last;
                 }
                 camera_state.pan_offset = Some(event.position);
+            }
+            // The trail's evenly paced movement where there is one (the web),
+            // the events as they came where there is not.
+            let delta = rig.smoothing.drag.step(true).unwrap_or(events);
+            if turning && space {
+                heading_delta += delta.x;
+            } else if rotating {
+                rot_delta += delta;
+            } else {
+                pan_delta += delta;
+            }
+            if let Some(applied) = rig.applied_drag.as_mut() {
+                applied.0 += delta.length();
             }
         } else {
             camera_state.pan_offset = None;
             cursor_moved_events.clear();
+            rig.smoothing.drag.step(false);
         }
 
         // Touch, mapped onto the same three deltas so everything below
@@ -3920,5 +4038,97 @@ mod tests {
                 "{mode:?} streams round the camera"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod drag_replay_tests {
+    use super::DragReplay;
+    use crate::platform::pointer_trail::interpolate;
+    use bevy::math::Vec2;
+    use std::collections::VecDeque;
+
+    /// Spread of per-frame movement: standard deviation over mean.
+    fn cv(steps: &[f32]) -> f32 {
+        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+        let var = steps.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / steps.len() as f32;
+        var.sqrt() / mean
+    }
+
+    /// The point of the replay: a hand moving at a constant speed, sampled by a
+    /// 125 Hz mouse whose events each reach the page 0–25 ms late (as Firefox's
+    /// did, unaligned with frames), moves the camera evenly at 60 fps, where the
+    /// events applied as they arrived judder.
+    #[test]
+    fn a_steady_drag_delivered_unevenly_replays_evenly() {
+        let speed = 0.4_f32; // px per ms
+        let mut seed = 7_u64;
+        let mut lag = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as f64 / (1_u64 << 31) as f64 * 25.0
+        };
+        // (created, visible from) for 4 s of samples, every 8 ms.
+        let samples: Vec<(f64, f64)> = (0..500)
+            .map(|i| {
+                let t = f64::from(i) * 8.0;
+                (t, t + lag())
+            })
+            .collect();
+        let mut replay = DragReplay::default();
+        let (mut raw, mut even) = (Vec::new(), Vec::new());
+        let mut last_raw = 0.0_f32;
+        for frame in 1..230 {
+            let now = f64::from(frame) * 1000.0 / 60.0;
+            // What has reached the page by this frame, in creation order.
+            let mut visible: Vec<_> = samples.iter().filter(|s| s.1 <= now).map(|s| s.0).collect();
+            visible.sort_by(f64::total_cmp);
+            let trail: VecDeque<(f64, Vec2)> = visible
+                .iter()
+                .map(|&t| (t, Vec2::new(speed * t as f32, 0.0)))
+                .collect();
+            let newest = trail.back().map(|&(t, _)| (t, trail.len() as u64));
+            let step = replay.advance(now, newest, true, |q| interpolate(&trail, q));
+            let pos = trail.back().map_or(0.0, |s| s.1.x);
+            if frame > 20 {
+                raw.push(pos - last_raw);
+                even.push(step.x);
+            }
+            last_raw = pos;
+        }
+        assert!(cv(&raw) > 0.3, "the input should judder: cv {}", cv(&raw));
+        assert!(cv(&even) < 0.1, "the replay should not: cv {}", cv(&even));
+        let mean = even.iter().sum::<f32>() / even.len() as f32;
+        assert!(
+            (mean - speed * 1000.0 / 60.0).abs() < 0.2,
+            "and keep the hand's speed: {mean}"
+        );
+    }
+
+    /// Nothing before the press moves the camera, and release stops it.
+    #[test]
+    fn a_drag_starts_and_stops_with_the_button() {
+        let trail: VecDeque<(f64, Vec2)> = (0..100)
+            .map(|i| (f64::from(i) * 8.0, Vec2::splat(i as f32)))
+            .collect();
+        let newest = trail.back().map(|&(t, _)| (t, 100));
+        let mut replay = DragReplay::default();
+        assert_eq!(
+            replay.advance(400.0, newest, true, |q| interpolate(&trail, q)),
+            Vec2::ZERO
+        );
+        assert!(
+            replay
+                .advance(450.0, newest, true, |q| interpolate(&trail, q))
+                .x
+                > 0.0
+        );
+        assert_eq!(
+            replay.advance(470.0, newest, false, |q| interpolate(&trail, q)),
+            Vec2::ZERO
+        );
+        assert_eq!(
+            replay.advance(490.0, newest, true, |q| interpolate(&trail, q)),
+            Vec2::ZERO
+        );
     }
 }

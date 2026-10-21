@@ -49,6 +49,8 @@ pub mod location;
 pub mod model_file;
 pub mod orientation;
 pub mod photo;
+// Where the pointer was and when, for an evenly paced drag (`free_camera`).
+pub mod pointer_trail;
 // Compiled everywhere so its holders need no `cfg`; it captures on Android only.
 pub mod precise_sensors;
 // The screen a call shares; not on the web, where the browser shares it.
