@@ -535,10 +535,14 @@ struct Flight {
     /// Wall-clock seconds since the zoom began, and the next film slot to fill
     /// (`CARTO_PERF_FILM`).
     film_clock: f32,
+    // Native only, as the filming is: the web has no threads to write frames on,
+    // and its lane builds with `-D unused`.
+    #[cfg(not(target_arch = "wasm32"))]
     film_next_slot: u32,
 }
 
 /// How long after arrival `CARTO_PERF_FILM` keeps filming.
+#[cfg(not(target_arch = "wasm32"))]
 const FILM_AFTER_ARRIVAL_S: f32 = 14.0;
 
 /// `CARTO_PERF_FILM`, frames a second, when set.
