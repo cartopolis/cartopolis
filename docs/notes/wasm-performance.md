@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
-triggers: [crates/mvt_reader, mvt-reader, platform/heap.rs, heap_labels, frame_split.rs, gpu_log.ts, firefox_probe, rust_oom, "out of memory", platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
-updated: 2026-10-20
+triggers: [gecko_profile, "gecko-profile", hardwareConcurrency, "?workers", CARTO_WORKERS, Firefox, crates/mvt_reader, mvt-reader, platform/heap.rs, heap_labels, frame_split.rs, gpu_log.ts, firefox_probe, rust_oom, "out of memory", platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+updated: 2026-10-21
 ---
 
 # What actually costs frames on the web build
@@ -286,6 +286,55 @@ and `after paving`, ~150 MB a cell). The first 3DBAG cells parse at up to 480 MB
 The 1478 MB high-water mark is those two overlapping at startup. Lowering it
 means fewer ground jobs at once (`Budget::surface_jobs`), or a cell build that
 holds less between its stages.
+
+## Firefox stuttered because the page had too many workers (2026-10-21)
+
+After the out-of-memory fix, Firefox still stuttered while the map streamed: on
+mac-1 (a six-core M5 Pro VM) it drew 31–40 fps over the scripted flight, with
+5 s windows under 30 fps and gaps of over a second, where Chrome drew 57–59.
+
+**The instrument is Firefox's own profiler, from a script**:
+`firefox_probe --gecko-profile PATH` starts it at launch through the
+`MOZ_PROFILER_STARTUP` variables, and `tools/gecko_profile.ts PATH --wasm
+<the module>` reads it: per thread, running time and how much of it was on a
+CPU, the innermost Bevy system on each stack, and the stretches without a pause.
+Read its header before trusting a figure; three of its rules came from being
+fooled:
+
+- **A WebDriver BiDi frame is not cost.** `serialize` (`RemoteValue.sys.mjs`)
+  appears on two-thirds of the page thread's stacks, while only 83 of 40,045
+  busy samples were inside `console.log`. The probe's console subscription is
+  cheap; the profile's attribution of it is wrong.
+- **Firefox cuts frame names at 511 characters**, which is where a Bevy system's
+  name is. `--wasm` recovers it from the module's name section.
+- **Running is not on a CPU.** The page's thread was off the CPU for 39% of the
+  time it was running, in the middle of wasm code: starved, not idle.
+
+What it showed, with the pool at five workers (`navigator.hardwareConcurrency -
+1`): no system or function dominated the page's thread (the largest single one,
+pipeline compiling, was 19% of the stretches over 100 ms, all of it at startup),
+the thread was off the CPU for 39% of its running time, and a third of its
+refresh ticks were "waiting for paint". Taking cores back from the pool fixed it:
+
+| same flight, mac-1 | Firefox fps | 5 s windows < 30 fps | Chrome fps |
+|---|---|---|---|
+| 5 workers | 31–40 | 6–16 of 20 | 56.7 |
+| 3 workers | 53–55 | 0 | 58.8 |
+| 2 workers | 55–56 | 0 | — |
+
+and a cold load with no flight filled about as fast with three as with five
+(Firefox 38–58 s against 37–40 s, Chrome 36 s against 42 s; noisy), while two
+was slower in Chrome (50 s). So **the web build's pool is half the cores**
+(`lib.rs`); `?workers=N` overrides it, for the next machine that says otherwise.
+
+What is not settled is why. Under the profiler, three workers took the page's
+off-CPU share from 39% to 32%, not to zero, and its "waiting for paint" ticks rose
+(1,751 of 3,544, against 1,099 of 3,242). mac-1 has two system daemons using
+~1.1 cores around the clock (`audiomxd`, `configd`), the profiler costs CPU of
+its own, and the main thread also spent 3.1 s blocked inside `Atomics.notify`
+waking workers, which in Firefox takes a lock every waiting worker shares.
+Measure frame rates without the profiler; use the profile for where, not for
+how much.
 
 ## The phone tier (2026-08-09)
 

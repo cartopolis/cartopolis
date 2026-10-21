@@ -216,14 +216,35 @@ fn run_client() {
     // efficiency cores at all, and `auto()` puts Android on `Budget::balanced`,
     // whose `worker_cap` is `None` — so the cap below is once again only what a
     // deliberately-selected `phone` tier asks for.
+    //
+    // **The browser gets half the cores, not all but one.** The page is not the
+    // only thing that has to run for a frame to appear: the browser composites
+    // and drives the GPU on threads of its own. With five workers on a six-core
+    // Mac, Firefox drew 31–40 fps over a scripted flight, with seconds-long
+    // freezes while the map streamed, and its profile had the page's thread off
+    // the CPU for 39% of the time it was running. With three it drew 54–56 fps
+    // with no 5 s window under 30, and the map filled about as fast (37–58 s
+    // against 37–40 s, noisy); Chrome was no worse either way. Two workers filled
+    // slower in Chrome (50 s against 36 s). `docs/notes/wasm-performance.md`.
+    #[cfg(target_arch = "wasm32")]
+    let workers = core_count().map(|n| n / 2).unwrap_or(3).max(1);
+    #[cfg(not(target_arch = "wasm32"))]
     let workers = core_count()
         .map(|n| n.saturating_sub(1))
         .unwrap_or(4)
         .max(1);
-    platform::workers::start(match quality::budget().worker_cap {
+    let workers = match quality::budget().worker_cap {
         Some(cap) => workers.min(cap),
         None => workers,
-    });
+    };
+    // `CARTO_WORKERS=N` (`?workers=N` on the web) sets the width outright, to
+    // measure what the pool costs the main thread on a given machine.
+    platform::workers::start(
+        env_value("CARTO_WORKERS")
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(workers),
+    );
 
     let cli = cli::parse_cli();
 
