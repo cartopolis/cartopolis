@@ -934,6 +934,45 @@ pub struct MapSurfaces {
     /// The ring was held this frame: the settle test must not mistake a ring
     /// waiting for the camera to stop for a finished one.
     held: bool,
+    /// The ring's cells within [`VIEW_FIRST_CELLS`] of its centre — the ground
+    /// the view is on — which are built before the rest are asked for.
+    in_view: Vec<Cell>,
+}
+
+/// How close to the ring's centre, in cells, a cell must come to be built
+/// first: about 370 m at Dutch latitudes. In Earth mode the centre is the
+/// point the view is aimed at, so these are the cells on screen; the rest of
+/// the 3×3 ring is mostly beyond its edges.
+///
+/// **First, and alone.** Nine cells dispatched together share the machine, and
+/// each cell's road cut already spreads over every core — so the one under the
+/// view finished at about the same time as the eight around it, 16–20 s after
+/// a zoom arrived on the Deck (2026-10-20). Building those first gives them all
+/// of it; the others are asked for once they have landed.
+const VIEW_FIRST_CELLS: f64 = 0.25;
+
+/// The cells of `wanted` within [`VIEW_FIRST_CELLS`] of `at` (tile units,
+/// fractional), nearest first.
+fn cells_in_view(wanted: &HashSet<Cell>, at: (f64, f64)) -> Vec<Cell> {
+    let gap = |c: &Cell| {
+        let dx = (c.0 as f64 - at.0).max(at.0 - (c.0 + 1) as f64).max(0.0);
+        let dy = (c.1 as f64 - at.1).max(at.1 - (c.1 + 1) as f64).max(0.0);
+        dx.hypot(dy)
+    };
+    let mut near: Vec<(f64, Cell)> = wanted
+        .iter()
+        .map(|c| (gap(c), *c))
+        .filter(|(d, _)| *d <= VIEW_FIRST_CELLS)
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    near.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Whether the cells in view go first ([`VIEW_FIRST_CELLS`]).
+/// `CARTO_NO_VIEW_FIRST=1` dispatches the whole ring at once, as before.
+fn view_first_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !crate::debug_switches::env_flag("CARTO_NO_VIEW_FIRST"))
 }
 
 /// Above this rate of change of altitude — in e-folds a second, so 0.3 is the
@@ -1054,6 +1093,7 @@ impl Default for MapSurfaces {
             coverage_wait: None,
             climb: ClimbRate::default(),
             held: false,
+            in_view: Vec::new(),
         }
     }
 }
@@ -2860,6 +2900,19 @@ impl MapSurfaces {
             || self.held
     }
 
+    /// Whether the ground in view is drawn in full: every cell within
+    /// [`VIEW_FIRST_CELLS`] of the ring's centre is [complete](Self::complete)
+    /// or has failed for good. `None` while there is no such cell — above the
+    /// flat ground's band no cell is ever complete, so ask at street level.
+    #[must_use]
+    pub fn view_ground_complete(&self) -> Option<bool> {
+        (!self.in_view.is_empty()).then(|| {
+            self.in_view
+                .iter()
+                .all(|c| self.complete.contains(c) || self.stream.exhausted(c))
+        })
+    }
+
     /// The shared material for a surface group, once some cell has created it.
     /// `systems::vegetation` ramps the canopy, trunk and forest colours through
     /// these handles — one write per group repaints every live cell, which is the
@@ -3348,6 +3401,7 @@ pub fn update_map_surfaces(
             bgt_revision,
             (ccx, ccy),
             (fcx, fcy),
+            at,
             tile_m,
             now,
         );
@@ -3418,6 +3472,7 @@ fn dispatch_cells(
     bgt_revision: (u32, u32, u32),
     (ccx, ccy): Cell,
     (fcx, fcy): (f64, f64),
+    at: (f64, f64),
     tile_m: f32,
     now: f64,
 ) {
@@ -3428,7 +3483,19 @@ fn dispatch_cells(
     // neighbours here *and* may spend the global `fetch_gate`'s near reserve — the
     // ground under your feet is not allowed to queue behind a far building cell
     // from another streamer that happened to run first this frame.
+    //
+    // And the cells in view before any other is even asked for
+    // (`VIEW_FIRST_CELLS`). One that failed for good does not hold the rest.
+    surfaces.in_view = cells_in_view(wanted, at);
+    let view_pending = view_first_enabled()
+        && surfaces
+            .in_view
+            .iter()
+            .any(|c| !surfaces.loaded.contains_key(c) && !surfaces.stream.exhausted(c));
     for c in wanted {
+        if view_pending && !surfaces.in_view.contains(c) {
+            continue;
+        }
         if !surfaces.loaded.contains_key(c) {
             let rank = crate::platform::fetch_gate::ring_distance(*c, ccx, ccy);
             surfaces.stream.request_ranked(*c, rank, now);
@@ -6069,6 +6136,26 @@ mod tests {
         assert!(near_ground(Some(false), 440.0, on, off));
         assert!(near_ground(None, 480.0, on, off));
         assert!(!near_ground(None, 520.0, on, off));
+    }
+
+    /// The cell under the view's centre always, a neighbour only when the
+    /// centre is near their shared edge, nearest first.
+    #[test]
+    fn the_cells_in_view_are_the_ones_near_its_centre() {
+        let ring: HashSet<Cell> = (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |y| (10 + x, 20 + y)))
+            .collect();
+        // Mid-cell: only that one.
+        assert_eq!(cells_in_view(&ring, (10.5, 20.5)), vec![(10, 20)]);
+        // Near the north edge (smaller y), as Grote Markt is in its cell.
+        assert_eq!(
+            cells_in_view(&ring, (10.5, 20.05)),
+            vec![(10, 20), (10, 19)]
+        );
+        // In a corner: the four cells meeting there.
+        let corner = cells_in_view(&ring, (10.02, 20.02));
+        assert_eq!(corner.len(), 4);
+        assert_eq!(corner[0], (10, 20));
     }
 
     /// A brisk scroll holds the ring, a slow one does not, a jump is not a

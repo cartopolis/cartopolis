@@ -530,6 +530,8 @@ struct Flight {
     /// Set once the closing picture's pixels are back
     /// (`shot_harness::snapshot`); the run waits for it.
     last_picture: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// When the ground in view was first complete after arrival.
+    view_ground: Option<f32>,
 }
 
 /// Frames the closing picture may take to come back before the run moves on
@@ -826,6 +828,12 @@ pub struct Window {
     /// gone quiet, or `None` when `wait` ran out first.
     #[serde(default)]
     pub quiet_after_s: Option<f32>,
+    /// `arrive` only: seconds after arrival until the ground in view was drawn
+    /// in full (`MapSurfaces::view_ground_complete`) — what the person looks
+    /// at, where `quiet_after_s` waits for the whole ring, most of it off
+    /// screen. `None` if it never was before the window closed.
+    #[serde(default)]
+    pub view_ground_s: Option<f32>,
     /// `arrive` only: every streamer that worked after arrival, and when it
     /// stopped.
     #[serde(default)]
@@ -980,6 +988,8 @@ pub struct WindowSummary {
     pub ground_cells_discarded: Stat,
     /// `arrive` only, over the flights that went quiet.
     pub quiet_after_s: Option<Stat>,
+    /// `arrive` only, over the flights whose view went complete.
+    pub view_ground_s: Option<Stat>,
     pub gpu_passes: Vec<GpuPassSummary>,
     /// Dearest first by median.
     pub systems: Vec<SystemSummary>,
@@ -1090,6 +1100,7 @@ fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary 
         ground_retears: all(|w| w.ground_retears as f64),
         ground_cells_discarded: all(|w| w.ground_cells_discarded as f64),
         quiet_after_s: some(|w| w.quiet_after_s.map(f64::from)),
+        view_ground_s: some(|w| w.view_ground_s.map(f64::from)),
         gpu_passes,
         systems,
     }
@@ -1546,6 +1557,7 @@ pub fn drive_perf_window(
     mut camera: ResMut<crate::resources::CameraState>,
     registry: Res<crate::systems::stream_watch::StreamRegistry>,
     target: Option<Res<crate::systems::shot_harness::ShotTarget>>,
+    surfaces: Option<Res<crate::systems::map_geometry::MapSurfaces>>,
 ) {
     // The report is out and the capture path is draining to exit. `placed` is not
     // cleared on the final viewpoint, so without this the `load` arm below opens a
@@ -1700,6 +1712,18 @@ pub fn drive_perf_window(
                 None => perf.flight.last_busy.push((name, t)),
             }
         }
+        if perf.flight.view_ground.is_none()
+            && surfaces
+                .as_ref()
+                .and_then(|s| s.view_ground_complete())
+                .unwrap_or(false)
+        {
+            perf.flight.view_ground = Some(t);
+            tracing::info!(
+                after_s = format!("{t:.1}"),
+                "perf arrive: the ground in view is complete"
+            );
+        }
         perf.flight.quiet_for = if busy.is_empty() {
             perf.flight.quiet_for + dt
         } else {
@@ -1730,6 +1754,7 @@ pub fn drive_perf_window(
         perf.settled = quiet;
         let mut window = close(&mut perf, "arrive", &run, &readouts);
         window.quiet_after_s = quiet.then(|| t - perf.flight.quiet_for);
+        window.view_ground_s = perf.flight.view_ground;
         window.layers = perf
             .flight
             .last_busy
@@ -1956,6 +1981,7 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         ground_retears: ground_retears().0.saturating_sub(base.ground_retears.0),
         ground_cells_discarded: ground_retears().1.saturating_sub(base.ground_retears.1),
         quiet_after_s: None,
+        view_ground_s: None,
         layers: Vec::new(),
     };
     // Quiet means the three streaming signals are all at rest. Mesh churn is in
@@ -2042,6 +2068,7 @@ fn log_window(w: &Window) {
         ground_retears = w.ground_retears,
         ground_cells_discarded = w.ground_cells_discarded,
         quiet_after_s = w.quiet_after_s.map_or("-".into(), |s| format!("{s:.1}")),
+        view_ground_s = w.view_ground_s.map_or("-".into(), |s| format!("{s:.1}")),
         "perf window"
     );
     for p in w.gpu_passes.iter().take(8) {
