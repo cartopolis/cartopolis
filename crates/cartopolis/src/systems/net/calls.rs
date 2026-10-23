@@ -491,6 +491,8 @@ impl Calls {
 
     /// Whether somebody else has been in this device's call with media
     /// flowing: it was answered, and is no longer ringing on the other side.
+    /// Only the voice agent asks (`mcp::voice`, Unix desktops).
+    #[cfg(mcp)]
     #[must_use]
     pub fn answered(&self) -> bool {
         self.active
@@ -501,7 +503,7 @@ impl Calls {
     /// A way to speak into this device's call from another thread, and to
     /// hear everybody in it there: what a voice agent talks through
     /// (`mcp::voice`). Each call hands out a fresh tap.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(mcp)]
     #[must_use]
     pub fn agent_audio(
         &self,
