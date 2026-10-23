@@ -67,8 +67,8 @@ with a version above the current one, so a fresh database is happy with
 
 Two guards, one at each end, because the clash can be made at either:
 
-- **Landing.** `merge-to-main` runs `.claude/skills/finish-branch/check-numbers.ts`
-  before it rebases. It refuses a branch that added a `Vnn__` main has since
+- **Landing.** The landing runs `tools/check-numbers.ts` (cartopolis's
+  `pre_land` at the midas hub) before it rebases. It refuses a branch that added a `Vnn__` main has since
   added as something else, and — when `ssh host` works — one whose `Vnn__`
   disagrees with the live `refinery_schema_history` or sits below its highest
   version. The same script checks `PROTOCOL_HISTORY` revisions and

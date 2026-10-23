@@ -22,9 +22,10 @@
 #     `--workspace` to the one package it was working in, because it does not
 #     choose the argument.
 #   * **It records what it proved.** A pass writes the head sha into
-#     `.git/cartopolis-verified`, and `merge-to-main` refuses a head that has no
-#     receipt. Rebasing or committing moves the sha, so a stale pass cannot be
-#     spent on different code.
+#     `.git/cartopolis-verified` (and the landing records it at the hub), and
+#     the finish-branch skill refuses a head that has no receipt. Rebasing or
+#     committing moves the sha, so a stale pass cannot be spent on different
+#     code.
 #   * **CI still runs**, on the push to `main` (`ci.yml` has `push: branches:
 #     [main]`), and on `main` it runs *more* than a pull request ever did — the
 #     smokes and both cross-target lanes. What changed is that its verdict
@@ -171,7 +172,7 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas
     # was done on and then queueing for a VPS node another session held, with the
     # Mac idle (2026-10-16: twice in one landing). The steps below run on Linux
     # and macOS alike; the node's checkout follows this worktree either way.
-    gate_node=$(midas mine 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+    gate_node=$(midas mine 2>/dev/null)
     if [ -n "$gate_node" ]; then
         echo "node     $gate_node — this worktree holds it; running the gate there"
     else
@@ -184,7 +185,7 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas
         gate_owner="gate-$(basename "$root")"
         gate_purpose="landing gate for $(git rev-parse --abbrev-ref HEAD)"
         if midas take --help 2>/dev/null | grep -q -- --fastest-for; then
-            gate_node=$(midas take any --fastest-for .claude/skills/finish-branch/verify-branch \
+            gate_node=$(midas take any --fastest-for tools/verify-branch \
                 --owner "$gate_owner" --wait 3600 --purpose "$gate_purpose")
         else
             gate_node=$(midas take vps --owner "$gate_owner" --wait 3600 --purpose "$gate_purpose")
@@ -193,7 +194,7 @@ if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && command -v midas
         echo "node     $gate_node — running the gate there"
     fi
     ssh -o BatchMode=yes "$gate_node" \
-        "CARTO_GATE_NO_SLOT=1 .claude/skills/finish-branch/verify-branch --base $mb --scope $scope${only:+ --only $only}"
+        "CARTO_GATE_NO_SLOT=1 tools/verify-branch --base $mb --scope $scope${only:+ --only $only}"
     status=$?
     remote=$(ssh -o BatchMode=yes "$gate_node" 'cat "$(git rev-parse --git-dir)/cartopolis-verified" 2>/dev/null')
     receipt="$(git rev-parse --git-dir)/cartopolis-verified"
@@ -371,7 +372,7 @@ if [ -n "$failed" ]; then
 fi
 
 # The receipt. Keyed on the head sha, so a commit or a rebase after this point
-# invalidates it and merge-to-main asks for the gate again.
+# invalidates it and a landing asks for the gate again.
 receipt="$(git rev-parse --git-dir)/cartopolis-verified"
 {
     echo "sha=$head"

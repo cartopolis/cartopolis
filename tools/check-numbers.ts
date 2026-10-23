@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 // Refuse a branch that claims a number somebody else already holds.
 //
-//   bun .claude/skills/finish-branch/check-numbers.ts [--base origin/main] [--no-live]
+//   bun tools/check-numbers.ts [--base origin/main] [--no-live]
+//
+// The landing runs it before the rebase: it is cartopolis's `pre_land` in the
+// midas hub's config (the shared finish-branch skill, `midas project`).
 //
 // Three things in this repository are numbered by hand, and git cannot see a
 // clash between two of them, because two branches that each append "the next

@@ -12,10 +12,10 @@ grep -l 'triggers:.*routing' docs/notes/*.md # notes about a topic
 ```
 
 - [`docs/guides/development.md`](docs/guides/development.md) — contributor guide: dev loop, tests, code map, conventions
-- [`.claude/skills/`](.claude/skills/) — the procedures: `commit`, `shots` (headless captures and driving a running client), `finish-branch` (landing on `main`), `handover` (passing a session's branch to the next one); the hook is `.claude/hooks/note-triggers`, registered in `.claude/settings.json`
+- [`.claude/skills/`](.claude/skills/) — this project's procedures: `shots` (headless captures and driving a running client); the hook is `.claude/hooks/note-triggers`, registered in `.claude/settings.json`. The workflow skills every midas project shares — `commit`, `finish-branch` (landing on `main`), `handover` (passing a session's branch to the next one) — are midas's, installed into `~/.claude/skills` by `midas claude install`; this project's part of the landing (the gate `tools/verify-branch`, the pre-land `tools/check-numbers.ts`) is named at the hub, `midas project`
 - `docs/adr/`, `docs/abstract/` — **frozen archive** of the numbered decision log, retired 2026-07-26 ([why](docs/notes/retired/adr-system.md)). Read for history; **never add to them, and don't re-propose numbered ADRs**
 
-**Where a fact goes:** explains one diff → the commit body (required for `feat`/`fix`/`perf` and any 5+-file commit — see [`.claude/skills/commit`](.claude/skills/commit/SKILL.md)); constrains all future work → a note; falsified by a code change → a comment next to the code.
+**Where a fact goes:** explains one diff → the commit body (required for `feat`/`fix`/`perf` and any 5+-file commit — see the `commit` skill); constrains all future work → a note; falsified by a code change → a comment next to the code.
 
 ## Build scope
 

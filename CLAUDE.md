@@ -81,9 +81,9 @@ Wayland + GLES flickers: run with `WGPU_BACKEND=vulkan`. Copy `data/world.db` be
 a schema upgrade; `refinery` migrations run on simulator startup.
 
 **Deploying is `midas deploy sim|atlas|web|wasm|apk`**: it builds the tip of `main`
-on a node and publishes it, once `verify-branch`'s pass is on record at the hub
-(`docs/notes/hosted-simulator.md`). `finish-branch`'s `merge-to-main --deploy`
-does it after a landing; the Forgejo deploy workflows are a manual fallback, and
+on a node and publishes it, once the landing gate's pass (`tools/verify-branch`)
+is on record at the hub (`docs/notes/hosted-simulator.md`). The `finish-branch`
+skill's `land --deploy` does it after a landing; the Forgejo deploy workflows are a manual fallback, and
 `ci.yml` runs on `main` nightly.
 
 ## Seeing it run

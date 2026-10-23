@@ -37,7 +37,7 @@ What is and is not a revision:
 
 **Two branches each appending the next number collide at merge**, the way
 migrations collide at deploy (`migration-numbers-are-claimed-by-a-deploy.md`).
-`.claude/skills/finish-branch/check-numbers.ts` checks `PROTOCOL_HISTORY`
+`tools/check-numbers.ts` checks `PROTOCOL_HISTORY`
 versions and `MessageKind` discriminants against `main` before landing.
 
 **A deployed server behind `main` refuses newer clients.** Deploys are manual

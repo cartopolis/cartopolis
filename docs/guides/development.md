@@ -161,7 +161,7 @@ the phase they belong to, not the end.
 - **Commits** — Conventional Commits (`type(scope): subject`). A body is required
   for `feat` / `fix` / `perf` and any 5+-file commit; it is where measurements,
   rejected options and silent-failure findings are kept. See
-  [`.claude/skills/commit`](../../.claude/skills/commit/SKILL.md).
+  the `commit` skill (midas's, installed into `~/.claude/skills`).
 - **Standing facts go in [`docs/notes/`](../notes/)**, one file per topic, edited in
   place. Rule of thumb: explains one diff → commit body; constrains future work →
   note. `docs/adr/` and `docs/abstract/` are a **frozen archive** — read them for

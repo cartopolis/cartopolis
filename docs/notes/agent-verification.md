@@ -1,6 +1,6 @@
 ---
 topic: agent-verification
-triggers: [harness, ci.yml, "--expect", .claude/settings.json, verifier, gate, "add a check", "how do we know it works", verify-branch, merge-to-main, "pull request", "merge to main"]
+triggers: [harness, ci.yml, "--expect", .claude/settings.json, verifier, gate, "add a check", "how do we know it works", verify-branch, merge-to-main, finish-branch, "pull request", "merge to main"]
 updated: 2026-10-17
 ---
 
@@ -35,7 +35,7 @@ The rule above cost two full 15-25 minute CI runs per landing on a capacity-3
 runner — one on the pull-request ref, one on the merge commit — and the first of
 the two was being merged after a median of zero seconds, i.e. not read. A
 session now runs the gate itself
-([`verify-branch`](../../.claude/skills/finish-branch/verify-branch)) and pushes
+([`verify-branch`](../../tools/verify-branch)) and pushes
 `main` with no pull request at all.
 
 What is kept of the rule, and it is what makes the trade survivable:
@@ -43,7 +43,7 @@ What is kept of the rule, and it is what makes the trade survivable:
 - **The invocations are not the agent's to choose.** They are fixed in a
   checked-in script that mirrors `ci.yml` command for command — corollary 1
   satisfied, in the only way it can be, by not being prompt text.
-- **A pass is a receipt keyed on the head sha**, and `merge-to-main` refuses a
+- **A pass is a receipt keyed on the head sha**, and the landing refuses a
   head without one. Committing or rebasing invalidates it.
 - **The independent run still happens**, on the push to `main`, where it runs
   *more* than a pull request did (the smokes and both cross-target lanes are

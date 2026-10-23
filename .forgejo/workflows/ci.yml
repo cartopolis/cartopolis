@@ -19,8 +19,9 @@ name: CI
 #
 # `.claude/` is on the same footing as `docs/`: skills, prompts and settings, no
 # compiled byte among them. It was added when the landing path moved into
-# .claude/skills/finish-branch — a change to the script that runs the gate should
-# not itself cost a run of the gate.
+# .claude/skills/finish-branch (since 2026-10-23 a skill midas installs, with
+# the gate in tools/verify-branch) — a change to the script that runs the gate
+# should not itself cost a run of the gate.
 #
 # `paths-ignore` because a Markdown change should not compile Bevy. Eight of the
 # forty commits on `main` before 2026-08-16 touched nothing but `docs/` and
@@ -67,7 +68,7 @@ name: CI
 # every PR then runs cold until some later merge happens to touch the client.
 # Dispatching this workflow on `main` runs it whole and re-warms the store.
 # **Nightly on `main`, not on every push to it** (2026-10-16). Every commit
-# reaches `main` through merge-to-main, which runs this file's own commands on a
+# reaches `main` through the finish-branch skill, which runs this file's own commands on a
 # midas node first and records the receipt at the hub (`midas verified`); a run
 # here on the push proved the same tree again, ~10 minutes on the 3-slot runner
 # every landing shares, and the deploys no longer wait on it (`midas deploy`

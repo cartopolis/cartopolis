@@ -64,7 +64,7 @@ and sccache refills it — measured at 85.6 % hits — provided nobody exports
 
 ## Working
 
-- **Commits** follow the [`commit`](../.claude/skills/commit/SKILL.md) skill:
+- **Commits** follow the `commit` skill:
   focused, Conventional, and a body for every `feat`, `fix` and `perf` — the body
   is where the reasoning of a session outlives it.
 - **Builds, captures and deploys** run on a midas node where the work needs one
@@ -79,7 +79,7 @@ A session that stops before its work is done — out of context, killed, finishe
 for the day — hands it to the next one rather than leaving it in a worktree:
 
 ```bash
-.claude/skills/handover/hand-over --note "what works, what does not, what you suspect"
+~/.claude/skills/handover/hand-over --note "what works, what does not, what you suspect"
 ```
 
 It sweeps uncommitted work into a `wip:` commit whose message carries the note,
@@ -87,12 +87,12 @@ pushes the branch, and detaches the
 worktree so the branch is free for the next session's worktree on the same
 machine. The next session switches to the branch in a worktree of its own, reads
 the note and the commits, and **folds the `wip:` commit into real commits before
-landing** — `merge-to-main` refuses a branch that still carries one, because
+landing** — the landing refuses a branch that still carries one, because
 with no pull request nothing else would stop a sweep reaching `main`.
 
 The note is the part only you can write: the rest moves bytes, and the note is
 the intent that is not already in the commits.
-[`handover`](../.claude/skills/handover/SKILL.md) has the rest.
+The `handover` skill has the rest.
 
 It refuses to sweep the repository's main checkout. Several sessions may be
 running in it, and `git add -A` there would hand over their edits as well.
@@ -104,12 +104,16 @@ Saying **"merge to main"** is the instruction to land, and the session does it
 rather than handing back a branch:
 
 ```bash
-.claude/skills/finish-branch/merge-to-main
+~/.claude/skills/finish-branch/land
 ```
 
-It rebases onto `origin/main`, runs CI's gate **locally**, pushes the branch and
-fast-forwards `main` to it. There is no pull request. `--deploy wasm,apk,…`
-then publishes the landed commit with `midas deploy`.
+It rebases onto `origin/main` — stopping first, to be read, when `main` changed
+files the branch changes too — runs CI's gate on a midas node, pushes the branch
+and fast-forwards `main` to it. There is no pull request. `--deploy wasm,apk,…`
+then publishes the landed commit with `midas deploy`. The `finish-branch` skill
+is the same in every midas project and comes from midas (`midas claude
+install`); what is cartopolis's — the gate below, and `tools/check-numbers.ts`
+before the rebase — is named at the hub (`midas project`).
 
 **Why the pull request went (2026-08-30).** `ci.yml` has no push trigger on
 branches, so opening a PR was the only way to start a run — two full runs of a
@@ -119,7 +123,7 @@ the first was not read: of the eight merges before the change, five went from
 code is:
 
 ```bash
-.claude/skills/finish-branch/verify-branch
+tools/verify-branch
 ```
 
 runs the same commands out of the same workflow file — `cargo fmt --check`,
@@ -128,7 +132,7 @@ diff can change a frame, the two headless smokes and the wasm and android target
 checks. It scopes itself with `ci.yml`'s own deny-list and **names on stdout
 everything it skipped**. It runs on the midas node the worktree holds, or on the
 fastest free one; with no midas reachable, `CARTO_GATE_NO_SLOT=1` runs it in
-place. `merge-to-main` runs it inside **the turn to land** (`midas land`), taken
+place. The landing runs it inside **the turn to land** (`midas land`), taken
 before the rebase and held through the push, so landings go one at a time in
 the order they asked and none is bounced by another's push.
 
@@ -136,7 +140,7 @@ Four properties are deliberate:
 
 - **The gate is a script, not a sentence.** A session cannot narrow `--workspace`
   to the package it was working in, because it does not choose the argument.
-- **A pass is a receipt, keyed on the head sha.** `merge-to-main` refuses a head
+- **A pass is a receipt, keyed on the head sha.** The landing refuses a head
   that has none, and committing or rebasing moves the sha, so a pass earned on
   one tree cannot be spent on another.
 - **`main` is a fast-forward, never a force.** A rejection means another session
@@ -161,9 +165,11 @@ fixed forward. Publishing is the gate that protects strangers:
 
 ## Setup
 
-The workflow needs nothing installed per machine: its hooks and skills are in
-the repository (`.claude/settings.json`, `.claude/hooks/`, `.claude/skills/`), so
-every checkout carries them. What stays per machine is the SSH key that pushes
+This project's hooks and skills are in the repository (`.claude/settings.json`,
+`.claude/hooks/`, `.claude/skills/`), so every checkout carries them; the
+workflow skills every midas project shares (`commit`, `finish-branch`,
+`handover`) and midas's session hooks are installed into `~/.claude` by midas
+itself, at each session start. What stays per machine is the SSH key that pushes
 to Forgejo, midas's configuration where builds go through nodes, and on the VPS
 a short `~/.claude/CLAUDE.md` about the host. Chat digests were published per
 session by a `Stop` hook installed outside the repository until 2026-10-17, and
@@ -182,12 +188,12 @@ retired ([notes/retired/agent-context-refs.md](notes/retired/agent-context-refs.
 
 ## When it goes wrong
 
-**`merge-to-main` refuses: uncommitted changes.** You are probably in a checkout
+**The landing refuses: uncommitted changes.** You are probably in a checkout
 other sessions share. Land from the session's own worktree; failing that, add a
 clean worktree at the branch tip, gate it there, and push from it — what the
 2026-10-17 landing did.
 
-**`merge-to-main` refuses: wip commits.** The branch was handed over and the
+**The landing refuses: wip commits.** The branch was handed over and the
 sweep is still on it. Fold it into real commits — `git reset --soft` to the
 commit before it and commit again — then re-run.
 
