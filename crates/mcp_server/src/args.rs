@@ -334,6 +334,23 @@ pub struct CallArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct VoiceCallArgs {
+    #[schemars(description = "Who to call, by username. Anybody: they need not be on the list \
+                               of people you hear.")]
+    pub to: String,
+    #[schemars(
+        description = "Why you are calling, in the words of whoever asked: what to say first, \
+                       what to find out or settle. The agent on the call opens with it."
+    )]
+    pub purpose: String,
+    #[schemars(
+        description = "Who asked for the call, by username: one of the people you hear. They \
+                       get one line in their private chat with you when the call ends."
+    )]
+    pub asked_by: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct IdArgs {
     pub id: i64,
 }
@@ -367,6 +384,7 @@ pub enum AgentRequest {
     DeclineCall,
     HangUp,
     CallStatus,
+    VoiceCall(VoiceCallArgs),
     RequestContact(ContactArgs),
     AnswerContact(AnswerContactArgs),
     Contacts,
@@ -418,6 +436,7 @@ impl AgentRequest {
             Self::DeclineCall => "decline call",
             Self::HangUp => "hang up",
             Self::CallStatus => "call status",
+            Self::VoiceCall(_) => "voice call",
             Self::RequestContact(_) => "request contact",
             Self::AnswerContact(_) => "answer contact",
             Self::Contacts => "contacts",

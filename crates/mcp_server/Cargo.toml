@@ -29,6 +29,9 @@ cartopolis_core = { path = "../core" }
 # socket per session. The streamable-HTTP transport (and axum, hyper and tower
 # with it) went with the bearer token; see `server.rs`'s module note.
 rmcp = { version = "3.4", default-features = false, features = [
+    # The client half too, for one in-process session: the voice agent calls
+    # these same tools through it (`voice_tools`). It adds only tokio-stream.
+    "client",
     "server",
     "macros",
     "schemars",
@@ -37,6 +40,8 @@ rmcp = { version = "3.4", default-features = false, features = [
 # encoded before it can be handed over. Already in the lock under the simulator.
 base64 = "0.22"
 futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+# The voice agent's `ToolHost`, which `voice_tools` implements with these tools.
+cartopolis_voice = { path = "../voice" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -47,6 +52,9 @@ tracing.workspace = true
 # it is ours. Already in the lock under half the graph.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

@@ -45,7 +45,7 @@ use crate::args::{
     AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
     EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, InboxArgs, LookAroundArgs,
     LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs,
-    RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
+    RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs, WalkArgs,
 };
 use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
 use crate::protocol::{ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
@@ -758,6 +758,21 @@ impl Tools {
     )]
     async fn call_status(&self) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::CallStatus).await
+    }
+
+    #[tool(
+        description = "Have your voice agent phone somebody and talk to them for you: it \
+                       opens with `purpose`, holds the conversation in speech, and when the \
+                       call ends sends `asked_by` one line saying how it went. Returns at \
+                       once; the call is placed in the background (after any call already \
+                       going on, and once they are your contact — a request is sent if they \
+                       are not). Only on a client started with --voice-agent."
+    )]
+    async fn voice_call(
+        &self,
+        Parameters(args): Parameters<VoiceCallArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::VoiceCall(args)).await
     }
 
     #[tool(

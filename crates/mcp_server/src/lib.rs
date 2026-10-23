@@ -23,5 +23,8 @@ pub mod protocol;
 /// now (`docs/notes/driving-the-client-from-an-ide.md`).
 #[cfg(unix)]
 pub mod server;
+/// The voice agent's tools: these, through an in-process MCP session.
+#[cfg(unix)]
+pub mod voice_tools;
 
 pub use guide::scripting_guide;
