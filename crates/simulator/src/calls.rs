@@ -81,6 +81,9 @@ pub struct Joiner {
     pub request_id: u32,
     /// A guest let in by an invite link: always waits to be let in.
     pub guest: bool,
+    /// An AI agent speaks for the account (`accounts.agent`): shown in the
+    /// roster, so everybody in the call sees the badge.
+    pub agent: bool,
     /// The community the chat is a topic of, for its moderators' numbers
     /// (`crate::stats`).
     pub community: Option<uuid::Uuid>,
@@ -262,6 +265,7 @@ struct Info {
     /// Recording the call on itself, by its own say.
     recording: bool,
     guest: bool,
+    agent: bool,
     /// Its breakout room; 0 is the main call.
     room: u32,
     /// When it came in, and the chat's community, for the minutes counted
@@ -286,6 +290,7 @@ impl Info {
             muted: false,
             recording: false,
             guest: joiner.guest,
+            agent: joiner.agent,
             room: 0,
             since: Instant::now(),
             community: joiner.community,
@@ -1079,6 +1084,7 @@ impl State {
                     recording: i.recording,
                     guest: i.guest,
                     room: i.room,
+                    agent: i.agent,
                 })
             })
             .collect();
@@ -1178,6 +1184,7 @@ mod tests {
             screen: None,
             request_id: 1,
             guest,
+            agent: false,
             community: None,
         }
     }

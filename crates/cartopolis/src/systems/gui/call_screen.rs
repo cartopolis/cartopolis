@@ -499,14 +499,22 @@ fn fold_button(ui: &mut egui::Ui, full: egui::Rect) -> bool {
 }
 
 /// The lock line every call screen carries: what makes it a private call.
-fn encrypted_line(p: &egui::Painter, pos: egui::Pos2) {
-    centred(
-        p,
-        pos,
-        &format!("{} End-to-end encrypted", icons::LOCK),
-        theme::SIZE_SUB,
-        theme::TEXT_DIM,
-    );
+fn encrypted_line(p: &egui::Painter, pos: egui::Pos2, agent: bool) {
+    // An agent's end of the call is the agent: what it hears goes on to a
+    // model provider, and the person talking to it should see that before
+    // saying anything (`docs/mockups/voice-agent/`).
+    let (text, colour) = if agent {
+        (
+            format!("{} AI agent · what you say goes to OpenAI", icons::LOCK),
+            theme::WARN,
+        )
+    } else {
+        (
+            format!("{} End-to-end encrypted", icons::LOCK),
+            theme::TEXT_DIM,
+        )
+    };
+    centred(p, pos, &text, theme::SIZE_SUB, colour);
 }
 
 /// A call coming in, over the whole screen.
@@ -549,7 +557,7 @@ fn incoming_screen(
         theme::SIZE_BODY,
         theme::TEXT,
     );
-    encrypted_line(&p, egui::pos2(x, below + 96.0));
+    encrypted_line(&p, egui::pos2(x, below + 96.0), r.agent);
 
     // Folded, it keeps ringing as a banner at the top.
     let folded = fold_button(ui, full);
@@ -877,7 +885,11 @@ fn in_call_screen(
             st.picked = None;
         }
         if centre_title {
-            encrypted_line(&p, egui::pos2(x, full.min.y + EDGE + 20.0));
+            encrypted_line(
+                &p,
+                egui::pos2(x, full.min.y + EDGE + 20.0),
+                calls.with_agent(),
+            );
         } else {
             centred(
                 &p,
@@ -2182,7 +2194,11 @@ fn waiting_screen(
         theme::SIZE_BODY,
         theme::TEXT,
     );
-    encrypted_line(&p, egui::pos2(x, full.min.y + EDGE + 20.0));
+    encrypted_line(
+        &p,
+        egui::pos2(x, full.min.y + EDGE + 20.0),
+        calls.with_agent(),
+    );
     if fold_button(ui, full) {
         calls.minimized = true;
     }

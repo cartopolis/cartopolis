@@ -1069,6 +1069,9 @@ struct UpdateRequest {
     disabled: Option<bool>,
     #[serde(default)]
     admin: Option<bool>,
+    /// An AI agent speaks for the account: everybody sees its badge.
+    #[serde(default)]
+    agent: Option<bool>,
 }
 
 async fn update_account(
@@ -1115,6 +1118,10 @@ async fn update_account(
     }
     if let Some(admin) = body.admin {
         with_db(&state, |c| auth::set_admin(c, &id, admin))?;
+    }
+    // Shown from the next contact list or call roster the account appears in.
+    if let Some(agent) = body.agent {
+        with_db(&state, |c| auth::set_agent(c, &id, agent))?;
     }
 
     if body.admin.is_some() || body.disabled.is_some() {

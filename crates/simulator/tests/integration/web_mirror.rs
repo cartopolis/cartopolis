@@ -47,6 +47,7 @@ fn account_row() {
         created_at: String::new(),
         email: Some(String::new()),
         email_pending: false,
+        agent: false,
     };
     assert_eq!(
         web_fields("Account"),

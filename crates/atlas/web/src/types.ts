@@ -11,6 +11,8 @@
  */
 export interface Account {
     admin: boolean
+    /** An AI agent speaks for the account: everybody sees its badge. */
+    agent: boolean
     created_at: string
     disabled: boolean
     /**

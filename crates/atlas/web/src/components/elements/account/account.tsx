@@ -195,6 +195,20 @@ function manage(id: string) {
                                             {account.admin ? 'Remove admin' : 'Make admin'}
                                         </Button>
                                     )}
+                                    <Button
+                                        disabled={s.busy}
+                                        onclick={() =>
+                                            act(() =>
+                                                updateAccount(
+                                                    account.id,
+                                                    {agent: !account.agent},
+                                                    `${account.username} is ${account.agent ? 'no longer' : 'now'} marked as an agent`,
+                                                ),
+                                            )
+                                        }
+                                    >
+                                        {account.agent ? 'Not an agent' : 'Mark as agent'}
+                                    </Button>
                                 </div>
                                 <p class="hint">
                                     Disabling stops the next sign-in; someone already connected stays connected until
@@ -282,6 +296,7 @@ class AccountTags extends MithrilComponent<{account: AccountRow}> {
         return (
             <span class="account-tags">
                 {account.admin && <Badge tone="accent">admin</Badge>}
+                {account.agent && <Badge>agent</Badge>}
                 {rolesOf(account.id).map((r) => (
                     <Badge key={r}>{$s.roles.find((x) => x.id === r)?.name ?? r}</Badge>
                 ))}

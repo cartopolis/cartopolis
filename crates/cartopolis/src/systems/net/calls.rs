@@ -457,6 +457,8 @@ pub struct Ringing {
     pub group: Vec<u8>,
     /// Who is in it, by name.
     pub who: Vec<String>,
+    /// An AI agent is among them (protocol 43): the call screen says so.
+    pub agent: bool,
 }
 
 impl Calls {
@@ -478,11 +480,22 @@ impl Calls {
         self.active.as_ref().is_some_and(|a| a.connected)
     }
 
+    /// Whether an AI agent is among the others in this device's call.
+    #[must_use]
+    pub fn with_agent(&self) -> bool {
+        let me = self.active.as_ref().and_then(|a| a.participant);
+        self.members()
+            .iter()
+            .any(|m| m.agent && Some(m.participant) != me)
+    }
+
     /// Whether somebody else has been in this device's call with media
     /// flowing: it was answered, and is no longer ringing on the other side.
     #[must_use]
     pub fn answered(&self) -> bool {
-        self.active.as_ref().is_some_and(|a| a.answered_at.is_some())
+        self.active
+            .as_ref()
+            .is_some_and(|a| a.answered_at.is_some())
     }
 
     /// A way to speak into this device's call from another thread, and to
@@ -549,6 +562,7 @@ impl Calls {
             .map(|(g, r)| Ringing {
                 group: g.clone(),
                 who: r.iter().map(|m| m.username.clone()).collect(),
+                agent: r.iter().any(|m| m.agent),
             })
             .collect();
         out.sort_by(|a, b| a.group.cmp(&b.group));
@@ -807,6 +821,9 @@ impl Calls {
             recording: false,
             guest: false,
             room: 0,
+            // `CARTO_UI_AGENT=1`: the others are an AI agent, to capture the
+            // line the call screen shows for one.
+            agent: participant != 1 && crate::env_flag("CARTO_UI_AGENT"),
         };
         if screen == "callincoming" {
             self.rosters.insert(group, vec![member("Jeroen", 2)]);
@@ -2042,7 +2059,20 @@ mod tests {
             recording: false,
             guest: false,
             room: 0,
+            agent: false,
         }
+    }
+
+    #[test]
+    fn a_call_from_an_agent_says_so_while_it_rings() {
+        let mut calls = Calls::default();
+        let g = vec![2u8; 16];
+        let mut bot = member("viberfox", 1);
+        bot.agent = true;
+        calls.rosters.insert(g.clone(), vec![bot]);
+        assert!(calls.ringing("anna")[0].agent);
+        calls.rosters.insert(g, vec![member("jeroen", 1)]);
+        assert!(!calls.ringing("anna")[0].agent);
     }
 
     #[test]

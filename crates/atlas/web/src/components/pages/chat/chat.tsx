@@ -2961,6 +2961,9 @@ export class Chat extends MithrilComponent {
         const channel = c.calls.ringing()
         if (!channel) return null
         const caller = c.calls.others(channel)[0]?.username ?? 'Somebody'
+        // An AI agent's end of the call is the agent, and what it hears goes on
+        // to a model provider: said before anybody answers.
+        const agent = c.calls.others(channel).some((m) => m.agent)
         const where = this.chatTitle(channel)
         const what = where.toLowerCase() === caller.toLowerCase() ? 'Incoming call' : `Incoming call · ${where}`
         const decline = () => {
@@ -2974,7 +2977,7 @@ export class Chat extends MithrilComponent {
                         {Avatar(caller, 36)}
                         <span>
                             <b>{caller}</b>
-                            <span class="chat-sub">{what}</span>
+                            <span class="chat-sub">{agent ? `${what} · AI agent` : what}</span>
                         </span>
                     </button>
                     {Key('call_end', 'Decline', 'danger', decline, 'sm')}
@@ -2991,7 +2994,9 @@ export class Chat extends MithrilComponent {
                     <div class="chat-ring-face">{Avatar(caller, 120)}</div>
                     <h2>{caller}</h2>
                     <p>{what}</p>
-                    <p class="chat-sub">🔐 End-to-end encrypted</p>
+                    <p class="chat-sub">
+                        {agent ? '🔐 AI agent · what you say goes to OpenAI' : '🔐 End-to-end encrypted'}
+                    </p>
                     <div class="chat-ring-keys">
                         {Key('call_end', 'Decline', 'danger', decline, 'lg')}
                         {Key('videocam', 'Video', 'glass', () => this.answer(channel, true), 'lg')}

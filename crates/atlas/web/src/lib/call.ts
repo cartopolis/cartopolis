@@ -55,6 +55,8 @@ export interface CallMember {
     guest: boolean
     /** Their breakout room; 0 is the main call. */
     room: number
+    /** An AI agent speaks for the account (protocol 43). */
+    agent: boolean
 }
 
 /** Somebody waiting to be let in. */

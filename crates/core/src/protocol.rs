@@ -205,6 +205,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "avatar looks — SetAvatarLook, a client's MakeHuman look (AvatarLook: body and face sliders, skin, eyes, hair, wardrobe), which the server keeps with the account; AvatarLookOf, an avatar's look, sent to everyone when it changes or its owner arrives, and every online look to a client that has just connected (docs/notes/makehuman-avatars.md)",
     },
+    ProtocolRevision {
+        version: 43,
+        adr: "",
+        summary: "agent accounts — CallMember.agent, ContactDto.agent and ContactRequestDto.agent say an AI agent speaks for the account, so its badge shows before anybody calls or answers it (docs/mockups/voice-agent/)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -2181,6 +2186,10 @@ pub struct CallMember {
     pub guest: bool,
     /// The breakout room it is in; 0 is the main call.
     pub room: u32,
+    /// An AI agent speaks for this account (protocol 43): what it hears goes
+    /// to a model provider, which its badge says.
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// Who runs a call. The first person in hosts it; when the last host or
@@ -2412,6 +2421,9 @@ pub struct ContactDto {
     pub met: Option<MetDto>,
     /// `None` when they do not show it.
     pub online: Option<bool>,
+    /// An AI agent speaks for this account (protocol 43).
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// One request, either way round.
@@ -2427,6 +2439,9 @@ pub struct ContactRequestDto {
     pub joined_ms: u64,
     /// Contacts you both have.
     pub in_common: Vec<String>,
+    /// An AI agent speaks for the other account (protocol 43).
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// How the asker stands with a person.
@@ -3227,6 +3242,7 @@ mod tests {
                     recording: false,
                     guest: true,
                     room: 2,
+                    agent: true,
                 }],
                 settings: CallSettings::default(),
                 waiting: vec![CallWaiter {

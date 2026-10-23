@@ -415,6 +415,16 @@ fn now_ms() -> u64 {
 
 /// "5 min ago", "yesterday": how long ago a meeting or a request was.
 #[must_use]
+/// A person row's second line, saying first that an AI agent speaks for the
+/// account: the badge, in the one place a row has room for words.
+fn agent_line(agent: bool, line: String) -> String {
+    if agent {
+        format!("AI agent · {line}")
+    } else {
+        line
+    }
+}
+
 pub fn ago(at_ms: u64, now_ms: u64) -> String {
     let mins = now_ms.saturating_sub(at_ms) / 60_000;
     match mins {
@@ -1517,6 +1527,7 @@ fn requests_screen(ui: &mut egui::Ui, contacts: &Contacts, act: &mut Act, now: u
                         Some(m) => met_text(m, now),
                         None => format!("Sent {}", ago(r.sent_at_ms, now)),
                     };
+                    let line = agent_line(r.agent, line);
                     if person_row(ui, &r.username, &line, theme::TEXT_DIM, false, |_| {}).clicked()
                     {
                         act.to = Some(Sub::Request(r.username.clone()));
@@ -1676,7 +1687,8 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
             if !online.is_empty() {
                 section_label(ui, "Online now", Some(online.len()));
                 for c in online {
-                    if person_row(ui, &c.username, "online", theme::TEXT_DIM, true, |ui| {
+                    let line = agent_line(c.agent, "online".into());
+                    if person_row(ui, &c.username, &line, theme::TEXT_DIM, true, |ui| {
                         ui.label(egui::RichText::new(icons::CHAT).color(theme::TEXT_DIM));
                     })
                     .clicked()
@@ -1695,6 +1707,7 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                         }
                         _ => format!("contact since {}", ago(c.since_ms, now)),
                     };
+                    let line = agent_line(c.agent, line);
                     let resp = person_row(
                         ui,
                         &c.username,
@@ -2089,18 +2102,21 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
             since_ms: now_ms - 40 * 86_400_000,
             met: None,
             online: Some(true),
+            agent: false,
         },
         ContactDto {
             username: "anouk".into(),
             since_ms: now_ms - 3_600_000,
             met,
             online: Some(false),
+            agent: false,
         },
         ContactDto {
             username: "tom".into(),
             since_ms: now_ms - 90 * 86_400_000,
             met: None,
             online: Some(true),
+            agent: false,
         },
     ];
     contacts.incoming = vec![
@@ -2111,6 +2127,7 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
             new_account: false,
             joined_ms: now_ms - 400 * 86_400_000,
             in_common: vec![],
+            agent: false,
         },
         ContactRequestDto {
             username: "sanne_k".into(),
@@ -2119,6 +2136,7 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
             new_account: true,
             joined_ms: now_ms - 3 * 86_400_000,
             in_common: vec![],
+            agent: false,
         },
     ];
     contacts.outgoing = vec![ContactRequestDto {
@@ -2128,6 +2146,7 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
         new_account: false,
         joined_ms: now_ms - 200 * 86_400_000,
         in_common: vec!["tom".into()],
+        agent: false,
     }];
     contacts.nearby = vec![NearbyPersonDto {
         username: "marit".into(),
@@ -2227,6 +2246,7 @@ mod tests {
             since_ms: 0,
             met: None,
             online,
+            agent: false,
         };
         let list = vec![
             c("Bas", Some(false)),

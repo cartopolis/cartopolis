@@ -90,15 +90,15 @@ function uuid(): string {
 // ── Accounts, sessions, roles ───────────────────────────────────────────────
 
 const accounts: Account[] = [
-    {admin: true, created_at: '2026-07-02 08:14:51', disabled: false, email: null, email_pending: false, id: '6f1c2a9e-3b0d-4c55-9a1e-0d2f7c1b8e01', username: 'viberfox'},
-    {admin: true, created_at: '2026-07-02 08:20:07', disabled: false, email: null, email_pending: false, id: '0b9d4e37-5a62-4f18-8c3a-7e4d2b6a9f02', username: 'jeroen'},
-    {admin: false, created_at: '2026-08-14 19:42:10', disabled: false, email: 'anneke.dijkstra@example.nl', email_pending: false, id: 'a3e85c10-9d4b-4e2f-b6a7-1c0e9f5d3a03', username: 'annekedijkstra'},
-    {admin: false, created_at: '2026-08-21 12:03:44', disabled: false, email: 'sjoerd@bakker.example', email_pending: false, id: '4d2a7b91-0e6c-4a3f-9b58-2f1d8c7e6b04', username: 'sjoerdbakker'},
-    {admin: false, created_at: '2026-09-02 07:55:19', disabled: true, email: 'marieke.visser@example.nl', email_pending: false, id: 'c71e0f42-8b3d-4d96-a2e5-6b9c1a0f4d05', username: 'mariekevisser'},
-    {admin: false, created_at: '2026-09-18 21:31:02', disabled: false, email: 'thijs.mulder@example.nl', email_pending: true, id: '9e5b3c08-2f7a-4b1d-8e64-3a0c5d9b2e06', username: 'thijsmulder'},
-    {admin: false, created_at: '2026-09-27 16:48:36', disabled: false, email: 'femke@deboer.example', email_pending: false, id: '2a8f6d14-7c0e-4e5b-91d3-8b2e4f6a0c07', username: 'femkedeboer'},
-    {admin: false, created_at: '2026-08-03 10:12:58', disabled: true, email: null, email_pending: false, id: 'e4c09b7a-1d5f-4a28-b3e6-5f7a9c2d1b08', username: 'bramhuisman'},
-    {admin: false, created_at: '2026-09-05 09:00:00', disabled: false, email: null, email_pending: false, id: '7b3e1a56-4c9d-4f02-a8b1-9d6e0c3f5a09', username: 'library'},
+    {admin: true, agent: true, created_at: '2026-07-02 08:14:51', disabled: false, email: null, email_pending: false, id: '6f1c2a9e-3b0d-4c55-9a1e-0d2f7c1b8e01', username: 'viberfox'},
+    {admin: true, agent: false, created_at: '2026-07-02 08:20:07', disabled: false, email: null, email_pending: false, id: '0b9d4e37-5a62-4f18-8c3a-7e4d2b6a9f02', username: 'jeroen'},
+    {admin: false, agent: false, created_at: '2026-08-14 19:42:10', disabled: false, email: 'anneke.dijkstra@example.nl', email_pending: false, id: 'a3e85c10-9d4b-4e2f-b6a7-1c0e9f5d3a03', username: 'annekedijkstra'},
+    {admin: false, agent: false, created_at: '2026-08-21 12:03:44', disabled: false, email: 'sjoerd@bakker.example', email_pending: false, id: '4d2a7b91-0e6c-4a3f-9b58-2f1d8c7e6b04', username: 'sjoerdbakker'},
+    {admin: false, agent: false, created_at: '2026-09-02 07:55:19', disabled: true, email: 'marieke.visser@example.nl', email_pending: false, id: 'c71e0f42-8b3d-4d96-a2e5-6b9c1a0f4d05', username: 'mariekevisser'},
+    {admin: false, agent: false, created_at: '2026-09-18 21:31:02', disabled: false, email: 'thijs.mulder@example.nl', email_pending: true, id: '9e5b3c08-2f7a-4b1d-8e64-3a0c5d9b2e06', username: 'thijsmulder'},
+    {admin: false, agent: false, created_at: '2026-09-27 16:48:36', disabled: false, email: 'femke@deboer.example', email_pending: false, id: '2a8f6d14-7c0e-4e5b-91d3-8b2e4f6a0c07', username: 'femkedeboer'},
+    {admin: false, agent: false, created_at: '2026-08-03 10:12:58', disabled: true, email: null, email_pending: false, id: 'e4c09b7a-1d5f-4a28-b3e6-5f7a9c2d1b08', username: 'bramhuisman'},
+    {admin: false, agent: false, created_at: '2026-09-05 09:00:00', disabled: false, email: null, email_pending: false, id: '7b3e1a56-4c9d-4f02-a8b1-9d6e0c3f5a09', username: 'library'},
 ]
 
 /** token → username. Every session here is an operator (see the module note). */
@@ -883,7 +883,7 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         if (accountNamed(username)) {
             return refuse(409, 'That username is taken')
         }
-        accounts.push({admin: false, created_at: sqlNow(), disabled: false, email: b.email ?? null, email_pending: true, id: uuid(), username})
+        accounts.push({admin: false, agent: false, created_at: sqlNow(), disabled: false, email: b.email ?? null, email_pending: true, id: uuid(), username})
         return json({ok: true})
     }
     if (p === '/api/register/verify' && method === 'POST') {
@@ -1050,7 +1050,7 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         if ((b.password ?? '').length < registration.min_password_length) {
             return refuse(400, `The password needs at least ${registration.min_password_length} characters`)
         }
-        const account: Account = {admin: Boolean(b.admin), created_at: sqlNow(), disabled: false, email: null, email_pending: false, id: uuid(), username}
+        const account: Account = {admin: Boolean(b.admin), agent: false, created_at: sqlNow(), disabled: false, email: null, email_pending: false, id: uuid(), username}
         accounts.push(account)
         return json(account, 201)
     }
@@ -1062,7 +1062,7 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         const lastAdmin = account.admin && !account.disabled &&
             accounts.filter((a) => a.admin && !a.disabled).length === 1
         if (parts.length === 4 && method === 'PATCH') {
-            const b = await body<{admin: boolean; disabled: boolean; password: string}>(req)
+            const b = await body<{admin: boolean; agent: boolean; disabled: boolean; password: string}>(req)
             if (lastAdmin && (b.admin === false || b.disabled === true)) {
                 return refuse(409, 'That is the last enabled admin — promote someone else first')
             }
@@ -1071,6 +1071,9 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             }
             if (b.disabled !== undefined) {
                 account.disabled = b.disabled
+            }
+            if (b.agent !== undefined) {
+                account.agent = b.agent
             }
             return json(account)
         }

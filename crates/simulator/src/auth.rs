@@ -176,6 +176,9 @@ pub struct AccountRow {
     /// from `disabled`: that is the operator's switch, this is the email gate,
     /// and an account can be stopped by either.
     pub email_pending: bool,
+    /// An AI agent speaks for this account (`docs/mockups/voice-agent/`):
+    /// everybody sees a badge beside its name.
+    pub agent: bool,
 }
 
 /// Every account, oldest first. The store is a few hundred rows at most, so this
@@ -183,7 +186,7 @@ pub struct AccountRow {
 /// nobody has.
 pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, username, disabled, admin, created_at, email, email_verified_at
+        "SELECT id, username, disabled, admin, created_at, email, email_verified_at, agent
          FROM accounts ORDER BY created_at, username",
     )?;
     let rows = stmt
@@ -198,6 +201,7 @@ pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
                 created_at: r.get(4)?,
                 email_pending: email.is_some() && verified_at.is_none(),
                 email,
+                agent: r.get::<_, i64>(7)? != 0,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -208,7 +212,7 @@ pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
 pub fn get_account(conn: &Connection, id: &str) -> anyhow::Result<Option<AccountRow>> {
     let row = conn
         .query_row(
-            "SELECT id, username, disabled, admin, created_at, email, email_verified_at
+            "SELECT id, username, disabled, admin, created_at, email, email_verified_at, agent
              FROM accounts WHERE id = ?1",
             [id],
             |r| {
@@ -222,6 +226,7 @@ pub fn get_account(conn: &Connection, id: &str) -> anyhow::Result<Option<Account
                     created_at: r.get(4)?,
                     email_pending: email.is_some() && verified_at.is_none(),
                     email,
+                    agent: r.get::<_, i64>(7)? != 0,
                 })
             },
         )
@@ -293,6 +298,25 @@ pub fn set_admin(conn: &Connection, id: &str, admin: bool) -> anyhow::Result<boo
         rusqlite::params![id, i64::from(admin)],
     )?;
     Ok(n > 0)
+}
+
+/// Mark or unmark an account as one an AI agent speaks for.
+pub fn set_agent(conn: &Connection, id: &str, agent: bool) -> anyhow::Result<bool> {
+    let n = conn.execute(
+        "UPDATE accounts SET agent = ?2 WHERE id = ?1",
+        rusqlite::params![id, i64::from(agent)],
+    )?;
+    Ok(n > 0)
+}
+
+/// Whether an AI agent speaks for this account. False for an account that
+/// is not there, or a database that cannot say.
+#[must_use]
+pub fn is_agent(conn: &Connection, id: &str) -> bool {
+    conn.query_row("SELECT agent FROM accounts WHERE id = ?1", [id], |r| {
+        r.get::<_, i64>(0)
+    })
+    .is_ok_and(|a| a != 0)
 }
 
 /// Delete an account outright.

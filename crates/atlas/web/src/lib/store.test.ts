@@ -33,6 +33,7 @@ describe('Store', () => {
         store.state.accounts = [
             {
                 admin: true,
+                agent: false,
                 created_at: '2026-08-13',
                 disabled: false,
                 email: null,

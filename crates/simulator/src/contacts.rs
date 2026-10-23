@@ -617,7 +617,8 @@ pub fn state(
     let mut contacts = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT acc.id, acc.username, acc.show_online, c.since_ms, c.met_at_ms, c.met_lat, c.met_lng
+            "SELECT acc.id, acc.username, acc.show_online, c.since_ms, c.met_at_ms, c.met_lat, c.met_lng,
+                    acc.agent
              FROM contacts c JOIN accounts acc ON acc.id = c.contact
              WHERE c.account = ?1 AND acc.disabled = 0
              ORDER BY acc.username COLLATE NOCASE",
@@ -629,28 +630,30 @@ pub fn state(
                 r.get::<_, bool>(2)?,
                 r.get::<_, i64>(3)?,
                 met_of(r.get(4)?, r.get(5)?, r.get(6)?),
+                r.get::<_, bool>(7)?,
             ))
         })?;
         for row in rows {
-            let (id, username, shows, since, met) = row?;
+            let (id, username, shows, since, met, agent) = row?;
             contacts.push(ContactDto {
                 username,
                 since_ms: since as u64,
                 met,
                 online: shows.then(|| online(&id)),
+                agent,
             });
         }
     }
     let requests = |incoming: bool| -> Result<Vec<ContactRequestDto>, Refusal> {
         let sql = if incoming {
             "SELECT acc.id, acc.username, CAST(strftime('%s', acc.created_at) AS INTEGER) * 1000,
-                    r.sent_at_ms, r.met_at_ms, r.met_lat, r.met_lng
+                    r.sent_at_ms, r.met_at_ms, r.met_lat, r.met_lng, acc.agent
              FROM contact_requests r JOIN accounts acc ON acc.id = r.from_acc
              WHERE r.to_acc = ?1 AND r.status = 0 AND acc.disabled = 0
              ORDER BY r.sent_at_ms DESC"
         } else {
             "SELECT acc.id, acc.username, CAST(strftime('%s', acc.created_at) AS INTEGER) * 1000,
-                    r.sent_at_ms, r.met_at_ms, r.met_lat, r.met_lng
+                    r.sent_at_ms, r.met_at_ms, r.met_lat, r.met_lng, acc.agent
              FROM contact_requests r JOIN accounts acc ON acc.id = r.to_acc
              WHERE r.from_acc = ?1 AND r.status IN (0, 2) AND acc.disabled = 0
                AND r.id = (SELECT MAX(id) FROM contact_requests
@@ -665,11 +668,12 @@ pub fn state(
                 r.get::<_, Option<i64>>(2)?.unwrap_or(0),
                 r.get::<_, i64>(3)?,
                 met_of(r.get(4)?, r.get(5)?, r.get(6)?),
+                r.get::<_, bool>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, username, joined, sent, met) = row?;
+            let (id, username, joined, sent, met, agent) = row?;
             // Already contacts (they asked back, or were contacts before): not a
             // request any more, whatever the old row says.
             if are_contacts(conn, &me.id, &id)? {
@@ -682,6 +686,7 @@ pub fn state(
                 new_account: (now_ms as i64 - joined) < NEW_ACCOUNT_DAYS * DAY_MS,
                 joined_ms: joined.max(0) as u64,
                 in_common: in_common(conn, &me.id, &id)?,
+                agent,
             });
         }
         Ok(out)

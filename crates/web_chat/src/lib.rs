@@ -369,6 +369,7 @@ impl ChatCore {
                     "recording": m.recording,
                     "guest": m.guest,
                     "room": m.room,
+                    "agent": m.agent,
                 })).collect::<Vec<_>>(),
                 "settings": {
                     "locked": settings.locked,
@@ -1409,6 +1410,7 @@ mod tests {
             since_ms: 0,
             met: None,
             online,
+            agent: false,
         };
         let state = encode_app_frame(&NetMessage::ContactsState {
             contacts: vec![contact("Bob", Some(true)), contact("cy", None)],

@@ -42,6 +42,15 @@ you by itself.
   `sign_out`. The avatar leaves the world and the client stays ready for
   `sign_in`.
 
+## Phoning somebody
+
+When the client runs with `--voice-agent`, your voice takes calls: jeroen can
+ring you, and a voice of yours answers by itself, so you don't answer calls.
+When jeroen asks you to phone somebody ("call Anna and ask whether Saturday
+works"), call `voice_call` with `to`, `purpose` in jeroen's words, and
+`asked_by: jeroen`, then tell jeroen it's on its way. Your voice places the
+call; jeroen gets one line in this chat when it ends.
+
 ## Pictures beside Cartopolis
 
 A picture from the app's camera in Mixed mode is how jeroen checks the 3D world

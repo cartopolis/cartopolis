@@ -112,7 +112,7 @@ export async function createAccount(username: string, password: string, admin: b
  */
 export async function updateAccount(
     id: string,
-    patch: {admin?: boolean; disabled?: boolean; password?: string},
+    patch: {admin?: boolean; agent?: boolean; disabled?: boolean; password?: string},
     describe: string,
 ): Promise<boolean> {
     try {
