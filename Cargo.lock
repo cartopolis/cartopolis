@@ -2801,6 +2801,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cartopolis_voice"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "cartopolis_web_chat"
 version = "1.0.0"
 dependencies = [

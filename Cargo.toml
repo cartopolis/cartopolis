@@ -17,6 +17,7 @@ members = [
     "crates/cartopolis",
     "crates/cartopolis_android",
     "crates/mcp_server",
+    "crates/voice",
     "crates/big_space",
     "crates/web_task",
 ]

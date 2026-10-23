@@ -1,0 +1,34 @@
+# The voice agent's bridge: a call's audio to OpenAI's Realtime API and its
+# speech back, with the client's MCP tools as the model's functions
+# (`docs/mockups/voice-agent/`).
+#
+# **Bevy-free, and it knows nothing about Cartopolis.** It takes 16 kHz PCM in,
+# hands 16 kHz PCM out, and calls tools through the `ToolHost` trait; the client
+# wires those to a call's session and to its MCP server. That is what lets the
+# whole conversation loop be tested here against a fake Realtime server, with no
+# renderer, no call and no network.
+#
+# The client depends on it only where it depends on `cartopolis_mcp`: Unix
+# desktops, the `mcp` cfg. A voice agent is a headless bot, never the phone app.
+[package]
+name = "cartopolis_voice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+serde_json.workspace = true
+tokio.workspace = true
+# The workspace's one version, with rustls and webpki-roots (the client's
+# manifest says why). The process must have installed a rustls crypto provider
+# before the first `wss://` connection; the client does at startup.
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
