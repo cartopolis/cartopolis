@@ -70,6 +70,8 @@ enum Cmd {
         members: Vec<u32>,
     },
     Pcm(Vec<f32>),
+    /// Copy every decoded voice frame here as well ([`Session::tap_audio`]).
+    Tap(mpsc::Sender<(ParticipantId, Vec<f32>)>),
     /// A camera picture and when it was taken.
     Picture(video::I420, Instant),
     /// A shared screen's picture and when it was taken.
@@ -271,6 +273,25 @@ impl Session {
         self.shared.screen_mid.lock().ok().and_then(|m| m.clone())
     }
 
+    /// A handle another thread can send 20 ms microphone frames through, at its
+    /// own pace: a voice agent speaks in real time whatever the app's frame
+    /// rate is doing, and a headless client nobody watches draws two frames a
+    /// second between calls.
+    #[must_use]
+    pub fn pcm_sink(&self) -> PcmSink {
+        PcmSink(self.tx.clone())
+    }
+
+    /// Every voice frame decoded from here on, with whose it is, as well as
+    /// [`Event::Audio`]: for a listener on another thread (a voice agent),
+    /// which must not wait for the app's next frame to hear the call.
+    #[must_use]
+    pub fn tap_audio(&self) -> mpsc::Receiver<(ParticipantId, Vec<f32>)> {
+        let (tx, rx) = mpsc::channel();
+        self.send(Cmd::Tap(tx));
+        rx
+    }
+
     /// A handle a camera thread can send pictures through directly, so video
     /// runs at the camera's pace rather than the app's frame rate — which on a
     /// slow frame (or a software renderer) would be the video's frame rate.
@@ -321,6 +342,18 @@ impl PictureSink {
     pub fn send(&self, frame: video::I420) {
         if let Some(tx) = &self.0 {
             let _ = tx.send(Cmd::Picture(frame, Instant::now()));
+        }
+    }
+}
+
+/// See [`Session::pcm_sink`]. Sending after the call ended does nothing.
+#[derive(Clone)]
+pub struct PcmSink(Option<mpsc::Sender<Cmd>>);
+
+impl PcmSink {
+    pub fn send(&self, pcm: Vec<f32>) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(Cmd::Pcm(pcm));
         }
     }
 }
@@ -589,6 +622,7 @@ fn run(
     let mut encoder = opus::Encoder::new(rate).map_err(|e| e.to_string())?;
     let mut decoders: HashMap<ParticipantId, opus::Decoder> = HashMap::new();
     let mut sent_frames: u64 = 0;
+    let mut tap: Option<mpsc::Sender<(ParticipantId, Vec<f32>)>> = None;
     let mut buf = [0u8; 2048];
     loop {
         let now = Instant::now();
@@ -626,6 +660,7 @@ fn run(
                     sent_frames += 1;
                     let _ = link.send(now, Codec::Opus, time, sealed);
                 }
+                Ok(Cmd::Tap(to)) => tap = Some(to),
                 Ok(Cmd::Picture(frame, taken)) => {
                     if let Some(enc) = &video_encoder {
                         if link.is_connected() && enc.offer(frame, taken, keyframe_wanted) {
@@ -739,6 +774,11 @@ fn run(
                         }
                     };
                     if let Ok(pcm) = dec.decode(&opened.frame) {
+                        if let Some(t) = &tap {
+                            if t.send((from, pcm.clone())).is_err() {
+                                tap = None;
+                            }
+                        }
                         let _ = events.send(Event::Audio {
                             from,
                             sender: opened.sender,
@@ -870,6 +910,10 @@ mod tests {
             .unwrap()
             .hold_screen(Instant::now(), ids[0], false);
 
+        // Alice speaks through a sink, as a voice agent does from its own
+        // thread; Bob's audio is tapped, as a voice agent hears it.
+        let alice_sink = sa.pcm_sink();
+        let bob_tap = sb.tap_audio();
         let frame = opus::frame_samples(rate);
         let mut heard: Vec<f32> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
@@ -922,7 +966,7 @@ mod tests {
                         0.5 * (t * 440.0 * std::f32::consts::TAU).sin()
                     })
                     .collect();
-                sa.send_pcm(pcm);
+                alice_sink.send(pcm);
                 // A picture every other voice frame is 25 fps; the encoder
                 // takes what it can and drops the rest, as with a camera.
                 if n % 2 == 0 {
@@ -944,6 +988,14 @@ mod tests {
             "bob heard {} samples",
             heard.len()
         );
+        let tapped: usize = bob_tap
+            .try_iter()
+            .map(|(from, pcm)| {
+                assert_eq!(from, ids[0]);
+                pcm.len()
+            })
+            .sum();
+        assert!(tapped >= heard.len(), "the tap heard {tapped} of {}", heard.len());
         let tail = &heard[heard.len() - frame * 20..];
         let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
         assert!(
