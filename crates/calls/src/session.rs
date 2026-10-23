@@ -996,7 +996,11 @@ mod tests {
                 pcm.len()
             })
             .sum();
-        assert!(tapped >= heard.len(), "the tap heard {tapped} of {}", heard.len());
+        assert!(
+            tapped >= heard.len(),
+            "the tap heard {tapped} of {}",
+            heard.len()
+        );
         let tail = &heard[heard.len() - frame * 20..];
         let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
         assert!(

@@ -335,8 +335,10 @@ pub struct CallArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct VoiceCallArgs {
-    #[schemars(description = "Who to call, by username. Anybody: they need not be on the list \
-                               of people you hear.")]
+    #[schemars(
+        description = "Who to call, by username. Anybody: they need not be on the list \
+                               of people you hear."
+    )]
     pub to: String,
     #[schemars(
         description = "Why you are calling, in the words of whoever asked: what to say first, \

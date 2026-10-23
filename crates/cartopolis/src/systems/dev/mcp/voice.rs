@@ -115,8 +115,9 @@ impl VoiceSettings {
         idle_hangup_s: u64,
     ) -> Result<Self, String> {
         let brief = match brief {
-            Some(path) => std::fs::read_to_string(path)
-                .map_err(|e| format!("--voice-brief {path}: {e}"))?,
+            Some(path) => {
+                std::fs::read_to_string(path).map_err(|e| format!("--voice-brief {path}: {e}"))?
+            }
             None => DEFAULT_BRIEF.to_string(),
         };
         let base = url.unwrap_or("wss://api.openai.com/v1/realtime");
@@ -384,7 +385,10 @@ fn place_next(state: &mut VoiceState, w: &mut VoiceWorld, me: &str) {
         if let Some(group) = w.private.direct_with(&o.to) {
             let o = w.queue.queue.remove(i).expect("in range");
             if w.settings.key().is_none() {
-                let line = format!("Voice isn't available right now, so I couldn't call {}.", o.to);
+                let line = format!(
+                    "Voice isn't available right now, so I couldn't call {}.",
+                    o.to
+                );
                 state.tell(&w.jobs, &o.asked_by, line);
                 return;
             }
@@ -404,8 +408,7 @@ fn place_next(state: &mut VoiceState, w: &mut VoiceWorld, me: &str) {
         if w.contacts.is_contact(&o.to) || w.contacts.sent_to(&o.to) || o.contact_asked {
             // A contact (or one asked) whose chat is not open on this device
             // yet: ask for it, now and then.
-            if o
-                .chat_asked_at
+            if o.chat_asked_at
                 .is_none_or(|at| now.duration_since(at) > REOPEN_CHAT)
             {
                 o.chat_asked_at = Some(now);
@@ -494,7 +497,11 @@ fn end_live(state: &mut VoiceState, w: &VoiceWorld, live: Live) {
         }
         None => {
             if let Some((asked_by, to)) = report {
-                state.tell(&w.jobs, &asked_by, format!("I called {to}, but they didn't pick up."));
+                state.tell(
+                    &w.jobs,
+                    &asked_by,
+                    format!("I called {to}, but they didn't pick up."),
+                );
             }
         }
     }
@@ -519,7 +526,10 @@ fn follow_closing(state: &mut VoiceState, w: &VoiceWorld) {
         let done = closed || c.since.elapsed() > CLOSE_WAIT;
         if done {
             if let Some((asked_by, to)) = c.report.take() {
-                lines.push((asked_by, format!("I called {to}; the call ended before anything was settled.")));
+                lines.push((
+                    asked_by,
+                    format!("I called {to}; the call ended before anything was settled."),
+                ));
             }
         }
         !done
@@ -536,7 +546,11 @@ fn agent_config(
     key: String,
     names: &HashMap<u64, String>,
 ) -> AgentConfig {
-    let me = w.identity.username.clone().unwrap_or_else(|| "the agent".into());
+    let me = w
+        .identity
+        .username
+        .clone()
+        .unwrap_or_else(|| "the agent".into());
     let mut people: Vec<&String> = names.values().collect();
     people.sort();
     let trusted: Vec<String> = people

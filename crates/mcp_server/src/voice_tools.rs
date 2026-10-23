@@ -171,7 +171,9 @@ mod tests {
             let out = host.call("me".into(), serde_json::json!({})).await;
             assert!(!out.error);
             assert_eq!(out.text, "You are viberfox.");
-            let out = host.call("no_such_tool".into(), serde_json::json!({})).await;
+            let out = host
+                .call("no_such_tool".into(), serde_json::json!({}))
+                .await;
             assert!(out.error);
         });
     }

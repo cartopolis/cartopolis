@@ -151,7 +151,10 @@ pub enum Incoming {
     /// The session is configured.
     Ready,
     /// More of the reply's audio, PCM16 at [`MODEL_RATE`].
-    Audio { item: String, pcm16: Vec<u8> },
+    Audio {
+        item: String,
+        pcm16: Vec<u8>,
+    },
     /// The whole of a text reply.
     Text(String),
     /// The model wants a tool.

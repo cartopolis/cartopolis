@@ -46,9 +46,8 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long the outcome line may take once the call has ended.
 const OUTCOME_WAIT: Duration = Duration::from_secs(20);
 
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 type WsTx = futures_util::stream::SplitSink<Ws, Message>;
 
 pub(crate) fn spawn(

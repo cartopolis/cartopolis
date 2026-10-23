@@ -236,7 +236,10 @@ fn a_whole_call_greets_hears_acts_refuses_is_interrupted_and_reports() {
             let _ = spoke_tx.send(frame.iter().any(|s| s.abs() > 0.01));
         }),
     );
-    agent.names(HashMap::from([(7, "jeroen".to_string()), (9, "anna".to_string())]));
+    agent.names(HashMap::from([
+        (7, "jeroen".to_string()),
+        (9, "anna".to_string()),
+    ]));
     let wait = |what: &str| {
         let got = step_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(got, what);
@@ -307,10 +310,18 @@ fn a_whole_call_greets_hears_acts_refuses_is_interrupted_and_reports() {
     assert!(events.contains(&Event::Closed));
 
     let s = seen.lock().unwrap();
-    assert_eq!(s.tools, ["look_around", "walk_to", "hang_up"], "build is not offered");
+    assert_eq!(
+        s.tools,
+        ["look_around", "walk_to", "hang_up"],
+        "build is not offered"
+    );
     // 400 ms fed, less the resampler's lag.
     assert!(s.appends >= 2, "{} appends", s.appends);
-    assert!((380..=400).contains(&s.appended_ms), "{} ms heard", s.appended_ms);
+    assert!(
+        (380..=400).contains(&s.appended_ms),
+        "{} ms heard",
+        s.appended_ms
+    );
     assert_eq!(s.outputs[0].0, "c1");
     assert!(s.outputs[0].1.contains("Grote Markt"));
     assert_eq!(s.outputs[1].0, "c2");
