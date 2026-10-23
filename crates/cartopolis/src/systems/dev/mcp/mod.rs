@@ -53,6 +53,7 @@ pub mod agent;
 pub mod overlay;
 pub mod relay;
 pub mod surroundings;
+pub mod voice;
 
 /// The job protocol — what crosses the channel between that crate's server
 /// thread and [`pump`]. Defined there, since the server builds and reads it.
@@ -713,6 +714,7 @@ pub fn pace_idle(
     bridge: Res<McpBridge>,
     agent: Res<agent::AgentState>,
     streams: Res<crate::systems::stream_watch::StreamRegistry>,
+    calls: Res<crate::systems::calls::Calls>,
 ) {
     // **Not while the map is still arriving.** Every streamer is bounded per
     // *frame*, so at the idle rate a teleport took minutes to fill in: the Deck
@@ -722,7 +724,11 @@ pub fn pace_idle(
     let idle = !crate::systems::shot_harness::shot_in_progress(harness, progress)
         && !bridge.busy()
         && !agent.is_working()
-        && streams.busy().is_empty();
+        && streams.busy().is_empty()
+        // Nor in a phone call: a voice agent's tool calls are answered on
+        // the next frame, and half a second of idle frame is half a second of
+        // silence on the line.
+        && calls.active_group().is_none();
     if !idle {
         return;
     }

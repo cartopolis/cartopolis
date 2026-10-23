@@ -431,6 +431,10 @@ pub struct Calls {
     /// environment switches (`CARTO_FAKE_CAMERA`, `CARTO_FAKE_MIC`) do the same
     /// for a whole run.
     pub fake_media: bool,
+    /// A voice agent speaks for this device (`mcp::voice`): no microphone and
+    /// no stand-in tone, since the agent sends its own frames from its own
+    /// thread ([`Calls::agent_audio`]), and no camera.
+    pub agent_voice: bool,
     /// The call screen is folded down to the bar at the top (Back, or its own
     /// arrow), so the chats and the world can be used during a call. Unfolded
     /// again by a new call ringing or by joining one.
@@ -472,6 +476,28 @@ impl Calls {
     #[must_use]
     pub fn connected(&self) -> bool {
         self.active.as_ref().is_some_and(|a| a.connected)
+    }
+
+    /// Whether somebody else has been in this device's call with media
+    /// flowing: it was answered, and is no longer ringing on the other side.
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        self.active.as_ref().is_some_and(|a| a.answered_at.is_some())
+    }
+
+    /// A way to speak into this device's call from another thread, and to
+    /// hear everybody in it there: what a voice agent talks through
+    /// (`mcp::voice`). Each call hands out a fresh tap.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn agent_audio(
+        &self,
+    ) -> Option<(
+        cartopolis_calls::session::PcmSink,
+        std::sync::mpsc::Receiver<(u64, Vec<f32>)>,
+    )> {
+        let a = self.active.as_ref()?;
+        Some((a.session.pcm_sink(), a.session.tap_audio()))
     }
 
     /// How long this device's call has been answered: zero while it rings.
@@ -1358,6 +1384,7 @@ pub fn drive_calls(
         level,
         camera_on,
         fake_media,
+        agent_voice,
         minimized,
         keep_noise,
         demo,
@@ -1479,7 +1506,7 @@ pub fn drive_calls(
             a.web.set_camera(*camera_on);
         }
         *level = 0.0;
-        let _ = (fake_media, &prefs, keep_noise);
+        let _ = (fake_media, agent_voice, &prefs, keep_noise);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1592,8 +1619,12 @@ pub fn drive_calls(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        capture(a, *muted, !*keep_noise, *fake_media, &prefs, level, notice);
-        send_camera(a, camera_on, *fake_media, looking, notice);
+        if *agent_voice {
+            *level = 0.0;
+        } else {
+            capture(a, *muted, !*keep_noise, *fake_media, &prefs, level, notice);
+            send_camera(a, camera_on, *fake_media, looking, notice);
+        }
         send_screen(a, notice, &online);
     }
 }

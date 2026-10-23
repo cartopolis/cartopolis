@@ -397,6 +397,26 @@ fn run_client() {
             std::process::exit(2);
         }
     };
+    // The voice agent's settings, refused here like the rest: a brief that
+    // cannot be read is found at launch, not at the first call.
+    #[cfg(mcp)]
+    let voice = match cli.voice_agent.then(|| {
+        systems::mcp::voice::VoiceSettings::resolve(
+            cli.voice_url.as_deref(),
+            &cli.voice_model,
+            &cli.voice_voice,
+            cli.voice_brief.as_deref(),
+            cli.voice_key_file.as_deref(),
+            cli.voice_idle_hangup_s,
+        )
+    }) {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
     // **A live harness for the MCP camera operator.** `view` photographs by
     // pushing a viewpoint onto the shot harness, which owns the only cycle that
     // knows how to place a camera, wait for the world and quiesce the workers
@@ -1157,6 +1177,7 @@ fn run_client() {
             allow: cli.mcp_allow.clone(),
             private_only: cli.mcp_private_only,
             launch_sign_in,
+            voice,
         });
     }
 

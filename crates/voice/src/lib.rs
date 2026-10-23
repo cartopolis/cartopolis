@@ -41,6 +41,10 @@ pub const FRAME: usize = (RATE as usize * 20) / 1000;
 /// bridge, which waits for the goodbye to be heard before hanging up.
 pub const HANG_UP: &str = "hang_up";
 
+/// In a meeting, what the model calls instead of speaking when nobody
+/// addressed it: the bridge answers it and asks for nothing more.
+pub const KEEP_LISTENING: &str = "keep_listening";
+
 /// A tool as the model is offered it.
 #[derive(Debug, Clone)]
 pub struct ToolSpec {

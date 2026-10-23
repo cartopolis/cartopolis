@@ -289,6 +289,48 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) mcp_private_only: bool,
 
+    /// Take part in calls by voice (`systems::mcp::voice`): pick up calls from
+    /// the people `--mcp-allow` names, place calls the `voice_call` tool asks
+    /// for, and join group calls those people are in, talking through
+    /// OpenAI's Realtime model with this client's MCP tools as its functions.
+    /// The key is `OPENAI_API_KEY`, or the file `--voice-key-file` names.
+    #[cfg(mcp)]
+    #[arg(long)]
+    pub(crate) voice_agent: bool,
+
+    /// The voice agent's instructions, as a Markdown file. Default: a brief
+    /// built into the client.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "PATH", requires = "voice_agent")]
+    pub(crate) voice_brief: Option<String>,
+
+    /// A file holding the voice agent's key, read afresh for each call, so a
+    /// host can keep a short-lived secret there. Default: `OPENAI_API_KEY`.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "PATH", requires = "voice_agent")]
+    pub(crate) voice_key_file: Option<String>,
+
+    /// The Realtime model.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "MODEL", default_value = "gpt-realtime")]
+    pub(crate) voice_model: String,
+
+    /// The voice it speaks in.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "NAME", default_value = "marin")]
+    pub(crate) voice_voice: String,
+
+    /// Seconds of silence after which the agent says goodbye and hangs up.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "S", default_value_t = 60)]
+    pub(crate) voice_idle_hangup_s: u64,
+
+    /// The Realtime endpoint, for a stand-in server in a test. Default:
+    /// OpenAI's.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "URL", requires = "voice_agent")]
+    pub(crate) voice_url: Option<String>,
+
     /// Offscreen surface size for `--mcp-headless`, `WxH`. Ignored when there is
     /// a window, where the window *is* the surface.
     #[cfg(mcp)]

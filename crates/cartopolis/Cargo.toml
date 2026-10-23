@@ -315,6 +315,10 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # this crate; the two talk only through its job channel.
 [target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 cartopolis_mcp = { path = "../mcp_server" }
+# The voice agent (`systems::mcp::voice`): a call answered by OpenAI's
+# Realtime model, with the MCP tools as its functions. Bevy-free, like the
+# server, and for the same reason.
+cartopolis_voice = { path = "../voice" }
 # MCP carries an image as base64 in a JSON message, so a capture has to be
 # encoded before it can be handed over. Already in the lock under the simulator.
 base64 = "0.22"

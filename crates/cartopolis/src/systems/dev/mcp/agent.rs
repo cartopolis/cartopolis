@@ -276,7 +276,7 @@ impl Audience {
 pub use cartopolis_mcp::args::{
     AgentReply, AgentRequest, BuildArgs, CallArgs, EditArgs, EmoteArgs, FaceArgs, FollowArgs,
     LookAroundArgs, OutputArgs, PlaceArgs, ReadChatArgs, RememberArgs, SavePlaceArgs, SayArgs,
-    WalkArgs, IMAGE_KEY,
+    VoiceCallArgs, WalkArgs, IMAGE_KEY,
 };
 
 /// How long `send_picture` waits for the picture to be encrypted, stored and
@@ -320,6 +320,13 @@ pub struct AgentState {
 }
 
 impl AgentState {
+    /// Whether a walk is under way, and how the last one ended: what a voice
+    /// agent is told when a walk it started finishes (`mcp::voice`).
+    #[must_use]
+    pub fn walk_status(&self) -> (bool, Option<&str>) {
+        (self.walk.is_some(), self.walk_ended.as_deref())
+    }
+
     /// State for a run that signed in at launch with `request`.
     #[must_use]
     pub fn signing_in_with(request: crate::systems::session::SessionRequest) -> Self {
@@ -637,6 +644,8 @@ pub struct AgentWorld<'w, 's> {
     videos: Res<'w, crate::systems::prim_video::PrimVideos>,
     contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     around: Around<'w, 's>,
+    /// Calls queued for the voice agent; absent without `--voice-agent`.
+    voice: Option<ResMut<'w, super::voice::VoiceCalls>>,
 }
 
 /// What the agent reads about its surroundings, as one parameter: the walk-up
@@ -1347,6 +1356,7 @@ fn handle(
             }
         }
         AgentRequest::CallStatus => call_status(w),
+        AgentRequest::VoiceCall(args) => voice_call(audience, w, &args),
         AgentRequest::RequestContact(args) => {
             if w.online.is_none() {
                 return Some((reply, AgentReply::refuse(NOT_ONLINE)));
@@ -2117,6 +2127,51 @@ fn answer_call(audience: &Audience, w: &mut AgentWorld) -> AgentReply {
     AgentReply::ok(
         format!("Answering the call from {}.", r.who.join(", ")),
         json!({ "answering": r.who }),
+    )
+}
+
+/// Queue a call for the voice agent (`mcp::voice`). Anybody may be called,
+/// unlike with `call`: the agent talks for whoever asked, and who asked must
+/// be somebody it works for.
+fn voice_call(audience: &Audience, w: &mut AgentWorld, args: &VoiceCallArgs) -> AgentReply {
+    let (to, asked_by, purpose) = (args.to.trim(), args.asked_by.trim(), args.purpose.trim());
+    if w.online.is_none() {
+        return AgentReply::refuse(NOT_ONLINE);
+    }
+    let Some(queue) = w.voice.as_mut() else {
+        return AgentReply::refuse(
+            "This client was not started with --voice-agent, so it has no voice to call with.",
+        );
+    };
+    if !audience.hears(asked_by) {
+        return AgentReply::refuse(format!(
+            "{asked_by} is not one of the people you work for, so you may not call anybody on \
+             their behalf. You work for: {}.",
+            audience.describe()
+        ));
+    }
+    if to.is_empty() || purpose.is_empty() {
+        return AgentReply::refuse("Say whom to call and what for.");
+    }
+    if w.identity
+        .username
+        .as_deref()
+        .is_some_and(|me| me.eq_ignore_ascii_case(to))
+    {
+        return AgentReply::refuse("That is you.");
+    }
+    let ahead = queue.ask(to, purpose, asked_by);
+    let when = match ahead {
+        0 if w.calls.active_group().is_none() => "now".to_string(),
+        0 => "when this call ends".to_string(),
+        n => format!("after {n} other call{}", if n == 1 { "" } else { "s" }),
+    };
+    AgentReply::ok(
+        format!(
+            "Calling {to} {when}. {asked_by} gets one line in your private chat when the call \
+             ends."
+        ),
+        json!({ "to": to, "ahead": ahead }),
     )
 }
 

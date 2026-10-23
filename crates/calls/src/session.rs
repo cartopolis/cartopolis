@@ -71,7 +71,7 @@ enum Cmd {
     },
     Pcm(Vec<f32>),
     /// Copy every decoded voice frame here as well ([`Session::tap_audio`]).
-    Tap(mpsc::Sender<(ParticipantId, Vec<f32>)>),
+    Tap(mpsc::Sender<(u64, Vec<f32>)>),
     /// A camera picture and when it was taken.
     Picture(video::I420, Instant),
     /// A shared screen's picture and when it was taken.
@@ -282,11 +282,12 @@ impl Session {
         PcmSink(self.tx.clone())
     }
 
-    /// Every voice frame decoded from here on, with whose it is, as well as
+    /// Every voice frame decoded from here on, with the participant number of
+    /// whoever said it, as well as
     /// [`Event::Audio`]: for a listener on another thread (a voice agent),
     /// which must not wait for the app's next frame to hear the call.
     #[must_use]
-    pub fn tap_audio(&self) -> mpsc::Receiver<(ParticipantId, Vec<f32>)> {
+    pub fn tap_audio(&self) -> mpsc::Receiver<(u64, Vec<f32>)> {
         let (tx, rx) = mpsc::channel();
         self.send(Cmd::Tap(tx));
         rx
@@ -622,7 +623,7 @@ fn run(
     let mut encoder = opus::Encoder::new(rate).map_err(|e| e.to_string())?;
     let mut decoders: HashMap<ParticipantId, opus::Decoder> = HashMap::new();
     let mut sent_frames: u64 = 0;
-    let mut tap: Option<mpsc::Sender<(ParticipantId, Vec<f32>)>> = None;
+    let mut tap: Option<mpsc::Sender<(u64, Vec<f32>)>> = None;
     let mut buf = [0u8; 2048];
     loop {
         let now = Instant::now();
@@ -775,7 +776,7 @@ fn run(
                     };
                     if let Ok(pcm) = dec.decode(&opened.frame) {
                         if let Some(t) = &tap {
-                            if t.send((from, pcm.clone())).is_err() {
+                            if t.send((from.0, pcm.clone())).is_err() {
                                 tap = None;
                             }
                         }
@@ -991,7 +992,7 @@ mod tests {
         let tapped: usize = bob_tap
             .try_iter()
             .map(|(from, pcm)| {
-                assert_eq!(from, ids[0]);
+                assert_eq!(from, ids[0].0);
                 pcm.len()
             })
             .sum();

@@ -390,6 +390,8 @@ pub struct McpPlugin {
     /// What this launch signed in with, kept so an agent can sign back in after
     /// signing out (`mcp::agent`, `sign_in`).
     pub launch_sign_in: Option<systems::session::SessionRequest>,
+    /// `--voice-agent`: calls are taken part in by voice (`mcp::voice`).
+    pub voice: Option<systems::mcp::voice::VoiceSettings>,
 }
 
 #[cfg(mcp)]
@@ -471,6 +473,20 @@ impl Plugin for McpPlugin {
                 )
                     .chain(),
             );
+        if let Some(voice) = self.voice.clone() {
+            tracing::info!(url = %voice.url, "mcp: voice agent on");
+            app.insert_resource(voice)
+                .init_resource::<systems::mcp::voice::VoiceState>()
+                .init_resource::<systems::mcp::voice::VoiceCalls>()
+                .add_systems(
+                    Update,
+                    // After the call system, whose rosters and rings it reads
+                    // and whose request it sets for the next frame.
+                    systems::mcp::voice::drive_voice
+                        .after(systems::calls::drive_calls)
+                        .in_set(ClientPhase::Input),
+                );
+        }
         if headless {
             // Nobody sees a headless client between calls, so it slows right
             // down then (`mcp::pace_idle`).

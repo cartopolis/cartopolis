@@ -21,7 +21,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::playout::Playout;
 use crate::realtime::{self, Incoming, MODEL_RATE};
 use crate::resample::{from_pcm16, to_pcm16, Resampler};
-use crate::{Cmd, Config, Event, ToolHost, ToolOutput, ToolSpec, FRAME, HANG_UP, RATE};
+use crate::{
+    Cmd, Config, Event, ToolHost, ToolOutput, ToolSpec, FRAME, HANG_UP, KEEP_LISTENING, RATE,
+};
 
 /// How often the loop moves audio. Half a frame, so a frame is never late by
 /// more than that.
@@ -89,13 +91,22 @@ fn offered(cfg: &Config, all: Vec<ToolSpec>) -> Vec<ToolSpec> {
     let full = !cfg.trusted.is_empty();
     let mut out: Vec<ToolSpec> = all
         .into_iter()
-        .filter(|t| t.name != HANG_UP)
+        .filter(|t| t.name != HANG_UP && t.name != KEEP_LISTENING)
         .filter(|t| cfg.read_only.contains(&t.name) || (full && cfg.full.contains(&t.name)))
         .map(|mut t| {
             t.parameters = clean_schema(t.parameters);
             t
         })
         .collect();
+    if cfg.announce_speakers {
+        out.push(ToolSpec {
+            name: KEEP_LISTENING.into(),
+            description: "Say nothing this turn: call this instead of speaking when what was \
+                          said was not meant for you."
+                .into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        });
+    }
     out.push(ToolSpec {
         name: HANG_UP.into(),
         description: "End this call. Say goodbye first: the line stays open until \
@@ -491,6 +502,10 @@ async fn on_message(
                 s.hang_up = Some(None);
                 let said = "Hanging up as soon as what you said has been heard.";
                 send(tx, realtime::function_output(&call_id, said)).await?;
+                return Ok(false);
+            }
+            if name == KEEP_LISTENING {
+                send(tx, realtime::function_output(&call_id, "Listening.")).await?;
                 return Ok(false);
             }
             if let Some(refusal) = refusal(cfg, s, offered, &name) {
