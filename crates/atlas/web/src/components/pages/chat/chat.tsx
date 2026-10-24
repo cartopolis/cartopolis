@@ -49,7 +49,9 @@ import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
 import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
 import {Icon} from '@/lib/icons'
+import {ProviderChoices} from '@/components/elements/providers/providers'
 import {CommunityStats} from './community-stats'
+import {LinkedGroups} from './linked-groups'
 import {Posts, Tabs, tabOf} from './posts'
 import {Calendar, type CalendarCtx, openCalendar, todayCount} from './calendar'
 
@@ -806,6 +808,13 @@ export class Chat extends MithrilComponent {
             history.replaceState(null, '', location.pathname)
             this.openInvite(code)
         }
+        // Back from linking a group (`/welcome`): the community it was linked to,
+        // shown once the chat has listed it.
+        const show = new URLSearchParams(location.search).get('show')
+        if (show) {
+            history.replaceState(null, '', location.pathname)
+            this.pendingShow = show
+        }
         if (onCalendarPath()) this.showCalendar()
         this.reminders = setInterval(() => {
             this.remind()
@@ -819,6 +828,9 @@ export class Chat extends MithrilComponent {
     }
 
     reminders: ReturnType<typeof setInterval> | undefined
+
+    /** A community to open as soon as the chat knows it (`?show=`). */
+    pendingShow: string | null = null
 
     /** The meeting about to start that this person said they come to. */
     upcoming: {channel: string; plan: Plan; startMs: number} | null = null
@@ -884,6 +896,11 @@ export class Chat extends MithrilComponent {
         // Signed in on this page since the last draw: start the chat too.
         if ($s.signup.token && chat().status === 'signed_out') chat().signIn({token: $s.signup.token})
         if ($s.signup.token && !this.s.adminChecked) void this.checkAdmin()
+        if (this.pendingShow && chat().communities.some((x) => x.id === this.pendingShow)) {
+            const id = this.pendingShow
+            this.pendingShow = null
+            this.show({id, kind: 'community'})
+        }
         // A call folded to a banner stays folded only while it rings: the next
         // call in that chat comes in as the dialog again.
         if (this.s.ringFolded !== null && chat().calls.ringing() !== this.s.ringFolded) this.s.ringFolded = null
@@ -1437,6 +1454,7 @@ export class Chat extends MithrilComponent {
                             Chat with your communities and your friends, end-to-end encrypted, and meet them
                             in a shared 3D world on the real map.
                         </p>
+                        <ProviderChoices disabled={s.busy} />
                         <FieldText
                             autocomplete="username"
                             disabled={s.busy}
@@ -3624,6 +3642,8 @@ export class Chat extends MithrilComponent {
                             <FieldCheckbox label="Archived" model={bind(t, 'archived')} />
                         </div>
                     ))}
+                    {/* Its buttons are type="button": they leave for the provider, and none of them saves the form. */}
+                    {moderates(community) && <LinkedGroups id={id} key={id} />}
                     <Button type="submit" variant="primary">Save</Button>
                     {community.role === 'owner' && (
                         <Button

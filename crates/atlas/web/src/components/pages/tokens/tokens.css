@@ -46,3 +46,65 @@
     overflow-wrap: anywhere;
     user-select: all;
 }
+
+/* "Ways to sign in": a provider or the password per row, with its one action. */
+.ways {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    list-style: none;
+    margin: 0 0 var(--m-space-3);
+    padding: 0;
+}
+
+.ways__row {
+    align-items: center;
+    display: flex;
+    gap: var(--m-space-3);
+}
+
+.ways__icon {
+    align-items: center;
+    display: inline-flex;
+    flex: none;
+    height: 1.5rem;
+    justify-content: center;
+    width: 1.5rem;
+
+    & .chat-icon {
+        height: 1.25rem;
+        width: 1.25rem;
+    }
+}
+
+.ways__text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+
+    & small {
+        color: var(--m-text-dim);
+        font-size: 0.85em;
+    }
+}
+
+.ways__password {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    margin-top: var(--m-space-3);
+}
+
+.ways__actions {
+    display: flex;
+    gap: var(--m-space-2);
+    justify-content: flex-end;
+}
+
+.tokens-page__confirm {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+}

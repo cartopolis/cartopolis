@@ -1,0 +1,69 @@
+/* `/welcome` and `/signin/fediverse`: the end and the start of a provider's round trip. */
+
+/* Who came back: a letter, their name there, and the provider's mark. */
+.welcome-who {
+    align-items: center;
+    background: var(--m-surface-sunken);
+    border-radius: var(--m-radius);
+    display: flex;
+    gap: var(--m-space-3);
+    padding: var(--m-space-3);
+}
+
+.welcome-who__avatar {
+    align-items: center;
+    background: var(--m-accent);
+    border-radius: var(--m-radius-full);
+    color: var(--m-on-accent);
+    display: inline-flex;
+    flex: none;
+    font-weight: 600;
+    height: 2.25rem;
+    justify-content: center;
+    width: 2.25rem;
+}
+
+.welcome-who__text,
+.welcome-group__name > span {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    overflow-wrap: anywhere;
+
+    & small {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.welcome-groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+}
+
+.welcome-groups__label,
+.fediverse-recent__label {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+.welcome-group {
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    padding: var(--m-space-2) var(--m-space-3);
+}
+
+.welcome-group__name {
+    align-items: center;
+    display: inline-flex;
+    gap: var(--m-space-2);
+}
+
+.fediverse-recent {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-1);
+}

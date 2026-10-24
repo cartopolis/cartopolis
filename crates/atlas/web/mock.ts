@@ -23,6 +23,15 @@
 import type {
     AccessToken,
     Account,
+    AccountSignin,
+    AdminProvider,
+    AdminSignin,
+    CommunityLink,
+    Identity,
+    LinkedIdentity,
+    Offer,
+    Provider,
+    SigninTicket,
     BuildingAddress,
     BuildingOverride,
     LibraryEntry,
@@ -143,6 +152,7 @@ const permissions: PermissionInfo[] = [
     {group: 'server', label: 'Handle reports and building claims', player_default: false, slug: 'reports_triage'},
     {group: 'server', label: 'Run the map data pipelines', player_default: false, slug: 'pipeline_run'},
     {group: 'server', label: 'Read the usage statistics', player_default: false, slug: 'stats_view'},
+    {group: 'server', label: 'Manage sign-in providers', player_default: false, slug: 'signin_manage'},
 ]
 
 // ── Usage statistics (invented, the same shape as docs/mockups/stats/) ─────────
@@ -365,6 +375,7 @@ const registration: RegistrationRules = {
     max_username_length: 32,
     min_password_length: 10,
     open: true,
+    providers: [],
     verification_valid_hours: 48,
 }
 
@@ -818,6 +829,123 @@ const overrides: BuildingOverride[] = [
 // ── Routing ─────────────────────────────────────────────────────────────────
 
 /** Whether the bearer belongs to a mock session; a 401 otherwise. */
+// ── Signing in through another site (`docs/mockups/external-sign-in/`) ───────
+
+/**
+ * Every provider, as Admin › People › Sign-in lists them: four working, Google
+ * with keys but untested, GitHub not set up. The sign-in card shows the enabled
+ * ones in this order (`/api/register`).
+ */
+const signinProviders: AdminProvider[] = [
+    {accounts: 214, client_id: '1298374650129837465', custom: false, enabled: true, id: 'discord', kind: 'discord', links: 3, name: 'Discord', needs_keys: true, new_accounts: 'anyone', position: 0, redirect_url: 'https://cartopolis.org/api/auth/discord/callback', secret_set: true, setup_url: 'https://discord.com/developers/applications', tested_at: 1_791_000_000},
+    {accounts: 58, client_id: 'Xk2b9Qp1-reddit', custom: false, enabled: true, id: 'reddit', kind: 'reddit', links: 1, name: 'Reddit', needs_keys: true, new_accounts: 'members', position: 1, redirect_url: 'https://cartopolis.org/api/auth/reddit/callback', secret_set: true, setup_url: 'https://www.reddit.com/prefs/apps', tested_at: 1_791_000_000},
+    {accounts: 31, client_id: '', custom: false, enabled: true, id: 'mastodon', kind: 'mastodon', links: 0, name: 'Mastodon', needs_keys: false, new_accounts: 'anyone', position: 2, redirect_url: 'https://cartopolis.org/api/auth/mastodon/callback', secret_set: false, setup_url: ''},
+    {accounts: 12, client_id: 'c0deberg-client', custom: false, enabled: true, id: 'codeberg', kind: 'oidc', links: 0, name: 'Codeberg', needs_keys: true, new_accounts: 'anyone', position: 3, redirect_url: 'https://cartopolis.org/api/auth/codeberg/callback', secret_set: true, setup_url: 'https://codeberg.org/user/settings/applications', tested_at: 1_791_000_000, issuer: 'https://codeberg.org/'},
+    {accounts: 0, client_id: '1234-abc.apps.googleusercontent.com', custom: false, enabled: false, id: 'google', kind: 'oidc', links: 0, name: 'Google', needs_keys: true, new_accounts: 'anyone', position: 4, redirect_url: 'https://cartopolis.org/api/auth/google/callback', secret_set: true, setup_url: 'https://console.cloud.google.com/apis/credentials', issuer: 'https://accounts.google.com'},
+    {accounts: 0, client_id: '', custom: false, enabled: false, id: 'github', kind: 'github', links: 0, name: 'GitHub', needs_keys: true, new_accounts: 'anyone', position: 5, redirect_url: 'https://cartopolis.org/api/auth/github/callback', secret_set: false, setup_url: 'https://github.com/settings/developers'},
+]
+
+function enabledProviders(): Provider[] {
+    return [...signinProviders]
+        .sort((a, b) => a.position - b.position)
+        .filter((p) => p.enabled)
+        .map(({id, kind, name}) => ({id, kind, name}))
+}
+
+/** How each account signs in. Absent means a password and nothing else. */
+const accountWays = new Map<string, {has_password: boolean; identities: LinkedIdentity[]; reauth_until?: number}>([
+    [MOCK_PLAYER, {
+        has_password: false,
+        identities: [{handle: 'anneke', id: 'ident-1', kind: 'oidc', linked_at: 1_790_000_000, provider: 'codeberg', provider_name: 'Codeberg'}],
+    }],
+])
+
+function waysOf(who: string) {
+    let ways = accountWays.get(who)
+    if (!ways) {
+        ways = {has_password: true, identities: []}
+        accountWays.set(who, ways)
+    }
+    return ways
+}
+
+const unixNow = () => Math.floor(Date.now() / 1000)
+
+/** Groups linked to communities, by community id. */
+const communityLinks = new Map<string, CommunityLink[]>([
+    ['groningen-fietst', [
+        {group_id: '8812', group_name: 'Groningen Fietst', linked_at: 1_790_500_000, linked_by: 'annekedijkstra', provider: 'discord', provider_name: 'Discord'},
+        {group_id: 'groningen', group_name: 'r/groningen', linked_at: 1_790_600_000, linked_by: 'annekedijkstra', provider: 'reddit', provider_name: 'Reddit'},
+    ]],
+])
+
+const offers: Offer[] = [
+    {community: 'groningen-fietst', group_name: 'Groningen Fietst', members: 86, name: 'Groningen Fietst', provider: 'discord', provider_name: 'Discord'},
+    {community: 'oosterpoort-buren', group_name: 'Oosterpoort Buren', members: 23, name: 'Oosterpoort Buren', provider: 'discord', provider_name: 'Discord'},
+]
+
+const discordAnna: Identity = {avatar_letter: 'A', display_name: 'annadv', email: 'anna@devries.nl', email_verified: true, handle: 'annadv', kind: 'discord', provider: 'discord', provider_name: 'Discord'}
+
+/**
+ * The tickets `/welcome` can be opened with under `--mock`: one per screen.
+ * `/welcome?ticket=mock-name`, `mock-groups`, `mock-link`, `mock-app`,
+ * `mock-signedin`, `mock-signedin-offers`, `mock-linked`, `mock-reauthed`,
+ * `mock-tested`, `mock-community`, `mock-refused`.
+ */
+function mockTicket(ticket: string): SigninTicket | null {
+    const session = () => {
+        const token = `mock-${uuid()}`
+        sessions.set(token, MOCK_PLAYER)
+        return {principal: accountNamed(MOCK_PLAYER)?.id ?? '', token, username: MOCK_PLAYER}
+    }
+    switch (ticket) {
+        case 'mock-name':
+            return {
+                identity: {avatar_letter: 'A', display_name: 'Anna de Vries', email_verified: false, handle: '@anna@mastodon.nl', kind: 'mastodon', provider: 'mastodon', provider_name: 'mastodon.nl'},
+                kind: 'choose_name', new_accounts: 'anyone', offers: [], return: '/', suggestion: 'anna',
+            }
+        case 'mock-groups':
+            return {identity: discordAnna, kind: 'choose_name', new_accounts: 'anyone', offers, return: '/', suggestion: 'anna'}
+        case 'mock-link':
+            return {
+                identity: {avatar_letter: 'A', display_name: 'annadv', email: 'anna@devries.nl', email_verified: true, handle: 'annadv', kind: 'github', provider: 'github', provider_name: 'GitHub'},
+                kind: 'link_existing', username: MOCK_PLAYER,
+            }
+        case 'mock-app':
+            return {...session(), app_code: 'KQ7-4MD', kind: 'signed_in', offers: [], return: '/'}
+        case 'mock-signedin':
+            return {...session(), kind: 'signed_in', offers: [], return: '/buildings'}
+        case 'mock-signedin-offers':
+            return {...session(), kind: 'signed_in', offers, return: '/'}
+        case 'mock-linked':
+            return {kind: 'linked', provider_name: 'Discord', return: '/tokens'}
+        case 'mock-reauthed':
+            waysOf(MOCK_PLAYER).reauth_until = unixNow() + 600
+            return {kind: 'reauthed', provider_name: 'Codeberg', return: '/tokens'}
+        case 'mock-tested':
+            return {kind: 'tested', provider_name: 'Google'}
+        case 'mock-community':
+            return {
+                community: {id: 'groningen-fietst', name: 'Groningen Fietst'},
+                groups: [{group_id: '8812', name: 'Groningen Fietst'}, {group_id: '9931', name: 'Stadjers op de fiets'}],
+                kind: 'community_groups', provider: 'discord', provider_name: 'Discord',
+            }
+        case 'mock-refused':
+            return {kind: 'refused', message: 'This server does not make new accounts through Reddit. Ask its operator.'}
+    }
+    return null
+}
+
+/** Which mock ticket a provider's start leads to, so each button shows a different screen. */
+function ticketFor(id: string, app: string | null): string {
+    if (app) return 'mock-app'
+    return {discord: 'mock-groups', github: 'mock-link', google: 'mock-signedin-offers', mastodon: 'mock-name', reddit: 'mock-refused'}[id] ?? 'mock-signedin'
+}
+
+function redirect(to: string): Response {
+    return new Response(null, {headers: {location: to}, status: 302})
+}
+
 function needSession(req: Request): string | Response {
     return sessionOf(req) ?? refuse(401, 'Sign in first')
 }
@@ -872,6 +1000,7 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         return new Response(null, {status: 204})
     }
     if (p === '/api/register' && method === 'GET') {
+        registration.providers = enabledProviders()
         return json(registration)
     }
     if (p === '/api/register' && method === 'POST') {
@@ -899,6 +1028,36 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
     }
     if (p === '/api/register/resend' && method === 'POST') {
         return json({ok: true})
+    }
+
+    // ── Signing in through another site (unauthenticated half) ───────────
+    if (parts[1] === 'auth' && parts[3] === 'start' && method === 'GET') {
+        const ticket = ticketFor(parts[2], url.searchParams.get('app'))
+        return redirect(`/welcome?ticket=${ticket}`)
+    }
+    if (p === '/api/auth/ticket' && method === 'POST') {
+        const b = await body<{ticket: string}>(req)
+        const what = mockTicket(b.ticket ?? '')
+        return what ? json(what) : refuse(404, 'That sign-in has expired. Start again.')
+    }
+    if (p === '/api/auth/ticket/create' && method === 'POST') {
+        const b = await body<{join: string[]; ticket: string; username: string}>(req)
+        const username = (b.username ?? '').trim()
+        if (!username) return refuse(400, 'Pick a name')
+        if (accountNamed(username)) return refuse(409, `the name ${username} is taken — pick another`)
+        const account: Account = {admin: false, agent: false, created_at: sqlNow(), disabled: false, email: null, email_pending: false, id: uuid(), username}
+        accounts.push(account)
+        accountWays.set(username, {has_password: false, identities: [{handle: 'annadv', id: `ident-${uuid()}`, kind: 'discord', linked_at: unixNow(), provider: 'discord', provider_name: 'Discord'}]})
+        const token = `mock-${uuid()}`
+        sessions.set(token, username)
+        return json({principal: account.id, token, username})
+    }
+    if (p === '/api/auth/ticket/link' && method === 'POST') {
+        const b = await body<{password: string; ticket: string}>(req)
+        if (!b.password) return refuse(403, 'that password is not right')
+        const token = `mock-${uuid()}`
+        sessions.set(token, MOCK_PLAYER)
+        return json({principal: accountNamed(MOCK_PLAYER)?.id ?? '', token, username: MOCK_PLAYER})
     }
 
     // ── Read by every client, signed in or not ─────────────────────────────
@@ -960,7 +1119,13 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
     }
     if (p === '/api/tokens' && method === 'POST') {
         const body = (await req.json()) as {elevated?: boolean; expires_at?: number | null; label?: string; password?: string}
-        if (!body.password) {
+        // An account without a password confirms through its provider instead.
+        const ways = waysOf(who)
+        if (!ways.has_password) {
+            if (!((ways.reauth_until ?? 0) > unixNow())) {
+                return json({error: 'Confirm it is you first.', reauth: true}, 403)
+            }
+        } else if (!body.password) {
             return refuse(403, 'that password is not right')
         }
         const label = (body.label ?? '').trim()
@@ -984,6 +1149,109 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             return refuse(404, 'no such token')
         }
         accessTokens.splice(i, 1)
+        return new Response(null, {status: 204})
+    }
+
+    // ── Signing in through another site (signed-in half) ──────────────────
+    if (p === '/api/auth/ticket/join' && method === 'POST') {
+        const b = await body<{join: string[]}>(req)
+        return json({joined: b.join ?? []})
+    }
+    if (p === '/api/auth/ticket/community' && method === 'POST') {
+        const b = await body<{group_id: string}>(req)
+        const link: CommunityLink = {group_id: b.group_id ?? '', group_name: b.group_id === '9931' ? 'Stadjers op de fiets' : 'Groningen Fietst', linked_at: unixNow(), linked_by: who, provider: 'discord', provider_name: 'Discord'}
+        const list = communityLinks.get('groningen-fietst') ?? []
+        communityLinks.set('groningen-fietst', [...list.filter((l) => l.group_id !== link.group_id), link])
+        return json({link})
+    }
+    if (parts[1] === 'auth' && parts[3] === 'begin' && method === 'POST') {
+        const b = await body<{purpose: string}>(req)
+        if (b.purpose === 'test') {
+            const tested = signinProviders.find((x) => x.id === parts[2])
+            if (tested) tested.tested_at = unixNow()
+        }
+        const ticket = {community: 'mock-community', link: 'mock-linked', reauth: 'mock-reauthed', test: 'mock-tested'}[b.purpose ?? ''] ?? 'mock-refused'
+        return json({url: `/welcome?ticket=${ticket}`})
+    }
+    if (p === '/api/account/signin' && method === 'GET') {
+        const ways = waysOf(who)
+        const signin: AccountSignin = {available: enabledProviders(), has_password: ways.has_password, identities: ways.identities, reauth_until: ways.reauth_until}
+        return json(signin)
+    }
+    if (parts[1] === 'account' && parts[2] === 'identities' && parts.length === 4 && method === 'DELETE') {
+        const ways = waysOf(who)
+        if (!ways.has_password && ways.identities.length <= 1) {
+            return refuse(409, 'That is your only way in. Link another or add a password first.')
+        }
+        ways.identities = ways.identities.filter((i) => i.id !== parts[3])
+        return new Response(null, {status: 204})
+    }
+    if (p === '/api/account/password' && method === 'POST') {
+        const ways = waysOf(who)
+        const b = await body<{current_password: string; password: string}>(req)
+        if (ways.has_password && !b.current_password) return refuse(403, 'that password is not right')
+        if (!ways.has_password && !((ways.reauth_until ?? 0) > unixNow())) {
+            return json({error: 'Confirm it is you first.', reauth: true}, 403)
+        }
+        if ((b.password ?? '').length < registration.min_password_length) {
+            return refuse(400, `The password needs at least ${registration.min_password_length} characters.`)
+        }
+        ways.has_password = true
+        return new Response(null, {status: 204})
+    }
+    if (parts[1] === 'communities' && parts[3] === 'links' && method === 'GET') {
+        return json({links: communityLinks.get(parts[2]) ?? []})
+    }
+    if (parts[1] === 'communities' && parts[3] === 'links' && parts.length === 6 && method === 'DELETE') {
+        const list = communityLinks.get(parts[2]) ?? []
+        communityLinks.set(parts[2], list.filter((l) => !(l.provider === parts[4] && l.group_id === decodeURIComponent(parts[5]))))
+        return new Response(null, {status: 204})
+    }
+
+    // ── Admin › People › Sign-in ──────────────────────────────────────────
+    if (p === '/api/admin/signin' && method === 'GET') {
+        const listing: AdminSignin = {key_ok: true, providers: signinProviders, redirect_base: 'https://cartopolis.org/api/auth'}
+        return json(listing)
+    }
+    if (p === '/api/admin/signin/order' && method === 'POST') {
+        const b = await body<{ids: string[]}>(req)
+        ;(b.ids ?? []).forEach((id, i) => {
+            const it = signinProviders.find((x) => x.id === id)
+            if (it) it.position = i
+        })
+        return new Response(null, {status: 204})
+    }
+    if (parts[1] === 'admin' && parts[2] === 'signin' && parts.length === 4 && method === 'PUT') {
+        const b = await body<{client_id: string; client_secret: string; enabled: boolean; issuer: string; name: string; new_accounts: AdminProvider['new_accounts']}>(req)
+        let it = signinProviders.find((x) => x.id === parts[3])
+        if (!it) {
+            if (!parts[3].startsWith('oidc-')) return refuse(404, 'no such provider')
+            it = {accounts: 0, client_id: '', custom: true, enabled: false, id: parts[3], kind: 'oidc', links: 0, name: b.name ?? parts[3], needs_keys: true, new_accounts: 'anyone', position: signinProviders.length, redirect_url: `https://cartopolis.org/api/auth/${parts[3]}/callback`, secret_set: false, setup_url: b.issuer ?? ''}
+            signinProviders.push(it)
+        }
+        if (b.client_id !== undefined || b.client_secret !== undefined || b.issuer !== undefined) {
+            it.tested_at = undefined
+            it.enabled = false
+        }
+        if (b.client_id !== undefined) it.client_id = b.client_id
+        if (b.client_secret) it.secret_set = true
+        if (b.issuer !== undefined) it.issuer = b.issuer
+        if (b.name !== undefined) it.name = b.name
+        if (b.new_accounts !== undefined) it.new_accounts = b.new_accounts
+        if (b.enabled !== undefined) {
+            if (b.enabled && it.needs_keys && !it.tested_at) return refuse(409, `Test ${it.name} before switching it on`)
+            it.enabled = b.enabled
+        }
+        registration.providers = enabledProviders()
+        return new Response(null, {status: 204})
+    }
+    if (parts[1] === 'admin' && parts[2] === 'signin' && parts.length === 4 && method === 'DELETE') {
+        const i = signinProviders.findIndex((x) => x.id === parts[3])
+        if (i < 0) return refuse(404, 'no such provider')
+        const it = signinProviders[i]
+        if (it.custom) signinProviders.splice(i, 1)
+        else Object.assign(it, {client_id: '', enabled: false, secret_set: false, tested_at: undefined})
+        registration.providers = enabledProviders()
         return new Response(null, {status: 204})
     }
 

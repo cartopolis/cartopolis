@@ -84,7 +84,167 @@ export interface RegistrationRules {
     min_password_length: number
     /** `false` on a server that does not take registrations. */
     open: boolean
+    /**
+     * The sign-in providers the operator switched on, in the operator's order
+     * (Admin › People › Sign-in). Absent on older simulators, and empty when
+     * none is on: either way the sign-in card is the name and password alone.
+     */
+    providers?: Provider[]
     verification_valid_hours: number
+}
+
+/*
+ * Signing in through another site: Discord, Reddit, Mastodon, Codeberg, Google,
+ * GitHub, or a community's own OpenID server (`docs/mockups/external-sign-in/`).
+ * Hand-written from the simulator's contract, like the rest of this file.
+ */
+
+/** How the server talks to a provider. Google and Codeberg are `oidc`, as is a custom one. */
+export type ProviderKind = 'discord' | 'github' | 'mastodon' | 'oidc' | 'reddit'
+
+/** One provider as the sign-in card lists it. A custom one's id is `oidc-<slug>`. */
+export interface Provider {
+    id: string
+    kind: ProviderKind
+    name: string
+}
+
+/** Who the provider says came back: drawn on /welcome before anything is made. */
+export interface Identity {
+    avatar_letter: string
+    display_name: string
+    /** Only when the provider gave one. */
+    email?: string
+    email_verified: boolean
+    /** `annadv`, `@anna@mastodon.nl`, `u/annadv`: the name there. */
+    handle: string
+    kind: ProviderKind
+    provider: string
+    provider_name: string
+}
+
+/** A Cartopolis community linked to a group this person is in at the provider. */
+export interface Offer {
+    community: string
+    group_name: string
+    /** People already in the community. */
+    members: number
+    name: string
+    provider: string
+    provider_name: string
+}
+
+/** Who may make an account through a provider (Admin › People › Sign-in). */
+export type NewAccounts = 'anyone' | 'members' | 'none'
+
+/** What a round trip to a provider came to (`POST /api/auth/ticket`). */
+export type SigninTicket =
+    | {
+          app_code?: string
+          kind: 'signed_in'
+          offers: Offer[]
+          principal: string
+          return: string
+          token: string
+          username: string
+      }
+    | {
+          app_code?: string
+          identity: Identity
+          kind: 'choose_name'
+          new_accounts: 'anyone' | 'members'
+          offers: Offer[]
+          return: string
+          suggestion: string
+      }
+    | {identity: Identity; kind: 'link_existing'; return?: string; username: string}
+    | {kind: 'linked'; provider_name: string; return: string}
+    | {kind: 'reauthed'; provider_name: string; return: string}
+    | {kind: 'tested'; provider_name: string}
+    | {
+          community: {id: string; name: string}
+          groups: {group_id: string; name: string}[]
+          kind: 'community_groups'
+          provider: string
+          provider_name: string
+      }
+    | {kind: 'refused'; message: string}
+
+/** The session a ticket's create or link step hands back. */
+export interface TicketSession {
+    app_code?: string
+    principal: string
+    token: string
+    username: string
+}
+
+/** One way into the signed-in account (`GET /api/account/signin`). */
+export interface LinkedIdentity {
+    handle: string
+    /** Opaque: only for removing it. */
+    id: string
+    kind: ProviderKind
+    /** Unix seconds. */
+    linked_at: number
+    provider: string
+    provider_name: string
+}
+
+/** Every way into the signed-in account, and what could be added. */
+export interface AccountSignin {
+    /** Every provider switched on, for the Link buttons. */
+    available: Provider[]
+    has_password: boolean
+    identities: LinkedIdentity[]
+    /** Unix seconds: until then a token or a password needs no further confirming. */
+    reauth_until?: number
+}
+
+/** One provider as the operator sets it up (`GET /api/admin/signin`). */
+export interface AdminProvider {
+    /** Accounts that can sign in with it. */
+    accounts: number
+    client_id: string
+    /** A custom OpenID server, which can be removed outright. */
+    custom: boolean
+    enabled: boolean
+    id: string
+    issuer?: string
+    kind: ProviderKind
+    /** Communities linked to a group there. */
+    links: number
+    name: string
+    /** False for Mastodon: it registers itself with each server. */
+    needs_keys: boolean
+    new_accounts: NewAccounts
+    position: number
+    /** The address to paste at the provider. */
+    redirect_url: string
+    /** Never the secret itself: only whether one is stored. */
+    secret_set: boolean
+    /** Where the operator makes the app at the provider. */
+    setup_url: string
+    /** Unix seconds of the last test that came back; absent means untested. */
+    tested_at?: number
+}
+
+export interface AdminSignin {
+    /** False until the server has a key to encrypt secrets with. */
+    key_ok: boolean
+    providers: AdminProvider[]
+    redirect_base: string
+}
+
+/** A community's link to a Discord server or a subreddit. */
+export interface CommunityLink {
+    group_id: string
+    group_name: string
+    /** Unix seconds. */
+    linked_at: number
+    /** The username of who linked it. */
+    linked_by: string
+    provider: string
+    provider_name: string
 }
 
 export interface Profile {
@@ -300,6 +460,7 @@ export type AdminTab =
     | 'roles'
     | 'claims'
     | 'reports'
+    | 'signin'
     | 'overrides'
     | 'library'
     | 'pipeline'
@@ -494,6 +655,8 @@ export interface AdminState extends Record<string, unknown> {
     signedIn: boolean | null
     /** The new account's own session, if this browser has just made one. */
     signup: SignupSession
+    /** Fediverse servers this browser signed in through, newest first. */
+    fediverseServers: string[]
     /** What the pipeline server offers; `null` until it has answered. */
     pipelineConfig: PipelineConfig | null
     /** What the served tree currently covers. */

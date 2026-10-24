@@ -9,10 +9,19 @@
 export class ApiError extends Error {
     status: number
 
-    constructor(status: number, message: string) {
+    /**
+     * Whether the server asked for the person to confirm who they are first
+     * (`{"error": …, "reauth": true}` on a 403): an account without a password
+     * makes a token or sets one only within minutes of signing in through its
+     * provider again, and the page offers that round trip instead of a dead end.
+     */
+    reauth: boolean
+
+    constructor(status: number, message: string, reauth = false) {
         super(message)
         this.name = 'ApiError'
         this.status = status
+        this.reauth = reauth
     }
 
     /** A 401 means the token is gone or was never good: sign out, do not retry. */
@@ -121,8 +130,12 @@ export class Api {
         const body = response.status === 204 ? null : await this.parse(response)
 
         if (!response.ok) {
-            const message = (body as {error?: string} | null)?.error
-            throw new ApiError(response.status, message || `The server answered ${response.status}`)
+            const refusal = body as {error?: string; reauth?: boolean} | null
+            throw new ApiError(
+                response.status,
+                refusal?.error || `The server answered ${response.status}`,
+                refusal?.reauth === true,
+            )
         }
         return body as T
     }

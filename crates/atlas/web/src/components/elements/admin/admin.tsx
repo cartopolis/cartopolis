@@ -11,6 +11,7 @@ import {Overrides} from '@/components/pages/overrides/overrides'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Reports} from '@/components/pages/reports/reports'
 import {Roles} from '@/components/pages/roles/roles'
+import {SigninAdmin} from '@/components/pages/signin-admin/signin-admin'
 import {StatsOverviewPage, StatsPlacesPage, StatsWebPage, StatsWorldPage} from '@/components/pages/stats/stats'
 import {loadAccounts} from '@/lib/accounts'
 import {closeContext, contextContent, layout} from '@/lib/layout'
@@ -68,6 +69,8 @@ function page(tab: AdminTab) {
             return <Reports />
         case 'roles':
             return <Roles />
+        case 'signin':
+            return <SigninAdmin />
         case 'stats':
             return <StatsOverviewPage />
         case 'stats_world':

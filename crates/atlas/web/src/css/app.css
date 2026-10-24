@@ -6,6 +6,7 @@
 /* Each page's own rules, in a stylesheet beside the page or element it styles. */
 @import '../components/elements/account/account.css';
 @import '../components/elements/buildings/buildings.css';
+@import '../components/elements/providers/providers.css';
 @import '../components/pages/accounts/accounts.css';
 @import '../components/pages/building/building.css';
 @import '../components/pages/buildings/buildings.css';
@@ -21,6 +22,8 @@
 @import '../components/pages/reports/reports.css';
 @import '../components/pages/stats/stats.css';
 @import '../components/pages/roles/roles.css';
+@import '../components/pages/signin-admin/signin-admin.css';
+@import '../components/pages/welcome/welcome.css';
 /* Glass and depth, last: it restyles the library's surfaces and the pages' rows. */
 @import './depth.css';
 

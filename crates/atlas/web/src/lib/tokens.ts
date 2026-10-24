@@ -32,15 +32,24 @@ export interface NewToken {
     expires_at: number | null
     elevated: boolean
     label: string
-    /** Asked again: a session can be a remembered one on somebody else's device. */
-    password: string
+    /**
+     * Asked again: a session can be a remembered one on somebody else's device.
+     * Absent for an account without a password, which confirms through its
+     * provider instead (the server accepts that for ten minutes).
+     */
+    password?: string
 }
 
-/** Make a token. The answer's `token` is the secret, and nothing shows it again. */
-export async function createToken(spec: NewToken): Promise<{info: AccessToken; token: string} | null> {
+/**
+ * Make a token. The answer's `token` is the secret, and nothing shows it again.
+ * `'reauth'` when the account has no password and the server wants a fresh
+ * confirmation through a provider first: the page offers that, not a toast.
+ */
+export async function createToken(spec: NewToken): Promise<{info: AccessToken; token: string} | 'reauth' | null> {
     try {
         return await signupApi.post<{info: AccessToken; token: string}>('/api/tokens', spec)
     } catch (e) {
+        if (e instanceof ApiError && e.reauth) return 'reauth'
         report(e, 'Could not create the token')
         return null
     }

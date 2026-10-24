@@ -3,6 +3,7 @@ import {Alert, Button, Card, FieldText} from '@garage44/mithril/components'
 import {validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
+import {ProviderChoices} from '@/components/elements/providers/providers'
 import {ADMIN} from '@/lib/base'
 import {bind, local} from '@/lib/reactive'
 import {register, whatIsMissing} from '@/lib/signup'
@@ -144,6 +145,8 @@ export class Register extends MithrilComponent {
                         One account for the world and for this page. We'll send a link to confirm your address
                         before it works.
                     </p>
+                    {/* Signing up through a provider is signing in: /welcome asks for the name. */}
+                    <ProviderChoices disabled={s.busy} or="or with an e-mail address and a password" return="/" />
                     {/*
                       * Errors wait until a field is left or the form is submitted
                       * (the library's rule, and the one this form had): on an

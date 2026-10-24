@@ -1,0 +1,43 @@
+/* The provider buttons on every sign-in card (`elements/providers`), two to a row. */
+.provider-choices {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.provider-grid {
+    display: grid;
+    gap: var(--m-space-2);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    & .provider-button {
+        justify-content: flex-start;
+        width: 100%;
+    }
+}
+
+/* "or with your Cartopolis name", between two rules. */
+.provider-or {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: var(--m-font-size-sm);
+    gap: var(--m-space-3);
+
+    &::before,
+    &::after {
+        border-top: 1px solid var(--m-border);
+        content: '';
+        flex: 1;
+    }
+}
+
+.provider-logo {
+    flex: none;
+}
+
+.provider-title {
+    align-items: center;
+    display: inline-flex;
+    gap: var(--m-space-2);
+}

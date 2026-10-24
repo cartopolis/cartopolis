@@ -1,0 +1,123 @@
+/* Admin › People › Sign-in: one row per provider, opening into its setup. */
+.signin-admin {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    max-width: 52rem;
+}
+
+.signin-admin__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+}
+
+.signin-admin__row {
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    background: var(--m-surface);
+
+    &.is-open {
+        border-color: var(--m-border-strong);
+    }
+}
+
+.signin-admin__head {
+    align-items: center;
+    display: flex;
+    gap: var(--m-space-3);
+    padding: var(--m-space-2) var(--m-space-3);
+
+    & .m-field {
+        margin: 0;
+    }
+}
+
+.signin-admin__order {
+    display: inline-flex;
+    flex-direction: column;
+}
+
+/* The name opens the row: a button, drawn as text. */
+.signin-admin__name {
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    font: inherit;
+    min-width: 0;
+    padding: 0;
+    text-align: start;
+
+    & small {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.signin-admin__switch {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+}
+
+.signin-admin__setup {
+    border-top: 1px solid var(--m-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    padding: var(--m-space-3) var(--m-space-4) var(--m-space-4);
+}
+
+.signin-admin__steps {
+    margin: 0;
+    padding-inline-start: 1.25rem;
+
+    & a {
+        color: var(--m-accent-text);
+    }
+}
+
+/* The redirect address, copied rather than read: monospace, with its button. */
+.signin-admin__redirect {
+    align-items: flex-end;
+    display: flex;
+    gap: var(--m-space-2);
+
+    & .m-field {
+        flex: 1;
+    }
+
+    & input {
+        font-family: var(--m-font-mono);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.signin-admin__actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+
+    & .spacer {
+        flex: 1;
+    }
+}
+
+.signin-admin__add {
+    border: 1px dashed var(--m-border-strong);
+    border-radius: var(--m-radius);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+    padding: var(--m-space-3);
+}
+
+.signin-admin__hint {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}

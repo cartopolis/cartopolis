@@ -9,6 +9,8 @@ import {PublicCommunity, PublicPerson} from '@/components/pages/public/public'
 import {Register} from '@/components/pages/register/register'
 import {Verify} from '@/components/pages/verify/verify'
 import {Tokens} from '@/components/pages/tokens/tokens'
+import {Fediverse} from '@/components/pages/fediverse/fediverse'
+import {Welcome} from '@/components/pages/welcome/welcome'
 import {layout} from '@/lib/layout'
 import {ADMIN} from '@/lib/base'
 import {pageView} from '@/lib/stats'
@@ -104,6 +106,10 @@ export function mountRoutes(root: Element) {
         '/house': page(Buildings),
         '/building/:pand': page(Building, 'wide'),
         '/tokens': page(Tokens),
+        // Signing in through another site (`docs/mockups/external-sign-in/`): where
+        // every round trip ends, and the one provider that asks a question first.
+        '/welcome': page(Welcome),
+        '/signin/fediverse': page(Fediverse),
         // The public pages other fediverse servers link to: a community's
         // posts and a person's (`pages/public`, docs/notes/fediverse.md).
         '/c/:handle': page(PublicCommunity),

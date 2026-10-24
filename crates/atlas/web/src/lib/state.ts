@@ -49,6 +49,12 @@ export const persistentState: AdminState = {
     librarySearch: '',
     loading: false,
     buildingLimit: 0,
+    /*
+     * Persisted: the servers this browser signed in through on
+     * `/signin/fediverse`, so the next time is one tap. Only host names, which
+     * the person typed themselves; never a handle.
+     */
+    fediverseServers: [],
     myBuildings: [],
     notifications: [],
     placeholders: [],

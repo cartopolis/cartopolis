@@ -2,6 +2,7 @@ import m, {MithrilComponent} from '@garage44/mithril'
 import {Button, Card, FieldText} from '@garage44/mithril/components'
 import {required, validation, validations} from '@garage44/mithril/validation'
 
+import {ProviderChoices} from '@/components/elements/providers/providers'
 import {bind, local} from '@/lib/reactive'
 import {playerSignIn} from '@/lib/signup'
 
@@ -46,6 +47,7 @@ export class PlayerSignIn extends MithrilComponent<SignInAttrs> {
             <form class="buildings-signin" onsubmit={this.submit}>
                 <Card title={vnode.attrs.title}>
                     <p class="buildings-page__hint">{vnode.attrs.hint}</p>
+                    <ProviderChoices disabled={s.busy} />
                     <FieldText
                         autocomplete="username"
                         disabled={s.busy}

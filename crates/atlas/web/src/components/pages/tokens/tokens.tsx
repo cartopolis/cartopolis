@@ -1,14 +1,19 @@
 import m, {MithrilComponent} from '@garage44/mithril'
-import {Badge, Button, Card, FieldCheckbox, FieldSelect, FieldText} from '@garage44/mithril/components'
+import {Alert, Badge, Button, Card, FieldCheckbox, FieldSelect, FieldText} from '@garage44/mithril/components'
 import {required, validation, validations} from '@garage44/mithril/validation'
 
-import type {AccessToken} from '@/types'
+import type {AccessToken, AccountSignin} from '@/types'
 
 import {$s} from '@/app'
+import {ProviderLogo} from '@/components/elements/providers/providers'
 import {PlayerSignIn} from '@/components/elements/signin/signin'
+import {loadAccountSignin} from '@/lib/auth'
 import {bind, local} from '@/lib/reactive'
+import {confirmLabel, reauthValid, reauthWith} from '@/lib/signin'
 import {playerSignOut} from '@/lib/signup'
 import {createToken, EXPIRY_CHOICES, expiryAfter, formatUnix, listTokens, revokeToken} from '@/lib/tokens'
+
+import {confirmWith, Ways} from './ways'
 
 /**
  * Access tokens: what a bot or a script signs in with instead of a password
@@ -30,20 +35,37 @@ export class Tokens extends MithrilComponent {
         password: '',
         /** The secret of the token just made; shown until dismissed, never again. */
         shown: '',
+        /** The account's ways in; `null` until asked (and on a server too old to say). */
+        signin: null as AccountSignin | null,
         tokens: [] as AccessToken[],
     })
 
     v = validations({
         label: validation(bind(this.s, 'label'), [required]),
-        password: validation(bind(this.s, 'password'), [required]),
+        // Required only of an account that has a password; one without confirms
+        // through its provider instead.
+        password: validation(bind(this.s, 'password')).rule((value) =>
+            this.needsPassword() && !value ? 'Enter your password.' : null,
+        ),
     })
 
     load = async () => {
-        const tokens = await listTokens()
+        const [tokens, signin] = await Promise.all([listTokens(), loadAccountSignin()])
         if (tokens) {
             this.s.tokens = tokens
             this.s.loaded = true
         }
+        if (signin) this.s.signin = signin
+    }
+
+    loadSignin = async () => {
+        const signin = await loadAccountSignin()
+        if (signin) this.s.signin = signin
+    }
+
+    /** Whether the form asks for the password: unless the server said there is none. */
+    needsPassword(): boolean {
+        return this.s.signin?.has_password ?? true
     }
 
     oninit() {
@@ -63,12 +85,17 @@ export class Tokens extends MithrilComponent {
             elevated: s.elevated,
             expires_at: expiryAfter(s.expiry),
             label: s.label.trim(),
-            password: s.password,
+            password: this.needsPassword() ? s.password : undefined,
         })
         s.busy = false
         // The password goes whatever happened: it was asked for one action.
         s.password = ''
         this.v.password.reset()
+        if (made === 'reauth') {
+            // The confirmation lapsed while the form was open: ask again.
+            await this.loadSignin()
+            return
+        }
         if (made) {
             s.shown = made.token
             s.label = ''
@@ -85,6 +112,36 @@ export class Tokens extends MithrilComponent {
             await this.load()
         }
         this.s.busy = false
+    }
+
+    /** Whether a token may be made now without a password: a recent confirmation. */
+    confirmed(): boolean {
+        return this.needsPassword() || reauthValid(this.s.signin?.reauth_until)
+    }
+
+    /**
+     * In place of the password, for an account without one: confirm through
+     * the provider, which comes back here with ten minutes to make the token.
+     */
+    confirmView() {
+        const signin = this.s.signin
+        const first = signin ? reauthWith(signin.identities) : null
+        if (signin && reauthValid(signin.reauth_until)) {
+            const until = new Date(signin.reauth_until! * 1000).toLocaleTimeString(undefined, {
+                hour: '2-digit',
+                minute: '2-digit',
+            })
+            return <Alert tone="success">Confirmed. You can make a token until {until}.</Alert>
+        }
+        if (!first) return null
+        return (
+            <div class="tokens-page__confirm">
+                <p class="tokens-page__hint">Confirm it's you before a new token is made.</p>
+                <Button icon={ProviderLogo({id: first.provider, kind: first.kind})} onclick={() => confirmWith(first)}>
+                    {confirmLabel(first.provider_name)}
+                </Button>
+            </div>
+        )
     }
 
     view() {
@@ -124,6 +181,8 @@ export class Tokens extends MithrilComponent {
                         </Button>
                     </Card>
                 )}
+
+                {s.signin && <Ways reload={this.loadSignin} signin={s.signin} />}
 
                 <Card title={`Access tokens for ${$s.signup.username}`}>
                     {s.tokens.length === 0 ? (
@@ -167,15 +226,19 @@ export class Tokens extends MithrilComponent {
                             Without it the token acts as a player would, whatever this account's roles say — what
                             a bot needs, and all a stolen token could do.
                         </p>
-                        <FieldText
-                            autocomplete="current-password"
-                            disabled={s.busy}
-                            label="Your password, to confirm"
-                            model={bind(s, 'password')}
-                            type="password"
-                            validation={this.v.password}
-                        />
-                        <Button disabled={!this.v.$valid} loading={s.busy} type="submit" variant="primary">
+                        {this.needsPassword() ? (
+                            <FieldText
+                                autocomplete="current-password"
+                                disabled={s.busy}
+                                label="Your password, to confirm"
+                                model={bind(s, 'password')}
+                                type="password"
+                                validation={this.v.password}
+                            />
+                        ) : (
+                            this.confirmView()
+                        )}
+                        <Button disabled={!this.v.$valid || !this.confirmed()} loading={s.busy} type="submit" variant="primary">
                             Create token
                         </Button>
                     </Card>

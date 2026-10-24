@@ -30,6 +30,7 @@ export const TABS: {tab: AdminTab; label: string; needs: string[]}[] = [
     {label: 'Roles', needs: ['roles_manage'], tab: 'roles'},
     {label: 'Building claims', needs: ['reports_triage'], tab: 'claims'},
     {label: 'Reports', needs: ['reports_triage'], tab: 'reports'},
+    {label: 'Sign-in', needs: ['signin_manage'], tab: 'signin'},
     {label: 'Overrides', needs: ['building_override'], tab: 'overrides'},
     {label: 'Models', needs: ['library_manage'], tab: 'library'},
     {label: 'Data', needs: ['pipeline_run'], tab: 'pipeline'},
@@ -53,7 +54,7 @@ export type AdminAreaId = 'people' | 'content' | 'data' | 'stats'
  * what is in the world, the data that builds the map, and how it is all used.
  */
 export const AREAS: {id: AdminAreaId; label: string; hint: string; tabs: AdminTab[]}[] = [
-    {hint: 'Accounts, what they may do, and who holds which building', id: 'people', label: 'People', tabs: ['accounts', 'roles', 'claims', 'reports']},
+    {hint: 'Accounts, what they may do, who holds which building, and how people sign in', id: 'people', label: 'People', tabs: ['accounts', 'roles', 'claims', 'reports', 'signin']},
     {hint: 'Buildings drawn from a model, and the shared model library', id: 'content', label: 'Content', tabs: ['overrides', 'library']},
     {hint: 'The pipelines that build the map', id: 'data', label: 'Data', tabs: ['pipeline']},
     {hint: 'How the world is used, and who visits the sites', id: 'stats', label: 'Stats', tabs: ['stats', 'stats_world', 'stats_web', 'stats_places']},

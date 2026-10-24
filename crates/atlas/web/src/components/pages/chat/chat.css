@@ -3769,3 +3769,37 @@
     margin: 0 0 14px;
     white-space: pre-wrap;
 }
+
+/* A community's linked Discord servers and subreddits, in its settings (`linked-groups.tsx`). */
+.linked-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.linked-group {
+    align-items: center;
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    display: flex;
+    gap: var(--m-space-3);
+    padding: var(--m-space-2) var(--m-space-3);
+}
+
+.linked-group__text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+
+    & small {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.linked-groups__add {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
