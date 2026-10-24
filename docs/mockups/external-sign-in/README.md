@@ -11,6 +11,23 @@ name and password, on cartopolis.org and in the app. The account stays a
 Cartopolis account with a Cartopolis name. The provider only confirms who you
 are, and an account can have a provider, a password, or both.
 
+## v2: free alternatives too
+
+![v2](v2-free.png)
+
+The same flow with free, non-commercial providers beside Google and GitHub:
+Codeberg, Mastodon and the fediverse (any server, typed in by the person), and a
+community's own OpenID server added by the operator (garage44's Forgejo drawn).
+The buttons become a two-column grid, with the operator setting the order and
+cartopolis.org listing the free ones first. Mastodon asks which server first and
+gives no e-mail address, so the address becomes optional and the handle shows as
+confirmed on the profile. Codeberg and community servers are one generic OpenID
+config block each.
+
+Open: the order (free first, or Google first), which free ones to switch on at
+launch, and whether any fediverse server may sign in or only an allowed list
+(drawn: any, minus `fediverse_blocklists`).
+
 ## v1
 
 ![v1](v1.png)

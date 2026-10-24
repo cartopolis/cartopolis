@@ -117,3 +117,14 @@ svg.logo { width:18px; height:18px; flex:none; }
 .decide ol { padding-left:22px; color:var(--dim); font-size:14.5px; }
 .decide li { margin-bottom:10px; }
 .decide b { color:var(--strong); font-weight:600; }
+
+/* v2: the provider grid */
+.prov { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.prov .btn { justify-content:flex-start; padding:0 12px; font-size:13.5px; }
+.prov .wide { grid-column:1 / -1; }
+.prov .btn small { margin-left:auto; color:var(--faint); font-weight:400; font-size:11.5px; }
+.free { display:inline-block; font-size:10px; font-weight:600; letter-spacing:.4px; padding:1px 5px; border-radius:5px; background:#23392f; color:#9fd3b4; }
+.badge { width:18px; height:18px; border-radius:5px; display:grid; place-items:center; flex:none; color:#fff; font-size:11px; font-weight:700; }
+.list { display:flex; flex-direction:column; gap:6px; }
+.list .who { cursor:default; }
+.appcard .prov .btn { font-size:12.5px; padding:0 8px; gap:6px; }
