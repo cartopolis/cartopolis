@@ -118,6 +118,9 @@ pub struct LoginScreen {
     remember: bool,
     /// A request is in flight and this card is waiting to see how it lands.
     awaiting: bool,
+    /// Signing in with Discord, Google and the rest, through the browser
+    /// (`external_signin`): what the server offers, and a round trip out.
+    external: crate::systems::external_signin::External,
 }
 
 impl Default for LoginScreen {
@@ -130,6 +133,7 @@ impl Default for LoginScreen {
             password: String::new(),
             remember: true,
             awaiting: false,
+            external: Default::default(),
         }
     }
 }
@@ -215,6 +219,32 @@ impl LoginScreen {
         !normalize_server(&self.server).is_empty()
             && !self.username.trim().is_empty()
             && can_simulate()
+    }
+
+    /// The server's HTTP address, for the other ways in it offers: `None` with
+    /// no server typed, or a dev sim on this machine, whose HTTP port nothing
+    /// here knows (`model_assets::derive_api_base`).
+    fn api_base(&self) -> Option<String> {
+        let server = normalize_server(&self.server);
+        if server.is_empty() {
+            return None;
+        }
+        crate::systems::model_assets::derive_api_base(&server)
+    }
+
+    /// The request for a session the browser's round trip left for the app.
+    fn token_request(&mut self, token: String, username: String) -> Option<SessionRequest> {
+        let server = normalize_server(&self.server);
+        if server.is_empty() || token.is_empty() || !can_simulate() {
+            return None;
+        }
+        self.server = server.clone();
+        self.username = username;
+        Some(SessionRequest::Remote {
+            server,
+            credential: AuthCredential::Token(token),
+            persist_token: self.remember,
+        })
     }
 
     fn build_request(&mut self) -> Option<SessionRequest> {
@@ -335,6 +365,23 @@ pub fn render_login_screen(
         egui.set_modal(false);
         screen.anim = 0.0;
         return;
+    }
+    // The other ways in follow the server field, and a sign-in handed to the
+    // browser is collected here on whichever frame the browser finishes it.
+    let base = screen.api_base();
+    screen.external.follow(base);
+    if let Some(got) = screen.external.tick(time.elapsed_secs_f64()) {
+        if let Some(request) = screen.token_request(got.token.clone(), got.username) {
+            info!(server = %screen.server, user = %screen.username, "sign-in collected from the browser");
+            // Over any token kept for this server: `connect` tries the kept one
+            // first, and it may be somebody else's.
+            if screen.remember {
+                store.set_session_token(&screen.server, &got.token);
+            }
+            store.set_session_prefs(screen.prefs());
+            session.request(request);
+            screen.awaiting = true;
+        }
     }
     let dt = time.delta_secs();
     screen.anim = (screen.anim + dt / FADE_S).min(1.0);
@@ -572,6 +619,18 @@ fn card_ui(
                 .desired_width(f32::INFINITY),
         );
     });
+
+    // ── Other ways in ────────────────────────────────────────────────────────
+    // While the browser is out, the card is about that and nothing else: the
+    // password form under it would be a second, contradictory question.
+    if screen.external.busy() {
+        external_waiting(ui, screen);
+        return close;
+    }
+    if !screen.external.offered.is_empty() {
+        external_buttons(ui, screen, session.status.is_busy());
+    }
+
     field(ui, "User", |ui| {
         crate::systems::text_touch::field(
             ui,
@@ -656,6 +715,116 @@ fn card_ui(
         );
     }
     close
+}
+
+/// The providers this server offers, two to a row, and the line that says the
+/// form below is the other way in.
+fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
+    ui.add_space(10.0);
+    let mut chosen = None;
+    ui.add_enabled_ui(!busy, |ui| {
+        for pair in screen.external.offered.chunks(2) {
+            ui.horizontal(|ui| {
+                let w = theme::equal_width(ui, 2);
+                for p in pair {
+                    // The name's first letter stands in for the provider's
+                    // mark: the app's fonts carry none of them.
+                    let mark: String = p.name.chars().take(1).collect();
+                    if theme::secondary_button(ui, &mark, &p.name, w).clicked() {
+                        chosen = Some(p.clone());
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
+    });
+    if let (Some(p), Some(base)) = (chosen, screen.api_base()) {
+        screen.external.start(&base, p);
+    }
+    if let Some(error) = &screen.external.error {
+        ui.label(
+            egui::RichText::new(error)
+                .size(theme::SIZE_SUB)
+                .color(theme::ERROR),
+        );
+    }
+    ui.add_space(4.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new("or with your account name")
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+    });
+}
+
+/// The card while the browser is signing in: the code to compare, a way back
+/// to the browser, and a way out.
+fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
+    ui.add_space(12.0);
+    let Some(p) = screen.external.pending.clone() else {
+        // The pairing code is still on its way.
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Spinner::new()
+                    .size(theme::SIZE_VALUE)
+                    .color(theme::ACCENT),
+            );
+            ui.label(
+                egui::RichText::new("Opening your browser…")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+        });
+        return;
+    };
+    ui.label(
+        egui::RichText::new("Finish in your browser")
+            .size(theme::SIZE_VALUE)
+            .color(theme::TEXT)
+            .strong(),
+    );
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "We opened {}'s sign-in in your browser. Come back here when it's done. \
+             The browser shows this code when it is finishing this sign-in:",
+            p.provider.name
+        ))
+        .size(theme::SIZE_SUB)
+        .color(theme::TEXT_DIM),
+    );
+    ui.add_space(8.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new(&p.code)
+                .monospace()
+                .size(26.0)
+                .color(theme::CREAM),
+        );
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Spinner::new()
+                .size(theme::SIZE_VALUE)
+                .color(theme::ACCENT),
+        );
+        ui.label(
+            egui::RichText::new(format!("Waiting for {}…", p.provider.name))
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+    });
+    ui.add_space(10.0);
+    let w = ui.available_width();
+    if theme::secondary_button(ui, "", "Open the browser again", w).clicked() {
+        screen.external.reopen();
+    }
+    ui.add_space(4.0);
+    if theme::secondary_button(ui, "", "Cancel", w).clicked() {
+        screen.external.cancel();
+    }
 }
 
 /// Where you are right now — the line that makes "sign out" mean something.

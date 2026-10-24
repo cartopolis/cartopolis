@@ -25,6 +25,7 @@ pub mod data_layers;
 pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;
+pub mod external_signin;
 pub mod faces;
 pub mod floor_picker;
 pub mod glass;
