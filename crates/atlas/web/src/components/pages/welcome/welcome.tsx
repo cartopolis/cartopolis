@@ -402,12 +402,6 @@ export class Welcome extends MithrilComponent {
                             {what.identity.provider_name} doesn't share your e-mail address, so this account has none.
                         </p>
                     )}
-                    {(what.identity.kind === 'mastodon' || what.identity.kind === 'reddit') && (
-                        <Alert tone="info">
-                            Your profile will show <b>{what.identity.handle}</b> as confirmed, so people who know you
-                            there know it's you.
-                        </Alert>
-                    )}
                     {this.picks()}
                     {s.error && <Alert tone="danger">{s.error}</Alert>}
                     <div class="auth__actions">
