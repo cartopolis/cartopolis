@@ -32,8 +32,12 @@ and configure sign-in in the backend rather than in `cartopolis.toml`.
    someone who manages it there. Whoever signs in through it is offered to
    join, on the pick-your-name screen.
 
+Decided 2026-10-24: all provider configuration, keys included, is done in the
+Admin UI and stored in the database, as drawn. Nothing goes in `cartopolis.toml`
+apart from the environment key that encrypts the secrets.
+
 Open: build section 4 with sign-in or later; which providers go on at launch
-(drawn: all six); secrets in the database (drawn) or in the environment.
+(drawn: all six).
 
 ## v2: free alternatives too
 
