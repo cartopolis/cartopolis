@@ -43,7 +43,10 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/account/password", post(account_password))
         .route("/api/admin/signin", get(admin_list))
         .route("/api/admin/signin/order", post(admin_order))
-        .route("/api/admin/signin/{id}", put(admin_save).delete(admin_delete))
+        .route(
+            "/api/admin/signin/{id}",
+            put(admin_save).delete(admin_delete),
+        )
         .route("/api/communities/{id}/links", get(community_links))
         .route(
             "/api/communities/{id}/links/{provider}/{group}",
@@ -107,7 +110,12 @@ fn live_provider(state: &HttpState, id: &str) -> ApiResult<Provider> {
     let id = id.to_string();
     with_db(state, move |c| store::provider(c, &id))?
         .filter(Provider::live)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "this server does not offer that".into()))
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::NOT_FOUND,
+                "this server does not offer that".into(),
+            )
+        })
 }
 
 fn provider_name(state: &HttpState, id: &str) -> String {
@@ -139,7 +147,11 @@ fn fediverse_origin(state: &HttpState, host: &str) -> String {
 }
 
 /// Find, and for a new fediverse server make, what `provider` needs.
-async fn prepare(state: &HttpState, p: &Provider, server: Option<&str>) -> Result<Prepared, String> {
+async fn prepare(
+    state: &HttpState,
+    p: &Provider,
+    server: Option<&str>,
+) -> Result<Prepared, String> {
     match p.kind {
         Kind::Oidc => {
             let issuer = p.issuer.clone().unwrap_or_default();
@@ -162,8 +174,10 @@ async fn prepare(state: &HttpState, p: &Provider, server: Option<&str>) -> Resul
                 .ok_or("That doesn't look like a fediverse address or server.")?;
             let blocked = {
                 let h = host.clone();
-                with_db(state, move |c| Ok(crate::fediverse::blocklist::is_blocked(c, &h)?))
-                    .unwrap_or(true)
+                with_db(state, move |c| {
+                    Ok(crate::fediverse::blocklist::is_blocked(c, &h)?)
+                })
+                .unwrap_or(true)
             };
             if blocked {
                 return Err(format!("This server doesn't take sign-ins from {host}."));
@@ -274,7 +288,10 @@ async fn start(
     Query(q): Query<StartQuery>,
 ) -> Response {
     if !state.signin.starts.allow(&caller_key(&headers, peer)) {
-        return welcome_error(&state, "Too many sign-ins from here. Wait a while and try again.");
+        return welcome_error(
+            &state,
+            "Too many sign-ins from here. Wait a while and try again.",
+        );
     }
     let Ok(p) = live_provider(&state, &id) else {
         return welcome_error(&state, "This server doesn't offer that way to sign in.");
@@ -289,7 +306,16 @@ async fn start(
         }
     }
     let return_to = safe_return(q.return_to.as_deref());
-    match launch(&state, &p, Purpose::SignIn, q.server.as_deref(), app, return_to).await {
+    match launch(
+        &state,
+        &p,
+        Purpose::SignIn,
+        q.server.as_deref(),
+        app,
+        return_to,
+    )
+    .await
+    {
         Ok(url) => Redirect::to(&url).into_response(),
         Err(message) => welcome_error(&state, &message),
     }
@@ -340,7 +366,9 @@ async fn begin(
             let (principal, _) = require_session(&state, &headers)?;
             let p = live_provider(&state, &id)?;
             if !p.kind.has_groups() {
-                return Err(bad_request("only a Discord server or a subreddit can be linked"));
+                return Err(bad_request(
+                    "only a Discord server or a subreddit can be linked",
+                ));
             }
             let community = body
                 .community
@@ -432,7 +460,11 @@ async fn finish(state: &HttpState, id: &str, flow: &Flow, code: &str) -> Result<
             .key
             .open(&sealed, &format!("fediverse:{host}"))
             .map_err(|e| e.to_string())?;
-        (cid, secret, providers::mastodon_endpoints(&fediverse_origin(state, &host)))
+        (
+            cid,
+            secret,
+            providers::mastodon_endpoints(&fediverse_origin(state, &host)),
+        )
     } else {
         let secret = p
             .secret_sealed
@@ -471,7 +503,15 @@ async fn finish(state: &HttpState, id: &str, flow: &Flow, code: &str) -> Result<
             &redirect,
             &verifier,
         )?;
-        providers::profile(&client, kind, &endpoints, &token, host.as_deref(), groups, managed)
+        providers::profile(
+            &client,
+            kind,
+            &endpoints,
+            &token,
+            host.as_deref(),
+            groups,
+            managed,
+        )
     })
     .await
     .map_err(|e| {
@@ -519,7 +559,8 @@ async fn decide(
 ) -> Result<Outcome, String> {
     let db_err = |e: ApiError| e.1;
     let (pid, subject) = (p.id.clone(), profile.subject.clone());
-    let linked = with_db(state, move |c| store::find_identity(c, &pid, &subject)).map_err(db_err)?;
+    let linked =
+        with_db(state, move |c| store::find_identity(c, &pid, &subject)).map_err(db_err)?;
     Ok(match &flow.purpose {
         Purpose::Test(_) => {
             let id = p.id.clone();
@@ -590,8 +631,10 @@ async fn decide(
                 let token = state.sessions.issue(principal, &username);
                 hand_to_app(state, flow.app.as_deref(), principal, &username);
                 let (pid, groups) = (p.id.clone(), group_ids(profile));
-                let offers = with_db(state, move |c| store::offers(c, &pid, &groups, Some(principal)))
-                    .map_err(db_err)?;
+                let offers = with_db(state, move |c| {
+                    store::offers(c, &pid, &groups, Some(principal))
+                })
+                .map_err(db_err)?;
                 tracing::info!(provider = %p.id, %username, "signed in");
                 Outcome::SignedIn {
                     principal,
@@ -778,7 +821,9 @@ async fn read_ticket(
 }
 
 fn spend(state: &HttpState, id: &str) {
-    state.signin.update_ticket(id, |t| t.outcome = Outcome::Spent);
+    state
+        .signin
+        .update_ticket(id, |t| t.outcome = Outcome::Spent);
 }
 
 /// Join the communities picked from a ticket's offers. Only those offered:
@@ -841,12 +886,22 @@ async fn ticket_create(
         t.profile.handle.clone(),
     );
     let made = with_db_mut(&state, move |c| {
-        store::create_account(c, &name, email.as_deref(), &provider, &subject, &handle, now_s())
+        store::create_account(
+            c,
+            &name,
+            email.as_deref(),
+            &provider,
+            &subject,
+            &handle,
+            now_s(),
+        )
     })?;
     let principal = match made {
         store::Made::Created(p) => p,
         store::Made::NameTaken => {
-            return Err(conflict(format!("the name {username} is taken — pick another")))
+            return Err(conflict(format!(
+                "the name {username} is taken — pick another"
+            )))
         }
         store::Made::EmailTaken | store::Made::AlreadyLinked => {
             return Err(conflict("That sign-in has been used already."))
@@ -1077,7 +1132,9 @@ async fn account_signin(
     let name_of = |id: &str| {
         all.iter()
             .find(|p| p.id == id)
-            .map_or((id.to_string(), "oidc"), |p| (p.name.clone(), p.kind.as_str()))
+            .map_or((id.to_string(), "oidc"), |p| {
+                (p.name.clone(), p.kind.as_str())
+            })
     };
     let identities: Vec<Value> = identities
         .iter()
@@ -1094,9 +1151,10 @@ async fn account_signin(
         .filter(|p| p.live())
         .map(|p| json!({ "id": p.id, "kind": p.kind.as_str(), "name": p.name }))
         .collect();
-    let reauth_until = state.sessions.reauthed_recently(principal).map(|at| {
-        now_s() + (auth::REAUTH_WINDOW.saturating_sub(at.elapsed())).as_secs() as i64
-    });
+    let reauth_until = state
+        .sessions
+        .reauthed_recently(principal)
+        .map(|at| now_s() + (auth::REAUTH_WINDOW.saturating_sub(at.elapsed())).as_secs() as i64);
     Ok(Json(json!({
         "has_password": has_password,
         "identities": identities,
@@ -1179,10 +1237,7 @@ fn admin_json(state: &HttpState, p: &Provider, usage: (i64, i64)) -> Value {
     })
 }
 
-async fn admin_list(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-) -> ApiResult<Json<Value>> {
+async fn admin_list(State(state): State<HttpState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     require(&state, &headers, Permission::SigninManage)?;
     let rows = with_db(&state, |c| {
         store::all_providers(c)?
@@ -1262,7 +1317,10 @@ async fn admin_save(
             p.name = name;
         }
     }
-    if let Some(issuer) = body.issuer.map(|i| i.trim().trim_end_matches('/').to_string()) {
+    if let Some(issuer) = body
+        .issuer
+        .map(|i| i.trim().trim_end_matches('/').to_string())
+    {
         if p.custom {
             state
                 .signin
@@ -1288,7 +1346,9 @@ async fn admin_save(
             NewAccounts::parse(&n).ok_or_else(|| bad_request("anyone, members or none"))?;
     }
     if p.custom && (p.name.is_empty() || p.issuer.is_none()) {
-        return Err(bad_request("a new OpenID server needs a name and an issuer"));
+        return Err(bad_request(
+            "a new OpenID server needs a name and an issuer",
+        ));
     }
     if keys_changed {
         // New keys are untested keys: the buttons go until a test passes.
@@ -1300,7 +1360,9 @@ async fn admin_save(
             return Err(conflict("Enter its client id and secret first."));
         }
         if on && p.kind != Kind::Mastodon && p.tested_at.is_none() {
-            return Err(conflict("Test it first, so members don't meet a broken button."));
+            return Err(conflict(
+                "Test it first, so members don't meet a broken button.",
+            ));
         }
         p.enabled = on;
     }

@@ -98,7 +98,10 @@ pub fn all_providers(conn: &Connection) -> anyhow::Result<Vec<Provider>> {
 
 /// The providers sign-in buttons offer, in order.
 pub fn enabled_providers(conn: &Connection) -> anyhow::Result<Vec<Provider>> {
-    Ok(all_providers(conn)?.into_iter().filter(Provider::live).collect())
+    Ok(all_providers(conn)?
+        .into_iter()
+        .filter(Provider::live)
+        .collect())
 }
 
 /// One provider by id: its row, or the preset of that name.
@@ -317,7 +320,10 @@ pub fn has_password(conn: &Connection, account: Uuid) -> anyhow::Result<bool> {
 
 /// A deleted account's sign-ins go with it (`db::erase_account_traces`).
 pub fn forget_account(conn: &Connection, account: &str) -> anyhow::Result<()> {
-    conn.execute("DELETE FROM account_identities WHERE account = ?1", [account])?;
+    conn.execute(
+        "DELETE FROM account_identities WHERE account = ?1",
+        [account],
+    )?;
     Ok(())
 }
 
@@ -451,7 +457,10 @@ pub fn add_link(
             |r| r.get(0),
         )
         .optional()?;
-    if existing.as_deref().is_some_and(|c| c != community.to_string()) {
+    if existing
+        .as_deref()
+        .is_some_and(|c| c != community.to_string())
+    {
         return Ok(false);
     }
     conn.execute(

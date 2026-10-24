@@ -6,7 +6,6 @@
 //! the callback with a code the stand-in knows. The code names the person —
 //! `anna`, `bob`, `carol` — and the stand-in answers that person's profile.
 
-
 use std::sync::Arc;
 
 use axum::extract::Form;
@@ -154,7 +153,11 @@ async fn call(
         let status = resp.status();
         let location = resp.header("location").map(str::to_string);
         let text = resp.into_string().unwrap_or_default();
-        (status, serde_json::from_str(&text).unwrap_or(Value::Null), location)
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+            location,
+        )
     })
     .await
     .unwrap()
@@ -174,35 +177,54 @@ async fn come_back(h: &SimHandle, authorize: &str, provider: &str, code: &str) -
     let state = query(authorize, "state").expect("authorize address carries a state");
     let (status, _, location) = call(
         "GET",
-        format!("{}/api/auth/{provider}/callback?code={code}&state={state}", base(h)),
+        format!(
+            "{}/api/auth/{provider}/callback?code={code}&state={state}",
+            base(h)
+        ),
         None,
         None,
     )
     .await;
-    assert!((300..400).contains(&status), "callback redirects, got {status}");
+    assert!(
+        (300..400).contains(&status),
+        "callback redirects, got {status}"
+    );
     let location = location.unwrap();
-    assert!(location.starts_with("http://web.test/welcome?"), "{location}");
-    query(&location, "ticket").unwrap_or_else(|| {
-        panic!("no ticket, error: {:?}", query(&location, "error"))
-    })
+    assert!(
+        location.starts_with("http://web.test/welcome?"),
+        "{location}"
+    );
+    query(&location, "ticket")
+        .unwrap_or_else(|| panic!("no ticket, error: {:?}", query(&location, "error")))
 }
 
 async fn ticket(h: &SimHandle, t: &str) -> Value {
-    call("POST", format!("{}/api/auth/ticket", base(h)), None, Some(json!({"ticket": t})))
-        .await
-        .1
+    call(
+        "POST",
+        format!("{}/api/auth/ticket", base(h)),
+        None,
+        Some(json!({"ticket": t})),
+    )
+    .await
+    .1
 }
 
 /// A signed-out visitor presses the provider's button.
 async fn sign_in(h: &SimHandle, provider: &str, code: &str, extra: &str) -> String {
     let (status, _, location) = call(
         "GET",
-        format!("{}/api/auth/{provider}/start?return=/buildings{extra}", base(h)),
+        format!(
+            "{}/api/auth/{provider}/start?return=/buildings{extra}",
+            base(h)
+        ),
         None,
         None,
     )
     .await;
-    assert!((300..400).contains(&status), "start redirects, got {status}");
+    assert!(
+        (300..400).contains(&status),
+        "start redirects, got {status}"
+    );
     come_back(h, &location.unwrap(), provider, code).await
 }
 
@@ -241,8 +263,17 @@ async fn set_up_discord(h: &SimHandle) -> String {
     .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["secret_set"], true);
-    assert!(v.get("client_secret").is_none(), "a secret never comes back");
-    let (s, v, _) = call("PUT", url.clone(), Some(&admin), Some(json!({"enabled": true}))).await;
+    assert!(
+        v.get("client_secret").is_none(),
+        "a secret never comes back"
+    );
+    let (s, v, _) = call(
+        "PUT",
+        url.clone(),
+        Some(&admin),
+        Some(json!({"enabled": true})),
+    )
+    .await;
     assert_eq!(s, 409, "untested keys stay off: {v}");
 
     let (s, v) = begin(h, "discord", &admin, json!({"purpose": "test"})).await;
@@ -291,7 +322,13 @@ async fn a_new_person_signs_up_with_discord_and_back_in() {
     assert_eq!(s, 409, "a ticket makes one account");
 
     // Its sign-ins: Discord, and no password.
-    let (_, me, _) = call("GET", format!("{}/api/account/signin", base(&h)), Some(&token), None).await;
+    let (_, me, _) = call(
+        "GET",
+        format!("{}/api/account/signin", base(&h)),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(me["has_password"], false);
     assert_eq!(me["identities"][0]["handle"], "bobby");
     // …which is its only way in.
@@ -375,12 +412,24 @@ async fn an_account_without_a_password_proves_itself_through_its_provider() {
     assert_eq!(v["reauth"], true, "{v}");
 
     // Somebody else's Discord does not count.
-    let (_, v) = begin(&h, "discord", &token, json!({"purpose": "reauth", "return": "/tokens"})).await;
+    let (_, v) = begin(
+        &h,
+        "discord",
+        &token,
+        json!({"purpose": "reauth", "return": "/tokens"}),
+    )
+    .await;
     let t = come_back(&h, v["url"].as_str().unwrap(), "discord", "carol").await;
     assert_eq!(ticket(&h, &t).await["kind"], "refused");
     assert_eq!(make().await.0, 403);
 
-    let (_, v) = begin(&h, "discord", &token, json!({"purpose": "reauth", "return": "/tokens"})).await;
+    let (_, v) = begin(
+        &h,
+        "discord",
+        &token,
+        json!({"purpose": "reauth", "return": "/tokens"}),
+    )
+    .await;
     let t = come_back(&h, v["url"].as_str().unwrap(), "discord", "bob").await;
     let v = ticket(&h, &t).await;
     assert_eq!(v["kind"], "reauthed");
@@ -433,10 +482,22 @@ async fn a_linked_discord_server_brings_its_members_to_the_community() {
 
     // A player who is no moderator may not link it.
     let player = login(&h, "player", "playerpw").await;
-    let (s, _) = begin(&h, "discord", &player, json!({"purpose": "community", "community": community})).await;
+    let (s, _) = begin(
+        &h,
+        "discord",
+        &player,
+        json!({"purpose": "community", "community": community}),
+    )
+    .await;
     assert_eq!(s, 403);
 
-    let (s, v) = begin(&h, "discord", &bob, json!({"purpose": "community", "community": community})).await;
+    let (s, v) = begin(
+        &h,
+        "discord",
+        &bob,
+        json!({"purpose": "community", "community": community}),
+    )
+    .await;
     assert_eq!(s, 200, "{v}");
     let t = come_back(&h, v["url"].as_str().unwrap(), "discord", "bob").await;
     let v = ticket(&h, &t).await;
@@ -489,8 +550,17 @@ async fn a_linked_discord_server_brings_its_members_to_the_community() {
 async fn the_app_collects_its_own_session_by_code() {
     let (h, _dir, _db) = server().await;
     set_up_discord(&h).await;
-    let (_, pair, _) = call("POST", format!("{}/api/auth/app", base(&h)), None, Some(json!({}))).await;
-    let (code, secret) = (pair["code"].as_str().unwrap(), pair["secret"].as_str().unwrap());
+    let (_, pair, _) = call(
+        "POST",
+        format!("{}/api/auth/app", base(&h)),
+        None,
+        Some(json!({})),
+    )
+    .await;
+    let (code, secret) = (
+        pair["code"].as_str().unwrap(),
+        pair["secret"].as_str().unwrap(),
+    );
     let poll = || {
         let url = format!("{}/api/auth/app/{code}?secret={secret}", base(&h));
         async move { call("GET", url, None, None).await }
@@ -509,7 +579,11 @@ async fn the_app_collects_its_own_session_by_code() {
     let (_, done, _) = poll().await;
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["username"], "bob");
-    assert_ne!(done["token"].as_str().unwrap(), browser, "the app's own session");
+    assert_ne!(
+        done["token"].as_str().unwrap(),
+        browser,
+        "the app's own session"
+    );
     assert_eq!(poll().await.0, 404, "handed over once");
 }
 
@@ -543,7 +617,13 @@ async fn a_communitys_own_openid_server_is_configuration() {
     assert_eq!(v["suggestion"], "dave");
     // A player may not touch any of it.
     let player = login(&h, "player", "playerpw").await;
-    let (s, _, _) = call("GET", format!("{}/api/admin/signin", base(&h)), Some(&player), None).await;
+    let (s, _, _) = call(
+        "GET",
+        format!("{}/api/admin/signin", base(&h)),
+        Some(&player),
+        None,
+    )
+    .await;
     assert_eq!(s, 403);
 }
 
@@ -555,4 +635,3 @@ async fn query_issuer(_h: &SimHandle) -> String {
     let base = stand_in().await;
     format!("{base}/oidc")
 }
-

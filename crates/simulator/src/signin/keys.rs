@@ -130,7 +130,10 @@ mod tests {
         assert!(!sealed.windows(7).any(|w| w == b"hunter2"));
         assert_eq!(key.open(&sealed, "discord").unwrap(), "hunter2");
         assert!(key.open(&sealed, "google").is_err());
-        assert!(SealKey::ephemeral().unwrap().open(&sealed, "discord").is_err());
+        assert!(SealKey::ephemeral()
+            .unwrap()
+            .open(&sealed, "discord")
+            .is_err());
     }
 
     #[test]

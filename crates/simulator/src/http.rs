@@ -817,7 +817,10 @@ pub(crate) struct LoginRequest {
 ///
 /// `lookup_credential` already filters `disabled = 1`, so a disabled account
 /// gets the same answer as an unknown one.
-pub(crate) async fn check_password_login(state: &HttpState, body: &LoginRequest) -> ApiResult<Uuid> {
+pub(crate) async fn check_password_login(
+    state: &HttpState,
+    body: &LoginRequest,
+) -> ApiResult<Uuid> {
     // Read the row, drop the guard, then hash — the module note in `auth` explains
     // why an argon2 verify must never happen with this mutex held.
     let stored = with_db(state, |c| auth::lookup_credential(c, &body.username))?;

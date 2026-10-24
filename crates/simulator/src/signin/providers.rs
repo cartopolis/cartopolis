@@ -396,10 +396,17 @@ mod tests {
             " Mastodon.NL ",
             "https://mastodon.nl/@anna",
         ] {
-            assert_eq!(fediverse_host(typed).as_deref(), Some("mastodon.nl"), "{typed}");
+            assert_eq!(
+                fediverse_host(typed).as_deref(),
+                Some("mastodon.nl"),
+                "{typed}"
+            );
         }
         assert_eq!(fediverse_host("anna"), None);
-        assert_eq!(fediverse_host("evil.example/../x"), Some("evil.example".into()));
+        assert_eq!(
+            fediverse_host("evil.example/../x"),
+            Some("evil.example".into())
+        );
         assert_eq!(fediverse_host("a b.nl"), None);
     }
 
@@ -427,6 +434,8 @@ mod tests {
         assert!(url.starts_with("https://www.reddit.com/api/v1/authorize?"));
         assert!(url.contains("duration=temporary"));
         assert!(url.contains("state=st"));
-        assert!(url.contains("redirect_uri=https%3A%2F%2Fcartopolis.org%2Fapi%2Fauth%2Freddit%2Fcallback"));
+        assert!(url.contains(
+            "redirect_uri=https%3A%2F%2Fcartopolis.org%2Fapi%2Fauth%2Freddit%2Fcallback"
+        ));
     }
 }

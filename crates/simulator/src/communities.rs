@@ -336,7 +336,12 @@ pub fn may_moderate(conn: &Connection, id: Uuid, account: &str) -> Result<(), Re
 /// linked to this community (`signin`). Being in that group is the way in,
 /// whatever the community's join rule says — that is what linking it means —
 /// but a block a moderator made still holds. `Ok(false)` when already in.
-pub fn join_linked(conn: &Connection, account: &str, id: Uuid, now_ms: i64) -> Result<bool, Refusal> {
+pub fn join_linked(
+    conn: &Connection,
+    account: &str,
+    id: Uuid,
+    now_ms: i64,
+) -> Result<bool, Refusal> {
     if !exists(conn, &id.to_string())? {
         return Err(Refusal::NoSuchCommunity);
     }
