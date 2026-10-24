@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in with Google or GitHub, v1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="google" viewBox="0 0 48 48">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+    </symbol>
+    <symbol id="github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+    <symbol id="ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  </defs>
+</svg>
+
+<h1>Sign in with <b>Google or GitHub</b></h1>
+<p class="lede">
+  A second way into the same account: “Continue with Google / GitHub” beside the name and password, on
+  cartopolis.org and in the app. The account stays a Cartopolis account with a Cartopolis name
+  (<code>anna@cartopolis.org</code>). Google or GitHub only confirm who you are, and the account can
+  have both, one, or a password as well.
+  Drawn in the web UI's tokens (<code>src/css/theme.css</code>, dark half). Everything here is
+  <span class="new">NEW</span> unless marked <span class="has">TODAY</span>.
+</p>
+
+<!-- ───────────────────────── 1. sign in ───────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>Signing in on cartopolis.org</h2>
+  <p class="cap">The sign-in card every page without a session shows (<code>elements/signin</code>), with the two buttons on top. Below them, the name and password form as it is now.</p>
+  <div class="row">
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/buildings</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">Sign in</div>
+          <div class="bd">
+            <p>One account for the world and for this page.</p>
+            <div class="ring" style="display:flex;flex-direction:column;gap:10px">
+              <div class="btn"><svg class="logo"><use href="#google"/></svg>Continue with Google</div>
+              <div class="btn"><svg class="logo" style="color:#fff"><use href="#github"/></svg>Continue with GitHub</div>
+            </div>
+            <div class="or">or with your Cartopolis name</div>
+            <div class="field"><label>Username</label><div class="input ph">anna</div></div>
+            <div class="field"><label>Password</label><div class="input ph">••••••••</div></div>
+            <div class="btn primary">Sign in</div>
+            <div class="foot">New here? <a>Sign up</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>What the buttons do</h3>
+      <ul>
+        <li><b>A plain redirect</b> to Google's or GitHub's own sign-in page and back to
+          <code>/api/auth/google/callback</code>. No Google or GitHub script is loaded on our pages.</li>
+        <li><b>We ask for the least there is</b>: Google <code>openid email profile</code>, GitHub
+          <code>read:user user:email</code>. That is a stable id, the e-mail address and a display name.
+          We never post anywhere and never read repositories or contacts.</li>
+        <li><b>Only where the server offers them.</b> The operator turns each on with a client id and secret
+          (section 6). <code>GET /api/register</code> lists what is on, and a server with neither shows exactly
+          today's card.</li>
+        <li><b>The same buttons on Sign up.</b> Sign up and Sign in become one step for these, because the
+          provider has already confirmed the address. No mail link to wait for.</li>
+      </ul>
+      <h3>After the round trip</h3>
+      <ul>
+        <li>Known Google/GitHub id → signed in, straight back to the page you came from.</li>
+        <li>Unknown id, new address → <b>pick a name</b> (section 2).</li>
+        <li>Unknown id, but the address already has an account → <b>link it</b> (section 3).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 2. new account ───────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>First time: Google's page, then one question</h2>
+  <p class="cap">Google asks which account to use and says what it will share. Back on cartopolis.org the only thing left to ask is your name here, because that is your address in chat, calls and the fediverse.</p>
+  <div class="row">
+    <div class="win" style="width:480px">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>accounts.google.com</b>/o/oauth2/…</div></div>
+      <div class="page light">
+        <div class="provider">
+          <svg class="logo" style="width:22px;height:22px"><use href="#google"/></svg>
+          <h4>Choose an account</h4>
+          <p>to continue to <b style="color:#1a73e8;font-weight:500">Cartopolis</b></p>
+          <div style="height:14px"></div>
+          <div class="acc"><i>A</i><div>Anna de Vries<small>anna.devries@gmail.com</small></div></div>
+          <div class="acc"><i style="background:#9aa0a6">+</i><div>Use another account</div></div>
+          <div class="share">Google will share your name, e-mail address and profile picture with Cartopolis.</div>
+        </div>
+        <div class="step" style="color:#80868b">Google's page, not ours: drawn only for the order of events</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="win" style="width:520px">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/welcome</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">Welcome to Cartopolis</div>
+          <div class="bd">
+            <div class="who">
+              <div class="av" style="background:var(--h1)">A</div>
+              <div class="t">Anna de Vries<small>anna.devries@gmail.com · confirmed by Google</small></div>
+              <svg class="logo"><use href="#google"/></svg>
+            </div>
+            <div class="field">
+              <label>Your name here</label>
+              <div class="input focus">anna<span class="suffix">@cartopolis.org</span></div>
+              <div class="help ok">Free. This is how people find you in chat and calls.</div>
+            </div>
+            <div class="btn primary">Create my account</div>
+            <div class="btn ghost">That's not me — use another account</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>Choices made here</h3>
+      <ul>
+        <li><b>The name is suggested, not taken.</b> We fill in the given name, lower-cased and checked against
+          the same rules as <code>/register</code>, and the person can change it. It is permanent, so it is asked
+          for, not derived from a Gmail address.</li>
+        <li><b>No password and no mail link.</b> Google's <code>email_verified</code>, or GitHub's primary
+          verified address, counts as confirmation, which is what the mail link exists for. A provider
+          address that is <i>not</i> verified is not stored, and the account starts with none.</li>
+        <li><b>Registrations closed on this server?</b> Then this card says so, as <code>/register</code> does
+          today, and only already-linked accounts can sign in with Google.</li>
+        <li><b>Stored:</b> provider, the provider's id for the person (never the address, which can change),
+          and when it was linked. No provider tokens are kept after sign-in.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 3. link ───────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>The address already has an account: prove it once, then link</h2>
+  <p class="cap">Someone who signed up with a password tries GitHub for the first time. We don't join the two on the e-mail address alone. The password is asked for once, and after that either way works.</p>
+  <div class="row">
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/welcome</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">You already have an account</div>
+          <div class="bd">
+            <div class="who">
+              <div class="av" style="background:#24292f"><svg class="logo" style="color:#fff"><use href="#github"/></svg></div>
+              <div class="t">annadv on GitHub<small>anna@devries.nl · verified by GitHub</small></div>
+            </div>
+            <p>That address belongs to <b>anna@cartopolis.org</b>. Enter its password once to add GitHub to it,
+              and you can then sign in either way.</p>
+            <div class="field"><label>Password for anna</label><div class="input focus">••••••••••</div></div>
+            <div class="btn primary">Add GitHub and sign in</div>
+            <div class="btn ghost">Forgot the password?</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>Why not link automatically</h3>
+      <ul>
+        <li><b>The account is worth more than the address.</b> Linking on the address alone would let whoever
+          controls that address at Google or GitHub take over an account with all its chats and buildings.
+          One password entry closes that.</li>
+        <li><b>Saying the account exists is fine here</b>, unlike on <code>/register</code>, which deliberately
+          answers every address the same. The person has just proved control of the address, which is
+          exactly what the mail link proves.</li>
+        <li><b>“Forgot the password?”</b> needs a reset by mail, which the server doesn't have yet
+          (<code>access-tokens.md</code>: nothing changes a password today). Until it does, that link is the
+          operator's address. Flagged in the open questions.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 4. the app ───────────────────────── -->
+<section class="sec">
+  <h2><span>4</span>In the app: the card hands off to the browser and gets a session back</h2>
+  <p class="cap">The app's sign-in card (<code>login_screen.rs</code>) gets the same two buttons. Google doesn't allow its sign-in inside an embedded view, so the app opens the phone's browser, which comes back to the app when it is done.</p>
+  <div class="row" style="gap:28px">
+    <div>
+      <div class="phone"><div class="screen"><div class="map"></div><div class="dim"></div>
+        <div class="appcard">
+          <div class="t">Sign in to cartopolis</div>
+          <div class="s">Sign in to share a world with other people</div>
+          <div class="row2">Server<div class="input">cartopolis.org</div></div>
+          <div class="ring" style="display:flex;flex-direction:column;gap:8px">
+            <div class="btn"><svg class="logo"><use href="#google"/></svg>Continue with Google</div>
+            <div class="btn"><svg class="logo" style="color:#fff"><use href="#github"/></svg>Continue with GitHub</div>
+          </div>
+          <div class="or">or</div>
+          <div class="row2">User<div class="input ph">your account name</div></div>
+          <div class="row2">Password<div class="input ph">••••••</div></div>
+          <div class="row2" style="color:var(--text)"><span style="width:14px;height:14px;border-radius:4px;background:var(--accent);display:inline-block"></span>Stay signed in on this device</div>
+          <div class="btn primary">Sign in</div>
+          <div class="stat">Offline — the map only</div>
+        </div>
+      </div></div>
+      <div class="step">① the card; the buttons appear once the server says it offers them</div>
+    </div>
+    <div class="arrow">→</div>
+    <div>
+      <div class="phone"><div class="screen"><div class="map"></div><div class="dim"></div>
+        <div class="appcard" style="top:150px">
+          <div class="t">Finish in your browser</div>
+          <div class="s">We opened Google's sign-in in your browser. Come back here when it's done, or check the browser shows this code:</div>
+          <div class="code">KQ7-4MD</div>
+          <div class="row2" style="color:var(--dim)"><div class="spinner"></div>Waiting for Google…</div>
+          <div class="btn small"><svg class="i" style="width:15px;height:15px"><use href="#ext"/></svg>Open the browser again</div>
+          <div class="btn ghost small">Cancel</div>
+        </div>
+      </div></div>
+      <div class="step">② waiting; the code is how you tell this sign-in from a fake one</div>
+    </div>
+    <div class="arrow">→</div>
+    <div>
+      <div class="phone"><div class="screen" style="background:var(--bg)">
+        <div style="height:40px;background:#1a2123;display:flex;align-items:center;padding:0 12px;font-size:12px;color:var(--dim)">🔒&nbsp;<b style="color:var(--text);font-weight:400">cartopolis.org</b>/app-signin</div>
+        <div style="padding:30px 14px">
+          <div class="card" style="width:auto"><div class="hd">Signed in as anna</div><div class="bd">
+            <div class="alert ok"><svg class="i"><use href="#check"/></svg><div>The app asking with code <b>KQ7-4MD</b> is now signed in.</div></div>
+            <div class="btn primary">Back to Cartopolis</div>
+            <p style="font-size:12.5px">Didn't start this from the app? <a>Sign it out</a>.</p>
+          </div></div>
+        </div>
+      </div></div>
+      <div class="step">③ the browser; on Android the button is an app link and drops you back in</div>
+    </div>
+    <div class="notes" style="max-width:380px">
+      <h3>How it fits what exists</h3>
+      <ul>
+        <li><b>No change to the wire.</b> The browser ends with a session token, the app picks it up by its
+          one-time code, and signs in with <code>AuthCredential::Token</code>, the same one “Stay signed in”
+          already uses <span class="has">TODAY</span>.</li>
+        <li><b>Android:</b> the return is <code>https://cartopolis.org/go/…</code>, the app link the manifest
+          already claims <span class="has">TODAY</span>. <b>Desktop:</b> the app just waits; switching back
+          is enough.</li>
+        <li><b>The web build</b> of the app runs on cartopolis.org itself, so it does the plain redirect of
+          section 1, with no code.</li>
+        <li><b>Encrypted chat is not affected.</b> Chat keys are per device. A new phone signed in with Google
+          is a new device, exactly as with a password.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 5. settings ───────────────────────── -->
+<section class="sec">
+  <h2><span>5</span>Your sign-in methods</h2>
+  <p class="cap">A small block on the account's page, next to Access tokens (<code>pages/tokens</code>). Link or remove a provider, or add a password to an account that started with Google.</p>
+  <div class="row">
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/account</div></div>
+      <div class="page" style="padding:28px 40px;min-height:0">
+        <div class="label">Ways to sign in</div>
+        <div class="methods">
+          <div class="method"><div class="ic"><svg class="logo"><use href="#google"/></svg></div>
+            <div class="t">Google<small>anna.devries@gmail.com · since 24 Oct 2026</small></div>
+            <div class="btn small danger">Remove</div></div>
+          <div class="method"><div class="ic" style="color:#fff"><svg class="logo"><use href="#github"/></svg></div>
+            <div class="t">GitHub<small>Not linked</small></div>
+            <div class="btn small">Link</div></div>
+          <div class="method"><div class="ic"><svg class="i"><use href="#key"/></svg></div>
+            <div class="t">Password<small>None. You sign in with Google.</small></div>
+            <div class="btn small">Add a password</div></div>
+        </div>
+        <div class="alert info" style="margin-top:14px"><svg class="i"><use href="#info"/></svg>
+          <div>Google is your only way in, so it can't be removed until you link GitHub or add a password.</div></div>
+        <div style="height:22px"></div>
+        <div class="label">Making an access token</div>
+        <div class="card" style="width:auto"><div class="bd">
+          <p>Confirm it's you before a new token is made.</p>
+          <div class="btn"><svg class="logo"><use href="#google"/></svg>Confirm with Google</div>
+        </div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>Rules</h3>
+      <ul>
+        <li><b>Never zero ways in.</b> The last method can't be removed; the alert above says why instead of
+          the button just being grey.</li>
+        <li><b>Re-confirming without a password.</b> Making an access token and deleting the account ask for the
+          password again today. An account without one is sent through Google or GitHub again instead, and
+          the server only accepts a sign-in from the last few minutes.</li>
+        <li><b>Bots stay on access tokens.</b> Nothing here changes how <code>midas bot</code> or a script
+          signs in.</li>
+      </ul>
+      <h3>For the operator</h3>
+      <ul>
+        <li>Admin › People shows a small G / GitHub mark beside accounts that have one. The operator never
+          sees the provider id, only that it is linked.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 6. server ───────────────────────── -->
+<section class="sec">
+  <h2><span>6</span>Turning it on for a server</h2>
+  <p class="cap">Off unless configured, per provider. Every self-hosted server registers its own app with Google and GitHub; nothing is shared through cartopolis.org.</p>
+  <div class="row">
+    <div class="card" style="width:560px;margin:0"><div class="bd">
+<pre style="font:13px/1.55 ui-monospace,Menlo,monospace;color:var(--text);white-space:pre"><span style="color:var(--faint)"># cartopolis.toml  (or CARTO_AUTH_GOOGLE_CLIENT_ID …)</span>
+[auth.google]
+client_id     = "1234-abc.apps.googleusercontent.com"
+client_secret = "<span style="color:var(--faint)">from the environment, never this file</span>"
+
+[auth.github]
+client_id     = "Ov23li…"
+client_secret = "<span style="color:var(--faint)">from the environment</span>"
+
+<span style="color:var(--faint)"># redirect to register at each provider:</span>
+<span style="color:var(--faint)"># https://cartopolis.org/api/auth/google/callback</span>
+<span style="color:var(--faint)"># https://cartopolis.org/api/auth/github/callback</span></pre>
+    </div></div>
+    <div class="notes">
+      <h3>Server side</h3>
+      <ul>
+        <li><b>HTTP only</b> (<code>http.rs</code>): <code>/api/auth/{provider}/start</code> and
+          <code>…/callback</code>, plus <code>/api/auth/app/{code}</code> for the app's pickup. Google is OpenID
+          Connect, so its answer is a signed token we check. GitHub is plain OAuth, so we ask its API for the
+          user and their verified addresses.</li>
+        <li><b>One new table</b> (provider, provider id, account). A migration, so its number is reserved with
+          <code>midas reserve</code> when built.</li>
+        <li><b>Caddy</b> needs the new <code>/api/auth/</code> paths listed, as every player route does.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="decide">
+  <h2>Open questions</h2>
+  <ol>
+    <li><b>Only Google and GitHub, or any OpenID server too?</b> Cartopolis is meant as a free alternative,
+      and the same code could offer Codeberg, Forgejo (code.garage44.eu), Mastodon or a community's own
+      Keycloak. Drawn: the two you asked for, built so a third is configuration and not code.</li>
+    <li><b>Linking an existing account:</b> password once (drawn), or link on the verified address
+      automatically (simpler, but a takeover risk if a provider ever gets an address wrong)?</li>
+    <li><b>May an account have no password at all?</b> Drawn: yes, as long as one way in remains. The
+      alternative is asking for a password in section 2 too, which makes the button mostly pointless.</li>
+    <li><b>Password reset by mail</b> doesn't exist yet. Section 3's “Forgot the password?” needs it. Build
+      it with this, or leave it as “ask the operator” for now?</li>
+    <li><b>Profile picture:</b> take Google's/GitHub's picture as the avatar's chat photo, or never import it
+      (drawn: never)?</li>
+  </ol>
+</div>
+
+</body>
+</html>
