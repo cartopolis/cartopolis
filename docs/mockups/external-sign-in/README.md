@@ -36,8 +36,9 @@ Decided 2026-10-24: all provider configuration, keys included, is done in the
 Admin UI and stored in the database, as drawn. Nothing goes in `cartopolis.toml`
 apart from the environment key that encrypts the secrets.
 
-Open: build section 4 with sign-in or later; which providers go on at launch
-(drawn: all six).
+Also decided 2026-10-24: section 4 (bringing communities across) is built
+together with sign-in, and all six providers go on for cartopolis.org at
+launch.
 
 ## v2: free alternatives too
 
