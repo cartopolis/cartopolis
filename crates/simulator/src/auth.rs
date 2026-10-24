@@ -620,6 +620,21 @@ pub fn verify_credentials(
 /// look broken even while the sim stayed up.
 pub const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// How long a fresh sign-in through another account stands in for re-typing a
+/// password ([`Sessions::reauthed_recently`]).
+pub const REAUTH_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// What `accounts.pw_hash` holds for an account made by signing in with
+/// another account. Like a guest's `'!guest'` it is no PHC string, so a
+/// password sign-in can never match it.
+pub const NO_PASSWORD: &str = "!signin";
+
+/// Whether a stored `pw_hash` is a real password rather than a marker.
+#[must_use]
+pub fn has_password(phc: &str) -> bool {
+    !phc.starts_with('!')
+}
+
 /// Hard ceiling on live tokens, whatever the TTL says.
 ///
 /// The TTL alone bounds the map only if connections are spread out in time; a
@@ -762,6 +777,10 @@ pub struct Sessions {
     /// Write-through target; `None` is a memory-only store (tests, and any
     /// caller that has no database to offer).
     conn: Option<Arc<Mutex<Connection>>>,
+    /// When each account last proved itself again through Discord, Google or
+    /// the rest (`signin`): what stands in for re-typing the password when an
+    /// account has none. In memory only; a restart asks once more.
+    reauthed: Mutex<HashMap<Uuid, std::time::Instant>>,
 }
 
 impl Default for Sessions {
@@ -782,6 +801,7 @@ impl Sessions {
             tokens: Mutex::new(HashMap::new()),
             ttl,
             conn: None,
+            reauthed: Mutex::new(HashMap::new()),
         }
     }
 
@@ -817,10 +837,29 @@ impl Sessions {
             tokens: Mutex::new(tokens),
             ttl,
             conn: Some(conn),
+            reauthed: Mutex::new(HashMap::new()),
         }
     }
 
     /// Issue a fresh random opaque token bound to a principal + its username.
+    /// Record that `principal` has just signed in again with another account
+    /// on purpose, to confirm it is them (`signin`, purpose `reauth`).
+    pub fn mark_reauthed(&self, principal: Uuid) {
+        let mut map = locked(&self.reauthed);
+        map.retain(|_, at| at.elapsed() < REAUTH_WINDOW);
+        map.insert(principal, std::time::Instant::now());
+    }
+
+    /// Whether `principal` confirmed itself that way within [`REAUTH_WINDOW`]:
+    /// the stand-in for a password re-check on an account that has none.
+    #[must_use]
+    pub fn reauthed_recently(&self, principal: Uuid) -> Option<std::time::Instant> {
+        locked(&self.reauthed)
+            .get(&principal)
+            .copied()
+            .filter(|at| at.elapsed() < REAUTH_WINDOW)
+    }
+
     pub fn issue(&self, principal: Uuid, username: &str) -> String {
         let token = random_token();
         let hash = token_hash(&token);

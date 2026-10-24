@@ -32,6 +32,7 @@ pub mod push;
 pub mod registration;
 pub mod roles;
 pub mod scripting;
+pub mod signin;
 pub mod state;
 pub mod stats;
 pub mod textures;
@@ -270,6 +271,14 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
                 600,
                 std::time::Duration::from_secs(3600),
             )),
+            signin: Arc::new(signin::SignIn::new(
+                load_signin_key(&config)?,
+                config.fediverse_allow_private,
+                config
+                    .signin_test_base
+                    .clone()
+                    .filter(|_| config.fediverse_allow_private),
+            )),
         };
         // Public posts reach other servers through a queue, and the servers
         // nobody here talks to come from a shared list; both only once this
@@ -358,6 +367,23 @@ fn load_vapid(config: &SimConfig) -> anyhow::Result<vapid::Vapid> {
     let path = std::path::Path::new(&config.database_path).with_file_name("vapid.key");
     vapid::Vapid::load_or_create(&path, contact)
         .with_context(|| format!("web push key at {}", path.display()))
+}
+
+/// The key provider secrets are sealed with in the database (`signin::keys`):
+/// `CARTO_SIGNIN_KEY` (64 hex digits) when set, else `signin.key` beside the
+/// database, made the first time. Read from the environment directly rather
+/// than through [`SimConfig`], which is `Debug` and would print it. An
+/// in-memory database gets a key for the life of the process.
+fn load_signin_key(config: &SimConfig) -> anyhow::Result<signin::keys::SealKey> {
+    if let Ok(hex) = std::env::var("CARTO_SIGNIN_KEY") {
+        return signin::keys::SealKey::from_hex(hex.trim()).context("CARTO_SIGNIN_KEY");
+    }
+    if config.database_path == ":memory:" {
+        return signin::keys::SealKey::ephemeral();
+    }
+    let path = std::path::Path::new(&config.database_path).with_file_name("signin.key");
+    signin::keys::SealKey::load_or_create(&path)
+        .with_context(|| format!("sign-in key at {}", path.display()))
 }
 
 /// Accept connections until the listener task is aborted (server shutdown). Unlike

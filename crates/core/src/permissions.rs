@@ -69,6 +69,9 @@ pub enum Permission {
     PipelineRun,
     /// Read the usage statistics in Admin › Stats.
     StatsView,
+    /// Set up signing in with Discord, Google and the rest (Admin › Sign-in):
+    /// which are on, in what order, and the keys each provider issued.
+    SigninManage,
 }
 
 /// How the web UI groups the list.
@@ -102,6 +105,7 @@ pub const ALL: &[Permission] = &[
     Permission::ReportsTriage,
     Permission::PipelineRun,
     Permission::StatsView,
+    Permission::SigninManage,
 ];
 
 impl Permission {
@@ -128,6 +132,7 @@ impl Permission {
             Self::ReportsTriage => "reports_triage",
             Self::PipelineRun => "pipeline_run",
             Self::StatsView => "stats_view",
+            Self::SigninManage => "signin_manage",
         }
     }
 
@@ -159,6 +164,7 @@ impl Permission {
             Self::ReportsTriage => "Handle reports and building claims",
             Self::PipelineRun => "Run the map data pipelines",
             Self::StatsView => "Read the usage statistics",
+            Self::SigninManage => "Set up signing in with other accounts",
         }
     }
 
@@ -183,7 +189,8 @@ impl Permission {
             | Self::RolesManage
             | Self::ReportsTriage
             | Self::PipelineRun
-            | Self::StatsView => PermissionGroup::Server,
+            | Self::StatsView
+            | Self::SigninManage => PermissionGroup::Server,
         }
     }
 

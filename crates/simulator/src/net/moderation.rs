@@ -130,6 +130,12 @@ pub(super) async fn on_delete_account<T: FrameTransport>(
         Err(_) => return Ok(()),
     };
     let ok = match phc {
+        // An account made through Discord, Google and the rest has no password
+        // to ask for; signing in through one of them again in the last few
+        // minutes is the same proof (`signin`, purpose `reauth`).
+        Some((_, phc)) if !crate::auth::has_password(&phc) => {
+            ctx.sessions.reauthed_recently(ctx.principal).is_some()
+        }
         Some((_, phc)) => crate::auth::verify_password_bounded(password, phc).await,
         None => false,
     };

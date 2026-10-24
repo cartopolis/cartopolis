@@ -978,6 +978,10 @@ pub fn erase_account_traces(
     // A role held by nobody is harmless; one held by a recycled principal is
     // not, so the grants go with the account.
     crate::roles::forget_account(conn, principal)?;
+    // Its Discord, Google and other sign-ins: left behind, the next person to
+    // sign in with that Discord account would be asked to pick a name and be
+    // told it is linked to nobody, rather than get a fresh account.
+    crate::signin::store::forget_account(conn, principal)?;
     Ok(())
 }
 

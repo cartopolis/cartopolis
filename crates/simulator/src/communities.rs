@@ -326,6 +326,41 @@ pub fn edit(
     Ok(())
 }
 
+/// Whether `account` may change a community's settings: its owner or a
+/// moderator. The check behind linking it to a Discord server or a subreddit.
+pub fn may_moderate(conn: &Connection, id: Uuid, account: &str) -> Result<(), Refusal> {
+    must_moderate(conn, id, account).map(|_| ())
+}
+
+/// Let `account` in because it signed in through a Discord server or subreddit
+/// linked to this community (`signin`). Being in that group is the way in,
+/// whatever the community's join rule says — that is what linking it means —
+/// but a block a moderator made still holds. `Ok(false)` when already in.
+pub fn join_linked(conn: &Connection, account: &str, id: Uuid, now_ms: i64) -> Result<bool, Refusal> {
+    if !exists(conn, &id.to_string())? {
+        return Err(Refusal::NoSuchCommunity);
+    }
+    if role(conn, id, account)?.is_some() {
+        return Ok(false);
+    }
+    let blocked: bool = conn
+        .query_row(
+            "SELECT 1 FROM community_blocks WHERE community = ?1 AND account = ?2
+               AND (until_ms IS NULL OR until_ms > ?3)",
+            params![id.to_string(), account, now_ms],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if blocked {
+        return Err(Refusal::Refused);
+    }
+    let tx = conn.unchecked_transaction()?;
+    admit(&tx, id, account, now_ms)?;
+    tx.commit()?;
+    Ok(true)
+}
+
 /// Put `account` in a community and queue it for every topic (rule 1).
 fn admit(conn: &Connection, id: Uuid, account: &str, now_ms: i64) -> Result<(), Refusal> {
     conn.execute(
@@ -691,6 +726,7 @@ pub fn delete(conn: &Connection, by: &str, id: Uuid, may_triage: bool) -> Result
         "community_requests",
         "community_blocks",
         "community_reports",
+        "community_links",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE community = ?1"),

@@ -131,30 +131,7 @@ pub fn begin(
     let email = email.as_str();
     let tx = conn.transaction()?;
 
-    // Taken by a *live* account, or by a pending one that has not expired — the
-    // sweep the caller runs first is what makes the second case rare.
-    let existing_username: Option<String> = tx
-        .query_row(
-            "SELECT id FROM accounts WHERE username = ?1",
-            [username],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if existing_username.is_some() {
-        return Ok(Begin::UsernameTaken);
-    }
-    // A community's fediverse address is found the same way a person's is
-    // (`@name@server`), so one may not take the other's name, nor its
-    // reader's (`{handle}.reader`, `fediverse::reader_name`).
-    let handle_taken: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = lower(?1)
-                            OR handle || '.reader' = lower(?1))
-             OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = lower(?1)
-                            OR handle || '.reader' = lower(?1))",
-        [username],
-        |r| r.get(0),
-    )?;
-    if handle_taken {
+    if name_taken(&tx, username)? {
         return Ok(Begin::UsernameTaken);
     }
 
@@ -178,6 +155,35 @@ pub fn begin(
     let token = insert_token(&tx, principal, email)?;
     tx.commit()?;
     Ok(Begin::Created { principal, token })
+}
+
+/// Whether a new account may not have `username`: shared by this form and by
+/// signing up through Discord, Google and the rest (`signin`).
+pub fn name_taken(conn: &Connection, username: &str) -> anyhow::Result<bool> {
+    // Taken by a *live* account, or by a pending one that has not expired — the
+    // sweep the caller runs first is what makes the second case rare.
+    let existing_username: Option<String> = conn
+        .query_row(
+            "SELECT id FROM accounts WHERE username = ?1",
+            [username],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if existing_username.is_some() {
+        return Ok(true);
+    }
+    // A community's fediverse address is found the same way a person's is
+    // (`@name@server`), so one may not take the other's name, nor its
+    // reader's (`{handle}.reader`, `fediverse::reader_name`).
+    let handle_taken: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM community_public WHERE handle = lower(?1)
+                            OR handle || '.reader' = lower(?1))
+             OR EXISTS (SELECT 1 FROM retired_handles WHERE handle = lower(?1)
+                            OR handle || '.reader' = lower(?1))",
+        [username],
+        |r| r.get(0),
+    )?;
+    Ok(handle_taken)
 }
 
 /// Mint a verification token for a principal, replacing any outstanding one.

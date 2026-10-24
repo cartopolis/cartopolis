@@ -234,6 +234,53 @@ impl Client {
         Err(FetchError::Refused(url.into(), "too many redirects"))
     }
 
+    /// A JSON request with the caller's own headers, and a form body when
+    /// given: what an OAuth round trip needs (`signin::providers`) — a code
+    /// exchanged for a token, then the person's profile read with it. No
+    /// redirects are followed; none of those endpoints answers with one.
+    pub fn call_json(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        form: Option<&[(&str, &str)]>,
+    ) -> Result<Value, FetchError> {
+        let parsed = self.check_url(url)?;
+        let mut req = self
+            .agent
+            .request(method, parsed.as_str())
+            .set("Accept", "application/json");
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        let answer = match form {
+            Some(form) => req.send_form(form),
+            None => req.call(),
+        };
+        match answer {
+            Ok(resp) => {
+                let mut bytes = Vec::new();
+                resp.into_reader()
+                    .take(MAX_JSON_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| FetchError::Transport(url.into(), e.to_string()))?;
+                if bytes.len() as u64 > MAX_JSON_BYTES {
+                    return Err(FetchError::Refused(url.into(), "too large"));
+                }
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| FetchError::Unreadable(url.into(), e.to_string()))
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                // The body says why (a wrong secret, a redirect address the
+                // provider does not know); worth the log, never the caller.
+                let body = resp.into_string().unwrap_or_default();
+                tracing::debug!(%url, code, body = %body.chars().take(300).collect::<String>(), "refused");
+                Err(FetchError::Status(url.into(), code))
+            }
+            Err(e) => Err(FetchError::Transport(url.into(), e.to_string())),
+        }
+    }
+
     /// GET an ActivityPub document as JSON.
     pub fn get_json(
         &self,

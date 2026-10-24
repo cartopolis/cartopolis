@@ -115,6 +115,10 @@ getrandom = "0.2"
 # pkcs8, spki and sha2 0.10 it builds on are already in the tree.
 rsa = { version = "0.9", features = ["getrandom"] }
 sha2 = { version = "0.10", features = ["oid"] }
+# Sealing the client secrets Discord, Google and the rest issue before they are
+# stored (`signin::keys`). Already in the tree (the MLS crypto's), so a name,
+# not a new dependency.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 # The `Date` header a signature covers. Already in the tree (hyper's).
 httpdate = "1"
 # Parsing the URLs other servers name, for the request guard

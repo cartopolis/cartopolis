@@ -131,6 +131,11 @@ pub struct SimConfig {
     /// network, so it must never be set in a deployment.
     #[serde(default)]
     pub fediverse_allow_private: bool,
+    /// Tests only: where Discord, Reddit and GitHub are, so a stand-in for
+    /// them on this machine can answer a sign-in (`signin::providers`). Only
+    /// reachable with `fediverse_allow_private`, whose guard it relies on.
+    #[serde(default)]
+    pub signin_test_base: Option<String>,
     /// Shared block lists of servers nobody here hears from or sends to
     /// (`fediverse::blocklist`), re-read daily: Mastodon's CSV or one server per
     /// line. The operator's own blocks are kept apart and survive every import.
@@ -264,6 +269,7 @@ impl Default for SimConfig {
             public_base_url: default_public_base_url(),
             fediverse: default_fediverse(),
             fediverse_allow_private: false,
+            signin_test_base: None,
             fediverse_blocklists: default_fediverse_blocklists(),
             house_claims_open: default_house_claims_open(),
             claim_municipality: default_claim_municipality(),

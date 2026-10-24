@@ -78,6 +78,10 @@ pub struct HttpState {
     /// Page views per caller: generous, since a whole school can share one
     /// address, but a script cannot inflate the counts without end.
     pub stats_throttle: Arc<Throttle>,
+    /// Signing in with Discord, Google and the rest: round trips in flight,
+    /// their answers, the app's pairing codes and the key provider secrets are
+    /// sealed with (`crate::signin`).
+    pub signin: Arc<crate::signin::SignIn>,
 }
 
 /// The two things a registration is counted against.
@@ -137,6 +141,9 @@ pub fn router(state: HttpState) -> Router {
         // token, and a second listener would double the reverse-proxy config to
         // separate two route prefixes (see this module's note).
         .merge(crate::authoring::routes())
+        // Signing in with Discord, Google and the rest, the account's own list
+        // of them, and Admin › Sign-in (`docs/notes/external-sign-in.md`).
+        .merge(crate::signin::http::routes())
         // Model assets, inventories and the shared library. Mounted here for the
         // same reason the authoring surface is: one listener, one token, one
         // reverse-proxy prefix to configure.
@@ -328,7 +335,18 @@ async fn health(State(state): State<HttpState>) -> Json<serde_json::Value> {
 /// Unauthenticated on purpose — it is the answer to "may I make an account
 /// here?", which is a question anyone who could press the button may ask.
 async fn registration_status(State(state): State<HttpState>) -> Json<serde_json::Value> {
+    // The buttons the sign-in card draws above the password form, in the
+    // operator's order. A database that cannot answer draws none rather than
+    // failing the whole form.
+    let providers = with_db(&state, crate::signin::store::enabled_providers)
+        .map(|list| {
+            list.into_iter()
+                .map(|p| json!({ "id": p.id, "kind": p.kind.as_str(), "name": p.name }))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Json(json!({
+        "providers": providers,
         "open": state.config.registration_open,
         "min_password_length": MIN_PASSWORD_LEN,
         "max_username_length": MAX_USERNAME_LEN,
@@ -625,13 +643,24 @@ async fn resend_verification(
 /// An error as the API reports it: a status and a message a GUI can show.
 pub(crate) struct ApiError(pub StatusCode, pub String);
 
+/// The refusal an account without a password gets where others are asked for
+/// theirs again. Answered with `"reauth": true` beside the sentence, so the web
+/// UI can offer the button that signs in through Discord, Google or the rest
+/// once more (`signin`) instead of a password field nobody can fill in.
+pub(crate) const REAUTH_NEEDED: &str =
+    "confirm it's you first: sign in again with the account you use here";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({ "error": self.1 }))).into_response()
+        let mut body = json!({ "error": self.1 });
+        if self.1 == REAUTH_NEEDED {
+            body["reauth"] = json!(true);
+        }
+        (self.0, Json(body)).into_response()
     }
 }
 
-fn bad_request(msg: impl Into<String>) -> ApiError {
+pub(crate) fn bad_request(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
@@ -654,7 +683,7 @@ pub(crate) type ApiResult<T> = Result<T, ApiError>;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_USERNAME_LEN: usize = 64;
 
-fn check_password(password: &str) -> ApiResult<()> {
+pub(crate) fn check_password(password: &str) -> ApiResult<()> {
     if password.chars().count() < MIN_PASSWORD_LEN {
         return Err(bad_request(format!(
             "password must be at least {MIN_PASSWORD_LEN} characters"
@@ -663,7 +692,7 @@ fn check_password(password: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_username(username: &str) -> ApiResult<()> {
+pub(crate) fn check_username(username: &str) -> ApiResult<()> {
     let n = username.chars().count();
     if n == 0 || n > MAX_USERNAME_LEN {
         return Err(bad_request(format!(
@@ -779,16 +808,16 @@ pub(crate) fn with_db_mut<T>(
 }
 
 #[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
+pub(crate) struct LoginRequest {
+    pub(crate) username: String,
+    pub(crate) password: String,
 }
 
 /// The password check both login routes share.
 ///
 /// `lookup_credential` already filters `disabled = 1`, so a disabled account
 /// gets the same answer as an unknown one.
-async fn check_password_login(state: &HttpState, body: &LoginRequest) -> ApiResult<Uuid> {
+pub(crate) async fn check_password_login(state: &HttpState, body: &LoginRequest) -> ApiResult<Uuid> {
     // Read the row, drop the guard, then hash — the module note in `auth` explains
     // why an argon2 verify must never happen with this mutex held.
     let stored = with_db(state, |c| auth::lookup_credential(c, &body.username))?;
@@ -874,7 +903,7 @@ async fn logout(State(state): State<HttpState>, headers: HeaderMap) -> StatusCod
 /// tokens are managed by the account, never by one another, so a stolen token
 /// can neither mint its siblings nor revoke the one its owner would use to lock
 /// it out (`docs/notes/access-tokens.md`).
-fn require_person(state: &HttpState, headers: &HeaderMap) -> ApiResult<auth::Access> {
+pub(crate) fn require_person(state: &HttpState, headers: &HeaderMap) -> ApiResult<auth::Access> {
     let access = require_access(state, headers)?;
     if !access.is_session() {
         return Err(ApiError(
@@ -883,6 +912,53 @@ fn require_person(state: &HttpState, headers: &HeaderMap) -> ApiResult<auth::Acc
         ));
     }
     Ok(access)
+}
+
+/// Ask a signed-in caller to prove it is them once more, before something a
+/// session alone must not be enough for: their password, or — for an account
+/// that has none — a sign-in through Discord, Google or the rest in the last
+/// few minutes (`auth::REAUTH_WINDOW`).
+pub(crate) async fn prove_again(
+    state: &HttpState,
+    access: &auth::Access,
+    password: Option<String>,
+) -> ApiResult<()> {
+    use rusqlite::OptionalExtension as _;
+    let wrong = || ApiError(StatusCode::FORBIDDEN, "that password is not right".into());
+    let principal = access.principal;
+    let phc: Option<String> = with_db(state, move |c| {
+        Ok(c.query_row(
+            "SELECT pw_hash FROM accounts WHERE id = ?1",
+            [principal.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?)
+    })?;
+    let Some(phc) = phc else {
+        return Err(wrong());
+    };
+    if !auth::has_password(&phc) {
+        return match state.sessions.reauthed_recently(principal) {
+            Some(_) => Ok(()),
+            None => Err(ApiError(StatusCode::FORBIDDEN, REAUTH_NEEDED.into())),
+        };
+    }
+    let Some(password) = password else {
+        return Err(wrong());
+    };
+    let proved = check_password_login(
+        state,
+        &LoginRequest {
+            username: access.username.clone(),
+            password,
+        },
+    )
+    .await
+    .map_err(|_| wrong())?;
+    if proved != principal {
+        return Err(wrong());
+    }
+    Ok(())
 }
 
 /// The caller's access tokens: everything but the secrets.
@@ -902,7 +978,10 @@ struct CreateTokenRequest {
     /// Asked again although the caller is signed in: a session can be a
     /// remembered one on a device somebody else is holding, and a token made
     /// there outlives the device — the reasoning `DeleteAccount` follows.
-    password: String,
+    /// Absent for an account without one, which signs in again through
+    /// Discord, Google or the rest instead ([`prove_again`]).
+    #[serde(default)]
+    password: Option<String>,
     #[serde(default)]
     elevated: bool,
     /// Unix seconds; absent for a token that lasts until it is revoked.
@@ -918,21 +997,7 @@ async fn create_token(
     Json(body): Json<CreateTokenRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let access = require_person(&state, &headers)?;
-    let proved = check_password_login(
-        &state,
-        &LoginRequest {
-            username: access.username.clone(),
-            password: body.password,
-        },
-    )
-    .await
-    .map_err(|_| ApiError(StatusCode::FORBIDDEN, "that password is not right".into()))?;
-    if proved != access.principal {
-        return Err(ApiError(
-            StatusCode::FORBIDDEN,
-            "that password is not right".into(),
-        ));
-    }
+    prove_again(&state, &access, body.password).await?;
     let (token, info) = state
         .sessions
         .create_access_token(
