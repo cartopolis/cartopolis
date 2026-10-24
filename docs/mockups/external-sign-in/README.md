@@ -11,6 +11,30 @@ name and password, on cartopolis.org and in the app. The account stays a
 Cartopolis account with a Cartopolis name. The provider only confirms who you
 are, and an account can have a provider, a password, or both.
 
+## v3: Discord and Reddit, set up in Admin, and communities come along
+
+![v3](v3-communities.png)
+
+Asked for on 2026-10-24: reach existing communities, drop the garage44 button,
+and configure sign-in in the backend rather than in `cartopolis.toml`.
+
+1. The card's grid has Discord, Reddit, Mastodon, Codeberg, Google and GitHub.
+   Discord gives a verified address, so it works like Google. Reddit gives none,
+   so it works like Mastodon.
+2. A new **Admin › People › Sign-in** tab: one row per provider with a switch,
+   drag to reorder, and a status that says "working" only after a test. Stored
+   in `world.db` with write-only secrets encrypted by a key from the
+   environment. A community's own OpenID server can still be added here.
+3. Setting one up: the provider's three steps, the redirect address to copy,
+   the keys, and who may make new accounts (anyone, members of a linked server
+   only, or nobody).
+4. A Cartopolis community can be linked to a Discord server or subreddit by
+   someone who manages it there. Whoever signs in through it is offered to
+   join, on the pick-your-name screen.
+
+Open: build section 4 with sign-in or later; which providers go on at launch
+(drawn: all six); secrets in the database (drawn) or in the environment.
+
 ## v2: free alternatives too
 
 ![v2](v2-free.png)

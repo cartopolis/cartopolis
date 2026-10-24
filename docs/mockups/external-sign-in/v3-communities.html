@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in from the communities people already have, v3</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="google" viewBox="0 0 48 48">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.360 7.09-17.65z"/>
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+      <path fill="#34A853" d="M24 48c6.48 0 11.930-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+    </symbol>
+    <symbol id="github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.330.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <!-- simplified marks, for the mockup only -->
+    <symbol id="codeberg" viewBox="0 0 24 24"><path fill="#2185D0" d="M12 3L1.5 20.5h21z" opacity=".55"/><path fill="#2185D0" d="M12 3l-4.2 17.5h8.4z"/></symbol>
+    <symbol id="mastodon" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#6364FF"/><path d="M7.5 16V10a2.25 2.25 0 0 1 4.5 0v3M12 13v-3a2.25 2.25 0 0 1 4.5 0v6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="discord" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="6" fill="#5865F2"/><path fill="#fff" d="M6 8.2c1.6-1.1 3.2-1.5 3.6-1.5l.4.8c1.3-.2 2.7-.2 4 0l.4-.8c.4 0 2 .4 3.6 1.5 1.3 2.6 1.6 5.2 1.4 7.6-1.4 1-2.6 1.4-3.6 1.6l-.8-1.2c.6-.2 1.1-.5 1.5-.8-2.6 1.2-6.4 1.2-9 0 .4.3.9.6 1.5.8l-.8 1.2c-1-.2-2.2-.6-3.6-1.6-.2-2.4.1-5 1.4-7.6z"/><circle cx="9.4" cy="12.6" r="1.3" fill="#5865F2"/><circle cx="14.6" cy="12.6" r="1.3" fill="#5865F2"/></symbol>
+    <symbol id="reddit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#FF4500"/><ellipse cx="12" cy="14" rx="6.2" ry="4.3" fill="#fff"/><circle cx="17.6" cy="10.4" r="1.5" fill="#fff"/><circle cx="6.4" cy="10.4" r="1.5" fill="#fff"/><circle cx="16" cy="5.6" r="1.2" fill="#fff"/><path d="M12 9.8l1-4.2 3 .6" stroke="#fff" stroke-width="1" fill="none"/><circle cx="9.7" cy="13.4" r="1" fill="#FF4500"/><circle cx="14.3" cy="13.4" r="1" fill="#FF4500"/><path d="M9.8 15.8c1.3.8 3.1.8 4.4 0" stroke="#FF4500" stroke-width=".9" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+    <symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.5a3.3 3.3 0 0 1 0 6.2M17.5 14a6 6 0 0 1 3.5 5.5"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  </defs>
+</svg>
+
+<h1>Sign in from the <b>communities people already have</b></h1>
+<p class="lede">
+  v3. The sign-in options are Codeberg, Mastodon, <b>Discord and Reddit</b>, Google and GitHub, and
+  an operator turns each on in <b>Admin › People › Sign-in</b>, not in a config file. A person who arrives
+  through Discord or Reddit is offered the Cartopolis community linked to their server or subreddit, so
+  the group moves across together. v1 and v2 hold what isn't repeated here: picking a name, linking by
+  password, the app's hand-off to the browser and the account page. Everything is <span class="new">NEW</span>.
+</p>
+
+<!-- ───────────────────────── 1. the card ───────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>The sign-in card</h2>
+  <p class="cap">The same grid as v2 with six providers. Which ones appear, and in what order, is whatever the operator has switched on in Admin.</p>
+  <div class="row">
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/buildings</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">Sign in</div>
+          <div class="bd">
+            <p>One account for the world and for this page.</p>
+            <div class="prov ring">
+              <div class="btn"><svg class="logo"><use href="#discord"/></svg>Discord</div>
+              <div class="btn"><svg class="logo"><use href="#reddit"/></svg>Reddit</div>
+              <div class="btn"><svg class="logo"><use href="#mastodon"/></svg>Mastodon</div>
+              <div class="btn"><svg class="logo"><use href="#codeberg"/></svg>Codeberg</div>
+              <div class="btn"><svg class="logo"><use href="#google"/></svg>Google</div>
+              <div class="btn"><svg class="logo" style="color:#fff"><use href="#github"/></svg>GitHub</div>
+            </div>
+            <div class="or">or with your Cartopolis name</div>
+            <div class="field"><label>Username</label><div class="input ph">anna</div></div>
+            <div class="field"><label>Password</label><div class="input ph">••••••••</div></div>
+            <div class="btn primary">Sign in</div>
+            <div class="foot">New here? <a>Sign up</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <h3>Discord and Reddit</h3>
+      <ul>
+        <li><b>Discord</b> asks for <code>identify email</code>, and adds <code>guilds</code> only if the server
+          links communities (section 4). Discord says whether the address is verified, so it behaves like
+          Google in v1: no mail link, and the password-once linking of v1 section 3.</li>
+        <li><b>Reddit</b> asks for <code>identity</code>, and <code>mysubreddits</code> only when communities are
+          linked. Reddit never gives an e-mail address, so it behaves like Mastodon in v2: the address is optional
+          and <code>u/annadv</code> shows on the profile as confirmed.</li>
+        <li><b>Neither is free software</b>, unlike Codeberg and Mastodon. They're there because that's where the
+          groups we want to reach already are.</li>
+      </ul>
+      <h3>Dropped since v2</h3>
+      <ul>
+        <li>The garage44 button. A community's own login server can still be added in Admin
+          (“Another OpenID server”), but cartopolis.org doesn't ship one.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 2. admin list ───────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>Admin › People › Sign-in</h2>
+  <p class="cap">A new tab beside Accounts, Roles, Claims and Reports. Every provider is listed with a switch, and you drag the rows to set the order. A provider can't be switched on until its keys have been entered and tested.</p>
+  <div class="row">
+    <div class="win" style="width:760px">
+      <div class="top">
+        <div class="wm"><img src="../../../assets/icon/cartopolis.svg" alt=""><span>carto<i>polis</i></span></div>
+        <div class="seg"><div>Community</div><div>World</div><div class="on">Admin</div></div>
+        <div class="sp" style="flex:1"></div>
+      </div>
+      <div class="tabs"><div>Accounts</div><div>Roles</div><div>Claims</div><div>Reports</div><div class="on">Sign-in <span class="new">NEW</span></div></div>
+      <div class="adm">
+        <div class="prow"><div class="grip">⋮⋮</div><div class="ic"><svg class="logo" style="width:22px;height:22px"><use href="#discord"/></svg></div>
+          <div class="t">Discord<small>214 accounts · 3 communities linked</small></div><span class="pill ok">working</span><div class="tog on"></div></div>
+        <div class="prow"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px"><use href="#reddit"/></svg>
+          <div class="t">Reddit<small>58 accounts · 1 community linked</small></div><span class="pill ok">working</span><div class="tog on"></div></div>
+        <div class="prow"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px"><use href="#mastodon"/></svg>
+          <div class="t">Mastodon and the fediverse<small>Any server, minus the federation blocklist · 31 accounts</small></div><span class="pill ok">no keys needed</span><div class="tog on"></div></div>
+        <div class="prow"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px"><use href="#codeberg"/></svg>
+          <div class="t">Codeberg<small>12 accounts</small></div><span class="pill ok">working</span><div class="tog on"></div></div>
+        <div class="prow"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px"><use href="#google"/></svg>
+          <div class="t">Google<small>Keys entered, not tested yet</small></div><span class="pill warn">test first</span><div class="tog"></div></div>
+        <div class="prow"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px;color:#fff"><use href="#github"/></svg>
+          <div class="t">GitHub<small>Not set up</small></div><div class="btn small">Set up</div><div class="tog" style="opacity:.4"></div></div>
+        <div class="btn ghost small" style="justify-content:flex-start"><svg class="i" style="width:15px;height:15px"><use href="#plus"/></svg>Another OpenID server (a community's own Keycloak, Nextcloud, Forgejo…)</div>
+        <div class="alert info"><svg class="i"><use href="#info"/></svg><div>Switching a provider off stops new sign-ins with it. Accounts that also have a password or another provider keep working. Those that don't are listed so you can warn them first.</div></div>
+      </div>
+    </div>
+    <div class="notes" style="max-width:440px">
+      <h3>Choices made here</h3>
+      <ul>
+        <li><b>In the backend, not in <code>cartopolis.toml</code></b>, as asked. It's stored in
+          <code>world.db</code>, takes effect without a restart, and needs the operator's
+          <i>manage sign-in</i> permission (a new one in Roles).</li>
+        <li><b>Secrets are write-only.</b> Once saved, a client secret shows as “set · replace”, never as text,
+          and no API returns it. It's kept encrypted in the database with a key from the environment, so a
+          copy of <code>world.db</code> alone doesn't give it away.</li>
+        <li><b>“Working” means tested.</b> The Test button does a real round trip with the operator's own
+          account. That catches a wrong redirect address before members see an error page.</li>
+        <li><b>The switch never strands anyone.</b> Turning a provider off is allowed, but the alert counts the
+          accounts with no other way in.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 3. setup ───────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>Setting one up: Discord</h2>
+  <p class="cap">The row opens into the three things to do at the provider's site, the address to paste there, and the two keys to paste back.</p>
+  <div class="row">
+    <div class="win" style="width:760px">
+      <div class="tabs" style="padding-top:12px"><div>Accounts</div><div>Roles</div><div>Claims</div><div>Reports</div><div class="on">Sign-in</div></div>
+      <div class="adm">
+        <div class="prow open"><div class="grip">⋮⋮</div><svg class="logo" style="width:22px;height:22px"><use href="#discord"/></svg>
+          <div class="t">Discord<small>Not set up</small></div><div class="tog" style="opacity:.4"></div>
+          <div class="setup">
+            <ol class="full">
+              <li>Open the <a style="color:var(--accent-text)">Discord developer portal</a> and make a new application called “Cartopolis”.</li>
+              <li>Under OAuth2 › Redirects, add the address below.</li>
+              <li>Copy the Client ID and Client Secret into the fields here.</li>
+            </ol>
+            <div class="field full"><label>Redirect address</label><div class="input" style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px">https://cartopolis.org/api/auth/discord/callback<span class="copy">Copy</span></div></div>
+            <div class="field"><label>Client ID</label><div class="input">1298374650129837465</div></div>
+            <div class="field"><label>Client secret</label><div class="input focus">••••••••••••••••••••</div></div>
+            <div class="field full"><label>New accounts</label>
+              <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+                <div class="radio"><i class="on"></i>Anyone with a Discord account may make one</div>
+                <div class="radio"><i></i>Only members of a linked Discord server</div>
+                <div class="radio"><i></i>None. Only accounts that already linked Discord may sign in.</div>
+              </div>
+            </div>
+            <div class="full" style="display:flex;gap:8px;justify-content:flex-end">
+              <div class="btn ghost small">Cancel</div><div class="btn small">Save</div><div class="btn primary small">Save and test with my Discord</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes" style="max-width:440px">
+      <h3>Notes</h3>
+      <ul>
+        <li><b>The same form for every provider</b>, with its own three steps and link. Mastodon has no form,
+          because the server registers itself with each Mastodon server on first use (v2).</li>
+        <li><b>“Only members of a linked server”</b> lets a server open itself to exactly the groups it has
+          linked, without opening registration to everyone. It's the one setting that goes further than the
+          server-wide <i>registrations open</i> switch.</li>
+        <li><b>Self-hosted servers</b> do the same with their own Discord application. Nothing is shared through
+          cartopolis.org.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── 4. bring the community ───────────────────────── -->
+<section class="sec">
+  <h2><span>4</span>Bringing the community along</h2>
+  <p class="cap">A Cartopolis community (<code>../communities/</code>) can be linked to a Discord server or a subreddit by someone who runs both. Then whoever signs in through that server or subreddit is offered to join it, on the same screen where they pick their name.</p>
+  <div class="row">
+    <div class="win" style="width:520px">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/welcome</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">Welcome to Cartopolis</div>
+          <div class="bd">
+            <div class="who">
+              <div class="av" style="background:#5865F2">A</div>
+              <div class="t">annadv on Discord<small>anna@devries.nl · verified by Discord</small></div>
+              <svg class="logo"><use href="#discord"/></svg>
+            </div>
+            <div class="field">
+              <label>Your name here</label>
+              <div class="input focus">anna<span class="suffix">@cartopolis.org</span></div>
+            </div>
+            <div>
+              <div class="label" style="margin-bottom:6px">Your groups are here too</div>
+              <div class="join">
+                <div class="r"><div class="chk on"></div><svg class="logo"><use href="#discord"/></svg><div class="x">Groningen Fietst<small>Discord server · 86 members already here</small></div></div>
+                <div class="r"><div class="chk on"></div><svg class="logo"><use href="#discord"/></svg><div class="x">Oosterpoort Buren<small>Discord server · 23 members already here</small></div></div>
+              </div>
+              <div class="help">Only servers with a Cartopolis community are shown. We don't keep the list of your other servers.</div>
+            </div>
+            <div class="btn primary">Create my account and join 2</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow">·</div>
+    <div class="win" style="width:520px">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url"><svg class="i" style="width:13px;height:13px"><use href="#lock"/></svg><b>cartopolis.org</b>/c/groningen-fietst/settings</div></div>
+      <div class="page">
+        <div class="card">
+          <div class="hd">Groningen Fietst · Linked groups</div>
+          <div class="bd">
+            <p>Members of these can join this community straight from sign-in.</p>
+            <div class="join">
+              <div class="r"><svg class="logo"><use href="#discord"/></svg><div class="x">Groningen Fietst<small>Discord server · linked by anna · 24 Oct 2026</small></div><div class="btn small danger">Unlink</div></div>
+              <div class="r"><svg class="logo"><use href="#reddit"/></svg><div class="x">r/groningen<small>Subreddit · linked by anna · 24 Oct 2026</small></div><div class="btn small danger">Unlink</div></div>
+            </div>
+            <div class="prov">
+              <div class="btn small"><svg class="logo"><use href="#discord"/></svg>Link a Discord server</div>
+              <div class="btn small"><svg class="logo"><use href="#reddit"/></svg>Link a subreddit</div>
+            </div>
+            <div class="alert info"><svg class="i"><use href="#info"/></svg><div>You can only link a Discord server you manage, or a subreddit you moderate. Discord and Reddit tell us which those are.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes" style="max-width:380px">
+      <h3>How it works</h3>
+      <ul>
+        <li><b>Proof of ownership</b>: linking needs <i>Manage Server</i> on Discord, or moderator status on
+          Reddit (<code>mysubreddits</code>), checked at link time. Nobody can claim a group they don't run.</li>
+        <li><b>Membership is checked once</b>, at sign-in, and only matched against linked groups. We don't
+          store anything else about which servers someone is in.</li>
+        <li><b>Joining is offered, not automatic</b>. Both boxes start ticked, but the person can untick them,
+          and leaving the Discord server later doesn't remove them here.</li>
+        <li>Already have an account? Linking Discord on the account page (v1 section 5) shows the same
+          “your groups are here too” list.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="decide">
+  <h2>Open questions</h2>
+  <ol>
+    <li><b>Bringing communities (section 4)</b>: build it with sign-in, or later? Sign-in alone is useful, but
+      section 4 is what gets a whole group across.</li>
+    <li><b>Which providers to switch on for cartopolis.org at launch?</b> Drawn: all six, with Discord and
+      Reddit first.</li>
+    <li><b>Secrets in the database</b>, encrypted with a key from the environment (drawn), or keys stay in
+      the environment and Admin only switches providers on and off and orders them?</li>
+    <li><b>Still open</b>: any fediverse server or an allowed list (v2), an account with no password
+      (drawn: allowed), password reset by mail (v1).</li>
+  </ol>
+</div>
+
+</body>
+</html>
