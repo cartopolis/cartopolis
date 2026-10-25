@@ -22,8 +22,9 @@ streams. That is trustworthy for **geometry, placement, culling and visibility**
 and no evidence at all for **colour, exposure, bloom, lighting or frame time**
 (`docs/notes/headless-shots-software-renderer.md`). The real GPUs in the pool
 are `mac-1` and `mac-2` (Apple M5 Pro, in a VM: no Metal counters, so no per-pass
-GPU timings); `deck-1` is retired. `midas take gpu` does not match the Macs, so
-name one. Check `midas status` for which is free.
+GPU timings) and `deck-1` (Steam Deck, RADV). `midas take gpu` matches only
+nodes registered with a hardware GPU, which the Macs are not, so name a Mac when
+you want one. Check `midas status` for which is free.
 
 ```bash
 midas take --node mac-2
