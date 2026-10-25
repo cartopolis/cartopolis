@@ -2807,11 +2807,21 @@ mod loopback {
             }
         }
 
-        /// Feed the engine whatever arrives for `window`, answering as it goes.
+        /// Feed the engine whatever arrives, answering as it goes, until the
+        /// connection has been quiet for `QUIET` or `window` is up.
+        ///
+        /// Ending on quiet is what keeps this suite affordable: every exchange
+        /// here is answered within milliseconds on loopback, and sitting out the
+        /// whole window after the last frame made sixteen tests take 32 s of
+        /// the landing gate's 82 s, nearly all of it waiting on nothing.
         async fn pump(&mut self, window: Duration) {
             let deadline = tokio::time::Instant::now() + window;
+            // Only chat traffic counts as activity: the server's other frames
+            // (world snapshots on its tick) would otherwise never let it go quiet.
+            let mut quiet_at = tokio::time::Instant::now() + QUIET;
             loop {
-                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let until = quiet_at.min(deadline);
+                let left = until.saturating_duration_since(tokio::time::Instant::now());
                 let Ok(Some(Ok(frame))) = tokio::time::timeout(left, self.conn.next()).await else {
                     return;
                 };
@@ -2819,6 +2829,7 @@ mod loopback {
                 if !is_private_message(&msg) {
                     continue;
                 }
+                quiet_at = tokio::time::Instant::now() + QUIET;
                 let mut out = Vec::new();
                 self.engine.handle(msg, &mut out, &mut self.events);
                 self.send_all(out).await;
@@ -2849,7 +2860,12 @@ mod loopback {
         }
     }
 
-    const PUMP: Duration = Duration::from_millis(600);
+    /// The most one `pump` waits; a busy exchange that keeps answering ends here.
+    const PUMP: Duration = Duration::from_secs(5);
+    /// How long the connection must be silent before a `pump` takes the
+    /// exchange as finished. Loopback answers in milliseconds; this is slack for
+    /// a node under load.
+    const QUIET: Duration = Duration::from_millis(150);
 
     async fn server(
         names: &[&str],
