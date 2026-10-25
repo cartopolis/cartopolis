@@ -32,6 +32,11 @@ ssh <node> 'cargo run -p cartopolis -- --shot /tmp/x.png --at …'
 scp <node>:/tmp/x.png /tmp/x.png     # a node's output stays on its machine
 ```
 
+On the Macs `scp` fails ("Connection closed": the node starts a Linux
+`sftp-server` path) and PNGs have been seen landing under `$TMPDIR` rather than
+`/tmp`, so fetch through plain ssh: `ssh mac-2 'cat /tmp/x.png' > /tmp/x.png`,
+and look in `$TMPDIR` if it is not there.
+
 ## One capture, a sweep, a flythrough
 
 ```bash
