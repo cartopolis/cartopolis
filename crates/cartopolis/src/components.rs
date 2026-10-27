@@ -141,6 +141,11 @@ pub struct RemoteAvatar {
     /// what turns that level back into an edge, and what distinguishes "waved
     /// twice" from "still waving".
     pub last_emote_sequence: Option<u32>,
+    /// An expression this avatar's face started that it has not shown yet, and
+    /// the sequence that turns the replicated level into that edge — as the
+    /// emote's pair; taken by `avatar_face::feed_faces`.
+    pub pending_expression: Option<cartopolis_core::Expression>,
+    pub last_expression_sequence: Option<u32>,
     /// Replicated seat (`AvatarStateDto::seated`): metres in world XZ from this
     /// avatar's position to where its body is drawn. `None` when it is standing.
     pub seated: Option<Vec2>,

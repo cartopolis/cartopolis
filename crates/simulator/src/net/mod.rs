@@ -493,6 +493,8 @@ struct RateGates {
     hand: Instant,
     /// The look bucket (`look::on_look`, [`take_token`]).
     look: Instant,
+    /// The tracked-face bucket (`look::on_face`, [`take_token`]).
+    face: Instant,
 }
 
 impl RateGates {
@@ -515,6 +517,7 @@ impl RateGates {
             last_where: ago(MIN_WHERE_INTERVAL),
             hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
             look: ago(look::LOOK_INTERVAL * look::LOOK_BURST),
+            face: ago(look::FACE_INTERVAL * look::FACE_BURST),
         }
     }
 }
@@ -1145,6 +1148,7 @@ async fn dispatch<T: FrameTransport>(
             fly_down,
             jump,
             emote,
+            expression,
             seated,
             geo,
         } => {
@@ -1159,6 +1163,7 @@ async fn dispatch<T: FrameTransport>(
                     fly_down,
                     jump,
                     emote,
+                    expression,
                     seated,
                     geo,
                 },
@@ -1171,6 +1176,7 @@ async fn dispatch<T: FrameTransport>(
             Ok(())
         }
         ClientRequest::SetAvatarLook { look } => look::on_look(ctx, look).await,
+        ClientRequest::SetFaceFrame { weights } => look::on_face(ctx, weights).await,
         ClientRequest::CreatePrim {
             request_id,
             name,

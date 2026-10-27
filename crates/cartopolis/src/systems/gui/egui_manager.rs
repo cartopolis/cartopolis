@@ -1481,6 +1481,12 @@ pub fn egui_pass(
     }
 
     let (view_target, camera) = view.into_inner();
+    // The UI is the window's: a camera ordered before the main one renders
+    // into a picture of its own (`avatar_video`'s, 512 × 384), and the
+    // window's scissors on it fail the whole submission — silently, headless.
+    if camera.order < 0 {
+        return;
+    }
     let render_queue = render_queue.into_inner();
     let mut guard = egui_renderer_res.0.lock().unwrap();
 

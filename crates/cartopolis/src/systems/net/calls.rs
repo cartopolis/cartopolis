@@ -426,6 +426,9 @@ pub struct Calls {
     /// starts as a voice call, and a camera switching itself on is the one
     /// surprise a person does not forgive.
     pub camera_on: bool,
+    /// The camera sends the avatar, filmed in the app and pulling the
+    /// person's faces, instead of the person (`systems::avatar_video`).
+    pub avatar_video: bool,
     /// Send the stand-in camera and microphone instead of the devices: for a
     /// client nobody sits at, such as an agent placing a call over MCP. The
     /// environment switches (`CARTO_FAKE_CAMERA`, `CARTO_FAKE_MIC`) do the same
@@ -937,6 +940,9 @@ pub fn drive_calls(
     mut voice: ResMut<VoiceState>,
     prefs: Res<AppPrefs>,
     identity: Res<AuthIdentity>,
+    #[cfg(not(target_arch = "wasm32"))] mut avatar_video: Option<
+        ResMut<crate::systems::avatar_video::AvatarVideo>,
+    >,
 ) {
     let me = identity.username.clone().unwrap_or_default();
     let Some(online) = online else {
@@ -1402,6 +1408,8 @@ pub fn drive_calls(
         muted,
         level,
         camera_on,
+        #[cfg(not(target_arch = "wasm32"))]
+            avatar_video: as_avatar,
         fake_media,
         agent_voice,
         minimized,
@@ -1642,7 +1650,8 @@ pub fn drive_calls(
             *level = 0.0;
         } else {
             capture(a, *muted, !*keep_noise, *fake_media, &prefs, level, notice);
-            send_camera(a, camera_on, *fake_media, looking, notice);
+            let avatar = avatar_video.as_deref_mut().filter(|_| *as_avatar);
+            send_camera(a, camera_on, *fake_media, looking, notice, avatar);
         }
         send_screen(a, notice, &online);
     }
@@ -1772,6 +1781,7 @@ fn send_camera(
     fake_media: bool,
     looking: bool,
     notice: &mut Option<String>,
+    avatar: Option<&mut crate::systems::avatar_video::AvatarVideo>,
 ) {
     let fake = fake_media || crate::env_flag("CARTO_FAKE_CAMERA");
     if fake && !fake_media {
@@ -1780,6 +1790,30 @@ fn send_camera(
     if !*on {
         a.camera = None;
         a.pictures.remove(&SELF_TILE);
+        return;
+    }
+    // The avatar in the person's place: its pictures are filmed in the app,
+    // and the device's camera is the face tracker's, not the call's.
+    if let Some(avatar) = avatar.filter(|_| !fake) {
+        a.camera = None;
+        avatar.want();
+        if let Some(p) = avatar.take() {
+            let sent = crate::platform::camera::to_size(&p, 0, a.session.send_size());
+            if looking {
+                let (width, height, rgba) = crate::platform::camera::self_view(&p, 320);
+                a.pictures.insert(
+                    SELF_TILE,
+                    Picture {
+                        width,
+                        height,
+                        rgba,
+                        fresh: true,
+                        at: web_time::Instant::now(),
+                    },
+                );
+            }
+            a.session.send_picture(sent);
+        }
         return;
     }
     if a.camera.is_none() {

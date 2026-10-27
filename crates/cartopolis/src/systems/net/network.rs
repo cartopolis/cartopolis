@@ -49,6 +49,9 @@ pub struct AuthWriteback<'w, 's> {
     /// Other avatars' looks (protocol 42), built from by `human_avatar`.
     /// Optional for the same reason as `time`.
     looks: Option<ResMut<'w, crate::systems::human_avatar::RemoteLooks>>,
+    /// Other people's tracked faces (protocol 44), shown by `avatar_face`.
+    /// Optional for the same reason as `time`.
+    faces: Option<ResMut<'w, crate::systems::avatar_face::IncomingFaces>>,
     /// Optional: the session tests drive this system in an app with no clock.
     time: Option<Res<'w, Time>>,
 }
@@ -1044,6 +1047,11 @@ pub fn apply_network_snapshot(
                     looks.arrived(avatar_id, look);
                 }
             }
+            NetMessage::FaceFrameOf { avatar_id, weights } => {
+                if let Some(faces) = auth.faces.as_mut() {
+                    faces.0.insert(avatar_id, weights);
+                }
+            }
             NetMessage::Permissions { granted } => {
                 tracing::info!(?granted, "this account's permissions");
                 auth.identity.permissions = granted;
@@ -1298,6 +1306,12 @@ fn sync_remote_avatar_entities(
                         r.pending_emote = Some(e.emote);
                     }
                 }
+                if let Some(e) = a.expression {
+                    if r.last_expression_sequence != Some(e.sequence) {
+                        r.last_expression_sequence = Some(e.sequence);
+                        r.pending_expression = Some(e.expression);
+                    }
+                }
                 found = true;
             }
         }
@@ -1314,6 +1328,8 @@ fn sync_remote_avatar_entities(
                     // the whole reason the sim holds it on the wire.
                     pending_emote: a.emote.map(|e| e.emote),
                     last_emote_sequence: a.emote.map(|e| e.sequence),
+                    pending_expression: a.expression.map(|e| e.expression),
+                    last_expression_sequence: a.expression.map(|e| e.sequence),
                     // An avatar already sitting when it comes into range is drawn
                     // sitting, and slides onto the seat from here like everyone
                     // else — a fraction of a second of one stranger arriving
@@ -1520,11 +1536,17 @@ pub struct SentIntent {
 /// Whether an intent carries an *edge* — something that happens once and is lost
 /// rather than delayed if the frame is skipped. Edges bypass both the
 /// send-on-change test and the keepalive throttle.
-fn intent_has_edge(jump: bool, emote: Option<cartopolis_core::Emote>) -> bool {
-    jump || emote.is_some()
+fn intent_has_edge(
+    jump: bool,
+    emote: Option<cartopolis_core::Emote>,
+    expression: Option<cartopolis_core::Expression>,
+) -> bool {
+    jump || emote.is_some() || expression.is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn send_network_intent(
+    mut started: MessageReader<crate::systems::avatar_face::StartExpression>,
     online: Option<Res<OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     camera_state: Res<crate::resources::CameraState>,
@@ -1539,6 +1561,9 @@ pub fn send_network_intent(
     mut last_sent: Local<Option<SentIntent>>,
     mut since_send: Local<f32>,
 ) {
+    // Read whatever the session's state: an expression is shown locally
+    // either way (`avatar_face`), and only the latest is worth sending.
+    let expression = started.read().last().map(|s| s.0);
     let Some(sess) = online else {
         return;
     };
@@ -1765,7 +1790,7 @@ pub fn send_network_intent(
     });
     // An edge is never throttled: a skipped jump is a jump that did not happen,
     // where a skipped movement frame is one the next intent corrects anyway.
-    if !changed && *since_send < INTENT_KEEPALIVE && !intent_has_edge(jump, emote) {
+    if !changed && *since_send < INTENT_KEEPALIVE && !intent_has_edge(jump, emote, expression) {
         return;
     }
     *since_send = 0.0;
@@ -1802,6 +1827,7 @@ pub fn send_network_intent(
         fly_down,
         jump,
         emote,
+        expression,
         seated,
         geo,
     });

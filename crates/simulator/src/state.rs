@@ -1,6 +1,7 @@
 use cartopolis_core::{
-    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, HandPose, NetMessage,
-    PrimBody, PrimDto, PrimSound, ToneSpec, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, Expression, ExpressionState,
+    GeoAnchor, HandPose, NetMessage, PrimBody, PrimDto, PrimSound, ToneSpec, EMOTE_REPLICATE_SECS,
+    EXPRESSION_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -45,6 +46,11 @@ struct AvatarSim {
     /// Monotonic per-avatar counter. The same emote twice running is two events,
     /// and a receiver that diffed on the emote alone would play only the first.
     emote_sequence: u32,
+    /// The expression the face is showing, held and aged as `emote` is
+    /// ([`SimWorld::start_expression`]).
+    expression: Option<ExpressionState>,
+    expression_age: f32,
+    expression_sequence: u32,
     /// What [`SimWorld::step`] actually moved this avatar by, per second, on its
     /// last tick — replicated as `AvatarStateDto::velocity`. Measured from the
     /// position change rather than assembled from `velocity`, `fly_vertical` and
@@ -289,6 +295,9 @@ impl SimWorld {
                 emote: None,
                 emote_age: 0.0,
                 emote_sequence: 0,
+                expression: None,
+                expression_age: 0.0,
+                expression_sequence: 0,
                 moved: Vec3::ZERO,
                 name: "Someone".to_string(),
                 look: None,
@@ -711,6 +720,12 @@ impl SimWorld {
                     av.emote = None;
                 }
             }
+            if av.expression.is_some() {
+                av.expression_age += dt;
+                if av.expression_age > EXPRESSION_REPLICATE_SECS {
+                    av.expression = None;
+                }
+            }
             // Horizontal yaw comes from [`SimWorld::apply_intent`] (`display_yaw`); do not derive from
             // `atan2(velocity)` (branch cuts + integration drift caused client flip-flops).
         }
@@ -834,6 +849,20 @@ impl SimWorld {
         }
     }
 
+    /// The face of `avatar_id` starts `expression`: a one-shot like an emote,
+    /// stamped with a fresh sequence so receivers tell "smiled again" from
+    /// "still smiling", and replicated for [`EXPRESSION_REPLICATE_SECS`].
+    pub fn start_expression(&mut self, avatar_id: u64, expression: Expression) {
+        if let Some(av) = self.avatars.get_mut(&avatar_id) {
+            av.expression_sequence = av.expression_sequence.wrapping_add(1);
+            av.expression = Some(ExpressionState {
+                expression,
+                sequence: av.expression_sequence,
+            });
+            av.expression_age = 0.0;
+        }
+    }
+
     /// v0 multiplayer: replicate every avatar to all clients.
     fn avatar_dtos(&self) -> Vec<AvatarStateDto> {
         self.avatars
@@ -844,6 +873,7 @@ impl SimWorld {
                 position: a.position,
                 yaw: a.yaw,
                 emote: a.emote,
+                expression: a.expression,
                 seated: a.seated,
                 velocity: a.moved,
             })

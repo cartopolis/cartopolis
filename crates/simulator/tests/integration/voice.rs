@@ -55,6 +55,7 @@ fn stand_here() -> Bytes {
             fly_down: false,
             jump: false,
             emote: None,
+            expression: None,
             seated: None,
             geo: None,
         })

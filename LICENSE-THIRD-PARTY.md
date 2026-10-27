@@ -201,3 +201,23 @@ role: The brand font — the boot splash wordmark and the UI's own family
 license: SIL Open Font License 1.1
 url: https://fonts.google.com/specimen/Plus+Jakarta+Sans
 notice: Plus Jakarta Sans by Tokotype, SIL Open Font License 1.1. The font files are redistributed with this software; see assets/fonts/README.md.
+
+## MakeHuman community — ARKit face units
+
+role: The avatar face's 52 live shapes (faceunits01, in the human pack's `face_units`)
+license: CC0 1.0 (the asset pack's metadata: "license": "CC0", author Mika Suominen)
+url: https://static.makehumancommunity.org/assets/assetpacks.html
+notice: Face units for the MakeHuman base mesh by Mika Suominen, CC0.
+
+## MediaPipe Face Landmarker — face detector, landmarks, blend shapes
+
+role: Following the user's own face through the camera to drive their avatar's (assets/models/face, crates/face)
+license: Apache-2.0
+url: https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker (models: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task)
+notice: Face detection, face mesh and blend-shape models from Google's MediaPipe, Apache License 2.0.
+
+## tract — neural network inference
+
+role: Runs the face tracker's models on every platform (crates/tract_tflite is tract-tflite 0.23.9 with four operations added)
+license: MIT OR Apache-2.0
+url: https://github.com/sonos/tract

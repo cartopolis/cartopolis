@@ -216,6 +216,21 @@ const EMOTE_KEYS: [(KeyCode, Emote); 6] = [
     (KeyCode::Digit6, Emote::Faint),
 ];
 
+/// Expression hotkeys, with Shift held: the order of `Expression::ALL`.
+const EXPRESSION_KEYS: [(KeyCode, cartopolis_core::Expression); 8] = {
+    use cartopolis_core::Expression as E;
+    [
+        (KeyCode::Digit1, E::Happy),
+        (KeyCode::Digit2, E::Laugh),
+        (KeyCode::Digit3, E::Sad),
+        (KeyCode::Digit4, E::Angry),
+        (KeyCode::Digit5, E::Surprised),
+        (KeyCode::Digit6, E::Afraid),
+        (KeyCode::Digit7, E::Disgusted),
+        (KeyCode::Digit8, E::Wink),
+    ]
+};
+
 /// Find what the avatar is standing next to, and read the nearest house number.
 ///
 /// Runs only in Follow: the other camera modes decouple the camera from the
@@ -528,10 +543,22 @@ pub fn handle_interaction_input(
     online: Option<Res<crate::resources::OnlineSession>>,
     mut avatar_state: ResMut<AvatarState>,
     mut state: ResMut<InteractState>,
+    mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
 ) {
     if camera_state.mode != CameraMode::Avatar
         || egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard)
     {
+        return;
+    }
+
+    // Shift and a digit pull a face, the digit row's second layer. Only the
+    // face moves, so a seated avatar may.
+    if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+        for (key, expression) in EXPRESSION_KEYS {
+            if keyboard.just_pressed(key) {
+                faces.write(crate::systems::avatar_face::StartExpression(expression));
+            }
+        }
         return;
     }
 

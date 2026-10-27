@@ -19,6 +19,7 @@ use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext, RenderAssetUsages};
 use bevy::curve::{Interval, SampleAutoCurve};
 use bevy::ecs::system::SystemParam;
+use bevy::mesh::morph::{MeshMorphWeights, MorphAttributes, MorphWeights};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
@@ -424,6 +425,9 @@ pub(crate) struct HumanPart {
     texture: Option<String>,
     alpha: bool,
     default_tint: Option<[u8; 3]>,
+    /// The mesh carries the face's units as morph targets, weighted by the
+    /// holder's `MorphWeights` (`systems::avatar_face`).
+    morphs: bool,
 }
 
 /// Build `look` from `pack` into [`PreparedHuman`]: the shaping, the fitting
@@ -486,12 +490,34 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, part.weights.clone());
             mesh.insert_indices(Indices::U32(part.indices.clone()));
+            if !part.morphs.is_empty() {
+                // Target after target, every vertex of each: the engine's
+                // layout. Tangents are not animated (the skin has none).
+                mesh.set_morph_targets(
+                    part.morphs
+                        .iter()
+                        .flat_map(|t| {
+                            t.positions.iter().zip(&t.normals).map(|(p, n)| {
+                                MorphAttributes::new(
+                                    Vec3::from_array(*p),
+                                    Vec3::from_array(*n),
+                                    Vec3::ZERO,
+                                )
+                            })
+                        })
+                        .collect(),
+                );
+                mesh.set_morph_target_names(
+                    cartopolis_human::face::UNITS.map(String::from).to_vec(),
+                );
+            }
             let info = HumanPart {
                 kind: part.kind,
                 region: part.region,
                 texture: part.texture.clone(),
                 alpha: part.alpha,
                 default_tint: part.default_tint,
+                morphs: !part.morphs.is_empty(),
             };
             (mesh, info, Name::new(part.name.clone()))
         })
@@ -624,10 +650,18 @@ pub(crate) fn spawn_human(
         });
     }
 
+    // The face's weights, on the holder, for every part that has its units.
+    if prepared.parts.iter().any(|(_, info, _)| info.morphs) {
+        if let Ok(weights) = MorphWeights::new(vec![0.0; cartopolis_human::face::UNITS.len()], None)
+        {
+            commands.entity(holder).insert(weights);
+        }
+    }
     let parts = prepared.parts.len();
     for (mesh, info, name) in prepared.parts {
         let material = material_for(&info, assets, tints);
-        commands.spawn((
+        let morphs = info.morphs;
+        let mut part = commands.spawn((
             name,
             Mesh3d(assets.meshes.add(mesh)),
             MeshMaterial3d(assets.materials.add(material)),
@@ -644,6 +678,9 @@ pub(crate) fn spawn_human(
             },
             ChildOf(holder),
         ));
+        if morphs {
+            part.insert(MeshMorphWeights::Reference(holder));
+        }
     }
 
     let mut clips_in = prepared.clips.into_iter();

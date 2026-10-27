@@ -10,6 +10,55 @@ use std::time::Duration;
 pub(super) const LOOK_INTERVAL: Duration = Duration::from_secs(2);
 pub(super) const LOOK_BURST: u32 = 5;
 
+/// A tracked face comes at [`cartopolis_core::FACE_FRAME_HZ`]; the bucket
+/// allows a little over it for a client's timer jitter, and no more.
+pub(super) const FACE_INTERVAL: Duration = Duration::from_millis(50);
+pub(super) const FACE_BURST: u32 = 4;
+
+/// A client's face, as its camera tracks it: handed to the clients within
+/// speaking range on the lane voice takes — a late frame is worth nothing, so
+/// it is dropped rather than queued — and kept nowhere. A face is something
+/// you show the people near you, as your voice is something they hear.
+pub(super) async fn on_face<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    weights: Vec<u8>,
+) -> anyhow::Result<()> {
+    use cartopolis_core::{encode_app_frame, FACE_UNITS};
+    if !(weights.is_empty() || weights.len() == FACE_UNITS)
+        || !take_token(&mut ctx.gates.face, FACE_INTERVAL, FACE_BURST)
+    {
+        return Ok(());
+    }
+    let avatar_id = ctx.avatar_id;
+    let (sender, positions) = {
+        let w = ctx.world.read().await;
+        let ps: Vec<(u64, _)> = ctx
+            .chat
+            .connected_ids()
+            .into_iter()
+            .filter(|id| *id != avatar_id)
+            .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
+            .collect();
+        (w.embodied_position(avatar_id), ps)
+    };
+    let Some(sender) = sender else {
+        return Ok(());
+    };
+    let frame = bytes::Bytes::from(encode_app_frame(&NetMessage::FaceFrameOf {
+        avatar_id,
+        weights,
+    })?);
+    for (id, _) in crate::chat::within_radius(sender, &positions, crate::chat::SAY_RADIUS_M) {
+        ctx.chat.deliver_to(
+            id,
+            &ctx.display_name,
+            crate::chat::Lane::Voice,
+            frame.clone(),
+        );
+    }
+    Ok(())
+}
+
 /// A client saved its look: keep it with the account, wear it in the world,
 /// and tell every client.
 pub(super) async fn on_look<T: FrameTransport>(

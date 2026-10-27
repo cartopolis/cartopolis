@@ -1,7 +1,7 @@
 //! The avatar: movement intents, teleports and presence.
 
 use super::{ConnCtx, FrameTransport, MIN_INTENT_INTERVAL};
-use cartopolis_core::{Emote, GeoAnchor};
+use cartopolis_core::{Emote, Expression, GeoAnchor};
 use glam::Vec3;
 use std::time::Instant;
 
@@ -15,6 +15,7 @@ pub(super) struct Intent {
     pub fly_down: bool,
     pub jump: bool,
     pub emote: Option<Emote>,
+    pub expression: Option<Expression>,
     pub seated: Option<[f32; 2]>,
     pub geo: Option<GeoAnchor>,
 }
@@ -29,6 +30,7 @@ pub(super) async fn on_intent<T: FrameTransport>(
     if ctx.gates.last_intent.elapsed() < MIN_INTENT_INTERVAL
         && !intent.jump
         && intent.emote.is_none()
+        && intent.expression.is_none()
     {
         return Ok(());
     }
@@ -47,6 +49,9 @@ pub(super) async fn on_intent<T: FrameTransport>(
         intent.seated,
         intent.geo,
     );
+    if let Some(e) = intent.expression {
+        w.start_expression(ctx.avatar_id, e);
+    }
     Ok(())
 }
 

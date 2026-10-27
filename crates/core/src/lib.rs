@@ -43,12 +43,13 @@ pub use protocol::{
     CallWaiter, ChatScope, CommunityDto, CommunityListing, CommunityMemberDto, CommunityPlace,
     CommunityReportDto, CommunityRole, CommunitySettings, ContactDto, ContactRequestDto,
     ContactSettings, DirectoryOrder, E2eeCursor, E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, Emote,
-    EmoteState, GeoAnchor, JoinRequestDto, JoinRule, ListingState, MessageKind, MetDto,
-    NearbyPersonDto, NetMessage, PersonDto, PersonWhereDto, PrimBody, PrimDto, PrimGeometry,
-    PrimSurface, PrimVideo, ProtocolRevision, Relation, ReportReason, RequestPolicy, ScriptLevel,
-    SetVideo, TextureEntry, TopicDto, CALL_CONTROL_REQUEST, CALL_GUEST_HOURS,
-    COMMUNITY_INVITE_DAYS, E2EE_BEHIND, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
-    MAX_REPORT_NOTE_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    EmoteState, Expression, ExpressionState, GeoAnchor, JoinRequestDto, JoinRule, ListingState,
+    MessageKind, MetDto, NearbyPersonDto, NetMessage, PersonDto, PersonWhereDto, PrimBody, PrimDto,
+    PrimGeometry, PrimSurface, PrimVideo, ProtocolRevision, Relation, ReportReason, RequestPolicy,
+    ScriptLevel, SetVideo, TextureEntry, TopicDto, CALL_CONTROL_REQUEST, CALL_GUEST_HOURS,
+    COMMUNITY_INVITE_DAYS, E2EE_BEHIND, EMOTE_REPLICATE_SECS, EXPRESSION_REPLICATE_SECS,
+    EXPRESSION_SECS, FACE_FRAME_HZ, FACE_UNITS, MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN,
+    MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use shot_env::ShotEnv;

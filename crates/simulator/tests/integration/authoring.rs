@@ -150,6 +150,7 @@ async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
         fly_down: false,
         jump: false,
         emote: None,
+        expression: None,
         seated: None,
         geo: Some(GeoAnchor {
             latitude: lat,
@@ -1407,6 +1408,7 @@ async fn a_kick_into_the_north_goal_is_called_a_goal() {
         fly_up: false,
         fly_down: false,
         jump: false,
+        expression: None,
         emote,
         seated: None,
         geo: Some(GeoAnchor {

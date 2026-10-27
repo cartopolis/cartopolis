@@ -358,6 +358,7 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 /// following frame. That is a constant ~50 ms on a phone, not jitter, and it is
 /// the cheaper half of the trade: inverting either link would move the camera or
 /// the driver tick to answer a translation control that cannot feel it.
+#[allow(clippy::too_many_arguments)]
 pub fn render_map_osd(
     egui: EguiRef,
     mut osd: ResMut<OsdInput>,
@@ -370,6 +371,8 @@ pub fn render_map_osd(
     touch: Res<crate::systems::touch::TouchGestures>,
     avatar_state: Res<crate::resources::AvatarState>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
+    mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
+    mut faces_open: Local<bool>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -424,6 +427,9 @@ pub fn render_map_osd(
                 let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying);
                 next.jump = jump;
                 next.fly_toggle = fly_toggle;
+                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut faces_open) {
+                    faces.write(crate::systems::avatar_face::StartExpression(e));
+                }
             }
             Cluster::Zoom => {
                 next.zoom = vertical_pair(
@@ -543,6 +549,74 @@ enum Mark {
     /// being filled is also the honest signal: this is the only control here that
     /// holds a state rather than expressing a rate.
     Wings,
+    /// A face: the expressions (`avatar_face`), a ring with two eyes and a
+    /// smile.
+    Face,
+}
+
+/// A disc above the jump/flight pair that opens a column of expressions
+/// beside it; a tap on one pulls that face and closes it. Returns the face
+/// picked this frame.
+fn face_picker(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    areas: &mut Vec<egui::Rect>,
+    open: &mut bool,
+) -> Option<cartopolis_core::Expression> {
+    let above = actions_bottom_offset() + pair_height() + theme::OSD_GROUP_GAP;
+    let area = egui::Area::new(egui::Id::new("osd_face"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-theme::OSD_MARGIN, -above),
+        )
+        .show(ctx, |ui| {
+            let resp = round_button(ui, Mark::Face, *open);
+            if resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false)) {
+                *open = !*open;
+            }
+        });
+    areas.push(area.response.rect);
+    if !*open {
+        return None;
+    }
+    let mut picked = None;
+    let list = egui::Area::new(egui::Id::new("osd_faces"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-(theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP), -above),
+        )
+        .show(ctx, |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for e in cartopolis_core::Expression::ALL {
+                    let resp = ui.add(
+                        egui::Button::new(expression_label(e)).min_size(egui::vec2(120.0, 32.0)),
+                    );
+                    if resp.clicked() || fingers.lifted_in(resp.rect) {
+                        picked = Some(e);
+                    }
+                }
+            });
+        });
+    areas.push(list.response.rect);
+    if picked.is_some() {
+        *open = false;
+    }
+    picked
+}
+
+fn expression_label(e: cartopolis_core::Expression) -> &'static str {
+    use cartopolis_core::Expression as E;
+    match e {
+        E::Happy => "Smile",
+        E::Laugh => "Laugh",
+        E::Sad => "Sad",
+        E::Angry => "Angry",
+        E::Surprised => "Surprised",
+        E::Afraid => "Afraid",
+        E::Disgusted => "Disgusted",
+        E::Wink => "Wink",
+    }
 }
 
 /// Two round buttons at the bottom of the right edge. Returns `+1` while the top
@@ -660,6 +734,19 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
         // egui tessellates correctly. Each half is a triangle and each triangle
         // is convex, and they share the nose and the notch, so the seam between
         // them lands on the axis where a dart has a crease anyway.
+        Mark::Face => {
+            p.circle_stroke(c, s * 1.1, stroke);
+            for side in [-1.0_f32, 1.0] {
+                p.circle_filled(c + egui::vec2(side * s * 0.4, -s * 0.3), 1.8, ink);
+            }
+            let smile: Vec<egui::Pos2> = (0..=8)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (0.2 + 0.6 * i as f32 / 8.0);
+                    c + egui::vec2(a.cos() * s * 0.6, a.sin() * s * 0.6)
+                })
+                .collect();
+            p.add(egui::Shape::line(smile, stroke));
+        }
         Mark::Wings => {
             let (nose, tip, notch) = (s * 1.15, s * 0.75, s * 0.3);
             let apex = c + egui::vec2(0.0, -nose);

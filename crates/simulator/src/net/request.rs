@@ -42,6 +42,7 @@ pub enum ClientRequest {
         fly_down: bool,
         jump: bool,
         emote: Option<Emote>,
+        expression: Option<cartopolis_core::Expression>,
         seated: Option<[f32; 2]>,
         geo: Option<GeoAnchor>,
     },
@@ -53,6 +54,10 @@ pub enum ClientRequest {
     },
     SetAvatarLook {
         look: cartopolis_core::AvatarLook,
+    },
+    /// A face its camera tracks, to hand on (`look::on_face`).
+    SetFaceFrame {
+        weights: Vec<u8>,
     },
     CreatePrim {
         request_id: u32,
@@ -299,6 +304,7 @@ impl ClientRequest {
             | Self::CallKeyDrop { .. }
             // A guest has no avatar in the world to wear one.
             | Self::SetAvatarLook { .. }
+            | Self::SetFaceFrame { .. }
             | Self::RequestContact { .. }
             | Self::AnswerContact { .. }
             | Self::RemoveContact { .. }
@@ -327,6 +333,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 fly_down,
                 jump,
                 emote,
+                expression,
                 seated,
                 geo,
                 ..
@@ -339,12 +346,14 @@ impl TryFrom<NetMessage> for ClientRequest {
                 fly_down,
                 jump,
                 emote,
+                expression,
                 seated,
                 geo,
             },
             NetMessage::Teleport { position, .. } => Self::Teleport { position },
             NetMessage::SetPresence { active, .. } => Self::SetPresence { active },
             NetMessage::SetAvatarLook { look } => Self::SetAvatarLook { look },
+            NetMessage::SetFaceFrame { weights } => Self::SetFaceFrame { weights },
             NetMessage::CreatePrim {
                 request_id,
                 name,
@@ -701,7 +710,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::TopicRemovePeople { .. }
             | NetMessage::TopicLeft { .. }
             | NetMessage::E2eeRedacted { .. }
-            | NetMessage::AvatarLookOf { .. } => return Err(msg),
+            | NetMessage::AvatarLookOf { .. }
+            | NetMessage::FaceFrameOf { .. } => return Err(msg),
         })
     }
 }

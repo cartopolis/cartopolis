@@ -128,6 +128,9 @@ pub struct CameraScreen {
     pub demo_result: bool,
     /// Whether the shutter records a clip: the choice used last, as `mode`.
     pub video: bool,
+    /// What the face tracking says during the In world selfie, shown where
+    /// the screen's status goes (`systems::face_tracking`).
+    pub face_note: Option<String>,
     /// The window as drawn, UI and all, for a clip's world
     /// (`ui::drive_screenshots`): taken without hiding the UI, which would
     /// make it blink at the clip's frame rate.
@@ -160,6 +163,16 @@ impl CameraScreen {
         {
             false
         }
+    }
+
+    /// Whether the screen is up In world, turned round to the avatar: the
+    /// selfie whose face follows the user's own (`systems::face_tracking`).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn avatar_selfie(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(native::Session::avatar_selfie)
     }
 }
 
@@ -563,6 +576,11 @@ mod native {
 
         fn recording(&self) -> bool {
             self.recorder.as_ref().is_some_and(|r| !r.stopping())
+        }
+
+        /// In world, turned round to the avatar.
+        pub(super) fn avatar_selfie(&self) -> bool {
+            self.mode == Mode::World && self.front
         }
     }
 
@@ -1590,6 +1608,7 @@ mod native {
     /// through the polaroid's frame), the modes beside the shutter, the flip
     /// under it and the upload above it.
     pub fn render_camera(mut egui: EguiMut, mut screen: ResMut<CameraScreen>) {
+        let face_note = screen.face_note.clone();
         let Some(session) = screen.session.as_mut() else {
             return;
         };
@@ -2007,7 +2026,7 @@ mod native {
                 } else if session.busy() {
                     Some("Taking the picture…".to_string())
                 } else {
-                    session.error.clone()
+                    session.error.clone().or_else(|| face_note.clone())
                 };
                 if let Some(text) = status {
                     let at = if sideways {

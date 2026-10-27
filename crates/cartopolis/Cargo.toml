@@ -213,6 +213,9 @@ bevy = { workspace = true, features = ["wayland"] }
 # provider (`platform::gnss_receiver`). The desktop also takes its serial port,
 # below; Android reaches the adapter through the USB host API instead.
 cartopolis_gnss = { path = "../gnss" }
+# The user's face through the front camera (`systems::face_tracking`); not on
+# the web, which has no camera here.
+cartopolis_face = { path = "../face" }
 # Microphone capture for `platform::audio` (see the `audio` feature above).
 # Version-matched to the cpal rodio already resolves, so Cargo unifies to one
 # copy rather than compiling two ALSA backends.

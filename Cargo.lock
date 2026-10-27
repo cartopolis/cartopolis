@@ -2539,6 +2539,7 @@ dependencies = [
  "cartopolis_chat",
  "cartopolis_core",
  "cartopolis_e2ee",
+ "cartopolis_face",
  "cartopolis_geo",
  "cartopolis_gnss",
  "cartopolis_human",

@@ -1401,6 +1401,21 @@ fn more_sheet(
     if sheet_row(ui, icons::MIC, "Noise suppression", Some(!calls.keep_noise)) {
         calls.keep_noise = !calls.keep_noise;
     }
+    // Your avatar in your camera's place, pulling your faces: the camera
+    // reads your face and sends nothing of it (`systems::avatar_video`).
+    if camera_available()
+        && sheet_row(
+            ui,
+            icons::APPEARANCE,
+            "Show your avatar instead",
+            Some(calls.avatar_video),
+        )
+    {
+        calls.avatar_video = !calls.avatar_video;
+        if calls.avatar_video {
+            calls.camera_on = true;
+        }
+    }
     // The phone asks first in its own dialog; a desktop may ask the first
     // time for its screen-recording permission.
     let sharing = calls.sharing_screen();

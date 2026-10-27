@@ -7,8 +7,13 @@ pub use plugin::PlayerPlugin;
 
 pub mod ambience;
 pub mod avatar;
+pub mod avatar_face;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod avatar_video;
 pub mod camera_attach;
 pub mod collision;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod face_tracking;
 pub mod free_camera;
 pub mod gizmo;
 pub mod held_phone;

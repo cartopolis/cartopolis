@@ -210,6 +210,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "agent accounts — CallMember.agent, ContactDto.agent and ContactRequestDto.agent say an AI agent speaks for the account, so its badge shows before anybody calls or answers it (docs/mockups/voice-agent/)",
     },
+    ProtocolRevision {
+        version: 44,
+        adr: "",
+        summary: "faces — ClientIntent.expression and AvatarStateDto.expression carry an expression (Expression, held like an emote with a sequence) the avatar's face shows for a few seconds; SetFaceFrame / FaceFrameOf relay a face tracked by its owner's camera, 52 unit weights a frame, to the clients within speaking range (docs/notes/avatar-faces.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -340,6 +345,8 @@ pub enum MessageKind {
     CallKeyDropped = 120,
     SetAvatarLook = 121,
     AvatarLookOf = 122,
+    SetFaceFrame = 123,
+    FaceFrameOf = 124,
 }
 
 impl MessageKind {
@@ -459,6 +466,8 @@ impl MessageKind {
             120 => Some(Self::CallKeyDropped),
             121 => Some(Self::SetAvatarLook),
             122 => Some(Self::AvatarLookOf),
+            123 => Some(Self::SetFaceFrame),
+            124 => Some(Self::FaceFrameOf),
             _ => None,
         }
     }
@@ -860,6 +869,9 @@ pub struct AvatarStateDto {
     /// it after [`EMOTE_REPLICATE_SECS`]; a receiver plays it once per
     /// `(avatar, sequence)` it has not seen.
     pub emote: Option<EmoteState>,
+    /// An expression this avatar's face started recently, held as `emote` is,
+    /// for [`EXPRESSION_REPLICATE_SECS`] (protocol 44).
+    pub expression: Option<ExpressionState>,
     /// Set while this avatar is sitting on something: metres in world XZ from
     /// [`Self::position`] to where its body is drawn.
     ///
@@ -930,6 +942,64 @@ pub struct EmoteState {
 /// the longest clip, so a client that receives its first snapshot mid-wave still
 /// plays it, and short enough that it does not replay on a much later snapshot.
 pub const EMOTE_REPLICATE_SECS: f32 = 2.5;
+
+/// A face an avatar pulls for a few seconds ([`EXPRESSION_SECS`]): a mix of
+/// the face's units every client composes the same way
+/// (`cartopolis_human::face::recipe`, by [`Expression::name`]). A closed enum
+/// for [`Emote`]'s reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Expression {
+    Happy,
+    Laugh,
+    Sad,
+    Angry,
+    Surprised,
+    Afraid,
+    Disgusted,
+    Wink,
+}
+
+impl Expression {
+    pub const ALL: [Self; 8] = [
+        Self::Happy,
+        Self::Laugh,
+        Self::Sad,
+        Self::Angry,
+        Self::Surprised,
+        Self::Afraid,
+        Self::Disgusted,
+        Self::Wink,
+    ];
+
+    /// The recipe's name in `cartopolis_human::face::recipe`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Happy => "happy",
+            Self::Laugh => "laugh",
+            Self::Sad => "sad",
+            Self::Angry => "angry",
+            Self::Surprised => "surprised",
+            Self::Afraid => "afraid",
+            Self::Disgusted => "disgusted",
+            Self::Wink => "wink",
+        }
+    }
+}
+
+/// An expression and the sequence that makes it re-playable, as [`EmoteState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpressionState {
+    pub expression: Expression,
+    pub sequence: u32,
+}
+
+/// How long a face holds an expression, seconds, easing in and out inside it.
+pub const EXPRESSION_SECS: f32 = 4.0;
+
+/// How long an expression stays on an avatar's replicated state: as long as
+/// it shows, so one who comes into view mid-smile still sees the smile.
+pub const EXPRESSION_REPLICATE_SECS: f32 = EXPRESSION_SECS;
 
 /// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
 /// channel. Geo tiers (country/province/municipality) land with `cartopolis_geo`.
@@ -1027,6 +1097,9 @@ pub enum NetMessage {
         /// everyone in range through [`AvatarStateDto::emote`]. `None` on almost
         /// every intent.
         emote: Option<Emote>,
+        /// One-shot: an expression the face started this frame (protocol 44),
+        /// replicated as [`AvatarStateDto::expression`]; like `emote`.
+        expression: Option<Expression>,
         /// Where the avatar is sitting, as metres from its own position — see
         /// [`AvatarStateDto::seated`] for why it is an offset. A *level*, not an
         /// edge: it is set for as long as the sit lasts, so an avatar that comes
@@ -1902,7 +1975,23 @@ pub enum NetMessage {
     /// just connected. Only the avatar id, never the account: who an avatar is
     /// stays something a client has to ask.
     AvatarLookOf { avatar_id: u64, look: AvatarLook },
+    /// This client's face as its camera tracks it (protocol 44): the face's
+    /// [`FACE_UNITS`] weights, each 0–255 for 0–1, at most [`FACE_FRAME_HZ`]
+    /// a second; empty when tracking stops. The server hands it on as
+    /// [`NetMessage::FaceFrameOf`] to the clients within speaking range and
+    /// keeps nothing. A frame of the wrong length is dropped.
+    SetFaceFrame { weights: Vec<u8> },
+    /// The tracked face of the avatar `avatar_id`, as its owner sent it.
+    FaceFrameOf { avatar_id: u64, weights: Vec<u8> },
 }
+
+/// How many weights a face has: the ARKit units, in the order
+/// `cartopolis_human::face::UNITS` lists them.
+pub const FACE_UNITS: usize = 52;
+
+/// How often a tracked face is sent, frames a second: a camera's pace, and
+/// enough for speech to read on the lips.
+pub const FACE_FRAME_HZ: f32 = 15.0;
 
 /// How long a guest link, and a guest's account, last: a meeting, not a
 /// membership.
@@ -2686,6 +2775,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::E2eeAddDevices { .. } => MessageKind::E2eeAddDevices,
         NetMessage::SetAvatarLook { .. } => MessageKind::SetAvatarLook,
         NetMessage::AvatarLookOf { .. } => MessageKind::AvatarLookOf,
+        NetMessage::SetFaceFrame { .. } => MessageKind::SetFaceFrame,
+        NetMessage::FaceFrameOf { .. } => MessageKind::FaceFrameOf,
         NetMessage::CommunityList { .. } => MessageKind::CommunityList,
         NetMessage::Communities { .. } => MessageKind::Communities,
         NetMessage::CommunityCreate { .. } => MessageKind::CommunityCreate,
@@ -2976,6 +3067,7 @@ mod tests {
                 fly_down: false,
                 jump: false,
                 emote: None,
+                expression: None,
                 seated,
                 geo: None,
             };
@@ -2990,6 +3082,7 @@ mod tests {
                     position: Vec3::new(1.0, 0.05, 2.0),
                     yaw: 1.25,
                     emote: None,
+                    expression: None,
                     seated,
                     velocity: Vec3::new(1.8, 0.0, -0.5),
                 }],
@@ -3422,7 +3515,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 113] = [
+        const ALL: [MessageKind; 115] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3536,6 +3629,8 @@ mod tests {
             CallKeyDropped,
             SetAvatarLook,
             AvatarLookOf,
+            SetFaceFrame,
+            FaceFrameOf,
         ];
         for k in ALL {
             assert_eq!(
@@ -3549,7 +3644,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(AvatarLookOf as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(FaceFrameOf as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

@@ -187,6 +187,7 @@ fn standing_still() -> NetMessage {
         fly_down: false,
         jump: false,
         emote: None,
+        expression: None,
         seated: None,
         geo: None,
     }
@@ -205,4 +206,68 @@ async fn an_unreasonable_look_is_dropped() {
         looks(&mut other, WINDOW).await.is_empty(),
         "a child's body is not relayed"
     );
+}
+
+/// Faces (protocol 44): an expression rides the snapshots for as long as it
+/// shows, and a tracked face reaches a client standing near, whole frames only.
+#[tokio::test]
+async fn a_face_reaches_those_near() {
+    use cartopolis_core::{Expression, FACE_UNITS};
+    let (_dir, _handle, addr) = boot().await;
+    let mut dev = connect_auth(&addr, "dev").await;
+    let mut other = connect_auth(&addr, "other").await;
+    // Both embodied, at the spawn point, so within speaking range.
+    send(&mut other, &standing_still()).await;
+    let mut laughing = standing_still();
+    if let NetMessage::ClientIntent { expression, .. } = &mut laughing {
+        *expression = Some(Expression::Laugh);
+    }
+    send(&mut dev, &laughing).await;
+    let shown = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(frame)) = other.next().await {
+            if let NetMessage::WorldSnapshot { avatars, .. } = decode_app_frame(&frame).unwrap() {
+                if let Some(e) = avatars.iter().find_map(|a| a.expression) {
+                    return Some(e);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+    assert_eq!(
+        shown.map(|e| e.expression),
+        Some(Expression::Laugh),
+        "the laugh rides a snapshot"
+    );
+
+    // A frame of the wrong length is dropped; a whole one is handed on.
+    send(
+        &mut dev,
+        &NetMessage::SetFaceFrame {
+            weights: vec![9; 51],
+        },
+    )
+    .await;
+    let face: Vec<u8> = (0..FACE_UNITS as u8).collect();
+    send(
+        &mut dev,
+        &NetMessage::SetFaceFrame {
+            weights: face.clone(),
+        },
+    )
+    .await;
+    let got = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(frame)) = other.next().await {
+            if let NetMessage::FaceFrameOf { weights, .. } = decode_app_frame(&frame).unwrap() {
+                return Some(weights);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+    assert_eq!(got, Some(face), "the first face to arrive is the whole one");
 }

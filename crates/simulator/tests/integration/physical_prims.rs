@@ -97,6 +97,7 @@ fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessage {
         fly_down: false,
         jump: false,
         emote,
+        expression: None,
         seated: None,
         geo: Some(geo),
     }

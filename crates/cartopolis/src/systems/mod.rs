@@ -90,9 +90,13 @@ pub use net::{
     background, call_tones, calls, chat_pictures, lifecycle, network, private_chat, session,
     user_store, voice,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use player::avatar_video;
+#[cfg(not(target_arch = "wasm32"))]
+pub use player::face_tracking;
 pub use player::{
-    avatar, camera_attach, collision, free_camera, gizmo, held_phone, human_avatar, interact,
-    local_avatar, locomotion, picking, prim_geo, touch,
+    avatar, avatar_face, camera_attach, collision, free_camera, gizmo, held_phone, human_avatar,
+    interact, local_avatar, locomotion, picking, prim_geo, touch,
 };
 // Re-exported only where something reaches it by name: with `audio` off the
 // module is still compiled (its synthesis and rate maths are pure and tested),

@@ -146,95 +146,133 @@ impl Plugin for PlayerPlugin {
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate),
         )
-        // A followed object's position, after it has been placed and before the
-        // camera rides it (`systems::camera_attach`).
-        .add_systems(
-            Update,
-            systems::prim_geo::report_attached_prim
-                .in_set(ClientPhase::Move)
-                .before(systems::free_camera::camera_controls),
-        )
+        // Faces: what each avatar's shows, onto its body's morph weights
+        // (`systems::avatar_face`).
+        .add_message::<systems::avatar_face::StartExpression>()
+        .init_resource::<systems::avatar_face::IncomingFaces>()
         .add_systems(
             Update,
             (
-                avatar::handle_avatar_movement.after(network::apply_network_snapshot),
-                // After `send_network_intent`, which stamps this frame's
-                // `predicted_velocity` that the prediction integrates.
-                avatar::smooth_online_avatar_display
-                    .after(network::apply_network_snapshot)
-                    .after(avatar::handle_avatar_movement)
-                    .after(network::send_network_intent),
-                // Keep the avatar out of buildings: block walking into them, and
-                // eject one that lands inside (teleport / a building streaming over
-                // it). Runs after movement and before the camera follows the
-                // corrected position.
-                systems::collision::eject_avatar_from_buildings
-                    .after(avatar::handle_avatar_movement)
-                    .before(systems::free_camera::camera_controls),
-                // The props the city draws are the props the avatar cannot walk
-                // through. Before movement, so a bench that streamed in this frame
-                // is solid on the frame it appears.
-                systems::collision::sync_prop_colliders.before(avatar::handle_avatar_movement),
-                // The tunnel walls, on the same terms and for the same reason: a
-                // tunnel that streamed in this frame is a floor on the frame it
-                // appears, and a floor with no walls is a way to walk out into
-                // solid ground.
-                systems::collision::sync_bore_colliders.before(avatar::handle_avatar_movement),
-                // What the avatar is standing next to, and the nearest house number.
-                systems::interact::track_interaction_target.after(avatar::handle_avatar_movement),
-                avatar::spawn_avatar,
+                systems::avatar_face::add_faces,
+                systems::avatar_face::feed_faces,
+                systems::avatar_face::drive_faces,
             )
-                .in_set(ClientPhase::Move),
-        )
-        .add_systems(
-            Update,
-            (
-                systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
-                systems::free_camera::track_stream_centre
-                    .after(systems::free_camera::camera_controls),
-            )
-                .in_set(ClientPhase::Camera),
-        )
-        .add_systems(
-            Update,
-            (
-                avatar::smooth_remote_avatars.after(avatar::smooth_online_avatar_display),
-                // After `send_network_intent`: the pending emote is a one-shot that
-                // this system *takes*, and the wire needs it first or a wave would
-                // be seen by everyone except the people watching it happen.
-                avatar::update_avatar_animation
-                    .after(avatar::handle_avatar_movement)
-                    .after(network::send_network_intent),
-                // The airborne pose the clip set doesn't have: lean the model into
-                // flight. After `spawn_avatar` so a holder that appeared this frame
-                // (first spawn, appearance change) is leant on the frame it exists.
-                avatar::update_avatar_model_pose
-                    .after(avatar::handle_avatar_movement)
-                    .after(avatar::spawn_avatar),
-                avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
-                avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
-                avatar::pin_avatar_animation.after(avatar::update_avatar_animation),
-                // A changed look is built on a worker and swapped in whole
-                // (`human_avatar::HumanRebuild`); the old body stays drawn
-                // until then, so neither needs ordering against the spawn.
-                systems::human_avatar::rebuild_on_look_change,
-                systems::human_avatar::finish_rebuilds
-                    .after(systems::human_avatar::rebuild_on_look_change),
-                systems::human_avatar::send_avatar_look,
-                systems::picking::render_marquee.after(systems::picking::update_marquee),
-                systems::gizmo::render_gizmo_visuals,
-                // The first-person twin of the driver arrow: take the avatar's
-                // model out of shot while the camera is inside its head. After the
-                // camera, which is what decides that, and after the driver arrow,
-                // which owns the avatar's visibility whenever it is drawing over it
-                // — the two never both want it, and ordering them makes that
-                // visible rather than merely true.
-                systems::free_camera::update_first_person_avatar
-                    .after(systems::free_camera::camera_controls)
-                    .after(systems::driver::update_driver_arrow),
-            )
+                .chain()
+                .after(network::apply_network_snapshot)
                 .in_set(ClientPhase::Present),
         );
+        // The user's own face through the front camera, onto the avatar's
+        // (`systems::face_tracking`), before the faces are stepped.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_asset::<systems::face_tracking::FaceModel>()
+            .init_asset_loader::<systems::face_tracking::FaceModelLoader>()
+            .init_resource::<systems::face_tracking::FaceTracking>()
+            .init_resource::<systems::avatar_video::AvatarVideo>()
+            .add_systems(
+                Update,
+                (
+                    systems::face_tracking::want_for_selfie,
+                    systems::avatar_video::dump_avatar_video,
+                    systems::avatar_video::drive_avatar_video,
+                    systems::face_tracking::drive_face_tracking,
+                    systems::face_tracking::show_own_face,
+                )
+                    .chain()
+                    .before(systems::avatar_face::feed_faces)
+                    .in_set(ClientPhase::Present),
+            );
+        app
+            // A followed object's position, after it has been placed and before the
+            // camera rides it (`systems::camera_attach`).
+            .add_systems(
+                Update,
+                systems::prim_geo::report_attached_prim
+                    .in_set(ClientPhase::Move)
+                    .before(systems::free_camera::camera_controls),
+            )
+            .add_systems(
+                Update,
+                (
+                    avatar::handle_avatar_movement.after(network::apply_network_snapshot),
+                    // After `send_network_intent`, which stamps this frame's
+                    // `predicted_velocity` that the prediction integrates.
+                    avatar::smooth_online_avatar_display
+                        .after(network::apply_network_snapshot)
+                        .after(avatar::handle_avatar_movement)
+                        .after(network::send_network_intent),
+                    // Keep the avatar out of buildings: block walking into them, and
+                    // eject one that lands inside (teleport / a building streaming over
+                    // it). Runs after movement and before the camera follows the
+                    // corrected position.
+                    systems::collision::eject_avatar_from_buildings
+                        .after(avatar::handle_avatar_movement)
+                        .before(systems::free_camera::camera_controls),
+                    // The props the city draws are the props the avatar cannot walk
+                    // through. Before movement, so a bench that streamed in this frame
+                    // is solid on the frame it appears.
+                    systems::collision::sync_prop_colliders.before(avatar::handle_avatar_movement),
+                    // The tunnel walls, on the same terms and for the same reason: a
+                    // tunnel that streamed in this frame is a floor on the frame it
+                    // appears, and a floor with no walls is a way to walk out into
+                    // solid ground.
+                    systems::collision::sync_bore_colliders.before(avatar::handle_avatar_movement),
+                    // What the avatar is standing next to, and the nearest house number.
+                    systems::interact::track_interaction_target
+                        .after(avatar::handle_avatar_movement),
+                    avatar::spawn_avatar,
+                )
+                    .in_set(ClientPhase::Move),
+            )
+            .add_systems(
+                Update,
+                (
+                    systems::free_camera::camera_controls
+                        .after(avatar::smooth_online_avatar_display),
+                    systems::free_camera::track_stream_centre
+                        .after(systems::free_camera::camera_controls),
+                )
+                    .in_set(ClientPhase::Camera),
+            )
+            .add_systems(
+                Update,
+                (
+                    avatar::smooth_remote_avatars.after(avatar::smooth_online_avatar_display),
+                    // After `send_network_intent`: the pending emote is a one-shot that
+                    // this system *takes*, and the wire needs it first or a wave would
+                    // be seen by everyone except the people watching it happen.
+                    avatar::update_avatar_animation
+                        .after(avatar::handle_avatar_movement)
+                        .after(network::send_network_intent),
+                    // The airborne pose the clip set doesn't have: lean the model into
+                    // flight. After `spawn_avatar` so a holder that appeared this frame
+                    // (first spawn, appearance change) is leant on the frame it exists.
+                    avatar::update_avatar_model_pose
+                        .after(avatar::handle_avatar_movement)
+                        .after(avatar::spawn_avatar),
+                    avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
+                    avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
+                    avatar::pin_avatar_animation.after(avatar::update_avatar_animation),
+                    // A changed look is built on a worker and swapped in whole
+                    // (`human_avatar::HumanRebuild`); the old body stays drawn
+                    // until then, so neither needs ordering against the spawn.
+                    systems::human_avatar::rebuild_on_look_change,
+                    systems::human_avatar::finish_rebuilds
+                        .after(systems::human_avatar::rebuild_on_look_change),
+                    systems::human_avatar::send_avatar_look,
+                    systems::picking::render_marquee.after(systems::picking::update_marquee),
+                    systems::gizmo::render_gizmo_visuals,
+                    // The first-person twin of the driver arrow: take the avatar's
+                    // model out of shot while the camera is inside its head. After the
+                    // camera, which is what decides that, and after the driver arrow,
+                    // which owns the avatar's visibility whenever it is drawing over it
+                    // — the two never both want it, and ordering them makes that
+                    // visible rather than merely true.
+                    systems::free_camera::update_first_person_avatar
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::driver::update_driver_arrow),
+                )
+                    .in_set(ClientPhase::Present),
+            );
 
         // The soundscape. Its own registration because the whole module is behind
         // the `audio` feature (ALSA headers on Linux — see Cargo.toml), and a

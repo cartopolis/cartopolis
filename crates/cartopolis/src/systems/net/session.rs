@@ -1053,6 +1053,8 @@ mod tests {
             net_age: 0.0,
             pending_emote: None,
             last_emote_sequence: None,
+            pending_expression: None,
+            last_expression_sequence: None,
             seated: None,
             seat_blend: 0.0,
             terrain_lift: 0.0,
