@@ -46,7 +46,8 @@ use crate::systems::{icons, theme};
 
 /// The hairline around glass and the segmented control (`--gline`, white at
 /// 14 %).
-const GLINE: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 36);
+pub(crate) const GLINE: egui::Color32 =
+    egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 36);
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
 ///
 /// Lifted from the mockup's muted set on 2026-10-04: on the ink screen those
@@ -71,7 +72,7 @@ pub(crate) const ROW_CARD: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 10);
 
 /// Blend `base` toward `over` by `k`.
-fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
+pub(crate) fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
     let ch = |b: u8, o: u8| (f32::from(b) + (f32::from(o) - f32::from(b)) * k).round() as u8;
     egui::Color32::from_rgb(
         ch(base.r(), over.r()),
@@ -117,8 +118,8 @@ fn lit_disc(p: &egui::Painter, c: egui::Pos2, r: f32, tone: egui::Color32) {
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
 const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x3F, 0x3B, 0x38);
 /// Bubble corners: round, with the corner nearest the speaker tucked in.
-const BUBBLE_R: u8 = 18;
-const TAIL_R: u8 = 6;
+pub(crate) const BUBBLE_R: u8 = 18;
+pub(crate) const TAIL_R: u8 = 6;
 /// Widest the World view's composer pill gets on a desktop window.
 const WORLD_SHEET_MAX_WIDTH: f32 = 520.0;
 
@@ -391,7 +392,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn tone_for(name: &str) -> egui::Color32 {
+pub(crate) fn tone_for(name: &str) -> egui::Color32 {
     let h = name
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));

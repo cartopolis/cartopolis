@@ -78,11 +78,25 @@ const FADE_SECS: f64 = 4.0;
 const TRANSCRIPT_LINES: usize = 4;
 /// And while the composer is open, when chat is what you are doing.
 const TRANSCRIPT_LINES_OPEN: usize = 8;
-/// Width of the transcript column, in points. Fixed rather than sized to
+/// Widest the transcript column gets, in points. Fixed rather than sized to
 /// content, for the reason `hud`'s module note gives at length: a size-to-content
 /// `Area` whose contents reach for the available width grows a little every
 /// frame until it has swallowed the screen.
-const TRANSCRIPT_WIDTH: f32 = 300.0;
+const TRANSCRIPT_WIDTH: f32 = 360.0;
+
+/// The transcript column on a viewport `viewport_w` points wide: the whole
+/// width less the margins on a phone, capped on anything wider.
+#[must_use]
+fn transcript_width(viewport_w: f32) -> f32 {
+    (viewport_w - 2.0 * theme::OSD_MARGIN).clamp(160.0, TRANSCRIPT_WIDTH)
+}
+
+/// The size of a line's words, as the messenger's thread sets them.
+const BODY_PT: f32 = 14.5;
+/// A speaker's name over their run, and the chat tag beside it.
+const NAME_PT: f32 = 12.5;
+/// The round initial beside someone else's run.
+const FACE_PT: f32 = 26.0;
 
 /// A bubble hangs this far above the avatar's feet, in metres. The MakeHuman
 /// bodies stand origin-at-feet (`human_avatar`) and the tallest the designer
@@ -96,7 +110,9 @@ const BUBBLE_FADE_SECS: f64 = 1.5;
 /// scrollback — and without a cap one person can paper over the view.
 const BUBBLE_LINES: usize = 3;
 /// Widest a bubble gets, in points.
-const BUBBLE_WIDTH: f32 = 190.0;
+const BUBBLE_WIDTH: f32 = 200.0;
+/// How far above a head a balloon reaches, roughly: a name and two lines.
+const BUBBLE_REACH: f32 = 90.0;
 
 /// Widest the composer pill gets. Beyond this a desktop window would put a
 /// single-line field across a metre of screen.
@@ -116,6 +132,10 @@ pub struct ChatOverlay {
     /// Here, usually — while every line above it was Everyone, so the obvious
     /// reply went to nobody nearby.
     follow: bool,
+    /// Where the transcript was drawn last frame, so a bubble over a head
+    /// does not land on it — the two drawn over each other were the same
+    /// words twice in a tangle.
+    transcript: Option<egui::Rect>,
     /// `--ui chat` seeded this run and there is no session behind it.
     ///
     /// The only thing it unlocks is the [`suppressed`] test for a session —
@@ -447,6 +467,19 @@ pub fn render_chat_bubbles(
         if !map_rect.contains(head) {
             continue;
         }
+        // The transcript carries the same words; a balloon that would land on
+        // it is left out rather than drawn over it — the two in a tangle were
+        // the worst of both. Last frame's rect, as the transcript draws after
+        // this; its size changes by a line at a time.
+        if let Some(transcript) = overlay.transcript {
+            let reach = egui::Rect::from_min_max(
+                egui::pos2(head.x - BUBBLE_WIDTH / 2.0, head.y - BUBBLE_REACH),
+                egui::pos2(head.x + BUBBLE_WIDTH / 2.0, head.y),
+            );
+            if reach.intersects(transcript) {
+                continue;
+            }
+        }
         // The newest line decides the whole bubble's opacity: a balloon whose
         // top half is fading while its bottom half is fresh reads as a rendering
         // fault, not as age.
@@ -498,26 +531,45 @@ fn bubble(
         .show(ctx, |ui| {
             ui.set_opacity(alpha);
             ui.set_max_width(BUBBLE_WIDTH);
-            theme::chip_frame()
-                .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+            // The transcript's glass bubble, and the speaker's name in the
+            // colour their initial has there, so the balloon and the line it
+            // also appears as read as one person.
+            let tone = crate::systems::chats::tone_for(speaker);
+            let frame = egui::Frame::NONE
+                .fill(theme::GLASS)
+                .stroke(egui::Stroke::new(1.0, crate::systems::chats::GLINE))
+                .corner_radius(egui::CornerRadius::same(14))
+                .inner_margin(egui::Margin::symmetric(11, 7))
+                .shadow(lift())
                 .show(ui, |ui| {
                     ui.set_max_width(BUBBLE_WIDTH);
+                    ui.spacing_mut().item_spacing.y = 1.0;
                     ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(speaker)
-                                .size(theme::SIZE_CHIP)
-                                .strong()
-                                .color(theme::ACCENT_TEXT),
-                        );
+                        ui.label(egui::RichText::new(speaker).size(NAME_PT).strong().color(
+                            crate::systems::chats::blend(tone, egui::Color32::WHITE, 0.5),
+                        ));
                         for body in bodies {
-                            ui.label(
-                                egui::RichText::new(body)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::CREAM),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(body).size(BODY_PT).color(theme::CREAM),
+                                )
+                                .wrap(),
                             );
                         }
                     });
                 });
+            // The tail, pointing down at whoever said it.
+            let r = frame.response.rect;
+            let tip = egui::pos2(r.center().x, r.bottom() + 7.0);
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(tip.x - 7.0, r.bottom()),
+                    egui::pos2(tip.x + 7.0, r.bottom()),
+                    tip,
+                ],
+                theme::GLASS,
+                egui::Stroke::NONE,
+            ));
         });
 }
 
@@ -535,6 +587,8 @@ pub fn render_chat_transcript(
     camera_state: Res<crate::resources::CameraState>,
     touch: Res<crate::systems::touch::TouchGestures>,
 ) {
+    // Where it was drawn, for the bubbles to keep clear of; nowhere until it is.
+    overlay.transcript = None;
     let compact = egui.compact();
     let panel_open = !right_panel.is(RightPanel::None);
     if suppressed(
@@ -615,7 +669,8 @@ pub fn render_chat_transcript(
     let mut open_report: Option<(String, Option<String>)> = None;
     let mut reply_in: Option<String> = None;
 
-    egui::Area::new(egui::Id::new("chat_transcript"))
+    let column = transcript_width(egui.viewport_pts().x);
+    let transcript = egui::Area::new(egui::Id::new("chat_transcript"))
         .order(egui::Order::Middle)
         // The rule this module exists to keep: an `Area` that is merely faded is
         // still a live click target over the map.
@@ -628,14 +683,13 @@ pub fn render_chat_transcript(
             // A fixed width, not a maximum: own runs sit on the right edge of
             // the column, and a column sized to its content has no right edge
             // to put them on. Inert at rest, so the empty part takes no taps.
-            ui.set_width(TRANSCRIPT_WIDTH);
-            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.set_width(column);
+            ui.spacing_mut().item_spacing.y = 8.0;
             for run in &runs {
-                // Per line, not per box: the oldest line at the top of the stack
-                // is the one that should be going, and fading the whole column
-                // together makes the transcript blink rather than scroll. A run
-                // fades with its newest line, as a bubble does — a box whose top
-                // half is going while its bottom half is fresh reads as a fault.
+                // A run fades with its newest line, as a bubble does: a box
+                // whose top half is going while its bottom half is fresh reads
+                // as a fault. Runs still go one at a time, oldest first, so the
+                // transcript scrolls away rather than blinking out.
                 let alpha = if overlay.composing {
                     1.0
                 } else {
@@ -647,109 +701,27 @@ pub fn render_chat_transcript(
                 if alpha <= 0.0 {
                     continue;
                 }
-                // Your own words on the right, everyone else's on the left: the
-                // messenger's convention, and it tells the two apart without a
-                // second accent colour, which the monochrome palette does not have.
-                let align = if run.mine {
-                    egui::Align::Max
-                } else {
-                    egui::Align::Min
-                };
                 // Which chat a run is in, only where it is not the one being
                 // answered and not Here (the default, and what the bubbles carry).
                 let tag = (only.is_none()
                     && run.key != "local"
                     && !(overlay.composing && active_key.as_deref() == Some(run.key.as_str())))
                 .then_some(run.chat.as_str());
-                let last_body = run.lines.last().map(|l| l.body.clone());
-                ui.with_layout(egui::Layout::top_down(align), |ui| {
-                    theme::chip_frame().show(ui, |ui| {
-                        ui.set_opacity(alpha);
-                        ui.set_max_width(TRANSCRIPT_WIDTH - 2.0 * theme::CHIP_PADDING.x);
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.with_layout(egui::Layout::top_down(align), |ui| {
-                            // The name on a line of its own, small and quiet,
-                            // above what was said: one name per run instead of
-                            // one per line, and the words are what is read.
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                if !run.mine {
-                                    let label = egui::Label::new(
-                                        egui::RichText::new(&run.sender)
-                                            .size(theme::SIZE_CHIP)
-                                            .strong()
-                                            .color(theme::ACCENT_TEXT),
-                                    );
-                                    if interactive {
-                                        // The name is the handle for what you can do
-                                        // *about* a person. It senses clicks only
-                                        // here, because an inert transcript must let
-                                        // the map have them.
-                                        let name = ui.add(label.sense(egui::Sense::click()));
-                                        person_menu(
-                                            &name,
-                                            &run.sender,
-                                            last_body.as_deref(),
-                                            &crate::systems::chat::PersonExtras::default(),
-                                            |action| match action {
-                                                PersonAction::Message => {
-                                                    message_now = Some(run.sender.clone())
-                                                }
-                                                PersonAction::Block => {
-                                                    block_now = Some(run.sender.clone())
-                                                }
-                                                PersonAction::Report(msg) => {
-                                                    open_report = Some((run.sender.clone(), msg))
-                                                }
-                                                // The transcript is public chat: no
-                                                // community, no moderation, and the
-                                                // admin section lives on the panel.
-                                                _ => {}
-                                            },
-                                        );
-                                    } else {
-                                        ui.add(label);
-                                    }
-                                } else if tag.is_some() {
-                                    ui.label(
-                                        egui::RichText::new("You")
-                                            .size(theme::SIZE_CHIP)
-                                            .strong()
-                                            .color(theme::ACCENT_TEXT),
-                                    );
-                                }
-                                if let Some(tag) = tag {
-                                    ui.label(
-                                        egui::RichText::new(format!("· {tag}"))
-                                            .size(theme::SIZE_CHIP)
-                                            .color(theme::TEXT_DIM),
-                                    );
-                                }
-                            });
-                            for line in &run.lines {
-                                let body = egui::Label::new(
-                                    egui::RichText::new(&line.body)
-                                        .size(theme::SIZE_SUB)
-                                        .color(theme::TEXT),
-                                );
-                                // Tapping what someone said answers in that chat:
-                                // the scope chip follows, so a reply to an
-                                // Everyone line goes to Everyone without a trip
-                                // round the chip's ring. The words, not the whole
-                                // box, so the name keeps its own menu.
-                                if interactive {
-                                    if ui.add(body.sense(egui::Sense::click())).clicked() {
-                                        reply_in = Some(run.key.clone());
-                                    }
-                                } else {
-                                    ui.add(body);
-                                }
-                            }
-                        });
-                    });
-                });
+                match draw_run(ui, run, alpha, interactive, tag, column) {
+                    RunHit::None => {}
+                    RunHit::Reply => reply_in = Some(run.key.clone()),
+                    RunHit::Person(action) => match action {
+                        PersonAction::Message => message_now = Some(run.sender.clone()),
+                        PersonAction::Block => block_now = Some(run.sender.clone()),
+                        PersonAction::Report(msg) => open_report = Some((run.sender.clone(), msg)),
+                        // The transcript is public chat: no community, no
+                        // moderation, and the admin section lives on the panel.
+                        _ => {}
+                    },
+                }
             }
         });
+    overlay.transcript = Some(transcript.response.rect);
 
     if let Some(key) = reply_in {
         if let Some(i) = chat.channels.iter().position(|c| c.key == key) {
@@ -789,11 +761,187 @@ pub fn render_chat_transcript(
     }
 }
 
+/// What a tap on a run asked for.
+enum RunHit {
+    None,
+    /// Its words: answer in its chat.
+    Reply,
+    /// Its speaker's name: something from the person menu.
+    Person(PersonAction),
+}
+
+/// The lift every bubble over the map has, so it reads as a thing laid on the
+/// world rather than a hole cut in it.
+fn lift() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 2],
+        blur: 10,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(90),
+    }
+}
+
+/// One run, in the messenger's thread style (`chats::bubble`): someone
+/// else's on the left in glass under their round initial and their name in
+/// their own colour, yours on the right in the accent, the corner nearest the
+/// speaker tucked in on the last line only.
+///
+/// The same look as the chat you open from the dock, on purpose: these are
+/// the same messages, and an overlay in a cheaper dialect of them read as a
+/// debug log laid over the map.
+fn draw_run(
+    ui: &mut egui::Ui,
+    run: &Run,
+    alpha: f32,
+    interactive: bool,
+    tag: Option<&str>,
+    column: f32,
+) -> RunHit {
+    use crate::systems::chats::{self, ChatKind, BUBBLE_R, TAIL_R};
+    let mut hit = RunHit::None;
+    let max_w = (column - FACE_PT - 8.0) * 0.86;
+    let last = run.lines.len().saturating_sub(1);
+    let (fill, ink) = if run.mine {
+        (theme::ACCENT, theme::INK)
+    } else {
+        (theme::GLASS, theme::CREAM)
+    };
+    let tone = chats::tone_for(&run.sender);
+    let bubbles = |ui: &mut egui::Ui, hit: &mut RunHit| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        for (i, line) in run.lines.iter().enumerate() {
+            // Square-ish on the speaker's side between lines of one run, and
+            // the tail only on the last, as a messenger stacks them.
+            let near = |end: bool| if end { TAIL_R } else { 6 };
+            let corners = if run.mine {
+                egui::CornerRadius {
+                    nw: BUBBLE_R,
+                    sw: BUBBLE_R,
+                    ne: if i == 0 { BUBBLE_R } else { 6 },
+                    se: near(i == last),
+                }
+            } else {
+                egui::CornerRadius {
+                    ne: BUBBLE_R,
+                    se: BUBBLE_R,
+                    nw: if i == 0 { BUBBLE_R } else { 6 },
+                    sw: near(i == last),
+                }
+            };
+            let frame = egui::Frame::NONE
+                .fill(fill)
+                .stroke(if run.mine {
+                    egui::Stroke::NONE
+                } else {
+                    egui::Stroke::new(1.0, chats::GLINE)
+                })
+                .corner_radius(corners)
+                .inner_margin(egui::Margin::symmetric(12, 7))
+                .shadow(lift())
+                .show(ui, |ui| {
+                    ui.set_max_width(max_w);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&line.body).size(BODY_PT).color(ink))
+                            .wrap(),
+                    );
+                });
+            // Tapping what someone said answers in that chat: the scope chip
+            // follows, so a reply to an Everyone line goes to Everyone without
+            // a trip round the chip's ring. Senses only while composing, so an
+            // ambient transcript leaves the map its taps.
+            if interactive
+                && ui
+                    .interact(
+                        frame.response.rect,
+                        egui::Id::new(("chat_line", line.seq)),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+            {
+                *hit = RunHit::Reply;
+            }
+        }
+    };
+    let name_row = |ui: &mut egui::Ui, hit: &mut RunHit| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            if run.mine {
+                ui.label(
+                    egui::RichText::new("You")
+                        .size(NAME_PT)
+                        .strong()
+                        .color(theme::TEXT_DIM),
+                );
+            } else {
+                // Their colour, lifted toward white so it reads on glass and on
+                // a bright sky alike: the one thing in a column of names that is
+                // theirs, as their initial is in the chat list.
+                let label = egui::Label::new(
+                    egui::RichText::new(&run.sender)
+                        .size(NAME_PT)
+                        .strong()
+                        .color(chats::blend(tone, egui::Color32::WHITE, 0.5)),
+                );
+                if interactive {
+                    // The name is the handle for what you can do *about* a
+                    // person. It senses clicks only here, because an inert
+                    // transcript must let the map have them.
+                    let name = ui.add(label.sense(egui::Sense::click()));
+                    let last_body = run.lines.last().map(|l| l.body.as_str());
+                    person_menu(
+                        &name,
+                        &run.sender,
+                        last_body,
+                        &crate::systems::chat::PersonExtras::default(),
+                        |action| *hit = RunHit::Person(action),
+                    );
+                } else {
+                    ui.add(label);
+                }
+            }
+            if let Some(tag) = tag {
+                ui.label(
+                    egui::RichText::new(format!("· {tag}"))
+                        .size(NAME_PT)
+                        .color(theme::TEXT_DIM),
+                );
+            }
+        });
+    };
+
+    ui.scope(|ui| {
+        ui.set_opacity(alpha);
+        if run.mine {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                // Your own name only says something when the chat is not the
+                // one you are typing into.
+                if tag.is_some() {
+                    name_row(ui, &mut hit);
+                }
+                bubbles(ui, &mut hit);
+            });
+        } else {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                chats::avatar(ui, &run.sender, ChatKind::Private, FACE_PT);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    name_row(ui, &mut hit);
+                    bubbles(ui, &mut hit);
+                });
+            });
+        }
+    });
+    hit
+}
+
 // ─── The composer ─────────────────────────────────────────────────────────────
 
-/// Height of the composer pill, in points — the row plus its frame.
+/// Height of the composer pill, in points — its round buttons (38) plus the
+/// pill's margin on both sides.
 fn composer_height() -> f32 {
-    theme::row_height().max(34.0) + 16.0
+    38.0 + 2.0 * 6.0
 }
 
 /// How much of the bottom edge to leave for the on-screen keyboard.
@@ -890,18 +1038,7 @@ pub fn render_chat_composer(
         })
         .unwrap_or_else(|| ("local".into(), "Here".into()));
     let is_local = scope_key == "local";
-    let scope_icon = match crate::systems::chats::kind_of(&scope_key) {
-        crate::systems::chats::ChatKind::Here => icons::PIN,
-        crate::systems::chats::ChatKind::Everyone => icons::CAM_EARTH,
-        _ => icons::LOCK,
-    };
-    // A ring to cycle, so it says so: the chip used to read like Shout beside
-    // it, a toggle, and nothing told you tapping it changed where words went.
-    let scope_label = if chat.channels.len() > 1 {
-        format!("{scope_icon} {scope_name} {}", icons::SWAP)
-    } else {
-        format!("{scope_icon} {scope_name}")
-    };
+    let scope_kind = crate::systems::chats::kind_of(&scope_key);
     let hint = hint_for(&scope_key, &scope_name, chat.shout);
     let scope_count = chat.channels.len();
 
@@ -913,74 +1050,147 @@ pub fn render_chat_composer(
     let shout = chat.shout;
     let ctx = egui.ctx_mut().clone();
 
+    // The messenger's own composer (`chats::compose_row`), so typing on the map
+    // looks like typing in a chat: one glass pill, a round field, round
+    // buttons. The row of chips and a boxed field it replaces read as a form.
     egui::Area::new(egui::Id::new("chat_composer"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(&ctx, |ui| {
             ui.set_width(width);
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width - 24.0);
-                ui.horizontal(|ui| {
-                    if theme::chip(ui, &scope_label, false)
-                        .on_hover_text(if scope_count > 1 {
-                            "Where this goes — tap to change"
-                        } else {
-                            "Where this goes"
-                        })
-                        .clicked()
-                    {
-                        cycle_scope = true;
-                    }
-                    // Shout is a property of the *local* channel only; a room or
-                    // the global channel has no distance to shout across. It is a
-                    // chip in the row rather than the checkbox on a line of its
-                    // own it used to be — one of three chrome rows that stood
-                    // between the history and the thumb.
-                    if is_local
-                        && theme::chip(ui, "Shout", shout)
-                            .on_hover_text("Carry further than a normal say")
+            crate::systems::chats::glass_frame()
+                .corner_radius(egui::CornerRadius::same(26))
+                .inner_margin(egui::Margin::same(6))
+                .shadow(lift())
+                .show(ui, |ui| {
+                    ui.set_width(width - 12.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        // Where this goes, as the chat list draws that chat: the
+                        // pin disc for Here, the globe for Everyone. It cycles
+                        // rather than opening a list — a popup over the keyboard
+                        // is a second thing covering the screen
+                        // (`docs/notes/chat-without-a-panel.md`) — and the field's
+                        // hint says in words what the disc says in a picture.
+                        let (rect, scope) =
+                            ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
+                        crate::systems::chats::paint_avatar(
+                            ui.painter(),
+                            rect.center(),
+                            &scope_name,
+                            scope_kind,
+                            38.0,
+                        );
+                        if scope_count > 1 {
+                            // A small swap mark on the disc: it is a switch.
+                            let c = rect.right_bottom() - egui::vec2(5.0, 5.0);
+                            ui.painter().circle_filled(c, 8.0, theme::SURFACE_RAISED);
+                            ui.painter().text(
+                                c,
+                                egui::Align2::CENTER_CENTER,
+                                icons::SWAP,
+                                egui::FontId::proportional(11.0),
+                                theme::CREAM,
+                            );
+                        }
+                        if scope
+                            .on_hover_text(format!("To {scope_name} — tap to change"))
                             .clicked()
-                    {
-                        toggle_shout = true;
-                    }
-                    // Right-to-left so the field takes whatever is left: the pill
-                    // is as wide as the viewport allows, and a fixed field width
-                    // either overflows a phone or leaves a gap on a desktop.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // ✕ outermost. The dock hides itself while the keys are
-                        // up (an `Area` drawn later would take taps meant for
-                        // them), so on a phone this is the only visible way out
-                        // of the composer besides Back.
-                        if theme::close_button(ui).clicked() {
-                            close_now = true;
+                        {
+                            cycle_scope = true;
                         }
-                        let ready = !chat.input.trim().is_empty();
-                        let send = theme::action_enabled_because(
-                            ui,
-                            ready,
-                            icons::FORWARD,
-                            "Type a message first",
-                        );
-                        // `desired_width`, not `add_sized(available_size())`:
-                        // this layout's available *height* is the whole rest of
-                        // the row, and sizing to it grows a single-line field
-                        // into a block.
-                        let field = crate::systems::text_touch::field(
-                            ui,
-                            egui::TextEdit::singleline(&mut chat.input)
-                                .id(egui::Id::new("chat_composer_field"))
-                                .desired_width(ui.available_width())
-                                .hint_text(hint.as_str()),
-                        );
-                        if claim {
-                            field.request_focus();
-                        }
-                        let entered =
-                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        send_now = (send.clicked() || entered) && ready;
+                        // Right-to-left so the field takes whatever is left.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // ✕ outermost. The dock hides itself while the keys
+                            // are up (an `Area` drawn later would take taps meant
+                            // for them), so on a phone this is the only visible
+                            // way out of the composer besides Back.
+                            if crate::systems::chats::circle_button(
+                                ui,
+                                icons::CLEAR,
+                                false,
+                                true,
+                                "Close",
+                            )
+                            .clicked()
+                            {
+                                close_now = true;
+                            }
+                            let ready = !chat.input.trim().is_empty();
+                            let send = crate::systems::chats::circle_button(
+                                ui,
+                                icons::SEND,
+                                true,
+                                ready,
+                                "Send",
+                            );
+                            let field = egui::Frame::NONE
+                                .fill(theme::SURFACE_RAISED)
+                                .corner_radius(egui::CornerRadius::same(19))
+                                .inner_margin(egui::Margin::symmetric(14, 9))
+                                .show(ui, |ui| {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            // Shout is a property of Here only;
+                                            // Everyone has no distance to shout
+                                            // across. Inside the field's end, as
+                                            // the messenger keeps its pin there.
+                                            if is_local
+                                                && ui
+                                                    .add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new("Shout")
+                                                                .size(NAME_PT)
+                                                                .strong()
+                                                                .color(if shout {
+                                                                    theme::ACCENT
+                                                                } else {
+                                                                    theme::TEXT_DIM
+                                                                }),
+                                                        )
+                                                        .sense(egui::Sense::click()),
+                                                    )
+                                                    .on_hover_text(
+                                                        "Carry further than a normal say",
+                                                    )
+                                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                    .clicked()
+                                            {
+                                                toggle_shout = true;
+                                            }
+                                            // `desired_width`, not
+                                            // `add_sized(available_size())`: this
+                                            // layout's available *height* is the
+                                            // rest of the row, and sizing to it
+                                            // grows a one-line field into a block.
+                                            crate::systems::text_touch::field(
+                                                ui,
+                                                egui::TextEdit::singleline(&mut chat.input)
+                                                    .id(egui::Id::new("chat_composer_field"))
+                                                    .frame(egui::Frame::NONE)
+                                                    .font(egui::FontId::proportional(BODY_PT))
+                                                    .text_color(theme::TEXT)
+                                                    .desired_width(ui.available_width())
+                                                    .hint_text(
+                                                        egui::RichText::new(hint.as_str())
+                                                            .color(theme::LINE),
+                                                    ),
+                                            )
+                                        },
+                                    )
+                                    .inner
+                                })
+                                .inner;
+                            if claim {
+                                field.request_focus();
+                            }
+                            let entered =
+                                field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            send_now = (send.clicked() || entered) && ready;
+                        });
                     });
                 });
-            });
         });
 
     if cycle_scope && scope_count > 0 {
