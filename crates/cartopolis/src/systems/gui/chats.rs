@@ -369,7 +369,7 @@ pub fn display_name(key: &str, label: &str) -> String {
 }
 
 fn is_mine(chat: &ChatState, line: &ChatLine) -> bool {
-    chat.my_id.is_some_and(|id| id != 0 && line.sender_id == id)
+    chat.is_mine(line)
 }
 
 /// `18:04`, in this device's time zone.

@@ -62,6 +62,12 @@ pub struct ChatState {
     pub next_seq: u64,
     /// This client's avatar id (from `ServerHelloAck`), to tag own lines.
     pub my_id: Option<u64>,
+    /// This account's name (from `ServerHelloAck`), the other half of telling
+    /// own lines: avatar ids are handed out per connection and start again at 1
+    /// when the server restarts, so a line replayed from an earlier sign-in
+    /// (Everyone's scrollback, another device) carries an id that is not
+    /// [`Self::my_id`] — and drew as "jeroen" on jeroen's own phone.
+    pub my_name: Option<String>,
     /// People this account blocks, exactly as the server last reported them
     /// (`NetMessage::BlockedList`).
     ///
@@ -293,6 +299,7 @@ impl Default for ChatState {
             clock: 0.0,
             next_seq: 1,
             my_id: None,
+            my_name: None,
             blocked: Vec::new(),
             report: None,
             notice: None,
@@ -474,6 +481,20 @@ impl ChatState {
         };
         self.channels.remove(i);
         self.active = self.active.min(self.channels.len().saturating_sub(1));
+    }
+
+    /// Whether this account wrote `line`: by avatar id for this connection's
+    /// lines, by name for the ones replayed from before it ([`Self::my_name`]).
+    #[must_use]
+    pub fn is_mine(&self, line: &ChatLine) -> bool {
+        self.my_id.is_some_and(|id| id != 0 && line.sender_id == id)
+            // Never for id 0: that is a prim talking, and a prim may be named
+            // anything, the account's own name included.
+            || line.sender_id != 0
+                && self
+                    .my_name
+                    .as_deref()
+                    .is_some_and(|me| !me.is_empty() && line.sender.eq_ignore_ascii_case(me))
     }
 
     /// Whether this account blocks `name`. Case-insensitive, as the server's own

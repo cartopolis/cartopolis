@@ -111,6 +111,11 @@ pub struct ChatOverlay {
     /// composer opens and when a message is sent (so a reply needs no second
     /// tap), and cleared once claimed.
     claim_focus: bool,
+    /// Point the scope chip at the conversation on screen, once, when the
+    /// composer opens. Without it the chip kept whatever it was last left on —
+    /// Here, usually — while every line above it was Everyone, so the obvious
+    /// reply went to nobody nearby.
+    follow: bool,
     /// `--ui chat` seeded this run and there is no session behind it.
     ///
     /// The only thing it unlocks is the [`suppressed`] test for a session —
@@ -127,6 +132,12 @@ impl ChatOverlay {
     pub fn open(&mut self) {
         self.composing = true;
         self.claim_focus = true;
+        self.follow = true;
+    }
+
+    /// Put the caret back in the field on the next frame it is drawn.
+    pub fn reclaim(&mut self) {
+        self.claim_focus = true;
     }
 
     /// Whether the field should take the keyboard this frame; asks once. For
@@ -140,6 +151,73 @@ impl ChatOverlay {
     pub fn close(&mut self) {
         self.composing = false;
         self.claim_focus = false;
+        self.follow = false;
+    }
+}
+
+/// Lines one person said back to back in one chat, drawn as one box under one
+/// name. Eight lines from two people used to be eight boxes and eight
+/// `[Global] name:` prefixes — a wall of chrome around very few words.
+pub struct Run {
+    /// The chat's key (`local`, `geo:`, a private chat's).
+    pub key: String,
+    /// The chat as the messenger names it: Here, Everyone, a person.
+    pub chat: String,
+    pub sender: String,
+    pub mine: bool,
+    pub lines: Vec<crate::systems::chat::ChatLine>,
+}
+
+/// Fold `(key, chat name, line)` in arrival order into [`Run`]s.
+#[must_use]
+pub fn runs(
+    lines: &[(String, String, crate::systems::chat::ChatLine)],
+    mine: impl Fn(&crate::systems::chat::ChatLine) -> bool,
+) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
+    for (key, chat, line) in lines {
+        let is_mine = mine(line);
+        match out.last_mut() {
+            Some(run)
+                if run.key == *key
+                    && run.mine == is_mine
+                    && (is_mine || run.sender.eq_ignore_ascii_case(&line.sender)) =>
+            {
+                run.lines.push(line.clone());
+            }
+            _ => out.push(Run {
+                key: key.clone(),
+                chat: chat.clone(),
+                sender: line.sender.clone(),
+                mine: is_mine,
+                lines: vec![line.clone()],
+            }),
+        }
+    }
+    out
+}
+
+/// The chat the composer should answer in when it opens: the one the newest
+/// line on screen came from, if anything is on screen at all.
+#[must_use]
+fn conversation_on_screen(chat: &ChatState) -> Option<usize> {
+    let (channel, _) = chat
+        .recent(chat.clock, HOLD_SECS + FADE_SECS, 1)
+        .into_iter()
+        .next()?;
+    chat.channels.iter().position(|c| c.key == channel.key)
+}
+
+/// What the empty field says: where the words will go, so the chip beside it
+/// is a confirmation rather than something to decode.
+#[must_use]
+fn hint_for(key: &str, chat: &str, shout: bool) -> String {
+    use crate::systems::chats::{kind_of, ChatKind};
+    match kind_of(key) {
+        ChatKind::Here if shout => "Shout to the street…".into(),
+        ChatKind::Here => "Say something nearby…".into(),
+        ChatKind::Everyone => "Message everyone…".into(),
+        _ => format!("Message {chat}…"),
     }
 }
 
@@ -185,6 +263,13 @@ pub fn seed_demo_chat(chat: &mut ChatState, overlay: &mut ChatOverlay) {
             THEM,
             "Wieke".into(),
             "Are you coming down to the Vismarkt?".into(),
+            Some(6.0),
+        );
+        chat.receive(
+            "local",
+            THEM,
+            "Wieke".into(),
+            "The stroopwafel stall is open".into(),
             Some(6.0),
         );
         chat.receive("local", ME, "You".into(), "On my way".into(), Some(0.0));
@@ -442,7 +527,7 @@ fn bubble(
 pub fn render_chat_transcript(
     mut egui: EguiMut,
     mut chat: ResMut<ChatState>,
-    overlay: Res<ChatOverlay>,
+    mut overlay: ResMut<ChatOverlay>,
     online: Option<Res<OnlineSession>>,
     right_panel: Res<RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -485,17 +570,16 @@ pub fn render_chat_transcript(
     } else {
         HOLD_SECS + FADE_SECS
     };
-    let mut lines: Vec<(String, crate::systems::chat::ChatLine)> = chat
+    let mut lines: Vec<(String, String, crate::systems::chat::ChatLine)> = chat
         .recent(now, window, usize::MAX)
         .into_iter()
         .filter(|(c, _)| only.as_deref().is_none_or(|k| c.key == k))
         .map(|(c, l)| {
-            let prefix = if c.key == "local" || only.is_some() {
-                String::new()
-            } else {
-                format!("[{}] ", c.label)
-            };
-            (prefix, l.clone())
+            (
+                c.key.clone(),
+                crate::systems::chats::display_name(&c.key, &c.label),
+                l.clone(),
+            )
         })
         .collect();
     if lines.len() > want {
@@ -504,7 +588,9 @@ pub fn render_chat_transcript(
     if lines.is_empty() {
         return;
     }
-    let my_id = chat.my_id;
+    let runs = runs(&lines, |l| chat.is_mine(l));
+    // Where the composer is sending, so a run in that same chat needs no tag.
+    let active_key = chat.channels.get(chat.active).map(|c| c.key.clone());
 
     // Clear of whatever the touch controls have claimed in this corner — the
     // thumbstick is bottom-left, which is exactly where a transcript wants to be.
@@ -527,6 +613,7 @@ pub fn render_chat_transcript(
     let mut block_now: Option<String> = None;
     let mut message_now: Option<String> = None;
     let mut open_report: Option<(String, Option<String>)> = None;
+    let mut reply_in: Option<String> = None;
 
     egui::Area::new(egui::Id::new("chat_transcript"))
         .order(egui::Order::Middle)
@@ -538,80 +625,140 @@ pub fn render_chat_transcript(
             egui::vec2(theme::OSD_MARGIN, -bottom),
         )
         .show(&ctx, |ui| {
-            ui.set_max_width(TRANSCRIPT_WIDTH);
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for (prefix, line) in &lines {
+            // A fixed width, not a maximum: own runs sit on the right edge of
+            // the column, and a column sized to its content has no right edge
+            // to put them on. Inert at rest, so the empty part takes no taps.
+            ui.set_width(TRANSCRIPT_WIDTH);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            for run in &runs {
                 // Per line, not per box: the oldest line at the top of the stack
                 // is the one that should be going, and fading the whole column
-                // together makes the transcript blink rather than scroll.
+                // together makes the transcript blink rather than scroll. A run
+                // fades with its newest line, as a bubble does — a box whose top
+                // half is going while its bottom half is fresh reads as a fault.
                 let alpha = if overlay.composing {
                     1.0
                 } else {
-                    fade(now - line.arrived, HOLD_SECS, FADE_SECS)
+                    run.lines
+                        .iter()
+                        .map(|l| fade(now - l.arrived, HOLD_SECS, FADE_SECS))
+                        .fold(0.0, f32::max)
                 };
                 if alpha <= 0.0 {
                     continue;
                 }
-                let mine = my_id.is_some_and(|me| me == line.sender_id);
-                let name = if mine {
-                    "You".to_string()
+                // Your own words on the right, everyone else's on the left: the
+                // messenger's convention, and it tells the two apart without a
+                // second accent colour, which the monochrome palette does not have.
+                let align = if run.mine {
+                    egui::Align::Max
                 } else {
-                    line.sender.clone()
+                    egui::Align::Min
                 };
-                theme::chip_frame().show(ui, |ui| {
-                    ui.set_opacity(alpha);
-                    ui.set_max_width(TRANSCRIPT_WIDTH);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let label = egui::Label::new(
-                            egui::RichText::new(format!("{prefix}{name}:"))
-                                .size(theme::SIZE_SUB)
-                                .strong()
-                                // One tone for every speaker. This used to be
-                                // amber for your own lines against everyone
-                                // else's orange, and the monochrome palette has
-                                // no second accent to spend on it — but it also
-                                // does not need one: `my_id` is read a line above
-                                // to write the name as "You", which says the same
-                                // thing in a word rather than in a hue nobody has
-                                // a key to.
-                                .color(theme::ACCENT_TEXT),
-                        );
-                        if interactive {
-                            // The name is the handle for what you can do *about*
-                            // a person. It senses clicks only here, because an
-                            // inert transcript must let the map have them.
-                            let name = ui.add(label.sense(egui::Sense::click()));
-                            person_menu(
-                                &name,
-                                &line.sender,
-                                Some(&line.body),
-                                &crate::systems::chat::PersonExtras::default(),
-                                |action| match action {
-                                    PersonAction::Message => {
-                                        message_now = Some(line.sender.clone())
+                // Which chat a run is in, only where it is not the one being
+                // answered and not Here (the default, and what the bubbles carry).
+                let tag = (only.is_none()
+                    && run.key != "local"
+                    && !(overlay.composing && active_key.as_deref() == Some(run.key.as_str())))
+                .then_some(run.chat.as_str());
+                let last_body = run.lines.last().map(|l| l.body.clone());
+                ui.with_layout(egui::Layout::top_down(align), |ui| {
+                    theme::chip_frame().show(ui, |ui| {
+                        ui.set_opacity(alpha);
+                        ui.set_max_width(TRANSCRIPT_WIDTH - 2.0 * theme::CHIP_PADDING.x);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.with_layout(egui::Layout::top_down(align), |ui| {
+                            // The name on a line of its own, small and quiet,
+                            // above what was said: one name per run instead of
+                            // one per line, and the words are what is read.
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if !run.mine {
+                                    let label = egui::Label::new(
+                                        egui::RichText::new(&run.sender)
+                                            .size(theme::SIZE_CHIP)
+                                            .strong()
+                                            .color(theme::ACCENT_TEXT),
+                                    );
+                                    if interactive {
+                                        // The name is the handle for what you can do
+                                        // *about* a person. It senses clicks only
+                                        // here, because an inert transcript must let
+                                        // the map have them.
+                                        let name = ui.add(label.sense(egui::Sense::click()));
+                                        person_menu(
+                                            &name,
+                                            &run.sender,
+                                            last_body.as_deref(),
+                                            &crate::systems::chat::PersonExtras::default(),
+                                            |action| match action {
+                                                PersonAction::Message => {
+                                                    message_now = Some(run.sender.clone())
+                                                }
+                                                PersonAction::Block => {
+                                                    block_now = Some(run.sender.clone())
+                                                }
+                                                PersonAction::Report(msg) => {
+                                                    open_report = Some((run.sender.clone(), msg))
+                                                }
+                                                // The transcript is public chat: no
+                                                // community, no moderation, and the
+                                                // admin section lives on the panel.
+                                                _ => {}
+                                            },
+                                        );
+                                    } else {
+                                        ui.add(label);
                                     }
-                                    PersonAction::Block => block_now = Some(line.sender.clone()),
-                                    PersonAction::Report(msg) => {
-                                        open_report = Some((line.sender.clone(), msg))
+                                } else if tag.is_some() {
+                                    ui.label(
+                                        egui::RichText::new("You")
+                                            .size(theme::SIZE_CHIP)
+                                            .strong()
+                                            .color(theme::ACCENT_TEXT),
+                                    );
+                                }
+                                if let Some(tag) = tag {
+                                    ui.label(
+                                        egui::RichText::new(format!("· {tag}"))
+                                            .size(theme::SIZE_CHIP)
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                }
+                            });
+                            for line in &run.lines {
+                                let body = egui::Label::new(
+                                    egui::RichText::new(&line.body)
+                                        .size(theme::SIZE_SUB)
+                                        .color(theme::TEXT),
+                                );
+                                // Tapping what someone said answers in that chat:
+                                // the scope chip follows, so a reply to an
+                                // Everyone line goes to Everyone without a trip
+                                // round the chip's ring. The words, not the whole
+                                // box, so the name keeps its own menu.
+                                if interactive {
+                                    if ui.add(body.sense(egui::Sense::click())).clicked() {
+                                        reply_in = Some(run.key.clone());
                                     }
-                                    // The transcript is public chat: no community, no
-                                    // moderation, and the admin section lives on the panel.
-                                    _ => {}
-                                },
-                            );
-                        } else {
-                            ui.add(label);
-                        }
-                        ui.label(
-                            egui::RichText::new(&line.body)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::TEXT),
-                        );
+                                } else {
+                                    ui.add(body);
+                                }
+                            }
+                        });
                     });
                 });
             }
         });
+
+    if let Some(key) = reply_in {
+        if let Some(i) = chat.channels.iter().position(|c| c.key == key) {
+            chat.active = i;
+        }
+        // The tap took focus off the field; give it back, or the keys go down
+        // under the reply that was about to be typed.
+        overlay.reclaim();
+    }
 
     if let Some(name) = message_now {
         chat.private_start.push(name);
@@ -725,15 +872,37 @@ pub fn render_chat_composer(
     // is a second thing covering the screen. The tabs it replaces were a wrapping
     // strip of text-height targets that pushed the history down as rooms
     // arrived — see `docs/notes/chat-without-a-panel.md`.
-    let scope_label = chat
+    if std::mem::take(&mut overlay.follow) {
+        if let Some(i) = conversation_on_screen(&chat) {
+            chat.active = i;
+        }
+    }
+    // The messenger's names for these chats (Here, Everyone), not the wire's
+    // (`Local`, `Global`): one chat, one name, wherever it is shown.
+    let (scope_key, scope_name) = chat
         .channels
         .get(chat.active)
-        .map(|c| c.label.clone())
-        .unwrap_or_else(|| "Local".into());
-    let is_local = chat
-        .channels
-        .get(chat.active)
-        .is_some_and(|c| c.key == "local");
+        .map(|c| {
+            (
+                c.key.clone(),
+                crate::systems::chats::display_name(&c.key, &c.label),
+            )
+        })
+        .unwrap_or_else(|| ("local".into(), "Here".into()));
+    let is_local = scope_key == "local";
+    let scope_icon = match crate::systems::chats::kind_of(&scope_key) {
+        crate::systems::chats::ChatKind::Here => icons::PIN,
+        crate::systems::chats::ChatKind::Everyone => icons::CAM_EARTH,
+        _ => icons::LOCK,
+    };
+    // A ring to cycle, so it says so: the chip used to read like Shout beside
+    // it, a toggle, and nothing told you tapping it changed where words went.
+    let scope_label = if chat.channels.len() > 1 {
+        format!("{scope_icon} {scope_name} {}", icons::SWAP)
+    } else {
+        format!("{scope_icon} {scope_name}")
+    };
+    let hint = hint_for(&scope_key, &scope_name, chat.shout);
     let scope_count = chat.channels.len();
 
     let mut send_now = false;
@@ -801,7 +970,7 @@ pub fn render_chat_composer(
                             egui::TextEdit::singleline(&mut chat.input)
                                 .id(egui::Id::new("chat_composer_field"))
                                 .desired_width(ui.available_width())
-                                .hint_text("Say something…"),
+                                .hint_text(hint.as_str()),
                         );
                         if claim {
                             field.request_focus();
@@ -937,6 +1106,86 @@ mod tests {
             .lines;
         assert_eq!(lines.len(), 2, "history stays in the log");
         assert_eq!(lines[0].at_ms, week_ago);
+    }
+
+    fn seeded(
+        lines: &[(&str, u64, &str)],
+    ) -> (
+        ChatState,
+        Vec<(String, String, crate::systems::chat::ChatLine)>,
+    ) {
+        let mut chat = ChatState::default();
+        chat.my_id = Some(1);
+        chat.my_name = Some("jeroen".into());
+        for (i, (key, id, who)) in lines.iter().enumerate() {
+            chat.clock = i as f64;
+            chat.receive(key, *id, (*who).into(), format!("line {i}"), None);
+        }
+        let got = chat
+            .recent(chat.clock, 100.0, 100)
+            .into_iter()
+            .map(|(c, l)| (c.key.clone(), c.label.clone(), l.clone()))
+            .collect();
+        (chat, got)
+    }
+
+    /// Back-to-back lines from one person in one chat are one box; a new
+    /// speaker or a new chat starts the next.
+    #[test]
+    fn a_run_is_one_speaker_in_one_chat() {
+        let (chat, lines) = seeded(&[
+            ("geo:", 5, "viberfox"),
+            ("geo:", 5, "viberfox"),
+            ("geo:", 1, "jeroen"),
+            ("local", 1, "jeroen"),
+            ("local", 5, "viberfox"),
+        ]);
+        let got: Vec<(String, bool, usize)> = runs(&lines, |l| chat.is_mine(l))
+            .iter()
+            .map(|r| (r.key.clone(), r.mine, r.lines.len()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("geo:".into(), false, 2),
+                ("geo:".into(), true, 1),
+                ("local".into(), true, 1),
+                ("local".into(), false, 1),
+            ]
+        );
+    }
+
+    /// Avatar ids start again per connection, so a line replayed from an
+    /// earlier sign-in is still yours by name — but never a prim's (id 0),
+    /// whatever it is called.
+    #[test]
+    fn own_lines_are_known_by_name_across_reconnects() {
+        let (chat, lines) = seeded(&[
+            ("geo:", 42, "Jeroen"),
+            ("local", 0, "jeroen"),
+            ("geo:", 7, "wieke"),
+        ]);
+        let mine: Vec<bool> = lines.iter().map(|(_, _, l)| chat.is_mine(l)).collect();
+        assert_eq!(mine, vec![true, false, false]);
+    }
+
+    /// Opening the composer answers in the chat of the newest line on screen.
+    #[test]
+    fn the_composer_opens_on_the_conversation_on_screen() {
+        let (mut chat, _) = seeded(&[("local", 5, "a"), ("geo:", 5, "a")]);
+        chat.active = 0;
+        let i = conversation_on_screen(&chat).expect("a line is on screen");
+        assert_eq!(chat.channels[i].key, "geo:");
+        // Nothing on screen: the chip stays where it was.
+        chat.clock += 1000.0;
+        assert_eq!(conversation_on_screen(&chat), None);
+    }
+
+    #[test]
+    fn the_hint_says_where_the_words_go() {
+        assert_eq!(hint_for("local", "Here", false), "Say something nearby…");
+        assert_eq!(hint_for("local", "Here", true), "Shout to the street…");
+        assert_eq!(hint_for("geo:", "Everyone", false), "Message everyone…");
     }
 
     /// The cap keeps the *newest*, not the first ones it happened to see.

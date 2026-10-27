@@ -793,6 +793,7 @@ pub fn apply_network_snapshot(
                 }
                 tracing::info!(%username, %server_name, "authenticated");
                 auth.identity.principal_id = Some(principal_id);
+                auth.chat.my_name = Some(username.clone());
                 auth.identity.username = Some(username);
                 auth.identity.server_name = Some(server_name);
                 auth.chat.my_id = Some(your_avatar_id);
