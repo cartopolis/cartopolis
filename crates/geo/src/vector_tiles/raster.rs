@@ -1533,106 +1533,115 @@ mod tests {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
         // The whole tile and two overzoomed windows, so the band offset is
         // exercised against a non-zero sub-tile shift as well as against zero.
-        for (factor, x, y) in [(1, 0, 0), (4, 2, 1), (8, 3, 5)] {
-            let sub = SubTile { factor, x, y };
-            let whole =
-                render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1, &[], &[])
-                    .expect("whole render");
-            // 7 is in the list on purpose: it does not divide TILE_PX, so the
-            // last band is short and the row arithmetic has to survive it.
-            for bands in [2u32, 3, 4, 7] {
-                let split = render_mvt_banded(
-                    &tile,
-                    sub,
-                    TILE_PX,
-                    NOMINAL_Z14_TILE_M,
-                    false,
-                    bands,
-                    &[],
-                    &[],
-                )
-                .expect("banded render");
-                assert_eq!(
-                    split.len(),
-                    whole.len(),
-                    "factor {factor} in {bands} bands produced a different sized raster"
-                );
-
-                let max_delta = split
-                    .iter()
-                    .zip(&whole)
-                    .map(|(a, b)| a.abs_diff(*b))
-                    .max()
-                    .unwrap_or(0);
-                let differing = split.iter().zip(&whole).filter(|(a, b)| a != b).count();
-                let stride = (TILE_PX * 4) as usize;
-                let worst_row = split
-                    .chunks(stride)
-                    .zip(whole.chunks(stride))
-                    .map(|(a, b)| a.iter().zip(b).filter(|(p, q)| p != q).count())
-                    .max()
-                    .unwrap_or(0);
-
-                // **Not bit-equality, and the reason is recorded rather than
-                // waved at.** Shifting the transform by the band's first row
-                // changes the magnitudes the coordinates are computed at, so f32
-                // rounds a few edge samples differently and the anti-aliased
-                // coverage moves by a step or two. Bleed rows remove the part
-                // that is clipping (2,443 bytes to 312 on this fixture); this
-                // residue is arithmetic and does not go away with more of them —
-                // 128 rows of bleed still left 96, and 256 left 43.
-                //
-                // What must not happen is geometry going missing at a seam, and
-                // that is a different shape entirely: it would be a whole row
-                // disagreeing, at full channel range, not four bytes in a
-                // thousand at a delta of three. Both are bounded here so the
-                // failure is legible either way.
-                // 8/255 is not a number picked to make this pass: it is the
-                // figure `flush_batch` already records for the paint batching,
-                // whose delta against a per-feature raster is likewise all
-                // anti-aliased edges. An overzoomed window rounds coarser than
-                // the whole tile — factor 4 reaches 5 where factor 1 reaches 3 —
-                // because the coordinates are four times larger before they are
-                // shifted.
-                //
-                // This is the weaker of the two checks. Lost geometry is caught
-                // by `worst_row` below: a missing road is a long run of pixels
-                // in one row at full channel range, not a handful at a delta of
-                // five.
-                //
-                // Raised 8 → 12 on 2026-09-26, when the stroke widths stopped
-                // being read as tile units (`flush_batch`). Until then every
-                // street in a whole z14 tile was a sub-pixel hairline, so factor 1
-                // had no stroke edges at a real width for the shift to round;
-                // with them it measured 12 at seven bands, in at most 21 bytes of
-                // any row and 399 of the tile. The seam bounds below are
-                // unchanged and all hold.
-                //
-                // Raised 12 → 16 on 2026-09-27, when the land took realistic
-                // tones. The residue is a fraction of the contrast across the
-                // edge being rounded, and tarmac against a dark aerial green
-                // is more contrast than it was against pale paper: the same
-                // seven bands measured 15. The seam and row bounds below are
-                // unchanged and hold.
-                assert!(
-                    max_delta <= 16,
-                    "factor {factor} in {bands} bands moved a channel by {max_delta}/255 — past anti-aliasing, so a band lost or gained geometry"
-                );
-                // Scaled by the number of seams, because that is what the residue
-                // is made of: one seam costs ~312 bytes on this fixture and six
-                // cost ~1,259. An absolute bound would pass at four bands and
-                // fail at seven for nothing worth failing over.
-                assert!(
-                    differing * 2000 <= whole.len() * bands as usize,
-                    "factor {factor} in {bands} bands differs in {differing} of {} bytes — more than rounding at {} seams",
-                    whole.len(),
-                    bands - 1
-                );
-                assert!(
-                    worst_row * 4 <= stride,
-                    "factor {factor} in {bands} bands has a row with {worst_row} of                      {stride} bytes differing — that is a seam, not rounding"
-                );
+        // Each window on its own thread: they share nothing, and one after
+        // another they were 1.4 s of renders.
+        let tile = &tile;
+        std::thread::scope(|s| {
+            for (factor, x, y) in [(1, 0, 0), (4, 2, 1), (8, 3, 5)] {
+                s.spawn(move || banding_changes_no_geometry_in(tile, SubTile { factor, x, y }));
             }
+        });
+    }
+
+    /// One window of [`banding_the_raster_changes_no_geometry`].
+    fn banding_changes_no_geometry_in(tile: &TileData, sub: SubTile) {
+        let factor = sub.factor;
+        let whole = render_mvt_banded(tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1, &[], &[])
+            .expect("whole render");
+        // 7 is in the list on purpose: it does not divide TILE_PX, so the
+        // last band is short and the row arithmetic has to survive it.
+        for bands in [2u32, 3, 4, 7] {
+            let split = render_mvt_banded(
+                tile,
+                sub,
+                TILE_PX,
+                NOMINAL_Z14_TILE_M,
+                false,
+                bands,
+                &[],
+                &[],
+            )
+            .expect("banded render");
+            assert_eq!(
+                split.len(),
+                whole.len(),
+                "factor {factor} in {bands} bands produced a different sized raster"
+            );
+
+            let max_delta = split
+                .iter()
+                .zip(&whole)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            let differing = split.iter().zip(&whole).filter(|(a, b)| a != b).count();
+            let stride = (TILE_PX * 4) as usize;
+            let worst_row = split
+                .chunks(stride)
+                .zip(whole.chunks(stride))
+                .map(|(a, b)| a.iter().zip(b).filter(|(p, q)| p != q).count())
+                .max()
+                .unwrap_or(0);
+
+            // **Not bit-equality, and the reason is recorded rather than
+            // waved at.** Shifting the transform by the band's first row
+            // changes the magnitudes the coordinates are computed at, so f32
+            // rounds a few edge samples differently and the anti-aliased
+            // coverage moves by a step or two. Bleed rows remove the part
+            // that is clipping (2,443 bytes to 312 on this fixture); this
+            // residue is arithmetic and does not go away with more of them —
+            // 128 rows of bleed still left 96, and 256 left 43.
+            //
+            // What must not happen is geometry going missing at a seam, and
+            // that is a different shape entirely: it would be a whole row
+            // disagreeing, at full channel range, not four bytes in a
+            // thousand at a delta of three. Both are bounded here so the
+            // failure is legible either way.
+            // 8/255 is not a number picked to make this pass: it is the
+            // figure `flush_batch` already records for the paint batching,
+            // whose delta against a per-feature raster is likewise all
+            // anti-aliased edges. An overzoomed window rounds coarser than
+            // the whole tile — factor 4 reaches 5 where factor 1 reaches 3 —
+            // because the coordinates are four times larger before they are
+            // shifted.
+            //
+            // This is the weaker of the two checks. Lost geometry is caught
+            // by `worst_row` below: a missing road is a long run of pixels
+            // in one row at full channel range, not a handful at a delta of
+            // five.
+            //
+            // Raised 8 → 12 on 2026-09-26, when the stroke widths stopped
+            // being read as tile units (`flush_batch`). Until then every
+            // street in a whole z14 tile was a sub-pixel hairline, so factor 1
+            // had no stroke edges at a real width for the shift to round;
+            // with them it measured 12 at seven bands, in at most 21 bytes of
+            // any row and 399 of the tile. The seam bounds below are
+            // unchanged and all hold.
+            //
+            // Raised 12 → 16 on 2026-09-27, when the land took realistic
+            // tones. The residue is a fraction of the contrast across the
+            // edge being rounded, and tarmac against a dark aerial green
+            // is more contrast than it was against pale paper: the same
+            // seven bands measured 15. The seam and row bounds below are
+            // unchanged and hold.
+            assert!(
+                max_delta <= 16,
+                "factor {factor} in {bands} bands moved a channel by {max_delta}/255 — past anti-aliasing, so a band lost or gained geometry"
+            );
+            // Scaled by the number of seams, because that is what the residue
+            // is made of: one seam costs ~312 bytes on this fixture and six
+            // cost ~1,259. An absolute bound would pass at four bands and
+            // fail at seven for nothing worth failing over.
+            assert!(
+                differing * 2000 <= whole.len() * bands as usize,
+                "factor {factor} in {bands} bands differs in {differing} of {} bytes — more than rounding at {} seams",
+                whole.len(),
+                bands - 1
+            );
+            assert!(
+                worst_row * 4 <= stride,
+                "factor {factor} in {bands} bands has a row with {worst_row} of                      {stride} bytes differing — that is a seam, not rounding"
+            );
         }
     }
 

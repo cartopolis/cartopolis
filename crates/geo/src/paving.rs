@@ -736,10 +736,12 @@ mod tests {
 
         let groups: std::collections::HashSet<SurfaceGroup> =
             fills.iter().map(|m| m.group).collect();
-        let (roads_at, paving_at) = (
-            coverage(&roads, None, tile_m),
-            coverage(&laid, None, tile_m),
-        );
+        // Only ever asked as "under a road or the paving", so asked once.
+        let covered: Vec<bool> = coverage(&roads, None, tile_m)
+            .iter()
+            .zip(coverage(&laid, None, tile_m))
+            .map(|(r, p)| *r || p)
+            .collect();
         let mut checked = 0;
         for g in groups {
             let (a, b) = (area_of(&before, g), area_of(&after, g));
@@ -754,24 +756,22 @@ mod tests {
             // A hairline is hit by a lattice point now and then; anything real is
             // hit every half metre. One in a hundred thousand allows the first.
             let hairline = old.len() / 100_000;
-            let added = old.iter().zip(&new).filter(|(o, n)| !**o && **n).count();
+            // One walk of the 8.6 M points for all four counts, not four.
+            let (mut added, mut opened, mut under, mut under_old) = (0, 0, 0, 0);
+            for ((&o, &n), &c) in old.iter().zip(&new).zip(&covered) {
+                added += usize::from(!o && n);
+                opened += usize::from(o && !n && !c);
+                under += usize::from(n && c);
+                under_old += usize::from(o && c);
+            }
             assert!(
                 added <= hairline,
                 "{g:?}: one pass covers {added} lattice points two did not"
             );
-            let opened = (0..old.len())
-                .filter(|&i| old[i] && !new[i] && !roads_at[i] && !paving_at[i])
-                .count();
             assert!(
                 opened <= hairline,
                 "{g:?}: one pass opens {opened} lattice points nothing covers"
             );
-            let under = (0..new.len())
-                .filter(|&i| new[i] && (roads_at[i] || paving_at[i]))
-                .count();
-            let under_old = (0..old.len())
-                .filter(|&i| old[i] && (roads_at[i] || paving_at[i]))
-                .count();
             assert!(
                 under <= under_old,
                 "{g:?}: one pass leaves {under} lattice points under a road or the paving, two left {under_old}"
