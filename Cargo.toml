@@ -6,6 +6,7 @@ members = [
     "crates/vio",
     "crates/gnss",
     "crates/human",
+    "crates/face",
     "crates/materials",
     "crates/e2ee",
     "crates/chat",
@@ -24,7 +25,7 @@ members = [
 default-members = ["crates/cartopolis"]
 # Not members, unlike `web_task`: they are dependencies patched in below, and as
 # members `cargo test --workspace` would build and run all of their doctests.
-exclude = ["crates/wgpu", "crates/bevy_shader", "crates/mvt_reader"]
+exclude = ["crates/wgpu", "crates/bevy_shader", "crates/mvt_reader", "crates/tract_tflite"]
 
 [workspace.package]
 version = "1.0.0"
@@ -469,3 +470,9 @@ bevy_shader = { path = "crates/bevy_shader" }
 # (`rust_oom`, a hang in Firefox). `crates/mvt_reader` reserves exactly. Drop it
 # when upstream does the same. `docs/notes/wasm-performance.md`.
 mvt-reader = { path = "crates/mvt_reader" }
+# tract-tflite 0.23.9 reads no DEQUANTIZE, PRELU, NEG or SQUARED_DIFFERENCE, and
+# MediaPipe's float16 face models (`cartopolis_face`) use all four: the weights
+# are float16 constants turned to float32 in the graph. `crates/tract_tflite`
+# adds them (`src/ops/mod.rs`, at the end). Drop it when upstream reads them.
+# `docs/notes/avatar-faces.md`.
+tract-tflite = { path = "crates/tract_tflite" }

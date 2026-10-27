@@ -1,0 +1,28 @@
+# A face, followed through a camera: where it is, its 478 landmarks, and the
+# 52 ARKit unit weights the avatar's face is driven by (docs/notes/avatar-faces.md).
+# MediaPipe's Face Landmarker models, run by tract.
+#
+# Bevy-free for the reason cartopolis_vio is: it is developed and tested off
+# the phone, on still pictures with a known answer.
+[package]
+name = "cartopolis_face"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_face"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# Pure Rust inference, so the same code runs on the phone, the desktop and the
+# web with no native runtime to ship; it reads the TFLite files as MediaPipe
+# publishes them.
+tract-tflite = "0.23"
+
+[dev-dependencies]
+image = { workspace = true }
+
+[lints]
+workspace = true

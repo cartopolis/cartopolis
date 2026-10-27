@@ -30,6 +30,8 @@
 *.bin   filter=lfs diff=lfs merge=lfs -text
 # The avatar body pack (`crates/human`, `human-pack`).
 *.humanpack filter=lfs diff=lfs merge=lfs -text
+# The face tracker's models (`crates/face`, MediaPipe's Face Landmarker).
+*.tflite filter=lfs diff=lfs merge=lfs -text
 
 # Images: source textures, the app icon, and the generated `docs/img` set
 *.png   filter=lfs diff=lfs merge=lfs -text
