@@ -1675,12 +1675,18 @@ mod tests {
             .create_access_token(p, "a", "brief", false, Some(now + 1))
             .unwrap();
         assert!(s.resolve(&raw).is_some());
-        std::thread::sleep(Duration::from_millis(1100));
-        assert_eq!(s.resolve(&raw), None);
+        // A second on, without waiting one out: the expiry is now, and
+        // `expired` is `now >= at`.
+        for t in locked(&s.tokens).values_mut() {
+            t.expires_at = Some(now);
+        }
+        // Listed first: a resolve removes the expired token, which would leave
+        // nothing to list either way.
         assert!(
             s.access_tokens(p).is_empty(),
             "an expired token is not listed"
         );
+        assert_eq!(s.resolve(&raw), None);
     }
 
     /// Only the owner revokes, and somebody else's id reads as "not found".

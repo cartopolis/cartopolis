@@ -168,6 +168,15 @@ pub struct SimConfig {
     /// docker gateway `172.17.0.1:4750`. `None`: APK downloads are not counted.
     #[serde(default)]
     pub apk_log_listen: Option<String>,
+    /// How often, in milliseconds, a connection signed in with an access token
+    /// checks the token still exists (`net::handle_connection`): revoking one
+    /// ends its open connection within this. Tests shorten it.
+    #[serde(default = "default_token_check_ms")]
+    pub token_check_ms: u64,
+}
+
+fn default_token_check_ms() -> u64 {
+    5_000
 }
 
 fn default_max_buildings_per_account() -> usize {
@@ -276,6 +285,7 @@ impl Default for SimConfig {
             max_buildings_per_account: default_max_buildings_per_account(),
             geoip_download: false,
             apk_log_listen: None,
+            token_check_ms: default_token_check_ms(),
         }
     }
 }

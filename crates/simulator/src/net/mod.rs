@@ -956,8 +956,11 @@ pub async fn handle_connection<T: FrameTransport>(
     // still exists. Revoking one is how its owner stops a bot, so it has to end
     // the bot's *open* connection, not just its next handshake; a check every
     // few seconds is a hash lookup, and costs nothing for a sign-in (the arm is
-    // disabled when there is no token to watch).
-    let mut revocation = tokio::time::interval(std::time::Duration::from_secs(5));
+    // disabled when there is no token to watch). The period is
+    // `SimConfig::token_check_ms`, floored because a zero period panics.
+    let mut revocation = tokio::time::interval(std::time::Duration::from_millis(
+        ctx.config.token_check_ms.max(10),
+    ));
     revocation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let mut outcome: anyhow::Result<()> = Ok(());

@@ -435,7 +435,19 @@ async fn a_blocked_server_is_not_heard() {
     )
     .await;
     assert_eq!(status, 200);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // A answers a blocked server 202 like any other, so B's queue emptying says
+    // the follow reached A. A works out what an activity means after answering
+    // (the inbox's `spawn_blocking`): give that a moment.
+    let queue = b._dir.path().join("world.db");
+    eventually("B delivers its follow", async || {
+        let conn = rusqlite::Connection::open(&queue).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fedi_deliveries", [], |r| r.get(0))
+            .unwrap();
+        (left == 0).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let (_, v) = call(
         "GET",
         format!("{}/api/communities/{}/public", a.base, a.community),

@@ -66,6 +66,49 @@ async fn looks(c: &mut Client, window: Duration) -> Vec<(u64, AvatarLook)> {
     }
 }
 
+/// Every look this client is told about until `ticks` world snapshots have
+/// followed the first one, or `limit` passes. Looks and snapshots share the
+/// server's one broadcast channel (`PrimService::broadcast`, the tick's
+/// `tx_snap`), so a look sent with or just after the first one arrives before
+/// those snapshots do.
+async fn looks_settled(c: &mut Client, ticks: usize, limit: Duration) -> Vec<(u64, AvatarLook)> {
+    let deadline = tokio::time::Instant::now() + limit;
+    let (mut out, mut after) = (Vec::new(), 0);
+    while after < ticks {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Some(Ok(frame))) = tokio::time::timeout(left, c.next()).await else {
+            break;
+        };
+        match decode_app_frame(&frame).unwrap() {
+            NetMessage::AvatarLookOf { avatar_id, look } => out.push((avatar_id, look)),
+            NetMessage::WorldSnapshot { .. } if !out.is_empty() => after += 1,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Read until a world snapshot has `avatar` in it (`listed`) or not. Snapshots
+/// list only avatars whose client has sent an intent.
+async fn until_listed(c: &mut Client, avatar: u64, listed: bool) {
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(frame)) = c.next().await {
+            if let NetMessage::WorldSnapshot { avatars, .. } = decode_app_frame(&frame).unwrap() {
+                if avatars.iter().any(|a| a.id == avatar) == listed {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        found,
+        Ok(true),
+        "no snapshot with avatar {avatar} listed = {listed}"
+    );
+}
+
 async fn boot() -> (tempfile::TempDir, cartopolis_simulator::SimHandle, String) {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("looks.db").to_str().unwrap().to_string();
@@ -99,17 +142,19 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
     let (_dir, _handle, addr) = boot().await;
     let mut dev = connect_auth(&addr, "dev").await;
     let mut other = connect_auth(&addr, "other").await;
-    let _ = looks(&mut other, WINDOW).await;
+    // Fully in before the look is set, or it is told twice: once as a change and
+    // once with the world it is still being handed.
+    until_listed(&mut other, u64::MAX, false).await;
 
     send(&mut dev, &NetMessage::SetAvatarLook { look: a_look() }).await;
-    let seen = looks(&mut other, WINDOW).await;
+    let seen = looks_settled(&mut other, 3, Duration::from_secs(5)).await;
     assert_eq!(seen.len(), 1, "the other client is told once: {seen:?}");
     assert_eq!(seen[0].1, a_look());
     let dev_avatar = seen[0].0;
 
     // Someone arriving later is handed it with the world.
     let mut late = connect_auth(&addr, "late").await;
-    let handed = looks(&mut late, WINDOW).await;
+    let handed = looks_settled(&mut late, 1, Duration::from_secs(5)).await;
     assert!(
         handed
             .iter()
@@ -117,16 +162,34 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
         "a late arrival gets every online look: {handed:?}"
     );
 
-    // Signing in again wears the saved look without sending it.
+    // Signing in again wears the saved look without sending it. An intent puts
+    // the avatar in the snapshots, so the other client can see it leave.
+    send(&mut dev, &standing_still()).await;
+    until_listed(&mut other, dev_avatar, true).await;
     drop(dev);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let _ = looks(&mut other, WINDOW).await;
+    until_listed(&mut other, dev_avatar, false).await;
     let _dev_again = connect_auth(&addr, "dev").await;
-    let again = looks(&mut other, WINDOW).await;
+    let again = looks_settled(&mut other, 1, Duration::from_secs(5)).await;
     assert!(
         again.iter().any(|(_, l)| *l == a_look()),
         "the account's look comes back on the next sign-in: {again:?}"
     );
+}
+
+fn standing_still() -> NetMessage {
+    NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: 0.0,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote: None,
+        seated: None,
+        geo: None,
+    }
 }
 
 #[tokio::test]

@@ -333,10 +333,23 @@ async fn talk(
     for_ms: u64,
     sent: &mut u32,
 ) -> (usize, Vec<NetMessage>) {
+    talk_until((fc, from), (tc, to), group, for_ms, sent, |_, _| false).await
+}
+
+/// [`talk`], stopping early once `done` holds for the frames heard so far and
+/// the messages said: most steps wait for an event, not for a fixed time.
+async fn talk_until(
+    (fc, from): (&mut Client, &mut Phone),
+    (tc, to): (&mut Client, &mut Phone),
+    group: &[u8],
+    max_ms: u64,
+    sent: &mut u32,
+    mut done: impl FnMut(usize, &[NetMessage]) -> bool,
+) -> (usize, Vec<NetMessage>) {
     let before = to.heard.len();
     let mut said = Vec::new();
-    let deadline = Instant::now() + Duration::from_millis(for_ms);
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(max_ms);
+    while Instant::now() < deadline && !done(to.heard.len() - before, &said) {
         said.extend(signalling_all(fc, from, group).await);
         said.extend(signalling_all(tc, to, group).await);
         pump(from);
@@ -393,15 +406,22 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
 
     let (mut pa, _) = join(&mut a, &alice, &group).await.expect("alice joins");
     let (mut pb, bob_id) = join(&mut b, &bob, &group).await.expect("bob joins");
+    let bob_joined = Instant::now();
     let mut sent = 0;
 
     // Bob is heard, and the first one in hosts the call.
-    let (heard, said) = talk(
+    let (heard, said) = talk_until(
         (&mut b, &mut pb),
         (&mut a, &mut pa),
         &group,
-        3000,
+        10_000,
         &mut sent,
+        |heard, said| {
+            heard > 20
+                && said.iter().any(
+                    |m| matches!(m, NetMessage::CallRoster { members, .. } if members.len() == 2),
+                )
+        },
     )
     .await;
     assert!(heard > 20, "alice heard {heard} of bob's frames");
@@ -418,11 +438,22 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
 
     // Bob is no host: his try is refused, and he is still in the call.
     control(&mut b, &group, CallAction::MuteAll).await;
-    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
-    assert!(said.iter().any(|m| matches!(
-        m,
-        NetMessage::ServerError { request_id, code: 403, .. } if *request_id == CALL_CONTROL_REQUEST
-    )));
+    let refused = |m: &NetMessage| {
+        matches!(
+            m,
+            NetMessage::ServerError { request_id, code: 403, .. } if *request_id == CALL_CONTROL_REQUEST
+        )
+    };
+    let (_, said) = talk_until(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        5_000,
+        &mut sent,
+        |_, said| said.iter().any(refused),
+    )
+    .await;
+    assert!(said.iter().any(refused));
 
     // Alice mutes him: the roster says so, and his sound stops at the server.
     control(
@@ -433,20 +464,34 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
         },
     )
     .await;
-    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
-    assert!(said.iter().any(|m| matches!(
-        m,
-        NetMessage::CallRoster { members, .. }
-            if members.iter().any(|m| m.participant == bob_id && m.held)
-    )));
-    let (heard, _) = talk(
+    let held = |m: &NetMessage| {
+        matches!(
+            m,
+            NetMessage::CallRoster { members, .. }
+                if members.iter().any(|m| m.participant == bob_id && m.held)
+        )
+    };
+    let (_, said) = talk_until(
         (&mut b, &mut pb),
         (&mut a, &mut pa),
         &group,
-        1500,
+        5_000,
         &mut sent,
+        |_, said| said.iter().any(held),
     )
     .await;
+    assert!(said.iter().any(held));
+    // The forwarder holds him before it sends that roster, but frames it
+    // forwarded just before may still be on their way: let them land.
+    let _ = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 200, &mut sent).await;
+    let before = sent;
+    let (heard, _) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 400, &mut sent).await;
+    // Or a dropped link would pass for a held one.
+    assert!(
+        sent - before >= 30,
+        "bob kept talking: {} frames",
+        sent - before
+    );
     assert_eq!(heard, 0, "a held member is not forwarded");
 
     // Let him talk again.
@@ -458,13 +503,13 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
         },
     )
     .await;
-    let _ = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 300, &mut sent).await;
-    let (heard, _) = talk(
+    let (heard, _) = talk_until(
         (&mut b, &mut pb),
         (&mut a, &mut pa),
         &group,
-        1500,
+        5_000,
         &mut sent,
+        |heard, _| heard > 20,
     )
     .await;
     assert!(heard > 20, "alice heard {heard} after letting bob talk");
@@ -478,12 +523,25 @@ async fn a_host_mutes_lets_talk_and_removes_at_the_forwarder() {
         },
     )
     .await;
-    let (_, said) = talk((&mut b, &mut pb), (&mut a, &mut pa), &group, 500, &mut sent).await;
-    assert!(said.iter().any(|m| matches!(
-        m,
-        NetMessage::CallEnded { reason: CallEndReason::Removed { by }, .. } if by == "alice"
-    )));
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let removed = |m: &NetMessage| {
+        matches!(
+            m,
+            NetMessage::CallEnded { reason: CallEndReason::Removed { by }, .. } if by == "alice"
+        )
+    };
+    let (_, said) = talk_until(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        5_000,
+        &mut sent,
+        |_, said| said.iter().any(removed),
+    )
+    .await;
+    assert!(said.iter().any(removed));
+    // A connection may join once a second (`MIN_CALL_JOIN_INTERVAL`); sooner is
+    // a 429, which fails below rather than passing.
+    tokio::time::sleep(Duration::from_millis(1_050).saturating_sub(bob_joined.elapsed())).await;
     let back = join(&mut b, &bob, &group).await;
     assert!(matches!(back, Err((409, _))), "{:?}", back.err());
 }
@@ -565,12 +623,13 @@ async fn a_member_waits_until_a_host_lets_them_in() {
     assert_eq!(bob_id, waited_as, "he keeps the number he waited under");
 
     let mut sent = 0;
-    let (heard, _) = talk(
+    let (heard, _) = talk_until(
         (&mut b, &mut pb),
         (&mut a, &mut pa),
         &group,
-        3000,
+        10_000,
         &mut sent,
+        |heard, _| heard > 20,
     )
     .await;
     assert!(
@@ -578,12 +637,13 @@ async fn a_member_waits_until_a_host_lets_them_in() {
         "alice heard {heard} of bob's frames after letting him in"
     );
     // And the other way: the one let in receives, too.
-    let (heard, _) = talk(
+    let (heard, _) = talk_until(
         (&mut a, &mut pa),
         (&mut b, &mut pb),
         &group,
-        3000,
+        10_000,
         &mut sent,
+        |heard, _| heard > 20,
     )
     .await;
     assert!(

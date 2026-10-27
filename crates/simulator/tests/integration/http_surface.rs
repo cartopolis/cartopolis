@@ -38,6 +38,8 @@ async fn server() -> (SimHandle, tempfile::TempDir) {
         database_path: db,
         listen: "127.0.0.1:0".into(),
         http_listen: Some("127.0.0.1:0".into()),
+        // Revoking a token ends its open connection within one check.
+        token_check_ms: 50,
         ..SimConfig::default()
     };
     let handle = serve(Arc::new(config)).await.unwrap();
