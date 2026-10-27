@@ -25,6 +25,9 @@ path = "src/lib.rs"
 # Same reason as cartopolis's: rustdoc does not receive .cargo/config.toml's
 # `rustflags`, so a doc-test would build without target-cpu=x86-64-v3.
 doctest = false
+# Material types and their impls, no tests. Left on, `cargo test --workspace`
+# links a 58 MB harness over Bevy to run zero of them.
+test = false
 
 [dependencies]
 # Declared exactly as `cartopolis` declares it, workspace entry and the Linux

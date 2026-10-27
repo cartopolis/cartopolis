@@ -27,6 +27,9 @@ license.workspace = true
 [[bin]]
 name = "carto-view"
 path = "src/main.rs"
+# No tests: what it draws is `cartopolis_geo`'s, and that is where the suite is.
+# Left on, `cargo test --workspace` links a 57 MB harness to run zero of them.
+test = false
 
 [features]
 # **Dynamic linking, for the edit-and-look loop.** Statically linking Bevy copies
