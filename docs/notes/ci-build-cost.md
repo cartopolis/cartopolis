@@ -63,8 +63,10 @@ function of *which crate you touched*, not of how many tests exist: touch the
 client and pay six minutes, touch `geo` alone and the client comes back from
 sccache.
 
-That kills the open question below it: **`cargo nextest` is not worth measuring.**
-It parallelises test execution, and there are 2.2 seconds of that to win.
+That killed the open question below it: **`cargo nextest` was not worth measuring**,
+with 2.2 seconds of test execution to win. That number did not last: by
+2026-10-27 the suite ran for 46 s, most of it waiting rather than computing, and
+the cure was the waits themselves, not a runner (`test-suite-build-cost.md`).
 
 The ~90 s post step is this action writing its archive, and it is measurable
 without reading a log — subtract the sum of a job's steps from the job's own
@@ -222,7 +224,8 @@ and the job cap, because the sccache it was supposedly measuring was never mount
   invocation *selects*, so any subset re-unifies the shared Bevy dependencies and
   rebuilds them. That is the 45% regression run 302 already measured, arriving by
   a different door. One `--workspace` invocation, always.
-- **`cargo nextest`** — see the measurement above. 2.2 seconds of test execution.
+- **`cargo nextest`** — see the measurement above, and `test-suite-build-cost.md`
+  for why the run time it would attack is better removed at the test.
 
 ## Host disk: where it goes and what is safe to reclaim
 

@@ -1,7 +1,7 @@
 ---
 topic: test-suite-build-cost
-triggers: [cargo test, "test suite", "tests are slow", include_bytes, fixture, testdata.rs, doctest, "test = false", "harness", "integration test", "tests/ directory", "one target", approx, default-features, "-p vs workspace", "cargo check -p", "rebuilt everything"]
-updated: 2026-09-14
+triggers: [cargo test, "test suite", "tests are slow", "slow test", report-time, settle_until, talk_until, include_bytes, fixture, testdata.rs, doctest, "test = false", "harness", "integration test", "tests/ directory", "one target", approx, default-features, "-p vs workspace", "cargo check -p", "rebuilt everything"]
+updated: 2026-10-27
 ---
 
 # What the test suite costs
@@ -96,6 +96,52 @@ lands separately in several of this profile's 256 codegen units. A `static` is
 one address every use loads from. `geo/src/testdata.rs` owns all three fixtures
 and its own tests pin both rules; the binary is 15.9 MB.
 
+## Running the suite: each binary is as slow as its slowest test
+
+Measured 2026-10-27 on mac-2 (6 cores), the suite built, `cargo test --workspace
+--exclude cartopolis_android` alone: **46 s of wall clock for 55 s of CPU** — most
+of it waiting, not computing. The binaries run one after another, the tests inside
+one in parallel, so a binary costs about its slowest test, and the suite the sum
+of those. Per-test times come from libtest without nightly:
+`RUSTC_BOOTSTRAP=1 target/debug/deps/<bin> -Z unstable-options --format json --report-time`.
+
+The long poles were all one of three kinds, and each has a cure that keeps what
+the test proves:
+
+- **A fixed wait sat out whether or not the thing waited for had happened.** The
+  chat loopback suite's `pump` ends after 150 ms of quiet, and `settle` pumped
+  each peer three rounds one after another: 42 quiet tails, 6.5 s for one test.
+  `settle_until` serves every peer at once and counts quiet only once the
+  expected event is there. The calls integration tests talked for a fixed 3 s
+  where twenty heard frames was the proof (`talk_until`). Wait for the event,
+  with a generous upper bound that fails loudly.
+- **A server interval the test had to sit out.** A revoked token ended its open
+  connection on a 5 s check; `SimConfig::token_check_ms` is 50 in the test. The
+  GNSS receiver's reopen and command pauses, and the voice bridge's hang-up
+  pause, are shorter under `cfg(test)`, with a comment saying the long ones are
+  for hardware.
+- **A brute-force search in the test itself, built at `opt-level = 1`.** One terrain
+  test compared 29k probes with every one of 110k triangles: 7.7 s of the
+  client's 7.9 s, now a plan-grid lookup and 0.1 s. The sheet stays as big as it
+  was, because the refinement budget running out is what the test is about.
+
+| suite, nothing to build | before | after |
+|---|---|---|
+| whole suite | 46.2 s | **26.5 s** |
+| simulator integration | 10.7 s | 6.8 s |
+| chat | 8.6 s | 3.1 s |
+| client | 7.9 s | 0.8 s |
+| calls | 3.1 s | 1.7 s |
+| vio | 3.1 s | 1.7 s |
+
+What is left is spread out: the simulator's unit tests (3.7 s) and `geo` (3.5 s)
+are many tests' CPU, no single pole; the integration binary's poles are two
+physics tests that wait on simulated time (a ball falling and coming to rest, a
+kick after `HOLD_AFTER_EDIT_S`), which a test-only shortcut would no longer prove.
+
+`cartopolis_materials` and `carto-view` had test harnesses with nothing in them,
+57–58 MB of link each per suite build; both are `test = false` now.
+
 ## What was audited and left alone
 
 **The suite's content.** 1,534 functions scanned for missing assertions,
@@ -103,7 +149,9 @@ tautologies, wall-clock sleeps, network reads and duplicated bodies. The seven
 without an assertion are all declared printing or eyeball hatches; the one
 duplicated body asserts `Licence::may_share` on each side of the wire, which is
 the point. Nothing to delete — worth saying, because "clean up the tests" reads
-as an invitation to.
+as an invitation to. Looked at again 2026-10-27, with the same result: the 44
+`#[ignore]`d tests are each a labelled printing, eyeball, network or
+known-fault hatch, run by hand, and cost the suite nothing.
 
 **`[profile.test] opt-level = 0`**, the one profile knob nobody had tried — the
 rejected experiment in `build-levers-that-do-not-work` was about *dependency*

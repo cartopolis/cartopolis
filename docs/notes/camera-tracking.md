@@ -97,8 +97,9 @@ at 240 Hz derived from the path, frames at 30 Hz.
 | As above, through rendered 640×480 frames and the whole image pipeline | **median 4.9 mm, 95th 9.9 mm** |
 
 Error is measured after aligning the tracker's world to the truth at the first
-tracked frame (it has its own heading and origin). The rendered case takes 13 s
-optimised and 15 s at the dev profile.
+tracked frame (it has its own heading and origin). The rendered case took 3.1 s
+in the suite on 2026-10-27 (a Mac node), and 1.7 s once `sim::render` drew its
+rows on threads; the drawing is most of it.
 
 **From the first phone log (OnePlus 15, 2026-10-07):** intrinsics reported
 (2795 px on a 4096×3072 array: ~437 px, ~72° across at 640×480), no distortion,
