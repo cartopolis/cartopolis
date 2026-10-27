@@ -17,7 +17,13 @@ RUSTFLAGS="--cfg=web_sys_unstable_apis \
 
 # A module linked without shared memory loads and then cannot start a thread.
 wasm=$(ls dist/*_bg.wasm)
-js="${wasm%_bg.wasm}.js"
+# The glue is the script index.html loads. Not derived from the wasm's name:
+# trunk 0.22 hashes the two separately (`cartopolis-4f2e…_bg.wasm` beside
+# `cartopolis-e323….js`), which failed every wasm deploy from 2026-10-24.
+js=$(grep -o 'cartopolis-[0-9a-f]*\.js' dist/index.html | sort -u)
+[ "$(printf '%s\n' "$js" | grep -c .)" = 1 ] \
+    || { echo "index.html does not name exactly one glue script: '$js'" >&2; exit 1; }
+js="dist/$js"
 for sym in wasm_thread_entry_point __wbindgen_thread_destroy; do
     grep -qa "$sym" "$wasm" || { echo "$sym missing: the module was linked without shared memory" >&2; exit 1; }
 done

@@ -189,15 +189,17 @@ jobs:
       - name: Verify the module is threaded
         run: |
           wasm=$(ls crates/cartopolis/dist/*_bg.wasm)
-          # Derived from the wasm name, never `ls *.js | head -1`: trunk emits two
-          # JS files — the wasm-bindgen glue `<name>-<hash>.js` beside its
-          # `<name>-<hash>_bg.wasm`, and the separate `<hash>-loader.js` from
-          # `data-initializer`. Which one sorts first depends on the content
-          # hashes, so `head -1` picked the loader roughly at random, and the
-          # loader never constructs a `WebAssembly.Memory` — the check below would
-          # then fail on a perfectly good build (or, worse, pass without ever
-          # having looked at the glue).
-          js="${wasm%_bg.wasm}.js"
+          # The glue is the script index.html loads, never `ls *.js | head -1`
+          # (a `data-initializer` loader once sorted first at random and never
+          # constructs a `WebAssembly.Memory`), and not derived from the wasm's
+          # name either: trunk 0.22 hashes the two separately, which failed
+          # every wasm deploy from 2026-10-24 on a good build.
+          js=$(grep -o 'cartopolis-[0-9a-f]*\.js' crates/cartopolis/dist/index.html | sort -u)
+          [ "$(printf '%s\n' "$js" | grep -c .)" = 1 ] || {
+            echo "::error::index.html does not name exactly one glue script: '$js'"
+            exit 1
+          }
+          js="crates/cartopolis/dist/$js"
           echo "module: $wasm ($(( $(stat -c%s "$wasm") / 1000000 )) MB)"
           # These two exports exist only if wasm-bindgen's thread transform ran,
           # and it only runs when the link produced shared memory and the TLS
