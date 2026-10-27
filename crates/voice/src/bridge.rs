@@ -38,7 +38,12 @@ const SPEAKING_RMS: f32 = 0.02;
 /// How long the speaker is held after their last loud frame.
 const SPEAKER_HOLD: Duration = Duration::from_millis(800);
 /// The pause after the goodbye has been played before the line is dropped.
-const HANG_UP_AFTER: Duration = Duration::from_millis(400);
+/// Shorter in tests, which wait it out in real time and assert only the order.
+const HANG_UP_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_millis(400)
+};
 /// Asked to say goodbye after a long silence, and still there this long after.
 const IDLE_GRACE: Duration = Duration::from_secs(20);
 /// The longest a tool may take before the model is told it failed.

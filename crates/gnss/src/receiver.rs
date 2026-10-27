@@ -414,6 +414,29 @@ fn send_frame(port: &mut dyn Port, frame: &[u8], status: &Mutex<Status>) -> Resu
     port.write(frame)
 }
 
+// The waits below are for a person's hardware: a receiver re-enumerating after
+// a cable wiggle, a Unicore parsing one command at a time. A test's scripted
+// port needs none of it, and waits each one out in real time.
+
+/// The pause before retrying a port that would not open.
+const RETRY_OPEN_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(2)
+};
+/// The pause before reopening a port that was lost.
+const REOPEN_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(1)
+};
+/// The gap between configuration commands.
+const COMMAND_GAP: Duration = if cfg!(test) {
+    Duration::from_millis(5)
+} else {
+    Duration::from_millis(50)
+};
+
 fn port_thread(
     mut opener: Opener,
     config: &Config,
@@ -441,7 +464,7 @@ fn port_thread(
                     logged_failure = Some(e.clone());
                 }
                 update(status, |s| s.link = Link::Failed(e));
-                if nap(cancel, Duration::from_secs(2)) {
+                if nap(cancel, RETRY_OPEN_AFTER) {
                     return;
                 }
                 continue;
@@ -458,7 +481,7 @@ fn port_thread(
                 tracing::warn!(error = %e, "GNSS receiver lost");
                 event(status, format!("lost: {e}"));
                 update(status, |s| s.link = Link::Failed(e));
-                if nap(cancel, Duration::from_secs(1)) {
+                if nap(cancel, REOPEN_AFTER) {
                     return;
                 }
             }
@@ -542,7 +565,7 @@ fn read_port(
                     send_command(port, &command, status)?;
                     // Unicore parses one command at a time; give it the gap a
                     // person typing them would.
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(COMMAND_GAP);
                 }
             }
         }
