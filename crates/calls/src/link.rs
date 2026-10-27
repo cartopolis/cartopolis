@@ -503,6 +503,9 @@ mod tests {
                 people.push(join(&mut sfu, now));
             }
             let (tx, _) = sfu.poll(now);
+            // The waits are for datagrams in flight, so a step that sent none
+            // skips them: alone, the caller is quiet for most of the minute.
+            let mut sent_any = !tx.is_empty();
             for t in tx {
                 let _ = sfu_sock.send_to(&t.contents, t.destination);
             }
@@ -512,9 +515,13 @@ mod tests {
                     let p = people.iter_mut().find(|p| p.id == to).unwrap();
                     let answer = p.link.accept_offer(now, &sdp, &tracks).unwrap();
                     sfu.answer(now, to, &answer).unwrap();
+                    sent_any = true;
                 }
             }
-            std::thread::sleep(Duration::from_micros(300));
+            if sent_any {
+                std::thread::sleep(Duration::from_micros(300));
+            }
+            sent_any = false;
             for p in &mut people {
                 for (leg, sock) in [(Leg::Up, &p.up), (Leg::Down, &p.down)] {
                     while let Ok((n, from)) = sock.recv_from(&mut buf) {
@@ -531,6 +538,7 @@ mod tests {
                         } => {
                             let s = if leg == Leg::Up { &p.up } else { &p.down };
                             let _ = s.send_to(&contents, destination);
+                            sent_any = true;
                         }
                         Output::Media { .. } => p.heard += 1,
                         Output::Failed(why) => panic!("failed after {} s: {why}", step / 20),
@@ -549,8 +557,11 @@ mod tests {
                     );
                 }
                 sent += 1;
+                sent_any = true;
             }
-            std::thread::sleep(Duration::from_micros(300));
+            if sent_any {
+                std::thread::sleep(Duration::from_micros(300));
+            }
             while let Ok((n, from)) = sfu_sock.recv_from(&mut buf) {
                 sfu.receive(now, from, &buf[..n]);
             }

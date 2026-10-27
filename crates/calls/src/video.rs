@@ -486,6 +486,9 @@ pub struct Encoder {
     height: u32,
     /// Pictures since the last keyframe.
     since_key: u64,
+    /// Pictures between scheduled keyframes: [`KEYFRAME_INTERVAL`], except in
+    /// a test that has to see the schedule come round without encoding 60.
+    keyframe_interval: u64,
     /// A shared screen's encoder: sized by [`screen_size`], not the camera's.
     screen: bool,
 }
@@ -504,6 +507,16 @@ impl Encoder {
     }
 
     fn sized(codec: Codec, width: u32, height: u32) -> Self {
+        Self::sized_every(codec, width, height, KEYFRAME_INTERVAL)
+    }
+
+    /// [`Encoder::with_codec`], scheduling a keyframe every `every` pictures.
+    #[cfg(test)]
+    fn with_codec_every(codec: Codec, every: u64) -> Self {
+        Self::sized_every(codec, WIDTH, HEIGHT, every)
+    }
+
+    fn sized_every(codec: Codec, width: u32, height: u32, every: u64) -> Self {
         let (inner, codec) = match codec {
             Codec::Vp9 => (EncoderInner::Vp9(Box::new(vp9_encoder())), Codec::Vp9),
             _ => {
@@ -516,8 +529,8 @@ impl Encoder {
                     trellis_strength: TrellisStrength::OFF,
                     ..KeyframeParams::default()
                 };
-                let enc = Vp8InterStreamEncoder::new(params, KEYFRAME_INTERVAL)
-                    .expect("a nonzero keyframe interval");
+                let enc =
+                    Vp8InterStreamEncoder::new(params, every).expect("a nonzero keyframe interval");
                 (EncoderInner::Vp8(enc), Codec::Vp8)
             }
         };
@@ -527,6 +540,7 @@ impl Encoder {
             width,
             height,
             since_key: 0,
+            keyframe_interval: every,
             screen: false,
         }
     }
@@ -572,7 +586,7 @@ impl Encoder {
             key
         } else {
             let screen = self.screen;
-            *self = Self::sized(self.codec, size.0, size.1);
+            *self = Self::sized_every(self.codec, size.0, size.1, self.keyframe_interval);
             self.screen = screen;
             true
         };
@@ -591,7 +605,7 @@ impl Encoder {
                     .map_err(|e| Error(format!("{e:?}")))
             }
             EncoderInner::Vp9(enc) => {
-                key |= self.since_key >= KEYFRAME_INTERVAL;
+                key |= self.since_key >= self.keyframe_interval;
                 if key {
                     // `rusty_vp9` has no "force a keyframe": its first picture
                     // is one, and a fresh encoder costs nothing to make.
@@ -1017,15 +1031,23 @@ mod tests {
 
     #[test]
     fn the_test_pattern_survives_the_codec_and_says_which_frame_it_is() {
+        // A keyframe every 8, not every 60: what is checked is that the
+        // schedule comes round and the stream decodes across it, and 65
+        // pictures in each codec took 2.5 s to show that.
+        const EVERY: u64 = 8;
         for codec in [Codec::Vp8, Codec::Vp9] {
-            let mut enc = Encoder::with_codec(codec);
+            let mut enc = Encoder::with_codec_every(codec, EVERY);
             let mut dec = Decoder::with_codec(codec);
             // Past the scheduled keyframe, so the stream restarts once.
-            for n in 0..(KEYFRAME_INTERVAL + 5) {
+            for n in 0..(EVERY + 5) {
                 let sent = test_pattern(n);
-                let got = dec
-                    .decode_as(codec, &enc.encode(&sent, false).unwrap())
-                    .unwrap();
+                let coded = enc.encode(&sent, false).unwrap();
+                assert_eq!(
+                    codec.is_keyframe(&coded),
+                    n % EVERY == 0,
+                    "{codec:?} frame {n}: keyframes on the schedule only"
+                );
+                let got = dec.decode_as(codec, &coded).unwrap();
                 assert_eq!((got.width, got.height), (WIDTH, HEIGHT));
                 assert_eq!(test_pattern_number(&got), Some(n), "{codec:?} frame {n}");
             }

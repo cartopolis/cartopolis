@@ -390,7 +390,11 @@ mod tests {
         .unwrap();
         let mut pictures = 0;
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
+        // Joining at 500 ms, at most three pictures are left before the end,
+        // so six means it went round; stop then rather than at the deadline.
+        while std::time::Instant::now() < deadline
+            && (pictures < 6 || ring.lock().unwrap().is_empty())
+        {
             if let Some(p) = player.take_picture() {
                 assert_eq!((p.width, p.height), (32, 24), "scaled to max_width");
                 assert_eq!(p.rgba.len(), 32 * 24 * 4);
@@ -398,8 +402,8 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        // 5 fps for ~3 s, going round the one-second clip.
-        assert!(pictures >= 8, "{pictures} pictures");
+        // 5 fps, going round the one-second clip.
+        assert!(pictures >= 6, "{pictures} pictures");
         assert!(!ring.lock().unwrap().is_empty(), "the sound played");
     }
 }
