@@ -1077,6 +1077,10 @@ async fn app_pair(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    // Read and dropped: the app posts `{}`. Answering with a request body still
+    // unread closes the connection under it, and a client reading the answer
+    // can get a reset instead — on macOS one run of the suite in ten.
+    _body: axum::body::Bytes,
 ) -> ApiResult<Json<Value>> {
     if !state.signin.starts.allow(&caller_key(&headers, peer)) {
         return Err(ApiError(
