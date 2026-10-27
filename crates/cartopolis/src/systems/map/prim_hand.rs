@@ -36,6 +36,11 @@ pub struct PreciseHand {
     /// the ground, from the high-precision mode's tracker anchored on its first
     /// GNSS fix and compass heading (`systems::high_precision`).
     pub hand_geo: Option<(f64, f64, f32)>,
+    /// How the phone is turned while `active`: from its own axes (x right, y
+    /// up the screen, z out of it) to east-north-up, measured against the
+    /// same north as `hand_geo` (`systems::held_phone` puts it in the
+    /// avatar's hand).
+    pub hand_rotation: Option<Quat>,
     /// Report a stand-in as an imprecise hand — the avatar's, or the view — so
     /// a hand-sensing script can be tried before high precision positions
     /// anything. `CARTO_HAND_FROM_CAMERA=1` sets it at launch; Developer tools
@@ -48,6 +53,7 @@ impl Default for PreciseHand {
         Self {
             active: false,
             hand_geo: None,
+            hand_rotation: None,
             camera_stands_in: std::env::var("CARTO_HAND_FROM_CAMERA").is_ok_and(|v| v == "1"),
         }
     }
@@ -205,18 +211,21 @@ mod tests {
         let off = PreciseHand {
             active: false,
             hand_geo: None,
+            hand_rotation: None,
             camera_stands_in: false,
         };
         assert_eq!(off.reporting(), None);
         let dev = PreciseHand {
             active: false,
             hand_geo: None,
+            hand_rotation: None,
             camera_stands_in: true,
         };
         assert_eq!(dev.reporting(), Some(false));
         let tracked = PreciseHand {
             active: true,
             hand_geo: None,
+            hand_rotation: None,
             camera_stands_in: true,
         };
         assert_eq!(tracked.reporting(), Some(true));

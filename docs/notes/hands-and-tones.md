@@ -1,7 +1,7 @@
 ---
 topic: hands near a prim, and tones
-triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA]
-updated: 2026-10-07
+triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip]
+updated: 2026-10-27
 ---
 
 # Hands near a prim, and tones
@@ -74,3 +74,27 @@ Stepping a sink volume per frame zippers a pure tone.
 
 Hand range and tone are memory-only, like `sound_loop`: a restart runs
 `on_start` again.
+
+## The avatar holds the phone (2026-10-27)
+
+While the high-precision mode holds a pose, the local avatar holds a phone and
+its arm follows the real hand (`systems::held_phone`). The clip still plays the
+body; after the animation and before propagation the holding arm is solved
+(`cartopolis_human::reach`, a closed-form two-bone reach toward the wrist,
+elbow down and out), the hand is turned to the phone's own turn
+(`PreciseHand::hand_rotation`, the tracker's orientation turned by the anchor's
+yaw into east-north-up), and the fingers close round it (`hands::phone_grip`,
+the palm side read off which way the middle finger curls). A 7.5 × 16 cm box is
+drawn in the hand.
+
+- **Relative, not on the map.** The avatar stands on the GNSS fix and the
+  tracked hand on its own anchor, metres apart, so the hand is put at a rest
+  point in front of the chest at the lock and moved from there by the
+  tracker's motion, in the body's frame. Carried past 95 % of the arm's length
+  it drags the rest point along. So the hand drawn and the hand a script
+  senses agree in motion, not in absolute place; putting the body behind the
+  hand is the next step.
+- **This client only.** Nothing new goes on the wire: others see the clip's arm.
+- **Right hand, fixed.** `HeldPhone::side` has no setting yet.
+- `CARTO_HELD_PHONE=look|selfie` holds one in a fixed pose for a capture
+  (`--shot-mode avatar`). Captured on mac-2 on 2026-10-27; not run on a phone.

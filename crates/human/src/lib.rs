@@ -27,6 +27,7 @@ pub mod macros;
 pub mod mocap;
 #[cfg(feature = "pack")]
 pub mod pack;
+pub mod reach;
 pub mod rig;
 #[cfg(feature = "pack")]
 pub mod textures;

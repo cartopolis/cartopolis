@@ -131,6 +131,21 @@ impl Plugin for PlayerPlugin {
                 .before(big_space::prelude::BigSpaceSystems::RecenterLargeTransforms)
                 .before(bevy::transform::TransformSystems::Propagate),
         )
+        // The phone in the avatar's hand: where it is, then the arm posed over
+        // the clip once the animation has written this frame's joints and
+        // before they are propagated (`systems::held_phone`).
+        .init_resource::<systems::held_phone::HeldPhone>()
+        .init_resource::<systems::held_phone::HeldPhoneBlend>()
+        .add_systems(
+            Update,
+            systems::held_phone::track_held_phone.in_set(ClientPhase::Move),
+        )
+        .add_systems(
+            PostUpdate,
+            systems::held_phone::pose_held_phone
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate),
+        )
         // A followed object's position, after it has been placed and before the
         // camera rides it (`systems::camera_attach`).
         .add_systems(

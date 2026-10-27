@@ -582,8 +582,10 @@ pub fn drive_high_precision(
                 }
             };
         }
-        Some(high.anchor?.place(pose.position))
+        let anchor = high.anchor?;
+        Some((anchor.place(pose.position), anchor.turn(pose.orientation)))
     });
+    let (hand, turn) = (hand.map(|h| h.0), hand.map(|h| h.1));
     if hand.is_some() != high.locked {
         high.locked = hand.is_some();
         if !high.locked && high.sensors.is_some() {
@@ -597,6 +599,7 @@ pub fn drive_high_precision(
         precise.active = hand.is_some();
         precise.hand_geo = hand;
     }
+    precise.hand_rotation = turn;
     log.save();
 }
 

@@ -397,6 +397,10 @@ pub(crate) struct PreparedHuman {
     walk: ClipGait,
     run: ClipGait,
     emote_secs: Vec<f32>,
+    /// Each hand round a phone, and every joint at rest in the holder's
+    /// frame: what `held_phone` poses an arm from.
+    phone_grip: [Option<cartopolis_human::hands::PhoneGrip>; 2],
+    rest: Vec<Vec3>,
     height: f32,
     vertices: usize,
     built_ms: f32,
@@ -527,6 +531,8 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
         walk: gait("walk", ClipGait::CHARACTER_WALK),
         run: gait("run", ClipGait::CHARACTER_RUN),
         emote_secs,
+        phone_grip: model.phone_grip.clone(),
+        rest: model.joint_positions(None),
         height: model.height,
         vertices,
         built_ms: started.elapsed().as_secs_f32() * 1000.0,
@@ -566,6 +572,7 @@ pub(crate) fn spawn_human(
     // Joints, parents first (the model's order), each bound to the holder's
     // player.
     let mut joints: Vec<Entity> = Vec::with_capacity(prepared.joints.len());
+    let names: Vec<String> = prepared.joints.iter().map(|j| j.name.to_string()).collect();
     for j in prepared.joints {
         let entity = commands
             .spawn((
@@ -582,6 +589,40 @@ pub(crate) fn spawn_human(
     let bindposes = assets
         .bindposes
         .add(SkinnedMeshInverseBindposes::from(prepared.inverse_binds));
+
+    // The arms a phone can be held in (`held_phone`), and the phone, hidden
+    // until one is.
+    {
+        use super::held_phone::{ArmJoints, HeldPhoneMesh, HumanArms, Side, PHONE_SIZE};
+        let index = |name: &str| names.iter().position(|n| n == name);
+        let joint = |name: &str| index(name).map(|i| (joints[i], prepared.rest[i]));
+        let entity = |i: usize| joints.get(i).copied();
+        let arm = |side: Side, grip: &Option<cartopolis_human::hands::PhoneGrip>| {
+            grip.as_ref()
+                .and_then(|g| ArmJoints::new(side, g, joint, entity))
+        };
+        let phone = commands
+            .spawn((
+                Name::new("held phone"),
+                HeldPhoneMesh,
+                Mesh3d(assets.meshes.add(Cuboid::from_size(PHONE_SIZE))),
+                MeshMaterial3d(assets.materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.04, 0.04, 0.05),
+                    perceptual_roughness: 0.3,
+                    ..default()
+                })),
+                Transform::default(),
+                Visibility::Hidden,
+                ChildOf(holder),
+            ))
+            .id();
+        let [left, right] = &prepared.phone_grip;
+        commands.entity(holder).insert(HumanArms {
+            arms: [arm(Side::Left, left), arm(Side::Right, right)],
+            head: index("head").map_or(Vec3::Y * 1.6, |i| prepared.rest[i]),
+            phone,
+        });
+    }
 
     let parts = prepared.parts.len();
     for (mesh, info, name) in prepared.parts {

@@ -11,6 +11,7 @@ pub mod camera_attach;
 pub mod collision;
 pub mod free_camera;
 pub mod gizmo;
+pub mod held_phone;
 pub mod human_avatar;
 pub mod interact;
 /// The local avatar's existence (registered by `ShellPlugin`).

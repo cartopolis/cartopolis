@@ -92,6 +92,8 @@ pub struct HumanModel {
     pub parts: Vec<Part>,
     pub joints: Vec<Joint>,
     pub clips: Vec<RetargetedClip>,
+    /// Each hand closed round a phone, left first (`hands::phone_grip`).
+    pub phone_grip: [Option<crate::hands::PhoneGrip>; 2],
     /// Top of the head above the soles, metres.
     pub height: f32,
     /// Targets the phenotype asked for that the pack does not carry — a pack
@@ -297,10 +299,12 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         .collect();
 
     plant_feet(&mut clips, &joints, &parts);
+    let phone_grip = crate::hands::phone_grip(pack, &rest);
     HumanModel {
         parts,
         joints,
         clips,
+        phone_grip,
         height,
         missing_targets,
     }
@@ -413,6 +417,13 @@ impl HumanModel {
     /// (`None`: the rest pose). For checking a clip, not for drawing it.
     #[must_use]
     pub fn joint_positions(&self, clip: Option<(usize, usize)>) -> Vec<Vec3> {
+        self.joint_poses(clip).into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// Every joint's position and rotation relative to the model, as
+    /// [`Self::joint_positions`].
+    #[must_use]
+    pub fn joint_poses(&self, clip: Option<(usize, usize)>) -> Vec<(Vec3, glam::Quat)> {
         let mut world: Vec<(Vec3, glam::Quat)> = Vec::with_capacity(self.joints.len());
         for (i, j) in self.joints.iter().enumerate() {
             let mut t = Vec3::from_array(j.translation);
@@ -436,7 +447,7 @@ impl HumanModel {
                 None => (t, r),
             });
         }
-        world.into_iter().map(|(t, _)| t).collect()
+        world
     }
 }
 
@@ -607,6 +618,41 @@ mod tests {
         );
         // Left is +x for a body facing +z.
         assert!(rest[m.joint("hand_l").unwrap()].x > 0.2);
+    }
+
+    /// A hand round a phone: each palm faces in toward the body at rest, the
+    /// fingers close, and the right arm of the idle can be brought to a phone
+    /// held in front of the chest, its palm turned to face the phone's back.
+    #[test]
+    fn a_hand_can_hold_a_phone_in_front_of_the_chest() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let rest = m.joint_poses(None);
+        let [Some(left), Some(right)] = &m.phone_grip else {
+            panic!("both hands have a grip")
+        };
+        for (grip, inward) in [(left, -1.0), (right, 1.0)] {
+            let (_, rot) = rest[grip.hand];
+            let palm = rot * grip.palm;
+            assert!(palm.x * inward > 0.3, "palm {palm} should face x {inward}");
+            assert!(grip.fingers.len() >= 12, "{}", grip.fingers.len());
+            assert!(grip.palm.dot(grip.towards_fingers).abs() < 1e-4);
+        }
+        let idle = m.clips.iter().position(|c| c.name == "idle").unwrap();
+        let pose = m.joint_poses(Some((idle, 0)));
+        let at = |n: &str| pose[m.joint(n).unwrap()].0;
+        let arm = crate::reach::Arm {
+            shoulder: at("upperarm_r"),
+            elbow: at("lowerarm_r"),
+            wrist: at("hand_r"),
+        };
+        let phone = arm.shoulder + Vec3::new(0.12, -0.25, 0.32);
+        let r = crate::reach::reach(&arm, phone, Vec3::new(-1.0, -1.0, -0.3));
+        assert!(r.reached, "a phone 43 cm from the shoulder is in reach");
+        let elbow = arm.shoulder + r.upper * (arm.elbow - arm.shoulder);
+        let wrist = elbow + r.lower * r.upper * (arm.wrist - arm.elbow);
+        assert!(wrist.distance(phone) < 1e-3, "{wrist} {phone}");
+        assert!(elbow.y < arm.shoulder.y - 0.15, "the elbow hangs: {elbow}");
     }
 
     /// A face control moves the face, and only it: a wider nose changes the

@@ -174,6 +174,72 @@ pub fn joint_turn(joint: &FingerJoint, curl: f32) -> Quat {
     Quat::from_axis_angle(joint.axis, c * joint.fist)
 }
 
+/// How far a hand holding a phone is closed: the fingers round its far edge,
+/// short of a fist. At 0.5 they stood out past the edge.
+pub const PHONE_CURL: f32 = 0.75;
+
+/// A hand holding a phone, as the client poses it over a clip (`reach`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneGrip {
+    /// The hand bone.
+    pub hand: usize,
+    /// Each finger joint's local rotation, closed round the phone.
+    pub fingers: Vec<(usize, Quat)>,
+    /// From the wrist toward the middle knuckle, in the hand bone's frame.
+    pub towards_fingers: Vec3,
+    /// The middle knuckle from the wrist, metres, in the hand bone's frame:
+    /// what places the hand on the phone.
+    pub to_knuckle: Vec3,
+    /// The way the palm faces, square to `towards_fingers`, in the hand
+    /// bone's frame. Read off which way the fingers curl, like the bend axes,
+    /// so no bone roll had to be known.
+    pub palm: Vec3,
+}
+
+/// The phone grip of each hand, left first; `None` for a hand the rig has no
+/// middle finger on.
+#[must_use]
+pub fn phone_grip(pack: &HumanPack, rest: &[RestBone]) -> [Option<PhoneGrip>; 2] {
+    let joints = finger_joints(pack, rest);
+    ["l", "r"]
+        .iter()
+        .enumerate()
+        .map(|(side, s)| {
+            let hand = pack.bone(&format!("hand_{s}"))?;
+            let knuckle = pack.bone(&format!("middle_01_{s}"))?;
+            let bend = joints.iter().find(|j| j.bone == knuckle)?;
+            let frame = rest[hand].rotation.inverse();
+            let towards = (rest[knuckle].head - rest[hand].head).try_normalize()?;
+            // Where the middle finger's tip goes as it closes is the palm side.
+            let seg = rest[knuckle].tail - rest[knuckle].head;
+            let axis = rest[knuckle].rotation * bend.axis;
+            let closed = Quat::from_axis_angle(axis, bend.fist) * seg;
+            let palm = closed - seg;
+            let palm = (palm - towards * palm.dot(towards)).try_normalize()?;
+            let fingers = joints
+                .iter()
+                .filter(|j| j.side == side)
+                .map(|j| {
+                    let rest_local = match pack.bones[j.bone].parent {
+                        Some(p) => rest[usize::from(p)].rotation.inverse() * rest[j.bone].rotation,
+                        None => rest[j.bone].rotation,
+                    };
+                    (j.bone, (rest_local * joint_turn(j, PHONE_CURL)).normalize())
+                })
+                .collect();
+            Some(PhoneGrip {
+                hand,
+                fingers,
+                towards_fingers: frame * towards,
+                to_knuckle: frame * (rest[knuckle].head - rest[hand].head),
+                palm: frame * palm,
+            })
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap_or([None, None])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -91,8 +91,8 @@ pub use net::{
     user_store, voice,
 };
 pub use player::{
-    avatar, camera_attach, collision, free_camera, gizmo, human_avatar, interact, local_avatar,
-    locomotion, picking, prim_geo, touch,
+    avatar, camera_attach, collision, free_camera, gizmo, held_phone, human_avatar, interact,
+    local_avatar, locomotion, picking, prim_geo, touch,
 };
 // Re-exported only where something reaches it by name: with `audio` off the
 // module is still compiled (its synthesis and rate maths are pure and tested),

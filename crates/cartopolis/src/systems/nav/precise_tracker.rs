@@ -214,6 +214,15 @@ impl Anchor {
         }
     }
 
+    /// A tracker orientation (the phone's axes to the tracker's world) as the
+    /// phone's axes to east-north-up.
+    #[must_use]
+    pub fn turn(&self, orientation: DQuat) -> bevy::math::Quat {
+        (DQuat::from_rotation_z(self.yaw) * orientation)
+            .normalize()
+            .as_quat()
+    }
+
     /// Where a tracker position is on the map: latitude, longitude, metres
     /// above ground.
     #[must_use]
