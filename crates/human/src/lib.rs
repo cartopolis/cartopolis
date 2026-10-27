@@ -20,6 +20,7 @@
 //! in Blender's frame (Z up) and converted once ([`rig`]).
 
 pub mod build;
+pub mod face;
 pub mod fit;
 pub mod hands;
 pub mod macros;
@@ -39,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 7;
+pub const PACK_VERSION: u32 = 8;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -65,6 +66,11 @@ pub struct HumanPack {
     /// MakeHuman's face controls, each a pair of target sets.
     pub modifiers: Vec<Modifier>,
     pub clips: Vec<SourceClip>,
+    /// The face's 52 ARKit units, in [`face::UNITS`]' order, or none: shape
+    /// targets on the base mesh that the client blends live on the GPU rather
+    /// than baking in ([`face`]). Last, so a pack of version 7 is this one
+    /// with the field empty (`pack::decode_upgrading`).
+    pub face_units: Vec<Target>,
 }
 
 /// A triangle or a quad: `v` indexes the mesh's vertices, `uv` its UVs. A
@@ -125,16 +131,23 @@ pub const TARGET_STEP: f32 = 0.005;
 impl Target {
     /// Pack `(vertex, offset)` pairs; their order does not matter.
     #[must_use]
-    pub fn new(name: &str, mut offsets: Vec<(u32, [f32; 3])>) -> Self {
+    pub fn new(name: &str, offsets: Vec<(u32, [f32; 3])>) -> Self {
+        Self::with_step(name, offsets, TARGET_STEP)
+    }
+
+    /// [`Target::new`] at a finer resolution than [`TARGET_STEP`], for
+    /// targets whose whole movement is a few millimetres (an eye turning).
+    #[must_use]
+    pub fn with_step(name: &str, mut offsets: Vec<(u32, [f32; 3])>, finest: f32) -> Self {
         offsets.sort_by_key(|(v, _)| *v);
         offsets.dedup_by_key(|(v, _)| *v);
         let largest = offsets
             .iter()
             .flat_map(|(_, d)| d.iter().map(|x| x.abs()))
             .fold(0.0f32, f32::max);
-        // 0.5 mm, unless a target moves a vertex more than 16 m (none does;
-        // the largest, a baby's, is 1.07 m).
-        let step = (largest / 32767.0).max(TARGET_STEP);
+        // `finest` (0.5 mm for a body target), unless a target moves a vertex
+        // more than 16 m (none does; the largest, a baby's, is 1.07 m).
+        let step = (largest / 32767.0).max(finest);
         let mut prev = 0u32;
         let mut last = [0i16; 3];
         let mut gaps = Vec::with_capacity(offsets.len());

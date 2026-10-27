@@ -51,6 +51,17 @@ pub struct Part {
     /// The colour that shows a neutral texture as authored; `None` when the
     /// texture is the original and takes no tint.
     pub default_tint: Option<[u8; 3]>,
+    /// One per face unit ([`crate::face::UNITS`]) on a part the face's units
+    /// move — the face, the eyes, the brows, the lashes; empty on the rest.
+    pub morphs: Vec<Morph>,
+}
+
+/// What one face unit at full weight does to a part: per vertex, the change
+/// of its position and of its normal, metres and our frame, before skinning.
+#[derive(Clone, Debug, Default)]
+pub struct Morph {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
 }
 
 /// One bone, as an engine wants it: rest transform relative to its parent, and
@@ -195,16 +206,47 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         .copied()
         .collect();
     let skin = pack.skins.iter().find(|s| s.name == look.skin);
-    let mut parts = vec![mesh_part(
-        PartKind::Body,
-        "body",
-        &positions,
-        &pack.uvs,
-        &body_faces,
-        |v| pack.weights[v].clone(),
-        skin.map(|s| s.texture.clone()),
-        false,
-    )];
+    // The face's units, metres. They are offsets on the base mesh, the same
+    // for every body, as MakeHuman applies its expressions.
+    let units: Vec<Vec<(usize, Vec3)>> = pack
+        .face_units
+        .iter()
+        .map(|t| t.offsets().map(|(i, d)| (i, d * 0.1)).collect())
+        .collect();
+    // The skin the units move is drawn as a part of its own, the face, so
+    // that only its few thousand vertices carry 52 morph targets: the engine
+    // stores a target's change for every vertex of a mesh, moved or not.
+    // Normals are summed over the whole skin first, so the seam between the
+    // two parts does not show.
+    let moved: HashSet<u32> = units
+        .iter()
+        .flatten()
+        .map(|(i, _)| *i as u32)
+        .filter(|&i| (i as usize) < BODY_VERTICES)
+        .collect();
+    let (face_faces, rest_faces): (Vec<Face>, Vec<Face>) = body_faces
+        .iter()
+        .partition(|f| corners(f).any(|v| moved.contains(&v)));
+    let body_normals = normal_sums(&positions, &body_faces);
+    let skin_part = |name: &str, faces: &[Face]| {
+        mesh_part(
+            PartKind::Body,
+            name,
+            &positions,
+            &body_normals,
+            &pack.uvs,
+            faces,
+            |v| pack.weights[v].clone(),
+            skin.map(|s| s.texture.clone()),
+            false,
+        )
+    };
+    let mut parts = vec![skin_part("body", &rest_faces).0];
+    if !face_faces.is_empty() {
+        let (mut face, source) = skin_part("face", &face_faces);
+        face.morphs = morphs(&positions, &body_normals, &face_faces, &units, &source);
+        parts.push(face);
+    }
     let eye_texture = look
         .eyes
         .as_ref()
@@ -237,6 +279,22 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
                 .collect();
             fit::smooth_weights(&mut weights, &edges, GARMENT_SMOOTHING);
         }
+        let normals = normal_sums(&at, &proxy.faces);
+        // What the face's units do to what sits on the face — the eyes turn
+        // and the lids, brows and lashes move — through the same fitting
+        // rule that put it there. Hair hangs on the scalp and stays put.
+        let proxy_units: Vec<Vec<(usize, Vec3)>> = if matches!(
+            proxy.kind,
+            ProxyKind::Eyes | ProxyKind::Eyebrows | ProxyKind::Eyelashes
+        ) {
+            units
+                .iter()
+                .map(|unit| proxy_offsets(proxy, unit, base.len()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let moves = proxy_units.iter().any(|u| !u.is_empty());
         // One mesh per tint region, so each takes its own colour.
         let regions = proxy.region_colours.len().max(1) as u8;
         for region in 0..regions {
@@ -254,16 +312,20 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
             if faces.is_empty() {
                 continue;
             }
-            let mut part = mesh_part(
+            let (mut part, source) = mesh_part(
                 PartKind::Proxy(proxy.kind),
                 &proxy.name,
                 &at,
+                &normals,
                 &proxy.uvs,
                 &faces,
                 |v| weights[v].clone(),
                 texture.clone(),
                 proxy.alpha,
             );
+            if moves {
+                part.morphs = morphs(&at, &normals, &faces, &proxy_units, &source);
+            }
             part.region = region;
             part.default_tint = proxy.region_colours.get(region as usize).copied();
             parts.push(part);
@@ -455,31 +517,122 @@ fn corners(f: &Face) -> impl Iterator<Item = u32> + '_ {
     f.v.iter().copied().filter(|&v| v != Face::NONE)
 }
 
+/// Per position, the sum of its faces' normals, each as long as twice the
+/// face's area — a smooth normal before it is normalised.
+fn normal_sums(positions: &[Vec3], faces: &[Face]) -> Vec<Vec3> {
+    let mut sum = vec![Vec3::ZERO; positions.len()];
+    for f in faces {
+        for t in f.triangles() {
+            let [a, b, c] = t.map(|k| positions[f.v[k] as usize]);
+            let n = (b - a).cross(c - a);
+            for k in t {
+                sum[f.v[k] as usize] += n;
+            }
+        }
+    }
+    sum
+}
+
+/// One unit's offsets on the base mesh as offsets on a proxy's vertices,
+/// through the proxy's fitting rule (`fit::fit_vertex`, whose scaled offset
+/// a unit does not change).
+fn proxy_offsets(proxy: &Proxy, unit: &[(usize, Vec3)], base_len: usize) -> Vec<(usize, Vec3)> {
+    let mut at = vec![Vec3::ZERO; base_len];
+    for &(i, d) in unit {
+        at[i] = d;
+    }
+    proxy
+        .refs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| {
+            let w = r.w();
+            let d: Vec3 = (0..3).map(|k| w[k] * at[r.v[k] as usize]).sum();
+            (d != Vec3::ZERO).then_some((i, d))
+        })
+        .collect()
+}
+
+/// The morph targets of a part made by [`mesh_part`]: per unit, each
+/// vertex's change of position and of normal. `faces` must include every
+/// face a unit moves a corner of; a face none moves keeps its normal, so it
+/// may be left out. `normal_sum` is [`normal_sums`] over all the faces that
+/// share the part's positions, and `source` the part's position per vertex.
+fn morphs(
+    positions: &[Vec3],
+    normal_sum: &[Vec3],
+    faces: &[Face],
+    units: &[Vec<(usize, Vec3)>],
+    source: &[u32],
+) -> Vec<Morph> {
+    let mut delta = vec![Vec3::ZERO; positions.len()];
+    let mut turn = vec![Vec3::ZERO; positions.len()];
+    units
+        .iter()
+        .map(|unit| {
+            for &(i, d) in unit {
+                delta[i] = d;
+            }
+            let mut touched: Vec<usize> = Vec::new();
+            for f in faces {
+                if !corners(f).any(|v| delta[v as usize] != Vec3::ZERO) {
+                    continue;
+                }
+                for t in f.triangles() {
+                    let ix = t.map(|k| f.v[k] as usize);
+                    let [a, b, c] = ix.map(|i| positions[i]);
+                    let [a2, b2, c2] = ix.map(|i| positions[i] + delta[i]);
+                    let change = (b2 - a2).cross(c2 - a2) - (b - a).cross(c - a);
+                    for i in ix {
+                        turn[i] += change;
+                        touched.push(i);
+                    }
+                }
+            }
+            let morph = Morph {
+                positions: source
+                    .iter()
+                    .map(|&s| delta[s as usize].to_array())
+                    .collect(),
+                normals: source
+                    .iter()
+                    .map(|&s| {
+                        let (sum, t) = (normal_sum[s as usize], turn[s as usize]);
+                        if t == Vec3::ZERO {
+                            return [0.0; 3];
+                        }
+                        ((sum + t).normalize_or(Vec3::Y) - sum.normalize_or(Vec3::Y)).to_array()
+                    })
+                    .collect(),
+            };
+            for &(i, _) in unit {
+                delta[i] = Vec3::ZERO;
+            }
+            for i in touched {
+                turn[i] = Vec3::ZERO;
+            }
+            morph
+        })
+        .collect()
+}
+
 /// One mesh from indexed faces whose corners carry separate position and UV
 /// indices: a vertex per distinct (position, UV) pair, normals smoothed per
-/// *position* so a UV seam is not a shading seam.
+/// *position* (`normal_sum`, from [`normal_sums`]) so a UV seam is not a
+/// shading seam. Also returns each vertex's position index.
 #[allow(clippy::too_many_arguments)]
 fn mesh_part(
     kind: PartKind,
     name: &str,
     positions: &[Vec3],
+    normal_sum: &[Vec3],
     uvs: &[[f32; 2]],
     faces: &[Face],
     influences: impl Fn(usize) -> Vec<(u16, f32)>,
     texture: Option<String>,
     alpha: bool,
-) -> Part {
-    let mut normal_at = vec![Vec3::ZERO; positions.len()];
-    for f in faces {
-        for t in f.triangles() {
-            let [a, b, c] = t.map(|k| positions[f.v[k] as usize]);
-            // Area-weighted: the cross product's length is twice the area.
-            let n = (b - a).cross(c - a);
-            for k in t {
-                normal_at[f.v[k] as usize] += n;
-            }
-        }
-    }
+) -> (Part, Vec<u32>) {
+    let mut source = Vec::new();
     let mut index_of: HashMap<(u32, u32), u32> = HashMap::new();
     let mut part = Part {
         kind,
@@ -494,6 +647,7 @@ fn mesh_part(
         alpha,
         region: 0,
         default_tint: None,
+        morphs: Vec::new(),
     };
     for f in faces {
         for t in f.triangles() {
@@ -503,9 +657,10 @@ fn mesh_part(
                     let v = f.v[k] as usize;
                     let uv = uvs.get(f.uv[k] as usize).copied().unwrap_or_default();
                     let (j, w) = fit::top_four(influences(v));
+                    source.push(v as u32);
                     part.positions.push(positions[v].to_array());
                     part.normals
-                        .push(normal_at[v].normalize_or(Vec3::Y).to_array());
+                        .push(normal_sum[v].normalize_or(Vec3::Y).to_array());
                     part.uvs.push([uv[0], 1.0 - uv[1]]);
                     part.joints.push(j);
                     part.weights.push(w);
@@ -515,7 +670,7 @@ fn mesh_part(
             }
         }
     }
-    part
+    (part, source)
 }
 
 #[cfg(test)]
@@ -543,10 +698,11 @@ mod tests {
                 uv: [4, 1, 2, Face::NONE],
             },
         ];
-        let part = mesh_part(
+        let (part, _) = mesh_part(
             PartKind::Body,
             "t",
             &positions,
+            &normal_sums(&positions, &faces),
             &uvs,
             &faces,
             |_| vec![(0, 1.0)],
@@ -605,8 +761,8 @@ mod tests {
         // The outfit is two meshes, its top and its bottom, tinted apart.
         assert_eq!(
             m.parts.len(),
-            8,
-            "the body, five proxies and the outfit's two halves"
+            9,
+            "the body, the face, five proxies and the outfit's two halves"
         );
         let rest = m.joint_positions(None);
         let y = |n: &str| rest[m.joint(n).unwrap()].y;
@@ -676,7 +832,15 @@ mod tests {
         );
         look.modifiers.clear();
         let base = build(&pack, &look);
-        let (a, b) = (&base.parts[0].positions, &wide.parts[0].positions);
+        // The skin is the body and, once the pack has face units, the face.
+        let skin = |m: &HumanModel| -> Vec<[f32; 3]> {
+            m.parts
+                .iter()
+                .filter(|p| p.kind == PartKind::Body)
+                .flat_map(|p| p.positions.iter().copied())
+                .collect()
+        };
+        let (a, b) = (&skin(&base), &skin(&wide));
         let moved: Vec<f32> = a
             .iter()
             .zip(b)
@@ -696,6 +860,72 @@ mod tests {
             "the feet stay on the ground"
         );
         let _ = plain;
+    }
+
+    /// The face's units are live morph targets on the parts they move, and
+    /// they move the right things: a blink closes the left lid downwards and
+    /// takes the lashes with it, an open jaw lowers the chin by centimetres,
+    /// and a look to the left turns the eyes and nothing on the skin.
+    #[test]
+    fn the_face_units_move_the_face() {
+        let Some(pack) = shipped_pack() else { return };
+        assert_eq!(pack.face_units.len(), crate::face::UNITS.len());
+        let m = man(&pack);
+        let part = |name: &str| m.parts.iter().find(|p| p.name == name).unwrap();
+        let unit = |name: &str| crate::face::unit(name).unwrap();
+        let (face, lashes, eyes) = (part("face"), part("eyelashes01"), part("high-poly"));
+        assert!(
+            part("body").morphs.is_empty(),
+            "the rest of the body has none"
+        );
+        for p in [face, lashes, eyes] {
+            assert_eq!(p.morphs.len(), 52, "{}", p.name);
+            for t in &p.morphs {
+                assert_eq!(t.positions.len(), p.positions.len());
+                assert_eq!(t.normals.len(), p.positions.len());
+            }
+        }
+        // The face is a few thousand vertices: 52 targets on each.
+        assert!(face.positions.len() < 6000, "face {}", face.positions.len());
+        // Largest movement down (−y) and its x, over a part, for a unit.
+        let down = |p: &Part, u: &str| {
+            p.morphs[unit(u)]
+                .positions
+                .iter()
+                .zip(&p.positions)
+                .map(|(d, at)| (-d[1], at[0]))
+                .fold((0.0f32, 0.0f32), |a, b| if b.0 > a.0 { b } else { a })
+        };
+        let (lid, x) = down(face, "eyeBlinkLeft");
+        assert!(
+            lid > 0.004,
+            "the upper lid comes down by millimetres: {lid}"
+        );
+        assert!(x > 0.0, "on the face's left, +x: {x}");
+        assert!(
+            down(lashes, "eyeBlinkLeft").0 > 0.003,
+            "the lashes go with it"
+        );
+        let (chin, _) = down(face, "jawOpen");
+        assert!(
+            chin > 0.01,
+            "an open jaw lowers the chin by centimetres: {chin}"
+        );
+        let moved = |p: &Part, u: &str| {
+            p.morphs[unit(u)]
+                .positions
+                .iter()
+                .map(|d| Vec3::from_array(*d).length())
+                .fold(0.0, f32::max)
+        };
+        assert!(moved(eyes, "eyeLookOutLeft") > 0.001, "the eyes turn");
+        // Normals turn with the faces, and stay unit vectors at full weight.
+        let t = &face.morphs[unit("jawOpen")];
+        assert!(t.normals.iter().any(|n| *n != [0.0; 3]));
+        for (n, dn) in face.normals.iter().zip(&t.normals) {
+            let turned = Vec3::from_array(*n) + Vec3::from_array(*dn);
+            assert!((turned.length() - 1.0).abs() < 1.0e-3);
+        }
     }
 
     /// Retargeting through the T-pose leaves the arms where the library put

@@ -112,6 +112,11 @@ impl MapTo for Vec<(u32, u32)> {
 /// A `.target` file: lines of `index dx dy dz`; blank lines and `#` comments
 /// skipped.
 pub fn parse_target(name: &str, text: &str) -> Result<Target> {
+    Ok(Target::new(name, target_offsets(name, text)?))
+}
+
+/// A `.target` file's `(vertex, offset)` lines.
+fn target_offsets(name: &str, text: &str) -> Result<Vec<(u32, [f32; 3])>> {
     let mut offsets = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -131,7 +136,7 @@ pub fn parse_target(name: &str, text: &str) -> Result<Target> {
             .map_err(|e| format!("{name}: {e} in {line:?}"))?;
         offsets.push((v, [num(f[1])?, num(f[2])?, num(f[3])?]));
     }
-    Ok(Target::new(name, offsets))
+    Ok(offsets)
 }
 
 fn read_target(targets_dir: &Path, name: &str) -> Result<Target> {
@@ -556,6 +561,48 @@ pub struct Sources {
     pub modifier_groups: Vec<String>,
     /// Where to copy the textures; the pack names them relative to it.
     pub textures_out: PathBuf,
+    /// The `faceunits01` asset pack's `targets/faceunits` directory, or none
+    /// for a face that never moves.
+    pub face_units: Option<PathBuf>,
+}
+
+/// The face's units from `dir` (one `NAME.target` each), in
+/// [`face::UNITS`](crate::face::UNITS)' order, every one required.
+pub fn read_face_units(dir: &Path) -> Result<Vec<Target>> {
+    crate::face::UNITS
+        .iter()
+        .map(|name| {
+            let text = read_text(&dir.join(format!("{name}.target")))?;
+            Ok(Target::with_step(
+                name,
+                target_offsets(name, &text)?,
+                crate::face::FACE_UNIT_STEP,
+            ))
+        })
+        .collect()
+}
+
+/// Decode a pack, reading one of version 7 as this version with no face
+/// units: the units are the only field 8 added, and they are last, so a
+/// version 7 pack's postcard bytes followed by an empty list's (one zero
+/// byte) are a version 8 pack's. Lets `human-pack --add-face-units` add them
+/// to the shipped pack without every source it was built from.
+pub fn decode_upgrading(bytes: &[u8]) -> Result<HumanPack> {
+    let mut raw = Vec::new();
+    flate2::read::DeflateDecoder::new(bytes)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("not a human pack: {e}"))?;
+    let version = postcard::take_from_bytes::<u32>(&raw)
+        .map_err(|e| e.to_string())?
+        .0;
+    if version == 7 {
+        raw.push(0);
+    } else if version != PACK_VERSION {
+        return Err(format!("pack version {version} cannot be upgraded"));
+    }
+    let mut pack: HumanPack = postcard::from_bytes(&raw).map_err(|e| e.to_string())?;
+    pack.version = PACK_VERSION;
+    Ok(pack)
 }
 
 pub fn build_pack(src: &Sources) -> Result<HumanPack> {
@@ -802,6 +849,10 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         eye_colours,
         modifiers,
         clips,
+        face_units: match &src.face_units {
+            Some(dir) => read_face_units(dir)?,
+            None => Vec::new(),
+        },
     })
 }
 

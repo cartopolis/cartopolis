@@ -3,7 +3,8 @@
 //! ```text
 //! cargo run -p cartopolis_human --features pack --bin human-pack -- \
 //!     --mpfb <mpfb2>/src/mpfb/data --assets <makehuman_system_assets> \
-//!     --style <100STYLE> --cmu <cmu-mocap BVH dir> --out assets/models/avatar/human
+//!     --style <100STYLE> --cmu <cmu-mocap BVH dir> --out assets/models/avatar/human \
+//!     --face-units <faceunits01>/targets/faceunits
 //! ```
 //!
 //! The selection — the wardrobe, the skins, the eye colours, which clips are cut
@@ -378,8 +379,45 @@ fn replace_walk(pack_path: &Path, file: &Path, start: usize, end: Option<usize>)
     }
 }
 
+/// `--add-face-units PACK DIR`: put the face's units from the `faceunits01`
+/// asset pack's `targets/faceunits` directory into a pack, leaving the rest
+/// of it as it is; a pack of version 7, which had none, comes out as this
+/// version.
+fn add_face_units(pack_path: &Path, dir: &Path) {
+    use cartopolis_human::pack::{decode_upgrading, read_face_units};
+    let result = std::fs::read(pack_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| decode_upgrading(&b))
+        .and_then(|mut pack| {
+            pack.face_units = read_face_units(dir)?;
+            let bytes = pack.encode()?;
+            std::fs::write(pack_path, &bytes).map_err(|e| e.to_string())?;
+            Ok((
+                bytes.len(),
+                pack.face_units.iter().map(|t| t.len()).sum::<usize>(),
+            ))
+        });
+    match result {
+        Ok((n, offsets)) => println!(
+            "{}: face units added ({offsets} offsets), {} KB",
+            pack_path.display(),
+            n / 1024
+        ),
+        Err(e) => {
+            eprintln!("human-pack: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let all: Vec<String> = std::env::args().collect();
+    if let [_, flag, pack, dir] = all.as_slice() {
+        if flag == "--add-face-units" {
+            add_face_units(Path::new(pack), Path::new(dir));
+            return;
+        }
+    }
     if all.get(1).is_some_and(|f| f == "--try-walk") && all.len() > 3 {
         try_walks(Path::new(&all[2]), &all[3..]);
         return;
@@ -430,9 +468,11 @@ fn main() {
     }
     let mut args = std::env::args().skip(1);
     let (mut mpfb, mut assets, mut style, mut cmu, mut out) = (None, None, None, None, None);
+    let mut face_units = None;
     while let Some(a) = args.next() {
         let v = args.next().map(PathBuf::from);
         match a.as_str() {
+            "--face-units" => face_units = v,
             "--mpfb" => mpfb = v,
             "--assets" => assets = v,
             "--style" => style = v,
@@ -479,6 +519,7 @@ fn main() {
         .map(String::from)
         .to_vec(),
         textures_out: out.join("textures"),
+        face_units,
     };
     let pack = match build_pack(&sources) {
         Ok(p) => p,
