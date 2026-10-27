@@ -3545,26 +3545,119 @@ mod tests {
         (positions, indices)
     }
 
-    /// The height of a triangulated surface at one plan position, or `None` off it.
-    fn surface_at(positions: &[[f32; 3]], indices: &[u32], x: f32, z: f32) -> Option<f32> {
-        for tri in indices.chunks_exact(3) {
-            let (a, b, c) = (
-                positions[tri[0] as usize],
-                positions[tri[1] as usize],
-                positions[tri[2] as usize],
-            );
-            let det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
-            if det.abs() < 1e-12 {
-                continue;
+    /// Plan-grid buckets, so the two layout tests below look only at what is near
+    /// a point or an edge. Scanning every triangle for each of 29k probes was
+    /// 7.7 s of the client suite's 7.9 s: this module is built at `opt-level = 1`.
+    struct PlanGrid {
+        lo: [f32; 2],
+        cell: f32,
+        cols: usize,
+        rows: usize,
+        buckets: Vec<Vec<u32>>,
+    }
+
+    impl PlanGrid {
+        fn over(positions: &[[f32; 3]], cell: f32) -> Self {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in positions {
+                lo = [lo[0].min(p[0]), lo[1].min(p[2])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[2])];
             }
-            let l0 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
-            let l1 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
-            let l2 = 1.0 - l0 - l1;
-            if l0 >= -1e-4 && l1 >= -1e-4 && l2 >= -1e-4 {
-                return Some(l0 * a[1] + l1 * b[1] + l2 * c[1]);
+            let cols = ((hi[0] - lo[0]) / cell) as usize + 1;
+            let rows = ((hi[1] - lo[1]) / cell) as usize + 1;
+            Self {
+                lo,
+                cell,
+                cols,
+                rows,
+                buckets: vec![Vec::new(); cols * rows],
             }
         }
-        None
+
+        /// The buckets under a plan box, clamped to the grid.
+        fn cells(&self, min: [f32; 2], max: [f32; 2]) -> impl Iterator<Item = usize> + '_ {
+            let at = |v: f32, lo: f32, n: usize| {
+                (((v - lo) / self.cell).floor().max(0.0) as usize).min(n - 1)
+            };
+            let (c0, c1) = (
+                at(min[0], self.lo[0], self.cols),
+                at(max[0], self.lo[0], self.cols),
+            );
+            let (r0, r1) = (
+                at(min[1], self.lo[1], self.rows),
+                at(max[1], self.lo[1], self.rows),
+            );
+            (r0..=r1).flat_map(move |r| (c0..=c1).map(move |c| r * self.cols + c))
+        }
+
+        fn insert(&mut self, min: [f32; 2], max: [f32; 2], item: u32) {
+            let cells: Vec<usize> = self.cells(min, max).collect();
+            for k in cells {
+                self.buckets[k].push(item);
+            }
+        }
+    }
+
+    /// The height of one triangle at a plan position, or `None` off it.
+    fn height_in(positions: &[[f32; 3]], tri: &[u32], x: f32, z: f32) -> Option<f32> {
+        let (a, b, c) = (
+            positions[tri[0] as usize],
+            positions[tri[1] as usize],
+            positions[tri[2] as usize],
+        );
+        let det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let l0 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
+        let l1 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
+        let l2 = 1.0 - l0 - l1;
+        (l0 >= -1e-4 && l1 >= -1e-4 && l2 >= -1e-4).then(|| l0 * a[1] + l1 * b[1] + l2 * c[1])
+    }
+
+    /// A triangulated surface that answers its height at a plan position, or
+    /// `None` off it.
+    ///
+    /// Each triangle is filed under every bucket its box touches, padded well past
+    /// the barycentric tolerance (1e-4 of an edge, under a millimetre here), so any
+    /// triangle a scan of the whole mesh would accept is in the probe's bucket; and
+    /// buckets fill in index order, so the first hit is the one that scan found.
+    struct Surface<'a> {
+        positions: &'a [[f32; 3]],
+        indices: &'a [u32],
+        grid: PlanGrid,
+    }
+
+    impl<'a> Surface<'a> {
+        fn new(positions: &'a [[f32; 3]], indices: &'a [u32]) -> Self {
+            const PAD: f32 = 0.01;
+            let mut grid = PlanGrid::over(positions, 2.0);
+            for (t, tri) in indices.chunks_exact(3).enumerate() {
+                let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for &i in tri {
+                    let p = positions[i as usize];
+                    min = [min[0].min(p[0]), min[1].min(p[2])];
+                    max = [max[0].max(p[0]), max[1].max(p[2])];
+                }
+                grid.insert(
+                    [min[0] - PAD, min[1] - PAD],
+                    [max[0] + PAD, max[1] + PAD],
+                    t as u32,
+                );
+            }
+            Self {
+                positions,
+                indices,
+                grid,
+            }
+        }
+
+        fn at(&self, x: f32, z: f32) -> Option<f32> {
+            let k = self.grid.cells([x, z], [x, z]).next()?;
+            self.grid.buckets[k].iter().find_map(|&t| {
+                height_in(self.positions, &self.indices[t as usize * 3..][..3], x, z)
+            })
+        }
     }
 
     /// **A vertex layout may not change the shape of the ground.**
@@ -3599,6 +3692,7 @@ mod tests {
         let (half, n) = (256.0f32, 96);
         let (sp, si) = drawn_grid(&field, half, n, false);
         let (up, ui) = drawn_grid(&field, half, n, true);
+        let (shared, unshared) = (Surface::new(&sp, &si), Surface::new(&up, &ui));
 
         let mut worst = 0.0f32;
         let mut compared = 0;
@@ -3606,8 +3700,7 @@ mod tests {
             for j in 0..=120 {
                 let x = -half + 0.5 + i as f32 * (half * 2.0 - 1.0) / 120.0;
                 let z = -half + 0.5 + j as f32 * (half * 2.0 - 1.0) / 120.0;
-                if let (Some(a), Some(b)) = (surface_at(&sp, &si, x, z), surface_at(&up, &ui, x, z))
-                {
+                if let (Some(a), Some(b)) = (shared.at(x, z), unshared.at(x, z)) {
                     compared += 1;
                     worst = worst.max((a - b).abs());
                 }
@@ -3635,18 +3728,33 @@ mod tests {
                 + ((z / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
         });
         let (positions, indices) = drawn_grid(&field, 48.0, 16, true);
+        // Every vertex filed where it stands. One the check below would flag lies
+        // within 1 mm of the edge, so it is in a bucket under the edge's box padded
+        // by more than that: every pair that could fail is still compared, without
+        // comparing every edge with every vertex (1.6 s).
+        let mut near = PlanGrid::over(&positions, 2.0);
+        for (v, p) in positions.iter().enumerate() {
+            near.insert([p[0], p[2]], [p[0], p[2]], v as u32);
+        }
+        const PAD: f32 = 0.01;
         for tri in indices.chunks_exact(3) {
             for k in 0..3 {
                 let (a, b) = (
                     positions[tri[k] as usize],
                     positions[tri[(k + 1) % 3] as usize],
                 );
-                for p in &positions {
-                    let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
-                    let len_sq = dx * dx + dz * dz;
-                    if len_sq < 1e-9 {
-                        continue;
-                    }
+                let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
+                let len_sq = dx * dx + dz * dz;
+                if len_sq < 1e-9 {
+                    continue;
+                }
+                let min = [a[0].min(b[0]) - PAD, a[2].min(b[2]) - PAD];
+                let max = [a[0].max(b[0]) + PAD, a[2].max(b[2]) + PAD];
+                let candidates = near
+                    .cells(min, max)
+                    .flat_map(|c| &near.buckets[c])
+                    .map(|&v| positions[v as usize]);
+                for p in candidates {
                     let t = ((p[0] - a[0]) * dx + (p[2] - a[2]) * dz) / len_sq;
                     if !(0.02..=0.98).contains(&t) {
                         continue;
