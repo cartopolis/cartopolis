@@ -117,42 +117,56 @@ fn pattern(u: f64, v: f64) -> f64 {
 
 /// What the camera sees at a pose: the façade, the pavement and the side wall
 /// of [`street`], textured, by casting a ray per pixel. Sky is flat grey.
+///
+/// Rows are split across threads: the bench casts ~350 frames of 307,200 rays,
+/// and nothing here is random, so the picture is the same however it is split.
 pub fn render(cam: &Camera, p: DVec3, q: DQuat) -> crate::image::Gray {
     let cam_q = q * cam.device_from_camera;
     let (w, h) = (cam.width as usize, cam.height as usize);
-    let mut px = Vec::with_capacity(w * h);
-    for y in 0..h {
-        for x in 0..w {
-            let d = cam_q * cam.bearing(Vec2::new(x as f32, y as f32));
-            let mut best = (f64::INFINITY, 0.55);
-            // Façade, y = 6.
-            if d.y > 1e-6 {
-                let t = (6.0 - p.y) / d.y;
-                let hit = p + d * t;
-                if t > 0.0 && hit.z >= 0.0 && hit.z < 8.0 && t < best.0 {
-                    best = (t, pattern(hit.x, hit.z));
+    let mut px = vec![0u8; w * h];
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+    let rows = h.div_ceil(threads).max(1);
+    std::thread::scope(|s| {
+        for (k, chunk) in px.chunks_mut(rows * w).enumerate() {
+            s.spawn(move || {
+                for (i, out) in chunk.iter_mut().enumerate() {
+                    *out = shade(cam, cam_q, p, i % w, k * rows + i / w);
                 }
-            }
-            // Pavement, z = 0.
-            if d.z < -1e-6 {
-                let t = -p.z / d.z;
-                let hit = p + d * t;
-                if t > 0.0 && hit.y < 6.0 && t < best.0 {
-                    best = (t, 0.3 + 0.5 * pattern(hit.x + 50.0, hit.y));
-                }
-            }
-            // Wall, x = −3.
-            if d.x < -1e-6 {
-                let t = (-3.0 - p.x) / d.x;
-                let hit = p + d * t;
-                if t > 0.0 && hit.y < 6.0 && hit.z >= 0.0 && hit.z < 5.0 && t < best.0 {
-                    best = (t, 0.2 + 0.6 * pattern(hit.y + 100.0, hit.z));
-                }
-            }
-            px.push((best.1 * 255.0).clamp(0.0, 255.0) as u8);
+            });
+        }
+    });
+    crate::image::Gray::new(w, h, px)
+}
+
+/// One pixel of [`render`].
+fn shade(cam: &Camera, cam_q: DQuat, p: DVec3, x: usize, y: usize) -> u8 {
+    let d = cam_q * cam.bearing(Vec2::new(x as f32, y as f32));
+    let mut best = (f64::INFINITY, 0.55);
+    // Façade, y = 6.
+    if d.y > 1e-6 {
+        let t = (6.0 - p.y) / d.y;
+        let hit = p + d * t;
+        if t > 0.0 && hit.z >= 0.0 && hit.z < 8.0 && t < best.0 {
+            best = (t, pattern(hit.x, hit.z));
         }
     }
-    crate::image::Gray::new(w, h, px)
+    // Pavement, z = 0.
+    if d.z < -1e-6 {
+        let t = -p.z / d.z;
+        let hit = p + d * t;
+        if t > 0.0 && hit.y < 6.0 && t < best.0 {
+            best = (t, 0.3 + 0.5 * pattern(hit.x + 50.0, hit.y));
+        }
+    }
+    // Wall, x = −3.
+    if d.x < -1e-6 {
+        let t = (-3.0 - p.x) / d.x;
+        let hit = p + d * t;
+        if t > 0.0 && hit.y < 6.0 && hit.z >= 0.0 && hit.z < 5.0 && t < best.0 {
+            best = (t, 0.2 + 0.6 * pattern(hit.y + 100.0, hit.z));
+        }
+    }
+    (best.1 * 255.0).clamp(0.0, 255.0) as u8
 }
 
 /// Run the tracker over `seconds` of the bench, returning the true and tracked
