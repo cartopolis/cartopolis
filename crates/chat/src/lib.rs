@@ -3255,13 +3255,72 @@ mod loopback {
         }
     }
 
-    /// Pump everybody a few rounds: a join is several hops between devices.
+    /// The most a `settle_until` waits for its condition before failing the
+    /// test. It bounds a broken exchange; it is not a pace.
+    const SETTLE_BOUND: Duration = Duration::from_secs(20);
+
+    /// Serve everybody's connection at once until the exchange has been quiet
+    /// for `QUIET`.
     async fn settle(peers: &mut [&mut Peer]) {
-        for _ in 0..3 {
-            for p in peers.iter_mut() {
-                p.pump(PUMP).await;
+        settle_until(peers, |_| true).await;
+    }
+
+    /// Serve everybody's connection at once until `done` holds and the
+    /// exchange has then been quiet for `QUIET`; a join is several hops
+    /// between devices.
+    ///
+    /// This used to be three rounds of `pump` per peer, one after another, and
+    /// every pump sat out its own quiet tail: 42 of them made one test 6.5 s.
+    /// Serving the peers together pays one tail, and quiet only counts once
+    /// `done` holds, so a hop that is slow on a loaded node is waited for
+    /// rather than taken for the end. The tail after `done` is what keeps a
+    /// "nothing else arrives" check honest.
+    async fn settle_until(peers: &mut [&mut Peer], done: impl Fn(&[&mut Peer]) -> bool) {
+        use std::task::Poll;
+        let bound = tokio::time::Instant::now() + SETTLE_BOUND;
+        let mut quiet_at = tokio::time::Instant::now() + QUIET;
+        let mut first = 0;
+        loop {
+            let met = done(peers);
+            let until = if met { quiet_at.min(bound) } else { bound };
+            let n = peers.len();
+            let next = std::future::poll_fn(|cx| {
+                // Rotate who is polled first, so one busy peer cannot starve the rest.
+                for k in 0..n {
+                    let i = (first + k) % n;
+                    if let Poll::Ready(frame) = peers[i].conn.poll_next_unpin(cx) {
+                        return Poll::Ready((i, frame));
+                    }
+                }
+                Poll::Pending
+            });
+            let (i, frame) = match tokio::time::timeout_at(until, next).await {
+                Ok((i, Some(Ok(frame)))) => (i, frame),
+                Ok((_, other)) => panic!("a connection ended while settling: {other:?}"),
+                Err(_) if met => return,
+                Err(_) => panic!(
+                    "not settled within {SETTLE_BOUND:?}: {:?}",
+                    peers.iter().map(|p| &p.events).collect::<Vec<_>>()
+                ),
+            };
+            first = (i + 1) % n;
+            let msg = decode_app_frame(&frame).unwrap();
+            // As in `pump`: the server's world snapshots are not chat traffic.
+            if !is_private_message(&msg) {
+                continue;
             }
+            quiet_at = tokio::time::Instant::now() + QUIET;
+            let p = &mut *peers[i];
+            let mut out = Vec::new();
+            p.engine.handle(msg, &mut out, &mut p.events);
+            p.send_all(out).await;
         }
+    }
+
+    fn opened_group(p: &Peer, group: &[u8]) -> bool {
+        p.events
+            .iter()
+            .any(|e| matches!(e, Event::Opened { group: g, .. } if g == group))
     }
 
     /// Alice starts a community with a topic and Bob in it; Bob is in the
@@ -3280,7 +3339,13 @@ mod loopback {
             &mut out,
         );
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut bob]).await;
+        settle_until(&mut [&mut alice, &mut bob], |p| {
+            communities(p[1])
+                .first()
+                .and_then(|c| c.topics.first())
+                .is_some_and(|t| t.joined)
+        })
+        .await;
         let mine = communities(&alice);
         assert_eq!(mine.len(), 1, "{:?}", alice.events);
         let id = mine[0].id;
@@ -3308,7 +3373,7 @@ mod loopback {
             .send_text(&group, "welcome bob", 0, &mut out)
             .unwrap();
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut bob]).await;
+        settle_until(&mut [&mut alice, &mut bob], |p| !p[1].lines().is_empty()).await;
         assert_eq!(bob.lines(), vec![("alice".into(), "welcome bob".into())]);
     }
 
@@ -3341,7 +3406,15 @@ mod loopback {
         let mut out = Vec::new();
         cas.engine.join_community(id, "", &mut out);
         cas.send_all(out).await;
-        settle(&mut [&mut cas, &mut alice, &mut bob]).await;
+        settle_until(&mut [&mut cas, &mut alice, &mut bob], |p| {
+            opened_group(p[0], &group)
+                && p[1..].iter().any(|q| {
+                    q.events
+                        .iter()
+                        .any(|e| matches!(e, Event::HistoryWanted { group: g } if *g == group))
+                })
+        })
+        .await;
         assert!(
             cas.events
                 .iter()
@@ -3366,7 +3439,12 @@ mod loopback {
             .engine
             .remove_from_community(id, "cas", None, true, &mut out);
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut cas, &mut bob]).await;
+        settle_until(&mut [&mut alice, &mut cas, &mut bob], |p| {
+            p[1].events
+                .iter()
+                .any(|e| matches!(e, Event::Left { group: g, .. } if *g == group))
+        })
+        .await;
         assert!(
             cas.events
                 .iter()
@@ -3381,7 +3459,13 @@ mod loopback {
             .send_text(&group, "cas has gone", 0, &mut out)
             .unwrap();
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut cas, &mut bob]).await;
+        // Bob's copy arriving bounds the wait; the quiet tail after it is
+        // Cas's chance to receive one too.
+        settle_until(&mut [&mut alice, &mut cas, &mut bob], |p| {
+            p[2].lines()
+                .contains(&("alice".into(), "cas has gone".into()))
+        })
+        .await;
         assert!(cas.lines().is_empty());
         assert!(bob
             .lines()
@@ -3409,7 +3493,13 @@ mod loopback {
             .send_text(&group, "buy my crypto", 0, &mut out)
             .unwrap();
         bob.send_all(out).await;
-        settle(&mut [&mut bob, &mut alice]).await;
+        settle_until(&mut [&mut bob, &mut alice], |p| {
+            p[0].events
+                .iter()
+                .any(|e| matches!(e, Event::Sent { request: r, .. } if *r == request))
+                && !p[1].lines().is_empty()
+        })
+        .await;
         let seq = bob
             .events
             .iter()
@@ -3423,7 +3513,14 @@ mod loopback {
         let mut out = Vec::new();
         alice.engine.moderate_delete(&group, seq, &mut out);
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut bob]).await;
+        settle_until(&mut [&mut alice, &mut bob], |p| {
+            p.iter().all(|q| {
+                q.events.iter().any(
+                    |e| matches!(e, Event::Redacted { group: g, seq: s, .. } if *g == group && *s == seq),
+                )
+            })
+        })
+        .await;
         for p in [&alice, &bob] {
             assert!(
                 p.events.iter().any(
@@ -3460,7 +3557,7 @@ mod loopback {
             &mut out,
         );
         alice.send_all(out).await;
-        settle(&mut [&mut alice]).await;
+        settle_until(&mut [&mut alice], |p| !communities(p[0]).is_empty()).await;
         let id = communities(&alice)[0].id;
         let group = communities(&alice)[0].topics[0].group.clone();
 
@@ -3468,7 +3565,13 @@ mod loopback {
         bob.engine
             .join_community(id, "I live on the Hereweg", &mut out);
         bob.send_all(out).await;
-        settle(&mut [&mut bob, &mut alice]).await;
+        settle_until(&mut [&mut bob, &mut alice], |p| {
+            !communities(p[0]).is_empty()
+                && communities(p[1])
+                    .first()
+                    .is_some_and(|c| !c.requests.is_empty())
+        })
+        .await;
         assert_eq!(communities(&bob)[0].role, None, "waiting");
         let asks = communities(&alice)[0].requests.clone();
         assert_eq!(asks[0].message, "I live on the Hereweg");
@@ -3478,7 +3581,11 @@ mod loopback {
             .engine
             .decide_request(id, &asks[0].address, true, &mut out);
         alice.send_all(out).await;
-        settle(&mut [&mut alice, &mut bob]).await;
+        settle_until(&mut [&mut alice, &mut bob], |p| {
+            communities(p[1]).first().is_some_and(|c| c.role.is_some())
+                && opened_group(p[1], &group)
+        })
+        .await;
         assert_eq!(
             communities(&bob)[0].role,
             Some(cartopolis_core::CommunityRole::Member)
