@@ -1,6 +1,6 @@
 ---
 topic: hands near a prim, and tones
-triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip]
+triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip, hand_button, hand_card, HandPrefs, HandPrimNear, phone_hold, SELFIE_REACH_M]
 updated: 2026-10-27
 ---
 
@@ -98,3 +98,26 @@ drawn in the hand.
 - **Right hand, fixed.** `HeldPhone::side` has no setting yet.
 - `CARTO_HELD_PHONE=look|selfie` holds one in a fixed pose for a capture
   (`--shot-mode avatar`). Captured on mac-2 on 2026-10-27; not run on a phone.
+
+## The hand button, and the selfie hold (2026-10-28)
+
+Built from `docs/mockups/hand-tracking/` v2. The mode is the **hand button**
+above the face button (`map_osd::hand_button`): tap on or off, a word beside
+it from `HighPrecision::hand_word`, a long press for the hand (`UserData::hand`)
+and "Start again". The first tap shows a card (`map_osd::hand_card`); "Use my
+hand" is the consent and is remembered (`HandPrefs::agreed`). A prim that
+senses hands offers it in the interaction prompt (`prim_hand::HandPrimNear`).
+
+**Only one camera can be open**, so while the camera screen has one (Mixed,
+Real, or the In world selfie, whose front camera reads the face) the tracker
+stands aside, still on (`CameraScreen::phone_hold`), and the phone is placed
+by how it is turned: screen toward the eyes, `SELFIE_REACH_M` (0.5 m) away in
+a selfie. In a selfie the model turns to the camera, and the Mixed selfie's
+world camera sits at that same point, so the avatar holds the phone toward
+the lens. Nothing is reported to prims from a selfie hold.
+
+Not done: the distance from the face's size in the front camera, and the
+face in the Mixed selfie — both need `face_tracking` to read pictures from the
+camera screen's camera rather than opening its own (asked of the session that
+owns it, 2026-10-28); the round mirror; the chip naming what follows you.
+None of it has run on a phone.
