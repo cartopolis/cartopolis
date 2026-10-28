@@ -566,13 +566,19 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
             }
             // A normal map needs the surface's tangents; a part without one
             // is spared the attribute.
-            let normal = part.normal.clone().filter(|_| match mesh.generate_tangents() {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!("avatar part {}: no tangents ({e}), drawn without its normal map", part.name);
-                    false
-                }
-            });
+            let normal = part
+                .normal
+                .clone()
+                .filter(|_| match mesh.generate_tangents() {
+                    Ok(()) => true,
+                    Err(e) => {
+                        warn!(
+                            "avatar part {}: no tangents ({e}), drawn without its normal map",
+                            part.name
+                        );
+                        false
+                    }
+                });
             let info = HumanPart {
                 kind: part.kind,
                 region: part.region,

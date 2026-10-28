@@ -348,9 +348,7 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
                 faces
                     .into_iter()
                     .filter(|f| {
-                        !corners(f).all(|v| {
-                            top_covers.contains(&main_ref(&proxy.refs[v as usize]))
-                        })
+                        !corners(f).all(|v| top_covers.contains(&main_ref(&proxy.refs[v as usize])))
                     })
                     .collect()
             } else {
@@ -1120,11 +1118,17 @@ mod tests {
         let bare = skin(&[]);
         let dressed = skin(&["toigo_fisherman_sweater"]);
         // 18 % went (2026-10-28): the head and hands hold most of the skin.
-        assert!(dressed * 20 < bare * 17, "{dressed} of {bare} skin triangles");
+        assert!(
+            dressed * 20 < bare * 17,
+            "{dressed} of {bare} skin triangles"
+        );
         let alone = triangles(&["toigo_wool_pants"]);
         let tucked = triangles(&["toigo_fisherman_sweater", "toigo_wool_pants"]);
         assert!(alone > 0, "the trousers are in the pack");
-        assert!(tucked < alone, "the sweater hides some: {tucked} of {alone}");
+        assert!(
+            tucked < alone,
+            "the sweater hides some: {tucked} of {alone}"
+        );
         assert!(tucked * 2 > alone, "but not the legs: {tucked} of {alone}");
     }
 

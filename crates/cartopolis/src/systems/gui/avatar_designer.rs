@@ -724,7 +724,10 @@ const STARTERS: [Starter; 14] = [
         bottom: None,
         shoes: "shoes01",
         hat: None,
-        extras: &["rehmanpolanski_beard_viking", "spamrakuen_sagerfrogs_glasses_03"],
+        extras: &[
+            "rehmanpolanski_beard_viking",
+            "spamrakuen_sagerfrogs_glasses_03",
+        ],
         skin_tone: 20,
     },
     Starter {
@@ -1451,7 +1454,9 @@ fn is_body_control(modifier: &str) -> bool {
 
 /// The pack's body groups (`human-pack`'s `modifier_groups` below the head),
 /// so a body control the designer does not offer is still not the face's.
-const BODY_GROUPS: [&str; 7] = ["neck", "torso", "hip", "stomach", "buttocks", "arms", "legs"];
+const BODY_GROUPS: [&str; 7] = [
+    "neck", "torso", "hip", "stomach", "buttocks", "arms", "legs",
+];
 
 fn has_face(look: &HumanLook) -> bool {
     look.face.iter().any(|(m, _)| !is_body_control(m))
@@ -1705,7 +1710,10 @@ mod tests {
                 s.label
             );
             assert!(
-                OUTFITS.iter().chain(&DRESSES).any(|(n, _)| *n == look.outfit)
+                OUTFITS
+                    .iter()
+                    .chain(&DRESSES)
+                    .any(|(n, _)| *n == look.outfit)
                     || (look.outfit.is_empty()
                         && extra_of(&look, &TOPS).is_some()
                         && extra_of(&look, &BOTTOMS).is_some()),
@@ -1771,7 +1779,10 @@ mod tests {
         );
         assert_eq!(look.face_value("hip/hip-scale-horiz-decr-incr"), 40);
         clear_face(&mut look);
-        assert_eq!(look.face, vec![("hip/hip-scale-horiz-decr-incr".into(), 40)]);
+        assert_eq!(
+            look.face,
+            vec![("hip/hip-scale-horiz-decr-incr".into(), 40)]
+        );
         look.set_face("nose/nose-hump-decr-incr", 60);
         similar_face(
             &mut Dice {
