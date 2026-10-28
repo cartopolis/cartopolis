@@ -567,8 +567,7 @@ pub struct BodyControls<'w, 's> {
     high: ResMut<'w, crate::systems::high_precision::HighPrecision>,
     held: Res<'w, crate::systems::held_phone::HeldPhone>,
     store: ResMut<'w, crate::systems::user_store::UserStore>,
-    /// The first-use card is up.
-    card_open: Local<'s, bool>,
+    card: ResMut<'w, crate::systems::held_phone::HandCard>,
 }
 
 /// The hand button, above the face disc (`docs/mockups/hand-tracking/`): while
@@ -635,7 +634,7 @@ fn hand_button(
                 if body.high.on || body.store.data.hand.agreed {
                     body.high.on = !body.high.on;
                 } else {
-                    *body.card_open = true;
+                    body.card.0 = true;
                 }
             }
             resp.context_menu(|ui| {
@@ -672,7 +671,7 @@ fn hand_button(
             });
         });
     areas.push(area.response.rect);
-    if *body.card_open {
+    if body.card.0 {
         hand_card(ctx, body);
     }
 }
@@ -703,18 +702,18 @@ fn hand_card(ctx: &egui::Context, body: &mut BodyControls) {
         ui.add_space(theme::OSD_GAP);
         ui.horizontal(|ui| {
             if theme::secondary_button(ui, "", "Not now", 140.0).clicked() {
-                *body.card_open = false;
+                body.card.0 = false;
             }
             if theme::primary_button_sized(ui, "Use my hand", 160.0).clicked() {
                 body.store.data.hand.agreed = true;
                 body.store.dirty = true;
                 body.high.on = true;
-                *body.card_open = false;
+                body.card.0 = false;
             }
         });
     });
     if modal.should_close() {
-        *body.card_open = false;
+        body.card.0 = false;
     }
 }
 

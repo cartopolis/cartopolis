@@ -81,6 +81,12 @@ impl HandPrefs {
     }
 }
 
+/// The hand button's first-use card is up (`map_osd::hand_card`). A resource,
+/// not the button's own state, because the prompt by a hand-sensing prim
+/// opens it too (`interact`).
+#[derive(Resource, Default)]
+pub struct HandCard(pub bool);
+
 /// A fixed pose to hold a phone in, for a capture (`CARTO_HELD_PHONE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandIn {

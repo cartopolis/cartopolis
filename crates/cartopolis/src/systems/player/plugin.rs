@@ -138,6 +138,7 @@ impl Plugin for PlayerPlugin {
         // before they are propagated (`systems::held_phone`).
         .init_resource::<systems::held_phone::HeldPhone>()
         .init_resource::<systems::held_phone::HeldPhoneBlend>()
+        .init_resource::<systems::held_phone::HandCard>()
         .add_systems(
             Update,
             systems::held_phone::track_held_phone.in_set(ClientPhase::Move),
