@@ -215,6 +215,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "faces — ClientIntent.expression and AvatarStateDto.expression carry an expression (Expression, held like an emote with a sequence) the avatar's face shows for a few seconds; SetFaceFrame / FaceFrameOf relay a face tracked by its owner's camera, 52 unit weights a frame, to the clients within speaking range (docs/notes/avatar-faces.md)",
     },
+    ProtocolRevision {
+        version: 45,
+        adr: "",
+        summary: "a more personal look — AvatarLook.skin_tone lightens or darkens the skin, AvatarLook.extras names things worn beyond the outfit (a beard, glasses), and AvatarLook.face carries the body's shape controls as well as the face's (docs/notes/makehuman-avatars.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -753,10 +758,42 @@ pub struct AvatarLook {
     pub shoes: String,
     #[serde(default)]
     pub hat: Option<String>,
-    /// Face controls by MakeHuman modifier (`nose/nose-scale-horiz-decr-incr`),
-    /// -100 … 100; one left at 0 is not listed.
+    /// Shape controls by MakeHuman modifier — the face's
+    /// (`nose/nose-scale-horiz-decr-incr`) and, since protocol 45, the body's
+    /// (`hip/hip-scale-horiz-decr-incr`) — -100 … 100; one left at 0 is not
+    /// listed.
     #[serde(default)]
     pub face: Vec<(String, i8)>,
+    /// -100 darker … 100 lighter, over the skin family's own colour.
+    #[serde(default)]
+    pub skin_tone: i8,
+    /// Things worn beyond the outfit — a beard, glasses — by pack name.
+    #[serde(default)]
+    pub extras: Vec<String>,
+}
+
+/// [`AvatarLook`] as protocols 42–44 wrote it, for
+/// [`AvatarLook::from_stored`]. Frozen: never edit, only add a newer one.
+#[derive(Deserialize)]
+struct AvatarLookV42 {
+    body_shape: u8,
+    age: u8,
+    height: u8,
+    weight: u8,
+    muscle: u8,
+    proportions: u8,
+    chest: u8,
+    skin: String,
+    eyes: String,
+    hair: Option<String>,
+    hair_colour: Option<[u8; 3]>,
+    eyebrows: String,
+    outfit: String,
+    top_colour: Option<[u8; 3]>,
+    bottom_colour: Option<[u8; 3]>,
+    shoes: String,
+    hat: Option<String>,
+    face: Vec<(String, i8)>,
 }
 
 fn default_look_skin() -> String {
@@ -778,6 +815,7 @@ fn default_look_shoes() -> String {
 /// The longest name an [`AvatarLook`] may carry, and the most face controls.
 pub const MAX_LOOK_NAME: usize = 48;
 pub const MAX_LOOK_FACE: usize = 128;
+pub const MAX_LOOK_EXTRAS: usize = 8;
 
 impl AvatarLook {
     /// The body a fresh avatar starts as.
@@ -807,7 +845,44 @@ impl AvatarLook {
             shoes: shoes.into(),
             hat: None,
             face: Vec::new(),
+            skin_tone: 0,
+            extras: Vec::new(),
         }
+    }
+
+    /// A look from the postcard bytes the server keeps (`looks.rs`), in this
+    /// layout or an older one. postcard is not self-describing: a field
+    /// added at the end does **not** take its serde default when older bytes
+    /// end before it — the read fails — so each older layout is read as
+    /// itself and carried forward.
+    #[must_use]
+    pub fn from_stored(bytes: &[u8]) -> Option<Self> {
+        if let Ok(look) = postcard::from_bytes::<Self>(bytes) {
+            return Some(look);
+        }
+        let v42: AvatarLookV42 = postcard::from_bytes(bytes).ok()?;
+        Some(Self {
+            body_shape: v42.body_shape,
+            age: v42.age,
+            height: v42.height,
+            weight: v42.weight,
+            muscle: v42.muscle,
+            proportions: v42.proportions,
+            chest: v42.chest,
+            skin: v42.skin,
+            eyes: v42.eyes,
+            hair: v42.hair,
+            hair_colour: v42.hair_colour,
+            eyebrows: v42.eyebrows,
+            outfit: v42.outfit,
+            top_colour: v42.top_colour,
+            bottom_colour: v42.bottom_colour,
+            shoes: v42.shoes,
+            hat: v42.hat,
+            face: v42.face,
+            skin_tone: 0,
+            extras: Vec::new(),
+        })
     }
 
     /// A face control's value, 0 when it is not listed.
@@ -856,6 +931,9 @@ impl AvatarLook {
                 .face
                 .iter()
                 .all(|(m, v)| short(m) && (-100..=100).contains(v))
+            && (-100..=100).contains(&self.skin_tone)
+            && self.extras.len() <= MAX_LOOK_EXTRAS
+            && self.extras.iter().all(|e| short(e))
     }
 }
 
@@ -3165,9 +3243,29 @@ mod tests {
         let mut bad = look.clone();
         bad.age = 12;
         assert!(!bad.is_reasonable(), "no children's bodies");
-        let mut bad = look;
+        let mut bad = look.clone();
         bad.outfit = "x".repeat(MAX_LOOK_NAME + 1);
         assert!(!bad.is_reasonable());
+        let mut bad = look;
+        bad.extras = vec!["glasses".into(); MAX_LOOK_EXTRAS + 1];
+        assert!(!bad.is_reasonable(), "a bounded list of extras");
+    }
+
+    /// A look saved before protocol 45 (the server keeps them as postcard
+    /// bytes, `looks.rs`) still reads: the fields added since default.
+    #[test]
+    fn a_look_saved_before_skin_tone_still_reads() {
+        let look = AvatarLook::default_for(false);
+        let bytes = postcard::to_allocvec(&look).unwrap();
+        // The two fields added last are a zero byte each (an i8 0 and an
+        // empty list); a look written before them simply ends there.
+        let old = &bytes[..bytes.len() - 2];
+        assert!(
+            postcard::from_bytes::<AvatarLook>(old).is_err(),
+            "postcard gives no defaults at the end — which is why from_stored exists"
+        );
+        assert_eq!(AvatarLook::from_stored(old), Some(look.clone()));
+        assert_eq!(AvatarLook::from_stored(&bytes), Some(look));
     }
 
     #[test]
