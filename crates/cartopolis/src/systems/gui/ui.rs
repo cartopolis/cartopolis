@@ -365,6 +365,7 @@ pub fn render_avatar_chooser(
     mut human_draft: ResMut<crate::systems::human_avatar::HumanDraft>,
     mut designer: Local<crate::systems::avatar_designer::DesignerState>,
     mut camera: ResMut<crate::resources::CameraState>,
+    mut designer_turn: ResMut<crate::systems::human_avatar::DesignerTurn>,
 ) {
     let online = session.is_online();
     if std::mem::replace(&mut was_online, online) && !online {
@@ -405,7 +406,12 @@ pub fn render_avatar_chooser(
             .show(ui, |ui| {
                 let d = &mut chooser.draft;
                 if let Some(look) = d.human.as_mut() {
-                    crate::systems::avatar_designer::designer(ui, &mut designer, look);
+                    crate::systems::avatar_designer::designer(
+                        ui,
+                        &mut designer,
+                        look,
+                        saved.human.as_ref(),
+                    );
                     ui.separator();
                     let changed = *d != *saved;
                     ui.horizontal(|ui| {
@@ -458,9 +464,30 @@ pub fn render_avatar_chooser(
     // the whole body stands in the half of the screen the sheet leaves.
     // (-0.3 m: at the default follow distance the head clears the top and the
     // feet the sheet; 0.25 put the legs under it.)
-    let aim = (sheet && showing.is_some()).then_some(-0.3);
+    // On the Face tab, come close and aim at the face instead: its controls
+    // move things millimetres across, unreadable from the follow distance.
+    // (1.0 m to the head at 1.62 m: the whole head and the shoulders, on a
+    // phone's top half too — the boom is above the sheet's edge.)
+    let close = showing.is_some() && designer.close_up();
+    let aim = if close {
+        Some(1.62)
+    } else {
+        (sheet && showing.is_some()).then_some(-0.3)
+    };
     if camera.aim_height != aim {
         camera.aim_height = aim;
+    }
+    let reach = close.then_some(1.0);
+    if camera.aim_reach != reach {
+        camera.aim_reach = reach;
+    }
+    let turn = if showing.is_some() {
+        designer.view.turn()
+    } else {
+        0.0
+    };
+    if designer_turn.0 != turn {
+        designer_turn.0 = turn;
     }
     if human_draft.0 != showing {
         human_draft.0 = showing;

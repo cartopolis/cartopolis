@@ -1725,6 +1725,11 @@ pub struct CameraState {
     /// half of the screen, clear of its sheet. Only the aim moves, never the
     /// camera, and it is not saved: closing the designer puts it back.
     pub aim_height: Option<f32>,
+    /// The boom length Follow uses instead of `distance`, in metres, while
+    /// something needs the avatar close: the designer's Face tab, so a nose
+    /// slider's effect can be seen. Not saved, and the wheel's `distance`
+    /// is untouched, so it springs back when the tab is left.
+    pub aim_reach: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1776,6 +1781,7 @@ impl Default for CameraState {
             drive_locked: false,
             drive_lookahead: Vec2::ZERO,
             aim_height: None,
+            aim_reach: None,
         }
     }
 }

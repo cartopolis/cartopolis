@@ -111,6 +111,46 @@ impl AssetLoader for HumanTextureLoader {
     }
 }
 
+/// The pack's normal maps (`*.nrm.avatar.jpg`): the same mips and block
+/// compression as [`HumanTextureLoader`], in a linear format, because their
+/// texels are directions — read as sRGB, every normal would lean.
+#[derive(Default, TypePath)]
+pub(crate) struct HumanNormalLoader;
+
+impl AssetLoader for HumanNormalLoader {
+    type Asset = Image;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        _load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let (done, image) = futures_channel::oneshot::channel();
+        use crate::platform::workers;
+        workers::submit_ranked(
+            "avatar normal maps",
+            workers::NEAR,
+            Box::new(move || {
+                let _ = done.send(human_texture(&bytes).map(|mut image| {
+                    let format = &mut image.texture_descriptor.format;
+                    *format = format.remove_srgb_suffix();
+                    image
+                }));
+            }),
+        );
+        image.await.map_err(std::io::Error::other)?
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["nrm.avatar.jpg"]
+    }
+}
+
 /// Decode a pack texture and make it the image the GPU gets: its whole mip
 /// chain, block-compressed where this device decodes a block format.
 fn human_texture(bytes: &[u8]) -> std::io::Result<Image> {
@@ -227,6 +267,11 @@ impl HumanAssets<'_> {
 #[derive(Resource, Default)]
 pub(crate) struct HumanDraft(pub Option<HumanLook>);
 
+/// How far the designer turns the model away from facing the camera,
+/// radians: its Side and Back views. 0 when it is closed.
+#[derive(Resource, Default)]
+pub(crate) struct DesignerTurn(pub f32);
+
 /// The look the local avatar should wear now: the designer's draft if one is
 /// open, else the saved one, else the default for the saved body.
 pub(crate) fn current_look(appearance: &AvatarAppearance, draft: &HumanDraft) -> HumanLook {
@@ -285,9 +330,12 @@ fn with_overrides(mut look: HumanLook) -> HumanLook {
             ("eyes", _) => look.eyes = v.into(),
             ("hair", _) => look.hair = (v != "none").then(|| v.into()),
             ("eyebrows", _) => look.eyebrows = v.into(),
-            ("outfit", _) => look.outfit = v.into(),
+            // `outfit=none`: separates, named as `extra=`.
+            ("outfit", _) => look.outfit = if v == "none" { String::new() } else { v.into() },
             ("shoes", _) => look.shoes = v.into(),
             ("hat", _) => look.hat = (v != "none").then(|| v.into()),
+            ("skin_tone", Some(n)) => look.skin_tone = n.clamp(-100, 100) as i8,
+            ("extra", _) => look.extras.push(v.into()),
             ("hair_colour", _) => look.hair_colour = colour(v),
             ("top", _) => look.top_colour = colour(v),
             ("bottom", _) => look.bottom_colour = colour(v),
@@ -307,6 +355,8 @@ pub(crate) struct Tints {
     pub hair: Option<[u8; 3]>,
     pub top: Option<[u8; 3]>,
     pub bottom: Option<[u8; 3]>,
+    /// The look's `skin_tone`, -100 darker … 100 lighter.
+    pub skin_tone: i8,
 }
 
 /// MakeHuman's age slider from years: 0.1875 is 11, 0.5 is 25 and 1.0 is 90,
@@ -354,6 +404,7 @@ pub(crate) fn look_for(h: &HumanLook) -> (Look, Tints) {
     proxies.push(h.outfit.clone());
     proxies.push(h.shoes.clone());
     proxies.extend(h.hat.clone());
+    proxies.extend(h.extras.iter().cloned());
     (
         Look {
             phenotype,
@@ -370,6 +421,7 @@ pub(crate) fn look_for(h: &HumanLook) -> (Look, Tints) {
             hair: h.hair_colour,
             top: h.top_colour,
             bottom: h.bottom_colour,
+            skin_tone: h.skin_tone,
         },
     )
 }
@@ -428,6 +480,7 @@ pub(crate) struct HumanPart {
     /// The mesh carries the face's units as morph targets, weighted by the
     /// holder's `MorphWeights` (`systems::avatar_face`).
     morphs: bool,
+    normal: Option<String>,
 }
 
 /// Build `look` from `pack` into [`PreparedHuman`]: the shaping, the fitting
@@ -511,6 +564,15 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
                     cartopolis_human::face::UNITS.map(String::from).to_vec(),
                 );
             }
+            // A normal map needs the surface's tangents; a part without one
+            // is spared the attribute.
+            let normal = part.normal.clone().filter(|_| match mesh.generate_tangents() {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("avatar part {}: no tangents ({e}), drawn without its normal map", part.name);
+                    false
+                }
+            });
             let info = HumanPart {
                 kind: part.kind,
                 region: part.region,
@@ -518,6 +580,7 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
                 alpha: part.alpha,
                 default_tint: part.default_tint,
                 morphs: !part.morphs.is_empty(),
+                normal,
             };
             (mesh, info, Name::new(part.name.clone()))
         })
@@ -713,36 +776,67 @@ pub(crate) fn spawn_human(
 fn tint_for(part: &HumanPart, tints: Tints) -> Option<[u8; 3]> {
     use cartopolis_human::ProxyKind;
     let chosen = match part.kind {
-        PartKind::Proxy(ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes) => tints.hair,
+        PartKind::Proxy(
+            ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes | ProxyKind::Beard,
+        ) => tints.hair,
         PartKind::Proxy(ProxyKind::Outfit) if part.region == 0 => tints.top,
-        PartKind::Proxy(ProxyKind::Outfit) => tints.bottom,
+        PartKind::Proxy(ProxyKind::Outfit | ProxyKind::Bottom) => tints.bottom,
+        PartKind::Proxy(ProxyKind::Top) => tints.top,
         _ => None,
     };
     chosen.or(part.default_tint)
 }
 
 fn base_colour(part: &HumanPart, tints: Tints) -> Color {
+    if part.kind == PartKind::Body {
+        return skin_colour(tints.skin_tone);
+    }
     tint_for(part, tints).map_or(Color::WHITE, |c| Color::srgb_u8(c[0], c[1], c[2]))
 }
+
+/// The multiplier a skin tone puts over the skin's painting, in linear light:
+/// a full step either way is a factor of [`SKIN_TONE_RANGE`], so the families'
+/// own paintings overlap and between them every skin is reachable. Lighter
+/// goes past 1 — a texture can only be brightened by a factor above one.
+fn skin_colour(tone: i8) -> Color {
+    let k = SKIN_TONE_RANGE.powf(f32::from(tone.clamp(-100, 100)) / 100.0);
+    Color::linear_rgb(k, k, k)
+}
+
+/// How far a full skin-tone step lightens or darkens, as a factor.
+const SKIN_TONE_RANGE: f32 = 1.8;
 
 fn material_for(part: &HumanPart, assets: &mut HumanAssets, tints: Tints) -> StandardMaterial {
     use cartopolis_human::ProxyKind;
     let texture = part.texture.as_ref().map(|t| assets.texture(t));
+    // `CARTO_NO_AVATAR_NORMALS=1`: draw without them, for a before/after.
+    let normal_map_texture = part
+        .normal
+        .as_ref()
+        .filter(|_| !crate::debug_switches::env_flag("CARTO_NO_AVATAR_NORMALS"))
+        .map(|t| assets.texture(t));
     let mut m = StandardMaterial {
         base_color: base_colour(part, tints),
         base_color_texture: texture,
+        normal_map_texture,
         perceptual_roughness: 0.75,
         reflectance: 0.35,
         ..default()
     };
+    // Skin is softer than cloth and a little oily: a broad, faint sheen
+    // rather than the garments' matte.
+    if part.kind == PartKind::Body {
+        m.perceptual_roughness = 0.55;
+        m.reflectance = 0.4;
+    }
     if let PartKind::Proxy(kind) = part.kind {
         if part.alpha {
             m.alpha_mode = AlphaMode::Mask(0.5);
             m.double_sided = true;
             m.cull_mode = None;
         }
-        // Eyes are a glossy ball.
-        if kind == ProxyKind::Eyes {
+        // Eyes are a glossy ball, and glasses' frames polished.
+        if matches!(kind, ProxyKind::Eyes | ProxyKind::Glasses) {
             m.perceptual_roughness = 0.2;
         }
     }
@@ -851,6 +945,7 @@ fn same_body(a: &HumanLook, b: &HumanLook) -> bool {
         hair_colour: None,
         top_colour: None,
         bottom_colour: None,
+        skin_tone: 0,
         ..l.clone()
     };
     shape(a) == shape(b)

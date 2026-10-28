@@ -21,7 +21,9 @@ impl Plugin for PlayerPlugin {
         app.init_asset::<systems::human_avatar::HumanPackAsset>()
             .init_asset_loader::<systems::human_avatar::HumanPackLoader>()
             .init_asset_loader::<systems::human_avatar::HumanTextureLoader>()
+            .init_asset_loader::<systems::human_avatar::HumanNormalLoader>()
             .init_resource::<systems::human_avatar::HumanDraft>()
+            .init_resource::<systems::human_avatar::DesignerTurn>()
             .init_resource::<systems::human_avatar::RemoteLooks>()
             .init_resource::<systems::human_avatar::HumanTextures>()
             .add_systems(Startup, systems::human_avatar::load_human_pack);

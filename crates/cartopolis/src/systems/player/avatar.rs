@@ -1139,6 +1139,7 @@ pub fn update_avatar_model_pose(
     // someone turns to a mirror. A turn of the model, not the avatar, so
     // neither the heading the sim holds nor the camera moves.
     designing: Option<Res<human_avatar::HumanDraft>>,
+    designer_turn: Option<Res<human_avatar::DesignerTurn>>,
     camera: Query<&GlobalTransform, With<crate::components::FreeCamera>>,
     avatar_at: Query<&GlobalTransform, With<Avatar>>,
     mut lean: Local<f32>,
@@ -1247,7 +1248,7 @@ pub fn update_avatar_model_pose(
             let (_, me_rot, me_at) = me.to_scale_rotation_translation();
             let to_cam = me_rot.inverse() * (cam.translation() - me_at);
             if to_cam.x.abs() + to_cam.z.abs() > 1.0e-3 {
-                let yaw = to_cam.x.atan2(to_cam.z);
+                let yaw = to_cam.x.atan2(to_cam.z) + designer_turn.as_ref().map_or(0.0, |t| t.0);
                 local.rotation = Quat::from_rotation_y(yaw) * local.rotation;
             }
         }

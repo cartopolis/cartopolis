@@ -2083,7 +2083,9 @@ fn follow_mode(ctx: ModeCtx) {
     if (want_pullback - rig.smoothing.pullback).abs() < 1e-4 {
         rig.smoothing.pullback = want_pullback;
     }
-    let reach = camera_state.distance * rig.smoothing.pullback;
+    let reach = camera_state
+        .aim_reach
+        .unwrap_or(camera_state.distance * rig.smoothing.pullback);
     let horizontal_distance = reach * camera_state.pitch.cos();
     let vertical_offset = reach * camera_state.pitch.sin();
     let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
