@@ -6,6 +6,26 @@ updated: 2026-10-28
 
 # Your hand, through the phone: mockup
 
+## v2 (2026-10-28): the Mixed selfie
+
+Asked for after v1: the Mixed selfie, where the avatar points the phone at
+itself and the real half shows the person, in sync; the front camera also
+gives the avatar the person's expression.
+
+- **In a selfie the phone's turn says where it is**: on a sphere round the
+  head, looking at the face. The motion sensors give which way it faces, the
+  face's size in the front camera how far (eyes about 6.3 cm apart), the GPS or
+  RTK receiver where you stand. So a selfie needs only the front camera: the
+  photograph, the expression (`face_tracking`) and the distance from one
+  stream. The button's "turning only" state becomes **selfie**.
+- **Mixed selfie**: real half the front camera's photograph; Cartopolis half
+  drawn from the phone's own pose, looking back at the avatar, which holds the
+  phone toward the lens, faces it, and wears the person's expression.
+- The Cartopolis half in the picture is a stand-in (the test pose from 1.5 m,
+  the nearest the capture camera goes), and the real half a silhouette.
+
+![v2](v2.png)
+
 ## v1 (2026-10-28): a hand button, not a locate option
 
 Asked for after the avatar learned to hold the tracked phone (2026-10-27,
