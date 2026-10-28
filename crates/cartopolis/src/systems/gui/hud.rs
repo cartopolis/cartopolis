@@ -231,20 +231,15 @@ pub enum LocateState {
 /// [`GpsQuality::caption`] repeats the essential word or two under the button,
 /// where a thumb can see it without pressing anything.
 ///
-/// **A long press (or a right-click) opens the button's menu**, which holds the
-/// one switch it has: High precision, the camera mode
-/// (`systems::high_precision`). `high` is that switch, flipped in place;
-/// `high_status` is what the mode is doing, and replaces the GPS caption while
-/// there is something to say. A long touch also reports `clicked()`, so the
-/// toggle is guarded with `!long_touched()` the way `bookmarks::place_row` is.
+/// **It is about where you are, and nothing else.** Its long-press menu used to
+/// hold the high-precision camera mode, which follows the phone in your hand;
+/// that is the hand button's now (`map_osd`, `docs/mockups/hand-tracking/`).
 fn locate_overlay(
     ctx: &egui::Context,
     top: f32,
     state: LocateState,
     gps: GpsQuality,
     hover: &str,
-    high: &mut bool,
-    high_status: Option<&str>,
 ) -> bool {
     let mut clicked = false;
     let on = matches!(state, LocateState::Tracking);
@@ -309,34 +304,11 @@ fn locate_overlay(
             // other report this button can make is in `hover`, and a touch device
             // has no hover. Under the disc rather than beside it, so the column
             // keeps its single centre line (`column_x`).
-            let caption = high_status
-                .map(str::to_owned)
-                .or_else(|| gps.caption().filter(|_| on));
-            if let Some(caption) = caption {
+            if let Some(caption) = gps.caption().filter(|_| on) {
                 halo_text(p, egui::pos2(c.x, c.y + face.radius + 8.0), &caption, tone);
             }
             let resp = resp.on_hover_text(hover);
-            clicked = resp.clicked() && !resp.long_touched();
-            resp.context_menu(|ui| {
-                let available = crate::systems::high_precision::HighPrecision::available();
-                ui.add_enabled_ui(available, |ui| {
-                    if theme::checkbox(ui, high, "High precision (camera)").changed() {
-                        ui.close();
-                    }
-                });
-                ui.label(
-                    egui::RichText::new(if available {
-                        "Pins your position down to centimetres with the back camera \
-                         and the buildings around you. The positioning itself is not \
-                         built yet; Developer tools ▸ Precision shows what the \
-                         sensors report."
-                    } else {
-                        "Needs a phone's camera and motion sensors."
-                    })
-                    .size(theme::SIZE_CHIP)
-                    .color(theme::TEXT_DIM),
-                );
-            });
+            clicked = resp.clicked();
         });
     clicked
 }
@@ -384,6 +356,18 @@ fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, 
 /// diagonals as well as axes, or the halo thins to nothing at the corners of a
 /// glyph.
 fn halo_text(painter: &egui::Painter, at: egui::Pos2, text: &str, ink: egui::Color32) {
+    halo_text_aligned(painter, at, egui::Align2::CENTER_CENTER, text, ink);
+}
+
+/// [`halo_text`] anchored by `align` at `at`: the hand button's word sits to
+/// the left of its disc (`map_osd`).
+pub(crate) fn halo_text_aligned(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    ink: egui::Color32,
+) {
     let font = egui::FontId::proportional(theme::SIZE_TINY);
     for dx in [-1.0, 0.0, 1.0] {
         for dy in [-1.0, 0.0, 1.0] {
@@ -392,14 +376,14 @@ fn halo_text(painter: &egui::Painter, at: egui::Pos2, text: &str, ink: egui::Col
             }
             painter.text(
                 at + egui::vec2(dx, dy),
-                egui::Align2::CENTER_CENTER,
+                align,
                 text,
                 font.clone(),
                 theme::OVERLAY,
             );
         }
     }
-    painter.text(at, egui::Align2::CENTER_CENTER, text, font, ink);
+    painter.text(at, align, text, font, ink);
 }
 
 /// The locate button's caption: what pressing it will do, or — while it is lit —
@@ -784,20 +768,13 @@ pub fn render_map_controls(
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        let high_status = high.status();
-        let mut high_on = high.on;
         let toggled = locate_overlay(
             egui.ctx(),
             column + theme::OSD_GAP,
             state,
             tracking.gps,
             &hover,
-            &mut high_on,
-            high_status.as_deref(),
         );
-        if high_on != high.on {
-            high.on = high_on;
-        }
         if toggled {
             match state {
                 // Recenter, in the view the user is already in. The button used to

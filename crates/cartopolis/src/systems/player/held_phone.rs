@@ -109,6 +109,14 @@ pub struct HeldPhone {
     reference: Option<((f64, f64, f32), Vec3)>,
 }
 
+impl HeldPhone {
+    /// The fixed pose a capture holds a phone in, if one does.
+    #[must_use]
+    pub fn stand_in(&self) -> Option<StandIn> {
+        self.stand_in
+    }
+}
+
 impl Default for HeldPhone {
     fn default() -> Self {
         Self {

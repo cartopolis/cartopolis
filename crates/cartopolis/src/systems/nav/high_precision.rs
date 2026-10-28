@@ -109,32 +109,83 @@ impl HighPrecision {
         Sensors::available()
     }
 
-    /// One line under the locate button saying what the mode is doing.
+    /// Why the camera would not open, in a sentence, for the hand button's
+    /// menu: the button itself only says "camera busy".
     #[must_use]
-    pub fn status(&self) -> Option<String> {
-        if self.on && self.sensors.is_none() && self.retry_at.is_some() {
-            return Some("High precision · getting the camera back".into());
+    pub fn problem(&self) -> Option<String> {
+        self.sensors.as_ref()?.error()
+    }
+}
+
+/// What the hand button says under itself: one or two words, the ones a person
+/// acts on (`map_osd`'s hand button, `docs/mockups/hand-tracking/`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandWord {
+    /// The camera is opening, or being got back from another app.
+    Starting,
+    /// The camera would not open (another camera has it, or no permission).
+    CameraBusy,
+    /// Learning which way is down: keep the phone still.
+    HoldStill,
+    /// Needs parallax: sway the phone.
+    MoveALittle,
+    /// Tracking, waiting for the one GNSS fix and compass that place it.
+    WaitingForGps,
+    /// The avatar's arm follows the phone.
+    Following,
+}
+
+impl HandWord {
+    #[must_use]
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::CameraBusy => "camera busy",
+            Self::HoldStill => "hold still",
+            Self::MoveALittle => "move it a little",
+            Self::WaitingForGps => "waiting for GPS",
+            Self::Following => "following",
         }
-        let sensors = self.sensors.as_ref()?;
-        if let Some(e) = sensors.error() {
-            return Some(e);
+    }
+}
+
+impl HighPrecision {
+    /// What the hand button says, while the mode is on.
+    #[must_use]
+    pub fn hand_word(&self) -> Option<HandWord> {
+        if !self.on {
+            return None;
+        }
+        let Some(sensors) = self.sensors.as_ref() else {
+            return Some(HandWord::Starting);
+        };
+        if sensors.error().is_some() {
+            return Some(HandWord::CameraBusy);
         }
         if sensors.counts().frames == 0 {
-            return Some("High precision · starting camera".into());
+            return Some(HandWord::Starting);
         }
         let state = self.tracker.as_ref().and_then(|t| t.latest().state);
         Some(match state {
-            Some(TrackState::Tracking { .. }) if self.anchor.is_some() => {
-                "High precision · locked".into()
-            }
-            Some(TrackState::Tracking { .. }) => {
-                "High precision · waiting for GPS and compass".into()
-            }
+            Some(TrackState::Tracking { .. }) if self.anchor.is_some() => HandWord::Following,
+            Some(TrackState::Tracking { .. }) => HandWord::WaitingForGps,
             Some(TrackState::Starting { .. } | TrackState::Scaling { .. }) => {
-                "High precision · move the phone a little".into()
+                HandWord::MoveALittle
             }
-            Some(TrackState::Waiting) | None => "High precision · hold still".into(),
+            Some(TrackState::Waiting) | None => HandWord::HoldStill,
         })
+    }
+
+    /// Start the tracking again from nothing — "hold still" — as the hand
+    /// button's menu asks: the sensors are closed and
+    /// [`drive_high_precision`] opens them on its next run.
+    pub fn restart(&mut self) {
+        self.sensors = None;
+        self.retry_at = None;
+        self.tracker = None;
+        self.anchor = None;
+        self.last_hand = None;
+        self.locked = false;
     }
 }
 

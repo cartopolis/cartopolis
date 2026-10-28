@@ -43,7 +43,7 @@ mapping in the engine.
 **High precision is the consent.** A hand report is a precise position report,
 and nobody agrees to send one by walking past a prim, so a client reports
 hands only while its user has the high-precision tracking mode on (camera
-tracking against the 3DBAG building models, toggled from the GPS button —
+tracking against the 3DBAG building models, switched by the hand button in the touch controls since 2026-10-28 —
 where the phone's pose *is* the view, so the camera position is the hand).
 Until that mode exists `prim_hand::PreciseHand::active` stays false and
 nothing is reported, except under `CARTO_HAND_FROM_CAMERA=1`, a developer

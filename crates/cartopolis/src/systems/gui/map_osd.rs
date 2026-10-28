@@ -371,8 +371,7 @@ pub fn render_map_osd(
     touch: Res<crate::systems::touch::TouchGestures>,
     avatar_state: Res<crate::resources::AvatarState>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
-    mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
-    mut faces_open: Local<bool>,
+    mut body: BodyControls,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -427,9 +426,11 @@ pub fn render_map_osd(
                 let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying);
                 next.jump = jump;
                 next.fly_toggle = fly_toggle;
-                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut faces_open) {
-                    faces.write(crate::systems::avatar_face::StartExpression(e));
+                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open) {
+                    body.faces
+                        .write(crate::systems::avatar_face::StartExpression(e));
                 }
+                hand_button(ctx, &fingers, &mut areas, &mut body);
             }
             Cluster::Zoom => {
                 next.zoom = vertical_pair(
@@ -552,6 +553,117 @@ enum Mark {
     /// A face: the expressions (`avatar_face`), a ring with two eyes and a
     /// smile.
     Face,
+    /// An open hand: the phone in your hand moves your avatar's
+    /// (`held_phone`).
+    Hand,
+}
+
+/// What the avatar does with your body in Follow — its face and its hand —
+/// bundled so `render_map_osd` stays under Bevy's sixteen parameters.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct BodyControls<'w, 's> {
+    faces: MessageWriter<'w, crate::systems::avatar_face::StartExpression>,
+    faces_open: Local<'s, bool>,
+    high: ResMut<'w, crate::systems::high_precision::HighPrecision>,
+    held: ResMut<'w, crate::systems::held_phone::HeldPhone>,
+}
+
+/// The hand button, above the face disc (`docs/mockups/hand-tracking/`): while
+/// it is on, the phone in your hand is the phone in your avatar's, and moving
+/// it moves the arm (`systems::high_precision` follows the phone,
+/// `systems::held_phone` poses the arm). A tap turns it on or off; a long
+/// press (or a right-click) picks the hand and starts the tracking again; the
+/// word to its left is what the tracking needs from you.
+///
+/// Only where it can work — a phone's camera and motion sensors — or where a
+/// capture holds a phone (`CARTO_HELD_PHONE`), so it can be photographed.
+fn hand_button(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    areas: &mut Vec<egui::Rect>,
+    body: &mut BodyControls,
+) {
+    use crate::systems::held_phone::Side;
+    use crate::systems::high_precision::{HandWord, HighPrecision};
+    let stand_in = body.held.stand_in().is_some();
+    if !HighPrecision::available() && !stand_in {
+        return;
+    }
+    let word = body
+        .high
+        .hand_word()
+        .or_else(|| stand_in.then_some(HandWord::Following));
+    let on = word.is_some();
+    let tone = match word {
+        Some(HandWord::Following) => theme::ACCENT_BRIGHT,
+        Some(HandWord::CameraBusy) => theme::WARN,
+        _ => theme::ACCENT_RING,
+    };
+    let above = actions_bottom_offset()
+        + pair_height()
+        + theme::OSD_GROUP_GAP
+        + CONTROL_SIZE
+        + theme::OSD_GAP;
+    let area = egui::Area::new(egui::Id::new("osd_hand"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-theme::OSD_MARGIN, -above),
+        )
+        .show(ctx, |ui| {
+            let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
+            paint_mark(
+                ui.painter(),
+                face.center,
+                CONTROL_SIZE * 0.22,
+                Mark::Hand,
+                face.ink,
+            );
+            if let Some(word) = word {
+                crate::systems::hud::halo_text_aligned(
+                    ui.painter(),
+                    egui::pos2(face.center.x - face.radius - 8.0, face.center.y),
+                    egui::Align2::RIGHT_CENTER,
+                    word.text(),
+                    tone,
+                );
+            }
+            let tapped = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false));
+            if tapped && !resp.long_touched() && HighPrecision::available() {
+                body.high.on = !body.high.on;
+            }
+            resp.context_menu(|ui| {
+                ui.label(egui::RichText::new("Your hand").strong());
+                ui.horizontal(|ui| {
+                    for (side, label) in [(Side::Left, "Left"), (Side::Right, "Right")] {
+                        if ui
+                            .selectable_label(body.held.side == side, label)
+                            .clicked()
+                        {
+                            body.held.side = side;
+                        }
+                    }
+                });
+                if ui
+                    .add_enabled(body.high.on, egui::Button::new("Start again"))
+                    .clicked()
+                {
+                    body.high.restart();
+                    ui.close();
+                }
+                if let Some(problem) = body.high.problem() {
+                    ui.label(egui::RichText::new(problem).color(theme::WARN));
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Uses the back camera and the motion sensors. Nothing the \
+                         camera sees is kept.",
+                    )
+                    .size(theme::SIZE_CHIP)
+                    .color(theme::TEXT_DIM),
+                );
+            });
+        });
+    areas.push(area.response.rect);
 }
 
 /// A disc above the jump/flight pair that opens a column of expressions
@@ -746,6 +858,36 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
                 })
                 .collect();
             p.add(egui::Shape::line(smile, stroke));
+        }
+        // A palm and four fingers, the thumb out to the side.
+        Mark::Hand => {
+            let palm = egui::Rect::from_center_size(
+                c + egui::vec2(0.0, s * 0.45),
+                egui::vec2(s * 1.3, s * 1.0),
+            );
+            p.rect_stroke(
+                palm,
+                s * 0.3,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            for (i, len) in [0.9_f32, 1.1, 1.05, 0.8].iter().enumerate() {
+                let x = palm.left() + palm.width() * (0.14 + 0.24 * i as f32);
+                p.line_segment(
+                    [
+                        egui::pos2(x, palm.top()),
+                        egui::pos2(x, palm.top() - s * len),
+                    ],
+                    stroke,
+                );
+            }
+            p.line_segment(
+                [
+                    egui::pos2(palm.left(), palm.center().y),
+                    egui::pos2(palm.left() - s * 0.5, palm.top() - s * 0.1),
+                ],
+                stroke,
+            );
         }
         Mark::Wings => {
             let (nose, tip, notch) = (s * 1.15, s * 0.75, s * 0.3);

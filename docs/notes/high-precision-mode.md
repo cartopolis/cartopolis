@@ -6,7 +6,9 @@ updated: 2026-10-07
 
 # High-precision mode
 
-A mode on the locate button (long-press ▸ **High precision (camera)**) that is
+A mode switched by the **hand button** above the face button in the touch
+controls (`map_osd::hand_button`; until 2026-10-28 a checkbox in the locate
+button's long-press menu, `docs/mockups/hand-tracking/`) that is
 to give the phone's position to centimetres, so the view *is* the phone in your
 hand. It is what makes a hand-sensing prim (`docs/notes/hands-and-tones.md`) — a
 theremin on the Grote Markt — playable for real.
