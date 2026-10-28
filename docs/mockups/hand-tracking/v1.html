@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — your hand, through the phone v1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 4l8 4.5-8 4.5-8-4.5zM4 13l8 4.5 8-4.5"/></symbol>
+  <symbol id="compass" viewBox="0 0 24 24"><path d="M7 5l11 12-6-2-3 5z"/></symbol>
+  <symbol id="nav" viewBox="0 0 24 24"><path d="M12 3l7 17-7-4-7 4z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="up" viewBox="0 0 24 24"><path d="M5 14l7-7 7 7M5 19h14"/></symbol>
+  <symbol id="down" viewBox="0 0 24 24"><path d="M5 10l7 7 7-7M5 5h14"/></symbol>
+  <symbol id="wings" viewBox="0 0 24 24"><path d="M12 14c-3-6-7-7-9-6 1 4 4 7 9 6zM12 14c3-6 7-7 9-6-1 4-4 7-9 6z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="camera" viewBox="0 0 24 24"><path d="M4 8h3.5L9 5.5h6L16.5 8H20v11H4z"/><circle cx="12" cy="13.2" r="3.4"/></symbol>
+  <symbol id="flip" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0114-5l2-2v6h-6l2.5-2.5A5.5 5.5 0 006.5 12M20 12a8 8 0 01-14 5l-2 2v-6h6l-2.5 2.5A5.5 5.5 0 0017.5 12"/></symbol>
+  <symbol id="close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="image" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5 4 4"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="9" r="3"/><path d="M3.5 19a5.5 5.5 0 0111 0M15 6.5a3 3 0 010 5.5M17 14a5 5 0 013.5 5"/></symbol>
+  <symbol id="face" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="9.2" cy="10" r=".9"/><circle cx="14.8" cy="10" r=".9"/><path d="M8.5 14a4.5 4.5 0 007 0"/></symbol>
+  <symbol id="hand" viewBox="0 0 24 24"><path d="M8 13V6.5a1.3 1.3 0 012.6 0V12M10.6 11.5V4.8a1.3 1.3 0 012.6 0v6.7M13.2 11.5V5.8a1.3 1.3 0 012.6 0V13M15.8 12.5V8.6a1.3 1.3 0 012.6 0V15c0 3.6-2.6 6-6 6-2.6 0-4-1.2-5.4-3.2L4.6 14.3a1.4 1.4 0 012.2-1.6L8 14"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/></symbol>
+  <symbol id="sat" viewBox="0 0 24 24"><path d="M5 19l4-4M7 13l4 4M12 8l4 4M14 6l4 4-6 6-4-4z"/></symbol>
+  <symbol id="rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 11-3-6.2M20 4v5h-5"/></symbol>
+</svg>
+
+<h1>Your <b>hand</b>, through the phone</h1>
+<p class="essence">"High precision" is really about <b>your hand</b>: the phone you hold becomes the phone in your avatar's hand, and moving it moves the avatar's arm. So it leaves the locate button, which is about <b>where you are</b>, and becomes a <b>hand button</b> of its own beside the face button. The camera's <b>selfie</b> is the first place that switches it on by itself; anything that senses hands, such as the theremin, <b>offers it</b> when you walk up.</p>
+<p class="lede" style="margin-top:-10px">Proposal v1, 2026-10-28. Grey controls are the app as it is today; anything marked <span class="new">new</span> does not exist yet. The avatar pictures are Cartopolis captures of the arm that landed on 2026-10-27 (<code>systems::held_phone</code>), in its fixed test poses.</p>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>1</span>Out of the locate menu, into a hand button</h2>
+<p class="cap">Today the mode is a checkbox in the locate button's long-press menu, worded as positioning to centimetres, which it does not do yet. What it does do is follow the phone in your hand, to about a centimetre relative to where it started.</p>
+<div class="row" style="margin-top:18px">
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(look_2.jpg);background-size:844px auto;background-position:50% 55%"></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="disc" style="left:16px;top:62px;color:#8fd6d2"><svg class="i"><use href="#compass"/></svg></div>
+  <div class="disc teal" style="left:16px;top:110px"><svg class="i"><use href="#nav"/></svg></div>
+  <div class="menu" style="left:66px;top:104px;width:330px">
+    <div class="item" style="background:transparent"><span style="margin:0;width:16px;height:16px;border:1.5px solid var(--line);border-radius:4px"></span>High precision (camera)</div>
+    <p>Pins your position down to centimetres with the back camera and the buildings around you. The positioning itself is not built yet; Developer tools ▸ Precision shows what the sensors report.</p>
+  </div>
+  <div class="stick"></div>
+  <div class="osd"><div class="disc"><svg class="i"><use href="#face"/></svg></div><div class="pair"><div class="disc"><svg class="i"><use href="#up"/></svg></div><div class="disc"><svg class="i"><use href="#wings"/></svg></div></div></div>
+  <div class="dockrow"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc hot"><svg class="i"><use href="#camera"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>Today</span>a hidden checkbox under locate</h3>
+<ul><li>Found only by long-pressing the locate arrow, and described as something it does not do.</li><li>Nothing on screen says the arm is following, and from behind you cannot see it.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(look_2.jpg);background-size:844px auto;background-position:50% 55%"></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="disc" style="left:16px;top:62px;color:#8fd6d2"><svg class="i"><use href="#compass"/></svg></div>
+  <div class="disc teal" style="left:16px;top:110px"><svg class="i"><use href="#nav"/></svg><small>±2 cm RTK</small></div>
+  <div class="mirror" style="background-image:url(look_0.jpg);background-size:260px auto;background-position:-55px -140px"><em>you, from the front</em></div>
+  <div class="stick"></div>
+  <div class="osd"><div class="disc lit full"><svg class="i"><use href="#hand"/></svg></div><div class="disc"><svg class="i"><use href="#face"/></svg></div><div class="pair"><div class="disc"><svg class="i"><use href="#up"/></svg></div><div class="disc"><svg class="i"><use href="#wings"/></svg></div></div></div>
+  <div class="caption" style="right:62px;bottom:176px;transform:none">following</div>
+  <div class="dockrow"><div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc hot"><svg class="i"><use href="#camera"/></svg></div><div class="disc"><svg class="i"><use href="#bookmark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div></div>
+</div>
+<h3><span>New</span>a hand button, and a mirror <span class="new">new</span></h3>
+<ul>
+<li><b>The hand button</b> sits above the face button in the touch column, both things your avatar does with your body. A tap turns it on or off; it is lit while your hand is followed.</li>
+<li><b>A round mirror</b> shows your avatar from the front while it is on, since the camera behind you cannot see your hand. It uses the small avatar camera that "Show your avatar instead" in calls already has. Tap it to hide it.</li>
+<li><b>Locate goes back to being about where you are</b>: its menu loses the checkbox. A receiver's accuracy (±2 cm RTK) stays under its arrow.</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>2</span>What the button says <span class="new">new</span></h2>
+<p class="cap">The arm only follows once the phone has learned which way is down and how far it moved, so the button talks you through it in a word under the disc, as the locate arrow does with the GPS.</p>
+<div class="states" style="margin-top:18px">
+  <div class="st"><div class="disc"><svg class="i"><use href="#hand"/></svg></div><b>Off</b><span>The clip's arm. Nothing from the camera.</span></div>
+  <div class="st"><div class="disc hollow"><svg class="i"><use href="#hand"/></svg></div><i>hold still</i><b>Starting</b><span>Hold the phone in front of you for a moment: it learns which way is down.</span></div>
+  <div class="st"><div class="disc hollow"><svg class="i"><use href="#hand"/></svg></div><i>move it a little</i><b>Finding scale</b><span>Sway the phone a little: the camera needs to see things shift.</span></div>
+  <div class="st"><div class="disc lit full"><svg class="i"><use href="#hand"/></svg></div><i>following</i><b>Following</b><span>The arm goes where the phone goes and turns as it turns.</span></div>
+  <div class="st"><div class="disc lit full"><svg class="i"><use href="#hand"/></svg></div><i>turning only</i><b>Turning only</b><span>The camera is busy (the selfie's face), so the hand turns with the phone but stays where it is.</span></div>
+  <div class="st"><div class="disc hollow" style="border-color:#c98a3a;color:#c98a3a"><svg class="i"><use href="#hand"/></svg></div><i style="color:#c98a3a">lost · too dark</i><b>Lost</b><span>Too dark, a blank wall, or moved too fast. It picks up again where the hand was.</span></div>
+  <div class="st" style="width:300px;align-items:flex-start;text-align:left">
+    <div class="menu" style="position:relative;width:290px">
+      <h4>Your hand</h4>
+      <div class="seg"><div>Left</div><div class="on w">Right</div></div>
+      <div class="item"><svg class="i s"><use href="#rotate"/></svg>Start again<span>hold still</span></div>
+      <div class="item"><svg class="i s"><use href="#eye"/></svg>Mirror<span>on</span></div>
+      <p>Uses the back camera and the motion sensors. Nothing the camera sees is kept.</p>
+    </div>
+    <span style="margin-top:6px">Long-press the button: which hand holds the phone (the avatar holds it in that one), start again, and the mirror.</span>
+  </div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>3</span>The first time: what it uses and who feels it <span class="new">new</span></h2>
+<p class="cap">A hand report is a precise position. The first tap says so once, plainly, then asks for the camera as Android does.</p>
+<div class="row" style="margin-top:18px">
+<div class="wide">
+<div class="land">
+  <div class="bg dim" style="background-image:url(look_2.jpg);background-size:844px auto;background-position:50% 55%"></div>
+  <div class="card">
+    <h4><svg class="i" style="color:var(--amber)"><use href="#hand"/></svg>Your phone, in your avatar's hand</h4>
+    <div class="pt"><svg class="i s"><use href="#camera"/></svg><div><b>The back camera and the motion sensors</b> follow the phone, to about a centimetre. Nothing the camera sees is kept or sent.</div></div>
+    <div class="pt"><svg class="i s"><use href="#music"/></svg><div><b>Things that sense hands</b>, such as a theremin, feel where your hand is while you are within a few metres of them.</div></div>
+    <div class="pt"><svg class="i s"><use href="#people"/></svg><div><b>People near you see your arm move.</b> <span class="new">later</span></div></div>
+    <div class="btnrow"><div>Not now</div><div class="p">Use my hand</div></div>
+  </div>
+</div>
+<h3><span>First tap</span>one card, then the camera permission</h3>
+<ul><li>Shown once; the long-press menu repeats the first line for later.</li><li>"People near you" is listed now so nobody is surprised when it is built, and it is the same switch: off means nobody sees it.</li></ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(look_1.jpg);background-size:844px auto;background-position:50% 60%"></div>
+  <div style="position:absolute;left:180px;top:120px;width:8px;height:210px;background:linear-gradient(#d9d2c4,#8b8579);border-radius:4px;z-index:2"></div>
+  <div style="position:absolute;left:130px;top:250px;width:90px;height:40px;border:6px solid #b8b0a2;border-radius:50%;z-index:2"></div>
+  <div class="disc" style="left:16px;top:14px"><svg class="i"><use href="#layers"/></svg></div>
+  <div class="stick"></div>
+  <div class="osd"><div class="disc hollow" style="box-shadow:0 0 0 6px rgba(253,146,18,.25)"><svg class="i"><use href="#hand"/></svg></div><div class="disc"><svg class="i"><use href="#face"/></svg></div><div class="pair"><div class="disc"><svg class="i"><use href="#up"/></svg></div><div class="disc"><svg class="i"><use href="#wings"/></svg></div></div></div>
+  <div class="prompt"><div><svg class="i s"><use href="#music"/></svg>Play Theremin with your hand</div><div><svg class="i s"><use href="#hand"/></svg></div></div>
+  <div class="dockrow" style="opacity:.0"></div>
+</div>
+<h3><span>Walking up</span>something that senses hands offers it <span class="new">new</span></h3>
+<ul><li>Within reach of a prim whose script calls <code>sense_hands</code>, the prompt row (where "Use Traffic light" appears today) offers it, and the hand button pulses once.</li><li>One tap turns the hand on; the prim's name comes from the prim. Nothing is reported to it before that tap.</li><li>The theremin here is drawn in for the picture.</li></ul>
+</div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>4</span>In the camera: the selfie holds the phone <span class="new">new</span></h2>
+<p class="cap">The camera's In world selfie already turns the view round to your avatar and lets your own face drive its face (front camera). With the hand on, the avatar also holds the phone and its arm follows yours, so the picture is you, holding up your phone, in the world.</p>
+<div class="row" style="margin-top:18px">
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(selfie_0.jpg);background-size:700px auto;background-position:50% -330px"></div>
+  <div class="polaroid" style="box-shadow:0 0 0 2000px rgba(5,8,9,.35)"><span><em style="font-style:normal">Grote Markt</em><em style="font-style:normal">28 Oct 2026</em></span></div>
+  <div class="disc camx"><svg class="i"><use href="#close"/></svg></div>
+  <div class="modes"><div class="on">In world</div><div>Mixed</div><div>Real</div></div>
+  <div class="shutter inw"><div></div></div>
+  <div class="disc flip" style="background:var(--brand);color:#fff;border-color:transparent"><svg class="i"><use href="#flip"/></svg></div>
+  <div class="disc gal"><svg class="i"><use href="#image"/></svg></div>
+  <div class="hint" style="left:70px;top:20px"><svg class="i s"><use href="#face"/></svg>Your face<span style="margin-left:8px;color:var(--line)">·</span><svg class="i s"><use href="#hand"/></svg>Your hand · turning only</div>
+</div>
+<h3><span>In world selfie</span>face and hand together</h3>
+<ul>
+<li><b>Flipping to the selfie turns the hand on</b> for as long as the selfie is up (if it was off), and back off after. The chip top-left says what follows you: your face, your hand.</li>
+<li>The front camera is the face's, so the hand <b>turns with the phone but stays at arm's length</b> ("turning only") — unless the phone can run both cameras at once, which is measured per phone and logged; then it follows fully.</li>
+<li>In Video the clip records the arm moving.</li>
+</ul>
+</div>
+
+<div class="wide">
+<div class="land">
+  <div class="bg" style="background-image:url(selfie_1.jpg);background-size:844px auto;background-position:50% 45%"></div>
+  <div class="disc camx"><svg class="i"><use href="#close"/></svg></div>
+  <div class="modes"><div class="on">In world</div><div>Mixed</div><div>Real</div></div>
+  <div class="shutter inw"><div></div></div>
+  <div class="disc flip"><svg class="i"><use href="#flip"/></svg></div>
+  <div class="disc gal"><svg class="i"><use href="#image"/></svg></div>
+  <div class="hint" style="left:70px;top:20px"><svg class="i s"><use href="#hand"/></svg>Your hand · following</div>
+</div>
+<h3><span>In world, facing out</span>your avatar holds the camera</h3>
+<ul>
+<li>With the hand on, the back camera follows the phone fully, and a picture taken over your avatar's shoulder shows it holding the phone where you hold yours.</li>
+<li><b>Mixed</b> needs the back camera for the photograph, which the hand also uses: there the hand goes to "turning only" as in the selfie.</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>5</span>Where else the hand is useful</h2>
+<p class="cap">The button is not the camera's: anything can read the hand. In order of what exists to build on.</p>
+<div class="principles" style="margin-top:18px;width:1728px">
+<div><h3>Playing things</h3><p>A theremin, a drum, a bell: prims that call <code>sense_hands</code> work today. <i>Built</i> (the prompt is new).</p></div>
+<div><h3>Waving in a call</h3><p>"Show your avatar instead" films the avatar; with the hand on, it waves and points with you.</p></div>
+<div><h3>Showing others</h3><p>Point at a building and people nearby see your arm. Needs the arm on the wire, rate-limited like a movement intent. <i>Step 4.</i></p></div>
+<div><h3>Placing things by hand</h3><p>Put a prim where the phone is, instead of tapping the ground: the phone as the hand that sets it down.</p></div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="sec">
+<h2><span>6</span>What goes where</h2>
+<div class="diagram" style="width:1728px;margin-top:14px">
+<svg width="1690" height="170" viewBox="0 0 1690 170">
+  <text x="20" y="34" class="b">Locate arrow</text><text x="230" y="34">Where you are: the GPS, an RTK receiver (Settings ▸ General ▸ GNSS receiver), later matching the buildings. Its long-press menu keeps only position things.</text>
+  <text x="20" y="74" class="o">Hand button</text><text x="230" y="74">What your hand does: the back camera and motion sensors move the avatar's arm. Left or right hand, start again, the mirror. Its consent covers hand-sensing prims, and later people nearby.</text>
+  <text x="20" y="114" class="b">Face button</text><text x="230" y="114">What your face does: expressions by tap, your own face through the front camera in the selfie and in calls (built 2026-10-27).</text>
+  <text x="20" y="154" class="b">Camera</text><text x="230" y="154">Uses both: the selfie turns face and hand on while it is up, and puts them back as they were.</text>
+</svg>
+</div>
+</div>
+
+<p class="lede" style="margin-top:44px">Open: whether the hand stays on by itself next time the app starts (proposed: no, like the camera); whether the mirror is on by default (proposed: yes, for the first minute); the body behind the hand (step 2) is what makes the absolute place right, and is not drawn here.</p>
+</body>
+</html>
