@@ -183,6 +183,7 @@ const PICTURE_REACH_M: f32 = 0.35;
 /// toward the eyes of whoever holds it. A selfie's camera is the eyes less
 /// this times [`SELFIE_REACH_M`].
 #[must_use]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn screen_out(attitude: &crate::platform::orientation::DeviceAttitude) -> Vec3 {
     enu_to_world() * attitude.screen_to_world.as_quat() * Vec3::Z
 }
