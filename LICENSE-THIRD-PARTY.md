@@ -165,6 +165,22 @@ notice: Human base mesh, shape targets, rig, skins, clothes and hair from the Ma
 
 Only the data is used. MPFB's code is GPL-3 and none of it is copied: `crates/human` implements the file formats from their documentation.
 
+## MakeHuman community assets (CC0) — beards, glasses, suits, dresses, separates, hair
+
+role: Beards, glasses, suits, dresses, tops, trousers and hair in the human pack (assets/models/avatar/human; listed in `human-pack`'s `COMMUNITY`)
+license: CC0 1.0 (each pack page — bodyparts05, glasses01, suits01, dress01, shirts01, pants01, hair01 — publishes it as CC0, and each item taken also says CC0 in its own `.mhclo`; the crude kit's repository carries the CC0 1.0 text)
+url: https://static.makehumancommunity.org/assets/assetpacks.html (files: http://files2.makehumancommunity.org/asset_packs/) and https://github.com/Makehuman-2/MH2_Asset_Repository_CCO
+notice: Beards by Rehman Polanski and culturalibre; glasses by spamrakuen and Margaret Toigo; suits, dresses, tops, trousers and bobs by Margaret Toigo; a polo by Namuhekam; T-shirts and loose trousers by Joel Palmius and Elvaerwyn; hair by culturalibre — from the MakeHuman community asset packs, CC0.
+
+Items whose own file names another licence (AGPL3 in most), or none, were left out, though their packs are labelled CC0: the community's asset pages, which would say which the author meant, are offline (checked 2026-10-27).
+
+## MakeHuman community assets (CC BY) — hair, beards, sunglasses
+
+role: Six hair styles, a scruffy beard, a curled moustache and two pairs of sunglasses in the human pack (`human-pack`'s `COMMUNITY`, under "CC-BY")
+license: CC BY (Elvaerwyn's and culturalibre's files say "CC-BY" with no version; punkduck's say CC BY 3.0)
+url: http://files2.makehumancommunity.org/asset_packs/ (hair02, bodyparts06, glasses02)
+notice: Hair styles "50s updo", "Micky afro", "Short daisy hair", "Ashley May hair", "Katherine hair" and "Maxwell hair" and the "Scruffy beard" by Elvaerwyn (CC BY); "Dal moustache" by culturalibre (CC BY); "Glasses modern form" and "Sport sunglasses" by punkduck (CC BY 3.0) — from the MakeHuman community asset packs. Their textures were resized and their colours made neutral for tinting.
+
 ## 100STYLE — motion capture
 
 role: The avatar's walk (the Rushed style) and idle (Neutral), cut into the human pack (assets/models/avatar/human)

@@ -4,7 +4,8 @@
 //! cargo run -p cartopolis_human --features pack --bin human-pack -- \
 //!     --mpfb <mpfb2>/src/mpfb/data --assets <makehuman_system_assets> \
 //!     --style <100STYLE> --cmu <cmu-mocap BVH dir> --out assets/models/avatar/human \
-//!     --face-units <faceunits01>/targets/faceunits
+//!     --face-units <faceunits01>/targets/faceunits \
+//!     [--community <community items' folders>]
 //! ```
 //!
 //! The selection — the wardrobe, the skins, the eye colours, which clips are cut
@@ -105,7 +106,7 @@ const OUTFITS: &[&str] = &[
     "female_sportsuit01",
 ];
 const SHOES: &[&str] = &["shoes01", "shoes02", "shoes03", "shoes05", "shoes06"];
-const HATS: &[&str] = &["fedora01"];
+const HATS: &[&str] = &["fedora01", "fedora_cocked"];
 const HAIR: &[&str] = &[
     "short01",
     "short02",
@@ -121,9 +122,16 @@ const HAIR: &[&str] = &[
 const EYEBROWS: &[&str] = &[
     "eyebrow001",
     "eyebrow002",
+    "eyebrow003",
     "eyebrow004",
+    "eyebrow005",
     "eyebrow006",
+    "eyebrow007",
+    "eyebrow008",
     "eyebrow009",
+    "eyebrow010",
+    "eyebrow011",
+    "eyebrow012",
 ];
 const EYE_COLOURS: &[&str] = &[
     "brown",
@@ -133,6 +141,82 @@ const EYE_COLOURS: &[&str] = &[
     "green",
     "lightblue",
 ];
+
+/// From the MakeHuman community's asset packs (`files2.makehumancommunity.org/
+/// asset_packs/`) — CC0: `bodyparts05`, `glasses01`, `suits01`, `dress01`,
+/// `shirts01`, `pants01`, `hair01`; CC-BY (credited in
+/// `LICENSE-THIRD-PARTY.md`): `hair02`, `bodyparts06`, `glasses02` — and
+/// Joel Palmius's CC0 "crude kit" (`github.com/Makehuman-2/
+/// MH2_Asset_Repository_CCO`, its folders' `.mhclo` renamed to the folder's
+/// name). **An item is taken only when its own `.mhclo` names the licence its
+/// pack is published under**: about one in five in those packs says AGPL3 in
+/// its file header, some say nothing, and with the community's asset pages
+/// offline nothing settles which is meant (checked 2026-10-27). Also left
+/// out: costume pieces (3-D glasses, goggles, `hats01`'s Christmas cap),
+/// `toigo_maga_hat`, whose texture is a slogan, the cloche hat, a camouflage
+/// print with the hair through it (seen on mac-1), and models over ~8 000
+/// vertices, whose fitting references would each add half a megabyte to the
+/// pack every client loads.
+/// `--community` is a directory of the items' folders, as unzipped.
+const COMMUNITY: &[(ProxyKind, &str)] = &[
+    // CC0
+    (ProxyKind::Outfit, "toigo_halter_dress_knee_length"),
+    (ProxyKind::Outfit, "toigo_halter_dress_midi"),
+    (ProxyKind::Outfit, "toigo_shift_dress"),
+    (ProxyKind::Outfit, "toigo_camisole_dress_with_full_skirt"),
+    (ProxyKind::Outfit, "toigo_cut_out_dress"),
+    (ProxyKind::Outfit, "toigo_strapless_ruffle_top_dress"),
+    (ProxyKind::Top, "elvs_crude_t-shirt_male"),
+    (ProxyKind::Top, "joepal_crude_t-shirt_female"),
+    (ProxyKind::Top, "namuhekam_male_polo_shirt"),
+    (ProxyKind::Top, "toigo_basic_tucked_t-shirt"),
+    (ProxyKind::Top, "toigo_fisherman_sweater"),
+    (ProxyKind::Top, "toigo_keyhole_tank_top"),
+    (ProxyKind::Top, "toigo_camisole_top"),
+    (ProxyKind::Bottom, "toigo_wool_pants"),
+    (ProxyKind::Bottom, "toigo_harem_pants"),
+    (ProxyKind::Bottom, "crude_loose_pants"),
+    (ProxyKind::Hair, "culturalibre_hair_05"),
+    (ProxyKind::Hair, "toigo_blunt_bob_with_bangs"),
+    (ProxyKind::Hair, "toigo_curled_under_bob"),
+    (ProxyKind::Hair, "toigo_inverted_bob"),
+    // CC-BY
+    (ProxyKind::Hair, "elvs_50s_updo"),
+    (ProxyKind::Hair, "elvs_micky_afro"),
+    (ProxyKind::Hair, "elvs_short_daisy_hair"),
+    (ProxyKind::Hair, "elvs_ashley_may_hair"),
+    (ProxyKind::Hair, "elvs_katherine_hair"),
+    (ProxyKind::Hair, "elvs_maxwell_hair"),
+    (ProxyKind::Beard, "elvs_scruffy_beard1"),
+    (ProxyKind::Beard, "culturalibre_dal_moustache"),
+    (ProxyKind::Glasses, "punkduck_glasses_modern_form"),
+    (ProxyKind::Glasses, "punkduck_sport-sunglasses"),
+    (ProxyKind::Beard, "rehmanpolanski_beard_viking"),
+    (ProxyKind::Beard, "rehmanpolanski_moustache_viking"),
+    (ProxyKind::Beard, "culturalibre_faun_beard"),
+    (ProxyKind::Glasses, "spamrakuen_sagerfrogs_glasses_01"),
+    (ProxyKind::Glasses, "spamrakuen_sagerfrogs_glasses_02"),
+    (ProxyKind::Glasses, "spamrakuen_sagerfrogs_glasses_03"),
+    (ProxyKind::Glasses, "spamrakuen_sagerfrogs_glasses_04"),
+    (ProxyKind::Glasses, "spamrakuen_tbm_glasses_frames_01"),
+    (ProxyKind::Glasses, "toigo_round_glasses_leopard"),
+    (ProxyKind::Outfit, "toigo_female_suit"),
+    (ProxyKind::Outfit, "toigo_female_double-breasted_suit"),
+    (ProxyKind::Outfit, "toigo_male_double-breasted_suit"),
+    (ProxyKind::Outfit, "toigo_male_suit_tie_and_jacket"),
+    (ProxyKind::Outfit, "toigo_suit_with_dinner_jacket"),
+];
+
+fn community(dir: &Path) -> Vec<ProxySource> {
+    COMMUNITY
+        .iter()
+        .map(|(kind, name)| ProxySource {
+            kind: *kind,
+            mhclo: dir.join(format!("{name}/{name}.mhclo")),
+            material: None,
+        })
+        .collect()
+}
 
 fn catalogue(assets: &Path) -> Vec<ProxySource> {
     let one = |kind, dir: &str, name: &str| ProxySource {
@@ -381,8 +465,7 @@ fn replace_walk(pack_path: &Path, file: &Path, start: usize, end: Option<usize>)
 
 /// `--add-face-units PACK DIR`: put the face's units from the `faceunits01`
 /// asset pack's `targets/faceunits` directory into a pack, leaving the rest
-/// of it as it is; a pack of version 7, which had none, comes out as this
-/// version.
+/// of it as it is (a pack of this version only: `pack::decode_upgrading`).
 fn add_face_units(pack_path: &Path, dir: &Path) {
     use cartopolis_human::pack::{decode_upgrading, read_face_units};
     let result = std::fs::read(pack_path)
@@ -469,6 +552,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let (mut mpfb, mut assets, mut style, mut cmu, mut out) = (None, None, None, None, None);
     let mut face_units = None;
+    let mut community_dir = None;
     while let Some(a) = args.next() {
         let v = args.next().map(PathBuf::from);
         match a.as_str() {
@@ -478,6 +562,7 @@ fn main() {
             "--style" => style = v,
             "--cmu" => cmu = v,
             "--out" => out = v,
+            "--community" => community_dir = v,
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -502,7 +587,10 @@ fn main() {
                 )
             })
             .collect(),
-        proxies: catalogue(&assets),
+        proxies: catalogue(&assets)
+            .into_iter()
+            .chain(community_dir.as_deref().map(community).unwrap_or_default())
+            .collect(),
         cuts: style_cuts(&style)
             .into_iter()
             .chain(cmu_cuts(&cmu))
@@ -512,9 +600,11 @@ fn main() {
         targets: TargetSet::Macros {
             skip: vec!["baby".into()],
         },
-        // Every face control MakeHuman has; the designer offers a choice of them.
+        // Every face control MakeHuman has, and the body's below the head;
+        // the designer offers a choice of them.
         modifier_groups: [
             "head", "forehead", "eyebrows", "eyes", "nose", "mouth", "cheek", "chin", "ears",
+            "neck", "torso", "hip", "stomach", "buttocks", "arms", "legs",
         ]
         .map(String::from)
         .to_vec(),

@@ -51,6 +51,8 @@ pub struct Part {
     /// The colour that shows a neutral texture as authored; `None` when the
     /// texture is the original and takes no tint.
     pub default_tint: Option<[u8; 3]>,
+    /// Its normal map, when the pack has one (linear: directions, not colour).
+    pub normal: Option<String>,
     /// One per face unit ([`crate::face::UNITS`]) on a part the face's units
     /// move — the face, the eyes, the brows, the lashes; empty on the rest.
     pub morphs: Vec<Morph>,
@@ -194,10 +196,23 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         })
         .collect();
 
-    // The skin, less what the clothes cover.
+    // The skin, less what the clothes cover: what each lists in
+    // `delete_verts`, and for separates — whose community authors mostly
+    // left that list empty, so the chest showed through a sweater — the
+    // base vertices they hang on (a body face goes only when all its corners
+    // do, so nothing opens at a hem).
+    let separates_cover = close_over(
+        proxies
+            .iter()
+            .filter(|p| matches!(p.kind, ProxyKind::Top | ProxyKind::Bottom))
+            .flat_map(|p| p.refs.iter().flat_map(|r| r.v))
+            .collect(),
+        &pack.body_faces,
+    );
     let covered: HashSet<u32> = proxies
         .iter()
         .flat_map(|p| p.delete_verts.iter().copied())
+        .chain(separates_cover)
         .collect();
     let body_faces: Vec<Face> = pack
         .body_faces
@@ -205,6 +220,18 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
         .filter(|f| !corners(f).all(|v| covered.contains(&v)))
         .copied()
         .collect();
+    // The skin a worn top lies over, to tuck a bottom under it: the base
+    // vertices its own vertices hang on, grown by one ring of the body's
+    // faces so the gaps between them close. Not its `delete_verts`, which
+    // most tops leave empty (the sweater does).
+    let top_covers: HashSet<u32> = close_over(
+        proxies
+            .iter()
+            .filter(|p| p.kind == ProxyKind::Top)
+            .flat_map(|p| p.refs.iter().flat_map(|r| r.v))
+            .collect(),
+        &pack.body_faces,
+    );
     let skin = pack.skins.iter().find(|s| s.name == look.skin);
     // The face's units, metres. They are offsets on the base mesh, the same
     // for every body, as MakeHuman applies its expressions.
@@ -267,7 +294,12 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
             .collect();
         if matches!(
             proxy.kind,
-            ProxyKind::Outfit | ProxyKind::Shoes | ProxyKind::Hat
+            ProxyKind::Outfit
+                | ProxyKind::Top
+                | ProxyKind::Bottom
+                | ProxyKind::Shoes
+                | ProxyKind::Hat
+                | ProxyKind::Glasses
         ) {
             let edges: Vec<(u32, u32)> = proxy
                 .faces
@@ -309,6 +341,21 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
                     .map(|(f, _)| *f)
                     .collect()
             };
+            // A bottom worn with a top is tucked under it: a face of the
+            // bottom whose corners all hang on skin the top covers is not
+            // drawn, or a waistband pokes through a sweater.
+            let faces: Vec<Face> = if proxy.kind == ProxyKind::Bottom && !top_covers.is_empty() {
+                faces
+                    .into_iter()
+                    .filter(|f| {
+                        !corners(f).all(|v| {
+                            top_covers.contains(&main_ref(&proxy.refs[v as usize]))
+                        })
+                    })
+                    .collect()
+            } else {
+                faces
+            };
             if faces.is_empty() {
                 continue;
             }
@@ -328,8 +375,14 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
             }
             part.region = region;
             part.default_tint = proxy.region_colours.get(region as usize).copied();
+            part.normal = proxy.normal.clone();
             parts.push(part);
         }
+    }
+
+    // The skin's baked detail goes on every part cut from the body.
+    for part in parts.iter_mut().filter(|p| p.kind == PartKind::Body) {
+        part.normal = skin.and_then(|s| s.normal.clone());
     }
 
     // The pelvis above the ankles: the unit a clip's hip motion and speed
@@ -517,6 +570,54 @@ fn corners(f: &Face) -> impl Iterator<Item = u32> + '_ {
     f.v.iter().copied().filter(|&v| v != Face::NONE)
 }
 
+/// The skin a garment lies over, from the base vertices it hangs on, which
+/// are scattered (a garment vertex hangs on the three nearest, and the
+/// garment is coarser than the body): those grown by [`CLOSE_RINGS`] rings of
+/// the body's faces and shrunk back by as many — a closing, which fills the
+/// gaps between them without reaching past the hem.
+fn close_over(hung: HashSet<u32>, faces: &[Face]) -> HashSet<u32> {
+    if hung.is_empty() {
+        return hung;
+    }
+    let mut neighbours: HashMap<u32, Vec<u32>> = HashMap::new();
+    for f in faces {
+        let c: Vec<u32> = corners(f).collect();
+        for &a in &c {
+            neighbours.entry(a).or_default().extend(c.iter().copied());
+        }
+    }
+    let mut set = hung;
+    for _ in 0..CLOSE_RINGS {
+        let grown: Vec<u32> = set
+            .iter()
+            .flat_map(|v| neighbours.get(v).into_iter().flatten().copied())
+            .collect();
+        set.extend(grown);
+    }
+    for _ in 0..CLOSE_RINGS {
+        set = set
+            .iter()
+            .copied()
+            .filter(|v| {
+                neighbours
+                    .get(v)
+                    .is_none_or(|n| n.iter().all(|w| set.contains(w)))
+            })
+            .collect();
+    }
+    set
+}
+
+/// How far [`close_over`] closes, in rings of body faces.
+const CLOSE_RINGS: usize = 3;
+
+/// The base-mesh vertex a garment vertex hangs on most.
+fn main_ref(r: &crate::ProxyRef) -> u32 {
+    let w = r.w();
+    let k = (0..3).max_by(|&a, &b| w[a].total_cmp(&w[b])).unwrap_or(0);
+    r.v[k]
+}
+
 /// Per position, the sum of its faces' normals, each as long as twice the
 /// face's area — a smooth normal before it is normalised.
 fn normal_sums(positions: &[Vec3], faces: &[Face]) -> Vec<Vec3> {
@@ -648,6 +749,7 @@ fn mesh_part(
         region: 0,
         default_tint: None,
         morphs: Vec::new(),
+        normal: None,
     };
     for f in faces {
         for t in f.triangles() {
@@ -974,9 +1076,62 @@ mod tests {
         );
     }
 
+    /// Trousers worn with a top lose the faces under it — the waistband the
+    /// sweater hid poked through it in the first capture — and keep the legs.
+    #[test]
+    fn a_bottom_tucks_under_a_top() {
+        let Some(pack) = shipped_pack() else { return };
+        let triangles = |proxies: &[&str]| {
+            let m = build(
+                &pack,
+                &Look {
+                    phenotype: Phenotype::male(),
+                    skin: "young_caucasian_male".into(),
+                    proxies: proxies.iter().map(|s| s.to_string()).collect(),
+                    eyes: None,
+                    modifiers: vec![],
+                },
+            );
+            m.parts
+                .iter()
+                .filter(|p| p.name == "toigo_wool_pants")
+                .map(|p| p.indices.len() / 3)
+                .sum::<usize>()
+        };
+        // And the skin under the sweater is not drawn, though the sweater
+        // lists none to delete.
+        let skin = |proxies: &[&str]| {
+            build(
+                &pack,
+                &Look {
+                    phenotype: Phenotype::male(),
+                    skin: "young_caucasian_male".into(),
+                    proxies: proxies.iter().map(|s| s.to_string()).collect(),
+                    eyes: None,
+                    modifiers: vec![],
+                },
+            )
+            .parts
+            .iter()
+            .filter(|p| p.kind == PartKind::Body)
+            .map(|p| p.indices.len() / 3)
+            .sum::<usize>()
+        };
+        let bare = skin(&[]);
+        let dressed = skin(&["toigo_fisherman_sweater"]);
+        // 18 % went (2026-10-28): the head and hands hold most of the skin.
+        assert!(dressed * 20 < bare * 17, "{dressed} of {bare} skin triangles");
+        let alone = triangles(&["toigo_wool_pants"]);
+        let tucked = triangles(&["toigo_fisherman_sweater", "toigo_wool_pants"]);
+        assert!(alone > 0, "the trousers are in the pack");
+        assert!(tucked < alone, "the sweater hides some: {tucked} of {alone}");
+        assert!(tucked * 2 > alone, "but not the legs: {tucked} of {alone}");
+    }
+
     /// Clothes stay in one piece through the clips (`fit::smooth_weights`):
-    /// skinned on the CPU at every other frame, no edge of any outfit or pair
-    /// of shoes grows by more than 5 cm. Before the smoothing, the casual suit's
+    /// skinned on the CPU at every other frame, no edge of any outfit, top,
+    /// bottom or pair of shoes grows by more than 5 cm (the wrap dress grew
+    /// 6.8 cm reaching and was left out of the pack). Before the smoothing, the casual suit's
     /// armpit grew 21 cm in the gestures and its crotch 13 cm in the walk —
     /// spikes. The roll and the kick spread the legs further than any outfit
     /// was cut for and are left out. Fails at four smoothing rounds (the
@@ -988,9 +1143,15 @@ mod tests {
         let worn: Vec<&str> = pack
             .proxies
             .iter()
-            .filter(|p| matches!(p.kind, ProxyKind::Outfit | ProxyKind::Shoes))
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    ProxyKind::Outfit | ProxyKind::Top | ProxyKind::Bottom | ProxyKind::Shoes
+                )
+            })
             .map(|p| p.name.as_str())
             .collect();
+        let mut spikes = Vec::new();
         for name in worn {
             let m = build(
                 &pack,
@@ -1050,17 +1211,31 @@ mod tests {
                                 let rest = Vec3::from_array(part.positions[a])
                                     .distance(Vec3::from_array(part.positions[b]));
                                 let grown = posed[a].distance(posed[b]) - rest;
-                                assert!(
-                                    grown < 0.05,
-                                    "{name} in {} frame {f}: an edge grew {grown:.3} m",
-                                    clip.name
-                                );
+                                if grown >= 0.05 {
+                                    let worst = spikes
+                                        .iter_mut()
+                                        .find(|(n, c, _)| *n == name && *c == clip.name);
+                                    match worst {
+                                        Some((_, _, g)) => *g = f32::max(*g, grown),
+                                        None => spikes.push((name, clip.name.clone(), grown)),
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        // Every offender at once, worst edge per garment and clip.
+        assert!(
+            spikes.is_empty(),
+            "an edge grew past 5 cm:\n{}",
+            spikes
+                .iter()
+                .map(|(n, c, g)| format!("  {n} in {c}: {g:.3} m"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     /// No upright clip shrugs (`rig::settle_shoulders`): on average the

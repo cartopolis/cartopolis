@@ -390,6 +390,27 @@ pub fn parse_mhmat(text: &str) -> (Option<String>, bool) {
     (texture, alpha)
 }
 
+/// The `.mhmat`'s normal map, unless its `shaderConfig normal False` turns it
+/// off (short02's hair lists one and does).
+pub fn mhmat_normal(text: &str) -> Option<String> {
+    let mut texture = None;
+    let mut on = true;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        match f.as_slice() {
+            ["normalmapTexture", t, ..] => texture = Some(t.to_string()),
+            ["shaderConfig", "normal", v, ..] => on = v.eq_ignore_ascii_case("true"),
+            _ => {}
+        }
+    }
+    texture.filter(|_| on)
+}
+
+/// How steep a skin's baked detail reads (`textures::normal_from_detail`):
+/// enough that a pore catches a low sun, not so much that a face looks
+/// pitted. Judged by eye on mac-1, 2026-10-27.
+const SKIN_DETAIL: f32 = 6.0;
+
 /// One proxy to put in a pack.
 pub struct ProxySource {
     pub kind: ProxyKind,
@@ -582,11 +603,10 @@ pub fn read_face_units(dir: &Path) -> Result<Vec<Target>> {
         .collect()
 }
 
-/// Decode a pack, reading one of version 7 as this version with no face
-/// units: the units are the only field 8 added, and they are last, so a
-/// version 7 pack's postcard bytes followed by an empty list's (one zero
-/// byte) are a version 8 pack's. Lets `human-pack --add-face-units` add them
-/// to the shipped pack without every source it was built from.
+/// Decode a pack for `human-pack --add-face-units` to replace its units in.
+/// Version 8 read a version 7 pack too (the units were the only field it
+/// added, and last); version 9 changed `Proxy` and `Skin` mid-layout, so
+/// only a pack of this version reads — build an older one again.
 pub fn decode_upgrading(bytes: &[u8]) -> Result<HumanPack> {
     let mut raw = Vec::new();
     flate2::read::DeflateDecoder::new(bytes)
@@ -595,9 +615,7 @@ pub fn decode_upgrading(bytes: &[u8]) -> Result<HumanPack> {
     let version = postcard::take_from_bytes::<u32>(&raw)
         .map_err(|e| e.to_string())?
         .0;
-    if version == 7 {
-        raw.push(0);
-    } else if version != PACK_VERSION {
+    if version != PACK_VERSION {
         return Err(format!("pack version {version} cannot be upgraded"));
     }
     let mut pack: HumanPack = postcard::from_bytes(&raw).map_err(|e| e.to_string())?;
@@ -708,14 +726,22 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (diffuse, alpha) = match &material {
+        let (diffuse, alpha, normal_src) = match &material {
             Some(m) => {
-                let (tex, alpha) = parse_mhmat(&read_text(m)?);
+                let text = read_text(m)?;
+                let (tex, alpha) = parse_mhmat(&text);
                 let mdir = m.parent().unwrap_or(Path::new("."));
-                (tex.map(|t| mdir.join(t)), alpha)
+                (
+                    tex.map(|t| mdir.join(t)),
+                    alpha,
+                    mhmat_normal(&text).map(|t| mdir.join(t)),
+                )
             }
-            None => (None, false),
+            None => (None, false, None),
         };
+        let normal = normal_src
+            .map(|n| crate::textures::normal_map(&n, &src.textures_out, &name))
+            .transpose()?;
         // An outfit's top and bottom are tinted apart; everything recoloured
         // gets a neutral texture and the tints that give its colour back.
         let face_regions = if p.kind == ProxyKind::Outfit {
@@ -725,13 +751,21 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
         };
         let recoloured = matches!(
             p.kind,
-            ProxyKind::Outfit | ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes
+            ProxyKind::Outfit
+                | ProxyKind::Top
+                | ProxyKind::Bottom
+                | ProxyKind::Hair
+                | ProxyKind::Eyebrows
+                | ProxyKind::Eyelashes
+                | ProxyKind::Beard
         );
         let side = match p.kind {
             ProxyKind::Eyes => crate::textures::EYE_SIDE,
-            ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes => {
-                crate::textures::HAIR_SIDE
-            }
+            ProxyKind::Hair
+            | ProxyKind::Eyebrows
+            | ProxyKind::Eyelashes
+            | ProxyKind::Beard
+            | ProxyKind::Glasses => crate::textures::HAIR_SIDE,
             _ => crate::textures::MAX_SIDE,
         };
         let (texture, alpha, region_colours) = match &diffuse {
@@ -771,6 +805,7 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             alpha,
             face_regions,
             region_colours,
+            normal,
         });
     }
 
@@ -783,6 +818,12 @@ pub fn build_pack(src: &Sources) -> Result<HumanPack> {
             let dir = s.mhmat.parent().unwrap_or(Path::new("."));
             Ok(Skin {
                 name: s.name.clone(),
+                normal: Some(crate::textures::normal_from_detail(
+                    &dir.join(&tex),
+                    &src.textures_out,
+                    &s.name,
+                    SKIN_DETAIL,
+                )?),
                 texture: crate::textures::plain(
                     &dir.join(tex),
                     &src.textures_out,

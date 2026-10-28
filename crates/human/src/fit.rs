@@ -166,6 +166,7 @@ mod tests {
             alpha: false,
             face_regions: vec![],
             region_colours: vec![],
+            normal: None,
         }
     }
 

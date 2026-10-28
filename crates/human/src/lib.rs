@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`HumanPack`]'s layout changes: postcard is not
 /// self-describing, so an old pack read by new code is garbage, not an error.
-pub const PACK_VERSION: u32 = 8;
+pub const PACK_VERSION: u32 = 9;
 
 /// Base-mesh vertices `0..BODY_VERTICES` are the skin; the rest are helpers
 /// (joint cubes, eyes, teeth, tights, hair…) that are shaped with it but never
@@ -68,8 +68,7 @@ pub struct HumanPack {
     pub clips: Vec<SourceClip>,
     /// The face's 52 ARKit units, in [`face::UNITS`]' order, or none: shape
     /// targets on the base mesh that the client blends live on the GPU rather
-    /// than baking in ([`face`]). Last, so a pack of version 7 is this one
-    /// with the field empty (`pack::decode_upgrading`).
+    /// than baking in ([`face`]).
     pub face_units: Vec<Target>,
 }
 
@@ -233,6 +232,13 @@ pub enum ProxyKind {
     Outfit,
     Shoes,
     Hat,
+    /// A beard or moustache: hair, recoloured with the head's.
+    Beard,
+    Glasses,
+    /// Separates, worn instead of an outfit: a top, tinted with the look's
+    /// top colour, and a bottom with its bottom colour.
+    Top,
+    Bottom,
 }
 
 /// Something worn: eyes, brows, lashes, hair, a garment.
@@ -263,6 +269,9 @@ pub struct Proxy {
     /// and its light kept — so a tint can make it any colour, lighter ones
     /// included. Empty means the texture is the original, shown as it is.
     pub region_colours: Vec<[u8; 3]>,
+    /// Its normal map (`*.nrm.avatar.jpg`, linear, not a colour), when
+    /// MakeHuman ships one: a garment's folds and seams, a hat's weave.
+    pub normal: Option<String>,
 }
 
 /// One proxy vertex: `Σ w·B[v] + offset·scale`, over the morphed base mesh B.
@@ -317,6 +326,10 @@ pub struct Skin {
     pub family: String,
     pub female: bool,
     pub age: SkinAge,
+    /// A normal map baked from the painting's fine detail — pores, creases,
+    /// an old skin's wrinkles (`textures::normal_from_detail`): MakeHuman
+    /// ships none for its skins.
+    pub normal: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

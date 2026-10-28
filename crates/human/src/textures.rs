@@ -89,6 +89,78 @@ pub fn write(img: &DynamicImage, out_dir: &Path, stem: &str, alpha: bool) -> Res
     Ok(name)
 }
 
+/// The inner extension of a normal map (`suit.nrm.avatar.jpg`): its texels are
+/// directions, not colours, so the client loads it linear rather than sRGB,
+/// and the full extension is what tells it so.
+pub const NORMAL_EXTENSION: &str = "nrm.avatar";
+
+/// Normal maps are 512 on a side: the folds a garment's carries are broad, and
+/// at 1024 a skin's would double the GPU memory of a body for detail a follow
+/// camera never resolves.
+pub const NORMAL_SIDE: u32 = 512;
+
+fn write_normal(img: &DynamicImage, out_dir: &Path, stem: &str) -> Result<String> {
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    let name = format!("{stem}.{NORMAL_EXTENSION}.jpg");
+    let path = out_dir.join(&name);
+    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 92)
+        .encode_image(&DynamicImage::ImageRgb8(img.to_rgb8()))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(name)
+}
+
+/// A normal map MakeHuman ships, no larger than [`NORMAL_SIDE`].
+pub fn normal_map(src: &Path, out_dir: &Path, stem: &str) -> Result<String> {
+    write_normal(&shrink(open(src)?, NORMAL_SIDE), out_dir, stem)
+}
+
+/// A tangent-space normal map baked from a painted texture's fine detail, for
+/// a skin, which MakeHuman ships without one. The painting's luminance with
+/// its broad shading taken out (a blur subtracted) is read as height — a pore
+/// or a crease is painted darker than the skin round it — and its slope as the
+/// normal. `strength` is how steep a full-range step reads.
+pub fn normal_from_detail(src: &Path, out_dir: &Path, stem: &str, strength: f32) -> Result<String> {
+    let img = shrink(open(src)?, NORMAL_SIDE).to_rgba8();
+    let (w, h) = img.dimensions();
+    let lum: Vec<f32> = img.pixels().map(luma).collect();
+    let blurred = box_blur(&lum, w as usize, h as usize, 6);
+    let height: Vec<f32> = lum.iter().zip(&blurred).map(|(l, b)| l - b).collect();
+    let at = |x: i64, y: i64| {
+        let x = x.clamp(0, i64::from(w) - 1) as usize;
+        let y = y.clamp(0, i64::from(h) - 1) as usize;
+        height[y * w as usize + x]
+    };
+    let out: RgbaImage = ImageBuffer::from_fn(w, h, |x, y| {
+        let (x, y) = (i64::from(x), i64::from(y));
+        let dx = (at(x + 1, y) - at(x - 1, y)) * strength;
+        // Image rows run down and UV v runs up: a rise down the image is a
+        // fall along v.
+        let dy = (at(x, y - 1) - at(x, y + 1)) * strength;
+        let n = glam::Vec3::new(-dx, -dy, 1.0).normalize();
+        let c = |v: f32| ((v * 0.5 + 0.5) * 255.0).round() as u8;
+        Rgba([c(n.x), c(n.y), c(n.z), 255])
+    });
+    write_normal(&DynamicImage::ImageRgba8(out), out_dir, stem)
+}
+
+/// A box blur of radius `r`, rows then columns, clamped at the edges.
+fn box_blur(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let pass = |src: &[f32], len: usize, lines: usize, at: &dyn Fn(usize, usize) -> usize| {
+        let mut out = vec![0.0; src.len()];
+        for line in 0..lines {
+            for i in 0..len {
+                let (lo, hi) = (i.saturating_sub(r), (i + r).min(len - 1));
+                let sum: f32 = (lo..=hi).map(|k| src[at(line, k)]).sum();
+                out[at(line, i)] = sum / (hi - lo + 1) as f32;
+            }
+        }
+        out
+    };
+    let rows = pass(v, w, h, &|y, x| y * w + x);
+    pass(&rows, h, w, &|x, y| y * w + x)
+}
+
 /// Whether an image really cuts anything out. MakeHuman marks most garments
 /// transparent whether or not their alpha holds anything, which made every
 /// outfit a megabyte-and-a-half PNG instead of a JPEG a tenth the size.
