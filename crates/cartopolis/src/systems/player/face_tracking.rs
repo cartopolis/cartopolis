@@ -62,16 +62,77 @@ const MODELS: [&str; 3] = [
     "models/face/face_blendshapes.tflite",
 ];
 
-/// What the camera thread found last, and when.
-type Latest = Arc<Mutex<Option<([f32; FACE_UNITS], std::time::Instant)>>>;
+/// A face as the tracker last saw it. The pupil gap and the picture are for
+/// placing the avatar's hand at the phone's distance (the camera screen's Mixed
+/// selfie, next), not yet read.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct Seen {
+    pub weights: [f32; FACE_UNITS],
+    /// The gap between the pupils in the picture's pixels, and the picture's
+    /// size: with the camera's focal length, how far the face is
+    /// (`cartopolis_face::PUPIL_GAP_M`).
+    pub eye_gap_px: f32,
+    pub picture: (u32, u32),
+    pub at: std::time::Instant,
+}
+
+/// Feeds a tracker from any camera's thread: [`FaceTap::feed`] each picture.
+/// Cloned into a sink — this module's own camera's, or the camera screen's
+/// when it already holds the front camera (Mixed), since only one camera can
+/// be open. Every tap of one [`FaceTracking`] shares its last face.
+#[derive(Clone)]
+pub(crate) struct FaceTap {
+    models: Arc<[Arc<Vec<u8>>; 3]>,
+    /// Built on the feeding thread at its first picture; `Some(None)` once it
+    /// failed to, so it is not tried again every picture.
+    tracker: Arc<Mutex<Option<Option<cartopolis_face::FaceTracker>>>>,
+    latest: Arc<Mutex<Option<Seen>>>,
+}
+
+impl FaceTap {
+    /// Read the face in `picture` (upright, not mirrored). Blocks for the
+    /// models' run: call it from a camera's thread, never the frame loop.
+    pub(crate) fn feed(&self, picture: &I420) {
+        let Ok(mut tracker) = self.tracker.lock() else {
+            return;
+        };
+        let built = tracker.get_or_insert_with(|| {
+            let [d, l, b] = &*self.models;
+            cartopolis_face::FaceTracker::new(d, l, b)
+                .inspect_err(|e| tracing::warn!("face tracking: the models would not run: {e}"))
+                .ok()
+        });
+        let Some(t) = built.as_mut() else {
+            return;
+        };
+        if let Some(face) = t.track(&I420Frame(picture)) {
+            if let Ok(mut l) = self.latest.lock() {
+                *l = Some(Seen {
+                    weights: face.weights,
+                    eye_gap_px: face.eye_gap(),
+                    picture: (picture.width, picture.height),
+                    at: std::time::Instant::now(),
+                });
+            }
+        }
+    }
+}
+
+/// How long a face stays current after the picture it was seen in.
+const FRESH_SECS: f32 = 0.5;
 
 /// Following the user's own face.
 #[derive(Resource, Default)]
 pub(crate) struct FaceTracking {
-    /// Asked for this frame; cleared once read.
+    /// Asked for this frame, with this module's own camera; cleared once read.
     wanted: bool,
+    /// A tap was asked for: load the models even without a camera of ours.
+    tap_wanted: bool,
     models: Option<[Handle<FaceModel>; 3]>,
-    running: Option<Running>,
+    tap: Option<FaceTap>,
+    /// This module's own camera, while wanted; dropping it closes it.
+    camera: Option<Camera>,
     /// Why it is not following a face, for whoever asked: the camera's
     /// error, or the models failing to load.
     pub(crate) problem: Option<String>,
@@ -79,16 +140,28 @@ pub(crate) struct FaceTracking {
     pub(crate) seeing: bool,
 }
 
-struct Running {
-    /// Held open while running; dropping it closes the camera.
-    camera: Camera,
-    latest: Latest,
-}
-
 impl FaceTracking {
-    /// Follow the face this frame: call every frame it is wanted.
+    /// Follow the face this frame with the front camera: call every frame it
+    /// is wanted.
     pub(crate) fn want(&mut self) {
         self.wanted = true;
+    }
+
+    /// A tap to feed from a camera already open (and the models loading, if
+    /// they are not yet): `None` until they are in. Ask each frame until one
+    /// comes, then keep it. For the camera screen's Mixed selfie, which holds
+    /// the front camera itself; not called yet.
+    #[allow(dead_code)]
+    pub(crate) fn tap(&mut self) -> Option<FaceTap> {
+        self.tap_wanted = true;
+        self.tap.clone()
+    }
+
+    /// The face seen last, if it is current.
+    pub(crate) fn seen(&self) -> Option<Seen> {
+        let tap = self.tap.as_ref()?;
+        let seen = (*tap.latest.lock().ok()?)?;
+        (seen.at.elapsed().as_secs_f32() < FRESH_SECS).then_some(seen)
     }
 }
 
@@ -119,8 +192,8 @@ impl cartopolis_face::Frame for I420Frame<'_> {
     }
 }
 
-/// Open or close the camera as the face is wanted, and start reading faces
-/// on its thread once the models are in.
+/// Load the models once a face is wanted or a tap asked for, and open or
+/// close this module's own camera as the face is wanted.
 pub(crate) fn drive_face_tracking(
     mut tracking: ResMut<FaceTracking>,
     asset_server: Res<AssetServer>,
@@ -128,73 +201,58 @@ pub(crate) fn drive_face_tracking(
 ) {
     let tracking = &mut *tracking;
     let wanted = std::mem::take(&mut tracking.wanted);
-    if !wanted {
-        if tracking.running.take().is_some() {
-            tracing::info!("face tracking: camera closed");
-        }
-        tracking.seeing = false;
+    let tap_wanted = std::mem::take(&mut tracking.tap_wanted);
+    tracking.seeing = tracking.seen().is_some();
+    if !wanted && tracking.camera.take().is_some() {
+        tracing::info!("face tracking: camera closed");
+    }
+    if !(wanted || tap_wanted) {
         return;
     }
-    if let Some(run) = &tracking.running {
-        if let Some(e) = run.camera.error() {
+    if tracking.tap.is_none() {
+        let handles = tracking
+            .models
+            .get_or_insert_with(|| MODELS.map(|path| asset_server.load(path)))
+            .clone();
+        let loaded: Vec<Arc<Vec<u8>>> = handles
+            .iter()
+            .filter_map(|h| models.get(h).map(|m| Arc::clone(&m.0)))
+            .collect();
+        let Ok(loaded) = <[Arc<Vec<u8>>; 3]>::try_from(loaded) else {
+            if handles
+                .iter()
+                .any(|h| asset_server.load_state(h).is_failed())
+            {
+                tracking.problem = Some("The face models did not load".into());
+            }
+            return;
+        };
+        tracking.tap = Some(FaceTap {
+            models: Arc::new(loaded),
+            tracker: Arc::default(),
+            latest: Arc::default(),
+        });
+    }
+    if !wanted {
+        return;
+    }
+    if let Some(camera) = &tracking.camera {
+        if let Some(e) = camera.error() {
             tracking.problem = Some(e);
         }
-        let fresh = run
-            .latest
-            .lock()
-            .ok()
-            .and_then(|l| l.map(|(_, at)| at.elapsed().as_secs_f32() < 0.5))
-            .unwrap_or(false);
-        tracking.seeing = fresh;
         return;
     }
-    let handles = tracking
-        .models
-        .get_or_insert_with(|| MODELS.map(|path| asset_server.load(path)))
-        .clone();
-    let loaded: Vec<Arc<Vec<u8>>> = handles
-        .iter()
-        .filter_map(|h| models.get(h).map(|m| Arc::clone(&m.0)))
-        .collect();
-    if loaded.len() < 3 {
-        if handles
-            .iter()
-            .any(|h| asset_server.load_state(h).is_failed())
-        {
-            tracking.problem = Some("The face models did not load".into());
-        }
+    let Some(tap) = tracking.tap.clone() else {
         return;
-    }
-    let latest: Latest = Arc::default();
+    };
     let camera = Camera::open();
     // The landmarker reads a 256-pixel square; a face across a third of a
     // 640 × 480 picture is about that, and a quarter-size one is not.
     camera.set_send_size((640, 480));
-    let into = Arc::clone(&latest);
-    // Built on the camera thread at its first picture; `None` inside once it
-    // failed to, so it is not tried again every picture.
-    let tracker: Mutex<Option<Option<cartopolis_face::FaceTracker>>> = Mutex::new(None);
-    camera.set_sink(Box::new(move |picture: I420| {
-        let Ok(mut tracker) = tracker.lock() else {
-            return;
-        };
-        let built = tracker.get_or_insert_with(|| {
-            cartopolis_face::FaceTracker::new(&loaded[0], &loaded[1], &loaded[2])
-                .inspect_err(|e| tracing::warn!("face tracking: the models would not run: {e}"))
-                .ok()
-        });
-        let Some(t) = built.as_mut() else {
-            return;
-        };
-        if let Some(face) = t.track(&I420Frame(&picture)) {
-            if let Ok(mut l) = into.lock() {
-                *l = Some((face.weights, std::time::Instant::now()));
-            }
-        }
-    }));
+    camera.set_sink(Box::new(move |picture: I420| tap.feed(&picture)));
     tracing::info!("face tracking: camera open");
     tracking.problem = None;
-    tracking.running = Some(Running { camera, latest });
+    tracking.camera = Some(camera);
 }
 
 /// Show what the camera sees on the local avatar's face, and send it to the
@@ -206,12 +264,7 @@ pub(crate) fn show_own_face(
     mut last: Local<Option<std::time::Instant>>,
     mut sent_any: Local<bool>,
 ) {
-    let found = tracking
-        .running
-        .as_ref()
-        .and_then(|r| r.latest.lock().ok().and_then(|l| *l))
-        .filter(|(_, at)| at.elapsed().as_secs_f32() < 0.5);
-    let Some((weights, at)) = found else {
+    let Some(seen) = tracking.seen() else {
         // Tell the others once that the face stopped, so theirs eases back.
         if std::mem::take(&mut *sent_any) {
             if let Some(online) = &online {
@@ -225,15 +278,16 @@ pub(crate) fn show_own_face(
     };
     // Each new face once: the camera hands pictures over at its own pace,
     // `video::FPS`, which is `FACE_FRAME_HZ`.
-    if *last == Some(at) {
+    if *last == Some(seen.at) {
         return;
     }
-    *last = Some(at);
+    *last = Some(seen.at);
     for mut face in &mut faces {
-        face.track(weights);
+        face.track(seen.weights);
     }
     if let Some(online) = &online {
-        let bytes = weights
+        let bytes = seen
+            .weights
             .iter()
             .map(|w| (w.clamp(0.0, 1.0) * 255.0).round() as u8)
             .collect();

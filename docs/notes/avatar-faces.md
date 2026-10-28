@@ -65,6 +65,14 @@ Measured 2026-10-27 on mac-2 (M5 Pro VM, release): first frame 13 ms with the
 detector, a followed frame 11 ms. The phone is unmeasured. Tracking runs on
 the camera's own thread, inside its sink, so the frame loop never waits.
 
+**Only one camera can be open**, so a screen that already holds the front
+camera (the camera's Mixed selfie) does not ask `face_tracking` to open its
+own: it takes a `FaceTap` (`FaceTracking::tap`) and feeds it from its sink.
+`Seen` carries the pupil gap in pixels; with the lens's focal length in the
+same pixels, `Tracked::distance` gives the face's distance from the 63 mm
+average gap — right to a few centimetres at arm's length, since people's
+gaps differ by about 6 %.
+
 ## The avatar in a call
 
 "Show your avatar instead" (a call's More sheet) films the local avatar with a

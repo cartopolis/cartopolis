@@ -63,6 +63,38 @@ pub struct Tracked {
     pub landmarks: Vec<[f32; 3]>,
 }
 
+/// The landmarks at the centres of the right and the left iris.
+const RIGHT_IRIS: usize = 468;
+const LEFT_IRIS: usize = 473;
+
+/// The usual gap between an adult's pupils, metres: 63 mm, the mean of
+/// both sexes (spread about ±4 mm).
+pub const PUPIL_GAP_M: f32 = 0.063;
+
+impl Tracked {
+    /// The gap between the pupils, in the picture's pixels.
+    #[must_use]
+    pub fn eye_gap(&self) -> f32 {
+        match (
+            self.landmarks.get(RIGHT_IRIS),
+            self.landmarks.get(LEFT_IRIS),
+        ) {
+            (Some(r), Some(l)) => (l[0] - r[0]).hypot(l[1] - r[1]),
+            _ => 0.0,
+        }
+    }
+
+    /// How far the face is from the camera, metres, for a lens of
+    /// `focal_px` (its focal length in this picture's pixels), from the pupil
+    /// gap: right to a few centimetres at arm's length, since people's gaps
+    /// differ by about 6 %. `None` when the eyes were not found.
+    #[must_use]
+    pub fn distance(&self, focal_px: f32) -> Option<f32> {
+        let gap = self.eye_gap();
+        (gap > 1.0).then(|| PUPIL_GAP_M * focal_px / gap)
+    }
+}
+
 type Model = Arc<TypedRunnableModel>;
 
 pub struct FaceTracker {
@@ -417,6 +449,14 @@ mod tests {
         assert!(
             right[0] < nose[0] && nose[0] < left[0],
             "{right:?} {nose:?} {left:?}"
+        );
+        // The pupils lie a little inside the eyes' outer corners, and
+        // a 300-pixel crop of a 500-pixel portrait puts them some 60 px apart.
+        let gap = face.eye_gap();
+        let corners = (left[0] - right[0]).abs();
+        assert!(
+            gap > 0.4 * corners && gap < corners,
+            "gap {gap}, corners {corners}"
         );
         let again = t.track(&frame).expect("followed");
         assert!((again.weights[MOUTH_SMILE_LEFT] - w[MOUTH_SMILE_LEFT]).abs() < 0.1);
