@@ -1,7 +1,7 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH]
-updated: 2026-10-19
+triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, DesignerTurn]
+updated: 2026-10-27
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
@@ -225,6 +225,64 @@ targets, 0.1 MB of the pack); the designer offers about thirty. A modifier is a
 pair of target sets by sign, a left-and-right one moving both sides; a
 one-sided one (`head-oval`) goes 0 to 1. Face values are stored as a sparse
 list, so an untouched face costs nothing.
+
+## Detail and a more personal look (pack 9, protocol 45, 2026-10-27)
+
+- **Normal maps.** MakeHuman ships them for most garments, the hats and a
+  pair of shoes, none for the skins. A garment's goes in the pack as
+  `*.nrm.avatar.jpg` at 512 px; **the inner `nrm.avatar` extension is what
+  sends it to `HumanNormalLoader`**, which uploads it in a linear format —
+  the colour loader's sRGB would lean every normal. A skin's is baked by
+  `textures::normal_from_detail` from the painting: its luminance with a
+  12 px box blur taken out, read as height (pores and creases are painted
+  darker), at `SKIN_DETAIL`. A part with a normal map gets tangents
+  (`Mesh::generate_tangents`) in `prepare_human`, on the worker. Normal maps
+  added 2.3 MB of skin and 1.2 MB of garment files to the textures; a client
+  fetches only those its avatars wear. **Judged on mac-1's GPU only; the
+  strength is a first guess.**
+- **Body controls.** The pack carries MakeHuman's neck, torso, hip, stomach,
+  buttocks, arms and legs groups as well as the face's (186 more targets,
+  0.18 MB: they touch few vertices each). They travel in `AvatarLook.face`,
+  whose name stayed for the wire: **a face button must only clear the face's
+  entries** (`avatar_designer::clear_face`), or "Average face" flattens a
+  belly.
+- **Skin tone** (`AvatarLook.skin_tone`) is the body material's base colour,
+  a linear factor of up to 1.8 either way over the painting, so a family's
+  skins overlap the next family's. A tone change repaints; it builds nothing.
+- **Extras** (`AvatarLook.extras`): anything worn beyond the outfit, by pack
+  name — a beard (tinted with the hair), glasses, and **separates**: an
+  empty `outfit` and a `Top` and a `Bottom` among the extras, tinted with the
+  top and bottom colours. From the MakeHuman community packs, CC0 and CC-BY,
+  **only where the item's own `.mhclo` names its pack's licence**
+  (`human-pack`'s `COMMUNITY` says what was left out and why;
+  `LICENSE-THIRD-PARTY.md` credits the CC-BY authors). Each was looked at
+  on mac-1 before it stayed: the cloche hat (hair through it), the leggings
+  (thighs through them) and the wrap dress (6.8 cm stretch reaching,
+  `clothes_do_not_spike`) did not. Models over ~8 000 vertices were not
+  taken: the fitting references are most of the pack, **12.0 MB with 82
+  items** (8.1 MB before this work), loaded whole by every client — the next
+  step, if it must shrink, is fetching a garment only when someone wears it.
+- **Separates need their skin hidden by rule.** The community's tops and
+  trousers mostly list no `delete_verts`, so a sweater showed the chest
+  through it and a trouser waistband through the sweater. `build` hides,
+  for a top or bottom, the skin it hangs on, and for a bottom worn with a
+  top, its faces over the top's skin — both through `close_over`, a
+  three-ring closing of the scattered base vertices the garment hangs on,
+  which fills the gaps without reaching past a hem (`a_bottom_tucks_under_a_top`).
+- **The designer**: Undo/Redo (a drag is one step, recorded when the pointer
+  lets go), Back to saved, a Front/Side/Back view (`DesignerTurn`, added to
+  the turn toward the camera), the camera close to the head on the Face tab
+  (`CameraState::aim_reach`, 1.0 m at 1.62 m), "Similar face" (each moved
+  control ±15, one or two new ones), a colour picker beside each palette,
+  all twelve brows, twelve starters.
+
+**Trap: postcard gives no serde default to a field missing at the end.**
+`accounts.look` is postcard bytes, and a look saved before protocol 45 ends
+before `skin_tone`; `from_bytes` fails rather than defaulting, and the old
+`load` turned that into "no look" — every saved avatar would have come back
+as the default body. `AvatarLook::from_stored` reads each older layout
+(`AvatarLookV42`, frozen) and carries it forward; the next field added needs
+the next frozen layout. The client's own copy is JSON, where defaults work.
 
 ## Rejected: Quaternius's animation library (2026-10-17)
 
