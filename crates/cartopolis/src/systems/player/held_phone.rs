@@ -59,6 +59,28 @@ impl Side {
     }
 }
 
+/// What the hand button remembers (`UserData::hand`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandPrefs {
+    /// The phone is held in the left hand.
+    #[serde(default)]
+    pub left: bool,
+    /// The first-use card was answered with "Use my hand".
+    #[serde(default)]
+    pub agreed: bool,
+}
+
+impl HandPrefs {
+    #[must_use]
+    pub fn side(&self) -> Side {
+        if self.left {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    }
+}
+
 /// A fixed pose to hold a phone in, for a capture (`CARTO_HELD_PHONE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandIn {
@@ -100,6 +122,8 @@ pub struct PhoneInHand {
 /// The phone the local avatar holds, if it holds one.
 #[derive(Resource)]
 pub struct HeldPhone {
+    /// The holding hand, copied each frame from the user's choice
+    /// (`UserData::hand`, the hand button's menu).
     pub side: Side,
     /// This frame's phone; `None` leaves the clip's arm.
     pub phone: Option<PhoneInHand>,
@@ -237,11 +261,13 @@ fn facing(at: Vec3, eyes: Vec3) -> Quat {
 /// Decide where the phone is this frame.
 pub fn track_held_phone(
     precise: Res<PreciseHand>,
+    store: Res<crate::systems::user_store::UserStore>,
     mut held: ResMut<HeldPhone>,
     avatars: Query<(), With<Avatar>>,
     holders: Query<(&ChildOf, &GlobalTransform, &HumanArms), With<AvatarHolder>>,
 ) {
-    let side = held.side;
+    let side = store.data.hand.side();
+    held.side = side;
     let Some((_, body, arms)) = holders
         .iter()
         .find(|(c, _, _)| avatars.contains(c.parent()))

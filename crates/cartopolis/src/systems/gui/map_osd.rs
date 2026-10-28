@@ -565,7 +565,10 @@ pub struct BodyControls<'w, 's> {
     faces: MessageWriter<'w, crate::systems::avatar_face::StartExpression>,
     faces_open: Local<'s, bool>,
     high: ResMut<'w, crate::systems::high_precision::HighPrecision>,
-    held: ResMut<'w, crate::systems::held_phone::HeldPhone>,
+    held: Res<'w, crate::systems::held_phone::HeldPhone>,
+    store: ResMut<'w, crate::systems::user_store::UserStore>,
+    /// The first-use card is up.
+    card_open: Local<'s, bool>,
 }
 
 /// The hand button, above the face disc (`docs/mockups/hand-tracking/`): while
@@ -629,7 +632,11 @@ fn hand_button(
             }
             let tapped = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false));
             if tapped && !resp.long_touched() && HighPrecision::available() {
-                body.high.on = !body.high.on;
+                if body.high.on || body.store.data.hand.agreed {
+                    body.high.on = !body.high.on;
+                } else {
+                    *body.card_open = true;
+                }
             }
             resp.context_menu(|ui| {
                 ui.label(egui::RichText::new("Your hand").strong());
@@ -639,7 +646,8 @@ fn hand_button(
                             .selectable_label(body.held.side == side, label)
                             .clicked()
                         {
-                            body.held.side = side;
+                            body.store.data.hand.left = side == Side::Left;
+                            body.store.dirty = true;
                         }
                     }
                 });
@@ -664,6 +672,50 @@ fn hand_button(
             });
         });
     areas.push(area.response.rect);
+    if *body.card_open {
+        hand_card(ctx, body);
+    }
+}
+
+/// The hand button's first tap: what it uses and who feels it, said once
+/// before Android asks for the camera. A hand report is a precise position
+/// (`docs/notes/hands-and-tones.md`), so this is the consent, and "Use my
+/// hand" is remembered (`HandPrefs::agreed`).
+fn hand_card(ctx: &egui::Context, body: &mut BodyControls) {
+    let modal = egui::Modal::new(egui::Id::new("hand_card")).show(ctx, |ui| {
+        ui.set_max_width(420.0);
+        ui.label(
+            egui::RichText::new("Your phone, in your avatar's hand")
+                .size(theme::SIZE_TITLE)
+                .strong(),
+        );
+        ui.add_space(theme::OSD_GAP);
+        for line in [
+            "The back camera and the motion sensors follow the phone, to about \
+             a centimetre. Nothing the camera sees is kept or sent.",
+            "Things that sense hands, such as a theremin, feel where your hand \
+             is while you are within a few metres of them.",
+            "Later, people near you will see your arm move: the same switch.",
+        ] {
+            ui.label(line);
+            ui.add_space(theme::OSD_GAP * 0.5);
+        }
+        ui.add_space(theme::OSD_GAP);
+        ui.horizontal(|ui| {
+            if theme::secondary_button(ui, "", "Not now", 140.0).clicked() {
+                *body.card_open = false;
+            }
+            if theme::primary_button_sized(ui, "Use my hand", 160.0).clicked() {
+                body.store.data.hand.agreed = true;
+                body.store.dirty = true;
+                body.high.on = true;
+                *body.card_open = false;
+            }
+        });
+    });
+    if modal.should_close() {
+        *body.card_open = false;
+    }
 }
 
 /// A disc above the jump/flight pair that opens a column of expressions

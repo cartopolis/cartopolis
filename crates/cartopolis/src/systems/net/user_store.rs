@@ -157,6 +157,11 @@ pub struct UserData {
     /// before it restores the receiver as switched off.
     #[serde(default)]
     pub gnss_receiver: crate::systems::gnss_receiver::ReceiverPrefs,
+    /// The hand button (`map_osd::hand_button`): which hand holds the phone,
+    /// and whether its first-use card was agreed to. Defaulted, so a file
+    /// from before it holds the phone in the right hand and shows the card.
+    #[serde(default)]
+    pub hand: crate::systems::held_phone::HandPrefs,
 }
 
 /// See [`UserData::screen`].
