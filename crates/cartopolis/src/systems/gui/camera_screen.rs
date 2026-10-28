@@ -126,6 +126,9 @@ pub struct CameraScreen {
     /// Open on a stand-in picture's result screen: for a scripted capture
     /// (`--ui cameraresult`), which has no shutter to press.
     pub demo_result: bool,
+    /// Open turned round to the avatar: for a scripted capture
+    /// (`--ui cameraselfie`), which has no flip to press.
+    pub demo_selfie: bool,
     /// Whether the shutter records a clip: the choice used last, as `mode`.
     pub video: bool,
     /// What the face tracking says during the In world selfie, shown where
@@ -173,6 +176,23 @@ impl CameraScreen {
         self.session
             .as_ref()
             .is_some_and(native::Session::avatar_selfie)
+    }
+
+    /// Whether the screen has one of the phone's cameras — the photograph's
+    /// in Mixed or Real, or the front one turned to the avatar for its face —
+    /// so the high-precision tracker cannot have the back one, and the phone in
+    /// the avatar's hand is placed by how the phone is turned
+    /// (`systems::held_phone`). `Some(true)` for a selfie.
+    #[must_use]
+    pub fn phone_hold(&self) -> Option<bool> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.session.as_ref().and_then(native::Session::phone_hold)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 }
 
@@ -415,6 +435,10 @@ mod native {
     /// moved: the map's streaming follows a teleport, not a nudge.
     const JUMP_M: f64 = 200.0;
 
+    /// How near the fix the avatar must stand for a Mixed selfie to look back
+    /// at it: a GNSS fix's error and a little more.
+    const SELFIE_NEAR_M: f32 = 25.0;
+
     /// Frames to wait for the world capture before giving up on it.
     const CAPTURE_GIVE_UP_FRAMES: u16 = 300;
 
@@ -582,6 +606,11 @@ mod native {
         pub(super) fn avatar_selfie(&self) -> bool {
             self.mode == Mode::World && self.front
         }
+
+        /// See [`CameraScreen::phone_hold`].
+        pub(super) fn phone_hold(&self) -> Option<bool> {
+            (self.mode.uses_camera() || self.front).then_some(self.front)
+        }
     }
 
     impl CameraScreen {
@@ -705,6 +734,7 @@ mod native {
         headless: Option<Res<crate::resources::HeadlessSurface>>,
         mut shot: ResMut<ScreenshotState>,
         mut chat: ResMut<crate::systems::chat::ChatState>,
+        held_phone: Res<crate::systems::held_phone::HeldPhone>,
     ) {
         let screen = &mut *screen;
         let grab_in = screen.frame_in.take();
@@ -736,7 +766,7 @@ mod native {
                     chats: Vec::new(),
                     choosing_chat: false,
                     press: false,
-                    flip: false,
+                    flip: std::mem::take(&mut screen.demo_selfie),
                     close: false,
                     switch: Some(screen.mode),
                     switch_video: None,
@@ -1160,7 +1190,22 @@ mod native {
                         crate::systems::geo_nav::lat_lng_to_world(geo, pose.lat, pose.lng);
                     let (wx, wz) = (wx as f32, wz as f32);
                     let here = crate::grid::anchored_position(cell, tf.translation);
-                    let want = Vec3::new(wx, terrain.at(wx, wz) + pose.height_m as f32, wz);
+                    let mut want = Vec3::new(wx, terrain.at(wx, wz) + pose.height_m as f32, wz);
+                    // A selfie's phone is in front of your face, not at your
+                    // eyes: at arm's length along its screen, looking back at
+                    // your avatar, which holds the phone there
+                    // (`held_phone`, `docs/mockups/hand-tracking/` v2). Only
+                    // with the avatar near the fix, so it is the one in view.
+                    if let (true, Some(attitude), Ok(body)) =
+                        (session.front, attitude, avatar.single())
+                    {
+                        let eyes = body.translation + Vec3::Y * held_phone.eyes_height;
+                        if eyes.xz().distance(want.xz()) < SELFIE_NEAR_M {
+                            want = eyes
+                                - crate::systems::held_phone::screen_out(&attitude)
+                                    * crate::systems::held_phone::SELFIE_REACH_M;
+                        }
+                    }
                     let d = want - here;
                     if d.length_squared() > 1e-4 {
                         tf.translation += d;

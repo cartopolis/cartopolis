@@ -169,9 +169,7 @@ impl HighPrecision {
         Some(match state {
             Some(TrackState::Tracking { .. }) if self.anchor.is_some() => HandWord::Following,
             Some(TrackState::Tracking { .. }) => HandWord::WaitingForGps,
-            Some(TrackState::Starting { .. } | TrackState::Scaling { .. }) => {
-                HandWord::MoveALittle
-            }
+            Some(TrackState::Starting { .. } | TrackState::Scaling { .. }) => HandWord::MoveALittle,
             Some(TrackState::Waiting) | None => HandWord::HoldStill,
         })
     }
@@ -344,6 +342,7 @@ pub fn drive_high_precision(
     mut log: ResMut<HighPrecisionLog>,
     mut tracking: ResMut<LocateTracking>,
     mut precise: ResMut<PreciseHand>,
+    screen: Res<crate::systems::camera_screen::CameraScreen>,
 ) {
     if !HighPrecision::available() {
         high.on = false;
@@ -352,7 +351,11 @@ pub fn drive_high_precision(
     let high = &mut *high;
     let now = web_time::Instant::now();
     let running = high.sensors.is_some() || high.retry_at.is_some();
-    match (high.on, running) {
+    // Only one camera can be open: while the camera screen has one, the mode
+    // stands aside (staying on) and the phone in the avatar's hand is placed
+    // by how the phone is turned (`held_phone`).
+    let wanted = high.on && screen.phone_hold().is_none();
+    match (wanted, running) {
         (true, false) => {
             // The map follows too, where there is an avatar to move.
             tracking.enter();
@@ -382,7 +385,11 @@ pub fn drive_high_precision(
             high.anchor = None;
             high.last_hand = None;
             high.locked = false;
-            log.note("off");
+            log.note(if high.on {
+                "paused · the camera screen has a camera"
+            } else {
+                "off"
+            });
         }
         _ => {}
     }
@@ -394,7 +401,7 @@ pub fn drive_high_precision(
             "camera taken by Android (another app, or the app in the background) · retrying in {CAMERA_RETRY_S:.0} s"
         ));
     }
-    if high.on && high.retry_at.is_some_and(|at| now >= at) {
+    if wanted && high.retry_at.is_some_and(|at| now >= at) {
         high.start_sensors();
         log.note("camera restarted");
     }

@@ -641,10 +641,7 @@ fn hand_button(
                 ui.label(egui::RichText::new("Your hand").strong());
                 ui.horizontal(|ui| {
                     for (side, label) in [(Side::Left, "Left"), (Side::Right, "Right")] {
-                        if ui
-                            .selectable_label(body.held.side == side, label)
-                            .clicked()
-                        {
+                        if ui.selectable_label(body.held.side == side, label).clicked() {
                             body.store.data.hand.left = side == Side::Left;
                             body.store.dirty = true;
                         }
@@ -916,12 +913,7 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
                 c + egui::vec2(0.0, s * 0.45),
                 egui::vec2(s * 1.3, s * 1.0),
             );
-            p.rect_stroke(
-                palm,
-                s * 0.3,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
+            p.rect_stroke(palm, s * 0.3, stroke, egui::StrokeKind::Middle);
             for (i, len) in [0.9_f32, 1.1, 1.05, 0.8].iter().enumerate() {
                 let x = palm.left() + palm.width() * (0.14 + 0.24 * i as f32);
                 p.line_segment(

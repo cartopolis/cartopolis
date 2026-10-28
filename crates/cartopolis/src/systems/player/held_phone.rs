@@ -137,6 +137,14 @@ pub struct HeldPhone {
     /// The tracked hand on the map, and where in the body's frame it was put:
     /// the hand is moved from there by the tracker's motion.
     reference: Option<((f64, f64, f32), Vec3)>,
+    /// The phone is held up for a selfie: the avatar turns to face the camera
+    /// (`avatar::update_avatar_model_pose`).
+    pub selfie: bool,
+    /// The eyes above the soles, metres: where a selfie's phone looks.
+    pub eyes_height: f32,
+    /// The phone's attitude while the camera screen has a camera, which takes
+    /// it from the tracker (`CameraScreen::phone_hold`).
+    compass: Option<crate::platform::orientation::OrientationWatch>,
 }
 
 impl HeldPhone {
@@ -154,8 +162,27 @@ impl Default for HeldPhone {
             phone: None,
             stand_in: StandIn::from_env(),
             reference: None,
+            selfie: false,
+            eyes_height: 1.6,
+            compass: None,
         }
     }
+}
+
+/// How far a selfie holds the phone from the eyes, metres: an arm held out.
+/// The distance the front camera's view of the face will measure, until then
+/// a typical one.
+pub const SELFIE_REACH_M: f32 = 0.5;
+
+/// How far a phone is held from the eyes to take a picture facing out.
+const PICTURE_REACH_M: f32 = 0.35;
+
+/// The way the phone's screen faces, in the world's axes, from an attitude:
+/// toward the eyes of whoever holds it. A selfie's camera is the eyes less
+/// this times [`SELFIE_REACH_M`].
+#[must_use]
+pub fn screen_out(attitude: &crate::platform::orientation::DeviceAttitude) -> Vec3 {
+    enu_to_world() * attitude.screen_to_world.as_quat() * Vec3::Z
 }
 
 /// The holding arm's joints and the hand's grip, kept on a body's holder.
@@ -268,12 +295,15 @@ fn facing(at: Vec3, eyes: Vec3) -> Quat {
 pub fn track_held_phone(
     precise: Res<PreciseHand>,
     store: Res<crate::systems::user_store::UserStore>,
+    screen: Res<crate::systems::camera_screen::CameraScreen>,
     mut held: ResMut<HeldPhone>,
     avatars: Query<(), With<Avatar>>,
     holders: Query<(&ChildOf, &GlobalTransform, &HumanArms), With<AvatarHolder>>,
 ) {
     let side = store.data.hand.side();
     held.side = side;
+    let hold = screen.phone_hold();
+    held.selfie = hold == Some(true);
     let Some((_, body, arms)) = holders
         .iter()
         .find(|(c, _, _)| avatars.contains(c.parent()))
@@ -287,6 +317,49 @@ pub fn track_held_phone(
         return;
     };
     let eyes = arms.head + Vec3::new(0.0, 0.08, 0.1);
+    held.eyes_height = eyes.y;
+    let to_body = body.rotation().inverse();
+    // The camera screen has a camera (the photograph's, or the front one
+    // turned to the avatar): the tracker cannot have it, and the phone is
+    // placed by how it is turned instead — its screen toward the eyes, at
+    // arm's length for a selfie (`docs/mockups/hand-tracking/` v2).
+    if let Some(front) = hold {
+        held.reference = None;
+        let attitude = held
+            .compass
+            .get_or_insert_with(crate::platform::orientation::OrientationWatch::start)
+            .latest();
+        held.phone = Some(match attitude {
+            Some(attitude) => {
+                let rotation =
+                    (to_body * enu_to_world() * attitude.screen_to_world.as_quat()).normalize();
+                let reach = if front {
+                    SELFIE_REACH_M
+                } else {
+                    PICTURE_REACH_M
+                };
+                PhoneInHand {
+                    at: eyes - rotation * Vec3::Z * reach,
+                    rotation,
+                }
+            }
+            // No motion sensors (a desktop): the pose a capture would hold.
+            None => {
+                let pose = if front {
+                    StandIn::Selfie
+                } else {
+                    StandIn::Look
+                };
+                let at = arm.shoulder + pose.from_shoulder(side.outward());
+                PhoneInHand {
+                    at,
+                    rotation: facing(at, eyes),
+                }
+            }
+        });
+        return;
+    }
+    held.compass = None;
     let tracked = precise
         .active
         .then_some(precise.hand_geo.zip(precise.hand_rotation))
@@ -302,7 +375,6 @@ pub fn track_held_phone(
         });
         return;
     };
-    let to_body = body.rotation().inverse();
     let rest = arm.shoulder + StandIn::Look.from_shoulder(side.outward());
     let (origin, from) = *held.reference.get_or_insert((geo, rest));
     let (per_lat, per_lng) = cartopolis_core::degree_scale_m(origin.0);
@@ -454,6 +526,22 @@ mod tests {
             "the screen is not tipped sideways"
         );
         assert!((q * Vec3::Y).y > 0.0, "its top is up");
+    }
+
+    #[test]
+    fn a_screen_facing_north_faces_minus_z() {
+        // The screen's own +z turned onto north: a quarter turn about east.
+        let attitude = crate::platform::orientation::DeviceAttitude {
+            screen_to_world: bevy::math::DQuat::from_rotation_x(-std::f64::consts::FRAC_PI_2),
+            accuracy_deg: None,
+        };
+        let out = screen_out(&attitude);
+        assert!((out - Vec3::NEG_Z).length() < 1e-5, "{out}");
+        // A selfie's camera is then half a metre south of the eyes, looking
+        // north at them.
+        let eyes = Vec3::new(0.0, 1.6, 0.0);
+        let camera = eyes - out * SELFIE_REACH_M;
+        assert!((camera - Vec3::new(0.0, 1.6, 0.5)).length() < 1e-5);
     }
 
     #[test]

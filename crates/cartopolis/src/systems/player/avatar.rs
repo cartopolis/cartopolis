@@ -1140,6 +1140,8 @@ pub fn update_avatar_model_pose(
     // neither the heading the sim holds nor the camera moves.
     designing: Option<Res<human_avatar::HumanDraft>>,
     designer_turn: Option<Res<human_avatar::DesignerTurn>>,
+    // A selfie turns the model to the camera too: you face your phone.
+    held: Option<Res<crate::systems::held_phone::HeldPhone>>,
     camera: Query<&GlobalTransform, With<crate::components::FreeCamera>>,
     avatar_at: Query<&GlobalTransform, With<Avatar>>,
     mut lean: Local<f32>,
@@ -1242,7 +1244,7 @@ pub fn update_avatar_model_pose(
     }
     let mut local = flight_pose(*lean, bank.0, arrived);
     local.translation += seat_shift;
-    if designing.is_some_and(|d| d.0.is_some()) {
+    if designing.is_some_and(|d| d.0.is_some()) || held.is_some_and(|h| h.selfie) {
         // Where the camera is, in the avatar's own frame (the model faces +Z).
         if let (Ok(cam), Ok(me)) = (camera.single(), avatar_at.single()) {
             let (_, me_rot, me_at) = me.to_scale_rotation_translation();
