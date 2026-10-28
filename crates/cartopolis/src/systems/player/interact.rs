@@ -580,40 +580,6 @@ pub fn handle_interaction_input(
     }
 }
 
-/// The hand button's offer by a prim that senses hands
-/// (`docs/mockups/hand-tracking/`), bundled for the prompt.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct HandOffer<'w> {
-    near: Res<'w, crate::systems::prim_hand::HandPrimNear>,
-    high: ResMut<'w, crate::systems::high_precision::HighPrecision>,
-    store: Res<'w, crate::systems::user_store::UserStore>,
-    card: ResMut<'w, crate::systems::held_phone::HandCard>,
-}
-
-impl HandOffer<'_> {
-    /// The prim's name, while the hand is off and could be turned on.
-    fn offer(&self) -> Option<String> {
-        let possible = crate::systems::high_precision::HighPrecision::available();
-        let name = &self.near.0.as_ref()?.1;
-        (possible && !self.high.on).then(|| {
-            if name.is_empty() {
-                "this".to_owned()
-            } else {
-                name.clone()
-            }
-        })
-    }
-
-    /// Turn the hand on, or ask first if it never was.
-    fn take(&mut self) {
-        if self.store.data.hand.agreed {
-            self.high.on = true;
-        } else {
-            self.card.0 = true;
-        }
-    }
-}
-
 /// Draw the prompt over the map, and let it be *pressed*.
 ///
 /// Anchored to the bottom-centre of the *map area* rather than the window, and
@@ -641,7 +607,6 @@ pub fn render_interaction_prompt(
     map_anchor: Res<MapAnchor>,
     driver: Res<crate::systems::driver::DriverState>,
     online: Option<Res<crate::resources::OnlineSession>>,
-    mut hand: HandOffer,
 ) {
     // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
     // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
@@ -658,11 +623,9 @@ pub fn render_interaction_prompt(
     // getting up is the one thing it can do, and on a phone this button is the
     // only way to ask for it.
     let seated = avatar_state.is_seated();
-    let offer = hand.offer();
-    if target.is_none() && receipt.is_none() && !seated && offer.is_none() {
+    if target.is_none() && receipt.is_none() && !seated {
         return;
     }
-    let mut take_hand = false;
 
     let compact = egui_manager.compact();
     let map = egui_manager.ui_mut().available_rect_before_wrap();
@@ -675,30 +638,12 @@ pub fn render_interaction_prompt(
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
         // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some() || seated || offer.is_some())
+        .interactable(target.is_some() || seated)
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(&egui_manager.ctx.clone(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // A prim that senses hands offers the hand button: one tap
-                    // turns it on (or asks first), and nothing is reported to
-                    // the prim before it.
-                    if let Some(name) = &offer {
-                        if ui
-                            .button(
-                                egui::RichText::new(format!(
-                                    "{}  Play {name} with your hand",
-                                    crate::systems::icons::HAND
-                                ))
-                                .color(theme::TEXT)
-                                .strong(),
-                            )
-                            .clicked()
-                        {
-                            take_hand = true;
-                        }
-                    }
                     if seated {
                         // The glyph is the thing being sat on where there is one,
                         // so the button that put you there and the button that
@@ -751,9 +696,6 @@ pub fn render_interaction_prompt(
             });
         });
 
-    if take_hand {
-        hand.take();
-    }
     if acted {
         send_touch(online.as_ref(), state.act(&mut avatar_state));
     }

@@ -46,13 +46,9 @@ impl Plugin for MapPlugin {
         // after the camera has moved, so it is this frame's.
         app.init_resource::<systems::prim_hand::HandReports>()
             .init_resource::<systems::prim_hand::PreciseHand>()
-            .init_resource::<systems::prim_hand::HandPrimNear>()
             .add_systems(
                 Update,
-                (
-                    systems::prim_hand::report_hands,
-                    systems::prim_hand::find_hand_prims,
-                )
+                systems::prim_hand::report_hands
                     .after(systems::free_camera::camera_controls)
                     .after(systems::network::apply_network_snapshot),
             );

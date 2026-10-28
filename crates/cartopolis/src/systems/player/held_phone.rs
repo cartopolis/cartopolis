@@ -81,9 +81,11 @@ impl HandPrefs {
     }
 }
 
-/// The hand button's first-use card is up (`map_osd::hand_card`). A resource,
-/// not the button's own state, because the prompt by a hand-sensing prim
-/// opens it too (`interact`).
+/// The hand button's first-use card is up (`map_osd::hand_card`).
+///
+/// **No prompt offers the hand by a prim that senses hands** (dropped
+/// 2026-10-28, at the user's word): a theremin is a script, and what it does
+/// with a hand is its own business, not the interface's.
 #[derive(Resource, Default)]
 pub struct HandCard(pub bool);
 

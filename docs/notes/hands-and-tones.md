@@ -1,6 +1,6 @@
 ---
 topic: hands near a prim, and tones
-triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip, hand_button, hand_card, HandPrefs, HandPrimNear, phone_hold, SELFIE_REACH_M]
+triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip, hand_button, hand_card, HandPrefs, phone_hold, SELFIE_REACH_M]
 updated: 2026-10-27
 ---
 
@@ -105,8 +105,12 @@ Built from `docs/mockups/hand-tracking/` v2. The mode is the **hand button**
 above the face button (`map_osd::hand_button`): tap on or off, a word beside
 it from `HighPrecision::hand_word`, a long press for the hand (`UserData::hand`)
 and "Start again". The first tap shows a card (`map_osd::hand_card`); "Use my
-hand" is the consent and is remembered (`HandPrefs::agreed`). A prim that
-senses hands offers it in the interaction prompt (`prim_hand::HandPrimNear`).
+hand" is the consent and is remembered (`HandPrefs::agreed`).
+
+**No prompt by a prim that senses hands.** One was built ("Play <prim> with
+your hand" in the interaction prompt) and removed the same day at the user's
+word: the theremin is an object with a script, which reacts to the hand the
+mode reports; it is not part of the code or the interface.
 
 **Only one camera can be open**, so while the camera screen has one (Mixed,
 Real, or the In world selfie, whose front camera reads the face) the tracker

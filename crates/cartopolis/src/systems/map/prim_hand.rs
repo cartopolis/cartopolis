@@ -100,38 +100,6 @@ pub fn hand_in_prim_frame(prim: &GlobalTransform, hand: Vec3) -> Vec3 {
     rotation.inverse() * (hand - translation)
 }
 
-/// The nearest prim that senses hands with the avatar about at its range: its
-/// id and name, for the prompt that offers the hand button
-/// (`interact::render_interaction_prompt`, `docs/mockups/hand-tracking/`).
-#[derive(Resource, Default)]
-pub struct HandPrimNear(pub Option<(i64, String)>);
-
-/// How far outside a prim's hand range the offer already shows: a step before
-/// the hand would be felt.
-const OFFER_MARGIN_M: f32 = 1.0;
-
-/// Find [`HandPrimNear`], measuring from the avatar's stand-in hand the way
-/// [`report_hands`] does without high precision.
-pub fn find_hand_prims(
-    avatar: Query<&GlobalTransform, With<crate::components::Avatar>>,
-    prims: Query<(&Prim, &SensesHands, &GlobalTransform)>,
-    mut near: ResMut<HandPrimNear>,
-) {
-    let found = avatar.single().ok().and_then(|body| {
-        let hand = body.translation() + Vec3::Y * STAND_IN_HAND_HEIGHT_M;
-        prims
-            .iter()
-            .filter(|(_, senses, _)| senses.0 > 0.0)
-            .map(|(prim, senses, at)| (prim, hand_in_prim_frame(at, hand).length() - senses.0))
-            .filter(|(_, outside)| *outside <= OFFER_MARGIN_M)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(prim, _)| (prim.id, prim.name.clone()))
-    });
-    if near.0 != found {
-        near.0 = found;
-    }
-}
-
 /// Report the hand to every prim that senses hands within reach of it.
 pub fn report_hands(
     time: Res<Time>,

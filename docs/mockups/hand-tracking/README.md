@@ -45,6 +45,8 @@ the phone in your avatar's hand — so it should be designed as that.
   then the camera permission.
 - **Walking up to a hand-sensing prim** offers it in the prompt row ("Play
   Theremin with your hand"); nothing is reported to the prim before that tap.
+  *Dropped after it was built (2026-10-28): the theremin is a script's
+  object, not part of the interface.*
 - **The camera's In world selfie** turns the hand on while it is up. The front
   camera is the face's (`face_tracking`), so there the hand turns with the
   phone but stays at arm's length ("turning only") unless the phone can run
