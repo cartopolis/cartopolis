@@ -349,9 +349,11 @@ fn football() -> Pack {
     }
 }
 
-/// Where the theremin's cabinet stands: the north side of the Grote Markt, a
-/// few paces from the beacon so the two do not crowd one another.
-const THEREMIN_AT: (f64, f64) = (53.21952, 6.56655);
+/// Where the theremin's cabinet stands: on the open paving of the Grote Markt,
+/// fifteen metres clear of the buildings on its west side. It stood at
+/// (53.21952, 6.56655) until 2026-10-29, which is inside one of them — checked
+/// against the aerial photograph (`--aerial-reference`) that time.
+const THEREMIN_AT: (f64, f64) = (53.21858, 6.56750);
 /// Height of the cabinet's centre — waist high, played standing.
 const THEREMIN_CABINET_Y: f32 = 1.0;
 /// The two antennas, metres from the cabinet's centre (east, up, south). The
