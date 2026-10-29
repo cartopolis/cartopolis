@@ -429,3 +429,493 @@ mod tests {
         assert!(tail < 1e-3 * OUTPUT_PEAK, "still at {tail} when it goes");
     }
 }
+
+/// The theremin played end to end, with nobody holding a phone: a virtual
+/// player — a connection of its own, standing at the cabinet — moves its hand
+/// along the rod through a melody at [`cartopolis_core::tone::HAND_HZ`], the
+/// rate `prim_hand` reports at; the real simulator runs the real
+/// `theremin.lua`; a second connection, a listener two metres away, takes the
+/// `PrimTone`s it hears and plays them through this module's own decoder into a
+/// WAV file. Every seam between a hand and a speaker is in the path except the
+/// two ends: the tracker that finds the hand (the offsets are computed here, as
+/// `prim_hand` would send them) and the audio device (the samples go to a file).
+///
+/// Ignored, because it plays in real time — about ten seconds. Run it with
+/// `cargo test -p cartopolis --lib virtual_player -- --ignored --nocapture`;
+/// `CARTO_THEREMIN_WAV` names the file (default `theremin.wav` in the temp
+/// directory), and the scene beside it — the prims and the hand — goes to the
+/// same name with `.json`, for a capture to play back (`CARTO_SHOT_REPLAY`).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod virtual_player {
+    use super::*;
+    use bytes::Bytes;
+    use cartopolis_core::{
+        decode_app_frame, encode_app_frame, AuthCredential, GeoAnchor, HandPose, NetMessage,
+        PrimDto, PrimGeometry, PrimSurface, PROTOCOL_VERSION,
+    };
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpStream;
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    type Client = Framed<TcpStream, LengthDelimitedCodec>;
+
+    const SCRIPT: &str = include_str!("../../../../simulator/content/theremin.lua");
+    /// `ROD`, `LOW`, `HIGH`, `PITCH_NEAR` and `PITCH_FAR` in `theremin.lua`,
+    /// read back here to place the hand. Change them there and the notes
+    /// asserted below move off their pitches.
+    const ROD: [f32; 3] = [0.35, 0.45, 0.0];
+    const LOW: f32 = 130.81;
+    const HIGH: f32 = 1046.5;
+    const PITCH_NEAR: f32 = 0.05;
+    const PITCH_FAR: f32 = 0.6;
+    /// Where the listener stands from the cabinet.
+    const LISTENER_AT_M: f32 = 2.0;
+    /// How long the hand takes to move from one note of the melody to the next.
+    const SLIDE_S: f32 = 0.07;
+    /// Seconds of silence before the hand arrives, and kept after it leaves —
+    /// long enough for the script to notice it has gone (`GONE_AFTER`, 1 s).
+    const LEAD_IN_S: f32 = 0.4;
+    const TAIL_S: f32 = 2.0;
+
+    /// Note, beats at 100 bpm, and seconds the hand takes to get there.
+    ///
+    /// A melody moves the hand little: three octaves span the rod's 55 cm, so
+    /// Ode to Joy's fifth is 11 cm. So the hand first comes in far from the rod,
+    /// sweeps up to it and back — the whole reach, and the whole idea of the
+    /// instrument — and at the end sinks away from it again.
+    const MELODY: &[(&str, f32, f32)] = &[
+        ("A#3", 0.8, 0.0),
+        ("C6", 2.0, 1.0),
+        ("E5", 1.0, 0.4),
+        ("E5", 1.0, SLIDE_S),
+        ("F5", 1.0, SLIDE_S),
+        ("G5", 1.0, SLIDE_S),
+        ("G5", 1.0, SLIDE_S),
+        ("F5", 1.0, SLIDE_S),
+        ("E5", 1.0, SLIDE_S),
+        ("D5", 1.0, SLIDE_S),
+        ("C5", 1.0, SLIDE_S),
+        ("C5", 1.0, SLIDE_S),
+        ("D5", 1.0, SLIDE_S),
+        ("E5", 1.0, SLIDE_S),
+        ("E5", 1.5, SLIDE_S),
+        ("D5", 0.5, SLIDE_S),
+        ("D5", 2.0, SLIDE_S),
+        ("A#3", 2.5, 1.2),
+    ];
+    const BEAT_S: f32 = 0.6;
+
+    /// One note: its pitch, start and end in seconds from the start, and the
+    /// slide into it.
+    #[derive(Clone, Copy)]
+    struct Note {
+        hz: f32,
+        start: f32,
+        end: f32,
+        slide: f32,
+    }
+
+    fn score() -> Vec<Note> {
+        let mut t = LEAD_IN_S;
+        MELODY
+            .iter()
+            .map(|&(note, beats, slide)| {
+                let start = t;
+                t += beats * BEAT_S;
+                Note {
+                    hz: cartopolis_core::tone::note_hz(note).unwrap(),
+                    start,
+                    end: t,
+                    slide,
+                }
+            })
+            .collect()
+    }
+
+    /// The pitch the hand is asking for at `t`, or `None` while it is away. A
+    /// player slides between notes, and scoops up from a semitone below to
+    /// sound a repeated one — a theremin cannot stop between them.
+    fn hand_pitch(score: &[Note], t: f32) -> Option<f32> {
+        let i = score.iter().position(|n| t >= n.start && t < n.end)?;
+        let n = score[i];
+        let from = match i.checked_sub(1).map(|p| score[p].hz) {
+            Some(prev) if (prev - n.hz).abs() < 0.01 => n.hz / 2f32.powf(1.0 / 12.0),
+            Some(prev) => prev,
+            None => n.hz,
+        };
+        let k = ((t - n.start) / n.slide.max(1e-3)).clamp(0.0, 1.0);
+        // Eased, as an arm moves: off slowly, and slowing into the note.
+        let k = k * k * (3.0 - 2.0 * k);
+        Some((from.ln() + (n.hz.ln() - from.ln()) * k).exp())
+    }
+
+    /// Where the hand must be for the script to sound `hz`: to the right of the
+    /// rod, at the distance `theremin.lua` maps to that pitch, out of the
+    /// loop's reach so it plays at full volume.
+    fn hand_for(hz: f32) -> [f32; 3] {
+        let t = (hz / LOW).ln() / (HIGH / LOW).ln();
+        let d = PITCH_FAR - t * (PITCH_FAR - PITCH_NEAR);
+        [ROD[0] + d, ROD[1], ROD[2]]
+    }
+
+    async fn connect(addr: &str) -> Client {
+        let mut c = Framed::new(
+            TcpStream::connect(addr).await.unwrap(),
+            LengthDelimitedCodec::builder()
+                .max_frame_length(32 << 20)
+                .little_endian()
+                .new_codec(),
+        );
+        send(
+            &mut c,
+            &NetMessage::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                auth: AuthCredential::Password {
+                    username: "dev".into(),
+                    password: "dev".into(),
+                },
+            },
+        )
+        .await;
+        let ack = decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap();
+        assert!(matches!(ack, NetMessage::ServerHelloAck { .. }), "{ack:?}");
+        c
+    }
+
+    async fn send<S>(c: &mut S, msg: &NetMessage)
+    where
+        S: futures_util::Sink<Bytes> + Unpin,
+        S::Error: std::fmt::Debug,
+    {
+        c.send(Bytes::from(encode_app_frame(msg).unwrap()))
+            .await
+            .unwrap();
+    }
+
+    async fn recv_until<T>(
+        c: &mut Client,
+        what: &str,
+        mut f: impl FnMut(NetMessage) -> Option<T>,
+    ) -> T {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let frame = tokio::time::timeout_at(deadline, c.next())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+                .unwrap()
+                .unwrap();
+            if let Some(v) = f(decode_app_frame(&frame).unwrap()) {
+                return v;
+            }
+        }
+    }
+
+    /// What the listener heard, and when.
+    enum Heard {
+        Tone(Option<ToneSpec>),
+        Name(String),
+    }
+
+    /// 16-bit mono PCM at [`SAMPLE_RATE`].
+    fn write_wav(path: &std::path::Path, samples: &[f32]) {
+        let data = (samples.len() * 2) as u32;
+        let mut out = Vec::with_capacity(44 + data as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+        out.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(
+                &((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16).to_le_bytes(),
+            );
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "plays in real time; run by hand to hear the theremin"]
+    async fn a_virtual_player_plays_the_theremin() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("theremin.db").to_str().unwrap().to_string();
+        {
+            let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+            cartopolis_simulator::ensure_account(&conn, "dev", "dev").unwrap();
+        }
+        let handle = cartopolis_simulator::serve(Arc::new(cartopolis_simulator::SimConfig {
+            database_path: db,
+            listen: "127.0.0.1:0".into(),
+            ..cartopolis_simulator::SimConfig::default()
+        }))
+        .await
+        .unwrap();
+        let addr = handle.local_addr.to_string();
+
+        // The `theremin` content pack — cabinet, stand, rod and loop — made as
+        // a player would make it, and the cabinet's script stored. Every prim
+        // as the server sent it goes into the replay.
+        let mut player = connect(&addr).await;
+        let mut upserts: Vec<(f32, PrimDto)> = Vec::new();
+        let mut prim_id = None;
+        for (n, spec) in cartopolis_simulator::content::pack("theremin")
+            .unwrap()
+            .prims
+            .into_iter()
+            .enumerate()
+        {
+            send(
+                &mut player,
+                &NetMessage::CreatePrim {
+                    request_id: n as u32 + 1,
+                    name: spec.name.clone().unwrap_or_default(),
+                    position: Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
+                    rotation: Vec3::from(spec.rotation.unwrap_or_default()),
+                    scale: Vec3::from(spec.scale.unwrap_or([1.0; 3])),
+                    color: spec.color.unwrap_or([0.5; 3]),
+                    texture_id: None,
+                    shape: spec.shape.clone().unwrap_or_else(|| "box".into()),
+                    surface: PrimSurface::default(),
+                    geometry: PrimGeometry::default(),
+                    geo: GeoAnchor {
+                        latitude: spec.latitude.unwrap(),
+                        longitude: spec.longitude.unwrap(),
+                    },
+                    particles: None,
+                    model: None,
+                },
+            )
+            .await;
+            let prim = recv_until(&mut player, "a theremin part", |m| match m {
+                NetMessage::PrimUpsert { prim } => Some(prim),
+                _ => None,
+            })
+            .await;
+            if let Some(source) = spec.script {
+                assert_eq!(source, SCRIPT, "the pack plays another script");
+                prim_id = Some(prim.id);
+                send(
+                    &mut player,
+                    &NetMessage::SetPrimScript {
+                        request_id: 100,
+                        prim_id: prim.id,
+                        source,
+                    },
+                )
+                .await;
+            }
+            upserts.push((0.0, prim));
+        }
+        let prim_id = prim_id.expect("the pack has no scripted cabinet");
+        let cabinet = recv_until(&mut player, "the script's sense_hands", |m| match m {
+            NetMessage::PrimUpsert { prim } if prim.id == prim_id && prim.hand_range > 0.0 => {
+                Some(prim)
+            }
+            _ => None,
+        })
+        .await;
+        upserts.push((0.0, cabinet));
+
+        let mut listener = connect(&addr).await;
+        let score = score();
+        let end = score.last().unwrap().end;
+        let start = Instant::now();
+
+        // The player's hand, sent at the rate a client reports one. Its own
+        // incoming traffic is drained so the server never waits on it.
+        let (mut tx, mut rx) = player.split();
+        tokio::spawn(async move { while rx.next().await.is_some() {} });
+        let hand_score = score.clone();
+        let hand = tokio::spawn(async move {
+            let mut sent = Vec::new();
+            let mut tick = tokio::time::interval(Duration::from_secs_f32(
+                1.0 / cartopolis_core::tone::HAND_HZ,
+            ));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let t = start.elapsed().as_secs_f32();
+                if t > end {
+                    return sent;
+                }
+                let Some(hz) = hand_pitch(&hand_score, t) else {
+                    continue;
+                };
+                let pose = HandPose {
+                    prim_id,
+                    offset: hand_for(hz),
+                    precise: true,
+                };
+                send(&mut tx, &NetMessage::HandPose { pose }).await;
+                sent.push((t, hz));
+            }
+        });
+
+        let mut heard: Vec<(f32, Heard)> = Vec::new();
+        let stop = tokio::time::Instant::now() + Duration::from_secs_f32(end + TAIL_S);
+        while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(stop, listener.next()).await {
+            let t = start.elapsed().as_secs_f32();
+            match decode_app_frame(&frame).unwrap() {
+                NetMessage::PrimTone { prim_id: id, tone } if id == prim_id => {
+                    heard.push((t, Heard::Tone(tone.map(ToneSpec::sanitized))));
+                }
+                NetMessage::PrimUpsert { prim } if prim.id == prim_id => {
+                    heard.push((t, Heard::Name(prim.name.clone())));
+                    upserts.push((t, prim));
+                }
+                _ => {}
+            }
+        }
+        let sent = hand.await.unwrap();
+        let total = start.elapsed().as_secs_f32();
+
+        // Played as `drive_prim_tones` plays it: a player spawned at the first
+        // tone, fed each tone as it arrives, faded out and despawned when it
+        // stops.
+        let mut samples = Vec::with_capacity((total * SAMPLE_RATE as f32) as usize);
+        let mut decoder: Option<ToneDecoder> = None;
+        let mut stopped_at: Option<f32> = None;
+        let mut next = 0;
+        while samples.len() < samples.capacity() {
+            let t = samples.len() as f32 / SAMPLE_RATE as f32;
+            if stopped_at.is_some_and(|s| t - s >= FADE_OUT_S) {
+                decoder = None;
+                stopped_at = None;
+            }
+            while next < heard.len() && heard[next].0 <= t {
+                if let Heard::Tone(tone) = &heard[next].1 {
+                    match tone {
+                        Some(tone) => {
+                            let d = decoder.get_or_insert_with(|| {
+                                let control = Arc::new(ToneControl::default());
+                                control.set(tone, 0.0);
+                                ToneDecoder {
+                                    targets: control.read(),
+                                    control,
+                                    synth: Synth::default(),
+                                    countdown: 0,
+                                }
+                            });
+                            d.control
+                                .set(tone, tone.gain * listener_gain(tone.range_m, LISTENER_AT_M));
+                            stopped_at = None;
+                        }
+                        None => {
+                            if let Some(d) = &decoder {
+                                d.control.silence();
+                                stopped_at.get_or_insert(t);
+                            }
+                        }
+                    }
+                }
+                next += 1;
+            }
+            samples.push(decoder.as_mut().and_then(Iterator::next).unwrap_or(0.0));
+        }
+        let path = std::env::var_os("CARTO_THEREMIN_WAV")
+            .map_or_else(|| std::env::temp_dir().join("theremin.wav"), Into::into);
+        write_wav(&path, &samples);
+        // The scene beside it, for a capture to play back (`systems::shot_replay`).
+        let replay = serde_json::json!({
+            "prims": upserts
+                .iter()
+                .map(|(t, prim)| serde_json::json!({ "t": t, "prim": prim }))
+                .collect::<Vec<_>>(),
+            "hand": sent
+                .iter()
+                .map(|&(t, hz)| serde_json::json!({ "t": t, "prim_id": prim_id, "offset": hand_for(hz) }))
+                .collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            path.with_extension("json"),
+            serde_json::to_vec(&replay).unwrap(),
+        )
+        .unwrap();
+
+        // What happened, for the person running it.
+        let tones: Vec<(f32, ToneSpec)> = heard
+            .iter()
+            .filter_map(|(t, h)| match h {
+                Heard::Tone(Some(s)) => Some((*t, *s)),
+                _ => None,
+            })
+            .collect();
+        println!("wrote {} ({total:.1} s)", path.display());
+        println!(
+            "hand reports sent: {}, tones heard: {}",
+            sent.len(),
+            tones.len()
+        );
+        for (t, h) in &heard {
+            if let Heard::Name(n) = h {
+                println!("{t:6.2} s  name: {n}");
+            }
+        }
+        // Per note: from the hand reaching it to the listener hearing it.
+        let mut latencies = Vec::new();
+        for &Note {
+            hz,
+            start: s,
+            end: e,
+            slide,
+        } in &score
+        {
+            let reached = s + slide;
+            let first_sent = sent
+                .iter()
+                .find(|&&(t, p)| t >= reached && (p - hz).abs() < 0.01);
+            // After the hand got there: a repeated note scoops away from the
+            // pitch and back, and the note before it is still at that pitch.
+            let first_heard = first_sent.and_then(|&(ts, _)| {
+                tones.iter().find(|(t, spec)| {
+                    *t >= ts && *t < e + 0.3 && (spec.pitch_hz / hz - 1.0).abs() < 0.005
+                })
+            });
+            match (first_sent, first_heard) {
+                (Some(&(ts, _)), Some(&(th, spec))) => {
+                    latencies.push(th - ts);
+                    println!(
+                        "{s:6.2} s  {hz:7.2} Hz  heard {:7.2} Hz gain {:.2}  {:4.0} ms after the hand",
+                        spec.pitch_hz,
+                        spec.gain,
+                        (th - ts) * 1000.0
+                    );
+                }
+                _ => println!("{s:6.2} s  {hz:7.2} Hz  NOT HEARD"),
+            }
+        }
+        latencies.sort_by(f32::total_cmp);
+        if let (Some(lo), Some(hi)) = (latencies.first(), latencies.last()) {
+            println!(
+                "hand → ear: median {:.0} ms, {:.0}–{:.0} ms",
+                latencies[latencies.len() / 2] * 1000.0,
+                lo * 1000.0,
+                hi * 1000.0
+            );
+        }
+
+        assert_eq!(latencies.len(), score.len(), "a note went unheard");
+        assert!(
+            heard
+                .iter()
+                .any(|(_, h)| matches!(h, Heard::Name(n) if n.contains("dev is playing"))),
+            "the script never named its player"
+        );
+        let last_hand = sent.last().unwrap().0;
+        assert!(
+            heard
+                .iter()
+                .any(|(t, h)| *t > last_hand && matches!(h, Heard::Tone(None))),
+            "the tone did not stop after the hand left"
+        );
+        let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.1, "the file is silent: peak {peak}");
+    }
+}

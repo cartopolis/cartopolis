@@ -1,7 +1,7 @@
 ---
 topic: hands near a prim, and tones
 triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip, hand_button, hand_card, HandPrefs, phone_hold, SELFIE_REACH_M]
-updated: 2026-10-27
+updated: 2026-10-29
 ---
 
 # Hands near a prim, and tones
@@ -70,10 +70,36 @@ where the hand is now, not a backlog — and one busy hand cannot hide another.
 **Smoothing is the synthesiser's, per sample.** The main thread writes target
 pitch and gain into atomics; the audio thread glides toward them
 (log-frequency at the script's `glide`, at least 4 ms; 15 ms on gain).
-Stepping a sink volume per frame zippers a pure tone.
+Stepping a sink volume per frame zippers a pure tone. **A stopped tone fades
+too**: its player is silenced and kept `FADE_OUT_S` (105 ms) before it is
+despawned. Despawning it at once cut the wave mid-cycle, at 60 % of full level
+in the recording below — a click at the end of every phrase.
 
 Hand range and tone are memory-only, like `sound_loop`: a restart runs
 `on_start` again.
+
+## Hearing and seeing it without a phone (2026-10-29)
+
+`prim_tone::virtual_player` (ignored: it plays in real time) installs the
+`theremin` pack in a real simulator, has a connection with no body report a
+hand at 20 Hz through a melody, and plays what a second connection two metres
+away hears through the client's own decoder into a WAV — every seam from hand
+to speaker except the tracker and the audio device. Measured that day on
+mac-2, over loopback: every note on its pitch, **hand to ear 74 ms median,
+21–124 ms** — under the 100–150 ms guessed above, before any real network.
+
+Beside the WAV it writes the scene (`.json`: the prims as the server sent
+them, and the hand), which `CARTO_SHOT_REPLAY=<file>` plays in a scripted
+`--video-fps` capture (`systems::shot_replay`): prims spawned on the movie's
+clock, and the avatar holding the phone where the script sensed the hand
+(`HeldPhone::placed`). Frame the camera **across** the hand's travel, not
+along it: a melody's fifth is 11 cm of the rod's 55, and seen end-on it does
+not move at all. Keep the avatar within reach of the whole path, or the arm
+stops at full stretch and the phone is no longer where the script heard it.
+
+The pack's own spot was inside a building on the Grote Markt's west side until
+that day; the theremin in the live world (by the Gorechtkade, placed by hand on
+2026-10-08) never came from it.
 
 ## The avatar holds the phone (2026-10-27)
 
