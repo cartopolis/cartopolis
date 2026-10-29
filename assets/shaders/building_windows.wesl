@@ -269,9 +269,18 @@ fn wall_finish(
     let fired = 0.88 + 0.24 * hash_wrapped(id + vec2<f32>(5.0, 3.0));
     // …and not only lighter or darker: some fire browner, some purpler, and
     // about one in twenty-five comes out of the kiln dark and glazed.
-    let hue = hash_wrapped(id + vec2<f32>(17.0, 41.0)) - 0.5;
+    // A ramp through what one kiln load gives — terracotta, brown, a purple
+    // that went darker in the hot part of the kiln — around the wall's own
+    // colour, so the three average to it.
+    let pick = hash_wrapped(id + vec2<f32>(17.0, 41.0));
+    let terracotta = vec3<f32>(1.1, 0.96, 0.84);
+    let brown = vec3<f32>(0.95, 0.94, 0.92);
+    let purple = vec3<f32>(0.88, 0.8, 0.92);
+    // Divided by the ramp's mean, (T + 2B + P) / 4, so it does not move the wall.
+    let ramp = select(mix(terracotta, brown, pick * 2.0), mix(brown, purple, pick * 2.0 - 1.0), pick > 0.5)
+        / vec3<f32>(0.97, 0.91, 0.9);
     let burnt = f32(hash_wrapped(id + vec2<f32>(71.0, 13.0)) > 0.96);
-    let firing = vec3<f32>(1.0 + 0.12 * hue, 1.0, 1.0 - 0.14 * hue) * fired * mix(1.0, 0.55, burnt);
+    let firing = ramp * fired * mix(1.0, 0.55, burnt);
     let face = max((c - MORTAR_SHARE * MORTAR) / (1.0 - MORTAR_SHARE), c * 0.3);
     // Faded out earlier than the windows are: a course is 6 cm, and at a few
     // pixels a course the bond beats against the pixel grid into moiré rings
@@ -298,6 +307,89 @@ fn wall_finish(
     let rendered = c * (1.0 + 0.1 * (value_noise(vec2<f32>(u, v) / 1.3) - 0.5));
 
     return bricked * brick_w + panelled * concrete_w + rendered * pale_w;
+}
+
+/// [`wall_finish`], with a large block's pale wall clad instead of plastered
+/// ([`is_cladding`]). The other two kinds are drawn as they were.
+fn wall_finish_clad(
+    c: vec3<f32>,
+    u: f32,
+    v: f32,
+    floor_f: f32,
+    brick: vec2<f32>,
+    brick_px: f32,
+    px: f32,
+    along: f32,
+    era: u32,
+    eave: f32,
+    slab: vec2<f32>,
+    slab_px: f32,
+) -> vec3<f32> {
+    let base = wall_finish(c, u, v, floor_f, brick, brick_px, px);
+    if !is_cladding(era, eave) {
+        return base;
+    }
+    let pale_w = wall_kinds(c).z;
+    let rendered = c * (1.0 + 0.1 * (value_noise(vec2<f32>(u, v) / 1.3) - 0.5));
+    return base + (cladding(c, along, v, floor_f, era, slab, slab_px, px) - rendered) * pale_w;
+}
+
+/// How a brick wall's roughness varies over its lattice, as a factor on the
+/// wall's own: 1 in the joints, 0.8–0.95 on a brick's face, its own value per
+/// brick and a little grain across it. Gone with the bricks' blur.
+fn brick_sheen(brick: vec2<f32>, brick_px: f32, brick_w: f32) -> f32 {
+    let course = floor(brick.y);
+    let along = brick.x + 0.5 * course;
+    let fb = vec2<f32>(fract(along), fract(brick.y));
+    let mortar = max(f32(fb.y < 0.2), f32(fb.x < 0.045));
+    let skin = 0.8 + 0.15 * hash_wrapped(vec2<f32>(floor(along), course) + vec2<f32>(43.0, 89.0));
+    let grain = 1.0 + 0.06 * (value_noise(brick * vec2<f32>(6.0, 2.0)) - 0.5);
+    let face = mix(skin * grain, 1.0, mortar);
+    let k = brick_w * (1.0 - clamp(brick_px * 3.0 - 0.3, 0.0, 1.0));
+    return mix(1.0, face, k);
+}
+
+/// A natural-stone cladding slab, laid in stack bond with open joints — the
+/// usual skin of a pale office or apartment block since 1990.
+const SLAB_M: vec2<f32> = vec2<f32>(1.2, 0.6);
+
+/// Whether a pale wall is a large post-war block's cladding rather than a
+/// house's plaster: built since 1960 and three storeys or more to the eaves.
+/// Plaster stays on what is older or lower, which is where it is in this
+/// country; the register says nothing about a facade's material, so this is
+/// the era palette's own reasoning carried one step further.
+fn is_cladding(era: u32, eave: f32) -> bool {
+    return era >= 3u && eave >= 9.0;
+}
+
+/// A pale block's skin, drawn over its colour `c`: since 1990 stone slabs
+/// ([`SLAB_M`]), each cut from its own part of the block — lighter or darker,
+/// warmer or cooler, with a faint bed running through it — and dark open
+/// joints; between 1960 and 1990 storey-high precast panels, a window bay
+/// wide, their washed aggregate a little speckled and streaked under each
+/// joint. `slab` is the slab lattice and `slab_px` how much of it a pixel spans.
+fn cladding(c: vec3<f32>, along: f32, v: f32, floor_f: f32, era: u32, slab: vec2<f32>, slab_px: f32, px: f32) -> vec3<f32> {
+    if era >= 4u {
+        let id = floor(slab);
+        let f = slab - id;
+        let d = min(f, vec2<f32>(1.0) - f) * SLAB_M;
+        let joint = 1.0 - smoothstep(0.003, 0.007, min(d.x, d.y));
+        let blur = clamp(slab_px * 3.0 - 0.3, 0.0, 1.0);
+        let h = hash_wrapped(id + vec2<f32>(37.0, 19.0));
+        let g = hash_wrapped(id + vec2<f32>(3.0, 77.0)) - 0.5;
+        let cut = vec3<f32>(0.92 + 0.16 * h) * vec3<f32>(1.0 + 0.05 * g, 1.0, 1.0 - 0.06 * g);
+        // The stone's bed, running along the slab, faded with the slab itself.
+        let bed = 1.0 + 0.06 * (value_noise(vec2<f32>(along / 0.35, v / 0.04) + id * 3.1) - 0.5);
+        let laid = mix(c * cut * bed, c * 0.45, joint);
+        return mix(laid, c, blur);
+    }
+    // Precast: the concrete branch's panels, finer in grain.
+    let jx = abs(fract(along / 2.4 + 0.5) - 0.5) * 2.4;
+    let jy = abs(fract(floor_f + 0.5) - 0.5) * STOREY_M;
+    let joint = (1.0 - smoothstep(0.0, 0.02, min(jx, jy))) * (1.0 - clamp(px * 1.6 - 0.35, 0.0, 1.0));
+    let panel = hash_wrapped(floor(vec2<f32>(along / 2.4, floor_f)) + vec2<f32>(9.0, 51.0)) - 0.5;
+    let streak = value_noise(vec2<f32>(along / 0.5, v / 4.0)) - 0.5;
+    return c * (1.0 + 0.08 * panel + 0.12 * streak) * mix(1.0, 0.5, joint);
 }
 
 /// A wall at the scale of a few metres: the brick of a later repair, a
@@ -993,7 +1085,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let grain_px = max(fwidth(grain.x), fwidth(grain.y));
     let blotch_uv = in.world_position.xz / PATCH_M;
     let blotch_px = max(fwidth(blotch_uv.x), fwidth(blotch_uv.y));
-    let brick = vec2<f32>(u / BRICK_LENGTH_M, v / BRICK_COURSE_M);
+    // Laid by hand, not printed: a course rises and falls a few millimetres
+    // over a metre or so, and each course's bond sits a little off the half
+    // brick it was meant to be. Shifting the lattice itself, here, moves every
+    // reader of it — the colour, the relief, the damp in the joints — alike.
+    let course_v = v / BRICK_COURSE_M
+        + 0.1 * (value_noise(vec2<f32>(u / 0.9, v / 2.0) + vec2<f32>(61.0, 3.0)) - 0.5);
+    let brick = vec2<f32>(
+        u / BRICK_LENGTH_M + 0.12 * (hash_wrapped(vec2<f32>(floor(course_v), 7.0)) - 0.5),
+        course_v,
+    );
     // On the geometric mean of the two axes, not the larger: a wall seen down
     // a street is squeezed along it and not up it, and fading on the squeezed
     // axis alone took the brick off every wall but the one beside you — the
@@ -1002,6 +1103,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Metres a pixel spans on the wall, on its sharper axis, for the variation
     // a few metres across that holds long after a course has gone.
     let wall_px = min(fwidth(u), fwidth(v));
+    // A pale block's cladding slabs, laid from the face's own corner.
+    let slab = vec2<f32>(along, v) / SLAB_M;
+    let slab_px = sqrt(fwidth(slab.x) * fwidth(slab.y));
     let gutter_px = fwidth(v) / GUTTER_M;
     let weave = vec2<f32>(u, v) / NET_MESH_M;
     let weave_px = max(fwidth(weave.x), fwidth(weave.y));
@@ -1036,7 +1140,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // colour as it was, not over the brick: a pane is not bricked.
         let plain = pbr_input.material.base_color.rgb;
         pbr_input.material.base_color = vec4<f32>(
-            wall_finish(pbr_input.material.base_color.rgb, u, v, floor_f, brick, brick_px, px)
+            wall_finish_clad(
+                pbr_input.material.base_color.rgb, u, v, floor_f, brick, brick_px, px,
+                along, era, eave, slab, slab_px,
+            )
                 * gutter_shade(v, eave, gutter_px)
                 * wall_drift(u, v, wall_px),
             pbr_input.material.base_color.a,
@@ -1073,7 +1180,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         // What the wall is built of, in relief — `gutter_px * GUTTER_M` is
         // `fwidth(v)`, metres a pixel up the wall.
-        let relief = wall_relief(wall_kinds(plain), u, v, floor_f, brick, brick_px, gutter_px * GUTTER_M);
+        var relief = wall_relief(wall_kinds(plain), u, v, floor_f, brick, brick_px, gutter_px * GUTTER_M);
+        // A stone slab's edges face into its open joint, as a sawn panel's do.
+        if era >= 4u && is_cladding(era, eave) {
+            let sf = fract(slab);
+            let sd = (sf - vec2<f32>(0.5, 0.5)) * SLAB_M;
+            let edge = SLAB_M * 0.5 - abs(sd);
+            let into = vec2<f32>(1.0 - smoothstep(0.004, 0.012, edge.x), 1.0 - smoothstep(0.004, 0.012, edge.y));
+            let k = wall_kinds(plain).z * (1.0 - clamp(slab_px * 5.0 - 0.3, 0.0, 1.0));
+            relief += vec2<f32>(sign(sd.x) * into.x, sign(sd.y) * into.y) * 0.5 * k;
+        }
 
         // The pane, sized by the building's era and centred in its cell. Written
         // as a half-width test either side of the middle so the window keeps its
@@ -1280,6 +1396,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             0.0,
             1.0,
         );
+        // Mortar is as matte as anything gets; a fired brick face is not, and
+        // no two came out of the kiln with the same skin. Multiplied in, so it
+        // composes with what else writes the roughness.
+        pbr_input.material.perceptual_roughness *= brick_sheen(brick, brick_px, wall_kinds(plain).x);
 
         pbr_input.material.perceptual_roughness = mix(
             pbr_input.material.perceptual_roughness,
