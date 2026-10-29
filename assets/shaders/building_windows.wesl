@@ -692,10 +692,60 @@ fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
 /// A room seen through a window by day: nearly black.
 const GLASS_BASE: vec3<f32> = vec3<f32>(0.03, 0.034, 0.04);
 
+/// How far the glass sits back from the face of the wall: a frame in a
+/// half-brick reveal.
+const REVEAL_M: f32 = 0.12;
+
+/// The room behind a pane, by day, found the way a ray finds it: from where
+/// the view meets the glass (`pg`, pane-local metres) along the view's
+/// direction in the wall's frame (`d`: along, up, into the wall), to the first
+/// of the room's two side walls, its floor, its ceiling or its back wall. The
+/// room is the window's bay wide (`room_w`), the storey high, from `floor_y`
+/// to `ceil_y` around the pane's centre, and three to six metres deep by the
+/// window's own draw `r`. Nothing is stored and nothing is drawn but this
+/// fragment: it is the old "interior mapping" trick, and what it buys is that
+/// a window has a room in it that moves as you walk past.
+///
+/// Lit by the window it is seen through, so it darkens with depth, and kept as
+/// dark as a room seen from a sunny street is — `GLASS_BASE` is its far end.
+fn room_behind(pg: vec2<f32>, d: vec3<f32>, room_w: f32, floor_y: f32, ceil_y: f32, r: f32) -> vec3<f32> {
+    let depth = 3.0 + 3.0 * fract(r * 5.17);
+    let big = 1e4;
+    let tx = select(big, (sign(d.x) * room_w * 0.5 - pg.x) / d.x, abs(d.x) > 1e-4);
+    let ty = select(big, (select(floor_y, ceil_y, d.y > 0.0) - pg.y) / d.y, abs(d.y) > 1e-4);
+    let tz = depth / max(d.z, 1e-3);
+    let t = max(min(tx, min(ty, tz)), 0.0);
+    let hit = pg + d.xy * t;
+    let z = d.z * t;
+    // What each surface is: a painted wall in one of a few colours, darker on
+    // the sides that face the window less; a wooden or carpeted floor; a pale
+    // ceiling. A cabinet or sofa line along the foot of the back wall.
+    let paint_pick = fract(r * 23.9);
+    var paint = vec3<f32>(0.62, 0.6, 0.55);
+    if paint_pick > 0.75 {
+        paint = vec3<f32>(0.55, 0.5, 0.4);
+    } else if paint_pick > 0.5 {
+        paint = vec3<f32>(0.45, 0.5, 0.52);
+    }
+    let floor_col = select(vec3<f32>(0.3, 0.19, 0.1), vec3<f32>(0.25, 0.24, 0.23), fract(r * 31.7) > 0.6);
+    var col = paint;
+    if tz <= tx && tz <= ty {
+        let furniture = f32(hit.y < floor_y + 0.85 && abs(hit.x - (fract(r * 3.3) - 0.5) * room_w * 0.5) < room_w * 0.3);
+        col = mix(paint, vec3<f32>(0.18, 0.14, 0.12), furniture * f32(fract(r * 11.1) > 0.35));
+    } else if ty < tx {
+        col = select(floor_col, vec3<f32>(0.75, 0.74, 0.72), d.y > 0.0);
+    } else {
+        col = paint * 0.75;
+    }
+    // Daylight from the window, falling off into the room.
+    let light = 0.16 * exp(-z * 0.45) + 0.03;
+    return max(col * light, GLASS_BASE);
+}
+
 /// What is in the window of a room, drawn from the window's own hash `r`: net
 /// curtains or drapes at the sides of about a third of them, a blind part-way
-/// down in one in five, and the rest nothing but the dark room.
-fn room_through_glass(pm: vec2<f32>, hs: vec2<f32>, r: f32) -> vec3<f32> {
+/// down in one in five, and the rest the room behind (`room`).
+fn room_through_glass(pm: vec2<f32>, hs: vec2<f32>, r: f32, room: vec3<f32>) -> vec3<f32> {
     let pick = fract(r * 13.7);
     let fabric_pick = fract(r * 29.3);
     var fabric = vec3<f32>(0.34, 0.3, 0.24);
@@ -706,15 +756,15 @@ fn room_through_glass(pm: vec2<f32>, hs: vec2<f32>, r: f32) -> vec3<f32> {
     }
     if pick < 0.35 {
         let curtain = f32(abs(pm.x) > hs.x * 0.6);
-        return mix(GLASS_BASE, fabric * 0.5, curtain);
+        return mix(room, fabric * 0.5, curtain);
     }
     if pick < 0.55 {
         let drop = mix(0.25, 0.7, fract(r * 7.1));
         let blind = f32(pm.y > hs.y * (1.0 - 2.0 * drop));
         let slat = 0.8 + 0.2 * f32(fract(pm.y / 0.045) > 0.3);
-        return mix(GLASS_BASE, vec3<f32>(0.42, 0.4, 0.36) * 0.55 * slat, blind);
+        return mix(room, vec3<f32>(0.42, 0.4, 0.36) * 0.55 * slat, blind);
     }
-    return GLASS_BASE;
+    return room;
 }
 
 /// A shop by day, through its window: lit, and busy — racks and displays at
@@ -1121,6 +1171,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Metres a pixel spans on the wall, on its sharper axis, for the variation
     // a few metres across that holds long after a course has gone.
     let wall_px = min(fwidth(u), fwidth(v));
+    // Which way `along` runs against `u` (and so against the wall's tangent):
+    // a laid-out face counts from its own corner, which may be either end. A
+    // derivative, so taken here in uniform control flow.
+    let along_sign = select(
+        -1.0,
+        1.0,
+        dot(vec2<f32>(dpdx(along), dpdy(along)), vec2<f32>(dpdx(u), dpdy(u))) >= 0.0,
+    );
     // A pale block's cladding slabs, laid from the face's own corner.
     let slab = vec2<f32>(along, v) / SLAB_M;
     let slab_px = sqrt(fwidth(slab.x) * fwidth(slab.y));
@@ -1314,20 +1372,54 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let metres = vec2<f32>(max(bay, 0.5), floor_h);
         let pm = (f - centre) * metres;
         let hs = half * metres;
-        let look = window_look(pm, hs, era, shop && on_ground);
         let detail = tall_enough * (1.0 - blur);
-        let frame_col = frame_colour(era);
         let shop_front = shop && on_ground;
+
+        // **Depth.** The view, in the wall's frame: along the face (the way
+        // `pm.x` runs), up, and into the wall. The glass is `REVEAL_M` back
+        // from the face, so the point of glass this fragment shows is where
+        // the view meets that plane (`pg`) — the frame and its bars move
+        // against the opening as you walk past — and where that falls outside
+        // the opening, what is seen is the reveal itself: its soffit, its sides
+        // or the sill. Then the room, from the glass on.
+        let n_raw = vec3<f32>(horiz.x, 0.0, horiz.y);
+        let n_out = select(-n_raw, n_raw, dot(pbr_input.V, n_raw) >= 0.0);
+        let into = -pbr_input.V;
+        let t3w = vec3<f32>(tangent.x, 0.0, tangent.y) * along_sign;
+        let dview = vec3<f32>(dot(into, t3w), into.y, max(dot(into, -n_out), 0.05));
+        let pg = mix(pm, pm + dview.xy * (REVEAL_M / dview.z), detail);
+        let over = abs(pg) - hs;
+        let reveal = f32((over.x > 0.0 || over.y > 0.0) && inside > 0.5) * detail;
+        // Which face of the reveal: the one the ray left the opening through
+        // first, i.e. with the larger overshoot for its rate of travel.
+        let by_x = over.x / max(abs(dview.x), 1e-3) > over.y / max(abs(dview.y), 1e-3);
+        let reveal_col = select(
+            select(plain * 0.45, SILL_COLOUR, pg.y < 0.0),
+            plain * 0.7,
+            by_x,
+        );
+
+        let look = window_look(pg, hs, era, shop_front);
+        let look_wall = window_look(pm, hs, era, shop_front);
+        let frame_col = frame_colour(era);
+        let room = room_behind(
+            pg,
+            dview,
+            metres.x,
+            -centre.y * floor_h,
+            (1.0 - centre.y) * floor_h,
+            r,
+        );
         // Behind the glass. Not the wall's colour darkened, which tinted every
-        // pane in a brick street brick-red: a dark neutral room, seen through
-        // glass, with what hangs in the window — curtains, a blind — or, in a
-        // shop, the lit shop. The sky it reflects is the lighting's job
+        // pane in a brick street brick-red: a room, seen through glass, with
+        // what hangs in the window — curtains, a blind — or, in a shop, the
+        // lit shop. The sky it reflects is the lighting's job
         // (`GLASS_REFLECTANCE`), and it only shows over something this dark.
         var interior = select(
-            room_through_glass(pm, hs, r),
-            shop_through_glass(pm, hs, along),
+            room_through_glass(pg, hs, r, mix(GLASS_BASE, room, detail)),
+            shop_through_glass(pg, hs, along),
             shop_front,
-        ) * look.z;
+        ) * mix(look.z, 1.0, detail * 0.5);
         // A neglected building: an empty room behind the glass, a whitewashed
         // shop window, and boards over the ground floor and over half the windows
         // above it — all of them once it is waiting to come down.
@@ -1339,18 +1431,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         var wall_col = pbr_input.material.base_color.rgb;
         // Sill and lintel sit on the wall around the opening.
-        wall_col = mix(wall_col, SILL_COLOUR, look.w * detail);
+        wall_col = mix(wall_col, SILL_COLOUR, look_wall.w * detail);
         wall_col = mix(wall_col, wall_col * lintel_tone(era), lintel(pm, hs, era) * detail);
         var glazed = mix(interior, frame_col, look.y);
         // At range the pane is only its coverage, the way it always was.
         glazed = mix(glazed, mix(GLASS_BASE, plain * facade.glow.z, 0.3), blur);
         // Boards cover the frame and the glass alike.
         glazed = mix(glazed, mix(boarded(pm, hs, r), BOARD_MEAN, blur), board_k);
-        // The glass's share of the opening: none where it is boarded.
-        let glass = pane * (1.0 - board_k);
+        // …and where the view falls on the reveal, that is what is seen.
+        glazed = mix(glazed, reveal_col, reveal * (1.0 - board_k));
+        // The glass's share of the opening: none where it is boarded, or where
+        // the reveal stands in front of it.
+        let glass = pane * (1.0 - board_k) * (1.0 - reveal);
         // A frame's inner edge is bevelled down to the glass: tilt the normal
         // there so it catches the light like a moulding rather than a stripe.
-        let bevel = frame_bevel(pm, hs, era, shop_front) * detail * glass;
+        let bevel = frame_bevel(pg, hs, era, shop_front) * detail * glass;
         // No two panes are glazed in quite one plane: each sits a degree or two
         // off the wall, the way a city's windows each catch a different piece
         // of sky rather than one sheet of it across a whole elevation. Gone with
@@ -1368,7 +1463,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // …and at night it is lit from inside. The emissive is added rather than
         // replacing the surface, so the wall keeps taking the moon and the street.
         pbr_input.material.emissive += vec4<f32>(
-            facade.lit.rgb * (emissive * facade.glow.x * facade.glow.y),
+            facade.lit.rgb * (emissive * (1.0 - reveal) * facade.glow.x * facade.glow.y),
             0.0,
         );
 
