@@ -567,20 +567,63 @@ pub(crate) fn building_palette_dated(
     lng: f64,
     year: Option<u16>,
 ) -> ([f32; 3], [f32; 3]) {
+    building_palette_for(lat, lng, year, None, None)
+}
+
+/// Eaves below this are a house, a terrace or a low block — what the post-war
+/// decades built in brick; above it the flats and slabs they built in concrete
+/// and render. Four storeys of three metres.
+const LOW_RISE_EAVE_M: f32 = 12.0;
+
+/// The reconstruction's brick, for the low-rise half of 1945–1974: red, brown,
+/// and the yellow-buff brick of the fifties, a little lighter than the
+/// interbellum's.
+const WEDEROPBOUW_BRICK: &[[f32; 3]] = &[
+    [0.64, 0.42, 0.34],
+    [0.58, 0.40, 0.33],
+    [0.70, 0.56, 0.42],
+    [0.62, 0.47, 0.38],
+    [0.68, 0.45, 0.35],
+];
+
+/// [`building_palette_dated`], told more where it is known: the building's
+/// eaves above its own base, and an OpenStreetMap `building:material`.
+///
+/// The material, where somebody mapped it, is the only word any source has on
+/// what a facade is made of, and wins. Otherwise the era decides, and for
+/// 1945–1974 the height does too: the era's pale render and grey concrete are
+/// the flats' and the slabs', and drawn on every house of the period they put
+/// whole brick neighbourhoods in render — the Gorechtkade, 57 of whose 92
+/// buildings are from 1949–50, came out grey (2026-10-29). A building of
+/// unknown height keeps the era's palette as it was.
+pub(crate) fn building_palette_for(
+    lat: f64,
+    lng: f64,
+    year: Option<u16>,
+    eave_m: Option<f32>,
+    material: Option<&str>,
+) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed((lat, lng));
     let (wall, roof) = match year {
         None => (palette_color((lat, lng)), default_roof("yes", seed)),
         Some(y) => {
-            let (_, walls, roofs) = ERA_PALETTES
+            let (until, walls, roofs) = ERA_PALETTES
                 .iter()
                 .find(|(until, _, _)| y < *until)
                 .unwrap_or(&ERA_PALETTES[ERA_PALETTES.len() - 1]);
+            let low_rise = eave_m.is_some_and(|e| e < LOW_RISE_EAVE_M);
+            let walls = if *until == 1975 && low_rise {
+                WEDEROPBOUW_BRICK
+            } else {
+                walls
+            };
             (
                 walls[(seed as usize) % walls.len()],
                 roofs[(seed.rotate_left(29) as usize) % roofs.len()],
             )
         }
     };
+    let wall = material.and_then(material_color).unwrap_or(wall);
     let wall = jitter(wall, seed, 0.12);
     let roof = jitter(roof, seed.rotate_left(17), 0.12);
     // Same sRGB→linear exit as `derive_colors` — these feed vertex colours too.
@@ -3887,7 +3930,14 @@ fn derive_colors(tags: Option<&Tags>, ring0: (f64, f64)) -> ([f32; 3], [f32; 3])
 /// alone puts the flat roofs back to grey.
 fn register_colours(b: &mut Building, roofs: &cartopolis_geo::formats::roofs::Cell) {
     let (lat, lng) = b.ring[0];
-    let (wall, tile) = building_palette_dated(lat, lng, b.year);
+    // The block's height is to its top; the shells measure eaves, which on a
+    // pitched house sit a storey or so lower.
+    let eave = if b.height_is_eaves {
+        b.height_m
+    } else {
+        b.height_m * 0.8
+    };
+    let (wall, tile) = building_palette_for(lat, lng, b.year, Some(eave), None);
     let flat = srgb_to_linear_f32(crate::systems::lod22::FLAT_ROOF_COLOR);
     let measured = b.bag.as_ref().and_then(|id| roofs.roofs.get(id));
     let lin = |s: &cartopolis_geo::formats::roofs::Surface| {
@@ -4665,6 +4715,32 @@ mod tests {
         let old = building_palette_dated(53.2194, 6.5665, Some(1880));
         let new = building_palette_dated(53.2194, 6.5665, Some(2015));
         assert_ne!(old.0, new.0, "pre-1900 and post-2000 walls must differ");
+    }
+
+    /// A post-war house is brick and a post-war flat is render: the height
+    /// splits the 1945–1974 palette, and a mapped material beats both.
+    #[test]
+    fn post_war_houses_are_brick_and_its_flats_are_not() {
+        // Saturation in linear light: brick is a strong warm colour, render and
+        // concrete a pale, nearly neutral one.
+        let warm = |c: [f32; 3]| (c[0] - c[2]) / c[0].max(1e-4);
+        for i in 0..20 {
+            let (lat, lng) = (53.2251 + f64::from(i) * 1e-4, 6.5781);
+            let house = building_palette_for(lat, lng, Some(1950), Some(7.0), None).0;
+            let flat = building_palette_for(lat, lng, Some(1950), Some(30.0), None).0;
+            assert!(warm(house) > 0.45, "a 1950 house came out {house:?}");
+            assert!(warm(flat) < 0.4, "a 1950 slab came out {flat:?}");
+            let rendered = building_palette_for(lat, lng, Some(1950), Some(7.0), Some("plaster")).0;
+            assert!(
+                warm(rendered) < 0.4,
+                "a mapped material lost to the era: {rendered:?}"
+            );
+        }
+        // No height known: the era's palette, exactly as before.
+        assert_eq!(
+            building_palette_for(53.2194, 6.5665, Some(1950), None, None),
+            building_palette_dated(53.2194, 6.5665, Some(1950)),
+        );
     }
 
     /// A building the register says nothing about keeps the generated palette, and

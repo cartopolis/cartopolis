@@ -2136,11 +2136,6 @@ fn build_lod22_from_body(
             struck += 1;
             continue;
         }
-        let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
-            blat,
-            blng,
-            fact.and_then(|f| f.year),
-        );
         // The register says it is being renovated or built (`scaffolding`).
         let works = fact.is_some_and(|f| crate::systems::scaffolding::wants_scaffold(f.status));
         // Alpha is not opacity here — the material is opaque and `alpha_discard`
@@ -2162,6 +2157,15 @@ fn build_lod22_from_body(
             h.sort_by(f32::total_cmp);
             h.get(h.len() / 4).copied().filter(|&e| e > 2.0)
         };
+        // The era's palette, and for the post-war decades the height as well:
+        // their houses are brick and only their flats are render.
+        let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_for(
+            blat,
+            blng,
+            fact.and_then(|f| f.year),
+            eave_m,
+            None,
+        );
         let lit = crate::systems::building_windows::pack_facade(
             crate::systems::building_windows::Facade {
                 // A building with work going on at it is mostly empty after
