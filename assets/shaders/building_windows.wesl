@@ -210,7 +210,9 @@ const BRICK_COURSE_M: f32 = 0.0625;
 /// The share of a brick wall that is mortar, for keeping its mean the wall's
 /// colour: bed joints are 0.2 of a course, head joints 0.045 of a brick.
 const MORTAR_SHARE: f32 = 0.24;
-const MORTAR: vec3<f32> = vec3<f32>(0.42, 0.41, 0.38);
+/// A cement-grey joint, linear. It was 0.42 — near white in sRGB — and with a
+/// joint a fifth of every course the walls up close read as tiling.
+const MORTAR: vec3<f32> = vec3<f32>(0.27, 0.26, 0.24);
 /// The shadow a gutter and the eaves' overhang throw down the wall.
 const GUTTER_M: f32 = 0.35;
 
@@ -263,7 +265,13 @@ fn wall_finish(
     let along = brick.x + 0.5 * course;
     let fb = vec2<f32>(fract(along), fract(brick.y));
     let mortar = max(f32(fb.y < 0.2), f32(fb.x < 0.045));
-    let fired = 0.88 + 0.24 * hash_wrapped(vec2<f32>(floor(along), course) + vec2<f32>(5.0, 3.0));
+    let id = vec2<f32>(floor(along), course);
+    let fired = 0.88 + 0.24 * hash_wrapped(id + vec2<f32>(5.0, 3.0));
+    // …and not only lighter or darker: some fire browner, some purpler, and
+    // about one in twenty-five comes out of the kiln dark and glazed.
+    let hue = hash_wrapped(id + vec2<f32>(17.0, 41.0)) - 0.5;
+    let burnt = f32(hash_wrapped(id + vec2<f32>(71.0, 13.0)) > 0.96);
+    let firing = vec3<f32>(1.0 + 0.12 * hue, 1.0, 1.0 - 0.14 * hue) * fired * mix(1.0, 0.55, burnt);
     let face = max((c - MORTAR_SHARE * MORTAR) / (1.0 - MORTAR_SHARE), c * 0.3);
     // Faded out earlier than the windows are: a course is 6 cm, and at a few
     // pixels a course the bond beats against the pixel grid into moiré rings
@@ -276,7 +284,7 @@ fn wall_finish(
     // Mortar is not one grey either: sandier where a batch was mixed fresh,
     // darker where rain has carried dirt into it, a metre or so at a time.
     let pointing = mix(vec3<f32>(1.08, 1.02, 0.9), vec3<f32>(0.8, 0.83, 0.8), value_noise(vec2<f32>(u, v) / 0.6));
-    let bricked = mix(mix(face * fired, MORTAR * recess * pointing, mortar), c, brick_blur);
+    let bricked = mix(mix(face * firing, MORTAR * recess * pointing, mortar), c, brick_blur);
 
     // Concrete: panel joints a window bay apart and at every floor, and the
     // streaks rain leaves running down from each sill.
@@ -290,6 +298,22 @@ fn wall_finish(
     let rendered = c * (1.0 + 0.1 * (value_noise(vec2<f32>(u, v) / 1.3) - 0.5));
 
     return bricked * brick_w + panelled * concrete_w + rendered * pale_w;
+}
+
+/// A wall at the scale of a few metres: the brick of a later repair, a
+/// lighter patch where the sun bleached it, a darker one where the rain runs.
+/// Every brick is varied, but until this a wall was the same colour from one
+/// end to the other, which is what made a terrace read as printed card at any
+/// distance past its bricks. Zero-mean, and faded on the wall's *sharper* axis
+/// (`wall_px`, metres) between half a metre and one and a half, so it holds on
+/// a wall seen down a street and is gone before a whole facade is a few pixels.
+fn wall_drift(u: f32, v: f32, wall_px: f32) -> vec3<f32> {
+    let k = 1.0 - smoothstep(0.5, 1.5, wall_px);
+    let broad = value_noise(vec2<f32>(u / 4.0, v / 3.0) + vec2<f32>(91.0, 7.0)) - 0.5;
+    let near = value_noise(vec2<f32>(u / 1.3, v / 1.1) + vec2<f32>(23.0, 57.0)) - 0.5;
+    let warm = value_noise(vec2<f32>(u / 6.0, v / 6.0) + vec2<f32>(5.0, 83.0)) - 0.5;
+    let tone = 1.0 + (0.16 * broad + 0.08 * near) * k;
+    return vec3<f32>(tone) * (vec3<f32>(1.0) + vec3<f32>(0.05, 0.0, -0.05) * warm * k);
 }
 
 /// One side of a raised edge, as a slope from 0 to 1 and back: a parabola over
@@ -970,7 +994,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let blotch_uv = in.world_position.xz / PATCH_M;
     let blotch_px = max(fwidth(blotch_uv.x), fwidth(blotch_uv.y));
     let brick = vec2<f32>(u / BRICK_LENGTH_M, v / BRICK_COURSE_M);
-    let brick_px = max(fwidth(brick.x), fwidth(brick.y));
+    // On the geometric mean of the two axes, not the larger: a wall seen down
+    // a street is squeezed along it and not up it, and fading on the squeezed
+    // axis alone took the brick off every wall but the one beside you — the
+    // street's paving had the same fault (`ground_detail.wesl`, 2026-10-29).
+    let brick_px = sqrt(fwidth(brick.x) * fwidth(brick.y));
+    // Metres a pixel spans on the wall, on its sharper axis, for the variation
+    // a few metres across that holds long after a course has gone.
+    let wall_px = min(fwidth(u), fwidth(v));
     let gutter_px = fwidth(v) / GUTTER_M;
     let weave = vec2<f32>(u, v) / NET_MESH_M;
     let weave_px = max(fwidth(weave.x), fwidth(weave.y));
@@ -1006,7 +1037,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let plain = pbr_input.material.base_color.rgb;
         pbr_input.material.base_color = vec4<f32>(
             wall_finish(pbr_input.material.base_color.rgb, u, v, floor_f, brick, brick_px, px)
-                * gutter_shade(v, eave, gutter_px),
+                * gutter_shade(v, eave, gutter_px)
+                * wall_drift(u, v, wall_px),
             pbr_input.material.base_color.a,
         );
         pbr_input.material.base_color = vec4<f32>(
@@ -1185,8 +1217,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // A frame's inner edge is bevelled down to the glass: tilt the normal
         // there so it catches the light like a moulding rather than a stripe.
         let bevel = frame_bevel(pm, hs, era, shop_front) * detail * glass;
+        // No two panes are glazed in quite one plane: each sits a degree or two
+        // off the wall, the way a city's windows each catch a different piece
+        // of sky rather than one sheet of it across a whole elevation. Gone with
+        // the window detail, since a per-pane glint below a pixel crawls.
+        let skew = (vec2<f32>(fract(r * 3.71), fract(r * 9.13)) - vec2<f32>(0.5, 0.5)) * 0.07;
         // The wall's own relief stops at the opening: a pane is not bricked.
-        let tilt = bevel + relief * (1.0 - pane);
+        let tilt = bevel + relief * (1.0 - pane) + skew * glass * (1.0 - blur);
         let t3 = vec3<f32>(tangent.x, 0.0, tangent.y);
         pbr_input.N = normalize(pbr_input.N + t3 * tilt.x + vec3<f32>(0.0, tilt.y, 0.0));
         pbr_input.material.base_color = vec4<f32>(
