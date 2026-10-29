@@ -258,20 +258,23 @@ fn stone(id: f32, f: vec2<f32>, size: vec2<f32>, edge: f32, joint: f32, spread: 
 const SAND: vec3<f32> = vec3<f32>(0.30, 0.26, 0.19);
 const MOSS: vec3<f32> = vec3<f32>(0.10, 0.14, 0.05);
 
-fn lived_in(look_in: PavingLook, pattern: u32, p: vec2<f32>, metres_per_px: f32) -> PavingLook {
+fn lived_in(look_in: PavingLook, pattern: u32, p: vec2<f32>, metres_per_px: f32, fresh: f32) -> PavingLook {
     var look = look_in;
-    let stain_fade = 1.0 - pav_blur(1.0, metres_per_px);
+    // A relaid patch has not had the years to collect it yet.
+    let stain_fade = (1.0 - pav_blur(1.0, metres_per_px)) * (1.0 - 0.75 * fresh);
     let blotch = smoothstep(0.55, 0.85, pav_noise(p + vec2<f32>(31.0, 17.0)));
     let mottle = pav_noise(p / 0.3125) - 0.5;
     // 0.15 is about the blotch's mean, so the stains darken a street by a few
     // percent before they fade into its measured colour. Dirt is grey-green.
-    let grime = (0.15 * mottle - 0.35 * (blotch - 0.15)) * stain_fade;
-    look.tone *= (1.0 + grime) * mix(vec3<f32>(1.0), vec3<f32>(0.88, 0.92, 0.84), blotch * stain_fade);
+    // Half what it was once the stones stopped fading three metres out: seen
+    // across a whole square, a metre blotch at 35 % read as spilt oil.
+    let grime = (0.15 * mottle - 0.18 * (blotch - 0.15)) * stain_fade;
+    look.tone *= (1.0 + grime) * mix(vec3<f32>(1.0), vec3<f32>(0.94, 0.96, 0.92), blotch * stain_fade);
 
     let fill = pav_noise(p / 0.3125 + vec2<f32>(5.0, 71.0));
     let moss = smoothstep(0.6, 0.8, pav_noise(p / 1.25 + vec2<f32>(13.0, 3.0)));
     let grit = mix(SAND, MOSS, moss) * (0.8 + 0.4 * fill);
-    look.fill = vec4<f32>(grit, look.joint * mix(0.35, 0.85, fill));
+    look.fill = vec4<f32>(grit, look.joint * mix(0.35, 0.85, fill) * (1.0 - 0.6 * fresh));
     look.tilt *= mix(1.0, 0.35, smoothstep(0.45, 0.8, fill));
 
     if pattern == 4u || pattern == 5u {
@@ -287,14 +290,85 @@ fn lived_in(look_in: PavingLook, pattern: u32, p: vec2<f32>, metres_per_px: f32)
     return look;
 }
 
+/// The street at the scale it is walked rather than the scale of its stones.
+/// Every stone above is varied and every stain is a metre across, so a square
+/// a hundred metres wide was still one carpet: nothing in it changed over the
+/// ten metres between one lamppost and the next. A real one is lighter here and
+/// duller there, and has been dug up and relaid in places — a trench, a cable,
+/// a drain — where the stones are of another batch and have not yet taken on
+/// the street's dirt, or, in asphalt, a darker, smoother patch with a seam of
+/// sealant round it.
+///
+/// All of it averages out — the clouds are zero-mean, the patches a fifth of
+/// the cells and a few per cent of the ground — so where `FLAT_GROUND_OFF_M`
+/// hands the ground to the basemap, which paints each pattern's mean
+/// (`paving::pattern_mean`), the colour does not step, only the mottling goes.
+/// It fades on a pixel's *sharp* side, between one and three metres, because a
+/// blotch five metres wide is still five metres across a grazing view. The lattices (12.5, 6.25, 5 and
+/// 3.125 m) divide 125, so with `pav_hash`'s 80 they divide the floating
+/// origin's 10,000 m jump like the stones' do.
+struct StreetScale {
+    /// Multiplies the surface's colour.
+    tone: vec3<f32>,
+    /// Multiplies its roughness.
+    roughness: f32,
+    /// 1 inside a relaid patch, 0 elsewhere and on patterns that are not laid.
+    fresh: f32,
+}
+
+/// The street-scale variation at `p`; `laid` is 0 for no patches (loose
+/// ground, a road ribbon), 1 for laid stones, 2 for asphalt.
+fn street_scale(p: vec2<f32>, laid: u32, metres_per_px: f32, sharpest_px: f32) -> StreetScale {
+    var s: StreetScale;
+    let k = 1.0 - smoothstep(1.0, 3.0, sharpest_px);
+    let broad = pav_noise(p / 12.5 + vec2<f32>(3.0, 61.0)) - 0.5;
+    let near = pav_noise(p / 5.0 + vec2<f32>(47.0, 11.0)) - 0.5;
+    let warm = pav_noise(p / 12.5 + vec2<f32>(29.0, 5.0)) - 0.5;
+    let v = (0.45 * broad + 0.22 * near) * k;
+    s.tone = vec3<f32>(1.0 + v) * (vec3<f32>(1.0) + vec3<f32>(0.08, 0.0, -0.08) * warm * k);
+    s.roughness = 1.0 + 0.16 * (pav_noise(p / 3.125 + vec2<f32>(7.0, 41.0)) - 0.5) * k;
+    s.fresh = 0.0;
+    if laid == 0u || k <= 0.0 {
+        return s;
+    }
+    let cell = floor(p / 6.25);
+    let h = pav_hash(cell + vec2<f32>(53.0, 29.0));
+    if h > 0.8 {
+        let f = fract(p / 6.25);
+        let lo = vec2<f32>(0.05 + 0.3 * fract(h * 11.3), 0.05 + 0.3 * fract(h * 17.1));
+        let hi = vec2<f32>(0.6 + 0.35 * fract(h * 23.9), 0.6 + 0.35 * fract(h * 5.3));
+        // Metres inside the patch's nearest edge: negative outside it.
+        let d = min(f - lo, hi - f) * 6.25;
+        let inside_m = min(d.x, d.y);
+        let aa = max(metres_per_px, 0.002);
+        let fresh = smoothstep(-aa, aa, inside_m) * k;
+        s.fresh = fresh;
+        let batch = fract(h * 41.7) - 0.5;
+        if laid == 1u {
+            // Another batch of stone: a shade off in hue, and a little lighter
+            // for being clean.
+            s.tone *= mix(vec3<f32>(1.0), vec3<f32>(1.14 + 0.25 * batch, 1.14 + 0.08 * batch, 1.14 - 0.2 * batch), fresh);
+        } else {
+            // Fresh asphalt is darker and closer-textured than the worn road
+            // round it, and the joint is sealed with a strip of bitumen.
+            let seam = (1.0 - smoothstep(0.03, 0.03 + aa, abs(inside_m))) * k;
+            s.tone *= mix(vec3<f32>(1.0), vec3<f32>(0.8), fresh) * (1.0 - 0.45 * seam);
+            s.roughness *= mix(1.0, 0.85, fresh);
+        }
+    }
+    return s;
+}
+
 /// `paving::pattern`: 1 asphalt, 2 concrete slabs, 3 brick in herringbone,
 /// 4 concrete pavers in a stretcher bond, 5 pavement tiles, 6 stone setts,
 /// 7 grass pavers, 8 gravel and sand.
-fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32) -> PavingLook {
+fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32, sharpest_px: f32) -> PavingLook {
     var look: PavingLook;
     look.tone = vec3<f32>(1.0);
     look.tilt = vec2<f32>(0.0);
     look.roughness = 0.9;
+    let laid = select(select(0u, 1u, pattern >= 2u && pattern <= 6u), 2u, pattern == 1u);
+    let street = street_scale(p, laid, metres_per_px, sharpest_px);
     switch pattern {
         case 1u: {
             // Asphalt: a fine aggregate, and the patches of a road resurfaced
@@ -385,8 +459,10 @@ fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32) -> PavingLook {
         default: {}
     }
     if look.crisp > 0.0 {
-        look = lived_in(look, pattern, p, metres_per_px);
+        look = lived_in(look, pattern, p, metres_per_px, street.fresh);
     }
+    look.tone *= street.tone;
+    look.roughness *= street.roughness;
     return look;
 }
 
@@ -416,7 +492,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let paving_code = select(0.0, pbr_input.material.base_color.a - 1.0, water_sea.z <= 0.0);
     // How many metres one pixel spans here — taken outside any branch, since a
     // derivative in non-uniform control flow is undefined.
-    let metres_per_px = max(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
+    //
+    // A grazing view smears the ground along the line of sight and not across
+    // it: at eye height ten metres off, a pixel is five times longer than it is
+    // wide. Fading the stones on the long side alone took them out of the
+    // picture three metres from the feet (Grote Markt, 2026-10-29), so they
+    // fade on the side's geometric mean — the pixel's area — which keeps them
+    // twice as far and still goes before they are small enough to crawl.
+    let along_px = max(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
+    let sharpest_px = min(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
+    let metres_per_px = sqrt(along_px * sharpest_px);
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
 
@@ -472,7 +557,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     if paving_code > 0.5 {
-        let look = paving_look(u32(round(paving_code)), in.world_position.xz, metres_per_px);
+        let look = paving_look(u32(round(paving_code)), in.world_position.xz, metres_per_px, sharpest_px);
         pbr_input.material.base_color = vec4<f32>(
             mix(pbr_input.material.base_color.rgb * look.tone, look.fill.rgb, look.fill.a),
             pbr_input.material.base_color.a,
@@ -489,6 +574,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let n = normalize(pbr_input.N + vec3<f32>(t.x, 0.0, t.y));
         pbr_input.N = n;
         pbr_input.world_normal = n;
+        // The same broad variation as the surveyed asphalt beside it, so the two
+        // do not change character at the seam; no patches, which would cut
+        // across the markings at angles no repair crew would.
+        let street = street_scale(in.world_position.xz, 0u, metres_per_px, sharpest_px);
+        pbr_input.material.base_color = vec4<f32>(
+            pbr_input.material.base_color.rgb * street.tone,
+            pbr_input.material.base_color.a,
+        );
+        pbr_input.material.perceptual_roughness *= street.roughness;
     }
 
     if detail.w > 0.0 {
