@@ -2158,13 +2158,15 @@ fn build_lod22_from_body(
             h.get(h.len() / 4).copied().filter(|&e| e > 2.0)
         };
         // The era's palette, and for the post-war decades the height as well:
-        // their houses are brick and only their flats are render.
+        // their houses are brick and only their flats are render. A colour or
+        // a material somebody mapped in OpenStreetMap wins over both.
         let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_for(
             blat,
             blng,
             fact.and_then(|f| f.year),
             eave_m,
-            None,
+            fact.and_then(|f| f.material.as_deref()),
+            fact.and_then(|f| f.colour.as_deref()),
         );
         let lit = crate::systems::building_windows::pack_facade(
             crate::systems::building_windows::Facade {

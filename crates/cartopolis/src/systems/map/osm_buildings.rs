@@ -567,7 +567,7 @@ pub(crate) fn building_palette_dated(
     lng: f64,
     year: Option<u16>,
 ) -> ([f32; 3], [f32; 3]) {
-    building_palette_for(lat, lng, year, None, None)
+    building_palette_for(lat, lng, year, None, None, None)
 }
 
 /// Eaves below this are a house, a terrace or a low block — what the post-war
@@ -587,10 +587,16 @@ const WEDEROPBOUW_BRICK: &[[f32; 3]] = &[
 ];
 
 /// [`building_palette_dated`], told more where it is known: the building's
-/// eaves above its own base, and an OpenStreetMap `building:material`.
+/// eaves above its own base, and an OpenStreetMap `building:colour` and
+/// `building:material`.
 ///
-/// The material, where somebody mapped it, is the only word any source has on
-/// what a facade is made of, and wins. Otherwise the era decides, and for
+/// What somebody mapped is the only word any source has on a facade, and wins:
+/// the colour first, being the more exact, then the material — **except
+/// `stone`**, which Dutch mappers write for *steen*, brick: around Groningen 334
+/// of the 591 buildings with a material say `stone`, nearly all 1920s houses
+/// whose mapped colour is a brick red (2026-10-29). Natural stone for those
+/// would be the opposite of what was meant, so `stone` alone says nothing and
+/// the era decides. Otherwise the era decides, and for
 /// 1945–1974 the height does too: the era's pale render and grey concrete are
 /// the flats' and the slabs', and drawn on every house of the period they put
 /// whole brick neighbourhoods in render — the Gorechtkade, 57 of whose 92
@@ -602,6 +608,7 @@ pub(crate) fn building_palette_for(
     year: Option<u16>,
     eave_m: Option<f32>,
     material: Option<&str>,
+    colour: Option<&str>,
 ) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed((lat, lng));
     let (wall, roof) = match year {
@@ -623,7 +630,12 @@ pub(crate) fn building_palette_for(
             )
         }
     };
-    let wall = material.and_then(material_color).unwrap_or(wall);
+    let mapped = colour.and_then(parse_color).or_else(|| {
+        material
+            .filter(|m| !m.eq_ignore_ascii_case("stone"))
+            .and_then(material_color)
+    });
+    let wall = mapped.unwrap_or(wall);
     let wall = jitter(wall, seed, 0.12);
     let roof = jitter(roof, seed.rotate_left(17), 0.12);
     // Same sRGB→linear exit as `derive_colors` — these feed vertex colours too.
@@ -3937,7 +3949,7 @@ fn register_colours(b: &mut Building, roofs: &cartopolis_geo::formats::roofs::Ce
     } else {
         b.height_m * 0.8
     };
-    let (wall, tile) = building_palette_for(lat, lng, b.year, Some(eave), None);
+    let (wall, tile) = building_palette_for(lat, lng, b.year, Some(eave), None, None);
     let flat = srgb_to_linear_f32(crate::systems::lod22::FLAT_ROOF_COLOR);
     let measured = b.bag.as_ref().and_then(|id| roofs.roofs.get(id));
     let lin = |s: &cartopolis_geo::formats::roofs::Surface| {
@@ -4726,19 +4738,35 @@ mod tests {
         let warm = |c: [f32; 3]| (c[0] - c[2]) / c[0].max(1e-4);
         for i in 0..20 {
             let (lat, lng) = (53.2251 + f64::from(i) * 1e-4, 6.5781);
-            let house = building_palette_for(lat, lng, Some(1950), Some(7.0), None).0;
-            let flat = building_palette_for(lat, lng, Some(1950), Some(30.0), None).0;
+            let house = building_palette_for(lat, lng, Some(1950), Some(7.0), None, None).0;
+            let flat = building_palette_for(lat, lng, Some(1950), Some(30.0), None, None).0;
             assert!(warm(house) > 0.45, "a 1950 house came out {house:?}");
             assert!(warm(flat) < 0.4, "a 1950 slab came out {flat:?}");
-            let rendered = building_palette_for(lat, lng, Some(1950), Some(7.0), Some("plaster")).0;
+            let rendered =
+                building_palette_for(lat, lng, Some(1950), Some(7.0), Some("plaster"), None).0;
             assert!(
                 warm(rendered) < 0.4,
                 "a mapped material lost to the era: {rendered:?}"
             );
         }
+        // A mapped colour beats the material, and `stone` alone is no answer.
+        let red = building_palette_for(
+            53.2251,
+            6.5781,
+            Some(1928),
+            Some(6.0),
+            Some("stone"),
+            Some("#9C6C62"),
+        )
+        .0;
+        assert!(warm(red) > 0.45, "the mapped brick colour lost: {red:?}");
+        assert_eq!(
+            building_palette_for(53.2251, 6.5781, Some(1928), Some(6.0), Some("stone"), None),
+            building_palette_for(53.2251, 6.5781, Some(1928), Some(6.0), None, None),
+        );
         // No height known: the era's palette, exactly as before.
         assert_eq!(
-            building_palette_for(53.2194, 6.5665, Some(1950), None, None),
+            building_palette_for(53.2194, 6.5665, Some(1950), None, None, None),
             building_palette_dated(53.2194, 6.5665, Some(1950)),
         );
     }

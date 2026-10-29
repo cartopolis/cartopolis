@@ -86,6 +86,10 @@ pub struct Building {
         skip_serializing_if = "Option::is_none"
     )]
     pub area_max: Option<u32>,
+    /// OpenStreetMap's `building:colour`, verbatim (`#9c6c62`, `brown`), where
+    /// somebody mapped it. Beside [`Self::mat`] and for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col: Option<String>,
     /// Index into [`Cell::districts`].
     #[serde(
         default,
@@ -101,6 +105,12 @@ pub struct Building {
     pub fp: Vec<LatLng>,
     /// The BAG identificatie, verbatim.
     pub id: String,
+    /// What OpenStreetMap's `building:material` says it is built of, lower-case
+    /// (`brick`, `plaster`, `concrete`, …), where somebody mapped it. Neither
+    /// the BAG nor 3DBAG records a facade's material, so this is the only word on
+    /// it; a client that predates the field ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mat: Option<String>,
     /// The monument's main category, in the register's Dutch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcat: Option<String>,
@@ -227,10 +237,12 @@ mod tests {
                 Building {
                     area: Some(62),
                     area_max: Some(140),
+                    col: None,
                     district: Some(0),
                     doors: vec![(53.219_400_1, 6.566_500_2)],
                     fp: vec![(53.2193, 6.5664), (53.2195, 6.5664), (53.2195, 6.5667)],
                     id: "0014100010903891".into(),
+                    mat: None,
                     mcat: Some("Woningen en woningbouwcomplexen".into()),
                     mon: Some(466_587),
                     status: Some("demolished".into()),

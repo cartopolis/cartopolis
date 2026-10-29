@@ -228,6 +228,13 @@ pub struct BuildingFact {
     /// stands in, if any. Interned per cell — a district covers thousands of
     /// buildings and its name is one string.
     pub district: Option<Arc<str>>,
+    /// What OpenStreetMap's `building:material` says the building is made of,
+    /// lower-case, where somebody mapped it — the only source of a facade's
+    /// material (atlas's `bag` joins it on `ref:bag`). Interned per cell, like
+    /// the monument categories: a few words over many buildings.
+    pub material: Option<Arc<str>>,
+    /// OpenStreetMap's `building:colour`, as written, where somebody mapped it.
+    pub colour: Option<Arc<str>>,
     /// The building's own outline, as lat/lng, open (no repeated first point).
     ///
     /// The shape the client never had. A 3DBAG building arrives as a triangle
@@ -365,6 +372,13 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
                         .clone()
                 }),
                 district: b.district.and_then(|i| districts.get(i).cloned()),
+                material: b.mat.map(|m| {
+                    categories
+                        .entry(m)
+                        .or_insert_with_key(|k| Arc::from(k.as_str()))
+                        .clone()
+                }),
+                colour: b.col.map(|c| Arc::from(c.as_str())),
                 // A ring under three points is not an outline; the extractor does
                 // not write one and a truncated cache entry can.
                 footprint: if b.fp.len() >= 3 { b.fp } else { Vec::new() },

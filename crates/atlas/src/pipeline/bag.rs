@@ -771,6 +771,98 @@ fn collect_monuments(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
     Ok(n)
 }
 
+/// The BAG id without its leading zeros. The register writes sixteen digits
+/// (`0014100010934570`); OpenStreetMap's imports wrote `ref:bag` as a number
+/// and dropped them, so this is the only form both agree on.
+fn bare_pand(id: &str) -> &str {
+    let t = id.trim().trim_start_matches('0');
+    if t.is_empty() { "0" } else { t }
+}
+
+/// The OpenStreetMap ways and relations over the area that say what a building
+/// is built of and which pand it is: the only source of a facade's material
+/// anywhere, the BAG and 3DBAG having none.
+fn materials_query(bbox_rd: [f64; 4]) -> String {
+    let [w, s, e, n] = super::rd::wgs84_bbox(bbox_rd);
+    let b = format!("{s:.5},{w:.5},{n:.5},{e:.5}");
+    format!(
+        "[out:json][timeout:300];(way[\"building\"][\"building:material\"][\"ref:bag\"]({b});\
+         relation[\"building\"][\"building:material\"][\"ref:bag\"]({b});\
+         way[\"building\"][\"building:colour\"][\"ref:bag\"]({b});\
+         relation[\"building\"][\"building:colour\"][\"ref:bag\"]({b}););out tags;"
+    )
+}
+
+/// What one mapped building says about its facade: `building:material`
+/// lower-cased, `building:colour` as written.
+#[derive(Debug, Default, PartialEq)]
+struct Mapped {
+    material: Option<String>,
+    colour: Option<String>,
+}
+
+/// Each element's material and colour against every pand its `ref:bag` names
+/// (a few list several, `;`-separated), keyed by [`bare_pand`].
+fn materials_of(doc: &Value) -> Vec<(String, Mapped)> {
+    let tidy = |v: &Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let mut out = Vec::new();
+    for el in doc["elements"].as_array().into_iter().flatten() {
+        let tags = &el["tags"];
+        let Some(refs) = tags["ref:bag"].as_str() else {
+            continue;
+        };
+        let material = tidy(&tags["building:material"]).map(|m| m.to_ascii_lowercase());
+        let colour = tidy(&tags["building:colour"]).or_else(|| tidy(&tags["building:color"]));
+        if material.is_none() && colour.is_none() {
+            continue;
+        }
+        for r in refs.split(';').map(str::trim).filter(|r| !r.is_empty()) {
+            out.push((
+                bare_pand(r).to_string(),
+                Mapped {
+                    material: material.clone(),
+                    colour: colour.clone(),
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// What OpenStreetMap says each pand is built of and what colour it is. Best
+/// effort: an Overpass that does not answer leaves every building as the
+/// register alone describes it, and the run goes on — the facade then takes its
+/// era's palette, as it always did.
+fn collect_materials(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
+    let url = format!(
+        "{}?{}",
+        super::tall::overpass_url(),
+        query(&[("data", &materials_query(ctx.bbox))])
+    );
+    let doc = match get_json_with(ctx, &url, "building materials", std::time::Duration::from_secs(360), 3) {
+        Ok(doc) => doc,
+        Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
+        Err(PipelineError::Failed(e)) => {
+            ctx.log(format!("materialen uit OpenStreetMap overgeslagen: {e}"));
+            return Ok(0);
+        }
+    };
+    let by_bare: HashMap<&str, usize> = c.by_pand.iter().map(|(id, &ix)| (bare_pand(id), ix)).collect();
+    let mut hits = Vec::new();
+    for (pand, mapped) in materials_of(&doc) {
+        if let Some(&ix) = by_bare.get(pand.as_str()) {
+            hits.push((ix, mapped));
+        }
+    }
+    let n = hits.len();
+    for (ix, mapped) in hits {
+        let rec = &mut c.buildings[ix];
+        rec.mat = mapped.material.or(rec.mat.take());
+        rec.col = mapped.colour.or(rec.col.take());
+    }
+    Ok(n)
+}
+
 /// The protected district each building stands in: few districts, many buildings,
 /// so this walks the districts and asks each building's own centre. The first
 /// district a building falls in keeps it.
@@ -824,6 +916,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     ctx.log("beschermde stads- en dorpsgezichten…");
     let mut districts = Vec::new();
     let n_dis = collect_townscapes(ctx, &mut c, &mut districts)?;
+    ctx.log("gevelmateriaal uit OpenStreetMap…");
+    let n_mat = collect_materials(ctx, &mut c)?;
 
     let mut done = Vec::new();
     let Cells {
@@ -872,6 +966,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             .with("address_count", n_adr)
             .with("berth_count", n_bth)
             .with("monument_count", n_mon)
+            .with("material_count", n_mat)
             .with("districts", districts.clone()),
     )?;
     ctx.log(format!(
@@ -887,6 +982,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             Count::new("addresses", n_adr),
             Count::new("berths", n_bth),
             Count::new("monuments", n_mon),
+            Count::new("materials", n_mat),
             Count::new("districts", districts.len()),
         ],
     })
@@ -896,6 +992,33 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// OpenStreetMap wrote `ref:bag` as a number, the register as sixteen
+    /// digits; both have to land on one key, and a list names every pand in it.
+    #[test]
+    fn a_mapped_material_reaches_its_pand_whatever_the_zeros() {
+        assert_eq!(bare_pand("0014100010934570"), "14100010934570");
+        assert_eq!(bare_pand("14100010934570"), "14100010934570");
+        let doc = json!({"elements": [
+            {"type": "way", "tags": {"building": "yes", "ref:bag": "14100010934570", "building:material": "Brick"}},
+            {"type": "way", "tags": {"building": "yes", "ref:bag": "1;0002", "building:material": "plaster"}},
+            {"type": "way", "tags": {"building": "yes", "ref:bag": "3"}},
+            {"type": "way", "tags": {"building": "yes", "ref:bag": "0004", "building:colour": "#9C6C62"}},
+        ]});
+        let m = |material: Option<&str>, colour: Option<&str>| Mapped {
+            material: material.map(str::to_string),
+            colour: colour.map(str::to_string),
+        };
+        assert_eq!(
+            materials_of(&doc),
+            vec![
+                ("14100010934570".to_string(), m(Some("brick"), None)),
+                ("1".to_string(), m(Some("plaster"), None)),
+                ("2".to_string(), m(Some("plaster"), None)),
+                ("4".to_string(), m(None, Some("#9C6C62"))),
+            ]
+        );
+    }
 
     #[test]
     fn uses_are_a_bitmask_and_unknown_words_say_nothing() {
