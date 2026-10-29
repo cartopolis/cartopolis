@@ -210,9 +210,14 @@ const BRICK_COURSE_M: f32 = 0.0625;
 /// The share of a brick wall that is mortar, for keeping its mean the wall's
 /// colour: bed joints are 0.2 of a course, head joints 0.045 of a brick.
 const MORTAR_SHARE: f32 = 0.24;
-/// A cement-grey joint, linear. It was 0.42 — near white in sRGB — and with a
+/// The two mortars a Dutch wall is pointed in, linear: a grey cement and a
+/// sandy lime. The joint was one 0.42 grey — near white in sRGB — and with a
 /// joint a fifth of every course the walls up close read as tiling.
-const MORTAR: vec3<f32> = vec3<f32>(0.27, 0.26, 0.24);
+const CEMENT: vec3<f32> = vec3<f32>(0.22, 0.215, 0.2);
+const LIME: vec3<f32> = vec3<f32>(0.3, 0.26, 0.19);
+/// What a joint averages to once the recess has shaded it (~0.6 of its
+/// colour), for keeping the wall's mean its own colour.
+const MORTAR: vec3<f32> = vec3<f32>(0.155, 0.143, 0.118);
 /// The shadow a gutter and the eaves' overhang throw down the wall.
 const GUTTER_M: f32 = 0.35;
 
@@ -264,14 +269,19 @@ fn wall_finish(
     let course = floor(brick.y);
     let along = brick.x + 0.5 * course;
     let fb = vec2<f32>(fract(along), fract(brick.y));
-    let mortar = max(f32(fb.y < 0.2), f32(fb.x < 0.045));
     let id = vec2<f32>(floor(along), course);
+    // A joint is as wide as the mason left it: each bed a millimetre or two
+    // thicker or thinner than the last and wandering along its length, each
+    // head joint its own. The other readers of the lattice keep the nominal
+    // shares, which these differ from by a few millimetres at most.
+    let bed = 0.2 + 0.06 * (hash_wrapped(vec2<f32>(course, 5.0)) - 0.5)
+        + 0.05 * (value_noise(vec2<f32>(u / 0.4, course)) - 0.5);
+    let head = 0.045 + 0.025 * (hash_wrapped(id + vec2<f32>(29.0, 7.0)) - 0.5);
+    let mortar = max(f32(fb.y < bed), f32(fb.x < head));
     let fired = 0.88 + 0.24 * hash_wrapped(id + vec2<f32>(5.0, 3.0));
-    // …and not only lighter or darker: some fire browner, some purpler, and
-    // about one in twenty-five comes out of the kiln dark and glazed.
-    // A ramp through what one kiln load gives — terracotta, brown, a purple
-    // that went darker in the hot part of the kiln — around the wall's own
-    // colour, so the three average to it.
+    // …and not only lighter or darker: a ramp through what one kiln load
+    // gives — terracotta, brown, a purple that went darker in the hot part of
+    // the kiln — and about one in twenty-five dark and glazed.
     let pick = hash_wrapped(id + vec2<f32>(17.0, 41.0));
     let terracotta = vec3<f32>(1.1, 0.96, 0.84);
     let brown = vec3<f32>(0.95, 0.94, 0.92);
@@ -286,14 +296,22 @@ fn wall_finish(
     // pixels a course the bond beats against the pixel grid into moiré rings
     // across the whole wall (seen on the Deck at 20–40 m, 2026-09-30).
     let brick_blur = clamp(brick_px * 3.0 - 0.3, 0.0, 1.0);
-    // The joint is recessed, so the brick over it shades its upper part — from
-    // the sky as much as from the sun, which is why this reads in shade, where
-    // the relief in `wall_relief` does not.
-    let recess = select(0.8, mix(1.0, 0.55, smoothstep(0.04, 0.2, fb.y)), fb.y < 0.2);
-    // Mortar is not one grey either: sandier where a batch was mixed fresh,
-    // darker where rain has carried dirt into it, a metre or so at a time.
-    let pointing = mix(vec3<f32>(1.08, 1.02, 0.9), vec3<f32>(0.8, 0.83, 0.8), value_noise(vec2<f32>(u, v) / 0.6));
-    let bricked = mix(mix(face * firing, MORTAR * recess * pointing, mortar), c, brick_blur);
+    // The joint is recessed, so the brick over it shades it — deepest right
+    // under the brick, from the sky as much as from the sun, which is why this
+    // reads in shade where the relief in `wall_relief` does not. A head joint,
+    // open to the sky above it, less so.
+    let recess = select(0.7, mix(0.85, 0.35, smoothstep(0.2, 1.0, fb.y / bed)), fb.y < bed);
+    // Mortar is not one mix: a grey cement on one stretch of wall and a sandy
+    // lime on the next, where it was repointed or built in another year, and
+    // within either darker where rain has carried dirt into it.
+    let lime = smoothstep(0.35, 0.65, value_noise(vec2<f32>(u / 7.0, v / 5.0) + vec2<f32>(13.0, 29.0)));
+    let mix_col = mix(CEMENT, LIME, lime);
+    let dirt = mix(1.05, 0.8, value_noise(vec2<f32>(u, v) / 0.6));
+    // …and it is a sand, not a paint: a grain of a few millimetres, gone well
+    // before the joint is.
+    let grain_k = 1.0 - clamp(brick_px * 30.0 - 0.3, 0.0, 1.0);
+    let grain = 1.0 + 0.3 * (value_noise(vec2<f32>(u, v) / 0.004) - 0.5) * grain_k;
+    let bricked = mix(mix(face * firing, mix_col * recess * dirt * grain, mortar), c, brick_blur);
 
     // Concrete: panel joints a window bay apart and at every floor, and the
     // streaks rain leaves running down from each sill.
