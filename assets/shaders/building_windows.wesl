@@ -737,8 +737,11 @@ fn room_behind(pg: vec2<f32>, d: vec3<f32>, room_w: f32, floor_y: f32, ceil_y: f
     } else {
         col = paint * 0.75;
     }
-    // Daylight from the window, falling off into the room.
-    let light = 0.16 * exp(-z * 0.45) + 0.03;
+    // Daylight from the window, falling off into the room. At 0.16 the room
+    // was there and could not be seen through the sky the glass reflects
+    // (mac-2, 2026-10-29); this is about what a room off a bright street
+    // shows from across a pavement.
+    let light = 0.34 * exp(-z * 0.32) + 0.05;
     return max(col * light, GLASS_BASE);
 }
 
