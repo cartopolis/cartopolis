@@ -15,20 +15,31 @@ export PATH="$TOOLS/bin:$PATH"
 
 # The wasm-bindgen CLI at exactly the version Cargo.lock names: anything else
 # refuses the module (or, worse, writes glue that does not match it). The
-# release binary, as the CI image installs it, rather than a cargo install.
+# release binary, as the CI image installs it, rather than a cargo install —
+# the build machine's own: the wasm and web deploys build on a Mac node.
 wasm_bindgen() {
-    local want dir
+    local want dir triple
     want=$(awk '/^name = "wasm-bindgen"$/ { found = 1; next }
                 found && /^version/ { gsub(/[",]/, "", $3); print $3; exit }' "$ROOT/Cargo.lock")
-    dir="$TOOLS/wasm-bindgen-$want"
+    case "$(uname -sm)" in
+        "Darwin arm64") triple=aarch64-apple-darwin ;;
+        *) triple=x86_64-unknown-linux-musl ;;
+    esac
+    dir="$TOOLS/wasm-bindgen-$want-$triple"
     if [ ! -x "$dir/wasm-bindgen" ]; then
-        echo "fetching wasm-bindgen $want" >&2
+        echo "fetching wasm-bindgen $want for $triple" >&2
         mkdir -p "$dir"
-        curl -sSfL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$want/wasm-bindgen-$want-x86_64-unknown-linux-musl.tar.gz" \
+        curl -sSfL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$want/wasm-bindgen-$want-$triple.tar.gz" \
             | tar -xz -C "$dir" --strip-components=1
     fi
     ln -sf "$dir/wasm-bindgen" "$TOOLS/bin/wasm-bindgen"
     echo "$dir/wasm-bindgen"
+}
+
+# Trunk, for the wasm client: the Linux node image carries it, a Mac node
+# installs it once into $TOOLS.
+trunk_cli() {
+    command -v trunk >/dev/null || cargo install --locked --quiet --root "$TOOLS" trunk
 }
 
 # The Android NDK, as ANDROID_NDK_HOME (exported): the one already set, the

@@ -5,6 +5,7 @@
 # for shared memory, the large assets pre-compressed.
 . "$(dirname "$0")/lib.sh"
 wasm_bindgen >/dev/null
+trunk_cli
 cd "$ROOT/crates/cartopolis"
 RUSTUP_TOOLCHAIN=nightly \
 CARGO_UNSTABLE_BUILD_STD=std,panic_abort \
