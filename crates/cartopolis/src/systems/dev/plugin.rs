@@ -313,6 +313,17 @@ impl Plugin for ShotHarnessPlugin {
                         .in_set(ClientPhase::Input),
                 ),
             );
+            // `CARTO_SHOT_REPLAY`: a recorded scene's prims and hand, on the
+            // movie's clock. Before the phone is placed, which reads the hand.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(replay) = systems::shot_replay::ShotReplay::from_env() {
+                app.insert_resource(replay).add_systems(
+                    Update,
+                    systems::shot_replay::play_shot_replay
+                        .before(systems::held_phone::track_held_phone)
+                        .in_set(ClientPhase::Move),
+                );
+            }
         }
     }
 }

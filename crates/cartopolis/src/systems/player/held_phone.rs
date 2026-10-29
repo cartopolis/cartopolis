@@ -144,6 +144,9 @@ pub struct HeldPhone {
     pub selfie: bool,
     /// The eyes above the soles, metres: where a selfie's phone looks.
     pub eyes_height: f32,
+    /// A hand a capture puts in the world this frame (`systems::shot_replay`,
+    /// in world space): the phone is held there, in place of the tracker's.
+    pub placed: Option<Vec3>,
     /// The phone's attitude while the camera screen has a camera, which takes
     /// it from the tracker (`CameraScreen::phone_hold`).
     compass: Option<crate::platform::orientation::OrientationWatch>,
@@ -166,6 +169,7 @@ impl Default for HeldPhone {
             reference: None,
             selfie: false,
             eyes_height: 1.6,
+            placed: None,
             compass: None,
         }
     }
@@ -363,6 +367,19 @@ pub fn track_held_phone(
         return;
     }
     held.compass = None;
+    // A capture's recorded hand: the phone where the script sensed it, its
+    // screen to the eyes, no further out than the arm reaches.
+    if let Some(world) = held.placed {
+        held.reference = None;
+        let at = body.affine().inverse().transform_point3(world);
+        let out = at - arm.shoulder;
+        let at = arm.shoulder + out.clamp_length_max(arm.length * LEASH);
+        held.phone = Some(PhoneInHand {
+            at,
+            rotation: facing(at, eyes),
+        });
+        return;
+    }
     let tracked = precise
         .active
         .then_some(precise.hand_geo.zip(precise.hand_rotation))

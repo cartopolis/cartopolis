@@ -909,33 +909,7 @@ pub fn apply_network_snapshot(
                 let mut found = false;
                 for (entity, mut p, mut tf) in prim_entities.iter_mut() {
                     if p.id == prim.id {
-                        *p = prim_from_dto(&prim);
-                        *tf = transform_from_dto(&prim);
-                        // Geometry may have changed → rebuild mesh; texture/surface →
-                        // refresh material (refresh_prim_textures re-applies both).
-                        commands
-                            .entity(entity)
-                            .try_insert(NeedsMeshRebuild)
-                            .try_insert(NeedsTextureRefresh);
-                        // ADR-029: keep the geo anchor in sync so place_geo_prims
-                        // re-derives the cell/local transform for the new position.
-                        commands.entity(entity).try_insert(PrimGeo {
-                            latitude: prim.geo.latitude,
-                            longitude: prim.geo.longitude,
-                        });
-                        commands.entity(entity).try_insert((
-                            crate::components::SoundingTone(
-                                prim.tone.map(cartopolis_core::ToneSpec::sanitized),
-                            ),
-                            crate::components::SensesHands(prim.hand_range),
-                        ));
-                        // A full upsert is the newer word on where it is (an edit,
-                        // a script's `set_geo`, physics switched off): drop the
-                        // motion so it is placed from this, and the next
-                        // `PrimMotion` picks it up from here.
-                        commands
-                            .entity(entity)
-                            .try_remove::<crate::components::PhysicalMotion>();
+                        update_prim_from_dto(&mut commands, entity, &mut p, &mut tf, &prim);
                         found = true;
                         break;
                     }
@@ -1386,10 +1360,45 @@ fn transform_from_dto(p: &PrimDto) -> Transform {
         .with_scale(p.scale)
 }
 
+/// Write a newer DTO onto a prim already spawned: what a `PrimUpsert` does to
+/// one this client has (and a capture's replay, `systems::shot_replay`).
+pub(crate) fn update_prim_from_dto(
+    commands: &mut Commands,
+    entity: Entity,
+    prim: &mut Prim,
+    transform: &mut Transform,
+    dto: &PrimDto,
+) {
+    *prim = prim_from_dto(dto);
+    *transform = transform_from_dto(dto);
+    // Geometry may have changed → rebuild mesh; texture/surface → refresh
+    // material (refresh_prim_textures re-applies both).
+    commands
+        .entity(entity)
+        .try_insert(NeedsMeshRebuild)
+        .try_insert(NeedsTextureRefresh);
+    // ADR-029: keep the geo anchor in sync so place_geo_prims re-derives the
+    // cell/local transform for the new position.
+    commands.entity(entity).try_insert((
+        PrimGeo {
+            latitude: dto.geo.latitude,
+            longitude: dto.geo.longitude,
+        },
+        crate::components::SoundingTone(dto.tone.map(cartopolis_core::ToneSpec::sanitized)),
+        crate::components::SensesHands(dto.hand_range),
+    ));
+    // A full upsert is the newer word on where it is (an edit, a script's
+    // `set_geo`, physics switched off): drop the motion so it is placed from
+    // this, and the next `PrimMotion` picks it up from here.
+    commands
+        .entity(entity)
+        .try_remove::<crate::components::PhysicalMotion>();
+}
+
 /// Spawn a prim entity from a DTO with its absolute geo anchor (ADR-029);
 /// `prim_geo::place_geo_prims` derives the `GridCell` + local `Transform` from
 /// the current OSM anchor.
-fn spawn_prim_from_dto(commands: &mut Commands, p: PrimDto) {
+pub(crate) fn spawn_prim_from_dto(commands: &mut Commands, p: PrimDto) {
     let geo = PrimGeo {
         latitude: p.geo.latitude,
         longitude: p.geo.longitude,

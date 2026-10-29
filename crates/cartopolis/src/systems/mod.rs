@@ -36,7 +36,7 @@ pub mod net;
 pub mod player;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use dev::aerial_reference;
+pub use dev::{aerial_reference, shot_replay};
 pub use dev::{
     anim_clock, camera_pacing, desktop_integration, dev_panel, diagnostics, frame_pacing,
     frame_split, perf, pipeline_health, render_census, shot_harness, shot_presets, upload_meter,

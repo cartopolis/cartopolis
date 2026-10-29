@@ -26,6 +26,9 @@ pub mod pipeline_health;
 pub mod render_census;
 pub mod shot_harness;
 pub mod shot_presets;
+/// A recorded scene — prims and a hand — played back in a capture.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod shot_replay;
 /// Per-system CPU time, counted in process and read per perf window.
 #[cfg(feature = "perf")]
 pub mod system_timings;
