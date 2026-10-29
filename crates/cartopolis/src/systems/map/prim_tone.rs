@@ -143,6 +143,11 @@ impl ToneControl {
             .store(tone.vibrato.to_bits(), Ordering::Relaxed);
     }
 
+    /// Fade to nothing at the pitch it has, over the synthesiser's gain ramp.
+    pub fn silence(&self) {
+        self.gain.store(0f32.to_bits(), Ordering::Relaxed);
+    }
+
     fn read(&self) -> (f32, f32, Voice, f32, f32) {
         let f = |a: &AtomicU32| f32::from_bits(a.load(Ordering::Relaxed));
         let voice = Voice::ALL
@@ -243,11 +248,18 @@ pub fn listener_gain(range_m: f32, distance_m: f32) -> f32 {
 /// so standing on the edge does not start and stop it every frame.
 const RANGE_HYSTERESIS: f32 = 1.1;
 
+/// How long a stopped tone's player is kept while it fades: seven of the gain
+/// ramp's time constants, by when it is under a thousandth of its level.
+/// Despawning it at once cut the wave wherever it was, which clicks.
+pub const FADE_OUT_S: f32 = 7.0 * GAIN_TAU_S;
+
 /// The player for one prim's tone.
 #[derive(Component)]
 pub struct TonePlayer {
     prim: i64,
     control: Arc<ToneControl>,
+    /// Seconds since its tone stopped, while it fades out.
+    fading: Option<f32>,
 }
 
 /// Keep one player per sounding prim in range, and feed it this frame's tone.
@@ -261,8 +273,9 @@ pub fn drive_prim_tones(
         &crate::components::SoundingTone,
         &GlobalTransform,
     )>,
-    players: Query<(Entity, &TonePlayer)>,
+    mut players: Query<(Entity, &mut TonePlayer)>,
     mut streams: ResMut<Assets<ToneStream>>,
+    time: Res<Time>,
 ) {
     use bevy::audio::{AudioPlayer, PlaybackMode, PlaybackSettings};
     use std::collections::HashMap;
@@ -277,15 +290,26 @@ pub fn drive_prim_tones(
         .filter_map(|(prim, tone, at)| Some((prim.id, (tone.0?, at.translation().distance(eye)))))
         .collect();
 
-    for (entity, player) in &players {
+    for (entity, mut player) in &mut players {
         match wanted.remove(&player.prim) {
             Some((tone, d)) if d < tone.range_m * RANGE_HYSTERESIS => {
                 player
                     .control
                     .set(&tone, tone.gain * listener_gain(tone.range_m, d) * effects);
+                player.fading = None;
             }
-            // Stopped, walked out of range, or the prim is gone.
-            _ => commands.entity(entity).try_despawn(),
+            // Stopped, walked out of range, or the prim is gone: faded out,
+            // then let go.
+            _ => {
+                if player.fading.is_none() {
+                    player.control.silence();
+                }
+                let fading = player.fading.unwrap_or(0.0) + time.delta_secs();
+                player.fading = Some(fading);
+                if fading >= FADE_OUT_S {
+                    commands.entity(entity).try_despawn();
+                }
+            }
         }
     }
     for (prim, (tone, d)) in wanted {
@@ -302,7 +326,11 @@ pub fn drive_prim_tones(
                 mode: PlaybackMode::Remove,
                 ..default()
             },
-            TonePlayer { prim, control },
+            TonePlayer {
+                prim,
+                control,
+                fading: None,
+            },
         ));
     }
 }
@@ -373,5 +401,31 @@ mod tests {
         assert!((listener_gain(25.0, 0.0) - 1.0).abs() < 1e-6);
         assert!(listener_gain(25.0, 5.0) > listener_gain(25.0, 15.0));
         assert_eq!(listener_gain(25.0, 30.0), 0.0);
+    }
+
+    #[test]
+    fn a_stopped_tone_fades_out_before_its_player_goes() {
+        let control = Arc::new(ToneControl::default());
+        control.set(&ToneSpec::default(), 1.0);
+        let mut decoder = ToneDecoder {
+            targets: control.read(),
+            control: Arc::clone(&control),
+            synth: Synth::default(),
+            countdown: 0,
+        };
+        for _ in 0..SAMPLE_RATE / 5 {
+            decoder.next();
+        }
+        control.silence();
+        let fade: Vec<f32> = (0..(FADE_OUT_S * SAMPLE_RATE as f32) as usize)
+            .map(|_| decoder.next().unwrap())
+            .collect();
+        // Still sounding just after the stop — a ramp, not a cut — and under a
+        // thousandth of full level by the time the player is despawned.
+        assert!(fade[..64].iter().any(|s| s.abs() > 0.1), "it cut off");
+        let tail = fade[fade.len() - 64..]
+            .iter()
+            .fold(0f32, |m, s| m.max(s.abs()));
+        assert!(tail < 1e-3 * OUTPUT_PEAK, "still at {tail} when it goes");
     }
 }
