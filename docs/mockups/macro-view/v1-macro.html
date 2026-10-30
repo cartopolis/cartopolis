@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v1: the macro view as a strategy map</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>The macro view as a <b>strategy map</b> <span class="new">new</span></h1>
+<p class="lede">Above about 40 km the 3D map crossfades into a painted, flat map in the manner of a strategy game's strategic view:
+clear land cover, roads with a hierarchy, cities as banners, borders that glow. It is the surface the macro features hang off —
+lenses, scenarios, communities by region. Every map on this sheet is drawn from real data: ESA WorldCover 2021 from our own
+tile server (z6), Natural Earth roads, rail, rivers and borders, and OSM city populations.</p>
+
+<div class="principles">
+  <div><h3>Read at a glance</h3><p>Cities named and sized, motorways in one warm colour, land cover in eight distinct classes instead of two greens.</p></div>
+  <div><h3>A crossfade, not a mode</h3><p>The painted map fades in on altitude (<code>space_factor</code>), the 3D city fades out. Zooming back in lands where you looked.</p></div>
+  <div><h3>Lenses</h3><p>One rail of lenses re-colours the same map: terrain, built-up, mobility, communities, weather, scenarios.</p></div>
+  <div><h3>Scenarios</h3><p>A scenario is a lens with a clock: it plays a modelled event over the map. The first is a nuclear exchange (other sheet).</p></div>
+</div>
+
+<h2><span>1</span>Today, at 350 km <span class="today">today</span></h2>
+<p class="sub">Captured on mac-1 (real GPU), offline, looking straight down. Land is one dark green with brown specks, every road is the same thin line, and nothing is named.</p>
+<div class="screen half" style="background-image:url(today-350km.jpg)"></div>
+
+<h2><span>2</span>Proposed: the same altitude <span class="new">new</span></h2>
+<p class="sub">Selected city on the left, lenses on the right, the zoom tiers bottom-left. People, communities and event counts are <span class="made">invented</span>; the orange badge on a banner is the number of communities based there.</p>
+<div class="screen" style="background-image:url(map-nl.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i></i>Cartopolis</div>
+    <div class="stat"><span class="dot" style="background:var(--accent)"></span><b>1,284</b><small>people online</small></div>
+    <div class="stat"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5M14 15c3 0 6 1.5 6 4"/></svg><b>312</b><small>communities</small></div>
+    <div class="stat"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg><b>47</b><small>events today</small></div>
+    <div class="stat"><svg class="i" viewBox="0 0 24 24"><path d="M6 16a4 4 0 0 1 1-8 5 5 0 0 1 9.5 1.5A3.5 3.5 0 0 1 17 16z"/></svg><b>11°</b><small>showers from the west</small></div>
+    <div class="right"><div class="stat"><small>Fri 30 Oct · 10:42</small></div><div class="btn"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/></svg>Search a place</div></div>
+  </div>
+
+  <div class="abs glass lenses labels">
+    <div class="lens on"><svg class="i" viewBox="0 0 24 24"><path d="M3 18l5-9 4 6 3-4 6 7z"/></svg><span>Map</span></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/></svg><span>Terrain</span></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="9" width="6" height="11"/><rect x="12" y="4" width="8" height="16"/></svg><span>Built-up</span></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M5 20L10 4M19 20L14 4M12 7v2M12 12v2M12 17v2"/></svg><span>Mobility</span></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/></svg><span>Communities</span></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M6 16a4 4 0 0 1 1-8 5 5 0 0 1 9.5 1.5A3.5 3.5 0 0 1 17 16z"/></svg><span>Weather</span></div>
+    <div style="height:1px;width:40px;background:var(--gline);margin:4px 0"></div>
+    <div class="lens war"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/></svg><span>Scenarios</span></div>
+  </div>
+
+  <div class="abs glass panel" style="left:16px; top:84px; width:330px;">
+    <h3><span class="dot" style="background:var(--brand)"></span>Utrecht</h3>
+    <div style="color:var(--dim);font-size:13px">City · Utrecht province · 295,591 people (OSM)</div>
+    <div class="k">Here now</div>
+    <div class="row2"><span>People in the world</span><b>38</b></div>
+    <div class="row2"><span>Communities based here</span><b>4</b></div>
+    <div class="row2"><span>Events today</span><b>6</b></div>
+    <div class="k">Land</div>
+    <div class="row2"><span>Built-up</span><b>61%</b></div><div class="bar"><i style="width:61%;background:#a48e78"></i></div>
+    <div class="row2" style="margin-top:6px"><span>Grass and farmland</span><b>33%</b></div><div class="bar"><i style="width:33%;background:#86a957"></i></div>
+    <div class="k">Communities</div>
+    <span class="chip">Fietsersbond Utrecht</span><span class="chip">Lombok buren</span><span class="chip">+2</span>
+    <div style="display:flex;gap:8px;margin-top:16px"><div class="btn primary">Fly down</div><div class="btn">Events</div></div>
+  </div>
+
+  <div class="abs glass zoom">
+    <div class="tiers"><div>Street</div><div>City</div><div>Region</div><div class="on">Country</div><div>Continent</div></div>
+    <span>320 km</span>
+  </div>
+</div>
+
+<h2><span>3</span>Lenses re-colour the same map <span class="new">new</span></h2>
+<p class="sub">Each is one hex grid (about 9 km across here) classified from the same data. Hexes are the unit the macro features aggregate to: a lens, a scenario's damage, a community's reach.</p>
+<div class="grid3">
+  <div><div class="lensimg" style="background-image:url(lens-terrain.jpg)"></div>
+    <div class="cap"><b>Terrain.</b> The majority WorldCover class of each hex: farmland gold, grassland green, forest dark with trees, built-up grey-brown. The Veluwe, the Drenthe forests and the Eifel read immediately.</div></div>
+  <div><div class="lensimg" style="background-image:url(lens-builtup.jpg)"></div>
+    <div class="cap"><b>Built-up.</b> Share of each hex that is residential, from pale to orange. The Randstad, Brabant's city chain and the Ruhr light up; the north stays dark.</div></div>
+  <div><div class="lensimg" style="background-image:url(lens-mobility.jpg)"></div>
+    <div class="cap"><b>Mobility.</b> Motorways in gold, other main roads in grey, railways in teal. Natural Earth's network at this scale; OSM's would follow as you zoom in.</div></div>
+</div>
+
+<div class="notes">
+  <div><h3>Where the data comes from</h3><ul>
+    <li>Land cover: ESA WorldCover 2021 (CC BY 4.0), <code>tiles.cartopolis.org/tiles/landcover</code> at z6.</li>
+    <li>Roads, railways, rivers, lakes, borders: Natural Earth 1:10m.</li>
+    <li>City populations: OSM <code>place=city</code> from <code>overpass.cartopolis.org</code>; Belgian and German cities from Natural Earth.</li>
+    <li>Drawn by <code>gen.ts</code> in this folder.</li></ul></div>
+  <div><h3>Found while drawing it</h3><ul>
+    <li>The landcover archive holds <b>no forest over the Netherlands from z7 up</b> (z6 has 930 forest polygons over this box, z7–z10 none); Germany has it at every zoom. If the client reads z7+ here, the Veluwe is drawn as grass, which may be part of why the view looks flat.</li>
+    <li>Not yet checked in the client itself.</li></ul></div>
+</div>
+</body>
+</html>
