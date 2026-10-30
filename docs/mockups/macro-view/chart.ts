@@ -5,7 +5,7 @@ const X = (km: number) => L + ((Math.log10(km) - lo) / (hi - lo)) * (W - L - R);
 type Seg = [number, number][]; // [km, opacity]
 const rows: { name: string; note: string; col: string; pts: Seg; today?: boolean }[] = [
   { name: "3D city", note: "buildings sink into the ground", col: "#c7d3d8", pts: [[0.5, 1], [15, 1], [50, 0], [20000, 0]] },
-  { name: "Painted ground", note: "land cover, roads by rank", col: "#86a957", pts: [[0.5, 0], [15, 0], [50, 1], [20000, 1]] },
+  { name: "Painted ground", note: "by distance; near stays today's style", col: "#86a957", pts: [[0.5, 0], [15, 0], [50, 1], [20000, 1]] },
   { name: "City banners", note: "more of them lower down", col: "#5cc6c0", pts: [[0.5, 0], [2, 0], [5, 1], [20000, 1]] },
   { name: "Hex grid", note: "the unit lenses count in", col: "#fff2c4", pts: [[0.5, 0], [100, 0], [250, 1], [1500, 1], [4000, 0], [20000, 0]] },
   { name: "Globe and space", note: "space_factor, exists today", col: "#6fb6e6", pts: [[0.5, 0], [50, 0], [3000, 1], [20000, 1]], today: true },

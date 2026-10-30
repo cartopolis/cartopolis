@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v3: from the street to the globe, closer colours, clouds and night</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>From the street to <b>the globe</b> <span class="new">new</span></h1>
+<p class="lede">v3 after review: the painted map now uses colours closer to today's client (muted greens, the same navy sea, grey towns), so the two blend instead of switching. Clouds are a setting, and the globe gets a night side.
+The painted look follows <b>distance from the camera</b>, not camera height. What is near you always keeps today's styling, even in a tilted view at 40 km. Only the ground far off, towards the horizon, turns painted.</p>
+
+<h2><span>1</span>What fades in and out, by altitude</h2>
+<p class="sub">The 3D city, the painted ground, banners and the hex grid are new. For the painted ground the axis is the distance from the camera to the ground, which equals the height only when looking straight down. Only the bottom row, globe and space, exists today.</p>
+<img src="v2-layers.svg" style="width:1600px;display:block">
+
+<h2><span>2</span>One zoom out over Utrecht <span class="new">new</span></h2>
+<p class="sub">The 3, 15 and 40 km frames are captures of today's client on mac-1 (real GPU), with the proposed layers drawn over them.
+Banners on the two tilted frames are placed by hand. Every frame from 40 km up is drawn from data, framed to match the client's camera.</p>
+<div class="strip">
+  <div><div class="frame"><img src="today-t3km.jpg"><div class="cb" style="left:50%;top:52%"><div class="p"><i>296k</i>Utrecht</div><div class="s"></div><div class="d"></div></div><span class="alt">3 km</span></div>
+    <div class="fcap"><b>3D city.</b> As today, plus a banner over the city, so you know where you are before you are high enough to need the map.</div></div>
+  <div><div class="frame"><img src="today-t15km.jpg"><div class="cb" style="left:47%;top:90%"><div class="p"><i>296k</i>Utrecht</div><div class="s"></div><div class="d"></div></div><div class="cb" style="left:63%;top:17%"><div class="p"><i>93k</i>Hilversum</div><div class="s"></div><div class="d"></div></div><span class="alt">15 km</span></div>
+    <div class="fcap"><b>The fade starts.</b> Buildings are still 3D and the haze stays. Banners for the cities in view appear.</div></div>
+  <div><div class="frame"><img src="today-t40km.jpg"><img src="frame-40km.jpg" style="opacity:.72"><span class="alt">40 km · 70% painted</span></div>
+    <div class="fcap"><b>Mostly painted.</b> These are the same OSM tiles the client already loads, drawn in strategy colours: forest dark, motorways gold, water clear blue.</div></div>
+  <div><div class="frame"><img src="frame-350km.jpg"><span class="alt">350 km</span></div>
+    <div class="fcap"><b>The strategy map.</b> Land cover from WorldCover, the hex grid and the country border. This is where the lenses live (sheet v1).</div></div>
+  <div><div class="frame"><img src="globe-3000.jpg"><span class="alt">3,000 km</span></div>
+    <div class="fcap"><b>The continent.</b> Still nearly flat at this height, because the Earth is wider than the view. Only the largest cities keep a banner. The hex grid gives way to lines of latitude and longitude.</div></div>
+  <div><div class="frame"><img src="globe-8000.jpg"><span class="alt">8,000 km</span></div>
+    <div class="fcap"><b>The globe.</b> The painted map wrapped on the sphere, with the atmosphere's rim and the stars as they are today.</div></div>
+</div>
+
+<h2><span>3</span>Today against the proposal, at the same camera</h2>
+<div class="vs">
+  <div><div class="frame"><img src="today-t40km.jpg"><span class="alt">40 km</span><span class="alt tag" style="left:auto;color:#9fd3b4">today</span></div></div>
+  <div><div class="frame"><img src="frame-40km.jpg"><span class="alt">40 km</span><span class="alt tag" style="left:auto;color:#ffb48a">proposed</span></div></div>
+</div>
+<div class="vs">
+  <div><div class="frame"><img src="today-t3000km.jpg"><span class="alt">3,000 km</span><span class="alt tag" style="left:auto;color:#9fd3b4">today</span></div></div>
+  <div><div class="frame"><img src="globe-3000.jpg"><span class="alt">3,000 km</span><span class="alt tag" style="left:auto;color:#ffb48a">proposed</span></div></div>
+</div>
+<div class="vs">
+  <div><div class="frame"><img src="today-t8000km.jpg"><span class="alt">8,000 km</span><span class="alt tag" style="left:auto;color:#9fd3b4">today</span></div></div>
+  <div><div class="frame"><img src="globe-8000.jpg"><span class="alt">8,000 km</span><span class="alt tag" style="left:auto;color:#ffb48a">proposed</span></div></div>
+</div>
+
+<h2><span>4</span>Clouds are a setting <span class="new">new</span></h2>
+<p class="sub">Clouds are the client's existing cloud deck, drawn at whatever strength the person chooses. The control sits in the Layers panel under "From above", and the choice is saved like any other setting.</p>
+<div class="strip">
+  <div><div class="frame"><img src="globe-3000.jpg"><span class="alt">Clouds off</span></div><div class="fcap"><b>Off.</b> The default on the strategy map.</div></div>
+  <div><div class="frame"><img src="globe-3000-clouds.jpg"><span class="alt">Light</span></div><div class="fcap"><b>Light.</b> Thin and see-through: the weather without hiding the map.</div></div>
+  <div><div class="frame"><img src="today-t3000km.jpg"><span class="alt">Full</span><span class="alt tag" style="left:auto;right:10px;color:#9fd3b4">today</span></div><div class="fcap"><b>Full.</b> As the client draws them now.</div></div>
+</div>
+<div class="glass panel" style="width:380px;margin-top:22px">
+  <h3>From above <span class="new">new</span></h3>
+  <div class="k">Clouds</div>
+  <div style="display:flex;background:var(--raised);border-radius:11px;padding:3px;gap:2px"><div style="flex:1;text-align:center;padding:6px;border-radius:8px;background:var(--accent);color:var(--ink)">Off</div><div style="flex:1;text-align:center;padding:6px;color:var(--dim)">Light</div><div style="flex:1;text-align:center;padding:6px;color:var(--dim)">Full</div></div>
+  <div class="row2" style="margin-top:12px"><span>Night side</span><b style="color:var(--accent)">On</b></div>
+  <div class="row2"><span>City lights at night</span><b style="color:var(--accent)">On</b></div>
+  <div class="row2"><span>Hex grid</span><b style="color:var(--accent)">On</b></div>
+</div>
+
+<h2><span>5</span>The night side <span class="new">new</span></h2>
+<p class="sub">The same globe on 30 October at 17:30 UTC. The sun is over the Americas and night has fallen over Europe. The terminator is computed from the sun's position, with about 12° of twilight. City lights come from Natural Earth's urban areas and towns, and show only on the dark side.</p>
+<div class="vs">
+  <div><div class="frame"><img src="globe-8000.jpg"><span class="alt">8,000 km · noon</span></div></div>
+  <div><div class="frame"><img src="globe-8000-night.jpg"><span class="alt">8,000 km · 17:30 UTC</span></div></div>
+</div>
+
+<div class="notes">
+  <div><h3>What it is made of</h3><ul>
+    <li>No new map data. Up to about 50 km the painted ground is a second style of the OSM tiles the client already streams. Above that, it is the WorldCover landcover the globe already uses.</li>
+    <li>Near the camera nothing changes. City banners appear from 2 km.</li>
+    <li>The fades ride on distance, as the sky does on altitude today, so a fast zoom never jumps.</li></ul></div>
+  <div><h3>Changed since v2</h3><ul>
+    <li>Palette moved towards the client's: grass #6f8a55, farmland #979262, forest #3e5a3c, towns #8a817a, sea navy. The tree marks and wave lines are fainter.</li>
+    <li>Clouds: a setting, off by default from above.</li>
+    <li>Night side with city lights, following the real sun.</li>
+    <li>The v1 sheets are re-rendered in the new palette.</li></ul></div>
+</div>
+</body>
+</html>

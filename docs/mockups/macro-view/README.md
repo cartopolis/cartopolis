@@ -21,6 +21,18 @@ The maps are drawn from real data by `gen.ts` (ESA WorldCover 2021 from
 `place=city` populations). People, community and event counts in the panels
 are invented.
 
+## v3-transition: closer colours, clouds as a setting, a night side
+
+![v3-transition](v3-transition.png)
+
+After review (2026-10-30): the painted palette moved towards the client's
+(muted greens, navy sea, grey towns) so the two blend rather than switch; the
+painted look follows distance from the camera, so what is near always keeps
+today's styling; clouds are a setting (off / light / full, off by default from
+above); the globe has a night side from the real sun with city lights from
+Natural Earth urban areas. The v1 sheets were re-rendered in this palette; the
+v2 picture keeps the old one.
+
 ## v2-transition: from the street to the globe
 
 ![v2-transition](v2-transition.png)

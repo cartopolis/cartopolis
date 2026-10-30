@@ -104,8 +104,8 @@ const isLand = (lon: number, lat: number) => landPolys.some((r: number[][][]) =>
 
 // --- palette ---------------------------------------------------------------
 const LC: Record<string, string> = {
-  farmland: "#c9b56a", grassland: "#86a957", forest: "#3f6e3c", residential: "#a48e78",
-  marsh: "#6f9a86", heath: "#9c7d93", scrub: "#9aa25c", bare_rock: "#e6d6a6",
+  farmland: "#979262", grassland: "#6f8a55", forest: "#3e5a3c", residential: "#8a817a",
+  marsh: "#5f7c6e", heath: "#86727f", scrub: "#7b8559", bare_rock: "#cdc29c",
 };
 const defs = `
 <defs>
@@ -120,14 +120,14 @@ const defs = `
   <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
   <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="2" stdDeviation="2.2" flood-color="#000" flood-opacity=".55"/></filter>
   <pattern id="trees" width="14" height="12" patternUnits="userSpaceOnUse">
-    <path d="M4 9 l3 -7 l3 7z" fill="#2c5430" opacity=".75"/><path d="M10 12 l2.5 -5.5 l2.5 5.5z" fill="#2c5430" opacity=".55"/>
+    <path d="M4 9 l3 -7 l3 7z" fill="#2a4229" opacity=".45"/><path d="M10 12 l2.5 -5.5 l2.5 5.5z" fill="#2a4229" opacity=".3"/>
   </pattern>
   <pattern id="reeds" width="10" height="8" patternUnits="userSpaceOnUse"><path d="M1 7h4M5 4h4" stroke="#3e6e66" stroke-width="1" opacity=".7"/></pattern>
   <pattern id="waves" width="46" height="26" patternUnits="userSpaceOnUse">
-    <path d="M3 8 q5 -4 10 0 t10 0" stroke="#7fb6c9" stroke-width="1" fill="none" opacity=".18"/>
-    <path d="M26 20 q5 -4 10 0 t10 0" stroke="#7fb6c9" stroke-width="1" fill="none" opacity=".14"/>
+    <path d="M3 8 q5 -4 10 0 t10 0" stroke="#7fb6c9" stroke-width="1" fill="none" opacity=".08"/>
+    <path d="M26 20 q5 -4 10 0 t10 0" stroke="#7fb6c9" stroke-width="1" fill="none" opacity=".06"/>
   </pattern>
-  <radialGradient id="sea" cx="40%" cy="40%" r="80%"><stop offset="0" stop-color="#2f6f86"/><stop offset="1" stop-color="#173d55"/></radialGradient>
+  <radialGradient id="sea" cx="40%" cy="40%" r="80%"><stop offset="0" stop-color="#2f5878"/><stop offset="1" stop-color="#1f3650"/></radialGradient>
 </defs>`;
 
 function hexPath(cx: number, cy: number, r: number) {
@@ -146,10 +146,10 @@ function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rail
   const landD = path(v, { type: "MultiPolygon", coordinates: landPolys }, true);
   const lakeD = lakes.features.map((f: any) => path(v, f.geometry, true)).join("");
   let s = `<rect width="${v.W}" height="${v.H}" fill="url(#sea)"/><rect width="${v.W}" height="${v.H}" fill="url(#waves)"/>`;
-  s += `<path d="${landD}" fill="none" stroke="#5fa7b8" stroke-width="22" stroke-linejoin="round" opacity=".35" filter="url(#wobble)"/>`;
-  s += `<path d="${landD}" fill="none" stroke="#86c3c8" stroke-width="8" stroke-linejoin="round" opacity=".45" filter="url(#wobble)"/>`;
+  s += `<path d="${landD}" fill="none" stroke="#4f7f98" stroke-width="22" stroke-linejoin="round" opacity=".35" filter="url(#wobble)"/>`;
+  s += `<path d="${landD}" fill="none" stroke="#6f9db3" stroke-width="8" stroke-linejoin="round" opacity=".45" filter="url(#wobble)"/>`;
   s += `<clipPath id="landclip"><path d="${landD}"/></clipPath>`;
-  s += `<g clip-path="url(#landclip)"><path d="${landD}" fill="#b5ad6c"/>`;
+  s += `<g clip-path="url(#landclip)"><path d="${landD}" fill="#7a8659"/>`;
   if (opt.lc !== false) {
     const by: Record<string, string> = {};
     for (const f of (opt.lcData ?? lc).features) if (f.properties.layer === "land") by[f.properties.kind] = (by[f.properties.kind] ?? "") + path(v, f.geometry, true, 0.8);
@@ -162,9 +162,9 @@ function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rail
   }
   if (opt.mute) s += `<rect width="${v.W}" height="${v.H}" fill="#1b2326" opacity="${opt.mute}"/>`;
   s += `</g>`;
-  s += `<path d="${lakeD}" fill="#3f8aa3" stroke="#86c3c8" stroke-width="2" opacity="${opt.mute ? 0.7 : 1}"/>`;
+  s += `<path d="${lakeD}" fill="#36607e" stroke="#6f9db3" stroke-width="2" opacity="${opt.mute ? 0.7 : 1}"/>`;
   const riv = feats(rivers, (p) => p.featurecla !== "Lake Centerline").map((f: any) => path(v, f.geometry, false)).join("");
-  s += `<path d="${riv}" fill="none" stroke="#4c97b4" stroke-width="2.6" stroke-linecap="round" opacity="${opt.mute ? 0.5 : 0.95}"/>`;
+  s += `<path d="${riv}" fill="none" stroke="#4a7a98" stroke-width="2.6" stroke-linecap="round" opacity="${opt.mute ? 0.5 : 0.95}"/>`;
   if (opt.provinces) {
     const pv = feats(provs, (p) => ["NLD", "BEL", "DEU"].includes(p.adm0_a3)).map((f: any) => path(v, f.geometry, false)).join("");
     s += `<path d="${pv}" fill="none" stroke="#fff6dc" stroke-width="1.2" stroke-dasharray="2 4" opacity=".55"/>`;
@@ -177,7 +177,7 @@ function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rail
     const sec = feats(roads, (p) => p.continent === "Europe" && p.type === "Secondary Highway").map((f: any) => path(v, f.geometry, false)).join("");
     const maj = feats(roads, (p) => p.continent === "Europe" && p.type === "Major Highway").map((f: any) => path(v, f.geometry, false)).join("");
     s += `<path d="${sec}" fill="none" stroke="#5a4636" stroke-width="3" stroke-linecap="round" opacity=".55"/><path d="${sec}" fill="none" stroke="#f3e2b8" stroke-width="1.4" stroke-linecap="round" opacity=".9"/>`;
-    s += `<path d="${maj}" fill="none" stroke="#4a3426" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/><path d="${maj}" fill="none" stroke="#ffd98a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+    s += `<path d="${maj}" fill="none" stroke="#4a3426" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/><path d="${maj}" fill="none" stroke="#e9c97e" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`;
   }
   return s;
 }
@@ -291,7 +291,7 @@ if (!process.env.FRAMES) {
   const sec = feats(roads, (p) => p.continent === "Europe" && p.type === "Secondary Highway").map((f: any) => path(v, f.geometry, false)).join("");
   const rl = rails.features.map((f: any) => path(v, f.geometry, false)).join("");
   m += `<path d="${sec}" fill="none" stroke="#c7d3d8" stroke-width="1.6" opacity=".55"/>`;
-  m += `<path d="${maj}" fill="none" stroke="#ffd98a" stroke-width="6" opacity=".25" filter="url(#glow)"/><path d="${maj}" fill="none" stroke="#ffd98a" stroke-width="2.6"/>`;
+  m += `<path d="${maj}" fill="none" stroke="#ffd98a" stroke-width="6" opacity=".25" filter="url(#glow)"/><path d="${maj}" fill="none" stroke="#e9c97e" stroke-width="2.6"/>`;
   m += `<path d="${rl}" fill="none" stroke="#5cc6c0" stroke-width="2" stroke-dasharray="7 4"/>`;
   m += countryLines(v, ["NLD"], "#c7d3d8", 1.5);
   m += placeBanners(v, cities, 14, (c) => banner(v, c, { small: true }));
@@ -452,10 +452,10 @@ if (process.env.FRAMES) {
   for (const k of ["sand", "beach", "scree"]) cls[k] = "bare_rock";
   for (const k of ["heath"]) cls[k] = "heath";
   for (const k of ["marsh", "wet_meadow", "swamp", "bog"]) cls[k] = "marsh";
-  const PAL = { ...LC, industrial: "#8c7d74", grassland: "#86a957" } as Record<string, string>;
+  const PAL = { ...LC, industrial: "#8c7d74", grassland: "#6f8a55" } as Record<string, string>;
   const hh = 40 * Math.tan(Math.PI / 8), hw = (hh * 1600) / 900;
   const v = view([5.3 - hw / (111.32 * Math.cos((52.1 * Math.PI) / 180)), 52.1 - hh / 110.57, 5.3 + hw / (111.32 * Math.cos((52.1 * Math.PI) / 180)), 52.1 + hh / 110.57], 1600, 900);
-  let s = `<rect width="1600" height="900" fill="#8fae5c"/>`;
+  let s = `<rect width="1600" height="900" fill="#71895a"/>`;
   const by: Record<string, string> = {};
   for (const f of osm.features) if (f.properties.layer === "land" && cls[f.properties.kind]) by[cls[f.properties.kind]] = (by[cls[f.properties.kind]] ?? "") + path(v, f.geometry, true, 0.5);
   for (const k of ["farmland", "grassland", "scrub", "heath", "marsh", "bare_rock", "forest", "residential", "industrial"]) if (by[k]) {
@@ -464,13 +464,13 @@ if (process.env.FRAMES) {
     if (k === "marsh") s += `<path d="${by[k]}" fill="url(#reeds)"/>`;
   }
   const wat = osm.features.filter((f: any) => f.properties.layer === "water_polygons").map((f: any) => path(v, f.geometry, true, 0.5)).join("");
-  s += `<path d="${wat}" fill="#3f8aa3" stroke="#86c3c8" stroke-width="1"/>`;
+  s += `<path d="${wat}" fill="#36607e" stroke="#6f9db3" stroke-width="1"/>`;
   const st = (kinds: string[]) => osm.features.filter((f: any) => f.properties.layer === "streets" && kinds.includes(f.properties.kind)).map((f: any) => path(v, f.geometry, false, 0.8)).join("");
   const rail = st(["rail"]), sec = st(["secondary"]), pri = st(["primary"]), mot = st(["motorway", "trunk"]);
   s += `<path d="${rail}" fill="none" stroke="#3b3430" stroke-width="2.6" opacity=".6"/><path d="${rail}" fill="none" stroke="#efe6d2" stroke-width="1.2" stroke-dasharray="6 6"/>`;
   s += `<path d="${sec}" fill="none" stroke="#f3e2b8" stroke-width="1.3" opacity=".8"/>`;
   s += `<path d="${pri}" fill="none" stroke="#5a4636" stroke-width="4" opacity=".5"/><path d="${pri}" fill="none" stroke="#f3e2b8" stroke-width="2.2"/>`;
-  s += `<path d="${mot}" fill="none" stroke="#4a3426" stroke-width="7" stroke-linecap="round" opacity=".7"/><path d="${mot}" fill="none" stroke="#ffd98a" stroke-width="3.8" stroke-linecap="round"/>`;
+  s += `<path d="${mot}" fill="none" stroke="#4a3426" stroke-width="7" stroke-linecap="round" opacity=".7"/><path d="${mot}" fill="none" stroke="#e9c97e" stroke-width="3.8" stroke-linecap="round"/>`;
   s = `<g filter="url(#paper)">${s}</g>`;
   s += placeBanners(v, cities, 8, (c) => banner(v, c, {}));
   await Bun.write(`${out}/frame-40km.svg`, svgWrap(v, s));
