@@ -2401,6 +2401,8 @@ pub struct ScriptedCards<'w, 's> {
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
     /// The map's ring of actions, for `--ui ring`.
     context_menu: ResMut<'w, crate::resources::ContextMenuState>,
+    /// The Plans layer's card, for `--ui plansnotice`.
+    plans: ResMut<'w, crate::systems::plans::Plans>,
     /// Nested rather than added beside: the ceiling this type exists to work
     /// around is a *parameter* count, so a second bundle would hit it again.
     chat: ScriptedChat<'w, 's>,
@@ -2484,8 +2486,14 @@ const UI_ELEMENTS: &[&str] = &[
     "city",
     "under",
     "orbit",
+    // Places, with the Plans tile's ⋯ open (`places` is the Places panel).
+    "placeslayers",
     // The ring of actions on a point in the middle of the view.
     "ring",
+    // The ring's Plans here, answered for the shot's point (`systems::plans`).
+    "planshere",
+    // The card of the notice nearest the shot's point that names council business.
+    "plansnotice",
     "places",
     "bookmarks",
     "route",
@@ -2637,6 +2645,14 @@ pub fn open_scripted_ui(
         cards.context_menu.hit_prim_id = None;
         cards.context_menu.lat_lng = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
     }
+    // `--ui planshere`: the card the ring's Plans here opens, for the shot's
+    // point — the ring hands it over the same way (`plans::drive_plans`).
+    if want("planshere") {
+        cards.context_menu.plans_here = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
+    }
+    if want("plansnotice") {
+        cards.plans.open_nearest = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
+    }
     // A scripted run reads no `user.json`, so the form comes up empty — and an
     // empty form is the *disabled* state of the button, which is the one state
     // this capture should not be documenting. Seed it with the address the docs
@@ -2658,9 +2674,14 @@ pub fn open_scripted_ui(
         crate::systems::layer_tiles::LayerCategory::Under
     } else if want("city") {
         crate::systems::layer_tiles::LayerCategory::City
+    } else if want("placeslayers") {
+        crate::systems::layer_tiles::LayerCategory::Places
     } else {
         crate::systems::layer_tiles::LayerCategory::Map
     };
+    if want("placeslayers") {
+        layers.open_tile = Some("Plans");
+    }
     bookmarks.panel_open = want("bookmarks") || want("places");
     // Driver mode is a *mode*, not a panel: it takes the map over (bare basemap,
     // locked chase camera, navigation chrome). Written unconditionally like the

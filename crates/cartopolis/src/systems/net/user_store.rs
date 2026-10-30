@@ -339,6 +339,20 @@ pub struct LayerPrefs {
     /// missing here is on.
     #[serde(default)]
     pub satellite_kinds: std::collections::HashMap<String, bool>,
+    /// Places ▸ Plans (`systems::plans`). Opt-in: a download, Groningen only.
+    #[serde(default)]
+    pub plans: bool,
+    /// Which kinds of notice are drawn, by `NoticeKind::key`; a kind missing
+    /// here takes its default (`plans::KINDS`).
+    #[serde(default)]
+    pub plans_kinds: std::collections::HashMap<String, bool>,
+    /// Whether the council's squares are drawn. On by default, as designed.
+    #[serde(default = "yes")]
+    pub plans_council: bool,
+    /// How far back the layer looks, by `plans::Period::key`; empty is the
+    /// default.
+    #[serde(default)]
+    pub plans_period: String,
     #[serde(default)]
     pub overlays: std::collections::HashMap<String, bool>,
 }

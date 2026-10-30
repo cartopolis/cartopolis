@@ -1092,6 +1092,9 @@ pub struct ContextMenuState {
     /// The ring's Post here was chosen at this spot: taken by
     /// `community_posts::post_here`, which opens the composer there.
     pub post_here: Option<(f64, f64)>,
+    /// The ring's Plans here was chosen at this spot: taken by
+    /// `plans::drive_plans`, which opens the list of notices around it.
+    pub plans_here: Option<(f64, f64)>,
 }
 
 /// Twist / taper / top-shear / slice parameters edited together in the dialog.

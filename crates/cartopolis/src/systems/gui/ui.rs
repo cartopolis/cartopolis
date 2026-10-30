@@ -837,6 +837,16 @@ pub fn render_context_menu(
                 hint: "Write a public post about this spot, to a community",
             });
         }
+        // What the municipality has published around here (`systems::plans`),
+        // with or without the layer on — only where the feed has anything.
+        if lat_lng.is_some_and(|(lat, lng)| crate::systems::plans::covers(lat, lng)) {
+            actions.push(RingAction {
+                key: "plans_here",
+                icon: icons::FLAG,
+                label: "Plans here",
+                hint: "What the municipality has published about this spot",
+            });
+        }
         if camera_altitude.is_some() {
             actions.push(RingAction {
                 key: "save",
@@ -909,6 +919,7 @@ pub fn render_context_menu(
             *right_panel = RightPanel::Route;
         }
         ("post_here", Some(at), _) => context_menu.post_here = Some(at),
+        ("plans_here", Some(at), _) => context_menu.plans_here = Some(at),
         ("save", Some((lat, lng)), _) => {
             // Altitude and pose come from the camera rather than from the hit
             // point, because a saved place is a remembered *view* as well as a

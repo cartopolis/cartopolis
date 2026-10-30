@@ -22,6 +22,8 @@ pub struct GuiPlugin {
     pub underground: Vec<String>,
     /// `--satellites`, for the same reason as `--sewers`.
     pub satellites: bool,
+    /// `--plans`, for the same reason.
+    pub plans: bool,
 }
 
 impl Plugin for GuiPlugin {
@@ -31,6 +33,8 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::ui::MainMenu>()
             // The place card a picked search result opens (`systems::place_card`).
             .init_resource::<systems::place_card::PlaceCard>()
+            // Layers ▸ Places ▸ Plans, and the card a dot opens (`systems::plans`).
+            .init_resource::<systems::plans::Plans>()
             .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
             // What the on-screen navigation controls asked for this frame
             // (`systems::map_osd`); read by `free_camera::camera_controls`.
@@ -40,6 +44,7 @@ impl Plugin for GuiPlugin {
                 layers.aerial_enabled = self.aerial;
                 layers.sewers = self.sewers;
                 layers.satellites_enabled = self.satellites;
+                layers.plans_enabled = self.plans;
                 for (slot, def) in layers
                     .underground
                     .iter_mut()
@@ -80,6 +85,22 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Input)
                     .before(systems::chats::render_chats_panel),
                 systems::calendar::render_reminder
+                    .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+            ),
+        );
+
+        // Layers ▸ Places ▸ Plans (`systems::plans`): the feed is read and the
+        // ring's Plans here taken before the panels draw; the dots are in the
+        // panel chain below; the card a dot opens is its own `Foreground`
+        // area, like the place card, so not in the chain.
+        app.add_systems(
+            Update,
+            (
+                systems::plans::drive_plans
+                    .after(systems::ui::render_context_menu)
+                    .in_set(ClientPhase::Input),
+                systems::plans::render_plans_card
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
             ),
@@ -395,6 +416,10 @@ impl Plugin for GuiPlugin {
                     // The person card and the first-message sheet
                     // (`systems::contacts`): the sheet is a text field too.
                     systems::contacts::render_person_card,
+                    // Layers ▸ Places ▸ Plans (`systems::plans`): dots over the
+                    // map, culled against the leftover space as the pins are, and
+                    // under them — a saved place stays on top of a notice.
+                    systems::plans::render_plans.after(systems::free_camera::camera_controls),
                     // Also after the camera has moved, so pins project onto this
                     // frame's view.
                     // And after the people it stands markers on have moved

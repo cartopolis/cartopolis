@@ -1079,6 +1079,7 @@ fn run_client() {
             sewers: cli.sewers,
             underground: cli.underground.clone(),
             satellites: cli.satellites,
+            plans: cli.plans,
         },
         systems::dev::DevPlugin,
     ));

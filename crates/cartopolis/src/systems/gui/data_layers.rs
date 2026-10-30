@@ -549,6 +549,16 @@ pub struct DataLayers {
     pub satellites_enabled: bool,
     /// Which kinds of satellite are drawn, indexed by `satellites::SatKind`.
     pub satellite_kinds: [bool; crate::systems::satellites::KINDS.len()],
+    /// Places ▸ Plans (`systems::plans`): the municipality's notices and the
+    /// council's business on the map. Off on a fresh install: a download of
+    /// its own, and Groningen only.
+    pub plans_enabled: bool,
+    /// Which kinds of notice are drawn, in `plans::KINDS` order.
+    pub plans_kinds: [bool; crate::systems::plans::KINDS.len()],
+    /// Whether the council's squares are drawn.
+    pub plans_council: bool,
+    /// How far back the layer looks.
+    pub plans_period: crate::systems::plans::Period,
     /// The Layers panel's open category. View state, not a preference.
     pub category: crate::systems::layer_tiles::LayerCategory,
     /// The tile whose ⋯ options are showing under the grid, by its label.
@@ -692,6 +702,10 @@ impl DataLayers {
             aerial: self.aerial_enabled,
             satellites: self.satellites_enabled,
             satellite_kinds: crate::systems::satellites::kinds_to_prefs(&self.satellite_kinds),
+            plans: self.plans_enabled,
+            plans_kinds: crate::systems::plans::kinds_to_prefs(&self.plans_kinds),
+            plans_council: self.plans_council,
+            plans_period: self.plans_period.key().to_string(),
             vehicles,
             overlays: LAYER_DEFS
                 .iter()
@@ -782,6 +796,10 @@ impl DataLayers {
         self.aerial_enabled = p.aerial;
         self.satellites_enabled = p.satellites;
         self.satellite_kinds = crate::systems::satellites::kinds_from_prefs(&p.satellite_kinds);
+        self.plans_enabled = p.plans;
+        self.plans_kinds = crate::systems::plans::kinds_from_prefs(&p.plans_kinds);
+        self.plans_council = p.plans_council;
+        self.plans_period = crate::systems::plans::Period::from_key(&p.plans_period);
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
             if let Some(on) = p.overlays.get(def.key) {
@@ -861,6 +879,10 @@ impl Default for DataLayers {
             aerial_enabled: false,
             satellites_enabled: false,
             satellite_kinds: [true; crate::systems::satellites::KINDS.len()],
+            plans_enabled: false,
+            plans_kinds: crate::systems::plans::default_kinds(),
+            plans_council: true,
+            plans_period: crate::systems::plans::Period::default(),
             category: crate::systems::layer_tiles::LayerCategory::default(),
             open_tile: None,
             terrain_revision: 0,
@@ -2275,7 +2297,11 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
         .layers
         .iter()
         .map(|l| l.enabled)
-        .chain([dl.friends_enabled, dl.community_posts_enabled])
+        .chain([
+            dl.friends_enabled,
+            dl.community_posts_enabled,
+            dl.plans_enabled,
+        ])
         .collect();
     let under: Vec<bool> = std::iter::once(dl.sewers)
         .chain(dl.underground.iter().copied())
@@ -2425,16 +2451,18 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             }
         }
         LayerCategory::Places => {
-            let names: Vec<&'static str> = LAYER_DEFS.iter().map(|d| d.name).collect();
+            let mut names: Vec<&'static str> = LAYER_DEFS.iter().map(|d| d.name).collect();
+            names.extend(["Friends", "Community posts", PLANS_TILE]);
             let icons_for = |key: &str| match key {
                 "transit" => icons::TRANSPORT,
                 "shops" => icons::SHOP,
                 _ => icons::PIN,
             };
-            let (overlays, friends, posts) = (
+            let (overlays, friends, posts, plans) = (
                 &mut dl.layers,
                 &mut dl.friends_enabled,
                 &mut dl.community_posts_enabled,
+                &mut dl.plans_enabled,
             );
             let mut tiles: Vec<(Tile<'_>, &mut bool)> = LAYER_DEFS
                 .iter()
@@ -2451,9 +2479,13 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 tile(icons::SHARE, "Community posts", false, false, None),
                 posts,
             ));
+            tiles.push((tile(icons::FLAG, PLANS_TILE, true, true, low), plans));
             let resp = tile_grid(ui, &mut tiles, open_index(&names));
             drop(tiles);
             toggle_open(dl, resp.more.and_then(|i| names.get(i).copied()));
+            if dl.open_tile == Some(PLANS_TILE) {
+                plans_options(ui, dl);
+            }
             if let Some(def) = dl
                 .open_tile
                 .and_then(|o| LAYER_DEFS.iter().find(|d| d.name == o))
@@ -2568,6 +2600,45 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             );
         }
     }
+}
+
+/// The Plans tile's label, which is also how its ⋯ is told open.
+const PLANS_TILE: &str = "Plans";
+
+/// Plans ⋯: which kinds of notice, whether the council, and how far back
+/// (`systems::plans`; `docs/mockups/plans-and-decisions/v2-layer.png`).
+fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
+    use crate::systems::plans::{Period, KINDS};
+    let enabled = dl.plans_enabled;
+    options_box(ui, "Plans: what is drawn", |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for ((_, label, _), on) in KINDS.iter().zip(dl.plans_kinds.iter_mut()) {
+                    crate::systems::layer_tiles::swatch_chip(ui, on, theme::ACCENT, label);
+                }
+                crate::systems::layer_tiles::swatch_chip(
+                    ui,
+                    &mut dl.plans_council,
+                    theme::COUNCIL_LIGHT,
+                    "Council",
+                );
+            });
+            ui.add_space(6.0);
+            let options: Vec<(Period, &str)> =
+                Period::ALL.iter().map(|p| (*p, p.label())).collect();
+            theme::segmented(ui, &mut dl.plans_period, &options);
+        });
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "Orange: you can still respond. Gemeente Groningen's official notices \
+                 and council agendas; council items are placed by the street names \
+                 in their titles.",
+            )
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+        );
+    });
 }
 
 /// Open the options of the tile whose ⋯ was tapped, or close them if they were
@@ -2771,6 +2842,10 @@ pub fn render_data_layers_panel(
         dl.aerial_enabled = fresh.aerial_enabled;
         dl.satellites_enabled = fresh.satellites_enabled;
         dl.satellite_kinds = fresh.satellite_kinds;
+        dl.plans_enabled = fresh.plans_enabled;
+        dl.plans_kinds = fresh.plans_kinds;
+        dl.plans_council = fresh.plans_council;
+        dl.plans_period = fresh.plans_period;
     }
     if about {
         *right_panel = crate::resources::RightPanel::About;

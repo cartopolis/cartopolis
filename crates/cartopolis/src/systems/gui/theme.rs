@@ -197,6 +197,16 @@ pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
 /// nothing else.
 pub const PUBLIC: Color32 = Color32::from_rgb(0xB3, 0x9D, 0xFF);
 
+/// **The council**: an item of a municipal council's business on the Plans
+/// layer (`systems::plans`), the square on the map and its badge on a card.
+/// The design's deep blue (`docs/mockups/plans-and-decisions/v1.png`), away
+/// from the brand orange the layer uses for notices still open. Used for
+/// nothing else.
+pub const COUNCIL: Color32 = Color32::from_rgb(0x2F, 0x4A, 0x7A);
+/// The council square's rim and the council's text on a dark card: the same
+/// blue, light enough to read.
+pub const COUNCIL_LIGHT: Color32 = Color32::from_rgb(0x9D, 0xB7, 0xE6);
+
 /// Off-white. Headings and the one or two things that must read brightest.
 pub const CREAM: Color32 = Color32::from_rgb(0xF4, 0xF8, 0xF8);
 /// Body text.

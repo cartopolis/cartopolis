@@ -231,6 +231,12 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) satellites: bool,
 
+    /// Switch the **Plans** layer on for this run (`systems::plans`): Gemeente
+    /// Groningen's official notices and council business on the map. Opt-in,
+    /// as it is in the panel; `CARTO_PLANS_URL` points it at another feed.
+    #[arg(long)]
+    pub(crate) plans: bool,
+
     /// Beside every capture, write the aerial photograph of the ground it looks
     /// at — `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB with the camera and the
     /// point it is aimed at drawn on (`systems::aerial_reference`). The check a
