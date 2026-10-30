@@ -142,7 +142,7 @@ function hexCentres(W: number, H: number, r: number) {
 }
 
 // --- base map: sea, coast shallows, land cover, water, lines ---------------
-function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rails?: boolean; provinces?: boolean } = {}) {
+function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rails?: boolean; provinces?: boolean; lcData?: any; hexR?: number } = {}) {
   const landD = path(v, { type: "MultiPolygon", coordinates: landPolys }, true);
   const lakeD = lakes.features.map((f: any) => path(v, f.geometry, true)).join("");
   let s = `<rect width="${v.W}" height="${v.H}" fill="url(#sea)"/><rect width="${v.W}" height="${v.H}" fill="url(#waves)"/>`;
@@ -152,7 +152,7 @@ function baseMap(v: V, opt: { lc?: boolean; mute?: number; roads?: boolean; rail
   s += `<g clip-path="url(#landclip)"><path d="${landD}" fill="#b5ad6c"/>`;
   if (opt.lc !== false) {
     const by: Record<string, string> = {};
-    for (const f of lc.features) if (f.properties.layer === "land") by[f.properties.kind] = (by[f.properties.kind] ?? "") + path(v, f.geometry, true, 0.8);
+    for (const f of (opt.lcData ?? lc).features) if (f.properties.layer === "land") by[f.properties.kind] = (by[f.properties.kind] ?? "") + path(v, f.geometry, true, 0.8);
     for (const k of ["farmland", "grassland", "scrub", "heath", "marsh", "bare_rock", "forest", "residential"]) {
       if (!by[k]) continue;
       s += `<path d="${by[k]}" fill="${LC[k]}" stroke="${LC[k]}" stroke-width=".8"/>`;
@@ -241,6 +241,7 @@ function placeBanners(v: V, list: City[], max: number, f: (c: City, i: number) =
 const svgWrap = (v: V, body: string) => `<svg xmlns="http://www.w3.org/2000/svg" width="${v.W}" height="${v.H}" viewBox="0 0 ${v.W} ${v.H}">
 <style>@font-face{font-family:Jakarta;src:url(../../../assets/fonts/PlusJakartaSans-SemiBold.ttf)}</style>${defs}${body}</svg>`;
 
+if (!process.env.FRAMES) {
 // ===== 1. the macro view of the Netherlands ===============================
 {
   const v = view([3.1, 50.68, 7.35, 53.62], 1600, 1000);
@@ -413,4 +414,64 @@ const windTo = 60; // degrees from north the wind blows towards (a south-westerl
   }
   await Bun.write(`${out}/map-volkel.svg`, svgWrap(vz, z));
 }
+}
 console.log("done");
+
+// ===== 4. frames matching the client's camera, for the transition strip =====
+// Straight down, 45° vertical fov (the capture at 350 km lines up with England at the left edge).
+if (process.env.FRAMES) {
+  const frameBox = (lat: number, lon: number, altKm: number, W: number, H: number): BBox => {
+    const hh = altKm * Math.tan(Math.PI / 8), hw = (hh * W) / H;
+    const dLat = hh / 110.57, dLon = hw / (111.32 * Math.cos((lat * Math.PI) / 180));
+    return [lon - dLon, lat - dLat, lon + dLon, lat + dLat];
+  };
+  const lcUtr = await J("lc_z10_utr.geojson");
+  for (const f of [
+    { name: "frame-40km", lat: 52.1, lon: 5.3, alt: 40, lcData: lcUtr, hex: 0, banners: 10 },
+    { name: "frame-350km", lat: 52.2, lon: 5.5, alt: 350, lcData: lc, hex: 22, banners: 24 },
+  ]) {
+    const v = view(frameBox(f.lat, f.lon, f.alt, 1600, 900), 1600, 900);
+    let s = `<g filter="url(#paper)">` + baseMap(v, { lcData: f.lcData, rails: true, provinces: true }) + `</g>`;
+    if (f.hex) s += `<path d="${hexCentres(v.W, v.H, f.hex).map(([x, y]) => hexPath(x, y, f.hex)).join("")}" fill="none" stroke="#fff8e0" stroke-width=".7" opacity=".22" clip-path="url(#landclip)"/>`;
+    s += countryLines(v, ["NLD"], "#fd6012", 3);
+    s += placeBanners(v, cities, f.banners, (c) => banner(v, c, {}));
+    await Bun.write(`${out}/${f.name}.svg`, svgWrap(v, s));
+  }
+}
+
+// ===== 5. the 40 km frame from the client's own OSM tiles (Shortbread) =====
+if (process.env.FRAMES) {
+  const osm = await J("osm_utr.geojson");
+  const cls: Record<string, string> = {};
+  for (const k of ["forest"]) cls[k] = "forest";
+  for (const k of ["scrub"]) cls[k] = "scrub";
+  for (const k of ["farmland", "orchard", "plant_nursery", "greenhouse_horticulture", "farmyard", "vineyard"]) cls[k] = "farmland";
+  for (const k of ["grass", "meadow", "grassland", "park", "garden", "recreation_ground", "golf_course", "village_green", "allotments", "greenfield", "playground", "miniature_golf"]) cls[k] = "grassland";
+  for (const k of ["residential", "garages"]) cls[k] = "residential";
+  for (const k of ["industrial", "commercial", "retail", "railway", "brownfield", "landfill", "quarry"]) cls[k] = "industrial";
+  for (const k of ["sand", "beach", "scree"]) cls[k] = "bare_rock";
+  for (const k of ["heath"]) cls[k] = "heath";
+  for (const k of ["marsh", "wet_meadow", "swamp", "bog"]) cls[k] = "marsh";
+  const PAL = { ...LC, industrial: "#8c7d74", grassland: "#86a957" } as Record<string, string>;
+  const hh = 40 * Math.tan(Math.PI / 8), hw = (hh * 1600) / 900;
+  const v = view([5.3 - hw / (111.32 * Math.cos((52.1 * Math.PI) / 180)), 52.1 - hh / 110.57, 5.3 + hw / (111.32 * Math.cos((52.1 * Math.PI) / 180)), 52.1 + hh / 110.57], 1600, 900);
+  let s = `<rect width="1600" height="900" fill="#8fae5c"/>`;
+  const by: Record<string, string> = {};
+  for (const f of osm.features) if (f.properties.layer === "land" && cls[f.properties.kind]) by[cls[f.properties.kind]] = (by[cls[f.properties.kind]] ?? "") + path(v, f.geometry, true, 0.5);
+  for (const k of ["farmland", "grassland", "scrub", "heath", "marsh", "bare_rock", "forest", "residential", "industrial"]) if (by[k]) {
+    s += `<path d="${by[k]}" fill="${PAL[k]}" stroke="${PAL[k]}" stroke-width=".6"/>`;
+    if (k === "forest") s += `<path d="${by[k]}" fill="url(#trees)"/>`;
+    if (k === "marsh") s += `<path d="${by[k]}" fill="url(#reeds)"/>`;
+  }
+  const wat = osm.features.filter((f: any) => f.properties.layer === "water_polygons").map((f: any) => path(v, f.geometry, true, 0.5)).join("");
+  s += `<path d="${wat}" fill="#3f8aa3" stroke="#86c3c8" stroke-width="1"/>`;
+  const st = (kinds: string[]) => osm.features.filter((f: any) => f.properties.layer === "streets" && kinds.includes(f.properties.kind)).map((f: any) => path(v, f.geometry, false, 0.8)).join("");
+  const rail = st(["rail"]), sec = st(["secondary"]), pri = st(["primary"]), mot = st(["motorway", "trunk"]);
+  s += `<path d="${rail}" fill="none" stroke="#3b3430" stroke-width="2.6" opacity=".6"/><path d="${rail}" fill="none" stroke="#efe6d2" stroke-width="1.2" stroke-dasharray="6 6"/>`;
+  s += `<path d="${sec}" fill="none" stroke="#f3e2b8" stroke-width="1.3" opacity=".8"/>`;
+  s += `<path d="${pri}" fill="none" stroke="#5a4636" stroke-width="4" opacity=".5"/><path d="${pri}" fill="none" stroke="#f3e2b8" stroke-width="2.2"/>`;
+  s += `<path d="${mot}" fill="none" stroke="#4a3426" stroke-width="7" stroke-linecap="round" opacity=".7"/><path d="${mot}" fill="none" stroke="#ffd98a" stroke-width="3.8" stroke-linecap="round"/>`;
+  s = `<g filter="url(#paper)">${s}</g>`;
+  s += placeBanners(v, cities, 8, (c) => banner(v, c, {}));
+  await Bun.write(`${out}/frame-40km.svg`, svgWrap(v, s));
+}

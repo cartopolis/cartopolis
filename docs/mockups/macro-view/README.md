@@ -21,6 +21,21 @@ The maps are drawn from real data by `gen.ts` (ESA WorldCover 2021 from
 `place=city` populations). People, community and event counts in the panels
 are invented.
 
+## v2-transition: from the street to the globe
+
+![v2-transition](v2-transition.png)
+
+No switch: every layer fades on altitude, like `space_factor` today. The 3D city
+holds to 15 km and is gone by 50 km, the painted ground comes in over the
+same band, banners appear from 2 km, the hex grid lives between about 100 and
+4,000 km. The 3, 15 and 40 km frames are today's client (mac-1); 40 km and up
+are drawn from data framed to the client's camera (45° vertical fov matched
+at 350 km; the 3,000 and 8,000 km frames were scaled by eye to match the
+captures). Up to 50 km the painted ground is a second style of the OSM
+Shortbread tiles the client already streams (`frame-40km`, `gen.ts`), above
+that the WorldCover landcover; the globes come from `gen-globe.ts` (d3-geo
+`geoSatellite`). Open: clouds (a Weather lens?), tilted views, the night side.
+
 ## v1-nuclear: a nuclear exchange
 
 ![v1-nuclear](v1-nuclear.png)

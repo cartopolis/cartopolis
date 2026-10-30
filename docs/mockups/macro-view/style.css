@@ -101,3 +101,18 @@ svg.i { width:20px; height:20px; stroke:currentColor; fill:none; stroke-width:1.
 .grid3 .cap b { color:var(--cream); font-family:Jakarta; font-weight:inherit; }
 .lensimg { width:100%; aspect-ratio:1.6; background-size:cover; border-radius:12px; box-shadow:0 0 0 1px #2b3438; position:relative; }
 .pair { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+
+/* v2: the transition */
+.strip { display:grid; grid-template-columns:repeat(3, 1fr); gap:20px 24px; }
+.frame { position:relative; aspect-ratio:16/9; border-radius:12px; overflow:hidden; box-shadow:0 0 0 1px #2b3438; background-size:cover; }
+.frame img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.frame .alt { position:absolute; left:10px; top:10px; padding:3px 10px; border-radius:9px; background:var(--glass); color:var(--cream); font-size:13px; border:1px solid var(--gline); }
+.fcap { margin-top:8px; font-size:13.5px; color:var(--dim); font-family:JakartaR, sans-serif; }
+.fcap b { color:var(--cream); font-family:Jakarta; font-weight:inherit; }
+.cb { position:absolute; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; font-size:12px; }
+.cb .p { display:flex; align-items:center; gap:5px; background:#13191b; color:var(--cream); border-radius:11px; padding:2px 8px 2px 2px; border:1px solid rgba(255,255,255,.22); box-shadow:0 2px 4px rgba(0,0,0,.5); white-space:nowrap; }
+.cb .p i { font-style:normal; background:var(--accent); color:var(--ink); border-radius:8px; padding:0 6px; font-size:10.5px; }
+.cb .s { width:2px; height:10px; background:#fff6dc; }
+.cb .d { width:7px; height:7px; border-radius:50%; background:#fff6dc; border:1.5px solid #2b2118; }
+.vs { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:22px; }
+.vs .frame .tag { position:absolute; right:10px; top:10px; }
