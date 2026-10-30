@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v4: cities with detail from a distance</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Cities with <b>detail from a distance</b> <span class="new">new</span></h1>
+<p class="lede">Everything on this sheet comes from the OSM tiles the client already streams for the street view (Shortbread):
+building footprints with their heights, land use, streets by rank, stations and district names. From far off the client
+draws a city today as one grey blob. Here each of these elements is kept for longer as you climb, each drawn in the painted
+palette of v3, and they give way one after another rather than all at once.</p>
+
+<div class="principles">
+  <div><h3>Buildings, with shadows</h3><p>Footprints from the <code>buildings</code> layer, roofs in Dutch tile and slate tones. Each casts a shadow from its own <code>height</code> and the real sun (30 Oct, noon: 24° high).</p></div>
+  <div><h3>Land use tells the city apart</h3><p>Housing warm grey, industry and ports blue-grey, shops and offices mauve-grey, parks and allotments darker green, water navy.</p></div>
+  <div><h3>Streets by rank</h3><p>Motorways gold, main roads cream with a dark edge, local streets fine and pale. Railways dashed.</p></div>
+  <div><h3>Names that belong to the place</h3><p>Districts from <code>place_labels</code> in small capitals, stations from <code>public_transport</code>, cities as banners.</p></div>
+</div>
+
+<h2><span>1</span>Utrecht at 10 km</h2>
+<p class="sub">Left: today's client (mac-1, real GPU), straight down. Right: the same camera, drawn from the same tiles. The detail strip below is a 1:1 crop of the old centre.</p>
+<div class="vs">
+  <div><div class="frame"><img src="today-utr10km.jpg"><span class="alt">today</span></div></div>
+  <div><div class="frame"><img src="city-utr10.jpg"><span class="alt">proposed</span></div></div>
+</div>
+<div class="vs">
+  <div><div class="frame" style="aspect-ratio:560/350"><img src="today-utr10km-detail.jpg"><span class="alt">today · 1:1</span></div></div>
+  <div><div class="frame" style="aspect-ratio:560/350"><img src="city-utr10-detail.jpg"><span class="alt">proposed · 1:1</span></div></div>
+</div>
+
+<h2><span>2</span>Amsterdam at 10 km</h2>
+<p class="sub">The canal ring, the IJ and the docks read at once. Stations whose name starts with the town's are rail stations and get their name; metro and tram stops get an icon only. The patch at bottom right of today's frame is tiles that failed to load during the capture.</p>
+<div class="vs">
+  <div><div class="frame"><img src="today-ams10km.jpg"><span class="alt">today</span></div></div>
+  <div><div class="frame"><img src="city-ams10.jpg"><span class="alt">proposed</span></div></div>
+</div>
+
+<h2><span>3</span>The Utrecht region at 40 km</h2>
+<p class="sub">At 37 m a pixel a building is less than a pixel. The footprints still make the grain of each town: a dense old centre, looser suburbs, big blocks on the business parks.</p>
+<div class="vs">
+  <div><div class="frame"><img src="today-t40km.jpg"><span class="alt">today</span></div></div>
+  <div><div class="frame"><img src="city-utr40.jpg"><span class="alt">proposed</span></div></div>
+</div>
+
+<h2><span>4</span>The Randstad at 120 km</h2>
+<p class="sub">Here the buildings give way to land use. Built-up areas are lifted off the ground by a soft shadow, so each town has an edge. Ditches thinner than a pixel are left out, and only the main districts keep a name.</p>
+<div class="vs">
+  <div><div class="frame"><img src="today-rand120km.jpg"><span class="alt">today</span></div></div>
+  <div><div class="frame"><img src="city-rand120.jpg"><span class="alt">proposed</span></div></div>
+</div>
+
+<div class="notes">
+  <div><h3>Which element, from which height</h3><ul>
+    <li><b>Building footprints and shadows:</b> up to about 60 km.</li>
+    <li><b>Local streets:</b> up to 20 km. Main roads to 150 km, motorways throughout.</li>
+    <li><b>District names:</b> neighbourhoods to 20 km, larger districts to 150 km.</li>
+    <li><b>Stations:</b> named to 20 km, an icon to 60 km.</li>
+    <li><b>Land-use colours and the lifted built-up edge:</b> from 40 km to the strategy map, where WorldCover takes over.</li></ul></div>
+  <div><h3>Notes</h3><ul>
+    <li>No new data: every element is a layer the client already loads at street level. Only the zoom at which it stops is new.</li>
+    <li>Roof tones vary per building by a hash of its outline. OSM has no roof colours for most buildings. The client's 3DBAG roofs could replace this in the Netherlands.</li>
+    <li>Shadows use the tile's <code>height</code>. 3DBAG heights would be more precise where the client has them.</li>
+    <li>Drawn by <code>city.ts</code> in this folder.</li></ul></div>
+</div>
+</body>
+</html>

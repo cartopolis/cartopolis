@@ -21,6 +21,21 @@ The maps are drawn from real data by `gen.ts` (ESA WorldCover 2021 from
 `place=city` populations). People, community and event counts in the panels
 are invented.
 
+## v4-cities: cities with detail from a distance
+
+![v4-cities](v4-cities.png)
+
+Asked for 2026-10-30: give cities more detail far out, from elements the map
+already has. Everything comes from the client's own OSM tiles (Shortbread):
+building footprints with a shadow from each one's `height` and the real sun,
+land use split into housing / industry / shops / parks, streets by rank,
+stations and district names. Each stays to a further height than today and
+they give way one after another: buildings to ~60 km, local streets to 20 km,
+then land use with a lifted built-up edge until WorldCover takes over. Drawn by
+`city.ts` against today's captures at 10 km (Utrecht, Amsterdam), 40 km and
+120 km. Roof tones are a hash per building (OSM rarely has roof colours);
+3DBAG roofs and heights could replace both in the Netherlands.
+
 ## v3-transition: closer colours, clouds as a setting, a night side
 
 ![v3-transition](v3-transition.png)
