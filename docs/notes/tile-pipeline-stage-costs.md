@@ -1,7 +1,7 @@
 ---
 topic: performance
-triggers: [tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
-updated: 2026-10-20
+triggers: [build_tunnels, unmeasured_profiles, road_levels.rs, tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
+updated: 2026-10-30
 ---
 
 # What one tile costs, stage by stage — and where the instrument does not reach
@@ -148,6 +148,29 @@ laid sheets. `i_overlay` is held to its list solver (`road_stitch::new_overlay`;
 above them, the same cascade on farmland; and the paving itself is dense (300 k
 triangles a cell as a blocker), so every fill triangle laid under it still meets
 thousands.
+
+## `build_tunnels` grew tenfold, and it is the road-level solve (2026-10-30)
+
+Same hatch, `mac-1` (Apple M5 Pro VM), release: `build_tunnels` read **30.8 ms**
+on the fixture against the 3.0 ms above — the most expensive row in the hatch,
+ahead of `cut_under_roads` (20.7 ms). Since September it plans every structure
+on the solved road network (`tunnels::unmeasured_profiles` →
+`road_levels::solve` + `structures`), and that is 26 of the 31 ms:
+
+| phase, per call | ms |
+|---|---|
+| `solve`: the outlier median (`Net::within` per measured node, ~28 k calls) | 10.1 |
+| `solve`: `Net::build` | 6.3 |
+| `structures`: `Net::build` again, over the same lines | 6.3 |
+| `solve`: the four grade envelopes | 2.8 |
+| everything else in both | 1.4 |
+
+The median's search now runs in reused dense buffers instead of a `HashMap`
+and heap per call: `build_tunnels` **30.8 → 22.9 ms**, `ocean_mask` 0.13 ms on
+both sides, and solved heights bit-identical over 31,607 points with noisy
+measured inputs. **Still open:** `unmeasured_profiles` builds the same network
+twice (`solve`, then `structures`); sharing one saves another ~6 ms a cell,
+and atlas's grading (`pipeline/terrain_grade.rs`) calls both as well.
 
 ## Batching the bank field's building fills — tried, measured, reverted
 

@@ -233,14 +233,17 @@ pub fn solve(lines: &[Line]) -> Solved {
     // a lamppost, a tree over the lane), and an average only spreads one out. First,
     // so that nothing seeded from a measurement below inherits one either.
     let soft: Vec<usize> = (0..n).filter(|&i| measured[i].is_some()).collect();
+    let mut reach = Reach::new(n);
+    let mut vals: Vec<f32> = Vec::new();
     let medians: Vec<f32> = soft
         .iter()
         .map(|&i| {
-            let mut vals: Vec<f32> = net
-                .within(i, MEDIAN_RADIUS_M)
-                .into_iter()
-                .filter_map(|j| measured[j].map(|(v, _)| v))
-                .collect();
+            vals.clear();
+            vals.extend(
+                net.within(i, MEDIAN_RADIUS_M, &mut reach)
+                    .iter()
+                    .filter_map(|&j| measured[j].map(|(v, _)| v)),
+            );
             vals.sort_by(f32::total_cmp);
             vals[vals.len() / 2]
         })
@@ -721,25 +724,39 @@ impl Net {
         }
     }
 
-    /// Every node within `radius` of `from` along the network, `from` included.
-    fn within(&self, from: usize, radius: f32) -> Vec<usize> {
-        let mut seen: HashMap<usize, f32> = HashMap::new();
-        let mut heap = BinaryHeap::new();
-        seen.insert(from, 0.0);
+    /// Every node within `radius` of `from` along the network, `from` included,
+    /// in no particular order.
+    ///
+    /// The search runs in `reach`'s buffers and leaves them clean behind it: the
+    /// median calls this once per measured node, ~28,000 times on a city tile,
+    /// and a fresh `HashMap` and heap per call were 10 of the 26 ms
+    /// `unmeasured_profiles` took there (2026-10-30).
+    fn within<'r>(&self, from: usize, radius: f32, reach: &'r mut Reach) -> &'r [usize] {
+        let Reach { dist, heap, seen } = reach;
+        seen.clear();
+        heap.clear();
+        dist[from] = 0.0;
+        seen.push(from);
         heap.push(Item(0.0, from));
         while let Some(Item(d, i)) = heap.pop() {
-            if seen.get(&i).is_some_and(|&b| d > b) {
+            if d > dist[i] {
                 continue;
             }
             for &(j, len, _) in &self.adj[i] {
                 let nd = d + len;
-                if nd <= radius && seen.get(&j).is_none_or(|&b| nd < b) {
-                    seen.insert(j, nd);
+                if nd <= radius && nd < dist[j] {
+                    if dist[j].is_infinite() {
+                        seen.push(j);
+                    }
+                    dist[j] = nd;
                     heap.push(Item(nd, j));
                 }
             }
         }
-        seen.into_keys().collect()
+        for &i in seen.iter() {
+            dist[i] = f32::INFINITY;
+        }
+        seen
     }
 
     /// Each node's value from the known node nearest it along the network.
@@ -800,6 +817,24 @@ impl Net {
             }
         }
         best.into_iter().map(|k| sign * k).collect()
+    }
+}
+
+/// Scratch for [`Net::within`], sized to the network: each node's distance
+/// (infinity when unreached), the frontier, and the nodes reached.
+struct Reach {
+    dist: Vec<f32>,
+    heap: BinaryHeap<Item>,
+    seen: Vec<usize>,
+}
+
+impl Reach {
+    fn new(nodes: usize) -> Self {
+        Self {
+            dist: vec![f32::INFINITY; nodes],
+            heap: BinaryHeap::new(),
+            seen: Vec::new(),
+        }
     }
 }
 
