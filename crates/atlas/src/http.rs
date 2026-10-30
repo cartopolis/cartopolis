@@ -27,6 +27,8 @@ pub struct AtlasState {
     pub api: crate::api::ApiState,
     /// `/satellites/active.tle`, the mirrored satellite catalogue.
     pub satellites: Arc<crate::satellites::SatelliteMirror>,
+    /// `/plans/groningen.json`, the notices and council business on the map.
+    pub plans: Arc<crate::plans::PlansMirror>,
 }
 
 /// Only the paths Caddy sends here. The site root — the front page, the
@@ -41,6 +43,10 @@ pub fn router(state: AtlasState) -> Router {
         .route(
             "/satellites/active.tle",
             get(crate::satellites::serve).with_state(state.satellites.clone()),
+        )
+        .route(
+            "/plans/groningen.json",
+            get(crate::plans::serve).with_state(state.plans.clone()),
         )
         .with_state(state)
         .nest("/api/pipeline", api)
@@ -204,6 +210,7 @@ mod tests {
                 )),
             },
             satellites: Arc::new(crate::satellites::SatelliteMirror::new(dir.path(), "")),
+            plans: Arc::new(crate::plans::PlansMirror::new(dir.path(), false)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

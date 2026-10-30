@@ -34,6 +34,9 @@ pub struct AtlasConfig {
     /// Where the satellite catalogue is mirrored from (`satellites`). Empty turns
     /// the refresh off; a copy already on disk is still served.
     pub satellites_source: String,
+    /// Whether the plans feed is rebuilt from its sources (`plans`). Off, a
+    /// feed already on disk is still served.
+    pub plans_refresh: bool,
 }
 
 impl Default for AtlasConfig {
@@ -45,6 +48,7 @@ impl Default for AtlasConfig {
             site_dir: PathBuf::from("data/atlas/site"),
             admin_api: "http://127.0.0.1:4748".to_string(),
             satellites_source: crate::satellites::DEFAULT_SOURCE.to_string(),
+            plans_refresh: true,
         }
     }
 }

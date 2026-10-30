@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod photo_pose;
 pub mod picture_limits;
 pub mod placeholders;
+pub mod plans;
 pub mod point;
 pub mod posts;
 pub mod protocol;

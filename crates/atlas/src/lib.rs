@@ -16,6 +16,7 @@ pub mod http;
 pub mod jobs;
 pub mod overrides;
 pub mod pipeline;
+pub mod plans;
 pub mod satellites;
 pub mod stamped;
 pub mod terrain;
@@ -61,6 +62,14 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             let mirror = Arc::new(satellites::SatelliteMirror::new(
                 &config.data_dir,
                 &config.satellites_source,
+            ));
+            mirror.spawn_refresh();
+            mirror
+        },
+        plans: {
+            let mirror = Arc::new(plans::PlansMirror::new(
+                &config.data_dir,
+                config.plans_refresh,
             ));
             mirror.spawn_refresh();
             mirror
