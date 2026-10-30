@@ -19,6 +19,15 @@ kinds (open, decided, council, events, traffic) and how far back (open only,
 switch as the tile. The ring's *Plans here* (v1 screen 4) works with the layer
 off.
 
+Asked to be built the same day ("ok maak het") and built as v2 draws it, with
+these differences: the ⋯ filters are by kind of notice (applications,
+decisions, notifications, events, traffic, other) plus a Council switch, and
+the dot's colour alone says open or decided, rather than "open" and "decided"
+being filters of their own; the council square carries a tick when the council
+has decided. Following a place and its notification (v1 screen 4) are not
+built (`docs/notes/plans.md` says why). v1's counts were corrected the same
+day: the first query also counted the Provinciaal blad.
+
 ## v1 — proposed 2026-10-30
 
 ![v1](v1.png)
