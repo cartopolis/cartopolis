@@ -21,6 +21,17 @@ The maps are drawn from real data by `gen.ts` (ESA WorldCover 2021 from
 `place=city` populations). People, community and event counts in the panels
 are invented.
 
+## Decided (2026-10-30)
+
+- **The map style is v4 on v3's palette**: cities from the client's own tiles
+  (buildings with height shadows, land use, streets by rank, stations,
+  district names), fading on distance from the camera, so near ground keeps
+  today's styling.
+- **The hex grid is an optional layer for now**, off by default — not part of
+  the base map at any height. Where v1 and v3 draw it, read it as switched on.
+- Clouds are a setting (off / light / full); the globe gets a night side.
+- The nuclear-exchange scenario (v1-nuclear) is set aside.
+
 ## v4-cities: cities with detail from a distance
 
 ![v4-cities](v4-cities.png)
