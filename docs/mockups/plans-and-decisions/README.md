@@ -6,6 +6,19 @@ updated: 2026-10-30
 
 # Plans and decisions on the map
 
+## v2 — Plans as a layer of its own, proposed 2026-10-30
+
+![v2](v2-layer.png)
+
+Asked for the same day: Plans as a separate layer to toggle. It is one tile
+under *Places* in the Layers sheet as built (beside Public transport stops,
+Shops, Friends and Community posts), with an *NL* badge. Off means nothing is
+drawn or fetched. v1's filter chips on the map move behind the tile's *⋯*: the
+kinds (open, decided, council, events, traffic) and how far back (open only,
+3 months, a year). On the map only the count chip stays, and its ✕ is the same
+switch as the tile. The ring's *Plans here* (v1 screen 4) works with the layer
+off.
+
 ## v1 — proposed 2026-10-30
 
 ![v1](v1.png)

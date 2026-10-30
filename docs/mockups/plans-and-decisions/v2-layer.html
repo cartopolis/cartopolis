@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v2: Plans as a layer of its own</title>
+<link rel="stylesheet" href="style.css">
+<style>
+body { width:1000px; }
+.row { display:flex; gap:40px; }
+.new { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:rgba(253,96,18,.18); color:#ffb48a; margin-left:4px; vertical-align:1px; }
+.today { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:#23392f; color:#9fd3b4; margin-left:4px; vertical-align:1px; }
+.world { background-image:url(vismarkt.jpg); background-size:390px 844px; }
+.world.dim::before { content:""; position:absolute; inset:0; background:rgba(10,14,16,.28); }
+.pp { position:absolute; width:13px; height:13px; border-radius:50%; transform:translate(-50%,-50%); z-index:3; background:#C7D3D8; border:2px solid #0A0E10; box-shadow:0 1px 4px rgba(0,0,0,.6); }
+.pp.o { background:var(--brand); border-color:#fff; width:15px; height:15px; }
+.council { position:absolute; z-index:4; transform:translate(-50%,-50%); width:30px; height:30px; border-radius:9px; background:#2f4a7a; border:2px solid #fff; display:grid; place-items:center; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.55); }
+.area { position:absolute; inset:0; z-index:2; pointer-events:none; }
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.disc.on { background:var(--accent); color:var(--ink); }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+.chipf { position:absolute; top:52px; left:50%; transform:translateX(-50%); z-index:6; background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:16px; padding:6px 10px; display:flex; gap:8px; align-items:center; font-size:12.5px; color:var(--dim); white-space:nowrap; }
+.chipf b { color:var(--cream); font-weight:inherit; }
+.chipf .x { width:22px; height:22px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); }
+.opt { display:flex; align-items:center; gap:10px; margin-top:10px; font-size:13px; color:var(--text); }
+.opt .sw { margin-left:auto; width:34px; height:20px; border-radius:10px; background:var(--brand); position:relative; }
+.opt .sw::after { content:""; position:absolute; top:3px; left:17px; width:14px; height:14px; border-radius:50%; background:#fff; }
+.opt .sw.off { background:var(--muted); }
+.opt .sw.off::after { left:3px; background:var(--dim); }
+.opt .seg2 { margin-left:auto; display:flex; background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:2px; font-size:12px; }
+.opt .seg2 span { padding:3px 9px; border-radius:8px; color:var(--dim); }
+.opt .seg2 .on { background:var(--accent); color:var(--ink); }
+.chips i.sq { border-radius:3px; }
+/* the layers sheet */
+.lsheet { position:absolute; left:0; right:0; bottom:0; top:300px; z-index:7; background:var(--surface); border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 0; }
+.lsheet .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 8px; }
+.lsheet .hd { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.lsheet .hd b { font-size:18px; color:var(--cream); font-weight:inherit; }
+.lsheet .hd .reset { margin-left:auto; font-size:12.5px; color:var(--dim); padding:3px 9px; border:1px solid var(--gline); border-radius:10px; }
+.cats { display:flex; justify-content:space-between; margin-bottom:12px; }
+.cats div { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:11px; color:var(--dim); width:56px; position:relative; }
+.cats .ic { width:46px; height:46px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); border:1px solid transparent; }
+.cats .on { color:var(--cream); }
+.cats .on .ic { background:var(--brand); color:#fff; }
+.cats .n { position:absolute; top:-3px; right:2px; min-width:17px; height:17px; border-radius:9px; background:var(--accent); color:var(--ink); font-size:10.5px; display:grid; place-items:center; padding:0 4px; }
+.sub { font-size:12px; color:var(--dim); margin:2px 0 8px; }
+.tiles { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.tile { height:88px; border-radius:16px; background:var(--raised); border:1px solid var(--gline); padding:9px 10px; display:flex; flex-direction:column; justify-content:space-between; position:relative; color:var(--text); font-size:12.5px; line-height:1.2; }
+.tile.on { background:rgba(253,96,18,.16); border-color:rgba(253,96,18,.7); color:var(--cream); }
+.tile.off-here { opacity:.5; }
+.tile .tg { position:absolute; top:8px; right:8px; width:26px; height:15px; border-radius:8px; background:var(--muted); }
+.tile .tg::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:var(--dim); }
+.tile.on .tg { background:var(--brand); }
+.tile.on .tg::after { left:13px; background:#fff; }
+.tile .nl { position:absolute; bottom:8px; right:8px; font-size:9.5px; color:var(--dim); border:1px solid var(--gline); border-radius:5px; padding:0 4px; }
+.tile .more { position:absolute; bottom:6px; right:8px; color:var(--dim); font-size:14px; letter-spacing:1px; }
+.tile .soon { position:absolute; bottom:8px; right:8px; font-size:9.5px; color:#ffb48a; }
+.basemap { display:flex; gap:8px; margin-bottom:12px; }
+.basemap div { flex:1; height:64px; border-radius:14px; border:2px solid transparent; position:relative; overflow:hidden; background-size:cover; }
+.basemap div span { position:absolute; left:6px; bottom:4px; font-size:11.5px; color:#fff; text-shadow:0 1px 3px #000; }
+.basemap .sel { border-color:var(--brand); }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.chips div { font-size:12px; padding:4px 10px 4px 8px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; gap:6px; align-items:center; color:var(--text); }
+.chips div.off { opacity:.45; }
+.chips i { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.hint { margin-top:10px; font-size:12px; color:var(--dim); display:flex; gap:6px; align-items:center; }
+.lsheet { top:330px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="hall" viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18"/></symbol>
+  <symbol id="clip" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M8.5 10h7M8.5 14h7M8.5 18h4"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+  <symbol id="city" viewBox="0 0 24 24"><path d="M3 21V9l5-3v15M8 21V4l7 3v14M15 21v-9l6 2v7M2 21h20"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0 1 12 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="move" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="10" rx="2"/><path d="M4 11h16"/><circle cx="8" cy="18" r="1.6"/><circle cx="16" cy="18" r="1.6"/></symbol>
+  <symbol id="under" viewBox="0 0 24 24"><path d="M2 8h20M4 12h16M6 16h12M9 20h6"/><path d="M12 3v3"/></symbol>
+  <symbol id="orbit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-25 12 12)"/></symbol>
+  <symbol id="bus" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="15" rx="3"/><path d="M5 11h14M8 21v-3M16 21v-3"/></symbol>
+  <symbol id="shop" viewBox="0 0 24 24"><path d="M4 9h16l-1 11H5zM8 9V7a4 4 0 0 1 8 0v2"/></symbol>
+  <symbol id="group" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c0-4 3-6 6-6s6 2 6 6M15 14c3 0 6 2 6 5"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/></symbol>
+  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+</svg>
+
+<h1><b>Plans</b> as a layer of its own</h1>
+<p class="lede">v1 put the kind filters on the map itself. Here Plans is one switch in the Layers sheet, beside the layers already under <i>Places</i>: off, nothing of it is drawn or fetched; on, the notices appear, and the kind filters live behind its <i>⋯</i> as Satellites' do. Only the Plans tile and its options are <span class="new">new</span>; the other tiles are the sheet <span class="today">as built</span>.</p>
+
+<div class="row">
+
+<div class="shot">
+<div class="phone">
+  <div class="world dim"></div>
+  <svg class="area" width="390" height="844"><polygon points="55.2,481.2 60.0,496.2 152.1,468.9 234.7,438.9 231.2,424.2" fill="rgba(253,96,18,.28)" stroke="#FD6012" stroke-width="2" stroke-dasharray="5 3"/></svg>
+  <span class="pp " style="left:81.6px;top:149.9px"></span><span class="pp " style="left:73.6px;top:280.5px"></span><span class="pp o" style="left:99.8px;top:466.5px"></span><span class="pp o" style="left:210.1px;top:415.1px"></span><span class="pp " style="left:298.9px;top:197.1px"></span><span class="pp o" style="left:224.0px;top:498.5px"></span><span class="pp " style="left:211.8px;top:430.2px"></span><span class="pp " style="left:15.0px;top:428.6px"></span><span class="pp " style="left:28.4px;top:791.4px"></span><span class="pp " style="left:98.9px;top:298.3px"></span><span class="pp " style="left:281.5px;top:284.4px"></span><span class="pp " style="left:184.1px;top:352.5px"></span><span class="pp o" style="left:209.5px;top:305.7px"></span><span class="pp o" style="left:261.0px;top:294.3px"></span><span class="pp o" style="left:161.8px;top:770.1px"></span><span class="pp o" style="left:70.6px;top:89.3px"></span><span class="pp o" style="left:240.2px;top:278.2px"></span><span class="pp o" style="left:272.1px;top:238.0px"></span>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="lsheet">
+    <div class="handle"></div>
+    <div class="hd"><svg class="i"><use href="#layers"/></svg><b>Layers</b><span class="reset">Reset</span></div>
+    <div class="cats">
+      <div><span class="ic"><svg class="i"><use href="#globe"/></svg></span>Map<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#city"/></svg></span>City<span class="n">4</span></div>
+      <div class="on"><span class="ic"><svg class="i"><use href="#pin"/></svg></span>Places<span class="n">2</span></div>
+      <div><span class="ic"><svg class="i"><use href="#move"/></svg></span>Moving<span class="n">1</span></div>
+      <div><span class="ic"><svg class="i"><use href="#under"/></svg></span>Under</div>
+      <div><span class="ic"><svg class="i"><use href="#orbit"/></svg></span>Orbit</div>
+    </div>
+    <div class="sub">Places, people and what is planned</div>
+    <div class="tiles">
+      <div class="tile"><svg class="i"><use href="#bus"/></svg>Public transport stops<span class="tg"></span><span class="more">⋯</span></div>
+      <div class="tile"><svg class="i"><use href="#shop"/></svg>Shops<span class="tg"></span><span class="more">⋯</span></div>
+      <div class="tile on"><svg class="i"><use href="#group"/></svg>Friends<span class="tg"></span></div>
+      <div class="tile"><svg class="i"><use href="#share"/></svg>Community posts<span class="tg"></span></div>
+      <div class="tile on" style="box-shadow:0 0 0 2px rgba(253,96,18,.5)"><svg class="i"><use href="#clip"/></svg>Plans<span class="tg"></span><span class="more">⋯</span><span class="nl" style="right:30px">NL</span></div>
+    </div>
+    <div class="chips">
+      <div><i style="background:var(--brand)"></i>Open for response</div>
+      <div><i style="background:#C7D3D8"></i>Decided</div>
+      <div><i class="sq" style="background:#2f4a7a;border:1px solid #9db7e6"></i>Council</div>
+      <div class="off"><i style="background:#9fd3b4"></i>Events</div>
+      <div class="off"><i style="background:#ffd173"></i>Traffic</div>
+    </div>
+    <div class="opt">Show<span class="seg2"><span>Open only</span><span class="on">Last 3 months</span><span>Year</span></span></div>
+    <div class="hint"><svg class="i s"><use href="#info"/></svg>Gemeente Groningen · official notices and council record</div>
+  </div>
+</div>
+<h2><span>1</span>The Plans tile, open</h2>
+<ul>
+  <li>One tile under <i>Places</i>, with <i>NL</i> because the notices are the Dutch government's. The tile alone is the on/off switch.</li>
+  <li><i>⋯</i> opens the kinds in place; the chips are the legend and the filters at once, as for Satellites. Events and traffic are off by default.</li>
+  <li><b>Show</b> sets how far back: only notices still open, the last three months (default), or a year.</li>
+</ul>
+</div>
+
+<div class="shot">
+<div class="phone">
+  <div class="world dim"></div>
+  <svg class="area" width="390" height="844"><polygon points="55.2,481.2 60.0,496.2 152.1,468.9 234.7,438.9 231.2,424.2" fill="rgba(253,96,18,.28)" stroke="#FD6012" stroke-width="2" stroke-dasharray="5 3"/></svg>
+  <span class="pp " style="left:81.6px;top:149.9px"></span><span class="pp " style="left:73.6px;top:280.5px"></span><span class="pp o" style="left:99.8px;top:466.5px"></span><span class="pp o" style="left:210.1px;top:415.1px"></span><span class="pp " style="left:298.9px;top:197.1px"></span><span class="pp o" style="left:224.0px;top:498.5px"></span><span class="pp " style="left:211.8px;top:430.2px"></span><span class="pp " style="left:15.0px;top:428.6px"></span><span class="pp " style="left:28.4px;top:791.4px"></span><span class="pp " style="left:98.9px;top:298.3px"></span><span class="pp " style="left:281.5px;top:284.4px"></span><span class="pp " style="left:184.1px;top:352.5px"></span><span class="pp o" style="left:209.5px;top:305.7px"></span><span class="pp o" style="left:261.0px;top:294.3px"></span><span class="pp o" style="left:161.8px;top:770.1px"></span><span class="pp o" style="left:70.6px;top:89.3px"></span><span class="pp o" style="left:240.2px;top:278.2px"></span><span class="pp o" style="left:272.1px;top:238.0px"></span>
+  <div class="council" style="left:318px;top:440px"><svg class="i s"><use href="#hall"/></svg></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="chipf"><svg class="i s"><use href="#clip"/></svg><b>Plans</b><span>22 here · <span style="color:#ffb48a">9 still open</span></span><span class="x"><svg class="i s" style="width:12px;height:12px"><use href="#x"/></svg></span></div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc on"><svg class="i"><use href="#layers"/></svg></div>
+  </div>
+</div>
+<h2><span>2</span>On the map</h2>
+<ul>
+  <li>v1's screen 1 without its row of filter chips: they moved into the tile, so the map stays clear.</li>
+  <li>The chip at the top stays while the layer is on: how many notices here and how many still open; its ✕ turns the layer off, the same switch as the tile.</li>
+  <li>With the layer off, the ring's <i>Plans here</i> (v1 screen 4) still answers for one spot.</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>
