@@ -263,7 +263,9 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
                 |ui| {
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(&title).strong().size(theme::SIZE_SUB),
+                            egui::RichText::new(&title)
+                                .size(theme::SIZE_TITLE)
+                                .color(theme::CREAM),
                         )
                         .truncate()
                         .selectable(false),
@@ -344,8 +346,10 @@ fn rows(
 ) {
     egui::Grid::new("building_facts")
         .num_columns(2)
-        .spacing([12.0, 4.0])
-        .striped(true)
+        .spacing([16.0, 4.0])
+        // No stripes: a band behind only the two columns stopped half way
+        // across the card and read as a spreadsheet pasted into it.
+        .striped(false)
         .show(ui, |ui| {
             if let Some(year) = fact.year {
                 row(ui, "Built", &year.to_string());

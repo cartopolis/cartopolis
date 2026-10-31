@@ -109,7 +109,28 @@ const ENTRIES: [RightPanel; 2] = [RightPanel::Search, RightPanel::Places];
 /// arithmetic is how the two would drift when the dock grows another entry.
 #[must_use]
 pub fn reserved_bottom() -> f32 {
-    BOTTOM_MARGIN + theme::ROUND_BUTTON_SIZE
+    BOTTOM_MARGIN + theme::ROUND_BUTTON_SIZE + 2.0 * BAR_PAD
+}
+
+/// The glass bar's margin round the discs, where there is room for it.
+const BAR_PAD: f32 = 4.0;
+
+/// The bar's margin at this viewport: [`BAR_PAD`], or what is left once the
+/// discs and their tightest gaps are placed — so the bar gives up its own edge
+/// before the row would have to overflow the web phone tier.
+#[must_use]
+fn bar_pad(viewport_w: f32, discs: usize) -> f32 {
+    let row = discs as f32 * theme::ROUND_BUTTON_SIZE
+        + discs.saturating_sub(1) as f32 * bar_spacing(viewport_w, discs);
+    ((viewport_w - row) / 2.0).clamp(0.0, BAR_PAD)
+}
+
+/// The gaps between the discs in the bar: [`disc_spacing`] over the room left
+/// once the bar's margin and the screen's are taken off, so on a phone the
+/// bar keeps clear of the edges before the gaps open up.
+#[must_use]
+fn bar_spacing(viewport_w: f32, discs: usize) -> f32 {
+    disc_spacing(viewport_w - 2.0 * (BAR_PAD + theme::OSD_MARGIN), discs)
 }
 
 /// Where the top-left map controls start, clear of the layers disc above them.
@@ -186,11 +207,21 @@ pub fn render_dock(
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.x = disc_spacing(viewport_w, disc_count);
+                ui.spacing_mut().item_spacing.x = bar_spacing(viewport_w, disc_count);
+                // One pane of glass under the row: five dark discs floating
+                // apart read as loose buttons dropped on the map, and the
+                // glass was nowhere to be seen (2026-10-31).
+                let pad = bar_pad(viewport_w, disc_count);
+                egui::Frame::NONE
+                    .fill(theme::GLASS)
+                    .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_PILL))
+                    .inner_margin(egui::Margin::same(pad.round() as i8))
+                    .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let mut panel_disc = |ui: &mut egui::Ui, panel: RightPanel| {
                         let open = right_panel.is(panel);
-                        if theme::round_button(ui, panel.icon(), panel.label(), open).clicked() {
+                        if theme::bar_button(ui, panel.icon(), panel.label(), open).clicked() {
                             clicked = Some(panel);
                         }
                     };
@@ -201,7 +232,7 @@ pub fn render_dock(
                     // the composer is up, the same "this is the live one" the
                     // panel discs wear.
                     if has_session
-                        && theme::round_button(
+                        && theme::bar_button(
                             ui,
                             crate::systems::icons::CHAT,
                             "Say something",
@@ -233,12 +264,13 @@ pub fn render_dock(
                     // decoration — nothing about it said there was a menu behind
                     // it, which is a problem for the one disc that is the only
                     // route to Settings, sign-in and Exit.
-                    if theme::round_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
+                    if theme::bar_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
                         .clicked()
                     {
                         menu_clicked = true;
                     }
                 });
+                    });
             });
 
         egui::Area::new(egui::Id::new("layers_disc"))
@@ -334,7 +366,7 @@ fn mode_disc(
         name = "First person";
     }
     let (_, next_name) = badge(next);
-    if theme::round_button(
+    if theme::bar_button(
         ui,
         icon,
         &format!("{name} view — switch to {next_name}"),
@@ -371,8 +403,10 @@ mod tests {
         // only exists in a session, which is the widest the row ever gets and
         // therefore the case to pin; the web has no camera.
         for (viewport, discs) in [(274.0_f32, ENTRIES.len() + 4), (214.0, ENTRIES.len() + 3)] {
+            // The glass bar, margin and all.
             let row = discs as f32 * theme::ROUND_BUTTON_SIZE
-                + (discs - 1) as f32 * disc_spacing(viewport, discs);
+                + (discs - 1) as f32 * bar_spacing(viewport, discs)
+                + 2.0 * bar_pad(viewport, discs);
             assert!(
                 row <= viewport,
                 "a {discs}-disc dock is {row} pt in {viewport}"

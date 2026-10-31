@@ -2228,6 +2228,8 @@ fn action_row(
     avatar: bool,
     actions: &mut PanelActions,
 ) {
+    let full = ui.available_width();
+    let mut below = false;
     ui.horizontal(|ui| {
         if ui.button("Clear").clicked() {
             actions.clear = true;
@@ -2242,49 +2244,89 @@ fn action_row(
         {
             actions.walk = Some(false);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let width = ui.available_width().max(START_MIN_WIDTH_PTS);
-            match start_action(mode, gps, avatar) {
-                Ok(_) if mode == TravelMode::Foot => {
-                    if theme::primary_button_sized(
-                        ui,
-                        &format!("{}  Walk me there", icons::PLAY),
-                        width,
-                    )
-                    .on_hover_text("The avatar follows the route; any key takes over")
-                    .clicked()
-                    {
-                        actions.walk = Some(true);
-                    }
-                }
-                Ok(verb) => {
-                    if theme::primary_button_sized(ui, &format!("{}  {verb}", icons::PLAY), width)
-                        .on_hover_text("Follow this route and show the next turn")
-                        .clicked()
-                    {
-                        actions.drive = true;
-                    }
-                }
-                Err(missing) => {
-                    let icon = if mode == TravelMode::Foot {
-                        icons::WALK
-                    } else {
-                        icons::HERE
-                    };
-                    ui.add_enabled_ui(false, |ui| {
-                        theme::primary_button_sized(ui, &format!("{icon}  {missing}"), width)
-                    })
-                    .response
-                    .on_disabled_hover_text(if mode == TravelMode::Foot {
-                        "Walking happens in the world, as your avatar, which needs a session."
-                    } else {
-                        "Riding and driving follow this device's position, and it has no \
-                         location source. Plan here and read the turns; navigate on a phone."
-                    });
-                }
-            }
-        });
+        // The start button takes what the row has left — unless that is less
+        // than the button needs, in which case it gets a row of its own. Held at
+        // its minimum in the row instead, it overlapped Clear on a phone
+        // ("Needs a GPS position" over the word, 2026-10-31).
+        let left = ui.available_width();
+        if left >= START_MIN_WIDTH_PTS.max(start_label_width(ui, mode, gps, avatar)) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                start_button(ui, mode, gps, avatar, actions, left);
+            });
+        } else {
+            below = true;
+        }
     });
+    if below {
+        start_button(ui, mode, gps, avatar, actions, full);
+    }
+}
+
+/// The start button's words, as [`start_button`] writes them.
+fn start_label(mode: TravelMode, gps: bool, avatar: bool) -> String {
+    match start_action(mode, gps, avatar) {
+        Ok(_) if mode == TravelMode::Foot => format!("{}  Walk me there", icons::PLAY),
+        Ok(verb) => format!("{}  {verb}", icons::PLAY),
+        Err(missing) => {
+            let icon = if mode == TravelMode::Foot {
+                icons::WALK
+            } else {
+                icons::HERE
+            };
+            format!("{icon}  {missing}")
+        }
+    }
+}
+
+/// How wide the start button's words are, with the button's padding.
+fn start_label_width(ui: &egui::Ui, mode: TravelMode, gps: bool, avatar: bool) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        start_label(mode, gps, avatar),
+        egui::FontId::proportional(theme::SIZE_VALUE),
+        theme::INK,
+    );
+    galley.size().x + 2.0 * ui.spacing().button_padding.x + 8.0
+}
+
+/// The sheet's one primary act: be walked there, ride or drive it, or — when
+/// this device cannot — the reason, disabled.
+fn start_button(
+    ui: &mut egui::Ui,
+    mode: TravelMode,
+    gps: bool,
+    avatar: bool,
+    actions: &mut PanelActions,
+    width: f32,
+) {
+    let label = start_label(mode, gps, avatar);
+    match start_action(mode, gps, avatar) {
+        Ok(_) if mode == TravelMode::Foot => {
+            if theme::primary_button_sized(ui, &label, width)
+                .on_hover_text("The avatar follows the route; any key takes over")
+                .clicked()
+            {
+                actions.walk = Some(true);
+            }
+        }
+        Ok(_) => {
+            if theme::primary_button_sized(ui, &label, width)
+                .on_hover_text("Follow this route and show the next turn")
+                .clicked()
+            {
+                actions.drive = true;
+            }
+        }
+        Err(_) => {
+            ui.add_enabled_ui(false, |ui| theme::primary_button_sized(ui, &label, width))
+                .response
+                .on_disabled_hover_text(if mode == TravelMode::Foot {
+                    "Walking happens in the world, as your avatar, which needs a session."
+                } else {
+                    "Riding and driving follow this device's position, and it has no \
+                     location source. Plan here and read the turns; navigate on a phone."
+                });
+        }
+    }
 }
 
 /// The turn list. Each row flies the camera to its manoeuvre.

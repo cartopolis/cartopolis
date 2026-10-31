@@ -41,6 +41,9 @@ fn vertex(@builtin(vertex_index) index: u32) -> Vertex {
     return out;
 }
 
+// The vibrancy in `fragment`, per pass; two passes make it 1.69.
+const SATURATION: f32 = 1.3;
+
 // A nine-tap Gaussian folded into five samples: each off-centre tap sits between
 // two texels so the hardware's linear filter adds the pair for free. The offsets
 // are the standard sigma-2 pair and the weights are their combined kernel
@@ -69,6 +72,15 @@ fn fragment(in: Vertex) -> @location(0) vec4<f32> {
     colour += textureSampleLevel(source, source_sampler, clamp(centre - step_1, low, high), 0.0).rgb * WEIGHT_1;
     colour += textureSampleLevel(source, source_sampler, clamp(centre + step_2, low, high), 0.0).rgb * WEIGHT_2;
     colour += textureSampleLevel(source, source_sampler, clamp(centre - step_2, low, high), 0.0).rgb * WEIGHT_2;
+
+    // Vibrancy: push the colour away from its own luminance. A blur averages
+    // roofs, trees and water towards one grey-brown, and under a dark tint that
+    // grey is what made the panes read as paint (2026-10-31); the city's colour
+    // is what says there is something behind the glass. Mixing about the
+    // luminance leaves the luminance where it was, so no contrast moves. Both
+    // passes run this, so the frame ends up SATURATION² saturated.
+    let luma = dot(colour, vec3<f32>(0.2126, 0.7152, 0.0722));
+    colour = max(mix(vec3<f32>(luma), colour, SATURATION), vec3<f32>(0.0));
 
     // Opaque: the panel's own fill is what makes the chrome translucent, and an
     // alpha here would let the *unblurred* frame show through the blur.

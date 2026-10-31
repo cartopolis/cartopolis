@@ -141,8 +141,8 @@ pub fn render_place_card(
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&place.name)
-                                            .strong()
-                                            .size(theme::SIZE_SUB),
+                                            .size(theme::SIZE_TITLE)
+                                            .color(theme::CREAM),
                                     )
                                     .truncate()
                                     .selectable(false),

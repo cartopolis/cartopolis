@@ -95,14 +95,33 @@ flat fills, i.e. the look before it existed) and that it hangs a textured twin
 under every rectangle painted in a glass fill, so it covers panels, windows,
 menus and floating readouts without any of them knowing it exists.
 
-Two later facts (2026-10-31). **The blur runs only on frames whose geometry
-holds glass** (`EguiRenderOutput::glass`): until then its two quarter-size
-passes ran every frame, behind an opaque full-screen panel on a phone too,
-although `theme::PANEL`'s note already claimed the panels did not pay for it.
-And **every glass pane carries a lit top edge** (`glass::sheen_shape`, white at
-alpha 52, panes 28 pt and taller): with the blur alone the place card and the
-reminder read as dark plates laid on the map, and light caught on the upper
-edge is the cue the primary and secondary keys already used.
+Later facts (2026-10-31). **The blur runs only on frames whose geometry holds
+glass** (`EguiRenderOutput::glass`): until then its two quarter-size passes ran
+every frame, behind an opaque full-screen panel on a phone too, although
+`theme::PANEL`'s note already claimed the panels did not pay for it.
+
+**Over a blur a pane is a clear rim round a dark core**, not one tint
+(`glass::core_shape`, `theme::GLASS_RIM` / `GLASS_CORE`, a 6 pt rim). The person
+looking at the 84 % panes said the glass was not visible, and the arithmetic
+agrees: wherever type can sit the pane must be dark over white paper, and at
+that darkness a blurred city shows at a sixth of itself. Two ways round it
+were tried that day and **both lost**:
+
+- *Dim the backdrop, thin the tint.* Over white the result is the same, so the
+  city shows at about the same sixth — the slab only got darker.
+- *Compress the backdrop's brightness with a curve* (paper pressed to the floor,
+  the city keeping its spread). A sunlit city is itself bright, so it was
+  pressed flat too: a darker slab again.
+
+The rim is where the glass is seen: no type reaches it (every glass frame's
+inner margin is ≥ 8 pt), so it can be nearly clear, and the blurred city shows
+through it at five sixths, the edge of a thick sheet. The core, inset, carries
+the darkness, and `the_glass_core_is_no_lighter_than_the_flat_pane` holds core
++ rim + sheen to `GLASS`'s worst case. With the rim go a sheen (a texture
+fading from the top, `glass::sheen_image`), a lit top line, a hairline on the
+core's edge and a saturation lift in the blur pass (×1.69, about the luminance,
+so no ratio moves). The dock became one such pane (`dock::bar_pad`), its discs
+glyphs on it (`theme::bar_button`).
 
 **The alpha is load-bearing in both directions, and only one of them is a
 test.** Downward: a translucent panel's real background is not in `theme.rs` at

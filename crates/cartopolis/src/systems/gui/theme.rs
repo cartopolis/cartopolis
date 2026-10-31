@@ -306,6 +306,29 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0
 /// white page darker.
 pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 215);
 
+/// The clear rim of a glass pane over a blur (`systems::glass`): [`GLASS`]'s
+/// colour, thin, so the blurred city shows through at five sixths of its light.
+///
+/// The floor on [`GLASS`] does not move — wherever type can sit, the pane is
+/// as dark as ever. What changed (2026-10-31, "the glass is not visible") is
+/// that the pane is no longer one tint: its outer few points carry this, its
+/// core [`GLASS_CORE`], and the rim is where the glass is seen. Without a
+/// backdrop the pane keeps the full [`GLASS`], so a missing blur cannot lose
+/// contrast.
+pub const GLASS_RIM: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 40);
+
+/// The dark core of a glass pane over a blur, drawn over [`GLASS_RIM`]: the
+/// two together, plus the sheen's brightest row, come out no lighter over white
+/// paper than [`GLASS`] does (`the_glass_core_is_no_lighter_than_the_flat_pane`),
+/// so every ratio measured through [`GLASS`] holds where the type is.
+pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 222);
+
+/// The white at the very top of a glass pane's sheen (`systems::glass`), as an
+/// alpha; it fades to nothing by 40 % of the pane's height. Counted in the
+/// worst case [`GLASS_CORE`] is held to, since the top of a pane is where
+/// its title sits.
+pub const GLASS_SHEEN_PEAK: u8 = 12;
+
 /// The docked side panels' surface: one flat near-black, between [`INK`] and
 /// [`SURFACE`], with the same teal cast as the ramp it belongs to.
 ///
@@ -737,7 +760,10 @@ pub fn visuals() -> egui::Visuals {
     // readout are the same material at two sizes.
     v.window_stroke = Stroke::new(1.0, OVERLAY_LINE);
     v.window_corner_radius = CornerRadius::same(RADIUS_LG);
-    v.menu_corner_radius = CornerRadius::same(RADIUS);
+    // The popups are the cards over the map (a place, a building), so they take
+    // the windows' radius: at 8 pt beside 14 pt panes they read as a
+    // different, cheaper material (2026-10-31).
+    v.menu_corner_radius = CornerRadius::same(RADIUS_LG);
     // Softer and further than egui's default: these float over a moving map, and
     // a tight hard shadow reads as a sticker rather than a raised surface. With
     // the surfaces translucent the shadow does more work than it used to — it is
@@ -1402,13 +1428,41 @@ pub fn round_button(
     tooltip: &str,
     selected: bool,
 ) -> egui::Response {
+    round_button_on(ui, icon, tooltip, selected, (OVERLAY, OVERLAY_LINE))
+}
+
+/// [`round_button`] for a disc that sits *in* a glass bar (the dock): at rest
+/// it is only its glyph, since the bar is already the surface — a dark disc on
+/// a dark pane read as a hole in it. Hover and the engaged plate are the same.
+pub fn bar_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    selected: bool,
+) -> egui::Response {
+    round_button_on(
+        ui,
+        icon,
+        tooltip,
+        selected,
+        (Color32::TRANSPARENT, Color32::TRANSPARENT),
+    )
+}
+
+fn round_button_on(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    selected: bool,
+    rest: (Color32, Color32),
+) -> egui::Response {
     let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = resp.hovered();
     let (fill, ring, ink) = match (selected, hovered) {
         (true, _) => (ACCENT, ACCENT_RING, INK),
         (false, true) => (SURFACE_HOVER, ACCENT, CREAM),
-        (false, false) => (OVERLAY, OVERLAY_LINE, TEXT),
+        (false, false) => (rest.0, rest.1, TEXT),
     };
     paint_disc(
         ui.painter(),
@@ -2983,6 +3037,24 @@ mod tests {
     const BRIGHT_MAP: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
     /// The same at the other end — a night city, a dark aerial, deep water.
     const DARK_MAP: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
+
+    /// Where the type sits, the glass keeps the flat pane's worst case: over
+    /// white paper, the core over the rim's tint, under the sheen's brightest
+    /// row, comes out no lighter, channel by channel, than [`GLASS`] over the
+    /// same paper — so every ratio `text_clears_every_surface_it_can_land_on`
+    /// measures through [`GLASS`] still holds inside a pane over the blur.
+    #[test]
+    fn the_glass_core_is_no_lighter_than_the_flat_pane() {
+        let flat = over(GLASS, BRIGHT_MAP);
+        let core = over(
+            Color32::from_white_alpha(GLASS_SHEEN_PEAK),
+            over(GLASS_CORE, over(GLASS_RIM, BRIGHT_MAP)),
+        );
+        for (f, b) in [(flat.r(), core.r()), (flat.g(), core.g()), (flat.b(), core.b())] {
+            assert!(b <= f, "the core {core:?} is lighter than the flat pane {flat:?}");
+        }
+        assert!(contrast(TEXT_DIM, core) >= contrast(TEXT_DIM, flat));
+    }
 
     /// **Every surface a colour can land on, not just the panel fill.**
     ///

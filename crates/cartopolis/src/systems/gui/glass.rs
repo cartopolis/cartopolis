@@ -123,6 +123,8 @@ fn is_glass(fill: egui::Color32) -> bool {
 struct Screen {
     /// Points per screen edge, i.e. the size the shapes are laid out against.
     size: egui::Vec2,
+    /// The sheen texture ([`sheen_image`]), once egui has one.
+    sheen: Option<egui::TextureId>,
 }
 
 /// Put a blurred copy of the frame under every glass rectangle in `shapes`, and
@@ -140,6 +142,7 @@ pub fn insert_backdrops(
     shapes: &mut Vec<egui::epaint::ClippedShape>,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
+    sheen: Option<egui::TextureId>,
 ) -> bool {
     let Some(id) = backdrop_id() else {
         return false;
@@ -152,6 +155,7 @@ pub fn insert_backdrops(
             size_in_pixels[0] as f32 / pixels_per_point,
             size_in_pixels[1] as f32 / pixels_per_point,
         ),
+        sheen,
     };
     let mut found = false;
     for clipped in shapes.iter_mut() {
@@ -159,12 +163,13 @@ pub fn insert_backdrops(
     }
     // The walk above can only *replace* a shape in place, because a
     // `ClippedShape` holds exactly one. A glass rectangle at the top level is
-    // therefore rewritten into a `Shape::Vec` of two — see `expand`.
+    // therefore rewritten into a `Shape::Vec` group — see `expand`.
     found
 }
 
-/// Walk a shape list, replacing each glass rectangle with a two-shape group:
-/// the blurred backdrop, then the rectangle itself.
+/// Walk a shape list, replacing each glass rectangle with a group: the blurred
+/// backdrop, the pane over it — a thin rim of glass round a dark core — and
+/// its light.
 ///
 /// Recursive because egui groups shapes into `Shape::Vec` in several places
 /// (a `Frame`'s background and its stroke arrive as one, for instance), and a
@@ -177,12 +182,25 @@ fn expand(shapes: &mut [egui::Shape], id: egui::TextureId, screen: &Screen) -> b
                 let Some(backdrop) = backdrop_shape(rect, id, screen) else {
                     continue;
                 };
-                let sheen = sheen_shape(rect);
-                let glass = std::mem::replace(shape, egui::Shape::Noop);
-                *shape = egui::Shape::Vec(match sheen {
-                    Some(sheen) => vec![backdrop, glass, sheen],
-                    None => vec![backdrop, glass],
-                });
+                let sheen = sheen_shapes(rect, screen.sheen);
+                let egui::Shape::Rect(mut glass) = std::mem::replace(shape, egui::Shape::Noop)
+                else {
+                    unreachable!("matched as a rect above");
+                };
+                let mut group = vec![backdrop];
+                match core_shape(&glass) {
+                    // The pane keeps its stroke and takes the rim's thin tint;
+                    // the core, inset inside it, carries the darkness. Without a
+                    // backdrop none of this runs and the pane keeps `GLASS`.
+                    Some(core) => {
+                        glass.fill = theme::GLASS_RIM;
+                        group.push(egui::Shape::Rect(glass));
+                        group.push(core);
+                    }
+                    None => group.push(egui::Shape::Rect(glass)),
+                }
+                group.extend(sheen);
+                *shape = egui::Shape::Vec(group);
                 found = true;
             }
             egui::Shape::Vec(inner) => found |= expand(inner, id, screen),
@@ -192,14 +210,53 @@ fn expand(shapes: &mut [egui::Shape], id: egui::TextureId, screen: &Screen) -> b
     found
 }
 
-/// The blurred twin of one glass rectangle: same rectangle, same corners, the
-/// backdrop texture, no tint and no stroke.
+/// How wide the clear rim of a glass pane is, in points.
 ///
-/// The tint is the glass rectangle drawn *over* this one, unchanged — which is
-/// what keeps the palette in one place. A brush multiplies the texture by the
-/// shape's fill, so tinting here instead would darken the blur by the panel
-/// colour rather than compositing over it, and a 84 %-alpha slate would come out
-/// as a near-black pane.
+/// **This is where the glass is.** The pane has to be dark wherever type can
+/// sit — over white paper, the brightest thing behind it — and at that
+/// darkness a blurred city shows as a sixth of itself, which the person
+/// looking at it called invisible (2026-10-31). Making the whole pane clearer
+/// costs that legibility; dimming the backdrop instead only darkened the slab.
+/// So the clear part is a rim no type reaches — every glass frame's inner
+/// margin is wider than this — and through it the blurred city shows at five
+/// sixths of its light: the edge of a thick sheet, which is what makes glass
+/// read as glass.
+const RIM_WIDTH: f32 = 6.0;
+
+/// The core's own hairline, white at this alpha.
+const CORE_EDGE_ALPHA: u8 = 22;
+
+/// The dark core of a glass pane: the pane inset by [`RIM_WIDTH`], corners
+/// shrunk to match, in `theme::GLASS_CORE`. `None` for a pane too small to
+/// have a rim and a core — a chip, a one-line readout — which keeps the plain
+/// `GLASS` fill.
+fn core_shape(rect: &egui::epaint::RectShape) -> Option<egui::Shape> {
+    let r = rect.rect;
+    if r.height() < SHEEN_MIN_HEIGHT || r.width() < 4.0 * RIM_WIDTH {
+        return None;
+    }
+    let radius = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne))
+        .min(r.height() * 0.5);
+    let inner = (radius - RIM_WIDTH).max(2.0).round() as u8;
+    let mut core = egui::epaint::RectShape::filled(
+        r.shrink(RIM_WIDTH),
+        egui::CornerRadius::same(inner),
+        theme::GLASS_CORE,
+    );
+    core.round_to_pixels = rect.round_to_pixels;
+    // The inner edge of the sheet, faint: it is what turns the rim from a
+    // coloured border into the thickness of the glass.
+    core.stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(CORE_EDGE_ALPHA));
+    core.stroke_kind = egui::StrokeKind::Inside;
+    Some(egui::Shape::Rect(core))
+}
+
+/// The blurred twin of one glass rectangle: same rectangle, same corners, the
+/// backdrop texture passed through untinted, no stroke.
+///
+/// The tint is the pane drawn *over* this one. A brush multiplies the texture
+/// by the shape's fill, so tinting here with the panel colour would turn the
+/// city teal-black under the rim as well as the core.
 fn backdrop_shape(
     rect: &egui::epaint::RectShape,
     id: egui::TextureId,
@@ -220,40 +277,80 @@ fn backdrop_shape(
 
 /// How bright the lit top edge of a glass surface is: white at this alpha.
 ///
-/// Between the secondary button's 40 and the primary's 120 — a pane is a
-/// larger thing than a key and a brighter line along all of it reads as a
-/// border rather than as light.
-const SHEEN_ALPHA: u8 = 52;
+/// Brighter than the secondary key's 40 and under the primary's 120: on a
+/// pane this is the one hard line that says *edge of a sheet*, where the sheen
+/// under it is the soft half.
+const RIM_ALPHA: u8 = 96;
 
-/// A pane shorter than this gets no lit edge: a chip or a one-line readout
-/// with a highlight across its top reads as underlined from above.
+/// A pane shorter than this gets no light: a chip or a one-line readout with
+/// a highlight across its top reads as underlined from above.
 const SHEEN_MIN_HEIGHT: f32 = 28.0;
 
-/// The lit top edge of one glass rectangle, drawn over it.
+/// How far down a pane the sheen reaches, as a fraction of its height.
+const SHEEN_REACH: f32 = 0.4;
+
+/// Rows in the sheen texture. It is stretched over each pane by its UVs, so
+/// this only sets how smooth the fade is.
+const SHEEN_ROWS: usize = 64;
+
+/// The sheen: white, at `theme::GLASS_SHEEN_PEAK` along the top row and
+/// fading quadratically to nothing at [`SHEEN_REACH`]. One column — it is
+/// stretched across a pane's width.
+#[must_use]
+pub fn sheen_image() -> egui::ColorImage {
+    let reach = (SHEEN_ROWS as f32 * SHEEN_REACH).max(1.0);
+    let pixels = (0..SHEEN_ROWS)
+        .map(|row| {
+            let t = (row as f32 / reach).min(1.0);
+            let a = f32::from(theme::GLASS_SHEEN_PEAK) * (1.0 - t) * (1.0 - t);
+            egui::Color32::from_white_alpha(a.round() as u8)
+        })
+        .collect();
+    egui::ColorImage::new([1, SHEEN_ROWS], pixels)
+}
+
+/// The light on one glass rectangle, drawn over it: a soft sheen down from the
+/// top and a hard lit rim along it.
 ///
 /// The blur alone made the chrome see-through but left it reading as a dark
 /// plate laid on the map (2026-10-31, the place card and the reminder over
-/// Groningen on a phone): nothing said *material*. What does is light caught
-/// on the upper edge, the cue the buttons already carry (`theme`'s primary
-/// and secondary keys), so the panes now carry it too — one hairline, inset
-/// by the corner radius so it runs only along the straight part, the same
-/// recipe as the keys so the family reads as one.
-fn sheen_shape(rect: &egui::epaint::RectShape) -> Option<egui::Shape> {
+/// Groningen): nothing said *material*. What does is light caught on the upper
+/// edge — the cue the primary and secondary keys already carry, so the panes
+/// and the keys read as one family. The sheen is a textured rectangle with the
+/// pane's own corners, so egui rounds it exactly as it rounds the pane; the rim
+/// is inset by the corner radius so it runs only along the straight part.
+fn sheen_shapes(
+    rect: &egui::epaint::RectShape,
+    sheen: Option<egui::TextureId>,
+) -> Vec<egui::Shape> {
     let r = rect.rect;
     if r.height() < SHEEN_MIN_HEIGHT {
-        return None;
+        return Vec::new();
     }
-    let inset = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne)).max(4.0);
-    if r.width() <= 2.0 * inset {
-        return None;
+    let mut out = Vec::with_capacity(2);
+    if let Some(id) = sheen {
+        let mut soft = egui::epaint::RectShape::filled(r, rect.corner_radius, egui::Color32::WHITE);
+        soft.round_to_pixels = rect.round_to_pixels;
+        out.push(egui::Shape::Rect(soft.with_texture(
+            id,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        )));
     }
-    Some(egui::Shape::line_segment(
-        [
-            egui::pos2(r.left() + inset, r.top() + 1.0),
-            egui::pos2(r.right() - inset, r.top() + 1.0),
-        ],
-        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(SHEEN_ALPHA)),
-    ))
+    // A pill's radius is "as round as it gets" (`RADIUS_PILL`), which egui clamps
+    // to half the height; the rim has to clamp the same way or a pill gets none.
+    let inset = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne))
+        .min(r.height() * 0.5)
+        .max(4.0);
+    if r.width() > 2.0 * inset {
+        out.push(egui::Shape::line_segment(
+            [
+                egui::pos2(r.left() + inset, r.top() + 1.0),
+                egui::pos2(r.right() - inset, r.top() + 1.0),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(RIM_ALPHA)),
+        ));
+    }
+    out
 }
 
 // ─── Render world: making the blurred copy ───────────────────────────────────
@@ -681,7 +778,7 @@ mod tests {
                 theme::GLASS,
             )),
         }];
-        insert_backdrops(&mut shapes, [800, 600], 1.0);
+        insert_backdrops(&mut shapes, [800, 600], 1.0, None);
         assert_eq!(shapes.len(), 1);
         assert!(matches!(shapes[0].shape, egui::Shape::Rect(_)));
     }
@@ -709,28 +806,40 @@ mod tests {
             )),
         }];
         // 800×400 points at 2× — the same screen a phone would lay out.
-        assert!(insert_backdrops(&mut shapes, [1600, 800], 2.0), "glass was found");
+        assert!(
+            insert_backdrops(&mut shapes, [1600, 800], 2.0, Some(egui::TextureId::User(9))),
+            "glass was found"
+        );
 
-        let egui::Shape::Vec(pair) = &shapes[0].shape else {
+        let egui::Shape::Vec(group) = &shapes[0].shape else {
             panic!("the glass rect should have become a group");
         };
-        assert_eq!(pair.len(), 3, "backdrop, tint, lit edge");
+        assert_eq!(group.len(), 5, "backdrop, rim tint, core, sheen, lit edge");
         assert!(
-            matches!(pair[2], egui::Shape::LineSegment { .. }),
-            "the lit edge is drawn last, over the tint"
+            matches!(group[4], egui::Shape::LineSegment { .. }),
+            "the lit edge is drawn last"
         );
-        let egui::Shape::Rect(backdrop) = &pair[0] else {
+        let egui::Shape::Rect(sheen) = &group[3] else {
+            panic!("the sheen is a rect over the pane");
+        };
+        assert_eq!(
+            sheen.brush.as_ref().map(|b| b.fill_texture_id),
+            Some(egui::TextureId::User(9))
+        );
+        assert_eq!(sheen.corner_radius, egui::CornerRadius::same(8));
+        let egui::Shape::Rect(core) = &group[2] else {
+            panic!("the core is a rect inside the pane");
+        };
+        assert_eq!(core.fill, theme::GLASS_CORE);
+        assert_eq!(core.rect, rect.shrink(RIM_WIDTH), "the core leaves the rim clear");
+        let egui::Shape::Rect(backdrop) = &group[0] else {
             panic!("the backdrop is drawn first, under the tint");
         };
-        let egui::Shape::Rect(glass) = &pair[1] else {
+        let egui::Shape::Rect(glass) = &group[1] else {
             panic!("the glass rect itself is drawn second");
         };
-        assert_eq!(glass.fill, theme::GLASS, "the tint is untouched");
-        assert_eq!(
-            backdrop.fill,
-            egui::Color32::WHITE,
-            "the backdrop is untinted"
-        );
+        assert_eq!(glass.fill, theme::GLASS_RIM, "the pane itself is the clear rim");
+        assert_eq!(backdrop.fill, egui::Color32::WHITE, "the backdrop is untinted");
         assert_eq!(backdrop.corner_radius, glass.corner_radius);
         let brush = backdrop.brush.as_ref().expect("the backdrop is textured");
         assert_eq!(brush.fill_texture_id, egui::TextureId::User(7));
@@ -759,7 +868,7 @@ mod tests {
                 )),
             ]),
         }];
-        insert_backdrops(&mut shapes, [100, 100], 1.0);
+        insert_backdrops(&mut shapes, [100, 100], 1.0, None);
         let egui::Shape::Vec(outer) = &shapes[0].shape else {
             panic!("group");
         };
@@ -784,7 +893,7 @@ mod tests {
                 theme::PANEL,
             )),
         }];
-        assert!(!insert_backdrops(&mut shapes, [300, 600], 1.0));
+        assert!(!insert_backdrops(&mut shapes, [300, 600], 1.0, None));
         forget();
     }
 }

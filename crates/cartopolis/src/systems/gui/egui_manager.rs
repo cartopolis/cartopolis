@@ -1339,6 +1339,9 @@ pub fn end_egui_frame(
     // it there would go through `DerefMut` and mark the resource changed every
     // frame — defeating exactly the extract skip this function exists to set up.
     mut since_write: Local<f32>,
+    // The glass panes' sheen (`glass::sheen_image`), a texture egui owns; held
+    // here so it lives as long as the system does.
+    mut sheen: Local<Option<egui::TextureHandle>>,
 ) {
     *since_write += time.delta_secs();
     // Unconditional, and deliberately not gated on a surface existing: every
@@ -1410,8 +1413,25 @@ pub fn end_egui_frame(
     // colours. This is the last moment at which a panel background is still
     // recognisably a panel background (`systems::glass`).
     let mut shapes = full_output.shapes;
-    let glass =
-        crate::systems::glass::insert_backdrops(&mut shapes, size_in_pixels, pixels_per_point);
+    // Named only from the frame after it is made: loaded now, after
+    // `end_pass`, its allocation travels in the *next* pass's texture delta,
+    // and geometry naming it before then would draw a texture egui-wgpu has
+    // not got. That next pass is never a quiet one, since a pending delta
+    // forces a write.
+    let sheen_id = sheen.as_ref().map(egui::TextureHandle::id);
+    if sheen.is_none() {
+        *sheen = Some(egui_manager.ctx.load_texture(
+            "glass_sheen",
+            crate::systems::glass::sheen_image(),
+            egui::TextureOptions::LINEAR,
+        ));
+    }
+    let glass = crate::systems::glass::insert_backdrops(
+        &mut shapes,
+        size_in_pixels,
+        pixels_per_point,
+        sheen_id,
+    );
     let clipped_primitives = egui_manager.ctx.tessellate(shapes, pixels_per_point);
 
     // Carry unconsumed texture deltas forward instead of dropping them.
