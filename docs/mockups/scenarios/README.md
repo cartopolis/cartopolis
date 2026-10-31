@@ -28,6 +28,20 @@ alert texts are invented and marked so on the sheets.
 
 Nothing decided yet.
 
+## v4-whole: every scale, every mode
+
+![v4-whole](v4-whole.png)
+
+Asked for 2026-10-31: how all these modes form one whole, and how simulation
+layers are useful at every scale. One ladder of places (street, city, region,
+country, continent, world, solar system, stars), each rung a board; a simulation
+runs at its native rung and is read at every other; one clock and one "you"
+card throughout; four modes with their own frames (Live red, Replay green,
+Exercise striped, Sandbox purple, the sandbox kept off Earth). Two scenarios
+followed through the ladder (a drone night, a solar storm), how the parts
+stack, which mode belongs where, and a build order. Street and city pictures
+are today's client (`docs/img/views`).
+
 ## v3-stars: beyond the globe, nodes and lanes
 
 ![v3-stars](v3-stars.png)
