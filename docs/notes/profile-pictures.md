@@ -1,6 +1,6 @@
 ---
 topic: people's pictures
-triggers: [faces, profile picture, "/api/pictures/mine", "/api/pictures/people", texture_for, paint_face, you_picture, face_snapshot, viewfinder, "accounts.picture", FACE_EDGE]
+triggers: [faces.rs, pictures.rs, faces, profile picture, "/api/pictures/mine", "/api/pictures/people", texture_for, paint_face, you_picture, face_snapshot, viewfinder, "accounts.picture", FACE_EDGE]
 updated: 2026-10-16
 ---
 

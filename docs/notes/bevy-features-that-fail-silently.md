@@ -1,6 +1,6 @@
 ---
 topic: bevy-features
-triggers: [Cargo.toml, avatar.rs, model_assets.rs, placeholder_models.rs, reflect_auto_register, gltf_animation, bevy_animation, bevy_gltf, bevy_world_serialization, WorldAssetRoot, GltfAssetLabel, AnimationClip, bevy_gizmos_render, "rest pose", "animations don't play", "unregistered type", "default-features = false"]
+triggers: [crates/cartopolis/Cargo.toml, avatar.rs, model_assets.rs, placeholder_models.rs, reflect_auto_register, gltf_animation, bevy_animation, bevy_gltf, bevy_world_serialization, WorldAssetRoot, GltfAssetLabel, AnimationClip, bevy_gizmos_render, "rest pose", "animations don't play", "unregistered type", "default-features = false"]
 updated: 2026-10-17
 ---
 

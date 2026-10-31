@@ -1,6 +1,6 @@
 ---
 topic: camera
-triggers: [camera_screen.rs, recorder.rs, webm.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, photos.toml, "Retake", camera_frame, hole_view, clip_encoder, save_video]
+triggers: [camera_screen.rs, recorder.rs, webm.rs, photo_pose, PhotoPose, jpeg_meta, world_polaroid, "In world", Mixed, selfie, EXIF, XMP, ImagePick, open_still, upright_turn, view_angles, "Retake", camera_frame, hole_view, clip_encoder, save_video]
 updated: 2026-10-21
 ---
 

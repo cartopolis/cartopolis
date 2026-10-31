@@ -41,16 +41,23 @@ updated: 2026-07-26
 ```
 
 **Name the files.** `.claude/hooks/note-triggers` runs after an agent reads or
-edits a file and lists the notes whose triggers match it — and it matches only
-three shapes: a file name (`routing.rs`, `water.wesl`), a path of two or more
-segments (`crates/atlas`, `assets/shaders/patched/`), and a module path by its
-last segment (`systems::water` → `water.rs`). Keywords and prose (`"turn list"`)
-are for grep and reach nobody on their own. A note with no file-shaped trigger
-is read only by someone who already knew to look, which is how CLAUDE.md came
-to hold a copy of half of them.
+edits a file — with the Read and Edit tools or through a Bash command naming it
+(`sed -n`, `cat`, `sed -i`) — and lists the notes whose triggers match it, the
+most specific first. It matches only three shapes: a file name (`routing.rs`,
+`water.wesl`), a path of two or more segments (`crates/atlas`,
+`assets/shaders/patched/`), and a module path by one of its last two segments
+(`systems::water` → `water.rs`, `free_camera::setup_camera` → `free_camera.rs`).
+Keywords and prose (`"turn list"`) are for grep and reach nobody on their own. A
+note with no file-shaped trigger is read only by someone who already knew to
+look, which is how CLAUDE.md came to hold a copy of half of them. Never a bare
+`lib.rs` or `Cargo.toml`: every crate has one.
 
-A claim may carry a `check:` line — a shell one-liner that fails when the claim
-goes stale (e.g. `check: ! grep -rqi "osrm" Cargo.toml`). **No runner exists
-yet**; they are written for the CI job that will run them.
+A claim may carry a `check:` line — a shell one-liner in backticks that fails
+when the claim goes stale (e.g. `check: ! grep -rqi "osrm" Cargo.toml`).
+
+`bun tools/notes-lint.ts` holds all of this, and runs in the landing gate's
+`fmt` step: an unquoted file trigger naming no tracked file (a rename leaves
+the note silently unnamed), a bare `lib.rs`, a note with no live trigger, a
+failing `check:`, a missing `updated:`. Quote a trigger to make it a keyword.
 
 If a note passes ~100 lines it is probably narrating. Cut it.

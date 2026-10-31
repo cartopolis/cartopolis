@@ -1,6 +1,6 @@
 ---
 topic: access-tokens
-triggers: [access token, access_tokens, CARTO_TOKEN, "/api/tokens", "/tokens", resolve_access, "Credential::AccessToken", without_elevated, elevated, bot account, "midas bot setup", revoke]
+triggers: [access_tokens.rs, access token, access_tokens, CARTO_TOKEN, "/api/tokens", "/tokens", resolve_access, "Credential::AccessToken", without_elevated, elevated, bot account, "midas bot setup", revoke]
 updated: 2026-10-16
 ---
 

@@ -1,6 +1,6 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, road_depth.rs, road_depth.wesl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, round_corners, corner_cut, "faceted road", "roads look polygonal", "road is a curve", "junction mouth", "side street", "roads look wrong", ribbon_kinds, MITER_LIMIT, "spike", "road seam", "tarmac in the field"]
+triggers: [vector_tiles/roads.rs, road_depth.rs, road_depth.wesl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, round_corners, corner_cut, "faceted road", "roads look polygonal", "road is a curve", "junction mouth", "side street", "roads look wrong", ribbon_kinds, MITER_LIMIT, "spike", "road seam", "tarmac in the field"]
 updated: 2026-09-11
 ---
 

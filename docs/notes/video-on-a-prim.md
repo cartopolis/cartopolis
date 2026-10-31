@@ -1,6 +1,6 @@
 ---
 topic: video on a prim
-triggers: ["video on a prim", "prim video", SetPrimVideo, PrimVideo, "/api/videos", WebM, webm, matroska, ClipPlayer, prim_video, play_video]
+triggers: [prim_video.rs, "video on a prim", "prim video", SetPrimVideo, PrimVideo, "/api/videos", WebM, webm, matroska, ClipPlayer, prim_video, play_video]
 updated: 2026-09-30
 ---
 

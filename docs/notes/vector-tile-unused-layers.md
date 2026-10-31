@@ -1,6 +1,6 @@
 ---
 topic: vector-tile-unused-layers
-triggers: [vector_tiles.rs, street_furniture.rs, data_layers.rs, pois.rs, places.rs, systems::places, world_places.rs, systems::world_places, interact.rs, PAINT_ORDER, pois, addresses, housenumber, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
+triggers: [geo/src/vector_tiles/mod.rs, street_furniture.rs, data_layers.rs, pois.rs, places.rs, systems::places, world_places.rs, systems::world_places, interact.rs, PAINT_ORDER, pois, addresses, housenumber, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
 updated: 2026-10-17
 ---
 

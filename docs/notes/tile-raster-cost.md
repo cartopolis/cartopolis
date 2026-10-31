@@ -1,6 +1,6 @@
 ---
 topic: tile-raster-cost
-triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu, "benchmark", "streaming performance", print_tile_pipeline_time]
+triggers: [vector_tiles/raster.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu, "benchmark", "streaming performance", print_tile_pipeline_time]
 updated: 2026-09-21
 ---
 

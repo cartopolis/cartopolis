@@ -1,6 +1,6 @@
 ---
 topic: map
-triggers: [surveyed.rs, bgt.ts, bv3d.ts, LineKind, SurveyedLine, scheiding_vlak, scheiding_lijn, kademuur, walbescherming, quay wall, retaining wall, 3D basisvoorziening, "why is this wall two metres tall", "why is there no wall here"]
+triggers: [surveyed.rs, pipeline/bgt.rs, pipeline/bv3d.rs, LineKind, SurveyedLine, scheiding_vlak, scheiding_lijn, kademuur, walbescherming, quay wall, retaining wall, 3D basisvoorziening, "why is this wall two metres tall", "why is there no wall here"]
 updated: 2026-09-16
 ---
 

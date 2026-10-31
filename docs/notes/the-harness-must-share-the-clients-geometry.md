@@ -4,7 +4,7 @@ triggers:
   - "the harness shows a crack / a hole / a tear the client does not"
   - considering reimplementing a client algorithm in the harness rather than sharing it
   - deciding what belongs in `cartopolis_geo` versus `cartopolis`
-  - reading a `--relief` A/B, or a picture the harness produced
+  - reading a `--relief` before-and-after, or a picture the harness produced
   - cartopolis_viewer
 updated: 2026-10-17
 ---

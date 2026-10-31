@@ -1,6 +1,6 @@
 ---
 topic: buildings
-triggers: [building_facts.rs, systems::building_facts, scaffolding.rs, scaffold, vacant, bag_attributes.py, 3dbag_lod22.py, bag.ts, lod22.ts, pipeline/bag.rs, pipeline/lod22.rs, formats/bag.rs, building_windows.wesl, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
+triggers: [building_facts.rs, systems::building_facts, scaffolding.rs, scaffold, vacant, pipeline/bag.rs, pipeline/lod22.rs, formats/bag.rs, building_windows.wesl, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
 updated: 2026-10-06
 ---
 

@@ -1,6 +1,6 @@
 ---
 topic: chat
-triggers: [pictures, "/api/pictures", chat_pictures, "Payload::Picture", seal_attachment, snapshot, polaroid, send_picture, see_picture, "picture store"]
+triggers: [pictures.rs, chat_pictures.rs, pictures, "/api/pictures", chat_pictures, "Payload::Picture", seal_attachment, snapshot, polaroid, send_picture, see_picture, "picture store"]
 updated: 2026-10-01
 ---
 

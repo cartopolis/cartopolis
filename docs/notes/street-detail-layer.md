@@ -1,6 +1,7 @@
 ---
 topic: street-detail-layer
 triggers: [street detail, overpass features, surveyed trees, street lamps, traffic signals, zebra, barriers, piers, wind turbines, windmills, building parts, street_detail.rs, systems::street_detail, tall_structures.rs, systems::tall_structures, tall.rs, pipeline/tall.rs, systems/map/osm_buildings.rs]
+updated: 2026-10-17
 ---
 
 # The Overpass street-detail layer

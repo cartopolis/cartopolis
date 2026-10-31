@@ -1,6 +1,6 @@
 ---
 topic: map
-triggers: [dikes.rs, dikes.py, waterkering, IMWA, dike, dijk, "flood defence",
+triggers: [pipeline/dikes.rs, formats/dikes.rs, waterkering, IMWA, dike, dijk, "flood defence",
   "sea wall", street_labels.rs, WorldLabelLine, crest, terrain.rs, height.rs,
   "Lauwersmeerdijk", waterschap]
 updated: 2026-08-29

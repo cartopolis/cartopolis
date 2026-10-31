@@ -1,6 +1,6 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, vapid.key, "/api/push/key", "@webapi", backups, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known, network.rs, http_surface.rs, systems::ws_transport, resolve_target, install_crypto_provider, FrameTransport, rustls]
+triggers: [deploy-sim.yml, vapid.key, "/api/push/key", "@webapi", backups, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known, network.rs, http_surface.rs, systems::ws_transport, resolve_target, install_crypto_provider, FrameTransport, rustls]
 updated: 2026-10-17
 ---
 

@@ -1,6 +1,6 @@
 ---
 topic: ecs
-triggers: [lib.rs, session.rs, tile_loader.rs, network.rs, render_halt.rs, cartopolis_android/Cargo.toml, "Entity despawned", "entity is invalid", try_insert, try_despawn, try_remove, "set_error_handler", warn_once_per_failure, "crashes when minimized", "app closed itself", "generation 1"]
+triggers: [crates/cartopolis/src/lib.rs, session.rs, tile_loader.rs, network.rs, render_halt.rs, cartopolis_android/Cargo.toml, "Entity despawned", "entity is invalid", try_insert, try_despawn, try_remove, "set_error_handler", warn_once_per_failure, "crashes when minimized", "app closed itself", "generation 1"]
 updated: 2026-10-17
 ---
 

@@ -1,6 +1,6 @@
 ---
 topic: underground
-triggers: [underground.rs, formats/underground, geotop, GeoTOP, BRO, publiek.broservices.nl, bhrgt, cpt, gmw, gld, GUF, wko, buisleiding, rev-portaal, Bodemloket, Tankbestand, KNMI, fdsnws, NLOG, gasfield, dirsurveys, stratinterpretations, Rotliegend]
+triggers: [underground.rs, formats/underground.rs, pipeline/underground.rs, geotop, GeoTOP, BRO, publiek.broservices.nl, bhrgt, cpt, gmw, gld, GUF, wko, buisleiding, rev-portaal, Bodemloket, Tankbestand, KNMI, fdsnws, NLOG, gasfield, dirsurveys, stratinterpretations, Rotliegend]
 updated: 2026-10-08
 ---
 

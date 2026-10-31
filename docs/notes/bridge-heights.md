@@ -1,6 +1,6 @@
 ---
 topic: bridge-heights
-triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at]
+triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles/bridges.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at]
 updated: 2026-10-20
 ---
 

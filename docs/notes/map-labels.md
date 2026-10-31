@@ -1,6 +1,6 @@
 ---
 topic: rendering
-triggers: [street_labels.rs, vector_tiles.rs, systems::street_labels, "street names", "labels", "place_labels", "text on the map", fontdue, HEIGHT_BANDS, GroundLayer::StreetLabel]
+triggers: [street_labels.rs, vector_tiles/labels.rs, systems::street_labels, "street names", "labels", "place_labels", "text on the map", fontdue, HEIGHT_BANDS, GroundLayer::StreetLabel]
 updated: 2026-10-17
 ---
 

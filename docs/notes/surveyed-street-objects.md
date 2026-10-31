@@ -1,6 +1,6 @@
 ---
 topic: map
-triggers: [surveyed.rs, paving_edges.rs, kerb, kerbs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak, systems::surveyed, pipeline/bgt.rs, formats/bgt.rs, paving.rs, cartopolis_geo::paving, world_places.rs, road_texture.rs, vector_tiles/roads.rs, SurveyedCover]
+triggers: [surveyed.rs, paving_edges.rs, kerb, kerbs, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak, systems::surveyed, pipeline/bgt.rs, formats/bgt.rs, paving.rs, cartopolis_geo::paving, world_places.rs, road_texture.rs, vector_tiles/roads.rs, SurveyedCover]
 updated: 2026-10-17
 ---
 

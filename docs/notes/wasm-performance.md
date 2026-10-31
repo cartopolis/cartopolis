@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
-triggers: [gecko_profile, "gecko-profile", hardwareConcurrency, "?workers", CARTO_WORKERS, Firefox, crates/mvt_reader, mvt-reader, platform/heap.rs, heap_labels, frame_split.rs, gpu_log.ts, firefox_probe, rust_oom, "out of memory", platform/workers.rs, crates/wgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
-updated: 2026-10-21
+triggers: [gecko_profile, "gecko-profile", hardwareConcurrency, "?workers", CARTO_WORKERS, Firefox, crates/mvt_reader, mvt-reader, platform/heap.rs, heap_labels, frame_split.rs, gpu_log.ts, firefox_probe, rust_oom, "out of memory", platform/workers.rs, crates/wgpu/src/meter.rs, crates/wgpu/src/backend/webgpu, crates/bevy_shader, shader_store.rs, wgsl-v1.bin, keep-profile, map_wgt_features, pipeline_log, height.rs, debug_switches.rs, pipeline_health.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, ground_detail.rs, wet_surfaces.rs, refresh_tile_lod_blend, "get_mut", "Assets<GroundMaterial>", IoTaskPool, cdp_probe, callgrind, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio", "hitch", "hang"]
+updated: 2026-10-31
 ---
 
 # What actually costs frames on the web build
@@ -38,15 +38,16 @@ triangles — `?no_shadows` exists to check that one.
 
 Parsing is **half fixed** (restated 2026-08-10). `lod22.rs` is typed now — its
 `parse_cell` uses a derived `Deserialize` — so the 3DBAG path no longer boxes
-every coordinate of a ~4 MB cell. What is still an untyped `serde_json::Value`
-walk is the OSM building path: `osm_buildings.rs`'s `fetch_coverage` and
-`parse_buildings`, the latter over a multi-megabyte Overpass response. (Named,
-not line-numbered: the line numbers written here on 2026-08-06 had drifted by
-fourteen within four days — the `check:` grep below is the durable pointer.)
-Dropping that tree still costs more than building it, and that cost moved off the
-main thread rather than going away. Typing `parse_buildings` is the remaining win.
+every coordinate of a ~4 MB cell. The OSM building path is partly
+there (checked 2026-10-31): since adbf7d1b the client's `parse_buildings` calls
+`cartopolis_geo::formats::osm_buildings::parse`, which no longer builds one
+`Value` tree of the whole multi-megabyte Overpass response — but its `Element`
+still deserializes through a `Value` *per element* and copies out of it, so every
+coordinate and every tag map is still boxed once and dropped. Dropping those
+still costs more than building them, off the main thread. A derived `Element`
+(with a lenient `geometry`) is the remaining win.
 
-check: `grep -qE 'serde_json::from_str::<serde_json::Value>|: serde_json::Value = serde_json::from_str' crates/cartopolis/src/systems/map/osm_buildings.rs`
+check: `grep -q 'Value::deserialize(d)' crates/geo/src/formats/osm_buildings.rs`
 
 The previous check pointed at `lod22.rs` and had become a **false green**: after
 that file was typed, its only remaining match was the comment explaining that it

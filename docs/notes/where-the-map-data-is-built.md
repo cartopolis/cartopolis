@@ -1,6 +1,6 @@
 ---
 topic: pipeline
-triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992, crates/atlas/src/pipeline, crates/geo/src/formats, cartopolis_geo::formats, lod22_cell.rs, rd.rs, ifc_lod3.py, ifc_demo_building.py]
+triggers: [pipeline/brp.rs, crops.rs, atlas, pipeline, extractor, formats/coverage.rs, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992, crates/atlas/src/pipeline, crates/geo/src/formats, cartopolis_geo::formats, lod22_cell.rs, rd.rs, ifc_lod3.py, ifc_demo_building.py]
 updated: 2026-10-17
 ---
 
