@@ -528,7 +528,11 @@ impl Plugin for MapPlugin {
                 sky::apply_day_night_cycle.after(systems::dev_panel::render_dev_panel),
                 sky::manage_lights.after(systems::dev_panel::render_dev_panel),
                 sky::apply_distance_fog.after(systems::dev_panel::render_dev_panel),
-                sky::update_window_glow,
+                (
+                    sky::update_window_glow,
+                    // The sun the painted far tiles cast their shadows from.
+                    systems::tile_loader::track_far_sun.after(sky::apply_day_night_cycle),
+                ),
                 // The other lane's windows. `update_window_glow` above only
                 // reaches the OSM buildings, which are never drawn over 3DBAG
                 // coverage — see `systems::building_windows`.

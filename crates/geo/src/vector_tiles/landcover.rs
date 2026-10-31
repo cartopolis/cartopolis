@@ -37,8 +37,17 @@ pub fn landcover_rgb(kind: &str) -> Option<u32> {
 /// Rings that land wholly off the source tile are dropped, since a z14 tile reads
 /// a z10 ancestor and would otherwise paint 256 tiles' worth of polygons to keep
 /// one.
+///
+/// `painted` takes the painted far style's tones ([`painted_land`]) instead,
+/// for a source tile [`painted_style`] says is drawn that way.
 #[must_use]
-pub fn landcover_fills(tile: &TileData, shift: u32, ox: u32, oy: u32) -> Vec<OverlayFill> {
+pub fn landcover_fills(
+    tile: &TileData,
+    shift: u32,
+    ox: u32,
+    oy: u32,
+    painted: bool,
+) -> Vec<OverlayFill> {
     let k = (1u32 << shift.min(16)) as f32;
     let mut out = Vec::new();
     for layer_name in ["land", "water_polygons"] {
@@ -48,7 +57,8 @@ pub fn landcover_fills(tile: &TileData, shift: u32, ox: u32, oy: u32) -> Vec<Ove
         let extent = TileData::extent(meta);
         let to_unit = 1.0 / extent;
         for feature in tile.features(meta) {
-            let Some(rgb) = kind_of(feature).and_then(landcover_rgb) else {
+            let tone = if painted { painted_land } else { landcover_rgb };
+            let Some(rgb) = kind_of(feature).and_then(tone) else {
                 continue;
             };
             let polys: Vec<&geo_types::Polygon<f32>> = match &feature.geometry {

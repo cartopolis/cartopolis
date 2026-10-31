@@ -198,11 +198,11 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
 /// Netherlands and merely approximate elsewhere, which is what they always were.
 pub const NOMINAL_Z14_TILE_M: f32 = 1465.0;
 
-/// Displayed ground metres per tile above which the raster switches to the far
-/// style: minor streets and paths are dropped and built-up land uses darken
-/// (`palette::RESIDENTIAL_FAR`) so a city reads from the air. A z12 tile at
-/// Dutch latitudes shows ~5.9 km, z13 ~2.9 km; the threshold sits between them.
-const FAR_STYLE_TILE_M: f32 = 5_000.0;
+/// Displayed ground metres per tile above which the raster switches to the
+/// painted far style (`painted.rs`): a map read from the air rather than the
+/// ground's own texture. A z12 tile at Dutch latitudes shows ~5.9 km, z13
+/// ~2.9 km; the threshold sits between them.
+pub(super) const FAR_STYLE_TILE_M: f32 = 5_000.0;
 
 /// Render an MVT tile body to a `TILE_PX × TILE_PX` RGBA8 buffer.
 ///
@@ -357,6 +357,31 @@ pub fn render_mvt_surveyed(
     overlay: &[OverlayFill],
     survey: &Survey,
 ) -> Result<Vec<u8>, String> {
+    render_mvt_detailed(
+        tile,
+        sub,
+        size,
+        source_m,
+        underlay,
+        overlay,
+        survey,
+        &NO_FAR_DETAIL,
+    )
+}
+
+/// [`render_mvt_surveyed`] with what a painted far tile is given beyond its own
+/// body ([`FarDetail`]: its descendants' footprints and the sun's shadow).
+#[allow(clippy::too_many_arguments)]
+pub fn render_mvt_detailed(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    underlay: &[OverlayFill],
+    overlay: &[OverlayFill],
+    survey: &Survey,
+    far: &FarDetail,
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
     render_mvt_banded_surveyed(
@@ -369,6 +394,7 @@ pub fn render_mvt_surveyed(
         underlay,
         overlay,
         survey,
+        far,
     )
 }
 
@@ -484,7 +510,16 @@ fn render_mvt_banded(
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
     render_mvt_banded_surveyed(
-        tile, sub, size, source_m, cull, bands, underlay, overlay, &NO_SURVEY,
+        tile,
+        sub,
+        size,
+        source_m,
+        cull,
+        bands,
+        underlay,
+        overlay,
+        &NO_SURVEY,
+        &NO_FAR_DETAIL,
     )
 }
 
@@ -500,10 +535,11 @@ fn render_mvt_banded_surveyed(
     underlay: &[OverlayFill],
     overlay: &[OverlayFill],
     survey: &Survey,
+    far: &FarDetail,
 ) -> Result<Vec<u8>, String> {
     if bands <= 1 {
         return render_rows(
-            tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey,
+            tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey, far,
         );
     }
 
@@ -520,7 +556,7 @@ fn render_mvt_banded_surveyed(
                             return Ok(Vec::new());
                         }
                         render_rows(
-                            tile, sub, size, source_m, cull, y0, h, underlay, overlay, survey,
+                            tile, sub, size, source_m, cull, y0, h, underlay, overlay, survey, far,
                         )
                     })
                 })
@@ -542,7 +578,7 @@ fn render_mvt_banded_surveyed(
 
     #[cfg(target_arch = "wasm32")]
     render_rows(
-        tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey,
+        tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey, far,
     )
 }
 
@@ -560,6 +596,7 @@ fn render_rows(
     underlay: &[OverlayFill],
     overlay: &[OverlayFill],
     survey: &Survey,
+    far: &FarDetail,
 ) -> Result<Vec<u8>, String> {
     // **Bleed, because a band edge is not neutral.** The first version of this
     // assumed a pixel's anti-aliased coverage depends only on the path inside
@@ -597,7 +634,29 @@ fn render_rows(
     // The displayed region's ground size decides the style band: past
     // `FAR_STYLE_TILE_M` this raster is a map read from the air, not a street's
     // own texture, and it styles for legibility instead of fidelity.
-    let far_style = source_m / f > FAR_STYLE_TILE_M;
+    let far_style = painted_style(source_m, sub.factor);
+    if far_style {
+        let p = palette::painted::PAPER;
+        pixmap.fill(tiny_skia::Color::from_rgba8(
+            ((p >> 16) & 0xFF) as u8,
+            ((p >> 8) & 0xFF) as u8,
+            (p & 0xFF) as u8,
+            255,
+        ));
+        let canvas = painted::Canvas {
+            px,
+            f,
+            y0,
+            wf,
+            source_m,
+            sub,
+        };
+        painted::paint(&mut pixmap, tile, &canvas, underlay, far);
+        let stride = (size * 4) as usize;
+        let data = pixmap.take();
+        let from = top as usize * stride;
+        return Ok(data[from..from + want_rows as usize * stride].to_vec());
+    }
 
     let mut paint = Paint {
         anti_alias: true,
@@ -804,47 +863,20 @@ fn render_rows(
             let style: Option<(u32, Option<f32>)> = match draw {
                 Draw::Fill(rgb) => Some((*rgb, None)),
                 Draw::FillByKind { default, kinds } => {
-                    let mut rgb = kind
+                    let rgb = kind
                         .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
-                    if far_style {
-                        rgb = match kind {
-                            Some("residential") => palette::RESIDENTIAL_FAR,
-                            Some("industrial") | Some("commercial") => palette::INDUSTRIAL_FAR,
-                            _ => rgb,
-                        };
-                    }
                     Some((rgb, None))
                 }
                 Draw::Line { color, width } => Some((*color, Some(width * wf))),
                 Draw::Outline { color, width } => Some((*color, Some(width * wf))),
                 Draw::Streets { casing } => {
-                    // Past the far threshold the minor network is sub-pixel
-                    // noise that greys the whole town; drop it and let the
-                    // hierarchy read.
-                    if far_style
-                        && matches!(
-                            kind,
-                            Some(
-                                "service"
-                                    | "track"
-                                    | "footway"
-                                    | "path"
-                                    | "cycleway"
-                                    | "steps"
-                                    | "pedestrian"
-                            )
-                        )
-                    {
-                        None
+                    let (w, fill, case) = street_style(feature, source_m);
+                    Some(if *casing {
+                        (case, Some((w + 0.5) * wf))
                     } else {
-                        let (w, fill, case) = street_style(feature, source_m);
-                        Some(if *casing {
-                            (case, Some((w + 0.5) * wf))
-                        } else {
-                            (fill, Some(w * wf))
-                        })
-                    }
+                        (fill, Some(w * wf))
+                    })
                 }
             };
             let Some((rgb, width)) = style else {
@@ -943,7 +975,7 @@ fn render_rows(
 /// settling inside its 60 s: the basemap drained at about one tile a second.
 /// Colours are painted in the order they first appear, which keeps a
 /// deterministic raster.
-fn paint_overlay(
+pub(super) fn paint_overlay(
     pixmap: &mut Pixmap,
     paint: &mut Paint<'static>,
     overlay: &[OverlayFill],
@@ -1164,7 +1196,7 @@ fn push_line(pb: &mut PathBuilder, coords: impl Iterator<Item = (f32, f32)>, clo
 }
 
 /// Append a geometry's *areas* (polygon rings) to `pb`; returns points appended.
-fn append_area(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
+pub(super) fn append_area(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
     let mut points = 0;
     let mut add_poly = |p: &geo_types::Polygon<f32>, pb: &mut PathBuilder| {
         points += push_line(pb, p.exterior().coords().map(|c| (c.x, c.y)), true);
@@ -1186,7 +1218,7 @@ fn append_area(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
 
 /// Append a geometry's *lines* to `pb` — polygon rings count, so the same helper
 /// serves `Draw::Outline`. Returns points appended.
-fn append_lines(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
+pub(super) fn append_lines(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
     match geom {
         Geometry::LineString(ls) => push_line(pb, ls.coords().map(|c| (c.x, c.y)), false),
         Geometry::MultiLineString(mls) => mls

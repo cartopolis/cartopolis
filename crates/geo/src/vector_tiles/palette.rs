@@ -138,3 +138,46 @@ pub const VEHICLE_GLASS: u32 = 0x6E_74_79;
 /// Rubber: tyres. The darkest tone in the group, and the one thing that makes
 /// a box on the ground read as a vehicle rather than as a crate.
 pub const VEHICLE_TYRE: u32 = 0x4A_47_45;
+
+/// **The painted map**: the far tiles' palette, from the macro-view design
+/// (`docs/mockups/macro-view/`, v3 and v4, decided 2026-10-30). Past
+/// `FAR_STYLE_TILE_M` a tile is read as a map from the air rather than as the
+/// ground's own texture, and it is drawn as one: land use told apart by colour,
+/// roads by rank, buildings with a shadow from their height (`painted.rs`).
+///
+/// These are the mockup's screen colours. The tile is still an albedo lit by
+/// the sun, so the shots decide the last few levels, not this table.
+pub mod painted {
+    /// Land nothing more is known about.
+    pub const PAPER: u32 = 0x7F_8F_60;
+    pub const GRASS: u32 = 0x6F_8A_55;
+    pub const PARK: u32 = 0x62_80_4F;
+    pub const FOREST: u32 = 0x3E_5A_3C;
+    pub const SCRUB: u32 = 0x7B_85_59;
+    pub const FARMLAND: u32 = 0x97_92_62;
+    pub const MARSH: u32 = 0x5F_7C_6E;
+    pub const SAND: u32 = 0xCD_C2_9C;
+    pub const ICE: u32 = 0xEE_F1_F4;
+    /// Housing: a warm grey.
+    pub const RESIDENTIAL: u32 = 0x95_8D_82;
+    /// Industry, ports and rail yards: blue-grey.
+    pub const INDUSTRIAL: u32 = 0x8B_8A_92;
+    /// Shops and offices: mauve-grey.
+    pub const COMMERCIAL: u32 = 0x9A_8F_8E;
+    pub const WATER: u32 = 0x36_60_7E;
+    /// The shadow a building casts, and the soft edge under a built-up area.
+    pub const SHADOW: u32 = 0x1C_22_2C;
+    pub const MOTORWAY: u32 = 0xE9_C9_7E;
+    pub const MOTORWAY_CASING: u32 = 0x4A_34_26;
+    pub const MAIN_ROAD: u32 = 0xF1_E4_C4;
+    pub const MAIN_ROAD_CASING: u32 = 0x4A_3A_2E;
+    pub const TERTIARY: u32 = 0xE8_DF_C9;
+    pub const LOCAL_STREET: u32 = 0xD9_D2_C4;
+    pub const RAIL: u32 = 0xEF_E6_D2;
+    pub const RAIL_CASING: u32 = 0x3B_34_30;
+    /// Roof tones, picked per building by a hash of its outline: Dutch tile red,
+    /// brown, and two slate greys. OSM has a roof colour for few buildings.
+    pub const ROOFS: [u32; 4] = [0x8A_5C_4A, 0x76_62_58, 0x80_7C_7A, 0x68_64_66];
+    /// A tall building's roof, which is nearly always flat and grey.
+    pub const ROOF_TALL: u32 = 0x80_7C_7A;
+}

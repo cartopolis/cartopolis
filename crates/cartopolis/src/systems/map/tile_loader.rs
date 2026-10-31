@@ -169,6 +169,10 @@ pub enum TilePayload {
         /// The surveyed ground over `source`, painted as the meshes draw it
         /// (`surveyed::raster_survey`). Empty outside the BGT coverage.
         survey: Arc<vector_tiles::Survey>,
+        /// What a painted far tile draws beyond its own body: its z14
+        /// descendants' footprints and the sun's shadow ([`far_detail`]).
+        /// Empty for every other tile.
+        far: Arc<vector_tiles::FarDetail>,
     },
 }
 
@@ -195,9 +199,10 @@ impl TilePayload {
                 crops,
                 underlay,
                 survey,
+                far,
             } => {
                 let tile = parse_shared(source, &bytes)?;
-                let rgba = vector_tiles::render_mvt_surveyed(
+                let rgba = vector_tiles::render_mvt_detailed(
                     &tile,
                     sub,
                     size,
@@ -205,6 +210,7 @@ impl TilePayload {
                     &underlay,
                     &crops,
                     &survey,
+                    &far,
                 )
                 .map_err(|e| e.to_string())?;
                 let mut img = image::RgbaImage::from_raw(size, size, rgba)
@@ -276,6 +282,7 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
         crops,
         underlay,
         survey,
+        far,
         ..
     } = payload
     else {
@@ -284,6 +291,14 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     use std::hash::Hash;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
+    // The footprints and the sun's shadow are drawn into a painted tile too.
+    far.shadow.map(|s| s.map(f32::to_bits)).hash(&mut h);
+    for b in &far.buildings {
+        b.height_m.to_bits().hash(&mut h);
+        for p in &b.outline {
+            p.map(f32::to_bits).hash(&mut h);
+        }
+    }
     // The crops are drawn into the same pixels, so they are part of what the
     // picture is of: a field re-registered next year, or a tile first drawn
     // before the host served the register at all, must not be read back. The
@@ -585,6 +600,7 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
     }
 
     let (crops, underlay, survey) = source_overlays(source, template).await;
+    let far = Arc::new(far_detail(source, sub, template).await);
     Ok(TilePayload::Vector {
         bytes,
         sub,
@@ -592,7 +608,103 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
         crops,
         underlay,
         survey,
+        far,
     })
+}
+
+/// The sun as the painted tiles cast their shadows from: azimuth (clockwise
+/// from north) in the high half, elevation in the low, whole degrees. Kept by
+/// [`track_far_sun`], read where a tile is fetched — off the main thread and
+/// with no world to ask. Until the first frame sets it, a south sun at 30°.
+static FAR_SUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(180 << 16 | 30);
+
+/// Keep [`FAR_SUN`] on the sun the world is lit by.
+pub fn track_far_sun(dev: Res<crate::resources::DevPanelState>) {
+    let d = crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad);
+    // World frame: +x east, +y up, +z south.
+    let az = d.x.atan2(-d.z).to_degrees().rem_euclid(360.0).round() as u32;
+    let el =
+        d.y.clamp(-1.0, 1.0)
+            .asin()
+            .to_degrees()
+            .round()
+            .clamp(0.0, 90.0) as u32;
+    FAR_SUN.store(az << 16 | el, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Zoom the footprints come from: Shortbread carries `buildings` at z14 only.
+const FAR_BUILDINGS_ZOOM: u32 = 14;
+
+/// How many zooms above [`FAR_BUILDINGS_ZOOM`] a painted tile still gathers its
+/// descendants' footprints. Two is sixteen z14 tiles for a z12 one — the
+/// nearest painted band, which the tile tree puts under a camera ~10 km up.
+/// Three would be 64 a tile, for buildings under a pixel each.
+const FAR_BUILDINGS_LEVELS: u32 = 2;
+
+/// What a painted far tile draws beyond its own body
+/// (`vector_tiles::FarDetail`): the footprints of its z14 descendants, with the
+/// sun's shadow. Empty for a tile that is not painted, and for one too far up
+/// for footprints to be worth sixteen fetches.
+async fn far_detail(
+    source: TileKey,
+    sub: vector_tiles::SubTile,
+    template: &str,
+) -> vector_tiles::FarDetail {
+    let source_m = source_ground_m(source);
+    if !vector_tiles::painted_style(source_m, sub.factor) {
+        return vector_tiles::FarDetail::default();
+    }
+    let sun = FAR_SUN.load(std::sync::atomic::Ordering::Relaxed);
+    let shadow = vector_tiles::shadow_step((sun >> 16) as f32, (sun & 0xFFFF) as f32, source_m);
+    let mut detail = vector_tiles::FarDetail {
+        buildings: Vec::new(),
+        shadow: Some(shadow),
+    };
+    if source.z >= FAR_BUILDINGS_ZOOM || source.z + FAR_BUILDINGS_LEVELS < FAR_BUILDINGS_ZOOM {
+        return detail;
+    }
+    let shift = FAR_BUILDINGS_ZOOM - source.z;
+    let n = 1u32 << shift;
+    let children: Vec<(TileKey, u32, u32)> = (0..n)
+        .flat_map(|oy| (0..n).map(move |ox| (ox, oy)))
+        .map(|(ox, oy)| {
+            (
+                TileKey::new(
+                    (source.x << shift) + i64::from(ox),
+                    (source.y << shift) + i64::from(oy),
+                    FAR_BUILDINGS_ZOOM,
+                ),
+                ox,
+                oy,
+            )
+        })
+        .collect();
+    let fetched = futures_util::future::join_all(children.iter().map(|(key, ox, oy)| async move {
+        load_tile_image(key, template)
+            .await
+            .ok()
+            .map(|bytes| (*key, *ox, *oy, bytes))
+    }))
+    .await;
+    // A quarter of the far tile's pixel: finer than that an outline is detail
+    // nothing can show.
+    let min_step = 0.25 / vector_tiles::TILE_PX as f32;
+    detail.buildings = crate::platform::workers::compute("far_buildings", move || {
+        let mut out = Vec::new();
+        for (key, ox, oy, bytes) in fetched.into_iter().flatten() {
+            if bytes.is_empty() || vector_tiles::looks_like_raster(&bytes) {
+                continue;
+            }
+            match parse_shared(key, &bytes) {
+                Ok(tile) => out.extend(vector_tiles::far_buildings(&tile, shift, ox, oy, min_step)),
+                Err(e) => tracing::warn!(tile = %key.to_path(), error = %e, "footprint tile did not parse"),
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+    detail
 }
 
 /// Where the land-cover tiles are, for a map served from `template`.
@@ -641,9 +753,13 @@ async fn landcover_underlay(source: TileKey, template: &str) -> Vec<vector_tiles
         (source.x - (ax << shift)) as u32,
         (source.y - (ay << shift)) as u32,
     );
+    // A source the painted style draws takes the land cover in its tones. The
+    // underlay is per source, and a source is only ever magnified past z14,
+    // where nothing is painted, so the factor is 1.
+    let painted = vector_tiles::painted_style(source_ground_m(source), 1);
     crate::platform::workers::compute("landcover", move || {
         match vector_tiles::TileData::parse(&bytes) {
-            Ok(tile) => vector_tiles::landcover_fills(&tile, shift, sub_x, sub_y),
+            Ok(tile) => vector_tiles::landcover_fills(&tile, shift, sub_x, sub_y, painted),
             Err(e) => {
                 tracing::warn!(tile = %ancestor.to_path(), error = %e, "land cover tile did not parse");
                 Vec::new()
@@ -834,6 +950,7 @@ mod tests {
             crops: Arc::default(),
             underlay: Arc::default(),
             survey: Arc::default(),
+            far: Arc::default(),
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
@@ -866,6 +983,7 @@ mod tests {
             crops: Arc::default(),
             underlay: Arc::default(),
             survey: Arc::default(),
+            far: Arc::default(),
         };
         let b = TilePayload::Vector {
             bytes: Arc::new(other),
@@ -874,6 +992,7 @@ mod tests {
             crops: Arc::default(),
             underlay: Arc::default(),
             survey: Arc::default(),
+            far: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
@@ -895,6 +1014,7 @@ mod tests {
             }]),
             underlay: Arc::default(),
             survey: Arc::default(),
+            far: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
