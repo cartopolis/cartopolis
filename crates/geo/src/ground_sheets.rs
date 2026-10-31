@@ -773,15 +773,26 @@ impl Reader<'_> {
 /// file from before the change no longer matches, and the client builds those
 /// cells itself until atlas runs again. Pinned by
 /// `the_revision_names_what_build_sheets_builds`, which prints the new value.
-pub const GROUND_REVISION: u64 = 0x6be1_8ff3_25bb_d35f;
+pub const GROUND_REVISION: u64 = 0x6871_dd92_058c_b0d5;
 
 /// Build the fixture's sheets and hash them — positions, indices and every
-/// attribute, as bits, through [`encode`].
+/// attribute, through [`encode`], with the vertex colours rounded to 1/1024
+/// first. Paving and crop colours go through `powf` (the sRGB curve), and
+/// macOS's libm and glibc's disagree in its last bit: the colours of groups
+/// 10 and 11 differed between an ARM Mac and an x86 node, every position and
+/// index matched (measured 2026-10-31), and so this failed on every x86 node
+/// while passing on the Mac that set the constant. A 1/1024 step is below what
+/// an 8-bit channel can show and far above a last-bit difference.
 #[cfg(test)]
 fn measure() -> u64 {
     let (paved, parcels) = fixture_inputs();
     let tile = crate::testdata::groningen();
-    let meshes = build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
+    let mut meshes = build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
+    for m in &mut meshes {
+        for c in &mut m.colors {
+            *c = c.map(|v| (v * 1024.0).round() / 1024.0);
+        }
+    }
     let mut h = Fnv::new();
     h.bytes(&encode(0, 0, 1460.0, &meshes));
     h.0
