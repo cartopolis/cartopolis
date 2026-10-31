@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v1: a drone war between Russia and Europe</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Scenario: <b>a night of drones over Europe</b> <span class="new">new</span></h1>
+<p class="lede">A hypothetical night in which waves of slow one-way attack drones cross from Belarus and western Russia into
+the Baltic states, Poland and further west — the pattern Ukraine has lived with every night since 2022, moved onto the EU's map.
+It uses two primitives: <b>tracks</b> (groups of drones with a cone of where they may go) and <b>region states</b> (each province
+coloured by when the nearest group would reach it). That second one is what an air-alert map for citizens is.</p>
+
+<div class="principles">
+  <div><h3>Regions, not aim points</h3><p>Tracks end in widening cones and regions light up; the map never says what a drone is aimed at.</p></div>
+  <div><h3>Time is the message</h3><p>Every region says how long it has. "Under an hour" matters to a person more than a position does.</p></div>
+  <div><h3>An exercise looks like one</h3><p>Striped edge, "exercise" in the top bar, invented numbers marked. Only an official feed may drop the stripes.</p></div>
+  <div><h3>Replays of real nights</h3><p>The same frame replays a documented night — such as the drones that crossed into Poland on 9–10 September 2025.</p></div>
+</div>
+
+<h2><span>1</span>Exercise: 02:10, four groups in the air</h2>
+<p class="sub">Group paths, launch times, counts and interceptions are <span class="made">invented</span>; the speed (170 km/h) is that of the slow one-way drones reported over Ukraine. Region states are computed from the tracks against Natural Earth's provinces: the group inside a region now, or the time until its path enters one.</p>
+<div class="screen" style="background-image:url(map-drones.jpg)">
+  <div class="abs exbar"></div>
+  <div class="abs glass topbar">
+    <div class="logo"><i style="background:#f2c14c"></i>Exercise · a night wave, hypothetical</div>
+    <div class="stat"><small>Not a real event · positions are a model's guess</small></div>
+    <div class="right"><div class="btn">Replay 10 Sep 2025</div><div class="btn">Sources</div><div class="btn">Leave scenario</div></div>
+  </div>
+
+  <div class="abs glass panel" style="left:16px; top:84px; width:290px;">
+    <h3>Regions</h3>
+    <div class="k">State</div>
+    <div class="row2"><span><span class="state" style="background:#d63a2f"></span>Drones over the region</span><b>5</b></div>
+    <div class="row2"><span><span class="state" style="background:#ef8a2e"></span>Expected within an hour</span><b>6</b></div>
+    <div class="row2"><span><span class="state" style="background:#d9c25a"></span>Within three hours</span><b>13</b></div>
+    <div class="row2"><span><span class="state" style="background:#5a7f99"></span>Passed · watch for debris</span><b>14</b></div>
+    <div class="k">Next to be reached</div>
+    <div class="row2"><span>Świętokrzyskie</span><b>2 min</b></div>
+    <div class="row2"><span>Lesser Poland</span><b>6 min</b></div>
+    <div class="row2"><span>Marijampolė</span><b>9 min</b></div>
+    <div class="row2"><span>Kuyavian-Pomeranian</span><b>56 min</b></div>
+    <div class="row2"><span>Silesian</span><b>58 min</b></div>
+    <div class="row2"><span>Gotland</span><b>58 min</b></div>
+  </div>
+
+  <div class="abs glass panel" style="right:16px; top:84px; width:300px;">
+    <h3><span class="dot" style="background:#ff8a5a"></span>Group A</h3>
+    <div style="color:var(--dim);font-size:13px">over Masovia, heading west · 170 km/h</div>
+    <div class="row2" style="margin-top:8px"><span>Launched</span><b>22:30 · 64</b></div>
+    <div class="row2"><span>Brought down</span><b>18</b></div>
+    <div class="row2"><span>Still flying</span><b>46</b></div>
+    <div class="k">Its cone reaches</div>
+    <div class="row2"><span>Greater Poland</span><b>~03:15</b></div>
+    <div class="row2"><span>Lubusz</span><b>~04:25</b></div>
+    <div class="row2"><span>Brandenburg</span><b>~05:00</b></div>
+    <div style="color:var(--dim);font-size:12px;margin-top:8px">The cone widens 33 km an hour: drones turn, and a group splits.</div>
+    <div style="display:flex;gap:8px;margin-top:12px"><div class="btn">Follow</div><div class="btn">Fly down</div></div>
+  </div>
+
+  <div class="abs glass timeline">
+    <div class="tl-head">
+      <div class="play"><svg class="i" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg></div>
+      <div class="clock">02:10</div><div class="phase" style="color:#f2c14c">exercise night · 22:00 – 06:00</div>
+      <div class="speed"><div>1×</div><div class="on">60×</div><div>600×</div></div>
+    </div>
+    <div class="track">
+      <div class="seg" style="left:0;width:6%;background:#3e4e55"><b>C launches</b></div>
+      <div class="seg" style="left:6.5%;width:6%;background:#3e4e55"><b>A</b></div>
+      <div class="seg" style="left:13%;width:8%;background:#3e4e55"><b>B, D</b></div>
+      <div class="seg" style="left:21.5%;width:30.5%;background:#ef8a2e"><b>over the Baltic states and Poland</b></div>
+      <div class="seg" style="left:52.5%;width:47.5%;background:#d9c25a"><b>further west, if not brought down</b></div>
+      <div class="head" style="left:52%"></div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div><h3>How it is drawn</h3><ul>
+    <li>A track is a path, a launch time and a speed; its position at the clock's time is walked along the path. The past is a solid line, the future dashed with times every 30 minutes, inside a cone that widens with time.</li>
+    <li>A region's state is the earliest time any group's path enters it in the next three hours; a region a group has left turns blue-grey for debris.</li>
+    <li>Blue crosses are interceptions; numbers on a group are how many are still flying.</li>
+    <li>Launch areas are broad hatched ellipses, not sites.</li></ul></div>
+  <div><h3>What a real version needs</h3><ul>
+    <li>For replays: a documented night's tracks from public reporting, with how sure each one is.</li>
+    <li>For Live: only an official alert feed per country, by its own regions. The model above is for exercises; it must never colour a region in Live.</li>
+    <li>Municipalities or safety regions instead of provinces for the Netherlands — the areas NL-Alert is sent to.</li>
+    <li>Sound: an exercise never plays an alarm.</li></ul></div>
+</div>
+</body>
+</html>

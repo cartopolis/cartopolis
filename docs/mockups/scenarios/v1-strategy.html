@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v1: what the macro map can take from Civilization</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>The macro map, <b>taken further towards Civilization</b> <span class="new">new</span></h1>
+<p class="lede">The painted far map landed on 2026-10-31 (macro-view v4). Civilization's strategic view works because every part of
+the screen answers a question at a glance: whose land is this, what is it worth, what changed since I last looked, what don't I
+know yet. This sheet borrows those answers for a map of communities — and leaves out what makes it a game: no score, no winning,
+no opponents.</p>
+
+<div class="principles">
+  <div><h3>A board, not a picture</h3><p>Hexes are the unit everything aggregates to: a lens, a community's reach, a scenario's field. Hover one and it says what it holds.</p></div>
+  <div><h3>What changed, in one column</h3><p>Like the turn notifications: a short stack on the right of what happened since you last looked; each one flies you there.</p></div>
+  <div><h3>Honest about gaps</h3><p>Fog of war becomes fog of data: where the map knows nothing recent it says so, instead of looking as sure as everywhere else.</p></div>
+  <div><h3>One clock</h3><p>The same time bar serves live (now), history (last week) and a scenario (T+3:20). Scenarios are the next sheets.</p></div>
+</div>
+
+<h2><span>1</span>The Low Countries at about 300 km</h2>
+<p class="sub">The base is the decided v4 palette with the optional hex grid switched on. Community territories, people counters, the fog and every count are <span class="made">invented</span>; land cover, roads, rail, borders and city populations are real data.</p>
+<div class="screen" style="background-image:url(map-strat.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i></i>Cartopolis</div>
+    <div class="stat"><span class="dot" style="background:var(--accent)"></span><b>1,284</b><small>people online</small></div>
+    <div class="stat"><b>312</b><small>communities</small></div>
+    <div class="stat"><b>47</b><small>events today</small></div>
+    <div class="right"><div class="stat"><small>Sat 31 Oct · 17:40</small></div><div class="btn">Search a place</div></div>
+  </div>
+
+  <div class="abs glass lenses">
+    <div class="lens on"><svg class="i" viewBox="0 0 24 24"><path d="M3 18l5-9 4 6 3-4 6 7z"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="9" width="6" height="11"/><rect x="12" y="4" width="8" height="16"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M6 16a4 4 0 0 1 1-8 5 5 0 0 1 9.5 1.5A3.5 3.5 0 0 1 17 16z"/></svg></div>
+    <div style="height:1px;width:40px;background:var(--gline);margin:4px 0"></div>
+    <div class="lens war"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/></svg></div>
+  </div>
+
+  <div class="abs notes-stack">
+    <div class="glass note"><div class="ic" style="background:var(--accent)">+</div><div><b>Groningen Energy Co-op grew</b>its reach now covers Assen<br><small>2 h ago · fly there</small></div></div>
+    <div class="glass note"><div class="ic" style="background:#f2b84b">◷</div><div><b>Repair café, Utrecht Lombok</b>tomorrow 10:00 · 14 going<br><small>event · fly there</small></div></div>
+    <div class="glass note"><div class="ic" style="background:#9fd3ff">≈</div><div><b>KNMI: code yellow, wind</b>Zeeland and Zuid-Holland tonight<br><small>official · weather lens</small></div></div>
+    <div class="glass note" style="opacity:.75"><div class="ic" style="background:var(--raised);color:var(--cream)">?</div><div><b>No fresh data east of the Ems</b>nobody here has mapped or met in 30 days<br><small>fog of data</small></div></div>
+  </div>
+
+  <div class="abs glass hexcard" style="left:430px; top:110px;">
+    <h4>Hex near Assen · 8 km across</h4>
+    <div class="row2"><span>People living here</span><b>41,200</b></div>
+    <div class="row2"><span>Land</span><b>farmland 54% · forest 21%</b></div>
+    <div class="row2"><span>In the world now</span><b>3</b></div>
+    <div class="row2"><span>Inside the reach of</span><b>Groningen Energy Co-op</b></div>
+    <div class="row2" style="border:none"><span>Data</span><b>mapped 6 days ago</b></div>
+  </div>
+  <svg style="position:absolute;left:0;top:0" width="1600" height="1000"><path d="M680 170 L 900 262" stroke="#f3f7f9" stroke-width="1.5" stroke-dasharray="3 3"/></svg>
+
+  <div class="abs glass timeline" style="left:16px; right:256px; height:96px">
+    <div class="tl-head" style="margin-bottom:6px">
+      <div class="clock" style="font-size:18px">Now</div><div class="phase" style="color:var(--accent)">live</div>
+      <div class="speed"><div>last month</div><div>last week</div><div class="on">now</div><div>scenario…</div></div>
+    </div>
+    <div class="track">
+      <div class="seg" style="left:0;width:100%;background:#2a3536"><b>scrub back to see how communities and events grew</b></div>
+      <div class="head" style="left:99%"></div>
+    </div>
+  </div>
+  <div class="abs glass mini" style="padding:0">
+    <svg width="220" height="150" viewBox="0 0 220 150"><rect width="220" height="150" fill="#1f3650"/><path d="M60 20 L120 10 L190 30 L210 140 L40 140 L30 90 Z" fill="#5e6e4a"/><rect x="62" y="42" width="72" height="46" fill="none" stroke="#f3f7f9" stroke-width="2" rx="3"/></svg>
+  </div>
+</div>
+
+<h2><span>2</span>What to borrow, and what not</h2>
+<table class="ideas">
+  <tr><th>In Civilization</th><th>In Cartopolis</th><th>Status</th></tr>
+  <tr><td>Strategic view</td><td>The painted far map, crossfading on distance.</td><td><span class="today">landed 10-31</span></td></tr>
+  <tr><td>Lenses</td><td>One rail re-colours the same map: terrain, built-up, mobility, communities, weather — and scenarios as the last lens.</td><td><span class="new">designed</span></td></tr>
+  <tr><td>Tile yields</td><td>A hex card on hover: people living there (CBS / GHSL grid), land, who is in the world, whose reach, how old the data is.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Culture borders</td><td>A community's reach as a tinted territory with a glowing edge, grown from where its members and events are. Overlaps are allowed: reach is not ownership.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Units and stacks</td><td>Far out, person pins merge into one counter per place with a number, and split again as you zoom in.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Turn notifications</td><td>A "what changed" stack: community news, events, official warnings. Each flies the camera to its place.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Fog of war</td><td>Fog of data: hazed where nothing was mapped or met recently, with the reason on hover.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Turns and eras</td><td>One time bar: live, history scrub, scenario clock.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Civilopedia</td><td>Every number opens its source: dataset, date, method.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Minimap</td><td>Bottom right, with the viewport.</td><td><span class="new">new</span></td></tr>
+  <tr><td>Score, victory, AI rivals</td><td>Left out. Communities are not competing, and a war scenario must never feel like a match.</td><td>not wanted</td></tr>
+</table>
+</body>
+</html>

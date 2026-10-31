@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v1: one engine for many simulations</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Scenarios: <b>one engine, many simulations</b> <span class="new">new</span></h1>
+<p class="lede">A scenario is a lens with a clock. It knows nothing about bombs, drones or floods: it plays a timeline of a few
+<b>primitives</b> — a point, rings, a plume, a track, a region's state, an arc, a field, a counter — over the real map, at every
+zoom. A model (a published study, a weather run, a flood model, a live feed) produces the primitives; Cartopolis only draws
+them, says where they came from, and turns them into what it means for a place. A nuclear exchange and a drone war are the
+first two; a dike breach, a storm, a heat wave or a power cut use the same parts.</p>
+
+<div class="principles">
+  <div><h3>The model is not ours</h3><p>Every scenario names its model and its sources. Cartopolis draws and explains; it does not invent figures.</p></div>
+  <div><h3>Uncertainty is drawn</h3><p>Every primitive carries how sure it is: a track's cone widens, a plume's edge is soft, an invented position is marked.</p></div>
+  <div><h3>A simulation never looks real</h3><p>Replay and exercise wear their label on every screen; only Live, fed by an official source, may look like a warning.</p></div>
+  <div><h3>About places, not targets</h3><p>Results go to regions and hexes — who should shelter, where help is needed — never to picking what to hit.</p></div>
+</div>
+
+<h2><span>1</span>Eight primitives</h2>
+<p class="sub">Each has a place, a time window, a source and a confidence. Far out they aggregate to hexes and regions; close in they lie on the ground as a <code>GroundLayer</code> like any other overlay.</p>
+<div class="prims">
+  <div class="prim"><svg viewBox="0 0 300 150"><circle cx="150" cy="75" r="9" fill="#fff1c9"/><circle cx="150" cy="75" r="24" fill="none" stroke="#fff1c9" stroke-width="2" opacity=".6"/><circle cx="150" cy="75" r="40" fill="none" stroke="#fff1c9" stroke-width="1" opacity=".3"/><text x="170" y="60" fill="#dbe2e5" font-size="12" font-family="Jakarta">T+0:52</text></svg>
+    <h3>Point event</h3><p>Something happened here, then: a detonation, a dike breach, an outage's origin.</p><div class="use">nuclear · flood · outage · fire</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><circle cx="150" cy="75" r="62" fill="#c7d3d8" opacity=".18" stroke="#c7d3d8"/><circle cx="150" cy="75" r="46" fill="#ffc35a" opacity=".25" stroke="#ffc35a"/><circle cx="150" cy="75" r="26" fill="#ff8a3a" opacity=".35" stroke="#ff8a3a"/><circle cx="150" cy="75" r="12" fill="#ff4a2a" opacity=".6" stroke="#ff4a2a"/></svg>
+    <h3>Rings</h3><p>Radii from a point, each with a meaning: blast pressure, an evacuation zone, a cordon.</p><div class="use">nuclear · chemical · cordon</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><ellipse cx="170" cy="70" rx="120" ry="28" transform="rotate(-12 170 70)" fill="#9cc7a8" opacity=".35"/><ellipse cx="130" cy="78" rx="80" ry="16" transform="rotate(-12 130 78)" fill="#f2c14c" opacity=".5"/><ellipse cx="90" cy="86" rx="40" ry="7" transform="rotate(-12 90 86)" fill="#ec6a2c" opacity=".7"/><circle cx="55" cy="92" r="5" fill="#fff1c9"/><path d="M240 120 l30 -8 m-8 -4 l8 4 l-6 6" stroke="#cfe3ea" stroke-width="2" fill="none"/></svg>
+    <h3>Plume</h3><p>A source carried by the day's wind into a field that grows and decays over hours.</p><div class="use">fallout · chemical · smoke · ash</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><path d="M20 110 Q90 100 140 80" stroke="#ffcf9a" stroke-width="2" fill="none"/><path d="M140 80 L280 40 L280 110 Z" fill="#ff7a4a" opacity=".15"/><path d="M140 80 Q210 62 280 70" stroke="#ffcf9a" stroke-width="2" stroke-dasharray="3 6" fill="none"/><circle cx="140" cy="80" r="14" fill="#ff6a3a" opacity=".4"/><circle cx="140" cy="80" r="4" fill="#fff1c9"/><circle cx="210" cy="66" r="3" fill="#ffcf9a"/><text x="200" y="56" fill="#ffd9b0" font-size="11" font-family="Jakarta">02:30</text><path d="M66 100 l8 8 m0 -8 l-8 8" stroke="#9fd3ff" stroke-width="2"/></svg>
+    <h3>Track</h3><p>A moving thing or group: where it was, where it is, a cone of where it may be, times along it.</p><div class="use">drones · storm · evacuation · convoy</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><path d="M20 30 L120 20 L130 80 L40 100 Z" fill="#d63a2f" opacity=".6"/><path d="M120 20 L220 30 L210 90 L130 80 Z" fill="#ef8a2e" opacity=".45"/><path d="M220 30 L285 45 L280 120 L210 90 Z" fill="#d9c25a" opacity=".45"/><path d="M40 100 L130 80 L210 90 L180 140 L30 135 Z" fill="#5a7f99" opacity=".35"/><text x="50" y="62" fill="#fff" font-size="12" font-family="Jakarta">now</text><text x="150" y="58" fill="#fff" font-size="12" font-family="Jakarta">&lt; 1 h</text><text x="228" y="80" fill="#fff" font-size="12" font-family="Jakarta">&lt; 3 h</text></svg>
+    <h3>Region state</h3><p>A province, municipality or safety region coloured by a state with a time: threat now, soon, later, passed.</p><div class="use">air alert · flood warning · outage</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><path d="M40 120 Q150 0 260 100" stroke="#ffb27a" stroke-width="2" stroke-dasharray="6 5" fill="none"/><path d="M60 125 Q170 40 250 60" stroke="#9fd3ff" stroke-width="2" stroke-dasharray="6 5" fill="none" opacity=".8"/><circle cx="40" cy="120" r="5" fill="#d0645a"/><circle cx="260" cy="100" r="5" fill="#fff1c9"/></svg>
+    <h3>Arc</h3><p>A link between two places: a launch and its arrival, a flow of people, help sent.</p><div class="use">missiles · migration · supply</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><g opacity=".85"><path d="M40 40 l10 -6 l10 6 v12 l-10 6 l-10 -6z M60 40 l10 -6 l10 6 v12 l-10 6 l-10 -6z M80 40 l10 -6 l10 6 v12 l-10 6 l-10 -6z" fill="#2c5570"/><path d="M50 58 l10 -6 l10 6 v12 l-10 6 l-10 -6z M70 58 l10 -6 l10 6 v12 l-10 6 l-10 -6z M90 58 l10 -6 l10 6 v12 l-10 6 l-10 -6z M110 58 l10 -6 l10 6 v12 l-10 6 l-10 -6z" fill="#3a76a0"/><path d="M60 76 l10 -6 l10 6 v12 l-10 6 l-10 -6z M80 76 l10 -6 l10 6 v12 l-10 6 l-10 -6z M100 76 l10 -6 l10 6 v12 l-10 6 l-10 -6z M120 76 l10 -6 l10 6 v12 l-10 6 l-10 -6z M140 76 l10 -6 l10 6 v12 l-10 6 l-10 -6z" fill="#4f9bd0"/><path d="M90 94 l10 -6 l10 6 v12 l-10 6 l-10 -6z M110 94 l10 -6 l10 6 v12 l-10 6 l-10 -6z M130 94 l10 -6 l10 6 v12 l-10 6 l-10 -6z" fill="#7fc0ea"/></g><text x="180" y="70" fill="#dbe2e5" font-size="12" font-family="Jakarta">water depth</text><text x="180" y="88" fill="#7f9aa3" font-size="11" font-family="Jakarta">0.5 · 1 · 2 · 4 m</text></svg>
+    <h3>Field</h3><p>A value over the ground, per hex far out and per cell close in: dose, water depth, temperature, smoke.</p><div class="use">fallout · flood · heat · air quality</div></div>
+  <div class="prim"><svg viewBox="0 0 300 150"><g font-family="Jakarta"><rect x="40" y="40" width="96" height="30" rx="15" fill="#13191b" stroke="rgba(255,255,255,.2)"/><rect x="43" y="43" width="44" height="24" rx="12" fill="#e5483a"/><text x="65" y="60" font-size="12" text-anchor="middle" fill="#fff">1.2k</text><text x="94" y="60" font-size="12" fill="#f3f7f9">Utrecht</text><rect x="150" y="84" width="110" height="30" rx="15" fill="#13191b" stroke="rgba(255,255,255,.2)"/><rect x="153" y="87" width="44" height="24" rx="12" fill="#5cc6c0"/><text x="175" y="104" font-size="12" text-anchor="middle" fill="#0f1416">310</text><text x="204" y="104" font-size="12" fill="#f3f7f9">Zwolle</text></g></svg>
+    <h3>Counter</h3><p>A number on a place: people affected, shelters free, check-ins, beds. Rolls up from hexes to regions to countries.</p><div class="use">casualties · shelters · check-ins</div></div>
+</div>
+
+<h2><span>2</span>Three ways to run a scenario</h2>
+<div class="modes">
+  <div class="mode"><span class="tag" style="background:#23392f;color:#9fd3b4">Replay</span><h3>A published model or a past event</h3>
+    <p>Plays a study's timeline as written, or what happened on a past night, with every figure from its source.</p>
+    <ul><li>Plan A, a NATO–Russia nuclear exchange (Princeton SGS, 2019)</li><li>The drones over Poland, night of 9–10 September 2025</li><li>The 1953 North Sea flood on today's map</li></ul></div>
+  <div class="mode exercise"><span class="tag" style="background:#3a2f1a;color:#f3c66b">Exercise</span><h3>What if, here, today?</h3>
+    <p>The same models with your own place and today's real wind and weather. Striped and labelled on every screen, never sent to anyone as an alert.</p>
+    <ul><li>"Where would fallout from Volkel go in today's wind?"</li><li>A drone wave over a night, for a municipality's drill</li><li>Practice your household's plan</li></ul></div>
+  <div class="mode" style="border-color:rgba(229,72,58,.6)"><span class="tag" style="background:rgba(229,72,58,.25);color:#ffb0a8">Live</span><h3>Official feeds only</h3>
+    <p>Shows what the authorities publish, on the map, with what it means where you are. Cartopolis makes no warning of its own, ever.</p>
+    <ul><li>NL-Alert, per area, as published</li><li>KNMI weather warnings, RIVM's radiation monitoring network</li><li>Elsewhere, each country's official alert service</li></ul></div>
+</div>
+
+<h2><span>3</span>From a model to a screen</h2>
+<div class="flow">
+  <div><b>A model runs</b>outside the client: a study's tables, a fallout or flood model, a feed. Atlas when it is heavy, the simulator when it is live.</div><span>→</span>
+  <div><b>A scenario file</b>primitives on a timeline, with sources and confidence. Small; streamed or downloaded once.</div><span>→</span>
+  <div><b>The client plays it</b>at the clock's time: fields as hexes far out, rings and plumes on the ground close in, regions coloured on the painted map.</div><span>→</span>
+  <div><b>What it means here</b>turned into plain words for a place: the region's state, the time it starts, what to do, whom to tell.</div>
+</div>
+
+<div class="pair" style="margin-top:22px">
+<div class="code"><i># a scenario file, sketched (drone wave, exercise)</i>
+<b>[scenario]</b>
+name    = <u>"A night wave, hypothetical"</u>
+mode    = <u>"exercise"</u>
+clock   = { start = <u>"22:00"</u>, end = <u>"06:00"</u> }
+sources = [<u>"Pattern of the 2025 waves over Ukraine (public reporting)"</u>]
+
+<b>[[track]]</b>
+id = <u>"Group A"</u>  count = 64  speed_kmh = 170
+path = [[30.5,53.9], [23.8,52.6], [19.0,52.3], [14.5,52.4]]
+t0 = <u>"22:30"</u>  cone_km_per_h = 33  confidence = <u>"invented"</u>
+
+<b>[[region_state]]</b>        <i># derived by the client from tracks</i>
+regions = <u>"admin1"</u>   states = [<u>"now"</u>, <u>"<1h"</u>, <u>"<3h"</u>, <u>"passed"</u>]</div>
+<div class="code"><i># and a nuclear one (replay + own fallout model)</i>
+<b>[scenario]</b>
+name    = <u>"Plan A"</u>   mode = <u>"replay"</u>
+sources = [<u>"Princeton SGS 2019"</u>, <u>"Glasstone &amp; Dolan 1977"</u>]
+
+<b>[[point]]</b>  at = [5.709, 51.656]  t = <u>"T+0:52"</u>
+<b>[[rings]]</b>  of = <u>"point"</u>  model = <u>"blast/100kt/surface"</u>
+<b>[[plume]]</b>  of = <u>"point"</u>  model = <u>"fallout/simple"</u>
+          wind = <u>"forecast"</u>      <i># today's, or the study's</i>
+<b>[[field]]</b>  sum = <u>"plume"</u>  unit = <u>"Gy, 48 h outdoors"</u>
+          bands = [0.02, 0.1, 1, 10]
+<b>[[counter]]</b> over = <u>"field"</u>  grid = <u>"population/GHSL"</u></div>
+</div>
+
+<div class="notes">
+  <div><h3>The same parts, other simulations</h3><ul>
+    <li><b>Dike breach</b>: point, then a water-depth field that spreads by the hour, evacuation tracks, shelters as counters.</li>
+    <li><b>Storm</b>: a track with its cone, a wind field, region states from KNMI codes.</li>
+    <li><b>Heat wave</b>: a temperature field over the built-up lens; counters of cool rooms open.</li>
+    <li><b>Power cut</b>: region states spreading along the grid, counters of homes without power.</li>
+    <li><b>Chemical fire</b>: a point, a smoke plume in today's wind, "windows shut" regions.</li></ul></div>
+  <div><h3>What a real version needs</h3><ul>
+    <li>A crate for the scenario types and "state at time t", with no Bevy, so atlas, the simulator and the client share it.</li>
+    <li>A population grid (CBS 100 m in the Netherlands, GHSL elsewhere) so counters count people.</li>
+    <li>The day's wind from a forecast for plumes and tracks; the client already has the real sun.</li>
+    <li>An adapter per official feed for Live, and nothing in Live that the feed did not say.</li>
+    <li>A content note before any war scenario opens, as v1-nuclear proposed.</li></ul></div>
+</div>
+</body>
+</html>

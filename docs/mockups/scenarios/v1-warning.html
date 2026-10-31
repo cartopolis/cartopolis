@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v1: early warning for citizens</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body style="width:1500px">
+<h1>Later: <b>early warning for citizens</b> <span class="new">new</span></h1>
+<p class="lede">The same region states, on a phone, for one person. Cartopolis is not an alarm authority and must never act like
+one: in <b>Live</b> it shows what NL-Alert (or another country's official service) sent, puts it on the map with the threat's
+direction and time, and connects people to each other — "I'm safe", who in my street needs help. In <b>Exercise</b> it lets a
+household or a municipality practise the same screens, unmistakably striped.</p>
+
+<div class="principles">
+  <div><h3>Official, or striped</h3><p>A red alert card appears only for a message from an official feed, quoted as sent. Everything else wears stripes.</p></div>
+  <div><h3>The map adds why and when</h3><p>Your region's state, the direction it comes from, how long you have — the parts a text message cannot draw.</p></div>
+  <div><h3>People, not just pins</h3><p>Check in once; the people and communities you chose see it. Neighbours can ask for and offer help.</p></div>
+  <div><h3>Works badly connected</h3><p>The message and the advice show without the map; the map follows when the network allows.</p></div>
+</div>
+
+<h2><span>1</span>Three screens</h2>
+<p class="sub">Apeldoorn, a drone group crossing from Germany (the exercise's own track, <span class="made">invented</span>). The alert text and the names are <span class="made">invented</span>; the provinces and their states are computed as on the drones sheet.</p>
+<div class="phones">
+  <div>
+    <div class="phone"><div class="scr">
+      <div class="map" style="background-image:url(map-phone.jpg)"></div>
+      <div class="sb"><span>22:41</span><span>4G ▮▮▮</span></div>
+      <div class="alert official">
+        <div class="src">NL-Alert · Veiligheidsregio Noord- en Oost-Gelderland</div>
+        <b>Drones op weg naar uw gebied</b>
+        <p>Verwacht vanaf 23:10. Ga naar binnen, blijf uit de buurt van ramen. Volg het nieuws.</p>
+      </div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="color:var(--cream);font-size:17px">Gelderland</div><div style="color:#ef8a2e;font-size:14px">over ~30 min</div></div>
+        <div style="color:var(--dim);font-size:12.5px;margin-bottom:8px">coming from the east · Overijssel ~20 min · Utrecht ~55 min</div>
+        <div class="steps">
+          <div><i>1</i>Go inside, away from windows</div>
+          <div><i>2</i>Stay in until the all-clear</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><div class="btn primary" style="flex:1;justify-content:center">I'm safe</div><div class="btn" style="flex:1;justify-content:center">I need help</div></div>
+        <div style="color:var(--dim);font-size:11px;margin-top:10px">Message as sent by NL-Alert. The map and times are Cartopolis's reading of it.</div>
+      </div>
+    </div></div>
+    <div class="pcap"><b>Live.</b> The official message on top, unchanged; the map shows your region and its neighbours by time; one tap to tell your people you are safe.</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="scr" style="box-shadow:inset 0 0 0 6px #f2c14c">
+      <div class="map" style="background-image:url(map-phone.jpg);filter:saturate(.7)"></div>
+      <div class="sb"><span>20:15</span><span>Wi-Fi</span></div>
+      <div class="alert exercise">
+        <div class="src">Exercise · not a real alert</div>
+        <b>Practise: drones expected in 30 min</b>
+        <p>Your household plan, step by step. No alarm sound, nobody else is told.</p>
+      </div>
+      <div class="sheet" style="border-top:3px solid #f2c14c">
+        <div class="grab"></div>
+        <div style="color:var(--cream);font-size:17px;margin-bottom:6px">Your plan</div>
+        <div class="steps">
+          <div><i>✓</i>Room without windows: the hall</div>
+          <div><i>✓</i>Water and food for 3 days</div>
+          <div><i>3</i>Radio with batteries — not found</div>
+          <div><i>4</i>Who calls grandma? Not decided</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><div class="btn" style="flex:1;justify-content:center;border-color:#f2c14c">Next step</div><div class="btn" style="flex:1;justify-content:center">End exercise</div></div>
+      </div>
+    </div></div>
+    <div class="pcap"><b>Exercise.</b> Yellow stripes and a yellow frame, never red. Practises the plan of the <i>Denk vooruit</i> campaign against the same map.</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="scr">
+      <div class="sb"><span>23:02</span><span>4G ▮▮</span></div>
+      <div style="position:absolute;left:0;right:0;top:44px;bottom:0;padding:10px 18px">
+        <div style="color:var(--cream);font-size:20px">Who is safe</div>
+        <div style="color:var(--dim);font-size:12.5px;margin-bottom:10px">after the NL-Alert of 22:41 · Gelderland</div>
+        <div class="k" style="color:var(--dim);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;margin:6px 0">Family</div>
+        <div class="who"><div class="av" style="background:#5cc6c0">M</div>Mira<span class="st" style="background:#23392f;color:#9fd3b4">safe · 22:44</span></div>
+        <div class="who"><div class="av" style="background:#f2b84b">J</div>Joost<span class="st" style="background:#23392f;color:#9fd3b4">safe · 22:47</span></div>
+        <div class="who"><div class="av" style="background:#c58be0">O</div>Oma Ria<span class="st" style="background:#3a2f1a;color:#f3c66b">no answer yet</span></div>
+        <div class="k" style="color:var(--dim);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Buurt Zevenhuizen (community)</div>
+        <div class="who"><div class="av" style="background:#7fb1ff">31</div>of 44 members checked in<span class="st" style="background:var(--raised);color:var(--cream)">open</span></div>
+        <div class="who"><div class="av" style="background:#e5483a;color:#fff">!</div><span>Kees, nr 12 · "can't get my mother to the cellar"</span><span class="st" style="background:rgba(229,72,58,.25);color:#ffb0a8">help</span></div>
+        <div class="who"><div class="av" style="background:#9fd3b4">+</div><span>Anouk, nr 15 · "I have room inside for 4"</span><span class="st" style="background:var(--raised);color:var(--cream)">offer</span></div>
+        <div style="display:flex;gap:8px;margin-top:14px"><div class="btn primary" style="flex:1;justify-content:center">Call Oma Ria</div><div class="btn" style="flex:1;justify-content:center">Offer help</div></div>
+        <div style="color:var(--dim);font-size:11px;margin-top:10px">Check-ins go only to people and communities you chose, end-to-end encrypted like private chats.</div>
+      </div>
+    </div></div>
+    <div class="pcap"><b>After the alert.</b> Who of your people has checked in, and what your street needs — the part only a community app can do.</div>
+  </div>
+</div>
+
+<div class="notes">
+  <div><h3>Rules for Live</h3><ul>
+    <li>Only an official feed opens a red card; its text is shown as sent, with the sender.</li>
+    <li>Cartopolis's own reading (times, direction) is labelled as such, and is left out when the feed gives no area or time.</li>
+    <li>No model or exercise ever colours a region in Live, and no alarm sound outside Live.</li>
+    <li>The all-clear is the feed's, not ours.</li></ul></div>
+  <div><h3>What it would need</h3><ul>
+    <li>Access to NL-Alert's messages in machine-readable form (it is a cell broadcast today, not a public API) — or another official source that is.</li>
+    <li>Safety regions and municipalities as region shapes.</li>
+    <li>Check-ins on the existing encrypted chat, so the server never learns who is where.</li>
+    <li>Push notifications on Android, and a text-only path when the map cannot load.</li></ul></div>
+</div>
+</body>
+</html>

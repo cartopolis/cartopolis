@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v1: a nuclear exchange at continent scale</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Scenario: <b>a nuclear exchange, the whole continent</b> <span class="new">new</span></h1>
+<p class="lede">macro-view's v1-nuclear showed the first hours: arcs across Europe and the rings around one base. This is the
+macro picture that follows: two days on, where the fallout has come down, drawn as a field of hexes over every country at once,
+and what that means for the one place you care about. The exchange follows <i>Plan A</i> (Princeton SGS, 2019) as before; the
+fallout is our own simple model and says so.</p>
+
+<div class="principles">
+  <div><h3>The question is "where to shelter"</h3><p>The field's bands are the decisions a person faces — stay indoors, shelter properly, leave — not damage scores.</p></div>
+  <div><h3>The wind decides</h3><p>The same strikes put fallout over different countries on different days. Exercise mode replays it in today's forecast wind.</p></div>
+  <div><h3>Your place first</h3><p>A card for where you are (or a place you choose) says, in plain words, what this scenario would mean there.</p></div>
+  <div><h3>Opened on purpose</h3><p>From the Scenarios lens only, after a content note; never shown to someone who did not open it.</p></div>
+</div>
+
+<h2><span>1</span>Europe, two days after the exchange</h2>
+<p class="sub">Strikes: five of the six publicly named NATO nuclear-sharing bases (100 kt surface bursts, an <span class="made">assumption</span>) and an <span class="made">illustrative</span> scatter of about 110 smaller strikes on forces in Poland, the Baltic states, Belarus and western Russia, standing for Plan A's tactical phase. Its later phases (strategic, cities) are left out of this frame. Wind from the west-south-west, veering northward.</p>
+<div class="screen" style="background-image:url(map-nuke.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i style="background:var(--red)"></i>Replay · Plan A (Princeton SGS, 2019)</div>
+    <div class="stat"><small>A simulation of a published model, not a forecast · fallout: own simplified model</small></div>
+    <div class="right"><div class="btn">Exercise in today's wind</div><div class="btn">Sources</div><div class="btn">Leave scenario</div></div>
+  </div>
+
+  <div class="abs glass panel" style="left:16px; top:84px; width:300px;">
+    <h3>Fallout, first 48 hours</h3>
+    <div style="color:var(--dim);font-size:12.5px">Dose to someone outdoors the whole time. Indoors in a brick house is roughly ten times less; a cellar more.</div>
+    <div class="k">What it means</div>
+    <div class="row2"><span><span class="swatch" style="background:#c9262a"></span>over 10 Gy</span><b>fatal outdoors</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#ec6a2c"></span>1 – 10 Gy</span><b>shelter, then leave</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#f2c14c"></span>0.1 – 1 Gy</span><b>shelter 2 days</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#9cc7a8"></span>0.02 – 0.1 Gy</span><b>stay indoors 1 day</b></div>
+    <div class="k">Countries with land in a band</div>
+    <span class="chip">Netherlands</span><span class="chip">Belgium</span><span class="chip">Germany</span><span class="chip">Italy</span><span class="chip">Slovenia</span><span class="chip">Austria</span><span class="chip">Poland</span><span class="chip">Lithuania</span><span class="chip">Latvia</span><span class="chip">Belarus</span><span class="chip">Russia</span><span class="chip">Ukraine</span>
+  </div>
+
+  <div class="abs glass panel" style="right:16px; top:84px; width:330px;">
+    <h3><span class="dot" style="background:var(--accent)"></span>Where you are · Groningen</h3>
+    <div style="color:var(--dim);font-size:13px">your place, from your profile · change</div>
+    <div style="margin:12px 0 4px;padding:10px 12px;border-radius:12px;background:rgba(92,198,192,.12);font-size:14px;color:var(--cream)">Outside every band in this wind. Volkel's fallout passes 150 km to the south-east.</div>
+    <div class="k">If the wind were from the south</div>
+    <div style="font-size:13.5px;font-family:JakartaR,sans-serif">Volkel's plume would reach Groningen in about 7 hours, in the "stay indoors 1 day" band. <span style="color:var(--accent)">Play it →</span></div>
+    <div class="k">What to have ready, whatever the wind</div>
+    <div class="steps">
+      <div><i>1</i>A room without windows, or a cellar</div>
+      <div><i>2</i>Water and food for three days</div>
+      <div><i>3</i>A radio that works without power</div>
+    </div>
+    <div style="color:var(--dim);font-size:11.5px;margin-top:8px">The list follows the government's <i>Denk vooruit</i> advice.</div>
+  </div>
+
+  <div class="abs glass timeline">
+    <div class="tl-head">
+      <div class="play"><svg class="i" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M7 5l12 7-12 7z"/></svg></div>
+      <div class="clock">H+48</div><div class="phase">after the tactical phase</div>
+      <div class="speed"><div>1×</div><div>600×</div><div class="on">3600×</div></div>
+    </div>
+    <div class="track">
+      <div class="seg" style="left:0;width:6%;background:var(--amber)"><b>strikes</b></div>
+      <div class="seg" style="left:6.5%;width:18%;background:#c9262a"><b>fallout comes down · 12 h</b></div>
+      <div class="seg" style="left:25%;width:40%;background:#ec6a2c"><b>shelter · 2 days</b></div>
+      <div class="seg" style="left:65.5%;width:20%;background:#f2c14c"><b>decay · weeks</b></div>
+      <div class="seg" style="left:86%;width:14%;background:#5b3b6b"><b>years →</b></div>
+      <div class="head" style="left:58%"></div>
+    </div>
+  </div>
+</div>
+
+<h2><span>2</span>After: years, the whole planet</h2>
+<p class="sub">The end of the time bar opens a globe. Not drawn here; it would use the painted globe and its night side from macro-view v3.</p>
+<div class="notes">
+  <div><h3>What the globe would show</h3><ul>
+    <li>Soot from burning cities spreading round the hemisphere in weeks, from the studies of nuclear winter (Robock, Toon and colleagues).</li>
+    <li>Harvests failing: Xia et al. (<i>Nature Food</i>, 2022) estimate more than 5 billion deaths from famine after a full US–Russia war.</li>
+    <li>A counter per country of the studied calorie loss, as a field over farmland from the land-cover lens.</li></ul></div>
+  <div><h3>Sources and assumptions</h3><ul>
+    <li>Exchange: Princeton SGS, <i>Plan A</i> (2019). Bases: the publicly named nuclear-sharing bases.</li>
+    <li>Fallout: a power law along the wind, fitted to v1-nuclear's 100 kt contours (1000 / 100 / 10 / 1 rad/h at 9 / 32 / 80 / 150 km, about five times that over 48 hours), width growing with distance, scaled by yield. No terrain, no rain, one wind — for shape and order of magnitude only.</li>
+    <li>Strikes in the east: illustrative positions, not targets.</li>
+    <li>Drawn by <code>gen.ts</code> in this folder; the map is Natural Earth.</li></ul></div>
+</div>
+</body>
+</html>
