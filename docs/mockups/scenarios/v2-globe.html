@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v2: one hex board from the macro map to the globe</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>From the macro map to the globe: <b>one hex board</b> <span class="new">new</span></h1>
+<p class="lede">Today's hex layer is a single grid of ~9 km cells laid in Web Mercator (<code>hex_grid.wesl</code>), drawn
+between ~100 and ~4,000 km. Zoom out further and the cells shrink to specks; Mercator also stretches them towards the poles, and a
+flat grid cannot close round a sphere. The proposal: a grid made for the whole Earth (<b>H3</b>), whose cells merge seven into
+one each time you climb about 2.6 times higher. A cell then stays 30–70 px across at every altitude, from the macro map to the
+whole globe, like the tiles of a strategy game's world map. The same cells are where the scenario engine's fields and counters
+are added up.</p>
+
+<div class="principles">
+  <div><h3>Same tile size at every height</h3><p>The resolution follows altitude, so a cell is always about a finger's width on screen: readable, clickable, never noise.</p></div>
+  <div><h3>No jump</h3><p>Over a band of altitude the seven small cells fade out as their parent fades in, on <code>space_factor</code>-style ramps, like every other altitude effect.</p></div>
+  <div><h3>Values roll up</h3><p>A parent holds its children's sum (people, check-ins), worst value and share (danger), or majority (land cover). Nothing is recomputed per zoom.</p></div>
+  <div><h3>A board that closes</h3><p>A sphere of hexes needs 12 pentagons. H3 puts all twelve at sea, so every land tile is a hexagon.</p></div>
+</div>
+
+<h2><span>1</span>The world board, with a scenario on it</h2>
+<p class="sub">12,000 km up, cells 365 km across (H3 resolution 2). The fallout field of the nuclear sheet, added up per cell: colour is the worst band inside the cell, strength is the share of the cell in any band. Cells with no fallout show the land-cover lens (ESA WorldCover). The scenario's sources and assumptions are those of v1-nuclear.</p>
+<div class="screen" style="background-image:url(globe-hero.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i style="background:var(--red)"></i>Replay · Plan A (Princeton SGS, 2019)</div>
+    <div class="stat"><small>H+48 · fallout: own simplified model</small></div>
+    <div class="right"><div class="btn">Sources</div><div class="btn">Leave scenario</div></div>
+  </div>
+  <div class="abs glass lenses">
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M3 18l5-9 4 6 3-4 6 7z"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="9" width="6" height="11"/><rect x="12" y="4" width="8" height="16"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><path d="M6 16a4 4 0 0 1 1-8 5 5 0 0 1 9.5 1.5A3.5 3.5 0 0 1 17 16z"/></svg></div>
+    <div style="height:1px;width:40px;background:var(--gline);margin:4px 0"></div>
+    <div class="lens war on"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/></svg></div>
+  </div>
+  <div class="abs glass panel" style="left:16px; top:84px; width:300px;">
+    <h3>Fallout, per cell</h3>
+    <div class="k">Worst band in the cell</div>
+    <div class="row2"><span><span class="swatch" style="background:#c9262a"></span>over 10 Gy</span><b>fatal outdoors</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#ec6a2c"></span>1 – 10 Gy</span><b>shelter, then leave</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#f2c14c"></span>0.1 – 1 Gy</span><b>shelter 2 days</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#9cc7a8"></span>0.02 – 0.1 Gy</span><b>indoors 1 day</b></div>
+    <div class="k">Strength</div>
+    <div style="font-size:13px;font-family:JakartaR,sans-serif">Pale: a sliver of the cell. Solid: a third of it or more.</div>
+    <div class="k">On the board</div>
+    <div class="row2"><span>Cells with fallout</span><b>29 of 5,882</b></div>
+  </div>
+  <div class="abs glass panel" style="left:1060px; top:300px; width:300px;">
+    <h3><span class="dot" style="background:#c9262a"></span>Cell over central Poland</h3>
+    <div style="color:var(--dim);font-size:13px">365 km across · holds 343 cells of 20 km</div>
+    <div class="row2" style="margin-top:8px"><span>Share in a band</span><b>52%</b></div>
+    <div class="row2"><span>Worst band</span><b>over 10 Gy</b></div>
+    <div class="row2"><span>People inside</span><b>needs a population grid</b></div>
+    <div style="display:flex;gap:8px;margin-top:12px"><div class="btn primary">Zoom in</div><div class="btn">Its 7 children</div></div>
+  </div>
+  <svg style="position:absolute;left:0;top:0" width="1600" height="1000"><path d="M1060 330 L 840 420" stroke="#f3f7f9" stroke-width="1.5" stroke-dasharray="3 3"/></svg>
+  <div class="abs glass zoom" style="bottom:150px">
+    <div class="tiers"><div>Street</div><div>City</div><div>Region</div><div>Country</div><div>Continent</div><div class="on">World</div></div>
+    <span>12,000 km · cells 365 km</span>
+  </div>
+  <div class="abs glass timeline">
+    <div class="tl-head">
+      <div class="play"><svg class="i" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M7 5l12 7-12 7z"/></svg></div>
+      <div class="clock">H+48</div><div class="phase">after the tactical phase</div>
+      <div class="speed"><div>1×</div><div>600×</div><div class="on">3600×</div></div>
+    </div>
+    <div class="track">
+      <div class="seg" style="left:0;width:6%;background:var(--amber)"><b>strikes</b></div>
+      <div class="seg" style="left:6.5%;width:18%;background:#c9262a"><b>fallout comes down · 12 h</b></div>
+      <div class="seg" style="left:25%;width:40%;background:#ec6a2c"><b>shelter · 2 days</b></div>
+      <div class="seg" style="left:65.5%;width:20%;background:#f2c14c"><b>decay · weeks</b></div>
+      <div class="seg" style="left:86%;width:14%;background:#5b3b6b"><b>years →</b></div>
+      <div class="head" style="left:58%"></div>
+    </div>
+  </div>
+</div>
+
+<h2><span>2</span>Climbing: one resolution per band of altitude</h2>
+<p class="sub">Each frame is the client's straight-down camera (45° vertical field of view) at that height, the land-cover lens per cell (majority of the cell's centre and its seven children's, WorldCover z3; outside its coverage a stand-in by latitude). The brighter lines are the next-larger cells, which the small ones will merge into.</p>
+<div class="strip">
+  <div><div class="frame" style="background-image:url(globe-300.jpg)"><div class="alt">300 km</div></div><div class="fcap"><b>Resolution 5 · 20 km cells · 48 px.</b> The macro map. Today's ~9 km Mercator grid sits here; it would become this.</div></div>
+  <div><div class="frame" style="background-image:url(globe-1000.jpg)"><div class="alt">1,000 km</div></div><div class="fcap"><b>Resolution 4 · 52 km · 38 px.</b> Countries. Each cell is seven of the last frame's.</div></div>
+  <div><div class="frame" style="background-image:url(globe-3000.jpg)"><div class="alt">3,000 km</div></div><div class="fcap"><b>Resolution 3 · 138 km · 33 px.</b> The continent, and the curve of the Earth. One of the twelve pentagons lies in the Norwegian Sea, at the top edge.</div></div>
+  <div><div class="frame" style="background-image:url(globe-8000.jpg)"><div class="alt">8,000 km</div></div><div class="fcap"><b>Resolution 2 · 365 km · 33 px.</b> The globe. 5,882 cells cover the Earth.</div></div>
+  <div><div class="frame" style="background-image:url(globe-20000.jpg)"><div class="alt">20,000 km</div></div><div class="fcap"><b>Resolution 1 · 966 km · 35 px.</b> The whole planet as a board of 842 tiles.</div></div>
+  <div><div class="frame" style="background-image:url(globe-fade.jpg)"><div class="alt">1,700 km · crossfade</div></div><div class="fcap"><b>Between two bands</b>: resolution 4 (22 px) half faded out, resolution 3 (59 px) half in. Crossing the band takes a moment of zooming, not a frame.</div></div>
+</div>
+
+<h2><span>3</span>The bands</h2>
+<table class="ideas">
+  <tr><th>Altitude</th><th>Resolution</th><th>Cell across</th><th>Cells on Earth</th><th>Reads as</th></tr>
+  <tr><td>80 – 200 km</td><td>6</td><td>7 km</td><td>14 million</td><td>towns and their surroundings</td></tr>
+  <tr><td>200 – 540 km</td><td>5</td><td>20 km</td><td>2.0 million</td><td>the macro map: a province</td></tr>
+  <tr><td>540 – 1,430 km</td><td>4</td><td>52 km</td><td>288,000</td><td>a country</td></tr>
+  <tr><td>1,430 – 3,780 km</td><td>3</td><td>138 km</td><td>41,000</td><td>a continent; the globe begins</td></tr>
+  <tr><td>3,780 – 10,000 km</td><td>2</td><td>365 km</td><td>5,882</td><td>the globe</td></tr>
+  <tr><td>10,000 – 26,500 km</td><td>1</td><td>966 km</td><td>842</td><td>the whole planet</td></tr>
+  <tr><td>above</td><td>0</td><td>2,560 km</td><td>122</td><td>a dozen tiles per continent</td></tr>
+</table>
+<p class="sub" style="margin-top:10px">A band starts where a cell would be under 70 px across (the client's camera, measured in this sheet's 600 px tall frames; a taller screen moves every band up in proportion). The crossfade runs over the lower ~30% of each band.</p>
+
+<div class="notes">
+  <div><h3>Why H3, and what it brings</h3><ul>
+    <li>A hex grid over the whole sphere, from Uber, open source (Apache 2.0), with a pure-Rust port (<code>h3o</code>) that builds for wasm and Android.</li>
+    <li>Each cell has a 64-bit id; its parent and children are arithmetic on the id. The scenario engine, atlas and the simulator can all key their numbers by cell.</li>
+    <li>Cells are near-equal in area, so a count per cell compares across Europe; Mercator's cells do not.</li>
+    <li>Seven children do not tile their parent exactly; the edge cells straddle. For counts this is handled by assigning each child to one parent, which H3 defines.</li></ul></div>
+  <div><h3>What a real version needs</h3><ul>
+    <li>Drawing the cells on the globe tiles in the ground shader (a cell id per fragment), so the lines follow the terrain and the night side like today's grid.</li>
+    <li>A per-cell value texture for the lens, filled from the rolled-up numbers; the realistic globe stays underneath.</li>
+    <li>The existing hex layer setting kept: off by default, now meaning this grid at every height.</li>
+    <li>A population grid (GHSL) so cells can count people at every level.</li></ul></div>
+</div>
+</body>
+</html>

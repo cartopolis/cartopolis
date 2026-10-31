@@ -1,6 +1,6 @@
 ---
 topic: scenarios
-triggers: [scenario, scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
+triggers: [scenario, globe, H3, h3o, hex_grid.wesl, "hex grid", scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
 updated: 2026-10-31
 ---
 
@@ -27,6 +27,20 @@ base-map code, copied. Community territories, people, counts, drone tracks and
 alert texts are invented and marked so on the sheets.
 
 Nothing decided yet.
+
+## v2-globe: one hex board from the macro map to the globe
+
+![v2-globe](v2-globe.png)
+
+Asked for 2026-10-31: zoomed further out the hexes get too small; a globe view
+that follows on from the macro map, in the Civilization idea. Today's hex layer
+is one ~9 km grid in Web Mercator (`hex_grid.wesl`, `painted-far-map.md`). The
+proposal is H3: cells merge seven into one per ~2.6× of altitude, so a cell stays
+30–70 px across from 200 km to the whole planet; children crossfade into their
+parent, and values roll up (sum, worst + share, majority). H3 puts all twelve
+pentagons at sea. Drawn by `gen-globe.ts` (h3-js, d3-geo `geoSatellite` with the
+client's 45° camera); the world frame carries v1-nuclear's fallout rolled up
+per 365 km cell.
 
 ## v1-strategy: what to borrow from Civilization
 
