@@ -337,46 +337,6 @@ cargo test --locked --workspace --exclude cartopolis_android
 CMD
 fi
 
-# The smokes launch the client. If the workspace did not build there is nothing
-# to launch, and each of these costs up to 15 minutes discovering that.
-if printf '%s' "$failed" | grep -qw tests; then
-    for s in smoke-orbit smoke-phone; do
-        want "$s" && { skipped="$skipped $s"; }
-    done
-    want smoke-orbit && echo "
-skipping the render smokes: the suite failed, so there is no binary to launch"
-    steps=$(printf '%s\n' $steps | grep -vE '^smoke-' | tr '\n' ' ')
-fi
-
-if want smoke-orbit; then
-    run smoke-orbit "headless orbit capture: a planet is on screen" <<CMD
-$bounded cargo run --locked -p cartopolis -- \\
-    --shot /tmp/verify_orbit.png --dump-state /tmp/verify_orbit.json \\
-    --at 53.2194,6.5665,180000 --look=-90,0 \\
-    --size 640x360 --settle 2 --wait 60 \\
-    --expect 'settled==true' --expect 'globe_rendered>0' \\
-    --expect 'draws<=200' --expect 'upload_peak_asset_kb<=8192' || {
-        echo "the metrics behind it:"; cat /tmp/verify_orbit.json 2>/dev/null \\
-            || echo "(no dump: the run died before it captured)"; exit 1; }
-CMD
-fi
-
-if want smoke-phone; then
-    # Not a performance variant of the orbit shot: the phone tier takes a
-    # different sky, and that absent `AtmosphereSettings` is what once deleted
-    # the planet on the handset while the tier above kept passing.
-    run smoke-phone "the same frame on the tier Android runs" <<CMD
-CARTO_QUALITY=phone $bounded cargo run --locked -p cartopolis -- \\
-    --shot /tmp/verify_phone.png --dump-state /tmp/verify_phone.json \\
-    --at 53.2194,6.5665,180000 --look=-90,0 \\
-    --size 640x360 --settle 2 --wait 60 \\
-    --expect 'settled==true' --expect 'globe_rendered>0' \\
-    --expect 'upload_peak_asset_kb<=8192' || {
-        echo "the metrics behind it:"; cat /tmp/verify_phone.json 2>/dev/null \\
-            || echo "(no dump: the run died before it captured)"; exit 1; }
-CMD
-fi
-
 if want wasm; then
     # `--features audio` is not optional: dropping the defaults also drops
     # bevy_audio, and systems::voice's playback half becomes dead code that
@@ -430,6 +390,46 @@ rustup target list --installed 2>/dev/null | grep -qx aarch64-linux-android \
 export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
 export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
 cargo check --locked -p cartopolis_android --target aarch64-linux-android
+CMD
+fi
+
+# The smokes launch the client. If the workspace did not build there is nothing
+# to launch, and each of these costs up to 15 minutes discovering that.
+if printf '%s' "$failed" | grep -qw tests; then
+    for s in smoke-orbit smoke-phone; do
+        want "$s" && { skipped="$skipped $s"; }
+    done
+    want smoke-orbit && echo "
+skipping the render smokes: the suite failed, so there is no binary to launch"
+    steps=$(printf '%s\n' $steps | grep -vE '^smoke-' | tr '\n' ' ')
+fi
+
+if want smoke-orbit; then
+    run smoke-orbit "headless orbit capture: a planet is on screen" <<CMD
+$bounded cargo run --locked -p cartopolis -- \\
+    --shot /tmp/verify_orbit.png --dump-state /tmp/verify_orbit.json \\
+    --at 53.2194,6.5665,180000 --look=-90,0 \\
+    --size 640x360 --settle 2 --wait 60 \\
+    --expect 'settled==true' --expect 'globe_rendered>0' \\
+    --expect 'draws<=200' --expect 'upload_peak_asset_kb<=8192' || {
+        echo "the metrics behind it:"; cat /tmp/verify_orbit.json 2>/dev/null \\
+            || echo "(no dump: the run died before it captured)"; exit 1; }
+CMD
+fi
+
+if want smoke-phone; then
+    # Not a performance variant of the orbit shot: the phone tier takes a
+    # different sky, and that absent `AtmosphereSettings` is what once deleted
+    # the planet on the handset while the tier above kept passing.
+    run smoke-phone "the same frame on the tier Android runs" <<CMD
+CARTO_QUALITY=phone $bounded cargo run --locked -p cartopolis -- \\
+    --shot /tmp/verify_phone.png --dump-state /tmp/verify_phone.json \\
+    --at 53.2194,6.5665,180000 --look=-90,0 \\
+    --size 640x360 --settle 2 --wait 60 \\
+    --expect 'settled==true' --expect 'globe_rendered>0' \\
+    --expect 'upload_peak_asset_kb<=8192' || {
+        echo "the metrics behind it:"; cat /tmp/verify_phone.json 2>/dev/null \\
+            || echo "(no dump: the run died before it captured)"; exit 1; }
 CMD
 fi
 
