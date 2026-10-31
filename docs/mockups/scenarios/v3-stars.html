@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v3: beyond the globe, nodes and lanes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Beyond the globe: <b>nodes and lanes</b>, as in Master of Orion <span class="new">new</span></h1>
+<p class="lede">Climb past the hex globe of v2 and the Earth becomes one node. Above that the board is no longer cells but a
+<b>graph</b>: places as nodes, the routes between them as lanes, the way Master of Orion connects star systems. The solar system
+is a handful of nodes; the stellar neighbourhood is every real star system within 16 light years, from the HYG catalogue, joined
+to its nearest neighbours. The scenario engine needs only one new thing for this: a second kind of board. The same graph works on
+Earth too, for cities and the rail, air and power links between them.</p>
+
+<div class="principles">
+  <div><h3>Two kinds of board</h3><p><b>Cells</b> (H3) for anything spread over ground; <b>graphs</b> (nodes and lanes) for anything that lives in places and moves along routes.</p></div>
+  <div><h3>Zoom goes up a level</h3><p>A node opens into the board below it: a star into its system, a planet into its hex globe, the globe into the macro map, down to the street.</p></div>
+  <div><h3>Real first</h3><p>The stars, their distances and their known planets are real data. Anything invented — a colony, a fleet — lives in a sandbox world marked as fiction.</p></div>
+  <div><h3>Same primitives</h3><p>A track runs along lanes, a region state colours nodes, a counter sits on a node. Nothing in the engine knows it is in space.</p></div>
+</div>
+
+<h2><span>1</span>The ladder above the globe</h2>
+<p class="sub">Each step is a level the camera crosses on the way out, crossfading like the hex resolutions of v2.</p>
+<div class="strip">
+  <div><div class="frame" style="background-image:url(globe-20000.jpg)"><div class="alt">The world · cells</div></div><div class="fcap"><b>20,000 km.</b> The hex globe of v2, 842 tiles. Further out it shrinks to a dot and becomes the Earth node.</div></div>
+  <div><div class="frame" style="background-image:url(system.jpg)"><div class="alt">The solar system · nodes</div></div><div class="fcap"><b>Planets as nodes</b>, orbits on a log scale; lanes are transfer routes between neighbours, the Moon a node off Earth. Earth, ringed, is where every community lives today.</div></div>
+  <div><div class="frame" style="background-image:url(stars.jpg);background-size:150%;background-position:52% 50%"><div class="alt">The neighbourhood · lanes</div></div><div class="fcap"><b>Star systems as nodes</b> within 16 light years; the Sun's lanes in teal. Opens full size below.</div></div>
+</div>
+
+<h2><span>2</span>The stellar neighbourhood as a board</h2>
+<p class="sub">45 systems from HYG v4.1 (stars within 0.15 pc of a brighter one count as one system), drawn above the plane of Sol's equator with a stalk to it, as star maps do. Each system has a lane to its nearest neighbour and to up to two more within 9.5 light years. Green dots: planets listed in the NASA Exoplanet Archive (a selection). The sandbox colony and the numbers in the panel are <span class="made">invented</span>.</p>
+<div class="screen" style="background-image:url(stars.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i style="background:#9b7bff"></i>Sandbox · the neighbourhood</div>
+    <div class="stat"><small>Real stars and distances · anything built here is fiction</small></div>
+    <div class="right"><div class="btn">Back to Earth</div><div class="btn">Sources</div></div>
+  </div>
+  <div class="abs glass lenses">
+    <div class="lens on"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="7" r="2"/><circle cx="17" cy="19" r="2"/><path d="M7 7l3 3M14 11l3-3M13.5 14l2.5 3.5"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16"/></svg></div>
+    <div class="lens"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/></svg></div>
+    <div style="height:1px;width:40px;background:var(--gline);margin:4px 0"></div>
+    <div class="lens war"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/></svg></div>
+  </div>
+  <div class="abs glass panel" style="left:16px; top:84px; width:320px;">
+    <h3><span class="dot" style="background:#fff1b0"></span>Alpha Centauri</h3>
+    <div style="color:var(--dim);font-size:13px">4.3 light years · three stars (G2, K1, M5)</div>
+    <div class="k">Real</div>
+    <div class="row2"><span>Planets known</span><b>Proxima b</b></div>
+    <div class="row2"><span>Light from here takes</span><b>4 years 4 months</b></div>
+    <div class="row2"><span>Lanes</span><b>Sol 4.3 · Barnard's 6.4 ly</b></div>
+    <div class="k">In the sandbox <span class="made">fiction</span></div>
+    <div class="row2"><span>Colony</span><b>Proxima Haven · 2,400</b></div>
+    <div class="row2"><span>Communities</span><b>3</b></div>
+    <div style="display:flex;gap:8px;margin-top:12px"><div class="btn primary">Open the system</div><div class="btn">Lanes</div></div>
+  </div>
+  <div class="abs glass panel" style="right:96px; top:84px; width:280px;">
+    <h3>A graph board</h3>
+    <div class="row2"><span>Nodes</span><b>45 systems</b></div>
+    <div class="row2"><span>Lanes</span><b>85</b></div>
+    <div class="row2"><span>With known planets</span><b>14</b></div>
+    <div class="row2"><span>Sol's lanes</span><b>α Cen · Barnard's · Wolf 359</b></div>
+    <div style="color:var(--dim);font-size:12px;margin-top:8px">Rings on the plane every 5 light years round Sol.</div>
+  </div>
+  <div class="abs glass zoom">
+    <div class="tiers"><div>Street</div><div>Country</div><div>World</div><div>System</div><div class="on">Neighbourhood</div></div>
+    <span>16 light years</span>
+  </div>
+</div>
+
+<h2><span>3</span>One engine, two boards</h2>
+<div class="flow">
+  <div><b>Cells (H3)</b>fields, region states and counters over the ground: fallout, flood depth, people, land cover. v2's hex globe.</div><span>+</span>
+  <div><b>Graph</b>nodes and lanes: cities and rail lines, substations and power lines, airports, planets, stars. Tracks move along lanes.</div><span>→</span>
+  <div><b>On Earth, now</b>the drone sheet's routes on real roads, a power cut spreading along the grid, help sent from city to city.</div><span>→</span>
+  <div><b>Above Earth, later</b>a sandbox world where communities settle real star systems — Civilization's map, made of real places.</div>
+</div>
+
+<div class="notes">
+  <div><h3>Sources and how it is drawn</h3><ul>
+    <li>Stars: the HYG database v4.1 (Astronexus, CC BY-SA 4.0), distances under 4.9 pc (16 ly), positions in its equatorial x, y, z.</li>
+    <li>Lanes: nearest neighbour always, plus up to two more under 2.9 pc. A design choice for readability, not physics.</li>
+    <li>Planets: a selection of hosts from the NASA Exoplanet Archive; the dot count is only indicative.</li>
+    <li>The solar system: real order of the planets, log-scaled distances. Drawn by <code>gen-stars.ts</code>.</li></ul></div>
+  <div><h3>What it would need</h3><ul>
+    <li>A graph board type in the scenario crate beside the cell board: nodes with an id and a place, lanes with a length.</li>
+    <li>The camera's ladder extended past the globe, each level a crossfade, never a separate mode.</li>
+    <li>A rule kept from the start: the real map never shows fiction; a sandbox world is entered on purpose and wears its label.</li>
+    <li>A decision on what the space layer is for: a game, a teaching tool, or a place for communities to imagine together.</li></ul></div>
+</div>
+</body>
+</html>

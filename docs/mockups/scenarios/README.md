@@ -1,6 +1,6 @@
 ---
 topic: scenarios
-triggers: [scenario, globe, H3, h3o, hex_grid.wesl, "hex grid", scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
+triggers: [scenario, globe, stars, "star lanes", "master of orion", graph, sandbox, H3, h3o, hex_grid.wesl, "hex grid", scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
 updated: 2026-10-31
 ---
 
@@ -27,6 +27,18 @@ base-map code, copied. Community territories, people, counts, drone tracks and
 alert texts are invented and marked so on the sheets.
 
 Nothing decided yet.
+
+## v3-stars: beyond the globe, nodes and lanes
+
+![v3-stars](v3-stars.png)
+
+Asked for 2026-10-31: in the end a Civilization, but intergalactic, using Master
+of Orion's structure of nodes between planets. Above the hex globe the Earth
+becomes a node: the solar system and the 45 real star systems within 16 light
+years (HYG v4.1, CC BY-SA 4.0, as `hyg.csv` in the data dir) as a graph board
+of nodes and lanes. The engine gains a second board kind (cells + graph); the
+graph serves on Earth too (cities, rail, power). Fiction lives only in a
+sandbox world marked as such. Drawn by `gen-stars.ts`.
 
 ## v2-globe: one hex board from the macro map to the globe
 
