@@ -29,13 +29,15 @@ you want one. Check `midas status` for which is free.
 ```bash
 midas take --node mac-2
 ssh <node> 'cargo run -p cartopolis -- --shot /tmp/x.png --at …'
-scp <node>:/tmp/x.png /tmp/x.png     # a node's output stays on its machine
+ssh <node> 'cat /tmp/x.png' > /tmp/x.png   # a node's output stays on its machine
 ```
 
-On the Macs `scp` fails ("Connection closed": the node starts a Linux
-`sftp-server` path) and PNGs have been seen landing under `$TMPDIR` rather than
-`/tmp`, so fetch through plain ssh: `ssh mac-2 'cat /tmp/x.png' > /tmp/x.png`,
-and look in `$TMPDIR` if it is not there.
+Fetch through plain ssh, never `scp`: on the Macs `scp` fails ("Connection
+closed": the node starts a Linux `sftp-server` path). PNGs have been seen landing
+under `$TMPDIR` rather than `/tmp` there, so look in `$TMPDIR` if it is not there.
+Upload the same way (`ssh mac-1 'cat > /tmp/run.sh' < run.sh`), a directory with
+`ssh mac-1 'cd /tmp/d && tar cf - .' | tar -C /tmp/d -xf -`, and run every ssh
+from the worktree that holds the node: from anywhere else midas refuses it.
 
 ## One capture, a sweep, a flythrough
 
