@@ -41,6 +41,7 @@ pub mod place_card;
 pub mod place_names;
 pub mod place_pins;
 pub mod plans;
+pub mod scenario;
 pub mod script_editor;
 pub mod settings;
 pub mod splash;

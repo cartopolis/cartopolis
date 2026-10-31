@@ -2545,6 +2545,7 @@ dependencies = [
  "cartopolis_human",
  "cartopolis_materials",
  "cartopolis_mcp",
+ "cartopolis_scenario",
  "cartopolis_simulator",
  "cartopolis_vio",
  "cartopolis_voice",
@@ -2615,6 +2616,7 @@ dependencies = [
  "brotli",
  "cartopolis_core",
  "cartopolis_geo",
+ "cartopolis_scenario",
  "clap",
  "earcutr",
  "figment",
@@ -2783,6 +2785,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "cartopolis_scenario"
+version = "1.0.0"
+dependencies = [
+ "earcutr",
+ "postcard",
+ "serde",
+ "thiserror 2.0.20",
+ "toml 0.8.23",
 ]
 
 [[package]]

@@ -355,6 +355,36 @@ pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xEC, 0xE9
 /// is the chrome's text-well fill, and the two are free to move apart.
 pub const LABEL_INK: Color32 = Color32::from_rgb(0x12, 0x11, 0x10);
 
+/// A scenario over the map (`systems::scenario`, `docs/mockups/scenarios/`).
+/// A region's own colour is the scenario file's (it is data, like a legend);
+/// what is here is the frame each mode wears and the inks of a track.
+pub mod scenario {
+    use egui::Color32;
+
+    /// Live: an official source only, so the one frame allowed to look like a
+    /// warning (v4-whole).
+    pub const LIVE: Color32 = Color32::from_rgb(0xD6, 0x3A, 0x2F);
+    pub const REPLAY: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x6E);
+    /// Exercise: the yellow of its stripes, on every screen.
+    pub const EXERCISE: Color32 = Color32::from_rgb(0xE8, 0xC5, 0x47);
+    pub const SANDBOX: Color32 = Color32::from_rgb(0x9B, 0x7B, 0xFF);
+
+    /// A track's line, behind and (dashed) ahead, and its time ticks.
+    pub const TRACK: Color32 = Color32::from_rgb(0xFF, 0xCF, 0x9A);
+    /// The soft line under the path behind.
+    pub const TRACK_GLOW: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0xB2, 0x7A, 40);
+    /// The cone of where it may go.
+    pub const CONE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x7A, 0x4A, 34);
+    pub const CONE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x9A, 0x6A, 90);
+    /// The glow round a group's head, and its members.
+    pub const HEAD: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x6A, 0x3A, 90);
+    pub const HEAD_DOT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xC9);
+    /// The rim of a group's label chip.
+    pub const HEAD_RIM: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x5A);
+    /// Where some were brought down.
+    pub const INTERCEPT: Color32 = Color32::from_rgb(0x9F, 0xD3, 0xFF);
+}
+
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
 /// The wordmark face (SIL OFL — see `assets/fonts/README.md`). Embedded rather

@@ -1,0 +1,108 @@
+# Figures about Dutch places, buurt to country (docs/mockups/scenarios/, v5-areas).
+#
+# CBS's Kerncijfers wijken en buurten 2024, as `atlas areas cbs-2024` writes
+# them: CBS publishes buurt, wijk and gemeente; province and country are rolled
+# up from the gemeenten (a count summed, a share weighted). Each layer stands on
+# all five rungs, and the one read follows the camera. A figure CBS keeps back
+# (too few people to publish) is left uncoloured, never guessed.
+#
+# Bands are for reading, not ranking: a few even steps around the national
+# figure, one ColorBrewer sequential ramp per layer (light to dark, distinct
+# enough to tell apart over the map at 70 % cover).
+
+[scenario]
+name = "Kerncijfers wijken en buurten 2024"
+mode = "replay"
+confidence = "documented"
+summary = "Who lives where: CBS's key figures per buurt, wijk and gemeente."
+sources = [
+  "CBS, Kerncijfers wijken en buurten 2024, via PDOK (CC BY 4.0)",
+  "Provinces and the country: Kadaster, Bestuurlijke gebieden, via PDOK",
+  "Province and country figures: rolled up from the gemeenten by Cartopolis",
+]
+clock = { start = "2024", end = "2024" }
+
+[[region_state]]
+id = "share_65_plus"
+label = "Aged 65 and over"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "share_65_plus"
+state = [
+  { id = "a", label = "under 10 %", colour = "#ffffcc", below = 10.0 },
+  { id = "b", label = "10 – 15 %", colour = "#c7e9b4", below = 15.0 },
+  { id = "c", label = "15 – 20 %", colour = "#7fcdbb", below = 20.0 },
+  { id = "d", label = "20 – 25 %", colour = "#41b6c4", below = 25.0 },
+  { id = "e", label = "25 – 30 %", colour = "#2c7fb8", below = 30.0 },
+  { id = "f", label = "30 % and over", colour = "#253494" },
+]
+
+[[region_state]]
+id = "share_0_15"
+label = "Aged under 15"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "share_0_15"
+state = [
+  { id = "a", label = "under 10 %", colour = "#ffffd4", below = 10.0 },
+  { id = "b", label = "10 – 13 %", colour = "#fed98e", below = 13.0 },
+  { id = "c", label = "13 – 16 %", colour = "#fe9929", below = 16.0 },
+  { id = "d", label = "16 – 19 %", colour = "#d95f0e", below = 19.0 },
+  { id = "e", label = "19 % and over", colour = "#993404" },
+]
+
+[[region_state]]
+id = "density"
+label = "People per km²"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "density"
+state = [
+  { id = "a", label = "under 100", colour = "#fef0d9", below = 100.0 },
+  { id = "b", label = "100 – 500", colour = "#fdcc8a", below = 500.0 },
+  { id = "c", label = "500 – 1,500", colour = "#fc8d59", below = 1500.0 },
+  { id = "d", label = "1,500 – 5,000", colour = "#e34a33", below = 5000.0 },
+  { id = "e", label = "5,000 and over", colour = "#b30000" },
+]
+
+[[region_state]]
+id = "single_households"
+label = "Single-person households"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "single_households"
+state = [
+  { id = "a", label = "under 25 %", colour = "#edf8fb", below = 25.0 },
+  { id = "b", label = "25 – 35 %", colour = "#b3cde3", below = 35.0 },
+  { id = "c", label = "35 – 45 %", colour = "#8c96c6", below = 45.0 },
+  { id = "d", label = "45 – 60 %", colour = "#8856a7", below = 60.0 },
+  { id = "e", label = "60 % and over", colour = "#810f7c" },
+]
+
+[[region_state]]
+id = "owner_occupied"
+label = "Owner-occupied homes"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "owner_occupied"
+state = [
+  { id = "a", label = "under 30 %", colour = "#edf8e9", below = 30.0 },
+  { id = "b", label = "30 – 50 %", colour = "#bae4b3", below = 50.0 },
+  { id = "c", label = "50 – 65 %", colour = "#74c476", below = 65.0 },
+  { id = "d", label = "65 – 80 %", colour = "#31a354", below = 80.0 },
+  { id = "e", label = "80 % and over", colour = "#006d2c" },
+]
+
+[[region_state]]
+id = "home_value"
+label = "Average home value"
+boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
+derive = "value"
+field = "home_value"
+state = [
+  { id = "a", label = "under €250k", colour = "#feebe2", below = 250.0 },
+  { id = "b", label = "€250k – 350k", colour = "#fbb4b9", below = 350.0 },
+  { id = "c", label = "€350k – 450k", colour = "#f768a1", below = 450.0 },
+  { id = "d", label = "€450k – 600k", colour = "#c51b8a", below = 600.0 },
+  { id = "e", label = "€600k and over", colour = "#7a0177" },
+]

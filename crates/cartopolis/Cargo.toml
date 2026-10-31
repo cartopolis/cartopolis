@@ -139,6 +139,7 @@ serde_json.workspace = true
 toml = "0.8"
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
+cartopolis_scenario = { path = "../scenario" }
 # MakeHuman bodies built at runtime (`systems::human_avatar`).
 cartopolis_human = { path = "../human" }
 # Visual-inertial odometry for the high-precision mode (`systems::high_precision`).
