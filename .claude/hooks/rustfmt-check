@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# Claude Code PostToolUse hook (Edit|Write): say at once when a Rust file just
+# edited is not rustfmt-clean, rather than at the landing gate. Formatting
+# slips reached the gate in 8 of the 61 sessions of 26-31 October and main took
+# 11 formatting fixes that month; the `land` script starts the gate on the node
+# directly, so the gate's own build-free first pass does not save the node.
+#
+# It reports and changes nothing: rewriting a file under the agent's Edit would
+# make its next old_string miss. Only the file itself is checked
+# (`skip_children`), with its crate's edition — the crates mix 2021 and 2024,
+# and rustfmt alone assumes 2015. FAILS OPEN: anything unexpected exits 0.
+set -uo pipefail
+command -v jq >/dev/null 2>&1 && command -v rustfmt >/dev/null 2>&1 || exit 0
+
+file=$(jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
+case "$file" in *.rs) ;; *) exit 0 ;; esac
+[ -f "$file" ] || exit 0
+
+# The crate: the nearest Cargo.toml above the file, inside a checkout.
+dir=$(dirname "$file")
+manifest=""
+while [ "$dir" != "/" ] && [ -n "$dir" ]; do
+    if [ -f "$dir/Cargo.toml" ]; then manifest="$dir/Cargo.toml"; break; fi
+    dir=$(dirname "$dir")
+done
+[ -n "$manifest" ] || exit 0
+# The vendored trees are not ours to format (verify-branch's fmt skips them).
+case "$manifest" in
+    */crates/big_space/*|*/crates/web_task/*|*/crates/wgpu/*|*/crates/bevy_shader/*|*/crates/mvt_reader/*|*/crates/tract_tflite/*) exit 0 ;;
+esac
+
+edition=$(sed -n 's/^edition *= *"\([0-9]*\)".*/\1/p' "$manifest" | head -1)
+if [ -z "$edition" ]; then
+    root=$(git -C "$(dirname "$manifest")" rev-parse --show-toplevel 2>/dev/null) || exit 0
+    edition=$(sed -n 's/^edition *= *"\([0-9]*\)".*/\1/p' "$root/Cargo.toml" | head -1)
+fi
+[ -n "$edition" ] || exit 0
+
+diff=$(timeout 8 rustfmt --edition "$edition" --check --config skip_children=true "$file" 2>/dev/null)
+[ $? -eq 1 ] || exit 0
+lines=$(printf '%s\n' "$diff" | sed -n 's/^Diff in .*:\([0-9]*\):$/\1/p' | paste -sd, -)
+pkg=$(sed -n '/^\[package\]/,/^\[/s/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+context="rustfmt would change \`$(basename "$file")\` (lines ${lines:-?}); the landing gate fails on it. Run \`cargo fmt -p ${pkg:-<crate>}\` when you are done editing."
+jq -cn --arg c "$context" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'
