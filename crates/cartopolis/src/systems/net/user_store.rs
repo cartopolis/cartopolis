@@ -276,6 +276,10 @@ pub struct LayerPrefs {
     /// Street names over the map (`systems::street_labels`).
     #[serde(default = "detail_default")]
     pub street_labels: bool,
+    /// Cities, districts and stations named from a distance
+    /// (`systems::place_names`).
+    #[serde(default = "yes")]
+    pub place_names: bool,
     /// The flood defences, named where they stand (`systems::dikes`).
     ///
     /// On by default rather than on the detail tier: it is a handful of names

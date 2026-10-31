@@ -509,6 +509,9 @@ pub struct DataLayers {
     /// (`systems::street_labels`). Screen-space text, so this gates the drawing
     /// only — the names are parsed with the cell either way, off the frame loop.
     pub street_labels: bool,
+    /// Feature toggle (under Map): cities, districts and stations named from a
+    /// distance (`systems::place_names`). Gates the tiles' fetching too.
+    pub place_names: bool,
     /// Feature toggle (under Map): the flood defences, named where they stand
     /// (`systems::dikes`). Gates both the streaming and the labelling — off, the
     /// cells are never asked for.
@@ -685,6 +688,7 @@ impl DataLayers {
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
             street_labels: self.street_labels,
+            place_names: self.place_names,
             flood_defences: self.flood_defences,
             sewers: self.sewers,
             underground: crate::systems::underground::LAYERS
@@ -777,6 +781,7 @@ impl DataLayers {
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
+        self.place_names = p.place_names;
         self.flood_defences = p.flood_defences;
         self.sewers = p.sewers;
         for (slot, def) in self
@@ -866,6 +871,9 @@ impl Default for DataLayers {
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
+            // Not on the detail tier: a few dozen names painted over the map,
+            // from tiles the basemap has mostly fetched already.
+            place_names: true,
             // Not on the detail tier: a handful of names from a layer that is
             // already running, and nothing at all outside the Netherlands.
             flood_defences: true,
@@ -2307,7 +2315,12 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
         .chain(dl.underground.iter().copied())
         .collect();
     [
-        n(&[dl.street_labels, dl.roads_textured, dl.water_shading]),
+        n(&[
+            dl.street_labels,
+            dl.place_names,
+            dl.roads_textured,
+            dl.water_shading,
+        ]),
         n(&[
             dl.buildings_enabled,
             dl.trees_enabled,
@@ -2393,6 +2406,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     (
                         tile(icons::LABEL, "Street names", false, false, ground.or(low)),
                         &mut dl.street_labels,
+                    ),
+                    (
+                        tile(icons::LABEL, "Place names", false, false, None),
+                        &mut dl.place_names,
                     ),
                     (
                         tile(icons::ROAD, "Road markings", false, false, low),
@@ -2826,6 +2843,7 @@ pub fn render_data_layers_panel(
         dl.roads_textured = fresh.roads_textured;
         dl.water_shading = fresh.water_shading;
         dl.street_labels = fresh.street_labels;
+        dl.place_names = fresh.place_names;
         dl.flood_defences = fresh.flood_defences;
         dl.sewers = fresh.sewers;
         dl.underground = fresh.underground;

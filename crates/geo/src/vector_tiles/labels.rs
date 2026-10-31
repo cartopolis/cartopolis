@@ -293,3 +293,107 @@ mod tests {
         assert!((polyline_len(&simplified) - 100.0).abs() < 1e-3);
     }
 }
+
+/// What sort of place a [`PlaceLabel`] names, in the order the map gives way:
+/// a city keeps its name when there is room for nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlaceKind {
+    City,
+    Town,
+    Station,
+    Suburb,
+    Quarter,
+    Neighbourhood,
+}
+
+/// A named place from a tile's `place_labels`, or a station from its
+/// `public_transport`: the points a map writes names at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaceLabel {
+    pub name: String,
+    pub kind: PlaceKind,
+    /// Inhabitants, where the source has a number (0 where not).
+    pub population: u32,
+    /// Where, in the tile's unit square (0..1 across, y down).
+    pub at: [f32; 2],
+}
+
+/// The named places of a tile. Villages, hamlets and localities are left out:
+/// from the heights these names are drawn at they are clutter, and up close the
+/// street names take over.
+#[must_use]
+pub fn extract_place_labels(tile: &TileData) -> Vec<PlaceLabel> {
+    let mut out = Vec::new();
+    for layer_name in ["place_labels", "public_transport"] {
+        let Some(meta) = tile.layer(layer_name) else {
+            continue;
+        };
+        let extent = TileData::extent(meta);
+        for feature in tile.features(meta) {
+            let kind = match (layer_name, kind_of(feature).unwrap_or("")) {
+                ("place_labels", "capital" | "state_capital" | "city") => PlaceKind::City,
+                ("place_labels", "town") => PlaceKind::Town,
+                ("place_labels", "suburb") => PlaceKind::Suburb,
+                ("place_labels", "quarter") => PlaceKind::Quarter,
+                ("place_labels", "neighbourhood") => PlaceKind::Neighbourhood,
+                ("public_transport", "station" | "railway_station" | "halt") => PlaceKind::Station,
+                _ => continue,
+            };
+            let Some(name) = str_prop(feature, "name").filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let at = match &feature.geometry {
+                Geometry::Point(p) => [p.x(), p.y()],
+                Geometry::MultiPoint(mp) => match mp.0.first() {
+                    Some(p) => [p.x(), p.y()],
+                    None => continue,
+                },
+                _ => continue,
+            };
+            if !(0.0..=extent).contains(&at[0]) || !(0.0..=extent).contains(&at[1]) {
+                continue;
+            }
+            let population = match feature
+                .properties
+                .as_ref()
+                .and_then(|p| p.get("population"))
+            {
+                Some(Value::Int(v) | Value::SInt(v)) => (*v).max(0) as u32,
+                Some(Value::UInt(v)) => *v as u32,
+                Some(Value::Float(v)) => v.max(0.0) as u32,
+                Some(Value::Double(v)) => v.max(0.0) as u32,
+                _ => 0,
+            };
+            out.push(PlaceLabel {
+                name: name.to_string(),
+                kind,
+                population,
+                at: [at[0] / extent, at[1] / extent],
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod place_label_tests {
+    use super::*;
+
+    #[test]
+    fn the_fixture_names_its_station_and_districts() {
+        let tile = crate::testdata::groningen();
+        let labels = extract_place_labels(&tile);
+        // The fixture is the station tile: it names the station and its districts.
+        assert!(
+            labels.iter().any(|l| l.kind == PlaceKind::Station),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.kind >= PlaceKind::Suburb),
+            "{labels:?}"
+        );
+        assert!(labels
+            .iter()
+            .all(|l| (0.0..=1.0).contains(&l.at[0]) && (0.0..=1.0).contains(&l.at[1])));
+    }
+}

@@ -29,6 +29,7 @@ pub struct GuiPlugin {
 impl Plugin for GuiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<systems::settings::SettingsState>()
+            .init_resource::<systems::place_names::PlaceNames>()
             // The dock's mark disc and the card it opens (`systems::ui`).
             .init_resource::<systems::ui::MainMenu>()
             // The place card a picked search result opens (`systems::place_card`).
@@ -295,6 +296,8 @@ impl Plugin for GuiPlugin {
                 // entirely, and it has to land whatever the panel is doing when
                 // they come back.
                 systems::bookmarks::poll_place_photos,
+                // The tiles the place names over the map are read from.
+                systems::place_names::stream_place_names,
             )
                 .in_set(ClientPhase::Stream),
         )
@@ -419,6 +422,11 @@ impl Plugin for GuiPlugin {
                     // Layers ▸ Places ▸ Plans (`systems::plans`): dots over the
                     // map, culled against the leftover space as the pins are, and
                     // under them — a saved place stays on top of a notice.
+                    // Cities, districts and stations named from a distance
+                    // (`systems::place_names`): painted, never sensing, under the
+                    // plans and the pins so a saved place stays on top.
+                    systems::place_names::render_place_names
+                        .after(systems::free_camera::camera_controls),
                     systems::plans::render_plans.after(systems::free_camera::camera_controls),
                     // Also after the camera has moved, so pins project onto this
                     // frame's view.

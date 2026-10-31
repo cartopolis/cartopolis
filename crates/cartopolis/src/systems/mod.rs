@@ -59,8 +59,8 @@ pub use gui::{
     call_screen, camera_screen, chat, chat_overlay, chat_people, chats, communities,
     community_posts, contacts, data_layers, dismiss, dock, egui_manager, external_signin, faces,
     floor_picker, glass, hud, icons, layer_tiles, login_screen, lua_highlight, map_osd,
-    model_library, onscreen_keyboard, place_card, place_pins, plans, script_editor, settings,
-    splash, text_touch, theme, ui,
+    model_library, onscreen_keyboard, place_card, place_names, place_pins, plans, script_editor,
+    settings, splash, text_touch, theme, ui,
 };
 pub use map::prim_hand;
 pub use map::prim_sound;

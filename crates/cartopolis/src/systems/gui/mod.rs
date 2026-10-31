@@ -38,6 +38,7 @@ pub mod map_osd;
 pub mod model_library;
 pub mod onscreen_keyboard;
 pub mod place_card;
+pub mod place_names;
 pub mod place_pins;
 pub mod plans;
 pub mod script_editor;
