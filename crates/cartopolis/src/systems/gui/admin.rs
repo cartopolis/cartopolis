@@ -427,8 +427,10 @@ pub fn render_admin_panel(
                 Page::Claims => claims_page(ui, &mut admin),
             }
         });
-    if !open {
+    // Every page's title carries the panel's close (`theme::back_title`).
+    if !open || theme::take_panel_close(egui.ctx()) {
         *right_panel = RightPanel::None;
+        you = false;
     }
     if you {
         *right_panel = RightPanel::Chat;

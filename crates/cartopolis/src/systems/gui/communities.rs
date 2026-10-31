@@ -1415,7 +1415,18 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 &line,
                 theme::TEXT_DIM,
                 |ui| {
-                    if theme::secondary_button(ui, icons::CHECK, "Let in", 0.0).clicked() {
+                    // On a phone the word leaves the request's own message one
+                    // word per line; the tick beside the cross says it alone.
+                    let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
+                    let (word, w) = if ui.available_width() < 300.0 {
+                        ("", side)
+                    } else {
+                        ("Let in", 0.0)
+                    };
+                    if theme::secondary_button(ui, icons::CHECK, word, w)
+                        .on_hover_text("Let in")
+                        .clicked()
+                    {
                         cs.ops
                             .push(CommunityOp::Decide(id, r.address.clone(), true));
                     }

@@ -1,0 +1,238 @@
+# Every panel and screen at phone width, 412×900 px at 1.5 — 275 pt, the
+# Android phone viewport (`ui-vocabulary.md`). Run with the scale set:
+#
+#     CARTO_UI_SCALE=1.5 cargo run -p cartopolis -- --shots docs/phone-ui-shots.toml
+#
+# and read /tmp/phone/*.png as one contact sheet (`montage`). Written to find
+# the panels that ran off a phone's edge or had no close (2026-10-31).
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "412x900"
+out_dir = "/tmp/phone"
+hide_ui = false
+mode = "free"
+settle = 1.0
+wait = 12.0
+
+[[shot]]
+name = "none"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = []
+
+[[shot]]
+name = "menu"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["menu"]
+
+[[shot]]
+name = "search"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["search"]
+
+[[shot]]
+name = "layers"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["layers"]
+
+[[shot]]
+name = "places"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["places"]
+
+[[shot]]
+name = "route"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["route"]
+
+[[shot]]
+name = "chats"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["chats"]
+
+[[shot]]
+name = "communities"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["communities"]
+
+[[shot]]
+name = "community"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["community"]
+
+[[shot]]
+name = "you"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["you"]
+
+[[shot]]
+name = "youadmin"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["youadmin"]
+
+[[shot]]
+name = "settings"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["settings"]
+
+[[shot]]
+name = "graphics"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["graphics"]
+
+[[shot]]
+name = "tokens"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["tokens"]
+
+[[shot]]
+name = "safety"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["safety"]
+
+[[shot]]
+name = "admin"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["admin"]
+
+[[shot]]
+name = "adminreports"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["adminreports"]
+
+[[shot]]
+name = "appearance"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["appearance"]
+
+[[shot]]
+name = "contacts"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["contacts"]
+
+[[shot]]
+name = "personcard"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["personcard"]
+
+[[shot]]
+name = "newchat"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["newchat"]
+
+[[shot]]
+name = "findcommunity"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["findcommunity"]
+
+[[shot]]
+name = "calendar"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["calendar"]
+
+[[shot]]
+name = "calendarplan"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["calendarplan"]
+
+[[shot]]
+name = "chatthread"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["chatthread"]
+
+[[shot]]
+name = "place"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["place"]
+
+[[shot]]
+name = "building"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["building"]
+
+[[shot]]
+name = "camera"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["camera"]
+
+[[shot]]
+name = "call"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["call"]
+
+[[shot]]
+name = "reminder"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["reminder"]
+
+[[shot]]
+name = "signin"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["signin"]
+
+[[shot]]
+name = "dev"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["dev"]

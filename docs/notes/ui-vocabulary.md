@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel]
-updated: 2026-10-17
+triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
+updated: 2026-10-31
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -171,6 +171,37 @@ the web phone tier ≈1.83 (dpr 2.75 ÷ `WEB_PHONE_MAX_DPR`). Android binds, so 
 control needs **≥ 32 pt** to clear `MIN_TOUCH_TARGET_DP`. Documented phone
 viewports are 274 pt (Android) and ≈214 pt (web) — test against both; the web
 one is narrower and is the one layout tests keep forgetting.
+
+## Every page title carries the panel's close
+
+`theme::back_title` draws a close on the right as well as the chevron on the
+left, and so does the contacts' `title_row`. Until 2026-10-31 only the panel's
+top page had a close: Community ▸ You ▸ Settings ▸ Graphics fills a phone, and
+getting back to the map from there was one chevron per level. A page does not
+know which panel it is drawn in, so the close is a request
+(`theme::request_panel_close`) that the panel owning the page reads after its
+body (`theme::take_panel_close` — Community, Settings and Admin do). It is keyed
+to the pass, so a page drawn somewhere that never reads it cannot close the
+next panel that does. **A new panel that hosts `back_title` pages has to read
+it**, or its pages draw a close that does nothing.
+
+## A row of frames does not wrap, and a row of shares must not widen
+
+Two ways a phone panel's content grew past the screen, found together on
+2026-10-31 at 275 pt:
+
+- **`horizontal_wrapped` wraps widgets, not `Frame`s.** A widget knows its size
+  before it is placed; a frame is placed and then measured, so a row of framed
+  chips runs off the side. The person card's facts made it 456 pt wide, half
+  off each edge. `theme::wrap_before(ui, width)` before each chip.
+- **A button given an `equal_width` share has to fit in it.** `secondary_toggle`
+  used to widen to its content, so the community page's People · Topic · 5 ·
+  Edit took 290 pt of 250, and since a `ScrollArea` takes its widest child's
+  width every card below was cut off on the right. It now drops its padding,
+  then its icon, before it widens.
+
+`docs/phone-ui-shots.toml` photographs every panel at phone width
+(`CARTO_UI_SCALE=1.5 cargo run -p cartopolis -- --shots docs/phone-ui-shots.toml`).
 
 ## One dismissal ladder, and adding a surface means adding a rung
 

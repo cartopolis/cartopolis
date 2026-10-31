@@ -1239,16 +1239,33 @@ pub fn secondary_toggle(
     // square asked for, and a row of them pushed the panel wider every frame.
     // Here the size asked for is the size drawn.
     let height = PRIMARY_BUTTON_HEIGHT.max(row_height());
-    let pad = 12.0;
     let gap = 6.0;
-    let icon_g = ui
-        .painter()
-        .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), ACCENT);
+    let mut icon_g = (!icon.is_empty()).then(|| {
+        ui.painter()
+            .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), ACCENT)
+    });
     let word_g = (!label.is_empty()).then(|| {
         ui.painter()
             .layout_no_wrap(label.to_string(), FontId::proportional(SIZE_BODY), CREAM)
     });
-    let content = icon_g.size().x + word_g.as_ref().map_or(0.0, |g| gap + g.size().x);
+    let content = |icon: &Option<std::sync::Arc<egui::Galley>>| {
+        let i = icon.as_ref().map_or(0.0, |g| g.size().x);
+        let w = word_g.as_ref().map_or(0.0, |g| g.size().x);
+        i + w + if i > 0.0 && w > 0.0 { gap } else { 0.0 }
+    };
+    // A button sharing a row (`equal_width`) gives up room before it widens
+    // past its share: the padding first, then the icon, keeping the word. A
+    // row that widened instead pushed the whole panel past a phone's edge —
+    // the community page's People · Topic · 5 · Edit took 290 pt of a 250 pt
+    // panel, and every card below it was cut off on the right (2026-10-31).
+    let mut pad = 12.0;
+    if word_g.is_some() && min_width > 0.0 && content(&icon_g) + 2.0 * pad > min_width {
+        pad = 6.0;
+        if content(&icon_g) + 2.0 * pad > min_width {
+            icon_g = None;
+        }
+    }
+    let content = content(&icon_g);
     let width = if word_g.is_some() {
         min_width.max(content + 2.0 * pad)
     } else {
@@ -1291,12 +1308,15 @@ pub fn secondary_toggle(
     }
     let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
     let mut x = rect.center().x - content / 2.0;
-    p.galley_with_override_text_color(
-        egui::pos2(x, rect.center().y - icon_g.size().y / 2.0),
-        icon_g.clone(),
-        dim(ACCENT),
-    );
-    x += icon_g.size().x + gap;
+    if let Some(g) = icon_g {
+        let w = g.size().x;
+        p.galley_with_override_text_color(
+            egui::pos2(x, rect.center().y - g.size().y / 2.0),
+            g,
+            dim(ACCENT),
+        );
+        x += w + gap;
+    }
     if let Some(g) = word_g {
         let y = rect.center().y - g.size().y / 2.0;
         p.galley_with_override_text_color(egui::pos2(x, y), g, dim(CREAM));
@@ -2350,24 +2370,101 @@ pub fn list_row(
 /// A page's title with a way back: the chevron and the name, at the top of a
 /// screen inside a panel (You, a Settings page, an Admin page). Answers whether
 /// back was pressed.
+///
+/// It also carries the panel's close, on the right, as [`panel_header`] does.
+/// A page several levels deep (Community ▸ You ▸ Settings ▸ Graphics) is the
+/// whole screen on a phone, and with only a chevron the way back to the map was
+/// one tap per level. The close cannot be returned from here, since the page
+/// does not know which panel it is in; it is raised with
+/// [`request_panel_close`] and the panel that owns the page reads it back with
+/// [`take_panel_close`] after its body has drawn.
 pub fn back_title(ui: &mut egui::Ui, title: &str) -> bool {
+    back_title_with(ui, title, |_| {})
+}
+
+/// [`back_title`] plus room for a page's own actions, laid out right-to-left
+/// from the close (the calendar's + and ⋯).
+pub fn back_title_with(
+    ui: &mut egui::Ui,
+    title: &str,
+    extra: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let mut back = false;
-    ui.horizontal(|ui| {
-        let resp = ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new(crate::systems::icons::BACK)
-                        .size(22.0)
-                        .color(CREAM),
-                )
-                .frame(false),
-            )
-            .on_hover_text("Back");
-        back = resp.clicked();
-        ui.label(egui::RichText::new(title).size(18.0).color(CREAM));
-    });
+    let row_h = close_button_size().max(30.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // The close is placed first and the title takes what is left, for
+            // the reason `panel_header_with` gives: a truncating label laid out
+            // first claims the whole row.
+            if close_button(ui).clicked() {
+                request_panel_close(ui.ctx());
+            }
+            extra(ui);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let resp = ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(crate::systems::icons::BACK)
+                                .size(22.0)
+                                .color(CREAM),
+                        )
+                        .frame(false)
+                        .min_size(egui::vec2(row_h, row_h)),
+                    )
+                    .on_hover_text("Back");
+                back = resp.clicked();
+                ui.add(
+                    egui::Label::new(egui::RichText::new(title).size(18.0).color(CREAM))
+                        .truncate()
+                        .selectable(false),
+                );
+            });
+        },
+    );
     ui.add_space(6.0);
     back
+}
+
+/// Start a new row of a `horizontal_wrapped` layout if something `width` wide
+/// will not fit in what is left of this one.
+///
+/// A wrapped layout wraps a *widget*, which knows its size before it is placed.
+/// A `Frame` is placed first and measured after, so a row of framed chips never
+/// wraps: it runs off the side and pushes whatever holds it wider. The person
+/// card's three facts grew the card to 456 pt on a 275 pt phone (2026-10-31),
+/// half of it off the screen on each side.
+pub fn wrap_before(ui: &mut egui::Ui, width: f32) {
+    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 0.5;
+    // `available_width` is the whole row in a wrapping layout; what is left of
+    // this one is `before_wrap`.
+    if !at_row_start && ui.available_size_before_wrap().x < width {
+        ui.end_row();
+    }
+}
+
+/// Where [`request_panel_close`] leaves its request: the pass it was made in.
+fn panel_close_id() -> egui::Id {
+    egui::Id::new("theme::panel_close")
+}
+
+/// Ask the panel this page is drawn in to close — the close of a page header
+/// that cannot name its panel ([`back_title`]).
+pub fn request_panel_close(ctx: &egui::Context) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(panel_close_id(), pass));
+}
+
+/// Whether a page in this pass asked its panel to close, consuming the ask.
+///
+/// Keyed to the pass, so a request no panel read (the page was drawn by
+/// something that does not call this) dies with its frame instead of closing
+/// whichever panel asks next.
+pub fn take_panel_close(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.remove_temp::<u64>(panel_close_id()))
+        .is_some_and(|asked| asked == pass)
 }
 
 /// One control with several positions: a raised pill with equal-width

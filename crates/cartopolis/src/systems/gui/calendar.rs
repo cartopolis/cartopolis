@@ -1066,24 +1066,20 @@ fn overview(
 ) {
     let today = local_day(now);
     let day = *cal.day.get_or_insert(today);
-    ui.horizontal(|ui| {
-        if theme::back_title(ui, "Calendar") {
-            out.back = true;
+    if theme::back_title_with(ui, "Calendar", |ui| {
+        if theme::kebab_button(ui)
+            .on_hover_text("Calendar settings")
+            .clicked()
+        {
+            cal.page = Page::Settings;
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::kebab_button(ui)
-                .on_hover_text("Calendar settings")
-                .clicked()
-            {
-                cal.page = Page::Settings;
-            }
-            if theme::round_button(ui, icons::ADD, "Plan something", false).clicked() {
-                cal.page = Page::New;
-                cal.new_chat = None;
-            }
-        });
-    });
-    ui.add_space(4.0);
+        if theme::round_button(ui, icons::ADD, "Plan something", false).clicked() {
+            cal.page = Page::New;
+            cal.new_chat = None;
+        }
+    }) {
+        out.back = true;
+    }
     let mut page = cal.page;
     theme::segmented(
         ui,

@@ -732,6 +732,10 @@ pub struct EguiRenderOutput {
     /// Forces the next [`end_egui_frame`] to write even if egui reports no repaint,
     /// otherwise the suppressed state would stick and the UI would never come back.
     pub force_next_write: bool,
+    /// Whether these primitives hold a glass rectangle, i.e. sample the blurred
+    /// backdrop. [`egui_pass`] skips the blur when they do not: a phone with a
+    /// full-screen opaque panel up, or an empty map, has nothing to blur for.
+    pub glass: bool,
 }
 
 // ─── Render-world resource ─────────────────────────────────────────────────
@@ -1406,7 +1410,8 @@ pub fn end_egui_frame(
     // colours. This is the last moment at which a panel background is still
     // recognisably a panel background (`systems::glass`).
     let mut shapes = full_output.shapes;
-    crate::systems::glass::insert_backdrops(&mut shapes, size_in_pixels, pixels_per_point);
+    let glass =
+        crate::systems::glass::insert_backdrops(&mut shapes, size_in_pixels, pixels_per_point);
     let clipped_primitives = egui_manager.ctx.tessellate(shapes, pixels_per_point);
 
     // Carry unconsumed texture deltas forward instead of dropping them.
@@ -1445,6 +1450,7 @@ pub fn end_egui_frame(
         pixels_per_point,
         generation: render_output.generation.wrapping_add(1),
         force_next_write: false,
+        glass,
     };
 }
 
@@ -1604,6 +1610,7 @@ pub fn egui_pass(
             &source,
             (size.width, size.height),
             viewport,
+            render_data.glass,
         );
     }
 

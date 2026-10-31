@@ -770,7 +770,9 @@ pub fn render_person_card(
         return;
     }
     let compact = egui.compact();
-    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
+    // The content's width: the frame's own 12 pt a side comes on top, so it
+    // is taken off here too, or the card meets the screen's edges on a phone.
+    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * (theme::OSD_MARGIN + 12.0));
     let lift = crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open());
     let ctx = egui.ctx().clone();
     let now = now_ms();
@@ -1123,6 +1125,12 @@ fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
     } else {
         (theme::SURFACE_RAISED, theme::TEXT)
     };
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), ink)
+        .size()
+        .x;
+    theme::wrap_before(ui, text_w + 18.0);
     egui::Frame::NONE
         .fill(fill)
         .corner_radius(egui::CornerRadius::same(9))
@@ -1408,6 +1416,12 @@ fn title_row(
                 .color(theme::CREAM),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The panel's close, as every page title carries (`theme::back_title`):
+            // these pages fill a phone, and the chevron alone took a tap per level
+            // to get back to the map.
+            if theme::close_button(ui).clicked() {
+                theme::request_panel_close(ui.ctx());
+            }
             right(ui, act);
         });
     });

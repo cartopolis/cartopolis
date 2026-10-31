@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
-updated: 2026-10-17
+updated: 2026-10-31
 ---
 
 # The chrome is monochrome glass, and the logo is not
@@ -94,6 +94,15 @@ having here are that it is **not load-bearing** (no backdrop registered means
 flat fills, i.e. the look before it existed) and that it hangs a textured twin
 under every rectangle painted in a glass fill, so it covers panels, windows,
 menus and floating readouts without any of them knowing it exists.
+
+Two later facts (2026-10-31). **The blur runs only on frames whose geometry
+holds glass** (`EguiRenderOutput::glass`): until then its two quarter-size
+passes ran every frame, behind an opaque full-screen panel on a phone too,
+although `theme::PANEL`'s note already claimed the panels did not pay for it.
+And **every glass pane carries a lit top edge** (`glass::sheen_shape`, white at
+alpha 52, panes 28 pt and taller): with the blur alone the place card and the
+reminder read as dark plates laid on the map, and light caught on the upper
+edge is the cue the primary and secondary keys already used.
 
 **The alpha is load-bearing in both directions, and only one of them is a
 test.** Downward: a translucent panel's real background is not in `theme.rs` at

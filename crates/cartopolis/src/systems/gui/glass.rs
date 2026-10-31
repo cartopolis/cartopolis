@@ -125,21 +125,27 @@ struct Screen {
     size: egui::Vec2,
 }
 
-/// Put a blurred copy of the frame under every glass rectangle in `shapes`.
+/// Put a blurred copy of the frame under every glass rectangle in `shapes`, and
+/// say whether there was one.
 ///
 /// A no-op when the render world has not registered a backdrop yet, when the
 /// screen has no area, or when the shape list holds no glass — so the cost on a
 /// frame with nothing translucent on it is one walk of the list.
+///
+/// The answer travels with the geometry (`EguiRenderOutput::glass`) so that
+/// [`prepare`] blurs the frame only while something on screen samples the blur.
+/// Without it the two quarter-size passes ran every frame, behind an opaque
+/// full-screen panel and behind an empty map alike.
 pub fn insert_backdrops(
     shapes: &mut Vec<egui::epaint::ClippedShape>,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
-) {
+) -> bool {
     let Some(id) = backdrop_id() else {
-        return;
+        return false;
     };
     if pixels_per_point <= 0.0 || size_in_pixels[0] == 0 || size_in_pixels[1] == 0 {
-        return;
+        return false;
     }
     let screen = Screen {
         size: egui::vec2(
@@ -147,12 +153,14 @@ pub fn insert_backdrops(
             size_in_pixels[1] as f32 / pixels_per_point,
         ),
     };
+    let mut found = false;
     for clipped in shapes.iter_mut() {
-        expand(std::slice::from_mut(&mut clipped.shape), id, &screen);
+        found |= expand(std::slice::from_mut(&mut clipped.shape), id, &screen);
     }
     // The walk above can only *replace* a shape in place, because a
     // `ClippedShape` holds exactly one. A glass rectangle at the top level is
     // therefore rewritten into a `Shape::Vec` of two — see `expand`.
+    found
 }
 
 /// Walk a shape list, replacing each glass rectangle with a two-shape group:
@@ -161,20 +169,27 @@ pub fn insert_backdrops(
 /// Recursive because egui groups shapes into `Shape::Vec` in several places
 /// (a `Frame`'s background and its stroke arrive as one, for instance), and a
 /// panel background nested one level down is still a panel background.
-fn expand(shapes: &mut [egui::Shape], id: egui::TextureId, screen: &Screen) {
+fn expand(shapes: &mut [egui::Shape], id: egui::TextureId, screen: &Screen) -> bool {
+    let mut found = false;
     for shape in shapes.iter_mut() {
         match shape {
             egui::Shape::Rect(rect) if is_glass(rect.fill) => {
                 let Some(backdrop) = backdrop_shape(rect, id, screen) else {
                     continue;
                 };
+                let sheen = sheen_shape(rect);
                 let glass = std::mem::replace(shape, egui::Shape::Noop);
-                *shape = egui::Shape::Vec(vec![backdrop, glass]);
+                *shape = egui::Shape::Vec(match sheen {
+                    Some(sheen) => vec![backdrop, glass, sheen],
+                    None => vec![backdrop, glass],
+                });
+                found = true;
             }
-            egui::Shape::Vec(inner) => expand(inner, id, screen),
+            egui::Shape::Vec(inner) => found |= expand(inner, id, screen),
             _ => {}
         }
     }
+    found
 }
 
 /// The blurred twin of one glass rectangle: same rectangle, same corners, the
@@ -201,6 +216,44 @@ fn backdrop_shape(
     let mut backdrop = egui::epaint::RectShape::filled(r, rect.corner_radius, egui::Color32::WHITE);
     backdrop.round_to_pixels = rect.round_to_pixels;
     Some(egui::Shape::Rect(backdrop.with_texture(id, uv)))
+}
+
+/// How bright the lit top edge of a glass surface is: white at this alpha.
+///
+/// Between the secondary button's 40 and the primary's 120 — a pane is a
+/// larger thing than a key and a brighter line along all of it reads as a
+/// border rather than as light.
+const SHEEN_ALPHA: u8 = 52;
+
+/// A pane shorter than this gets no lit edge: a chip or a one-line readout
+/// with a highlight across its top reads as underlined from above.
+const SHEEN_MIN_HEIGHT: f32 = 28.0;
+
+/// The lit top edge of one glass rectangle, drawn over it.
+///
+/// The blur alone made the chrome see-through but left it reading as a dark
+/// plate laid on the map (2026-10-31, the place card and the reminder over
+/// Groningen on a phone): nothing said *material*. What does is light caught
+/// on the upper edge, the cue the buttons already carry (`theme`'s primary
+/// and secondary keys), so the panes now carry it too — one hairline, inset
+/// by the corner radius so it runs only along the straight part, the same
+/// recipe as the keys so the family reads as one.
+fn sheen_shape(rect: &egui::epaint::RectShape) -> Option<egui::Shape> {
+    let r = rect.rect;
+    if r.height() < SHEEN_MIN_HEIGHT {
+        return None;
+    }
+    let inset = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne)).max(4.0);
+    if r.width() <= 2.0 * inset {
+        return None;
+    }
+    Some(egui::Shape::line_segment(
+        [
+            egui::pos2(r.left() + inset, r.top() + 1.0),
+            egui::pos2(r.right() - inset, r.top() + 1.0),
+        ],
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(SHEEN_ALPHA)),
+    ))
 }
 
 // ─── Render world: making the blurred copy ───────────────────────────────────
@@ -497,9 +550,15 @@ fn pack(x: f32, y: f32, z: f32, w: f32) -> [u8; PARAMS_SIZE as usize] {
 /// re-registers the texture with egui under the *same* id, so geometry already
 /// tessellated against that id keeps working across a resize.
 ///
+/// `sampled` is whether the geometry about to be drawn holds a glass rectangle
+/// ([`insert_backdrops`]'s answer). Without one the blur is built and kept —
+/// the id has to be published before any shape can name it — but not filled,
+/// since nothing would read it.
+///
 /// Answers `false` when there is no backdrop — the caller need not care, since
 /// the shapes were already laid out for whichever answer the *previous* frame
 /// gave, but it makes the state visible in a log or a test.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -509,6 +568,7 @@ pub fn prepare(
     source: &wgpu::TextureView,
     size: (u32, u32),
     viewport: (u32, u32),
+    sampled: bool,
 ) -> bool {
     if disabled() {
         return false;
@@ -544,7 +604,9 @@ pub fn prepare(
     let Some(backdrop) = slot.as_ref() else {
         return false;
     };
-    backdrop.render(device, queue, encoder, source, viewport);
+    if sampled {
+        backdrop.render(device, queue, encoder, source, viewport);
+    }
     true
 }
 
@@ -647,12 +709,16 @@ mod tests {
             )),
         }];
         // 800×400 points at 2× — the same screen a phone would lay out.
-        insert_backdrops(&mut shapes, [1600, 800], 2.0);
+        assert!(insert_backdrops(&mut shapes, [1600, 800], 2.0), "glass was found");
 
         let egui::Shape::Vec(pair) = &shapes[0].shape else {
-            panic!("the glass rect should have become a group of two");
+            panic!("the glass rect should have become a group");
         };
-        assert_eq!(pair.len(), 2);
+        assert_eq!(pair.len(), 3, "backdrop, tint, lit edge");
+        assert!(
+            matches!(pair[2], egui::Shape::LineSegment { .. }),
+            "the lit edge is drawn last, over the tint"
+        );
         let egui::Shape::Rect(backdrop) = &pair[0] else {
             panic!("the backdrop is drawn first, under the tint");
         };
@@ -700,7 +766,25 @@ mod tests {
         let egui::Shape::Vec(pair) = &outer[1] else {
             panic!("the nested rect should have become a pair");
         };
+        // 10 pt tall: too small for a lit edge, so backdrop and tint only.
         assert_eq!(pair.len(), 2);
+        forget();
+    }
+
+    /// No glass, no blur: the answer `egui_pass` skips the two passes on.
+    #[test]
+    fn a_frame_without_glass_says_so() {
+        let _held = backdrop_lock();
+        publish(egui::TextureId::User(5));
+        let mut shapes = vec![egui::epaint::ClippedShape {
+            clip_rect: egui::Rect::EVERYTHING,
+            shape: egui::Shape::Rect(egui::epaint::RectShape::filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 600.0)),
+                egui::CornerRadius::ZERO,
+                theme::PANEL,
+            )),
+        }];
+        assert!(!insert_backdrops(&mut shapes, [300, 600], 1.0));
         forget();
     }
 }

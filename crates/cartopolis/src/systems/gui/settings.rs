@@ -486,6 +486,8 @@ pub fn render_settings_panel(
                 });
         });
     }
+    // A page's own close (`theme::back_title`), as well as the list's.
+    close |= theme::take_panel_close(egui.ctx());
     if close || !open {
         if right_panel.is(RightPanel::Settings) {
             *right_panel = RightPanel::None;

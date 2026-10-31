@@ -1179,7 +1179,8 @@ pub fn render_chats_panel(
                 }
             }
         });
-    if !open_flag {
+    // A page's own close (`theme::back_title`, the contacts' title row).
+    if !open_flag || theme::take_panel_close(egui.ctx()) {
         act.close = true;
     }
     if std::mem::take(&mut act.calendar) {
