@@ -42,7 +42,9 @@ fn is_comment(line: &str) -> bool {
 fn code_lines_with(needle: &str) -> Vec<String> {
     let mut hits = Vec::new();
     for (path, text) in sources() {
-        let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&path);
+        let rel = path
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(&path);
         for (i, line) in text.lines().enumerate() {
             if !is_comment(line) && line.contains(needle) {
                 hits.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
@@ -111,12 +113,20 @@ fn no_frustum_culling_comes_with_not_shadow_caster() {
     for (path, text) in sources() {
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            if is_comment(line) || !line.contains("NoFrustumCulling") || line.trim_start().starts_with("use ") {
+            if is_comment(line)
+                || !line.contains("NoFrustumCulling")
+                || line.trim_start().starts_with("use ")
+            {
                 continue;
             }
             let window = &lines[i.saturating_sub(REACH)..(i + REACH + 1).min(lines.len())];
-            if !window.iter().any(|l| l.contains("NotShadowCaster") || l.contains("casts shadows")) {
-                let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&path);
+            if !window
+                .iter()
+                .any(|l| l.contains("NotShadowCaster") || l.contains("casts shadows"))
+            {
+                let rel = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap_or(&path);
                 bad.push(format!("{}:{}", rel.display(), i + 1));
             }
         }

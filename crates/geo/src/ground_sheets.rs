@@ -787,7 +787,8 @@ pub const GROUND_REVISION: u64 = 0x6871_dd92_058c_b0d5;
 fn measure() -> u64 {
     let (paved, parcels) = fixture_inputs();
     let tile = crate::testdata::groningen();
-    let mut meshes = build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
+    let mut meshes =
+        build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
     for m in &mut meshes {
         for c in &mut m.colors {
             *c = c.map(|v| (v * 1024.0).round() / 1024.0);
