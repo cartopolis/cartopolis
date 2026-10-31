@@ -1546,6 +1546,8 @@ pub fn update_globe_albedo(
 pub struct GlobeNight {
     pub night: Vec4,
     pub lights: Vec4,
+    /// The hex grid's strength, 0 = off (`hex_grid.wesl`).
+    pub hex: f32,
 }
 
 /// How far the sun's direction moves, as the length of the difference, before
@@ -1577,10 +1579,12 @@ pub fn update_globe_night(
             0.0,
             0.0,
         ),
+        hex: if layers.hex_grid { 1.0 } else { 0.0 },
     };
     let moved = (want.night.xyz() - night.night.xyz()).length() > NIGHT_SUN_STEP
         || want.night.w != night.night.w
-        || want.lights.x != night.lights.x;
+        || want.lights.x != night.lights.x
+        || want.hex != night.hex;
     if *cursor == 0 && !moved {
         return;
     }
@@ -1597,12 +1601,15 @@ pub fn update_globe_night(
         done += 1;
         // Compared first: `get_mut` re-prepares the material even unchanged.
         let stale = materials.get(&mat.0).is_some_and(|m| {
-            m.extension.night != night.night || m.extension.lights.x != night.lights.x
+            m.extension.night != night.night
+                || m.extension.lights.x != night.lights.x
+                || m.extension.tile.w != night.hex
         });
         if stale {
             if let Some(mut m) = materials.get_mut(&mat.0) {
                 m.extension.night = night.night;
                 m.extension.lights.x = night.lights.x;
+                m.extension.tile.w = night.hex;
             }
         }
     }
@@ -1963,6 +1970,8 @@ pub fn update_globe_tiles(
                                 .lights
                                 .with_y(if lights_map.is_some() { 1.0 } else { 0.0 });
                         ext.lights_map = lights_map;
+                        // Its key, for the hex grid the flat tiles draw too.
+                        ext.tile = crate::systems::map_stream::hex_tile(key, night.hex > 0.0);
                         ext
                     },
                 })),

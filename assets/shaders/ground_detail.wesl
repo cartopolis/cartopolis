@@ -52,6 +52,7 @@ import super::water_common::{
     water_reflected, water_transmitted, sky_fallback, with_clouds, cloud_mirror_fade,
 };
 import super::cloud_field as cf;
+import super::hex_grid;
 
 import bevy_pbr::render::mesh_bindings::mesh;
 @if(BINDLESS)
@@ -83,12 +84,15 @@ enable wgpu_binding_array;
 //   sets it), 0 on every ground surface.
 // far — the cross-fade to the painted map: x the camera distance it starts at,
 //   y where it is complete, metres; z 1 when the painted twin (106) is bound.
+// tile — the clipmap tile's key for the hex grid (`hex_grid.wesl`): x, y, 2^z, and w
+//   the layer's strength, 0 off and on every surface that is not a tile.
 struct GroundUniform {
     detail: vec4<f32>,
     lod: vec4<f32>,
     water_body: vec4<f32>,
     water_sea: vec4<f32>,
     far: vec4<f32>,
+    tile: vec4<f32>,
 }
 
 // Bindless where the platform has it, which is what lets every clipmap tile —
@@ -583,6 +587,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let painted = textureSample(painted_basemap, painted_sampler, in.uv);
         pbr_input.material.base_color = vec4<f32>(
             mix(pbr_input.material.base_color.rgb, painted.rgb, t),
+            pbr_input.material.base_color.a,
+        );
+    }
+
+    // The optional hex grid, over land only (`hex_grid.wesl`). Evaluated outside any
+    // branch, because it takes a derivative; `tile.w` is 0 wherever it is off.
+    @if(VERTEX_UVS_A)
+    {
+        let hex = hex_grid::coverage(
+            ground.tile,
+            in.uv,
+            length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+            water,
+        );
+        pbr_input.material.base_color = vec4<f32>(
+            mix(pbr_input.material.base_color.rgb, hex_grid::LINE, hex),
             pbr_input.material.base_color.a,
         );
     }

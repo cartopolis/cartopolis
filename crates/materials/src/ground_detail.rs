@@ -73,6 +73,8 @@ pub struct GroundUniform {
     pub water_sea: Vec4,
     /// `GroundDetailExtension::far`.
     pub far: Vec4,
+    /// `GroundDetailExtension::tile`.
+    pub tile: Vec4,
 }
 
 impl From<&GroundDetailExtension> for GroundUniform {
@@ -83,6 +85,7 @@ impl From<&GroundDetailExtension> for GroundUniform {
             water_body: e.water_body,
             water_sea: e.water_sea,
             far: e.far,
+            tile: e.tile,
         }
     }
 }
@@ -148,6 +151,9 @@ pub struct GroundDetailExtension {
     /// complete, metres; z `1.0` when [`painted`](Self::painted) is bound. Zero is
     /// the off switch every other ground surface carries.
     pub far: Vec4,
+    /// A clipmap tile's key for the optional hex grid (`hex_grid.wesl`): x, y,
+    /// `2^z`, and w the layer's strength, 0 = off and on every other surface.
+    pub tile: Vec4,
     /// Compile the screen-door variant ([`GroundKey`]). Written on every ground
     /// material at once by `sewers::apply_ground_see_through`.
     pub see_through: bool,
@@ -166,6 +172,7 @@ impl Default for GroundDetailExtension {
             // `CLOUD_FIELD_BUFFER` for what a missing storage buffer costs.
             painted: None,
             far: Vec4::ZERO,
+            tile: Vec4::ZERO,
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
         }

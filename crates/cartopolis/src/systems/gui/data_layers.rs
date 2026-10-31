@@ -519,6 +519,8 @@ pub struct DataLayers {
     pub night_side: bool,
     /// From above: city lights on the night side.
     pub city_lights: bool,
+    /// From above: the hex grid over the land (`hex_grid.wesl`), off by default.
+    pub hex_grid: bool,
     /// Feature toggle (under Map): the flood defences, named where they stand
     /// (`systems::dikes`). Gates both the streaming and the labelling — off, the
     /// cells are never asked for.
@@ -699,6 +701,7 @@ impl DataLayers {
             globe_clouds: self.globe_clouds,
             night_side: self.night_side,
             city_lights: self.city_lights,
+            hex_grid: self.hex_grid,
             flood_defences: self.flood_defences,
             sewers: self.sewers,
             underground: crate::systems::underground::LAYERS
@@ -795,6 +798,7 @@ impl DataLayers {
         self.globe_clouds = p.globe_clouds;
         self.night_side = p.night_side;
         self.city_lights = p.city_lights;
+        self.hex_grid = p.hex_grid;
         self.flood_defences = p.flood_defences;
         self.sewers = p.sewers;
         for (slot, def) in self
@@ -890,6 +894,9 @@ impl Default for DataLayers {
             globe_clouds: crate::systems::user_store::GlobeCloudMode::Off,
             night_side: true,
             city_lights: true,
+            // Off, as decided; `CARTO_HEX_GRID=1` turns it on for a capture, which
+            // never reads the saved layers.
+            hex_grid: crate::env_flag("CARTO_HEX_GRID"),
             // Not on the detail tier: a handful of names from a layer that is
             // already running, and nothing at all outside the Netherlands.
             flood_defences: true,
@@ -2475,6 +2482,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                         tile(icons::STAR, "City lights", false, false, None),
                         &mut dl.city_lights,
                     ),
+                    (
+                        tile(icons::TUNE, "Hex grid", false, false, None),
+                        &mut dl.hex_grid,
+                    ),
                 ],
                 None,
             );
@@ -2903,6 +2914,7 @@ pub fn render_data_layers_panel(
         dl.globe_clouds = fresh.globe_clouds;
         dl.night_side = fresh.night_side;
         dl.city_lights = fresh.city_lights;
+        dl.hex_grid = fresh.hex_grid;
         dl.flood_defences = fresh.flood_defences;
         dl.sewers = fresh.sewers;
         dl.underground = fresh.underground;

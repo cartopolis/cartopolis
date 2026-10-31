@@ -24,6 +24,8 @@ import bevy_pbr::render::{
 };
 import bevy_pbr::render::mesh_bindings::mesh;
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
+import bevy_pbr::render::mesh_view_bindings as view_bindings;
+import super::hex_grid;
 
 // The material's two vectors, one buffer (`globe_ocean::GlobeOceanUniform`):
 //
@@ -32,11 +34,13 @@ import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d
 // tint — rgb: water tint applied to the imagery. a unused.
 // night — xyz: towards the sun, render space. w: how dark the night side goes.
 // lights — x: city-light strength. y: 1 when the lights map (101) is bound.
+// tile — the tile's key for the hex grid (`hex_grid.wesl`): x, y, 2^z, w strength.
 struct GlobeOceanUniform {
     ocean: vec4<f32>,
     tint: vec4<f32>,
     night: vec4<f32>,
     lights: vec4<f32>,
+    tile: vec4<f32>,
 }
 
 // Bindless where the platform has it, so the globe's tiles — each a material of
@@ -80,6 +84,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let tint = params.tint;
     let night = params.night;
     let lights = params.lights;
+    // Water as the imagery says, before the effect strength scales it: the hex
+    // grid stays off the sea at every height.
+    let water = pbr_input.material.base_color.a * ocean.y;
 
     // Water coverage, 0..1. The imagery's mip chain averages the mask with the
     // colour, so a coastline softens with distance rather than aliasing — which
@@ -108,6 +115,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec3<f32>(ocean.w),
         mask,
     );
+
+    // The optional hex grid, the same one the flat tiles draw (`hex_grid.wesl`).
+    // Outside any branch, because it takes a derivative.
+    @if(VERTEX_UVS_A)
+    {
+        let hex = hex_grid::coverage(
+            params.tile,
+            in.uv,
+            length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+            water,
+        );
+        pbr_input.material.base_color = vec4<f32>(
+            mix(pbr_input.material.base_color.rgb, hex_grid::LINE, hex),
+            pbr_input.material.base_color.a,
+        );
+    }
 
     // The night side, from the real sun: a twilight band about 12° wide round the
     // terminator, then the ground darkened towards the space ambient's floor and

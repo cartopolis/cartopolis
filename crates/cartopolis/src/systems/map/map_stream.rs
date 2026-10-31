@@ -873,6 +873,46 @@ fn spawn_map_tile(
 /// be part-painted.
 pub const PAINTED_FADE_M: (f32, f32) = (4_500.0, 8_000.0);
 
+/// A tile's key as the hex grid reads it (`hex_grid.wesl`): x, y, `2^z`, and the
+/// layer's strength. Shared with the globe's tiles, so the two draw one grid.
+#[must_use]
+pub fn hex_tile(key: TileKey, on: bool) -> Vec4 {
+    Vec4::new(
+        key.x as f32,
+        key.y as f32,
+        (1u64 << key.z) as f32,
+        if on { 1.0 } else { 0.0 },
+    )
+}
+
+/// Switch the hex grid on every clipmap tile when the layer is toggled. Rare, so
+/// all at once; compared first, since `get_mut` re-prepares a material.
+pub fn apply_hex_grid(
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    tiles: Query<
+        &MeshMaterial3d<crate::systems::ground_detail::GroundMaterial>,
+        With<StreamTileReady>,
+    >,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
+    mut applied: Local<Option<bool>>,
+) {
+    if *applied == Some(layers.hex_grid) {
+        return;
+    }
+    *applied = Some(layers.hex_grid);
+    let w = if layers.hex_grid { 1.0 } else { 0.0 };
+    for mat in &tiles {
+        if materials
+            .get(&mat.0)
+            .is_some_and(|m| m.extension.tile.w != w)
+        {
+            if let Some(mut m) = materials.get_mut(&mat.0) {
+                m.extension.tile.w = w;
+            }
+        }
+    }
+}
+
 /// The mip bias a clipmap tile reaches at the edge of its own ring.
 ///
 /// **One, and it is derived rather than chosen.** Each level covers twice the ground
@@ -2228,6 +2268,7 @@ pub fn apply_stream_textures(
     >,
     time: Res<Time>,
     mut next_report: Local<f64>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
 ) {
     // Decode and upload run on different clocks now (worker pool vs. the render
     // frame), so "the map is filling slowly" has two very different causes and the
@@ -2414,6 +2455,8 @@ pub fn apply_stream_textures(
                 // `water::update_water_waves` keeps them in step after. A tile
                 // with no mask in its alpha reads as all land and is untouched.
                 (extension.water_body, extension.water_sea) = water.far_water();
+                // Its key, for the optional hex grid (`hex_grid.wesl`).
+                extension.tile = hex_tile(key, layers.hex_grid);
                 if painted.is_some() {
                     extension.far = Vec4::new(PAINTED_FADE_M.0, PAINTED_FADE_M.1, 1.0, 0.0);
                     extension.painted = painted;

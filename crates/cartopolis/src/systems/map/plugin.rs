@@ -356,6 +356,9 @@ impl Plugin for MapPlugin {
                     // visibility sweep, which is the only thing allowed to act on it.
                     systems::map_stream::update_tile_occlusion
                         .after(systems::map_stream::apply_stream_textures),
+                    // The hex grid switched on every tile at once (`hex_grid.wesl`).
+                    systems::map_stream::apply_hex_grid
+                        .after(systems::map_stream::apply_stream_textures),
                     // Each tile's own ring, so the shader can soften it into the
                     // level beneath rather than meeting it at a step. After the
                     // textures, for the reason the occlusion pass is: a tile that

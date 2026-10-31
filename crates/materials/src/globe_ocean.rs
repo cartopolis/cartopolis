@@ -60,6 +60,8 @@ pub struct GlobeOceanUniform {
     pub night: Vec4,
     /// [`GlobeOcean::lights`].
     pub lights: Vec4,
+    /// [`GlobeOcean::tile`].
+    pub tile: Vec4,
 }
 
 impl From<&GlobeOcean> for GlobeOceanUniform {
@@ -69,6 +71,7 @@ impl From<&GlobeOcean> for GlobeOceanUniform {
             tint: e.tint,
             night: e.night,
             lights: e.lights,
+            tile: e.tile,
         }
     }
 }
@@ -96,6 +99,9 @@ pub struct GlobeOcean {
     /// City lights on the night side: x their strength (0 = off), y 1 when
     /// [`lights_map`](Self::lights_map) is bound.
     pub lights: Vec4,
+    /// The tile's key for the optional hex grid (`hex_grid.wesl`): x, y, `2^z`,
+    /// and w the layer's strength, 0 = off. Zero on the backstop sphere.
+    pub tile: Vec4,
     /// Where the built-up land is on this tile, one channel, read off its own
     /// painted imagery (`globe::lights_mask`). `None` on the backstop sphere.
     #[texture(101)]

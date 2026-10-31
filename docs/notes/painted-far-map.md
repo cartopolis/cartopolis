@@ -1,6 +1,6 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+triggers: [painted.rs, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
 updated: 2026-10-31
 ---
 
@@ -111,3 +111,17 @@ wash; cutting it 8× dimmed the frame by only a quarter. `CITY_LIGHT` at
 
 The flat map near the anchor (drawn to 250 km up) has no night side or lights;
 from orbit it is a small patch, not looked at yet.
+
+## The hex grid is one grid in Mercator, off by default
+
+Layers ▸ Map ▸ From above ▸ Hex grid, **off by default** (decided 2026-10-30:
+a layer, not part of the base map); `CARTO_HEX_GRID=1` turns it on for a
+capture. `hex_grid.wesl` lays it in Web Mercator's unit square from each tile's
+own key (`map_stream::hex_tile`) and UV, so the flat clipmap tiles and the
+globe's draw the same lines; measured 2026-10-31 at 350 km over the
+Netherlands, the vertical sides fall 47 px apart on both tiers, the expected
+~9 km cell. It is drawn over land only (the tile's water mask), between ~100 and
+~4,000 km from the camera.
+
+The cell's sides are normal to the lattice's six neighbours, at 0° and ±60°;
+the first build used ±30° and drew bow-ties at every vertex.

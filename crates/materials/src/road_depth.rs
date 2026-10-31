@@ -80,6 +80,7 @@ pub struct RoadDepthExtension {
     #[sampler(107)]
     pub painted: Option<Handle<Image>>,
     pub far: Vec4,
+    pub tile: Vec4,
     /// The ground's screen-door variant (`ground_detail::GroundKey`), so a road
     /// opens onto what is under it exactly where the pavement beside it does.
     pub see_through: bool,
@@ -95,6 +96,7 @@ impl From<&RoadDepthExtension> for GroundUniform {
             // carriageway its aggregate in relief; every ground surface leaves it 0.
             water_sea: e.water_sea.with_w(ROAD_FLAG),
             far: e.far,
+            tile: e.tile,
         }
     }
 }
@@ -121,6 +123,7 @@ impl Default for RoadDepthExtension {
             // nothing (`sky::CLOUD_FIELD_BUFFER`).
             painted: None,
             far: Vec4::ZERO,
+            tile: Vec4::ZERO,
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
         }

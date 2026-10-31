@@ -303,6 +303,9 @@ pub struct LayerPrefs {
     /// City lights on that night side.
     #[serde(default = "yes")]
     pub city_lights: bool,
+    /// The hex grid over the land from far up (`hex_grid.wesl`): off by default.
+    #[serde(default)]
+    pub hex_grid: bool,
     /// The flood defences, named where they stand (`systems::dikes`).
     ///
     /// On by default rather than on the detail tier: it is a handful of names
