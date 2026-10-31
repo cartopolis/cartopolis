@@ -70,7 +70,8 @@ tracks binary assets by extension, and four are `include_bytes!`-ed at compile t
 (the brand font, the app icon, `assets/sky/bright_stars.bin`, the tile fixtures).
 Without `git lfs install`, `cargo build` embeds 130-byte pointer files: the font
 panics in epaint and the fixture tests assert against garbage. Every
-`actions/checkout` in `.forgejo/workflows/` sets `lfs: true` — add it to any new job.
+`actions/checkout` in `.forgejo/workflows/` sets `lfs: true`, or says why not as
+`deploy-sim.yml` does (`deploy-web.yml` and `deploy-atlas.yml` do neither yet).
 
 **Never export `CARGO_TARGET_DIR` on the workstation.** sccache hashes that variable
 into its cache key, so setting it silently zeroes build sharing between worktrees
@@ -174,6 +175,9 @@ hand-mirrors `auth::AccountRow`**: change an account field and change it there t
 ## Rules that hold everywhere
 
 Each of these bit someone, usually silently. The note behind each has the story.
+The ones a source scan can hold are tests (`crates/cartopolis/src/source_rules.rs`,
+the panel chain in `egui_manager.rs`, the fixture in `testdata.rs`); the rest are
+prose, so read them.
 
 **Bevy and the ECS**
 - A command aimed at an entity another system may despawn uses `try_insert` / `try_remove` / `try_despawn`; a release build only warns, a debug build panics — `entity-commands-outlive-entities.md`
@@ -203,7 +207,7 @@ Each of these bit someone, usually silently. The note behind each has the story.
 - Systems reach egui through `EguiRef` / `EguiMut`, never `Res<EguiManager>` — it is non-send on wasm, so the mistake breaks only the web check — `egui-shared-root-ui.md`
 - Every system drawing into the shared root `Ui` goes in the panel-chain `.chain()` tuple in `systems/gui/plugin.rs`, or panels steal each other's clicks — `egui-shared-root-ui.md`
 - Floating `Area`s paint over panels: a world-anchored overlay culls (not clips) itself to `place_pins::map_area` and runs at the chain's tail — `egui-shared-root-ui.md`
-- UI colour, spacing, type, overlay frames, panel headers and close buttons come from `systems::theme`; never a fresh `Color32` in a panel — `ui-vocabulary.md`
+- UI chrome — colour, spacing, type, overlay frames, panel headers and close buttons — comes from `systems::theme`; never a fresh `Color32` for chrome in a panel (a palette for content, people or categories, is a named const in its module) — `ui-vocabulary.md`
 - Gate a world click on `EguiManager::owns_click`; `egui_wants_pointer_input()` is only right while a button is down — `touch-input.md`
 - Game keys yield only to `EguiManager::ui_owns_keyboard` (a focused text field), never `egui_wants_keyboard_input()` — `egui-shared-root-ui.md`
 - Touch emits no mouse events: world clicks get an emulated mouse, gestures read `TouchGestures`, egui reads the event stream — `touch-input.md`
@@ -211,7 +215,7 @@ Each of these bit someone, usually silently. The note behind each has the story.
 - An anchored, size-to-content `Area` pins its content width, or it grows every frame until it spans the screen — `map-chrome.md`
 
 **Platforms**
-- All persistence goes through `platform::storage`, never `std::fs`; on the web a read can be `Loading`, and treating that as `Missing` never recovers — `web-persistence.md`
+- Everything the client keeps for the user (settings, chats, photos) goes through `platform::storage`, never `std::fs`, which fails on wasm; `std::fs` is for code that never runs on the web (caches, crash reports, dev tools). On the web a read can be `Loading`, and treating that as `Missing` never recovers — `web-persistence.md`
 - Android answers "native" to every `cfg(not(target_arch = "wasm32"))`: gate desktop-only crates with `not(target_os = "android")` too, and give per-OS `cfg` chains a catch-all arm — `android-build.md`
 - A build lane that passes `--no-default-features` must name `audio` back, or that platform ships silent — `audio-off-platform.md`
 

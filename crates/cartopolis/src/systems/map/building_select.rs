@@ -661,6 +661,9 @@ pub fn update_building_shells(
                 // exactly this reason. One building's worth of glass is nothing
                 // to draw unconditionally.
                 bevy::camera::visibility::NoFrustumCulling,
+                // An entity out of frustum culling joins every shadow cascade,
+                // and a glass box casting a building-sized shadow is wrong anyway.
+                bevy::light::NotShadowCaster,
             ))
             .id();
         if slot == 0 {

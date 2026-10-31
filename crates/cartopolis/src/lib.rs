@@ -28,6 +28,8 @@ mod render_setup;
 mod resources;
 mod shader_store;
 mod simd_baseline;
+#[cfg(test)]
+mod source_rules;
 mod systems;
 mod utils;
 
