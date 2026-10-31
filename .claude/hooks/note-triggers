@@ -1,100 +1,153 @@
 #!/usr/bin/env bash
 #
-# Claude Code PostToolUse hook (Read|Edit|Write): name the docs/notes that apply
-# to the file just touched. Every note carries `triggers:` front-matter saying
-# when to read it; this is what reads them, so a note's knowledge reaches the
-# agent working on its files without being pasted into CLAUDE.md.
+# Claude Code PostToolUse hook (Read|Edit|Write|Bash): name the docs/notes that
+# apply to the file just touched. Every note carries `triggers:` front-matter
+# saying when to read it; this is what reads them, so a note's knowledge reaches
+# the agent working on its files without being pasted into CLAUDE.md.
 #
 # A trigger matches when it is a file name (`routing.rs`), a path or path prefix
 # (`crates/atlas`, `assets/shaders/patched/`, `systems/map/water.rs`) or a module
-# path whose last segment is the file's module (`systems::water` → water.rs or
-# water/mod.rs). Prose and keyword triggers are for grep, not for this.
+# path one of whose last two segments is the file's module (`systems::water` →
+# water.rs or water/mod.rs; `free_camera::setup_camera` → free_camera.rs). A
+# token starting with `/` is an HTTP route, not a file. Prose and keyword
+# triggers are for grep, not for this.
 #
-# Each note is named once per session. FAILS OPEN: anything unexpected exits 0
-# and costs nothing.
+# Bash counts: agents read and edit far more through `sed -n`, `cat` and
+# `sed -i` than through the Read and Edit tools (2026-10-31, 61 sessions: 347
+# Bash reads of crates/*.rs against 50 Reads), so a command's arguments that
+# name existing files are matched too — at most four of them, so `git diff` over
+# a tree names nothing.
+#
+# The most specific matches come first (a full path, then a file name, then a
+# directory or module), at most six with their titles; the rest by file name.
+# Each note is named once per agent — a subagent's `agent_id` keeps its own
+# list, or whichever read a file first would hide its notes from the other.
+# FAILS OPEN: anything unexpected exits 0 and costs nothing.
 set -uo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
 
 payload=$(cat 2>/dev/null) || exit 0
-file=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
-session=$(printf '%s' "$payload" | jq -r '.session_id // "none"' 2>/dev/null)
-[ -n "$file" ] || exit 0
+# Unit separators, not tabs: `read` folds runs of a whitespace IFS, so an empty
+# agent_id would hand the cwd to `agent`.
+IFS=$'\x1f' read -r tool session agent cwd < <(printf '%s' "$payload" | jq -r \
+    '[.tool_name // "", .session_id // "none", .agent_id // "", .cwd // ""] | join("\u001f")' 2>/dev/null) || exit 0
 
-# The checkout the file is in, found by walking up to its docs/notes — so a
-# session working across several worktrees reads each one's own notes.
-dir=$(dirname "$file")
-root=""
-while [ "$dir" != "/" ] && [ -n "$dir" ]; do
-    if [ -f "$dir/docs/notes/README.md" ]; then root=$dir; break; fi
-    dir=$(dirname "$dir")
-done
-[ -n "$root" ] || exit 0
-rel=${file#"$root"/}
-case "$rel" in docs/notes/*|docs/adr/*|docs/abstract/*) exit 0 ;; esac
+files=()
+if [ "$tool" = Bash ]; then
+    cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null)
+    [ -n "$cmd" ] || exit 0
+    [ -d "$cwd" ] && cd "$cwd" 2>/dev/null
+    # Words that look like a path to a source file: a `/` or an extension, no
+    # option, no glob. `sed -n 10,40p f.rs` and `cat a.rs b.rs` both qualify.
+    for w in $(printf '%s' "$cmd" | tr -cs 'A-Za-z0-9_./~-' '\n' \
+            | grep -E '^[A-Za-z0-9_./~-]*[./][A-Za-z0-9_./-]*$' | grep -vE '^-|^\.+$|\*' | head -40); do
+        case "$w" in "~/"*) w="$HOME/${w#\~/}" ;; esac
+        [ -f "$w" ] || continue
+        case "$w" in /*) ;; *) w="$PWD/$w" ;; esac
+        files+=("$w")
+        [ "${#files[@]}" -ge 4 ] && break
+    done
+else
+    f=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+    [ -n "$f" ] && files+=("$f")
+fi
+[ "${#files[@]}" -gt 0 ] || exit 0
 
-base=$(basename "$rel")
-stem=${base%.*}
-# A module's own file is mod.rs; its name is the directory's.
-[ "$stem" = mod ] && stem=$(basename "$(dirname "$rel")")
-
-matches=$(awk -v rel="$rel" -v base="$base" -v stem="$stem" '
-    function hit(tok,   t, n, parts, last) {
-        sub(/^\.\//, "", tok); sub(/^\/+/, "", tok); sub(/\.+$/, "", tok)
-        # A single directory (`systems/`) names a whole tree, which is every
-        # file and so no file in particular; two segments (`crates/atlas`) do.
-        sub(/\/+$/, "", tok)
-        if (tok == "") return 0
-        if (index(tok, "#") > 0) {
-            n = split(tok, parts, "#")
-            last = parts[n]
-            if (last ~ /^[a-z][a-z0-9_]+$/ && last !~ /^(mod|lib|main|plugin|tests?)$/ && last == stem) return 1
-            return 0
-        }
-        if (index(tok, "/") > 0) {
-            if (rel == tok) return 1
-            if (index(rel, tok "/") == 1) return 1
-            if (index("/" rel, "/" tok "/") > 0) return 1
-            t = "/" tok
-            if (length(rel) >= length(t) && substr("/" rel, length(rel) + 2 - length(t)) == t) return 1
-            return 0
-        }
-        if (tok ~ /\.(rs|wesl|wgsl|ts|tsx|js|sh|toml|json|py|yml|yaml|java|xml|html|css|kt)$/ && tok == base) return 1
-        return 0
-    }
-    # A note without a heading is still named, by its file.
-    function flush() { if (found) print prev "\t" prev; found = 0 }
-    FNR == 1 { flush(); prev = FILENAME; infm = ($0 == "---"); intrig = 0; next }
-    END { flush() }
-    infm && /^---[ \t]*$/ { infm = 0; next }
-    infm {
-        if ($0 ~ /^triggers:/) intrig = 1
-        else if ($0 ~ /^[a-z_]+:/) intrig = 0
-        if (intrig && !found) {
-            line = $0
-            gsub(/::/, "#", line)
-            n = split(line, toks, /[^A-Za-z0-9_.\/#-]+/)
-            for (i = 1; i <= n; i++) if (hit(toks[i])) { found = 1; break }
-        }
-        next
-    }
-    found && /^# / { print FILENAME "\t" substr($0, 3); found = 0 }
-' "$root"/docs/notes/*.md 2>/dev/null) || exit 0
-[ -n "$matches" ] || exit 0
-
-# Once per session per note: a file read five times should not repeat itself.
+# Once per agent per note: a file read five times should not repeat itself.
 state_dir=${TMPDIR:-/tmp}/cartopolis-note-triggers
 mkdir -p "$state_dir" 2>/dev/null
-state=$state_dir/$session
+state=$state_dir/$session${agent:+-$agent}
 touch "$state" 2>/dev/null
-lines=""
-while IFS=$'\t' read -r path title; do
-    note=${path#"$root"/}
-    grep -qxF "$note" "$state" 2>/dev/null && continue
-    echo "$note" >> "$state" 2>/dev/null
-    lines+="- \`$note\` — $title"$'\n'
-done <<< "$matches"
-[ -n "$lines" ] || exit 0
 
-context="Notes whose triggers name \`$rel\` — read the ones that bear on your change before making it:"$'\n'"$lines"
+context=""
+for file in "${files[@]}"; do
+    # The checkout the file is in, found by walking up to its docs/notes — so a
+    # session working across several worktrees reads each one's own notes.
+    dir=$(dirname "$file")
+    root=""
+    while [ "$dir" != "/" ] && [ -n "$dir" ] && [ "$dir" != . ]; do
+        if [ -f "$dir/docs/notes/README.md" ]; then root=$dir; break; fi
+        dir=$(dirname "$dir")
+    done
+    [ -n "$root" ] || continue
+    rel=${file#"$root"/}
+    case "$rel" in docs/notes/*|docs/adr/*|docs/abstract/*) continue ;; esac
+
+    base=$(basename "$rel")
+    stem=${base%.*}
+    # A module's own file is mod.rs; its name is the directory's.
+    [ "$stem" = mod ] && stem=$(basename "$(dirname "$rel")")
+
+    # Prints `<rank>\t<note path>\t<title>`, rank 3 for a full path, 2 for a
+    # file name, 1 for a directory or a module.
+    matches=$(awk -v rel="$rel" -v base="$base" -v stem="$stem" '
+        function modhit(seg) {
+            return seg ~ /^[a-z][a-z0-9_]+$/ && seg !~ /^(mod|lib|main|plugin|tests?)$/ && seg == stem
+        }
+        function hit(tok,   t, n, parts) {
+            # An HTTP route (`/api/tokens`) is not a file.
+            if (tok ~ /^\//) return 0
+            sub(/^\.\//, "", tok); sub(/\.+$/, "", tok)
+            # A single directory (`systems/`) names a whole tree, which is every
+            # file and so no file in particular; two segments (`crates/atlas`) do.
+            sub(/\/+$/, "", tok)
+            if (tok == "") return 0
+            if (index(tok, "#") > 0) {
+                n = split(tok, parts, "#")
+                if (modhit(parts[n])) return 1
+                if (n >= 2 && modhit(parts[n - 1])) return 1
+                return 0
+            }
+            if (index(tok, "/") > 0) {
+                if (rel == tok) return 3
+                t = "/" tok
+                if (length(rel) >= length(t) && substr("/" rel, length(rel) + 2 - length(t)) == t) return 3
+                if (index(rel, tok "/") == 1) return 1
+                if (index("/" rel, "/" tok "/") > 0) return 1
+                return 0
+            }
+            if (tok ~ /\.(rs|wesl|wgsl|ts|tsx|js|sh|toml|json|py|yml|yaml|java|xml|html|css|kt)$/ && tok == base) return 2
+            return 0
+        }
+        # A note without a heading is still named, by its file.
+        function flush() { if (best) print best "\t" prev "\t" prev; best = 0 }
+        FNR == 1 { flush(); prev = FILENAME; infm = ($0 == "---"); intrig = 0; next }
+        END { flush() }
+        infm && /^---[ \t]*$/ { infm = 0; next }
+        infm {
+            if ($0 ~ /^triggers:/) intrig = 1
+            else if ($0 ~ /^[a-z_]+:/) intrig = 0
+            if (intrig) {
+                line = $0
+                gsub(/::/, "#", line)
+                n = split(line, toks, /[^A-Za-z0-9_.\/#-]+/)
+                for (i = 1; i <= n; i++) { r = hit(toks[i]); if (r > best) best = r }
+            }
+            next
+        }
+        best && /^# / { print best "\t" FILENAME "\t" substr($0, 3); best = 0 }
+    ' "$root"/docs/notes/*.md 2>/dev/null | sort -t$'\t' -k1,1nr -k2,2) || continue
+    [ -n "$matches" ] || continue
+
+    lines=""
+    more=""
+    shown=0
+    while IFS=$'\t' read -r rank path title; do
+        note=${path#"$root"/}
+        grep -qxF "$note" "$state" 2>/dev/null && continue
+        echo "$note" >> "$state" 2>/dev/null
+        if [ "$shown" -lt 6 ]; then
+            lines+="- \`$note\` — $title"$'\n'
+            shown=$((shown + 1))
+        else
+            more+=" \`$(basename "$note")\`"
+        fi
+    done <<< "$matches"
+    [ -n "$lines" ] || continue
+    [ -n "$more" ] && lines+="- and, less specifically:$more"$'\n'
+    context+="Notes whose triggers name \`$rel\` — read the ones that bear on your change before making it:"$'\n'"$lines"
+done
+[ -n "$context" ] || exit 0
+
 printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":%s}}\n' \
     "$(printf '%s' "$context" | jq -Rs .)"
