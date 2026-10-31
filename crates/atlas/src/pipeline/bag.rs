@@ -776,7 +776,11 @@ fn collect_monuments(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
 /// and dropped them, so this is the only form both agree on.
 fn bare_pand(id: &str) -> &str {
     let t = id.trim().trim_start_matches('0');
-    if t.is_empty() { "0" } else { t }
+    if t.is_empty() {
+        "0"
+    } else {
+        t
+    }
 }
 
 /// The OpenStreetMap ways and relations over the area that say what a building
@@ -804,7 +808,12 @@ struct Mapped {
 /// Each element's material and colour against every pand its `ref:bag` names
 /// (a few list several, `;`-separated), keyed by [`bare_pand`].
 fn materials_of(doc: &Value) -> Vec<(String, Mapped)> {
-    let tidy = |v: &Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let tidy = |v: &Value| {
+        v.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let mut out = Vec::new();
     for el in doc["elements"].as_array().into_iter().flatten() {
         let tags = &el["tags"];
@@ -839,7 +848,13 @@ fn collect_materials(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
         super::tall::overpass_url(),
         query(&[("data", &materials_query(ctx.bbox))])
     );
-    let doc = match get_json_with(ctx, &url, "building materials", std::time::Duration::from_secs(360), 3) {
+    let doc = match get_json_with(
+        ctx,
+        &url,
+        "building materials",
+        std::time::Duration::from_secs(360),
+        3,
+    ) {
         Ok(doc) => doc,
         Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
         Err(PipelineError::Failed(e)) => {
@@ -847,7 +862,11 @@ fn collect_materials(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
             return Ok(0);
         }
     };
-    let by_bare: HashMap<&str, usize> = c.by_pand.iter().map(|(id, &ix)| (bare_pand(id), ix)).collect();
+    let by_bare: HashMap<&str, usize> = c
+        .by_pand
+        .iter()
+        .map(|(id, &ix)| (bare_pand(id), ix))
+        .collect();
     let mut hits = Vec::new();
     for (pand, mapped) in materials_of(&doc) {
         if let Some(&ix) = by_bare.get(pand.as_str()) {
