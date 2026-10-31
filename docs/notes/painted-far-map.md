@@ -1,6 +1,6 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+triggers: [painted.rs, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
 updated: 2026-10-31
 ---
 
@@ -19,8 +19,26 @@ asked for: in a tilted view at 3 km the ground near the camera keeps today's
 style and only the band towards the horizon is painted. Over the Netherlands
 that is z12 (~5.9 km) and coarser, and every globe tile.
 
-The edge between the two styles is a tile edge for now; the crossfade on
-distance is the next step of the design.
+## The two styles crossfade on distance, through a painted twin
+
+A tile cannot be both styles at once, so a z13 tile (`tile_loader::PAINTED_TWIN_ZOOM`)
+is drawn twice: as itself and as a painted twin, kept on disk under its own
+key (`twin_cache_key`) and bound beside it in the ground material (106–107).
+`ground_detail.wesl` mixes the two on the fragment's distance from the camera,
+4.5 to 8 km (`map_stream::PAINTED_FADE_M`). Why z13 and those numbers: the tree
+picks z14 and finer within ~4 km and z12 and coarser past ~8–10 km, so z14 is
+never asked to be part-painted and z12 is always fully painted. The band ends
+before 10 km because v4's straight-down 10 km frame is fully painted.
+
+What it costs: a second raster and texture for each z13 tile — 49 at most,
+~70 MB of graphics memory on a desktop, a quarter of that at a phone's 256 px —
+and four z14 fetches each for its footprints.
+
+Not done, and why: v2's chart sinks the 3D buildings into the ground between 15
+and 50 km. Only the far OSM tier has a height ramp (`building_fade`); the 3DBAG
+shells and blocks would still vanish in one step at 50 km, so sinking one tier
+of three was left out. And the haze over the ground at 10 km is left as it is:
+v3 keeps it to ~15 km, and above that `CITY_ATMOSPHERE_ALT` already thins it.
 
 ## Footprints on a far tile cost sixteen fetches
 

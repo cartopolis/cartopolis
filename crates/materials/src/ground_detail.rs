@@ -71,6 +71,8 @@ pub struct GroundUniform {
     pub water_body: Vec4,
     /// `GroundDetailExtension::water_sea`.
     pub water_sea: Vec4,
+    /// `GroundDetailExtension::far`.
+    pub far: Vec4,
 }
 
 impl From<&GroundDetailExtension> for GroundUniform {
@@ -80,6 +82,7 @@ impl From<&GroundDetailExtension> for GroundUniform {
             lod: e.lod,
             water_body: e.water_body,
             water_sea: e.water_sea,
+            far: e.far,
         }
     }
 }
@@ -88,7 +91,7 @@ impl From<&GroundDetailExtension> for GroundUniform {
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 #[bind_group_data(GroundKey)]
 #[data(100, GroundUniform, binding_array(110))]
-#[bindless(index_table(range(100..106), binding(109)))]
+#[bindless(index_table(range(100..108), binding(109)))]
 pub struct GroundDetailExtension {
     /// xy: the detail box's centre in **render-space** XZ. z: 1 / its half-extent.
     /// w: strength, and `0.0` means "no tier" — see the module docs
@@ -134,6 +137,17 @@ pub struct GroundDetailExtension {
     /// buffer, and only a water texel reads it.
     #[storage(105, read_only, visibility(fragment), binding_array(111))]
     pub clouds: Handle<ShaderBuffer>,
+    /// The tile drawn a second time in the painted far style (`vector_tiles::painted`),
+    /// for the cross-fade from today's ground to the painted map on distance from
+    /// the camera. Only a clipmap tile in the band where the two styles meet has
+    /// one (`tile_loader::PAINTED_TWIN_ZOOM`); `None` everywhere else.
+    #[texture(106)]
+    #[sampler(107)]
+    pub painted: Option<Handle<Image>>,
+    /// The painted cross-fade: x the camera distance it starts at, y where it is
+    /// complete, metres; z `1.0` when [`painted`](Self::painted) is bound. Zero is
+    /// the off switch every other ground surface carries.
+    pub far: Vec4,
     /// Compile the screen-door variant ([`GroundKey`]). Written on every ground
     /// material at once by `sewers::apply_ground_see_through`.
     pub see_through: bool,
@@ -150,6 +164,8 @@ impl Default for GroundDetailExtension {
             water_sea: Vec4::ZERO,
             // Never `Handle::default()`, which names no asset: see
             // `CLOUD_FIELD_BUFFER` for what a missing storage buffer costs.
+            painted: None,
+            far: Vec4::ZERO,
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
         }

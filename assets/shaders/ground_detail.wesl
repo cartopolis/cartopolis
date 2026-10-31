@@ -81,11 +81,14 @@ enable wgpu_binding_array;
 //   everywhere else — the off switch, since the vector fills and the roads share
 //   this material and carry no mask. w: 1 on a road ribbon (`RoadDepthExtension`
 //   sets it), 0 on every ground surface.
+// far — the cross-fade to the painted map: x the camera distance it starts at,
+//   y where it is complete, metres; z 1 when the painted twin (106) is bound.
 struct GroundUniform {
     detail: vec4<f32>,
     lod: vec4<f32>,
     water_body: vec4<f32>,
     water_sea: vec4<f32>,
+    far: vec4<f32>,
 }
 
 // Bindless where the platform has it, which is what lets every clipmap tile —
@@ -104,6 +107,8 @@ struct GroundIndices {
     basemap: u32,         // 103
     basemap_sampler: u32, // 104
     clouds: u32,          // 105
+    painted: u32,         // 106
+    painted_sampler: u32, // 107
 }
 @if(BINDLESS) {
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var<storage> ground_indices: array<GroundIndices>;
@@ -117,6 +122,8 @@ struct GroundIndices {
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var lod_basemap: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var lod_basemap_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(105) var<storage, read> clouds_single: cf::Deck;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var painted_basemap: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var painted_sampler: sampler;
 }
 
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
@@ -479,6 +486,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let lod = ground.lod;
     let water_body = ground.water_body;
     let water_sea = ground.water_sea;
+    let far = ground.far;
     // How much of this texel is water, read out of the tile's alpha **before**
     // `alpha_discard` flattens it to 1 for an opaque material. 255 is land, so a
     // mask-less image and every surface that is not a tile answer 0.
@@ -552,6 +560,29 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // would move a cutout that has already been made.
         pbr_input.material.base_color = vec4<f32>(
             mix(pbr_input.material.base_color.rgb, soft.rgb, t),
+            pbr_input.material.base_color.a,
+        );
+    }
+
+    // From today's ground to the painted map (`vector_tiles::painted`), on distance
+    // from the camera and not on its height, so what is near keeps today's style in
+    // a tilted view too. A tile in the band where the two meet carries itself drawn
+    // a second time in the painted style; every other surface carries `far.z == 0`.
+    // Water keeps its mask from the tile's own alpha, read above.
+    @if(VERTEX_UVS_A)
+    if far.z > 0.0 {
+        let d = length(in.world_position.xyz - view_bindings::view.world_position.xyz);
+        let t = smoothstep(far.x, far.y, d);
+        @if(BINDLESS)
+        let painted = textureSample(
+            bindless_textures_2d[ground_indices[slot].painted],
+            bindless_samplers_filtering[ground_indices[slot].painted_sampler],
+            in.uv,
+        );
+        @else
+        let painted = textureSample(painted_basemap, painted_sampler, in.uv);
+        pbr_input.material.base_color = vec4<f32>(
+            mix(pbr_input.material.base_color.rgb, painted.rgb, t),
             pbr_input.material.base_color.a,
         );
     }

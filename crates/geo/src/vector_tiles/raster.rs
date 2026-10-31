@@ -634,7 +634,7 @@ fn render_rows(
     // The displayed region's ground size decides the style band: past
     // `FAR_STYLE_TILE_M` this raster is a map read from the air, not a street's
     // own texture, and it styles for legibility instead of fidelity.
-    let far_style = painted_style(source_m, sub.factor);
+    let far_style = far.painted || painted_style(source_m, sub.factor);
     if far_style {
         let p = palette::painted::PAPER;
         pixmap.fill(tiny_skia::Color::from_rgba8(

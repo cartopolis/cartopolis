@@ -51,7 +51,7 @@ pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 // A bare name: the derive parses an identifier and silently drops a path.
 #[bind_group_data(GroundKey)]
 #[data(100, GroundUniform, binding_array(110))]
-#[bindless(index_table(range(100..106), binding(109)))]
+#[bindless(index_table(range(100..108), binding(109)))]
 pub struct RoadDepthExtension {
     /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
     /// w: strength, `0.0` when there is no tier to read.
@@ -74,6 +74,12 @@ pub struct RoadDepthExtension {
     /// reason, and never read on a road for the same `water_sea.z`.
     #[storage(105, read_only, visibility(fragment), binding_array(111))]
     pub clouds: Handle<ShaderBuffer>,
+    /// Always `None` and zero — the painted cross-fade is the clipmap's, here for
+    /// the shared layout like the rest.
+    #[texture(106)]
+    #[sampler(107)]
+    pub painted: Option<Handle<Image>>,
+    pub far: Vec4,
     /// The ground's screen-door variant (`ground_detail::GroundKey`), so a road
     /// opens onto what is under it exactly where the pavement beside it does.
     pub see_through: bool,
@@ -88,6 +94,7 @@ impl From<&RoadDepthExtension> for GroundUniform {
             // w says "a road ribbon" to the shared shader, which gives a
             // carriageway its aggregate in relief; every ground surface leaves it 0.
             water_sea: e.water_sea.with_w(ROAD_FLAG),
+            far: e.far,
         }
     }
 }
@@ -112,6 +119,8 @@ impl Default for RoadDepthExtension {
             // Never `Handle::default()`, which names no asset: a road material
             // whose storage buffer does not exist never prepares, and draws
             // nothing (`sky::CLOUD_FIELD_BUFFER`).
+            painted: None,
+            far: Vec4::ZERO,
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
             see_through: false,
         }

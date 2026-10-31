@@ -177,6 +177,10 @@ struct DecodedTile {
     mip_count: u32,
     /// RGBA8, or the block format `tile_loader::tile_texels` compressed it to.
     format: TextureFormat,
+    /// The tile drawn a second time in the painted style, for the cross-fade on
+    /// distance (`tile_loader::PaintedTwin`). Only a tile at
+    /// `tile_loader::PAINTED_TWIN_ZOOM` has one.
+    painted: Option<Box<DecodedTile>>,
 }
 
 impl crate::platform::warm::WarmSize for DecodedTile {
@@ -184,7 +188,7 @@ impl crate::platform::warm::WarmSize for DecodedTile {
         // The mip chain is the whole of it — the other fields are its shape. A
         // 512² RGBA8 chain is 1,398,100 bytes every time, because the raster size
         // is the tier's and not the content's; block-compressed, a quarter of that.
-        self.data.len()
+        self.data.len() + self.painted.as_ref().map_or(0, |p| p.data.len())
     }
 }
 
@@ -758,6 +762,18 @@ fn spawn_map_tile(
                         }
                         None => None,
                     };
+                    let twin_key =
+                        crate::systems::tile_loader::twin_cache_key(&key, &payload, tile_px);
+                    let stored_twin = match &twin_key {
+                        Some(k) => {
+                            crate::platform::storage::get(
+                                crate::platform::storage::Namespace::Cache,
+                                k,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
                     let wanted = wanted.clone();
                     let live_gen = live_gen.clone();
                     add_stage(0, fetched);
@@ -783,26 +799,49 @@ fn spawn_map_tile(
                                 drawn
                             }
                         };
+                        // The painted twin, the same way: read back, or drawn and kept.
+                        let twin = stored_twin
+                            .and_then(|png| {
+                                crate::systems::tile_loader::decode_rendered(&png, tile_px)
+                            })
+                            .or_else(|| match payload.decode_twin(tile_px) {
+                                Some(Ok(img)) => {
+                                    if let Some(k) = &twin_key {
+                                        crate::systems::tile_loader::store_rendered(k, &img);
+                                    }
+                                    Some(img)
+                                }
+                                Some(Err(e)) => {
+                                    tracing::warn!(tile = %key.to_path(), error = %e, "painted twin failed; the tile fades to nothing");
+                                    None
+                                }
+                                None => None,
+                            });
                         add_stage(2, drawing);
                         let packing = bevy::platform::time::Instant::now();
+                        let pack = |rgba: image::RgbaImage| {
+                            let (width, height) = (rgba.width(), rgba.height());
+                            let (texels, mip_count) = crate::systems::tile_loader::tile_texels(
+                                width,
+                                height,
+                                rgba.into_raw(),
+                            );
+                            DecodedTile {
+                                data: texels.data,
+                                width,
+                                height,
+                                mip_count,
+                                format: texels.format,
+                                painted: None,
+                            }
+                        };
                         let decoded = match drawn {
                             Ok(rgba) => {
-                                let (width, height) = (rgba.width(), rgba.height());
-                                let (texels, mip_count) =
-                                    crate::systems::tile_loader::tile_texels(
-                                        width,
-                                        height,
-                                        rgba.into_raw(),
-                                    );
+                                let mut tile = pack(rgba);
+                                tile.painted = twin.map(|t| Box::new(pack(t)));
                                 add_stage(3, packing);
                                 STAGE_N.fetch_add(1, Ordering::Relaxed);
-                                Some(DecodedTile {
-                                    data: texels.data,
-                                    width,
-                                    height,
-                                    mip_count,
-                                    format: texels.format,
-                                })
+                                Some(tile)
                             }
                             Err(e) => {
                                 tracing::warn!(tile = %key.to_path(), error = %e, "map tile decode failed");
@@ -824,6 +863,15 @@ fn spawn_map_tile(
         })
         .detach();
 }
+
+/// Camera distances, metres, over which a tile with a painted twin crossfades from
+/// today's ground to the painted map (`ground_detail.wesl`).
+///
+/// Ends before ~10 km, because the decided design (`docs/mockups/macro-view/`,
+/// v4) is fully painted straight down from 10 km; starts past the ~4 km where the
+/// tile tree still picks z14, which has no twin, so a z14 tile is never asked to
+/// be part-painted.
+pub const PAINTED_FADE_M: (f32, f32) = (4_500.0, 8_000.0);
 
 /// The mip bias a clipmap tile reaches at the edge of its own ring.
 ///
@@ -2289,7 +2337,9 @@ pub fn apply_stream_textures(
     // tally lifted out to where every streamer draws from it.
     let ready =
         crate::systems::stream_ledger::take_admitted(&mut stream.tiles, uploads, |outcome| {
-            outcome.as_ref().map_or(0, |tile| tile.data.len())
+            outcome
+                .as_ref()
+                .map_or(0, |tile| crate::platform::warm::WarmSize::warm_bytes(tile))
         });
     for (key, outcome) in ready {
         // Retired before its fetch landed: the entity is gone, so nobody will ever
@@ -2328,6 +2378,19 @@ pub fn apply_stream_textures(
                 if decoded.format != TextureFormat::Rgba8UnormSrgb {
                     stream.compressed_uploads += 1;
                 }
+                // The painted twin, uploaded beside the tile, with the band the
+                // shader fades it in over.
+                let painted = decoded.painted.map(|p| {
+                    images.add(crate::systems::tile_loader::image_from_mip_chain(
+                        p.width,
+                        p.height,
+                        p.data,
+                        p.mip_count,
+                        p.format,
+                        crate::systems::tile_loader::TILE_TEXTURE_USAGE,
+                        crate::systems::tile_loader::ground_sampler(),
+                    ))
+                });
                 // Decode + mipmaps already done off-thread; just assemble and upload.
                 let bevy_image = crate::systems::tile_loader::image_from_mip_chain(
                     decoded.width,
@@ -2351,6 +2414,10 @@ pub fn apply_stream_textures(
                 // `water::update_water_waves` keeps them in step after. A tile
                 // with no mask in its alpha reads as all land and is untouched.
                 (extension.water_body, extension.water_sea) = water.far_water();
+                if painted.is_some() {
+                    extension.far = Vec4::new(PAINTED_FADE_M.0, PAINTED_FADE_M.1, 1.0, 0.0);
+                    extension.painted = painted;
+                }
                 let mat = materials.add(crate::systems::ground_detail::GroundMaterial {
                     base: StandardMaterial {
                         base_color_texture: Some(handle),

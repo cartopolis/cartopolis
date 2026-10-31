@@ -173,6 +173,10 @@ pub enum TilePayload {
         /// descendants' footprints and the sun's shadow ([`far_detail`]).
         /// Empty for every other tile.
         far: Arc<vector_tiles::FarDetail>,
+        /// The same tile again in the painted far style, for the cross-fade on
+        /// distance (`ground_detail.wesl`): only a tile at [`PAINTED_TWIN_ZOOM`]
+        /// has one.
+        twin: Option<Arc<PaintedTwin>>,
     },
 }
 
@@ -188,10 +192,10 @@ impl TilePayload {
     /// release late. A raster source arrives at whatever size it was served at and
     /// is left alone — there is nothing to re-rasterise, only pixels to resample,
     /// and resampling on the CPU would cost more than the memory it saved.
-    pub fn decode(self, size: u32) -> Result<image::RgbaImage, String> {
+    pub fn decode(&self, size: u32) -> Result<image::RgbaImage, String> {
         use crate::systems::vector_tiles;
         match self {
-            TilePayload::Raster(bytes) => decode_tile_image(&bytes),
+            TilePayload::Raster(bytes) => decode_tile_image(bytes),
             TilePayload::Vector {
                 bytes,
                 sub,
@@ -200,17 +204,19 @@ impl TilePayload {
                 underlay,
                 survey,
                 far,
+                ..
             } => {
-                let tile = parse_shared(source, &bytes)?;
+                let (sub, source) = (*sub, *source);
+                let tile = parse_shared(source, bytes)?;
                 let rgba = vector_tiles::render_mvt_detailed(
                     &tile,
                     sub,
                     size,
                     source_ground_m(source),
-                    &underlay,
-                    &crops,
-                    &survey,
-                    &far,
+                    underlay,
+                    crops,
+                    survey,
+                    far,
                 )
                 .map_err(|e| e.to_string())?;
                 let mut img = image::RgbaImage::from_raw(size, size, rgba)
@@ -220,6 +226,50 @@ impl TilePayload {
             }
         }
     }
+
+    /// The painted twin's pixels, for a tile that has one ([`PaintedTwin`]). No
+    /// water mask: the shader reads that from the tile's own image.
+    pub fn decode_twin(&self, size: u32) -> Option<Result<image::RgbaImage, String>> {
+        let TilePayload::Vector {
+            bytes,
+            sub,
+            source,
+            twin: Some(twin),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some((|| {
+            let tile = parse_shared(*source, bytes)?;
+            let rgba = vector_tiles::render_mvt_detailed(
+                &tile,
+                *sub,
+                size,
+                source_ground_m(*source),
+                &twin.underlay,
+                &[],
+                &vector_tiles::NO_SURVEY,
+                &twin.far,
+            )?;
+            image::RgbaImage::from_raw(size, size, rgba)
+                .ok_or_else(|| "rendered twin had the wrong buffer size".to_string())
+        })())
+    }
+}
+
+/// The zoom whose tiles carry a painted twin. The tile tree puts z13 where the
+/// cross-fade from today's ground to the painted map happens (4.5–8 km from the
+/// camera, `map_stream::PAINTED_FADE_M`): nearer is z14 and finer, never painted;
+/// further is z12 and coarser, always painted.
+pub const PAINTED_TWIN_ZOOM: u32 = 13;
+
+/// A tile drawn a second time in the painted style: the land cover in the painted
+/// tones, and its descendants' footprints with the sun's shadow.
+#[derive(Debug, Default)]
+pub struct PaintedTwin {
+    pub underlay: Vec<vector_tiles::OverlayFill>,
+    pub far: vector_tiles::FarDetail,
 }
 
 /// Pack a flat tile's water mask into its alpha as **land** coverage: 255 is
@@ -292,13 +342,7 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     // The footprints and the sun's shadow are drawn into a painted tile too.
-    far.shadow.map(|s| s.map(f32::to_bits)).hash(&mut h);
-    for b in &far.buildings {
-        b.height_m.to_bits().hash(&mut h);
-        for p in &b.outline {
-            p.map(f32::to_bits).hash(&mut h);
-        }
-    }
+    hash_far(&mut h, far);
     // The crops are drawn into the same pixels, so they are part of what the
     // picture is of: a field re-registered next year, or a tile first drawn
     // before the host served the register at all, must not be read back. The
@@ -352,6 +396,50 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
         key.y,
         h.finish()
     ))
+}
+
+/// Where a tile's painted twin ([`PaintedTwin`]) is kept on disk, or `None`
+/// when it has none or is not kept: its own entry beside the tile's, keyed on
+/// what the twin is drawn from.
+#[must_use]
+pub fn twin_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option<String> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let TilePayload::Vector {
+        bytes,
+        twin: Some(twin),
+        ..
+    } = payload
+    else {
+        return None;
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    hash_fills(&mut h, &twin.underlay);
+    hash_far(&mut h, &twin.far);
+    Some(format!(
+        "rendered-painted/{:016x}/{size}/{}/{}/{}-{:016x}.png",
+        cartopolis_geo::render_revision::RENDER_REVISION,
+        key.z,
+        key.x,
+        key.y,
+        h.finish()
+    ))
+}
+
+/// Fold a painted tile's footprints and shadow into a cache key.
+fn hash_far(h: &mut impl std::hash::Hasher, far: &vector_tiles::FarDetail) {
+    use std::hash::Hash;
+    far.painted.hash(h);
+    far.shadow.map(|s| s.map(f32::to_bits)).hash(h);
+    for b in &far.buildings {
+        b.height_m.to_bits().hash(h);
+        for p in &b.outline {
+            p.map(f32::to_bits).hash(h);
+        }
+    }
 }
 
 /// Fold painted-in fills into a rendered-tile cache key.
@@ -558,7 +646,7 @@ async fn source_overlays(source: TileKey, template: &str) -> Overlays {
     let mut guard = Building(Some(key.clone()));
     let built: Overlays = (
         Arc::new(crate::systems::crops::raster_overlay(source).await),
-        Arc::new(landcover_underlay(source, template).await),
+        Arc::new(landcover_underlay(source, template, painted_source(source)).await),
         crate::systems::surveyed::raster_survey(source).await,
     );
     let waiters = {
@@ -600,7 +688,17 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
     }
 
     let (crops, underlay, survey) = source_overlays(source, template).await;
-    let far = Arc::new(far_detail(source, sub, template).await);
+    let far = Arc::new(far_detail(source, sub, template, false).await);
+    // A tile in the band where the two styles meet is drawn painted too, unless
+    // it already is (a z13 tile showing over 5 km of ground, near the equator).
+    let twin = if key.z == PAINTED_TWIN_ZOOM && sub.factor == 1 && !painted_source(source) {
+        Some(Arc::new(PaintedTwin {
+            underlay: landcover_underlay(source, template, true).await,
+            far: far_detail(source, sub, template, true).await,
+        }))
+    } else {
+        None
+    };
     Ok(TilePayload::Vector {
         bytes,
         sub,
@@ -609,6 +707,7 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
         underlay,
         survey,
         far,
+        twin,
     })
 }
 
@@ -649,9 +748,10 @@ async fn far_detail(
     source: TileKey,
     sub: vector_tiles::SubTile,
     template: &str,
+    painted: bool,
 ) -> vector_tiles::FarDetail {
     let source_m = source_ground_m(source);
-    if !vector_tiles::painted_style(source_m, sub.factor) {
+    if !painted && !vector_tiles::painted_style(source_m, sub.factor) {
         return vector_tiles::FarDetail::default();
     }
     let sun = FAR_SUN.load(std::sync::atomic::Ordering::Relaxed);
@@ -659,6 +759,7 @@ async fn far_detail(
     let mut detail = vector_tiles::FarDetail {
         buildings: Vec::new(),
         shadow: Some(shadow),
+        painted,
     };
     if source.z >= FAR_BUILDINGS_ZOOM || source.z + FAR_BUILDINGS_LEVELS < FAR_BUILDINGS_ZOOM {
         return detail;
@@ -707,6 +808,13 @@ async fn far_detail(
     detail
 }
 
+/// Whether a source tile is drawn in the painted style, and so takes the land
+/// cover in its tones. The underlay is per source, and a source is only ever
+/// magnified past z14, where nothing is painted, so the factor is 1.
+fn painted_source(source: TileKey) -> bool {
+    vector_tiles::painted_style(source_ground_m(source), 1)
+}
+
 /// Where the land-cover tiles are, for a map served from `template`.
 ///
 /// VersaTiles serves each archive as its own tile set on one host
@@ -733,7 +841,11 @@ fn landcover_template(template: &str) -> Option<String> {
 /// reads its ancestor at that zoom. Any failure — a host without the set, a 404
 /// over open ocean or Antarctica — is an empty underlay, i.e. the paper the map
 /// always had.
-async fn landcover_underlay(source: TileKey, template: &str) -> Vec<vector_tiles::OverlayFill> {
+async fn landcover_underlay(
+    source: TileKey,
+    template: &str,
+    painted: bool,
+) -> Vec<vector_tiles::OverlayFill> {
     let Some(lc) = landcover_template(template) else {
         return Vec::new();
     };
@@ -753,10 +865,6 @@ async fn landcover_underlay(source: TileKey, template: &str) -> Vec<vector_tiles
         (source.x - (ax << shift)) as u32,
         (source.y - (ay << shift)) as u32,
     );
-    // A source the painted style draws takes the land cover in its tones. The
-    // underlay is per source, and a source is only ever magnified past z14,
-    // where nothing is painted, so the factor is 1.
-    let painted = vector_tiles::painted_style(source_ground_m(source), 1);
     crate::platform::workers::compute("landcover", move || {
         match vector_tiles::TileData::parse(&bytes) {
             Ok(tile) => vector_tiles::landcover_fills(&tile, shift, sub_x, sub_y, painted),
@@ -814,7 +922,7 @@ pub async fn fetch_globe_tile_payload(
     if vector_tiles::looks_like_raster(&bytes) {
         return Ok(GlobeTilePayload::Raster(bytes));
     }
-    let underlay = Arc::new(landcover_underlay(source, template).await);
+    let underlay = Arc::new(landcover_underlay(source, template, painted_source(source)).await);
     Ok(GlobeTilePayload::Vector {
         bytes,
         sub,
@@ -951,6 +1059,7 @@ mod tests {
             underlay: Arc::default(),
             survey: Arc::default(),
             far: Arc::default(),
+            twin: None,
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
@@ -984,6 +1093,7 @@ mod tests {
             underlay: Arc::default(),
             survey: Arc::default(),
             far: Arc::default(),
+            twin: None,
         };
         let b = TilePayload::Vector {
             bytes: Arc::new(other),
@@ -993,6 +1103,7 @@ mod tests {
             underlay: Arc::default(),
             survey: Arc::default(),
             far: Arc::default(),
+            twin: None,
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
@@ -1015,6 +1126,7 @@ mod tests {
             underlay: Arc::default(),
             survey: Arc::default(),
             far: Arc::default(),
+            twin: None,
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),

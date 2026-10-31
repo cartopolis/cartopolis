@@ -43,12 +43,17 @@ pub struct FarDetail {
     /// A building's shadow per metre of its height, in the tile's unit square
     /// (x east, y south) — [`shadow_step`]. `None` draws no shadows.
     pub shadow: Option<[f32; 2]>,
+    /// Draw the tile painted whatever its size: the twin a tile in the band
+    /// where the two styles meet carries, for the cross-fade on distance
+    /// (`tile_loader::PAINTED_TWIN_ZOOM`).
+    pub painted: bool,
 }
 
 /// The empty detail: what every caller that has none passes.
 pub static NO_FAR_DETAIL: FarDetail = FarDetail {
     buildings: Vec::new(),
     shadow: None,
+    painted: false,
 };
 
 /// Whether a raster of `source_m` ground metres, magnified `factor` times, is
