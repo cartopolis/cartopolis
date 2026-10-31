@@ -64,6 +64,7 @@ sha2 = "0.10"
 rusqlite.workspace = true
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
+cartopolis_scenario = { path = "../scenario" }
 
 [dev-dependencies]
 tempfile = "3.0"

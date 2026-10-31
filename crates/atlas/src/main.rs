@@ -43,6 +43,18 @@ enum Command {
         #[arg(long)]
         fresh: bool,
     },
+    /// Write official-area sets for scenario layers (`official_areas`) into
+    /// the served tree, where the client fetches them.
+    Areas {
+        /// `cbs-2024` (buurt to country, with figures) or `ne-admin1-europe`.
+        set: String,
+        /// For `ne-admin1-europe`: a GeoJSON file or URL instead of Natural Earth's.
+        #[arg(long)]
+        from: Option<String>,
+        /// The directory the area files go in: the served site tree's `areas/`.
+        #[arg(long, default_value = "site/areas")]
+        out: PathBuf,
+    },
 }
 
 struct Stderr;
@@ -141,6 +153,13 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(Command::Areas { set, from, out }) = &cli.command {
+        for (name, n, bytes) in cartopolis_atlas::official_areas::write(set, from.as_deref(), out)?
+        {
+            eprintln!("{name}: {n} areas, {bytes} bytes");
+        }
+        return Ok(());
+    }
     if let Some(Command::Run {
         out,
         area,

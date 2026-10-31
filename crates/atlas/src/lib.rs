@@ -14,6 +14,7 @@ pub mod coverage;
 pub mod designs;
 pub mod http;
 pub mod jobs;
+pub mod official_areas;
 pub mod overrides;
 pub mod pipeline;
 pub mod plans;
