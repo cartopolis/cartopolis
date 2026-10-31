@@ -2023,6 +2023,8 @@ pub(crate) const GLOBE_CLOUD_ALT: f32 = 25_000.0;
 pub(crate) const GLOBE_CLOUD_FREQ: f32 = 1.8;
 /// Overall opacity of the planet cloud sphere.
 pub(crate) const GLOBE_CLOUD_OPACITY: f32 = 0.85;
+/// The shell's opacity at the Light setting: thin enough to read the map through.
+pub(crate) const GLOBE_CLOUD_OPACITY_LIGHT: f32 = 0.35;
 /// Fixed global cloudiness for the planet layer — a realistic partly-cloudy Earth
 /// (the shader's latitude banding pushes this up in the ITCZ, down in the
 /// subtropics). Deliberately NOT the ground weather slider, which is one point.
@@ -2095,6 +2097,8 @@ pub(crate) fn update_globe_clouds(
     // Same shape, and for the same reason: a bisecting switch cannot change while
     // the process runs, and `env_flag` takes a process-global lock.
     mut clouds_disabled: Local<Option<bool>>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    mut globe_clouds_override: Local<Option<Option<crate::systems::user_store::GlobeCloudMode>>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
         return;
@@ -2126,8 +2130,28 @@ pub(crate) fn update_globe_clouds(
     // away when a frame runs long. `systems::adaptive_quality` used to, and did it
     // during every launch's loading frames and never gave them back (removed
     // 2026-09-28, `docs/notes/render-performance-survey.md`).
+    // From above, the shell is the person's choice of three (Layers ▸ Map ▸ From
+    // above), off by default so the planet reads as a map
+    // (`docs/mockups/macro-view/`, v3). Light is the same weather, thinner.
+    use crate::systems::user_store::GlobeCloudMode;
+    // `CARTO_GLOBE_CLOUDS=off|light|full` overrides it, for a capture: a
+    // scripted run never reads the saved setting.
+    let mode = *globe_clouds_override.get_or_insert_with(|| {
+        match std::env::var("CARTO_GLOBE_CLOUDS").as_deref() {
+            Ok("off") => Some(GlobeCloudMode::Off),
+            Ok("light") => Some(GlobeCloudMode::Light),
+            Ok("full") => Some(GlobeCloudMode::Full),
+            _ => None,
+        }
+    });
+    let opacity = match mode.unwrap_or(layers.globe_clouds) {
+        GlobeCloudMode::Off => 0.0,
+        GlobeCloudMode::Light => GLOBE_CLOUD_OPACITY_LIGHT,
+        GlobeCloudMode::Full => GLOBE_CLOUD_OPACITY,
+    };
     let disabled = *clouds_disabled.get_or_insert_with(|| crate::env_flag("CARTO_NO_CLOUDS"))
-        || !dev.clouds_enabled;
+        || !dev.clouds_enabled
+        || opacity <= 0.0;
     let want = if space <= 0.0 || disabled {
         Visibility::Hidden
     } else {
@@ -2153,7 +2177,7 @@ pub(crate) fn update_globe_clouds(
     // Sunlit cloud colour is white: the shader reddens it per fragment toward
     // the terminator. It used to take the sun colour at the *map anchor*, so at
     // the anchor's sunset every cloud on the planet turned orange.
-    let lit = Vec4::new(1.0, 1.0, 1.0, GLOBE_CLOUD_OPACITY);
+    let lit = Vec4::new(1.0, 1.0, 1.0, opacity);
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.centre = centre.extend(radius);

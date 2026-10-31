@@ -254,6 +254,19 @@ pub struct SkyPrefs {
 /// The five detail layers default to [`detail_default`] rather than to `true`: the
 /// fresh-install answer is the render budget's, so on the phone tier it is *off*,
 /// and a hard-coded `true` here would quietly hand a phone the desktop's layer set.
+/// How much of the cloud shell the globe draws, from above.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GlobeCloudMode {
+    /// None: the map, unclouded. The default.
+    #[default]
+    Off,
+    /// Thin and see-through: the weather without hiding the map.
+    Light,
+    /// As the shell has always been drawn.
+    Full,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct LayerPrefs {
     #[serde(default = "yes")]
@@ -280,6 +293,16 @@ pub struct LayerPrefs {
     /// (`systems::place_names`).
     #[serde(default = "yes")]
     pub place_names: bool,
+    /// The globe's cloud shell from above (`sky::update_globe_clouds`): off by
+    /// default, so the planet reads as a map (`docs/mockups/macro-view/`, v3).
+    #[serde(default)]
+    pub globe_clouds: GlobeCloudMode,
+    /// The globe's night side, darkened from the real sun.
+    #[serde(default = "yes")]
+    pub night_side: bool,
+    /// City lights on that night side.
+    #[serde(default = "yes")]
+    pub city_lights: bool,
     /// The flood defences, named where they stand (`systems::dikes`).
     ///
     /// On by default rather than on the detail tier: it is a handful of names

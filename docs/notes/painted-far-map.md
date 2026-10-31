@@ -1,6 +1,6 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+triggers: [painted.rs, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
 updated: 2026-10-31
 ---
 
@@ -83,3 +83,31 @@ first with room around district names, because at 3 km a tile holds dozens of
 neighbourhoods and the first build wrote all of them. Villages, hamlets and
 localities are left out. A station gets its name only when it starts with a
 loaded town's name (rail stations do; metro and tram stops get the icon).
+
+## From above: clouds as a setting, the night side
+
+**Clouds** from above are Layers ▸ Map ▸ From above, off / light / full, **off by
+default** (`GlobeCloudMode`). It governs the globe's shell only; Settings ▸ World
+▸ Clouds still turns every cloud off, the street's included. A scripted capture
+never reads the saved setting, so `CARTO_GLOBE_CLOUDS=off|light|full` sets it
+for one.
+
+**The night side** follows the real sun's direction (`update_globe_night`), not
+the directional light: at night over the map anchor the sun light is dimmed to
+nothing, and a terminator read from it would put the whole globe in the dark.
+
+**City lights have no data of their own.** A globe tile is painted, and built-up
+land is painted in exactly three tones, from the land cover and OSM alike; so
+`globe::lights_mask` reads them off the tile's own pixels into an R8 mip chain.
+That also means a tile read back from the disk cache has its lights, with no
+second cache entry. The design drew them from Natural Earth's urban areas; this
+is WorldCover's built-up class instead, which is denser in the east.
+
+**Brightness, measured** (mac-1, 2026-10-31, 8,000 km, 17:30 UTC): the emissive
+is added before exposure and blooms, so it saturates long before it looks
+bright. At 9000/6500/3400 the lights were balls and the night side an orange
+wash; cutting it 8× dimmed the frame by only a quarter. `CITY_LIGHT` at
+160/115/60 gives separate points of light on a dark ground.
+
+The flat map near the anchor (drawn to 250 km up) has no night side or lights;
+from orbit it is a small patch, not looked at yet.

@@ -56,6 +56,10 @@ pub struct GlobeOceanUniform {
     pub ocean: Vec4,
     /// [`GlobeOcean::tint`].
     pub tint: Vec4,
+    /// [`GlobeOcean::night`].
+    pub night: Vec4,
+    /// [`GlobeOcean::lights`].
+    pub lights: Vec4,
 }
 
 impl From<&GlobeOcean> for GlobeOceanUniform {
@@ -63,6 +67,8 @@ impl From<&GlobeOcean> for GlobeOceanUniform {
         Self {
             ocean: e.ocean,
             tint: e.tint,
+            night: e.night,
+            lights: e.lights,
         }
     }
 }
@@ -70,7 +76,7 @@ impl From<&GlobeOcean> for GlobeOceanUniform {
 /// Ocean uniforms for `shaders/globe_ocean.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug, Default)]
 #[data(100, GlobeOceanUniform, binding_array(110))]
-#[bindless(index_table(range(100..101), binding(109)))]
+#[bindless(index_table(range(100..103), binding(109)))]
 pub struct GlobeOcean {
     /// x: effect strength, ramped with `space_factor` (0 = the surface behaves
     /// exactly as it did before this material existed).
@@ -81,6 +87,20 @@ pub struct GlobeOcean {
     pub ocean: Vec4,
     /// rgb: the water tint. a unused.
     pub tint: Vec4,
+    /// The night side (`docs/mockups/macro-view/`, v3): xyz the direction
+    /// towards the sun in render space, from the real sun's position whatever
+    /// the light is doing; w how dark the night side goes, 0 = off. The shader
+    /// ramps it with the effect strength in `ocean.x`, so it arrives with the
+    /// globe and not at the tier boundary.
+    pub night: Vec4,
+    /// City lights on the night side: x their strength (0 = off), y 1 when
+    /// [`lights_map`](Self::lights_map) is bound.
+    pub lights: Vec4,
+    /// Where the built-up land is on this tile, one channel, read off its own
+    /// painted imagery (`globe::lights_mask`). `None` on the backstop sphere.
+    #[texture(101)]
+    #[sampler(102)]
+    pub lights_map: Option<Handle<Image>>,
 }
 
 /// `CARTO_NO_OCEAN=1` strips the ocean split, leaving the matte globe this
@@ -102,6 +122,7 @@ impl GlobeOcean {
         Self {
             ocean: Vec4::new(strength, 1.0, OCEAN_ROUGHNESS, OCEAN_REFLECTANCE),
             tint: OCEAN_TINT.extend(1.0),
+            ..Self::default()
         }
     }
 
@@ -111,6 +132,7 @@ impl GlobeOcean {
         Self {
             ocean: Vec4::new(0.0, 0.0, LAND_ROUGHNESS, 0.0),
             tint: Vec3::ONE.extend(1.0),
+            ..Self::default()
         }
     }
 }

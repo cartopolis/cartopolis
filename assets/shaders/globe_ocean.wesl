@@ -23,15 +23,20 @@ import bevy_pbr::render::{
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 };
 import bevy_pbr::render::mesh_bindings::mesh;
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 
 // The material's two vectors, one buffer (`globe_ocean::GlobeOceanUniform`):
 //
 // ocean — x: effect strength (space_factor ramp). y: 1 when alpha carries a real
 //   mask. z: ocean roughness. w: ocean reflectance (StandardMaterial's 0..1 remap).
 // tint — rgb: water tint applied to the imagery. a unused.
+// night — xyz: towards the sun, render space. w: how dark the night side goes.
+// lights — x: city-light strength. y: 1 when the lights map (101) is bound.
 struct GlobeOceanUniform {
     ocean: vec4<f32>,
     tint: vec4<f32>,
+    night: vec4<f32>,
+    lights: vec4<f32>,
 }
 
 // Bindless where the platform has it, so the globe's tiles — each a material of
@@ -41,6 +46,8 @@ struct GlobeOceanUniform {
 @if(BINDLESS)
 struct GlobeOceanIndices {
     material: u32, // 100
+    lights_map: u32, // 101
+    lights_sampler: u32, // 102
 }
 @if(BINDLESS) {
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var<storage> globe_ocean_indices: array<GlobeOceanIndices>;
@@ -48,7 +55,17 @@ struct GlobeOceanIndices {
 }
 @else {
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> globe_ocean_single: GlobeOceanUniform;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var lights_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var lights_sampler: sampler;
 }
+
+// How much of the ground's own tone the night side keeps away from: the space
+// ambient still lights it, and 0.78 matches the mockup's night wash.
+const NIGHT_DARKEN: f32 = 0.78;
+
+// A built-up texel's light at night, linear, before exposure: sodium-warm, and
+// bright enough to read at the daylight exposure space holds.
+const CITY_LIGHT: vec3<f32> = vec3<f32>(160.0, 115.0, 60.0);
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -61,6 +78,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let params = globe_ocean_single;
     let ocean = params.ocean;
     let tint = params.tint;
+    let night = params.night;
+    let lights = params.lights;
 
     // Water coverage, 0..1. The imagery's mip chain averages the mask with the
     // colour, so a coastline softens with distance rather than aliasing — which
@@ -89,6 +108,37 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec3<f32>(ocean.w),
         mask,
     );
+
+    // The night side, from the real sun: a twilight band about 12° wide round the
+    // terminator, then the ground darkened towards the space ambient's floor and
+    // the built-up land lit (`docs/mockups/macro-view/`, v3). Ramped with
+    // `ocean.x`, which is `space_factor`, so it comes with the globe.
+    let into_night = smoothstep(0.06, -0.14, dot(normalize(pbr_input.N), night.xyz))
+        * night.w
+        * clamp(ocean.x, 0.0, 1.0);
+    if into_night > 0.0 {
+        pbr_input.material.base_color = vec4<f32>(
+            pbr_input.material.base_color.rgb * (1.0 - NIGHT_DARKEN * into_night),
+            pbr_input.material.base_color.a,
+        );
+        var built = 0.0;
+        @if(VERTEX_UVS_A)
+        if lights.y > 0.5 {
+            @if(BINDLESS)
+            let l = textureSample(
+                bindless_textures_2d[globe_ocean_indices[slot].lights_map],
+                bindless_samplers_filtering[globe_ocean_indices[slot].lights_sampler],
+                in.uv,
+            );
+            @else
+            let l = textureSample(lights_map, lights_sampler, in.uv);
+            built = l.r;
+        }
+        pbr_input.material.emissive = vec4<f32>(
+            pbr_input.material.emissive.rgb + CITY_LIGHT * built * into_night * lights.x,
+            pbr_input.material.emissive.a,
+        );
+    }
 
     pbr_input.material.base_color = alpha_discard(
         pbr_input.material.flags,

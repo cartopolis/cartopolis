@@ -698,6 +698,7 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 /// (the fetch + decode/render itself is `tile_loader::fetch_globe_tile_payload`).
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
+    let lights = lights_mask(&rgba, has_ocean_mask);
     let (texels, mip_count) =
         crate::systems::tile_loader::tile_texels(width, height, rgba.into_raw());
     DecodedTile {
@@ -707,7 +708,93 @@ fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTil
         mip_count,
         format: texels.format,
         has_ocean_mask,
+        lights,
     }
+}
+
+/// Where a globe tile's ground is built up, as an R8 mip chain (mip count with
+/// it): the night side's city lights (`globe_ocean.wesl`).
+///
+/// **Read off the tile's own pixels**, not fetched: a globe tile is painted
+/// (`vector_tiles::painted`), and built-up land is painted in exactly three
+/// tones of its own, from the land cover and from OSM's land use alike. So the
+/// lights follow the same built-up land the day side shows, with no data of
+/// their own and nothing more to keep on disk — a tile read back from the cache
+/// gets them too. A texel counts where its colour is one of the three and it
+/// is not water; a 3×3 blur then gives each town a soft glow before the mips.
+fn lights_mask(rgba: &image::RgbaImage, has_ocean_mask: bool) -> Option<(Vec<u8>, u32)> {
+    use crate::systems::vector_tiles::palette::painted;
+    let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+    if w == 0 || w != h || !w.is_power_of_two() {
+        return None;
+    }
+    let built: [[i32; 3]; 3] = [
+        painted::RESIDENTIAL,
+        painted::INDUSTRIAL,
+        painted::COMMERCIAL,
+    ]
+    .map(|c| {
+        [
+            (c >> 16) as i32 & 0xFF,
+            (c >> 8) as i32 & 0xFF,
+            c as i32 & 0xFF,
+        ]
+    });
+    let mut hit = vec![0u8; w * h];
+    let mut any = false;
+    for (i, px) in rgba.pixels().enumerate() {
+        if has_ocean_mask && px.0[3] > 127 {
+            continue;
+        }
+        let near = built.iter().any(|b| {
+            (px.0[0] as i32 - b[0]).abs()
+                + (px.0[1] as i32 - b[1]).abs()
+                + (px.0[2] as i32 - b[2]).abs()
+                <= 18
+        });
+        if near {
+            hit[i] = 255;
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    // Blur, then halve to 1×1 by box filter.
+    let mut level = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0u32;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let (sx, sy) = (x as i32 + dx, y as i32 + dy);
+                    if sx >= 0 && sy >= 0 && (sx as usize) < w && (sy as usize) < h {
+                        let wgt = if dx == 0 && dy == 0 { 4 } else { 1 };
+                        sum += hit[sy as usize * w + sx as usize] as u32 * wgt;
+                    }
+                }
+            }
+            level[y * w + x] = (sum / 12) as u8;
+        }
+    }
+    let mut chain = level.clone();
+    let mut size = w;
+    let mut mips = 1;
+    while size > 1 {
+        let half = size / 2;
+        let mut next = vec![0u8; half * half];
+        for y in 0..half {
+            for x in 0..half {
+                let s = |dx: usize, dy: usize| level[(2 * y + dy) * size + 2 * x + dx] as u32;
+                next[y * half + x] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1) + 2) / 4) as u8;
+            }
+        }
+        chain.extend_from_slice(&next);
+        level = next;
+        size = half;
+        mips += 1;
+    }
+    Some((chain, mips))
 }
 
 fn covers(a: &TileKey, b: &TileKey) -> bool {
@@ -734,6 +821,9 @@ struct DecodedTile {
     /// Whether the alpha channel carries a real ocean mask (`systems::globe_ocean`)
     /// rather than the opaque 255s a source without one leaves behind.
     has_ocean_mask: bool,
+    /// The night side's city lights: an R8 mip chain and its level count
+    /// ([`lights_mask`]), `None` where the tile has no built-up land.
+    lights: Option<(Vec<u8>, u32)>,
 }
 
 /// Outcome of one worker fetch.
@@ -1449,6 +1539,76 @@ pub fn update_globe_albedo(
     *applied = Some(a);
 }
 
+/// The globe's night side as every tile material should carry it
+/// (`GlobeOcean::night` / `GlobeOcean::lights`): read at tile spawn, kept by
+/// [`update_globe_night`].
+#[derive(Resource, Default, Clone, Copy, PartialEq)]
+pub struct GlobeNight {
+    pub night: Vec4,
+    pub lights: Vec4,
+}
+
+/// How far the sun's direction moves, as the length of the difference, before
+/// every globe material is rewritten — about half a degree, or two minutes of
+/// the Earth's turn.
+const NIGHT_SUN_STEP: f32 = 0.009;
+
+/// Keep the night side on the real sun and on the person's From above settings
+/// (Layers ▸ Map). Rewrites the tile materials only when one of those moved, and
+/// spread over frames as [`update_globe_albedo`] is, for its reason.
+pub fn update_globe_night(
+    dev: Res<crate::resources::DevPanelState>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    mut night: ResMut<GlobeNight>,
+    tiles: Query<&MeshMaterial3d<GlobeSurfaceMaterial>, With<GlobeMesh>>,
+    mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
+    mut cursor: Local<usize>,
+) {
+    let sun = crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad);
+    let want = GlobeNight {
+        night: sun.extend(if layers.night_side { 1.0 } else { 0.0 }),
+        lights: Vec4::new(
+            if layers.night_side && layers.city_lights {
+                1.0
+            } else {
+                0.0
+            },
+            0.0,
+            0.0,
+            0.0,
+        ),
+    };
+    let moved = (want.night.xyz() - night.night.xyz()).length() > NIGHT_SUN_STEP
+        || want.night.w != night.night.w
+        || want.lights.x != night.lights.x;
+    if *cursor == 0 && !moved {
+        return;
+    }
+    if *cursor == 0 {
+        *night = want;
+    }
+    let budget = crate::quality::budget().per_frame(MAX_GLOBE_ALBEDO_WRITES_PER_FRAME);
+    let mut done = 0;
+    for mat in tiles.iter().skip(*cursor) {
+        if done >= budget {
+            *cursor += done;
+            return;
+        }
+        done += 1;
+        // Compared first: `get_mut` re-prepares the material even unchanged.
+        let stale = materials.get(&mat.0).is_some_and(|m| {
+            m.extension.night != night.night || m.extension.lights.x != night.lights.x
+        });
+        if stale {
+            if let Some(mut m) = materials.get_mut(&mat.0) {
+                m.extension.night = night.night;
+                m.extension.lights.x = night.lights.x;
+            }
+        }
+    }
+    *cursor = 0;
+}
+
 /// Whole-globe quadtree tile streaming: select the tile set whose screen-space
 /// size is right for the current view (splitting down to `QT_MAX_Z`), fetch the
 /// missing ones (coarse first), and swap tiles in/out without holes — a parent
@@ -1605,6 +1765,7 @@ pub fn update_globe_tiles(
     surface_albedo: Res<GlobeSurfaceAlbedo>,
     ocean_gloss: Res<GlobeOceanGloss>,
     time: Res<Time>,
+    night: Res<GlobeNight>,
 ) {
     let headless = headless.map(|h| *h);
     if !globe.ready {
@@ -1689,6 +1850,17 @@ pub fn update_globe_tiles(
             crate::systems::tile_loader::ground_sampler(),
         );
         let texture = images.add(image);
+        let lights_map = tile.lights.map(|(chain, mips)| {
+            images.add(crate::systems::tile_loader::image_from_mip_chain(
+                tile.width,
+                tile.height,
+                chain,
+                mips,
+                TextureFormat::R8Unorm,
+                crate::systems::tile_loader::TILE_TEXTURE_USAGE,
+                crate::systems::tile_loader::ground_sampler(),
+            ))
+        });
 
         // Sphere-patch mesh over the tile's Mercator footprint: rows linear in
         // tile-y (so the texture maps 1:1), vertices relative to the tile
@@ -1778,10 +1950,20 @@ pub fn update_globe_tiles(
                     },
                     // Same contract as the albedo above: come up at the ocean
                     // gloss the rest of the globe is already showing.
-                    extension: if has_ocean_mask {
-                        GlobeOcean::masked(ocean_gloss.0)
-                    } else {
-                        GlobeOcean::unmasked()
+                    extension: {
+                        let mut ext = if has_ocean_mask {
+                            GlobeOcean::masked(ocean_gloss.0)
+                        } else {
+                            GlobeOcean::unmasked()
+                        };
+                        // The night side as it is now (`update_globe_night`).
+                        ext.night = night.night;
+                        ext.lights =
+                            night
+                                .lights
+                                .with_y(if lights_map.is_some() { 1.0 } else { 0.0 });
+                        ext.lights_map = lights_map;
+                        ext
                     },
                 })),
                 Transform::from_translation(origin),

@@ -151,6 +151,7 @@ impl Plugin for MapPlugin {
             .watch_stream::<systems::globe::GlobeState>()
             .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
             .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
+            .init_resource::<systems::globe::GlobeNight>()
             .init_resource::<systems::placeholder_models::PlaceholderModels>();
 
         app.add_systems(
@@ -500,7 +501,12 @@ impl Plugin for MapPlugin {
             (
                 systems::globe::update_globe_visibility
                     .after(systems::free_camera::camera_controls),
-                systems::globe::update_globe_albedo.after(systems::free_camera::camera_controls),
+                (
+                    systems::globe::update_globe_albedo
+                        .after(systems::free_camera::camera_controls),
+                    // The night side, on the real sun and the From above settings.
+                    systems::globe::update_globe_night,
+                ),
                 // Track the atmosphere's planet centre against the floating-origin
                 // camera cell (correct sky altitude in every tier — see its doc).
                 systems::globe::update_atmosphere_origin
