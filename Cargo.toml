@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/geo",
+    "crates/scenario",
     "crates/vio",
     "crates/gnss",
     "crates/human",

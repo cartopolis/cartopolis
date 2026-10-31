@@ -1,0 +1,30 @@
+# `cartopolis_scenario` — the scenario engine's types and "the state at time t"
+# (`docs/mockups/scenarios/`, v1-engine; step 1 of v4-whole's build order).
+#
+# A scenario is a lens with a clock that plays primitives (a track, a region's
+# state, and later the rest) on a board (official areas, H3 cells, a network).
+# It knows nothing about drones, fallout or statistics: those are scenario
+# files. No `bevy`, so atlas, the simulator and the client can share it.
+[package]
+name = "cartopolis_scenario"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_scenario"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+earcutr.workspace = true
+# The area files (`areas`): compact, varint-coded.
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+# Scenario files are TOML, written by people. 0.8 is the one already in the
+# lockfile through figment; `parse` alone is all reading needs.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+[lints]
+workspace = true

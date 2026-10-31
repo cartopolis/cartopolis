@@ -1,0 +1,72 @@
+# A night wave of drones, as an exercise (docs/mockups/scenarios/, v1-drones).
+#
+# Group paths, launch times, counts and interceptions are invented; the speed is
+# that of the slow one-way attack drones reported over Ukraine. Region states are
+# derived from the tracks against Natural Earth's provinces (ne-admin1-europe.bin,
+# written by `atlas areas`).
+
+[scenario]
+name = "A night wave, hypothetical"
+mode = "exercise"
+confidence = "invented"
+summary = "Four groups of slow one-way attack drones cross from Belarus and western Russia into the Baltic states, Poland and further west."
+sources = [
+  "Speed: the slow one-way attack drones reported over Ukraine, 2022–2025 (public reporting)",
+  "Provinces: Natural Earth admin-1, 1:10m",
+  "Paths, launch times, counts and interceptions: invented for this exercise",
+]
+clock = { start = "22:00", end = "06:00", opens = "02:10" }
+
+[[track]]
+id = "Group A"
+count = 64
+speed_kmh = 170.0
+cone_km_per_h = 33.0
+confidence = "invented"
+t0 = "22:30"
+path = [[30.5, 53.9], [23.8, 52.6], [19.0, 52.3], [14.5, 52.4], [11.0, 52.3], [7.5, 52.2], [5.5, 52.1]]
+down = [{ t = "00:31", n = 6 }, { t = "01:15", n = 6 }, { t = "01:59", n = 6 }]
+
+[[track]]
+id = "Group B"
+count = 41
+speed_kmh = 170.0
+cone_km_per_h = 33.0
+confidence = "invented"
+t0 = "23:00"
+path = [[29.5, 55.5], [26.0, 55.8], [24.0, 56.3], [21.5, 56.8], [18.0, 57.5], [14.5, 56.0], [11.5, 55.3]]
+down = [{ t = "00:44", n = 3 }, { t = "01:22", n = 3 }, { t = "02:00", n = 3 }]
+
+[[track]]
+id = "Group C"
+count = 52
+speed_kmh = 170.0
+cone_km_per_h = 33.0
+confidence = "invented"
+t0 = "22:00"
+path = [[31.0, 52.0], [24.0, 51.2], [21.0, 50.3], [18.0, 49.8], [15.0, 50.0], [12.5, 50.2]]
+down = [{ t = "00:17", n = 7 }, { t = "01:07", n = 7 }, { t = "01:57", n = 7 }]
+
+[[track]]
+id = "Group D"
+count = 36
+speed_kmh = 170.0
+cone_km_per_h = 33.0
+confidence = "invented"
+t0 = "23:15"
+path = [[31.5, 54.5], [27.0, 54.6], [23.0, 54.4], [19.5, 54.6], [15.5, 54.4], [12.5, 54.3], [10.0, 54.3]]
+down = [{ t = "00:51", n = 2 }, { t = "01:26", n = 2 }, { t = "02:01", n = 2 }]
+
+# Each province takes the state of the soonest group to enter it; a model, so
+# never in Live.
+[[region_state]]
+id = "threat"
+board = "areas:ne-admin1-europe"
+derive = "tracks"
+within = ["POL", "LTU", "LVA", "EST", "DEU", "CZE", "SVK", "NLD", "BEL", "DNK", "AUT", "HUN", "SWE", "FIN", "FRA", "LUX", "CHE", "ITA", "SVN", "HRV", "ROU", "NOR", "GBR"]
+state = [
+  { id = "now", label = "Drones over the region", colour = "#d63a2f", when = "inside" },
+  { id = "soon", label = "Expected within an hour", colour = "#ef8a2e", within = "1:00" },
+  { id = "later", label = "Within three hours", colour = "#d9c25a", within = "3:00" },
+  { id = "passed", label = "Passed · watch for debris", colour = "#5a7f99", when = "passed" },
+]
