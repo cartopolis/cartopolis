@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — scenarios v5: figures about places, and where people use them</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Figures about places — <b>and where people use them</b> <span class="new">new</span></h1>
+<p class="lede">The planning offices (SCP, CPB, PBL) and CBS describe the Netherlands area by area: who lives where, how people
+live, what the future may bring. In Cartopolis this is not a separate statistics app. It uses the same system as the
+simulations: the figures are <b>region states and counters</b> on a third kind of board — <b>official areas</b> (neighbourhood →
+district → municipality → province → country), beside cells and graphs; a forecast is a <b>scenario clock that runs into the
+future</b>. And it answers the UX question first: who looks at this, where, and to do what?</p>
+
+<div class="principles">
+  <div><h3>A question, not a dataset</h3><p>People ask "how is my neighbourhood doing?" or "where do older people live alone?", not for table 85984NED. The question picks the lens.</p></div>
+  <div><h3>Compare, never rank</h3><p>A neighbourhood is shown against its town and the country, never as "worst of 13,000". No single score on a place.</p></div>
+  <div><h3>Small numbers stay hidden</h3><p>What CBS hides to protect people stays hidden; a neighbourhood under 50 people is grey.</p></div>
+  <div><h3>Then do something</h3><p>Every figure leads to people: the communities and events that work on it here, or a meeting to talk about it.</p></div>
+</div>
+
+<h2><span>1</span>Exploring, at home: the macro map with an area lens</h2>
+<p class="sub">Share of residents aged 65 or older, per municipality, 2024 — real figures from CBS's <i>Kerncijfers wijken en buurten</i> as PDOK serves them with the boundaries. The Netherlands as a whole: 20.5%. Apeldoorn outlined. The question chips, the community links and the forecast part of the time bar are <span class="new">new</span>.</p>
+<div class="screen" style="background-image:url(map-areas.jpg)">
+  <div class="abs glass topbar">
+    <div class="logo"><i></i>Cartopolis</div>
+    <div class="stat"><small>Lens · People and places</small></div>
+    <div class="right"><div class="btn">Areas</div><div class="btn" style="opacity:.6">Cells</div><div class="btn">Sources</div></div>
+  </div>
+  <div class="abs glass panel" style="left:16px; top:84px; width:300px;">
+    <h3>Ask the map</h3>
+    <div class="k">Questions people ask</div>
+    <span class="chip" style="background:var(--accent);color:var(--ink)">Where do many older people live?</span>
+    <span class="chip">Where do people live alone?</span>
+    <span class="chip">How far is the GP?</span>
+    <span class="chip">Where are homes still on gas?</span>
+    <span class="chip">How many homes have solar panels?</span>
+    <div class="k">Aged 65 or older · 2024</div>
+    <div class="row2"><span><span class="swatch" style="background:#3f6f78"></span>under 18%</span><b>25 municipalities</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#6f9c8f"></span>18 – 21%</span><b>58</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#c9b46a"></span>21 – 24%</span><b>110</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#e08a4a"></span>24 – 27%</span><b>104</b></div>
+    <div class="row2"><span><span class="swatch" style="background:#c8553d"></span>27% or more</span><b>45</b></div>
+    <div style="color:var(--dim);font-size:12px;margin-top:8px">Source: CBS, Kerncijfers wijken en buurten 2024 (via PDOK).</div>
+  </div>
+  <div class="abs glass panel" style="right:16px; top:84px; width:330px;">
+    <h3><span class="dot" style="background:#f3f7f9"></span>Apeldoorn</h3>
+    <div style="color:var(--dim);font-size:13px">municipality · 168,211 residents</div>
+    <div class="k">Compared with the Netherlands</div>
+    <div class="row2"><span>Aged 65 or older</span><b>22% · NL 20.5%</b></div>
+    <div class="row2"><span>Living alone (households)</span><b>37% · NL 39.9%</b></div>
+    <div class="row2"><span>Homes with solar panels</span><b>43% · NL 35.7%</b></div>
+    <div class="row2"><span>To the nearest GP</span><b>0.9 km</b></div>
+    <div class="k">Working on it here</div>
+    <span class="chip">Vrijwilligers Zevenhuizen</span><span class="chip">Repair café De Mheen</span><span class="chip">+3</span>
+    <div style="color:var(--dim);font-size:11.5px;margin:6px 0 0">Community names <span class="made">invented</span>.</div>
+    <div style="display:flex;gap:8px;margin-top:12px"><div class="btn primary">Its neighbourhoods</div><div class="btn">Talk about it</div></div>
+  </div>
+  <div class="abs glass timeline" style="height:96px">
+    <div class="tl-head" style="margin-bottom:6px">
+      <div class="clock" style="font-size:18px">2024</div><div class="phase" style="color:var(--accent)">CBS, measured</div>
+      <div class="speed"><div>2014</div><div class="on">2024</div><div>2035 forecast</div><div>2050 forecast</div></div>
+    </div>
+    <div class="track">
+      <div class="seg" style="left:0;width:38%;background:#3e6a6f"><b>measured · 2014 – 2024</b></div>
+      <div class="seg" style="left:38.5%;width:61.5%;background:repeating-linear-gradient(-45deg,#5a5f86 0 8px,#3b3f5c 8px 16px)"><b>forecast · PBL/CBS regional projections, WLO scenarios (CPB and PBL) · a model, hatched</b></div>
+      <div class="head" style="left:38%"></div>
+    </div>
+  </div>
+</div>
+
+<h2><span>2</span>Glancing, on the street: the neighbourhood card</h2>
+<p class="sub">The same lens one rung down, on a phone: the neighbourhoods of Apeldoorn (real CBS figures, 2024), you in the Binnenstad. The card compares the neighbourhood with its town and the country.</p>
+<div class="phones">
+  <div>
+    <div class="phone"><div class="scr">
+      <div class="map" style="background-image:url(map-apd.jpg);height:470px;background-position:center 38%"></div>
+      <div class="sb"><span>16:20</span><span>4G ▮▮▮</span></div>
+      <div class="sheet" style="height:372px">
+        <div class="grab"></div>
+        <div style="color:var(--cream);font-size:18px">Binnenstad</div>
+        <div style="color:var(--dim);font-size:12.5px;margin-bottom:8px">neighbourhood · Apeldoorn · 6,020 residents</div>
+        <div class="row2"><span>Living alone</span><b>66% · town 37 · NL 40</b></div>
+        <div class="row2"><span>Aged 65+</span><b>20% · town 22 · NL 20.5</b></div>
+        <div class="row2"><span>Rented homes</span><b>67% · town 40</b></div>
+        <div class="row2"><span>Solar panels</span><b>9% · town 43</b></div>
+        <div class="row2"><span>Supermarket · GP</span><b>0.4 km · 0.7 km</b></div>
+        <div style="margin-top:10px;padding:8px 10px;border-radius:10px;background:rgba(92,198,192,.12);font-size:12.5px;color:var(--cream);font-family:JakartaR,sans-serif">Two in three households here are one person. <b style="font-family:Jakarta;font-weight:inherit;color:var(--accent)">Saturday: soup evening at the Grote Kerk · 18 going</b></div>
+      </div>
+    </div></div>
+    <div class="pcap"><b>On the street.</b> Opened from the place card when you tap your own neighbourhood; three or four figures that say something, each against the town. The event is <span class="made">invented</span>.</div>
+  </div>
+  <div style="flex:1">
+    <h3 style="color:var(--cream);font-size:17px;margin:0 0 10px">Where and how people use it</h3>
+    <table class="ideas">
+      <tr><th>Moment</th><th>Where</th><th>What they do</th><th>Surface</th></tr>
+      <tr><td>Glance</td><td>on the street, on a phone</td><td>"What is this neighbourhood like?" — while walking, moving house, meeting someone</td><td>place card, 3–4 figures</td></tr>
+      <tr><td>Explore</td><td>at home, desktop or tablet</td><td>ask a question, compare towns, scrub back ten years or forward into a forecast</td><td>macro map, lens, time bar</td></tr>
+      <tr><td>Talk it over</td><td>in a community room in the world</td><td>a neighbourhood group looks at the same lens together, pins ideas on it, plans an activity</td><td>shared map table, pins, chat</td></tr>
+      <tr><td>Decide</td><td>a council or association meeting</td><td>weigh two futures (a forecast's high and low) for a place, with the sources open</td><td>scenario compare, side by side</td></tr>
+      <tr><td>Be warned</td><td>anywhere, a push</td><td>an official alert, with what it means for your neighbourhood (v1-warning)</td><td>phone card, live frame</td></tr>
+      <tr><td>Learn</td><td>a classroom</td><td>replay how a town changed, or a published scenario, step by step</td><td>replay with a teacher's pace</td></tr>
+    </table>
+    <div class="notes" style="grid-template-columns:1fr;margin-top:16px">
+      <div><h3>Who it is for</h3><ul>
+        <li><b>Residents</b>: understand their own place, find others who care about the same thing.</li>
+        <li><b>Community organisers</b>: see where the people they want to reach live, and what is already going on there.</li>
+        <li><b>Councillors, journalists, students</b>: the figures with their sources one tap away, and the futures that are on the table.</li></ul></div>
+    </div>
+  </div>
+</div>
+
+<h2><span>3</span>How the planning offices' figures fit the engine</h2>
+<div class="flow">
+  <div><b>Official areas: a third board</b>buurt → wijk → gemeente → provincie → land, with CBS's boundaries per year. Beside H3 cells (v2) and graphs (v3).</div><span>→</span>
+  <div><b>Figures are region states and counters</b>a share is a region state, a count a counter. Rolling up weights by residents or households; hidden small numbers stay hidden.</div><span>→</span>
+  <div><b>Forecasts are scenarios</b>a published projection is a replay of a model running into the future, hatched; two futures side by side are two scenarios on one clock.</div><span>→</span>
+  <div><b>Read on every rung</b>the same figure as a lens on the macro map, a card on the street, a row in a meeting — and cells (CBS's 100 m and 500 m squares) where areas mislead.</div>
+</div>
+
+<div class="notes">
+  <div><h3>Where the figures come from</h3><ul>
+    <li><b>CBS</b>: Kerncijfers wijken en buurten (yearly, per neighbourhood), and its 100 m / 500 m square statistics. Drawn here from PDOK's <code>wijkenbuurten</code> 2024 service.</li>
+    <li><b>PBL with CBS</b>: the regional population and household forecasts per municipality to 2050.</li>
+    <li><b>CPB with PBL</b>: the WLO scenarios for welfare and the living environment — two or more futures, some regionalised.</li>
+    <li><b>SCP</b>: reports on how people live (the <i>Sociale Staat van Nederland</i> and others). Mostly national; they explain a lens rather than colour it, and link from the card.</li>
+    <li>Health and loneliness per municipality and district: the GGD/RIVM <i>Gezondheidsmonitor</i>.</li></ul></div>
+  <div><h3>Choices and open questions</h3><ul>
+    <li>No income or "status" lens by default: it ranks neighbourhoods and can stigmatise them. Available behind a question, always compared, never coloured red.</li>
+    <li>Areas change every year; a time bar over ten years needs CBS's figures recalculated to one year's boundaries, or cells.</li>
+    <li>Drawn by <code>gen.ts</code> (<code>ONLY=areas,apd</code>); classes and averages computed from the same data (the national figures weighted by residents, households or homes).</li></ul></div>
+</div>
+</body>
+</html>

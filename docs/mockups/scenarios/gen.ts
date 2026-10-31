@@ -543,4 +543,49 @@ if (which.includes("phone")) {
   for (const [r, x] of st) console.log("phone", r.name, x.k, x.eta);
   await Bun.write(`${outD}/phone.svg`, svgWrap(v, s));
 }
+
+// ===== E. area statistics (CBS Kerncijfers wijken en buurten 2024, via PDOK's wijkenbuurten WFS) =====
+// gem_stats.json: wijkenbuurten:gemeenten; buurt_apd.json: wijkenbuurten:buurten around Apeldoorn. Negative values are CBS's "missing" codes.
+const ok = (x: any) => typeof x === "number" && x >= 0;
+const O65 = [ { max: 18, col: "#3f6f78" }, { max: 21, col: "#6f9c8f" }, { max: 24, col: "#c9b46a" }, { max: 27, col: "#e08a4a" }, { max: 99, col: "#c8553d" } ];
+const o65col = (v: number) => O65.find((c) => v < c.max)!.col;
+if (which.includes("areas")) {
+  const gem = (await J("gem_stats.json")).features.filter((f: any) => f.properties.water !== "JA");
+  const v = view([3.25, 50.72, 7.3, 53.58], 1600, 1000);
+  let s = `<rect width="${v.W}" height="${v.H}" fill="url(#sea)"/><rect width="${v.W}" height="${v.H}" fill="url(#waves)"/>`;
+  const landD = path(v, { type: "MultiPolygon", coordinates: landPolys }, true);
+  s += `<path d="${landD}" fill="#3a4140"/>`;
+  for (const f of gem) { const p = f.properties; const d = path(v, f.geometry, true, 0.5); s += `<path d="${d}" fill="${ok(p.percentagePersonen65JaarEnOuder) ? o65col(p.percentagePersonen65JaarEnOuder) : "#555"}" stroke="#13191b" stroke-width=".7" stroke-opacity=".7"/>`; }
+  const lakeD = lakes.features.map((f: any) => path(v, f.geometry, true)).join("");
+  s += `<path d="${lakeD}" fill="#36607e" opacity=".9"/>`;
+  const pv = feats(provs, (p) => ["NLD"].includes(p.adm0_a3)).map((f: any) => path(v, f.geometry, false)).join("");
+  s += `<path d="${pv}" fill="none" stroke="#fff6dc" stroke-width="1.6" opacity=".7"/>`;
+  s += countryLines(v, ["NLD"], "#fd6012", 2.5);
+  // highlight Apeldoorn
+  const ap = gem.find((f: any) => f.properties.gemeentenaam === "Apeldoorn");
+  s += `<path d="${path(v, ap.geometry, true, 0.5)}" fill="none" stroke="#f3f7f9" stroke-width="3.5"/>`;
+  s += placeBanners(v, cities.filter((c) => c.lat > 50.7 && c.lat < 53.6 && c.lon > 3.3 && c.lon < 7.3), 14, (c) => banner(v, c, { small: true }));
+  await Bun.write(`${outD}/areas.svg`, svgWrap(v, s));
+  const vals = gem.map((f: any) => f.properties.percentagePersonen65JaarEnOuder).filter(ok);
+  console.log("areas", gem.length, "classes", O65.map((c, i) => vals.filter((x: number) => x < c.max && (i === 0 || x >= O65[i - 1].max)).length).join(","));
+  const pick = ["Apeldoorn", "Utrecht", "Groningen", "Amsterdam"].map((n) => { const p = gem.find((f: any) => f.properties.gemeentenaam === n).properties; return `${n}: 65+ ${p.percentagePersonen65JaarEnOuder}% alone ${p.percentageEenpersoonshuishoudens}% GP ${p.huisartsenpraktijkGemiddeldeAfstandInKm} solar ${p.percentageWoningenMetZonnestroom} green ${p.afstandTotOpenbaarGroenTotaal}`; });
+  console.log(pick.join("\n"));
+}
+if (which.includes("apd")) {
+  const bu = (await J("buurt_apd.json")).features.filter((f: any) => f.properties.gemeentecode === "GM0200" && f.properties.water !== "JA");
+  const v = view([5.905, 52.175, 6.035, 52.245], 780, 1180);
+  let s = `<rect width="${v.W}" height="${v.H}" fill="#2b3134"/>`;
+  for (const f of bu) { const p = f.properties; const d = path(v, f.geometry, true, 0.4); s += `<path d="${d}" fill="${ok(p.percentagePersonen65JaarEnOuder) && p.aantalInwoners >= 50 ? o65col(p.percentagePersonen65JaarEnOuder) : "#4a5154"}" stroke="#13191b" stroke-width="1.2"/>`; }
+  const bs = bu.find((f: any) => f.properties.buurtnaam === "Binnenstad");
+  s += `<path d="${path(v, bs.geometry, true, 0.4)}" fill="none" stroke="#f3f7f9" stroke-width="5"/>`;
+  const taken: number[][] = [];
+  for (const f of bu) { const p = f.properties; const g = f.geometry; const ring = (g.type === "Polygon" ? g.coordinates[0] : g.coordinates[0][0]); let x = 0, y = 0; for (const [lo, la] of ring) { x += lo; y += la; } const [px, py] = v.P(x / ring.length, y / ring.length); if (px < 60 || px > v.W - 60 || py < 30 || py > v.H - 20 || p.aantalInwoners < 2500) continue; if (taken.some(([tx, ty]) => Math.abs(tx - px) < 120 && Math.abs(ty - py) < 26)) continue; taken.push([px, py]); s += `<text x="${r1(px)}" y="${r1(py)}" font-family="Jakarta" font-size="${p.buurtnaam === "Binnenstad" ? 24 : 16}" fill="#f3f7f9" text-anchor="middle" filter="url(#shadow)">${p.buurtnaam.replace(/&/g, "&amp;")}</text>`; }
+  const [px, py] = v.P(5.962, 52.2115);
+  s += `<g transform="translate(${r1(px)},${r1(py)})"><circle r="30" fill="#5cc6c0" opacity=".25"/><circle r="13" fill="#13191b" stroke="#5cc6c0" stroke-width="4"/><circle r="5" fill="#5cc6c0"/></g>`;
+  await Bun.write(`${outD}/apd.svg`, svgWrap(v, s));
+  const p = bs.properties;
+  console.log("Binnenstad", JSON.stringify({ n: p.aantalInwoners, o65: p.percentagePersonen65JaarEnOuder, alone: p.percentageEenpersoonshuishoudens, gp: p.huisartsenpraktijkGemiddeldeAfstandInKm, sup: p.groteSupermarktGemiddeldeAfstandInKm, green: p.afstandTotOpenbaarGroenTotaal, solar: p.percentageWoningenMetZonnestroom, rent: p.percentageHuurwoningen }));
+  const all = bu.map((f: any) => f.properties).filter((q: any) => q.aantalInwoners >= 50);
+  console.log("apd buurten drawn", bu.length, "with 50+ people", all.length);
+}
 console.log("all done");

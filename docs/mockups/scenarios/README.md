@@ -1,6 +1,6 @@
 ---
 topic: scenarios
-triggers: [scenario, globe, stars, "star lanes", "master of orion", graph, sandbox, H3, h3o, hex_grid.wesl, "hex grid", scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
+triggers: [scenario, CBS, SCP, CPB, PBL, wijkenbuurten, buurt, "area statistics", globe, stars, "star lanes", "master of orion", graph, sandbox, H3, h3o, hex_grid.wesl, "hex grid", scenarios, simulation, nuclear, fallout, drones, "air alert", "early warning", NL-Alert, lens, lenses, "strategy map", civilization, hex, "region state"]
 updated: 2026-10-31
 ---
 
@@ -27,6 +27,20 @@ base-map code, copied. Community territories, people, counts, drone tracks and
 alert texts are invented and marked so on the sheets.
 
 Nothing decided yet.
+
+## v5-areas: figures about places, and where people use them
+
+![v5-areas](v5-areas.png)
+
+Asked for 2026-10-31: SCP/CPB figures about Dutch areas in the same system, and
+the UX of where and how people use them. Official areas (buurt → wijk →
+gemeente → provincie) as a third board beside cells and graphs; figures as
+region states and counters; forecasts (PBL/CBS, WLO) as scenario clocks into
+the future, hatched. Real CBS Kerncijfers 2024 from PDOK's `wijkenbuurten`
+service (`gem_stats.json`, `buurt_apd.json` in the data dir): 65+ per
+municipality, and the Apeldoorn Binnenstad card. UX: question-first entry,
+compare never rank, small numbers hidden, every figure leading to people; six
+moments of use (glance, explore, talk it over, decide, be warned, learn).
 
 ## v4-whole: every scale, every mode
 
