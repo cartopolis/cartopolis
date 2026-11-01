@@ -2317,8 +2317,8 @@ fn meeting_chips(
         .get(my_room as usize - 1)
         .map_or("a breakout room", String::as_str);
     let left = rooms.until_ms.map(|until| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
         let secs = until.saturating_sub(now) / 1000;
         format!(" · {}:{:02} left", secs / 60, secs % 60)

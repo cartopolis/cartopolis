@@ -137,3 +137,80 @@ fn no_frustum_culling_comes_with_not_shadow_caster() {
         bad.join("\n")
     );
 }
+
+/// `std::time::Instant::now()` and `SystemTime::now()` panic on wasm32 ("time
+/// not implemented on this platform"), and a panic is `abort` there, so the
+/// browser client dies: the watchdog's clock did it to every browser at its
+/// first frame on 2026-08-21, and a breakout room's countdown carried another
+/// from 2026-10-17 until it was found by reading on 2026-11-01. Use
+/// `web_time` (or `bevy::platform::time`), which natively *is* std.
+///
+/// A scan cannot read `cfg`, so the files listed here are the ones that never
+/// compile on wasm (their `mod` is gated off it) or gate the call inside them;
+/// a new file that needs std's clock joins the list with its reason.
+/// `#[cfg(test)]` items are not scanned.
+#[test]
+fn the_clock_is_web_time_where_the_web_runs() {
+    const NATIVE_ONLY: &[&str] = &[
+        "platform/android.rs",
+        "platform/camera.rs",      // `cfg(not(wasm32))` in platform/mod.rs
+        "platform/hw_video.rs",    // `cfg(target_os = "android")`
+        "platform/orientation.rs", // its `mod android`
+        "platform/http.rs",        // inside its native `mod`
+        "platform/workers.rs",     // each call `cfg`-gated beside it
+        "systems/dev/aerial_reference.rs", // `cfg(not(wasm32))`
+        "systems/dev/mcp/",        // `cfg(mcp)`, Unix desktops only
+        "systems/dev/system_timings.rs", // feature `perf`, never on the web
+        "systems/gui/camera_screen.rs", // its `mod native`
+        "systems/gui/camera_screen/recorder.rs", // `cfg(not(wasm32))`
+        "systems/player/face_tracking.rs", // `cfg(not(wasm32))`
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut bad = Vec::new();
+    for (path, text) in sources() {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if NATIVE_ONLY.iter().any(|n| rel.starts_with(n)) {
+            continue;
+        }
+        // The `#[cfg(test)]` item being skipped: its brace depth, once opened.
+        let mut in_test: Option<i32> = None;
+        for (i, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            let t = line.trim_start();
+            if in_test.is_none()
+                && (t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test,"))
+            {
+                in_test = Some(0);
+                continue;
+            }
+            if let Some(depth) = in_test.as_mut() {
+                let opened = *depth > 0 || line.contains('{');
+                *depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                // Done when its braces close, or a brace-less item (`use …;`) ends.
+                if (opened && *depth <= 0) || (!opened && line.trim_end().ends_with(';')) {
+                    in_test = None;
+                }
+                continue;
+            }
+            let import = line.trim_start().starts_with("use std::time")
+                && (line.contains("Instant") || line.contains("SystemTime"));
+            if import
+                || line.contains("std::time::Instant::now")
+                || line.contains("std::time::SystemTime::now")
+            {
+                bad.push(format!("src/{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "std's clock panics on wasm32; use `web_time::{{Instant, SystemTime}}`:\n{}",
+        bad.join("\n")
+    );
+}

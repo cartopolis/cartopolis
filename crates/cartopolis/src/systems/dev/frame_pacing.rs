@@ -546,7 +546,7 @@ mod cadence_tests {
 
 pub(crate) fn frame_limiter(
     rate: Res<PresentationRate>,
-    mut deadline: Local<Option<std::time::Instant>>,
+    mut deadline: Local<Option<web_time::Instant>>,
     mut period: Local<Duration>,
 ) {
     // Native only: a `thread::sleep`-based FPS cap. The browser paces frames itself
@@ -602,7 +602,7 @@ pub(crate) fn frame_limiter(
             *deadline = None;
         }
         let period = wanted;
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         // A deadline in the past means we're already running below the cap (a hitch,
         // or a genuinely heavy frame). Re-base on `now` rather than sleeping zero for
         // a burst of frames trying to "catch up" to a schedule we can't meet.
