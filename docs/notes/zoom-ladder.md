@@ -1,10 +1,10 @@
 ---
 topic: zoom-ladder
-triggers: [zoom_rail.rs, cosmos.rs, planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
+triggers: [zoom_rail.rs, cosmos.rs, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
 updated: 2026-11-01
 ---
 
-# The zoom ladder: one zoom from the street to the Milky Way
+# The zoom ladder: one zoom from the street to the edge of the universe
 
 Built 2026-11-01 from `docs/mockups/zoom-ladder/` (v1, v2). What the code
 does not say:
@@ -87,6 +87,59 @@ at ~39° of heliocentric longitude on 1 November) and the Mars opposition of
 The Moon is wherever `utils::sun::moon_direction` puts it, which is the sky
 dome's approximation (a fixed 18° declination), not an ephemeris — its
 longitude only, laid on the ecliptic (the real orbit is within 5° of it).
+
+## Past the Milky Way: the galaxies, to the edge of the universe
+
+Added 2026-11-01 (asked: "is it realistic to zoom out further than the Milky
+Way?" — answer: all the way to the edge). Four rungs above the Galaxy one:
+Local Group (10²¹–3·10²² m), Nearby galaxies (to 5·10²³), Cosmic web (to
+2·10²⁵) and Universe (to `zoom_rail::TOP_M`, 3·10²⁷ — the edge, 46.5 billion
+light years comoving, fits a phone held upright there, tested).
+
+The galaxies are **one served file**, `cosmos/galaxies.bin`
+(`cartopolis_geo::formats::galaxies`), written by atlas's `galaxies` dataset
+from three catalogues — McConnachie 2012 (CADC, the January 2021 public FITS:
+144 dwarfs, no row for the Milky Way or Andromeda), Karachentsev's UNGC 2013
+(VizieR `J/AJ/145/101`, 869 to ~11 Mpc) and 2MRS (VizieR `J/ApJS/199/26`,
+44,599) — and fetched by the client once `cosmos_alt` passes 10¹⁹ m. It is not
+embedded like the near stars because it is ~800 KB nobody below the galaxy
+needs. Run on the host with `atlas run --datasets galaxies`: a deploy ships
+only the binary.
+
+What the code does not say:
+
+- **VizieR's own server in Strasbourg did not answer the VPS on 2026-11-01**
+  (connect timeout, three tries) while the Harvard mirror answered in half a
+  second; the dataset tries the mirror first.
+- **2MRS is taken only beyond 11 Mpc.** Nearer, a galaxy's own motion is a
+  large part of its redshift (Andromeda's cz is −300 km/s); the UNGC has real
+  distances for those. Distances are `cz / 70`.
+- **The file's order is the thinning**: catalogue by catalogue, and the survey
+  brightest first as seen from here, so a phone (and the web) draws the first
+  12,000 and keeps every named galaxy; a desktop draws all. Drawn as one mesh
+  of squares with one dot per 2-pixel bin, so the squeezed far shell at the
+  rim is not overdrawn.
+- **The squeeze breathes.** It eases (knee 0.6) over the Milky Way so the
+  spiral reads, closes again as the Local Group comes in at the rim, and lets
+  go at the top (knee 8, effectively to scale): there, everything mapped is a
+  small patch in the middle of the edge's ring. That is the honest picture.
+- The view turns once more, to above the **supergalactic plane** (pole at
+  l 47.37°, b 6.32°) between 3·10²² and 3·10²³ m, where the Local Sheet and
+  the Virgo direction lie face on.
+- The empty band across the survey is the Zone of Avoidance (our own disc),
+  and the caption says so.
+- **Capturing it**: `--shot-mode earth --at 53.2,6.57,3e27` (without the
+  mode the camera is not put in the cosmos at all, and the picture is black).
+  Before 2026-11-01 any height past ~10²¹ m overflowed the floating origin's
+  grid in the harness; the teleport now stops at the ceiling. Until atlas has
+  run on the host, point `CARTO_3DBAG_URL` at a local tree holding
+  `cosmos/galaxies.bin` (`atlas run --datasets galaxies --out /tmp/site`).
+- Labels go to the clusters first, then by how bright a galaxy looks from
+  here (luminosity over distance squared): by luminosity alone Andromeda lost
+  its place to galaxies five times farther.
+- Clusters are named on their brightest galaxy, matched in 2MRS by position
+  within 0.02° (`galaxies::LANDMARKS`): Coma's NGC 4889 is in the survey as a
+  bare 2MASX id, not as NGC.
 
 ## Light and Dark are the sun modes, not a globe setting
 
