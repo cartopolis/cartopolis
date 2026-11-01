@@ -906,7 +906,8 @@ mod tests {
             shape: egui::Shape::Rect(egui::epaint::RectShape::filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 600.0)),
                 egui::CornerRadius::ZERO,
-                theme::PANEL,
+                // A solid fill: the panels are glass since 2026-11-01.
+                theme::INK,
             )),
         }];
         assert!(!insert_backdrops(&mut shapes, [300, 600], 1.0, None));

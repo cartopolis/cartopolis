@@ -277,9 +277,16 @@ pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
 /// were lifted, and to 92 % again for the midas hub's cards ([`GLASS`]) — 84 %
 /// is a *measured* floor now rather than an eyeballed one, and
 /// `text_clears_every_surface_it_can_land_on` is what keeps it one.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 235);
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x1E, 0x32, 0x33, 240);
 
-/// The panel and window fill: [`SURFACE`] at 92 %.
+/// The panel and window fill: the midas hub's dark teal at 92 %.
+///
+/// **Teal since 2026-11-01**, asked for the same day ("the midas styling for
+/// panels", then "tealer, lighter"): the hub draws a question or a permission
+/// as the accent mixed into [`SURFACE`] with a teal rim ([`PANEL_RIM`]); this
+/// is that mix at 14 %, a step lighter than the hub's 7 %, which over the map
+/// read as one more near-black. The cards in a panel stay [`SURFACE`], so
+/// they sit darker in the teal as the hub's rows do in its question.
 ///
 /// **Raised from 84 % on 2026-11-01, to the midas hub's cards.** The hub draws
 /// these same tones (its `theme.css` is a copy of the web's, generated from
@@ -312,7 +319,7 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0
 /// ratios at once. Note what the test cannot know: it measures against the
 /// *unblurred* white, which is the honest worst case — a blur cannot make a
 /// white page darker.
-pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 235);
+pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x1E, 0x32, 0x33, 235);
 
 /// The clear rim of a glass pane over a blur (`systems::glass`): [`GLASS`]'s
 /// colour, thin, so the blurred city shows through at five sixths of its light.
@@ -323,13 +330,13 @@ pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1
 /// core [`GLASS_CORE`], and the rim is where the glass is seen. Without a
 /// backdrop the pane keeps the full [`GLASS`], so a missing blur cannot lose
 /// contrast.
-pub const GLASS_RIM: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 40);
+pub const GLASS_RIM: Color32 = Color32::from_rgba_unmultiplied_const(0x1E, 0x32, 0x33, 60);
 
 /// The dark core of a glass pane over a blur, drawn over [`GLASS_RIM`]: the
 /// two together, plus the sheen's brightest row, come out no lighter over white
 /// paper than [`GLASS`] does (`the_glass_core_is_no_lighter_than_the_flat_pane`),
 /// so every ratio measured through [`GLASS`] holds where the type is.
-pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 248);
+pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x1E, 0x32, 0x33, 245);
 
 /// The white at the very top of a glass pane's sheen (`systems::glass`), as an
 /// alpha; it fades to nothing by 40 % of the pane's height. Counted in the
@@ -361,7 +368,17 @@ pub const GLASS_SHEEN_PEAK: u8 = 12;
 /// was a step lighter than [`INK`], so a [`SURFACE`] card in it stood off it
 /// by less than one step and the list read flat. A constant of its own still,
 /// so the two can part again.
-pub const PANEL: Color32 = INK;
+///
+/// **[`GLASS`] again since 2026-11-01**, asked for the same day: the hub's
+/// layers, with the map blurred behind the panel. Being a glass fill it gets
+/// `systems::glass`'s backdrop, rim and core like every floating pane, and
+/// the contrast floor is [`GLASS`]'s, so no ratio measured through it moves.
+pub const PANEL: Color32 = GLASS;
+
+/// The hairline round a panel: the midas hub's teal rim on a question or a
+/// permission (`.msg__permission`, the accent at 32 % into [`SURFACE`]),
+/// round a pane that is that hub's dark teal (the accent at 14 %, [`GLASS`]).
+pub const PANEL_RIM: Color32 = Color32::from_rgb(0x2B, 0x51, 0x50);
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -716,13 +733,12 @@ fn widgets() -> Widgets {
     Widgets {
         // Separators, indent guides and plain labels all read off this one.
         noninteractive: visuals(SURFACE, LINE, TEXT),
-        inactive: visuals(SURFACE_RAISED, LINE, TEXT),
-        // Hover: the surface lifts a step and the hairline goes bright, so
-        // "clickable" is a change you can see rather than a guess.
-        hovered: WidgetVisuals {
-            expansion: 1.0,
-            ..visuals(SURFACE_HOVER, ACCENT, CREAM)
-        },
+        // At rest and under the pointer as the midas hub's `m-button`: a dark
+        // surface that lifts a step under the pointer. The hub's hairline is
+        // quieter than [`LINE`]; this one keeps the 3:1 a control boundary
+        // needs (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
+        inactive: visuals(SURFACE, LINE, TEXT),
+        hovered: visuals(SURFACE_RAISED, ACCENT, CREAM),
         // Pressed / focused — **one fill, not two.** `bg_fill` (the graphical
         // fill: slider grab, checkbox box) could take the full accent but
         // `weak_bg_fill` (the button fill) carries a [`CREAM`] label, which
@@ -780,7 +796,7 @@ pub fn visuals() -> egui::Visuals {
     // A lit rim rather than a drawn border. It is the same hairline the boxes
     // over the map wear, which is the point: a docked panel and a floating
     // readout are the same material at two sizes.
-    v.window_stroke = Stroke::new(1.0, OVERLAY_LINE);
+    v.window_stroke = Stroke::new(1.0, PANEL_RIM);
     v.window_corner_radius = CornerRadius::same(RADIUS_LG);
     // The popups are the cards over the map (a place, a building), so they take
     // the windows' radius: at 8 pt beside 14 pt panes they read as a
@@ -1238,20 +1254,12 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
         .corner_radius(CornerRadius::same(RADIUS))
         .min_size(egui::vec2(min_width, height)),
     );
+    // Flat, as the midas hub's primary: the small shadow every button wears,
+    // no glow and no lit edge.
     if lit {
-        let r = resp.rect;
-        let p = ui.painter();
-        p.set(
+        ui.painter().set(
             glow_slot,
-            accent_glow().as_shape(r, CornerRadius::same(RADIUS)),
-        );
-        let inset = f32::from(RADIUS);
-        p.line_segment(
-            [
-                egui::pos2(r.left() + inset, r.top() + 1.0),
-                egui::pos2(r.right() - inset, r.top() + 1.0),
-            ],
-            Stroke::new(1.0, Color32::from_white_alpha(120)),
+            SEGMENT_SHADOW.as_shape(resp.rect, CornerRadius::same(RADIUS)),
         );
     }
     resp
@@ -1293,8 +1301,11 @@ pub fn secondary_toggle(
             .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), ACCENT)
     });
     let word_g = (!label.is_empty()).then(|| {
-        ui.painter()
-            .layout_no_wrap(label.to_string(), FontId::proportional(SIZE_BODY), CREAM)
+        ui.painter().layout_no_wrap(
+            label.to_string(),
+            FontId::new(SIZE_BODY, brand_family()),
+            CREAM,
+        )
     });
     let content = |icon: &Option<std::sync::Arc<egui::Galley>>| {
         let i = icon.as_ref().map_or(0.0, |g| g.size().x);
@@ -1325,16 +1336,26 @@ pub fn secondary_toggle(
     }
     let enabled = ui.is_enabled();
     let held = resp.is_pointer_button_down_on();
-    let (fill, line) = if !enabled {
-        (SURFACE_RAISED, LINE.gamma_multiply(0.5))
-    } else if held || on {
-        (ACCENT_MUTED, ACCENT)
+    // The midas hub's button (`m-button`): a dark surface with a hairline and
+    // a small shadow, the word and its icon in the strong text tone. Under the
+    // pointer it lifts a step and the hairline takes the accent; "on" is the
+    // hub's soft teal tag. The hairline is [`LINE`], firmer than the hub's,
+    // for the 3:1 a control boundary needs.
+    let (fill, line, ink) = if !enabled {
+        (SURFACE, SURFACE_HOVER, CREAM)
+    } else if on {
+        (ACCENT_MUTED, ACCENT_MUTED, ACCENT_RING)
+    } else if held {
+        (SURFACE_HOVER, LINE, CREAM)
     } else if resp.hovered() {
-        (SECONDARY_HOVER, ACCENT)
+        (SURFACE_RAISED, ACCENT, CREAM)
     } else {
-        (SURFACE_HOVER, LINE)
+        (SURFACE, LINE, CREAM)
     };
     let p = ui.painter();
+    if enabled && !held && !on {
+        p.add(SEGMENT_SHADOW.as_shape(rect, CornerRadius::same(RADIUS)));
+    }
     p.rect(
         rect,
         CornerRadius::same(RADIUS),
@@ -1342,18 +1363,6 @@ pub fn secondary_toggle(
         Stroke::new(1.0, line),
         egui::StrokeKind::Inside,
     );
-    // The same lit top edge as the primary, fainter: it is what makes a
-    // surface read as a raised key rather than a hole in the panel.
-    if enabled && !held {
-        let inset = f32::from(RADIUS);
-        p.line_segment(
-            [
-                egui::pos2(rect.left() + inset, rect.top() + 1.0),
-                egui::pos2(rect.right() - inset, rect.top() + 1.0),
-            ],
-            Stroke::new(1.0, Color32::from_white_alpha(40)),
-        );
-    }
     let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
     let mut x = rect.center().x - content / 2.0;
     if let Some(g) = icon_g {
@@ -1361,20 +1370,17 @@ pub fn secondary_toggle(
         p.galley_with_override_text_color(
             egui::pos2(x, rect.center().y - g.size().y / 2.0),
             g,
-            dim(ACCENT),
+            dim(ink),
         );
         x += w + gap;
     }
     if let Some(g) = word_g {
         let y = rect.center().y - g.size().y / 2.0;
-        p.galley_with_override_text_color(egui::pos2(x, y), g, dim(CREAM));
+        p.galley_with_override_text_color(egui::pos2(x, y), g, dim(ink));
     }
     paint_focus_ring(ui, &resp, rect, false);
     resp
 }
-
-/// [`secondary_button`]'s hover fill: a step above [`SURFACE_HOVER`].
-const SECONDARY_HOVER: Color32 = Color32::from_rgb(0x36, 0x44, 0x45);
 
 /// The width each of `n` buttons gets to share a row equally: a row of
 /// controls that are one choice each reads as a set, sized to their words it
@@ -1745,6 +1751,22 @@ pub const CARD_SHADOW: Shadow = Shadow {
     color: Color32::from_black_alpha(150),
 };
 
+/// The shadow under the chosen option of a [`segmented`] control and under a
+/// button at rest: the hub's `--m-shadow`, close and small.
+const SEGMENT_SHADOW: Shadow = Shadow {
+    offset: [0, 1],
+    blur: 4,
+    spread: 0,
+    color: Color32::from_black_alpha(120),
+};
+
+/// The chosen option of a segmented control, painted: a raised card with the
+/// small shadow ([`segmented`], the Community | World switch).
+pub fn paint_raised(p: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
+    p.add(SEGMENT_SHADOW.as_shape(rect, corner));
+    p.rect_filled(rect, corner, SURFACE_RAISED);
+}
+
 /// A card in a panel, painted: its [`CARD_SHADOW`] and then its fill. For the
 /// rows that are painted rather than laid out in a `Frame` (a `Frame` takes
 /// `.shadow(CARD_SHADOW)`).
@@ -1817,11 +1839,6 @@ fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
 }
 
 // ─── Panel header ─────────────────────────────────────────────────────────────
-
-/// Diameter of the header's icon medallion. Small enough to sit on one text
-/// line, large enough that the dock's glyph survives the shrink. It is not a
-/// target — nothing clicks it — so it does not grow on the touch tier.
-const HEADER_MEDALLION: f32 = 28.0;
 
 /// Padding between the header band's edge and its contents.
 const HEADER_INSET: f32 = 7.0;
@@ -2207,26 +2224,11 @@ pub fn panel_header_with(
         row.spacing_mut().item_spacing.x = 8.0;
         close = close_button(&mut row).clicked();
         extra(&mut row);
+        // A plain title, as the midas hub titles its pages: the teal medallion
+        // that stood before it repeated the dock disc that opened the panel,
+        // and was one more accent on a page that should carry one.
+        let _ = icon;
         row.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            let (medallion, _) =
-                ui.allocate_exact_size(egui::Vec2::splat(HEADER_MEDALLION), egui::Sense::hover());
-            paint_disc(
-                ui.painter(),
-                medallion.center(),
-                HEADER_MEDALLION * 0.5 - 0.5,
-                Disc {
-                    // The dock disc that opened this panel is engaged, so the
-                    // medallion has to be the engaged plate too — they are one
-                    // object at two sizes, and a header wearing the *old* state
-                    // of its own button is the drift this function exists to stop.
-                    fill: ACCENT,
-                    ring: ACCENT_RING,
-                    ink: INK,
-                    icon,
-                    icon_size: 15.0,
-                    ring_width: 1.0,
-                },
-            );
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(title)
@@ -2272,28 +2274,61 @@ pub fn panel_header_with(
 /// ("ONLINE NOW"): a section title is a signpost, and drawn bold in the brightest
 /// tone it competed with the controls under it for the eye.
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(12.0);
-    ui.label(
-        egui::RichText::new(title.to_uppercase())
-            .size(SIZE_CHIP)
-            .extra_letter_spacing(0.6)
-            .color(TEXT_DIM),
-    );
-    ui.add_space(2.0);
+    section_tinted(ui, title, TEXT_DIM);
 }
 
 /// [`section`] in a colour of its own: the admin pages' headings are
 /// [`WARN`] gold, the colour Admin wears everywhere it appears
 /// (`docs/mockups/home-and-profile/v2`).
+///
+/// Drawn as the midas hub heads its groups ("Running 4", `.home__head`):
+/// sentence case in the semibold face, and a trailing count — a title ending
+/// in "(3)" — split off and set in the faint tone after it.
 pub fn section_tinted(ui: &mut egui::Ui, title: &str, tone: Color32) {
+    let (name, count) = split_count(title);
     ui.add_space(12.0);
-    ui.label(
-        egui::RichText::new(title.to_uppercase())
-            .size(SIZE_CHIP)
-            .extra_letter_spacing(0.6)
-            .color(tone),
-    );
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            egui::RichText::new(sentence_case(name))
+                .font(FontId::new(SIZE_SUB, brand_family()))
+                .color(tone),
+        );
+        if let Some(n) = count {
+            ui.label(
+                egui::RichText::new(n)
+                    .font(FontId::new(SIZE_SUB, brand_family()))
+                    .color(LINE),
+            );
+        }
+    });
     ui.add_space(2.0);
+}
+
+/// "Asking to join (1)" → ("Asking to join", Some("1")).
+fn split_count(title: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = title.strip_suffix(')') {
+        if let Some((name, n)) = rest.rsplit_once(" (") {
+            if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+                return (name, Some(n));
+            }
+        }
+    }
+    (title, None)
+}
+
+/// A title written in capitals by a caller ("ONLINE NOW") in sentence case;
+/// anything already mixed-case is left as written, names and all.
+fn sentence_case(s: &str) -> String {
+    if s.chars().any(char::is_lowercase) {
+        return s.to_string();
+    }
+    let lower = s.to_lowercase();
+    let mut chars = lower.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// What a [`list_row`] carries at its right-hand end.
@@ -2600,12 +2635,15 @@ pub fn segmented<T: PartialEq + Copy>(
         size -= 0.5;
     }
 
+    // The midas hub's segmented control (`m-segmented`): a sunken track with a
+    // hairline, and the chosen option a raised card on it — not an accent
+    // plate. The accent stays for the one primary action on a page.
     let p = ui.painter().clone();
-    p.rect_filled(rect, CornerRadius::same(12), SURFACE_RAISED);
+    p.rect_filled(rect, CornerRadius::same(RADIUS), INK);
     p.rect_stroke(
         rect,
-        CornerRadius::same(12),
-        Stroke::new(1.0, OVERLAY_LINE),
+        CornerRadius::same(RADIUS),
+        Stroke::new(1.0, SURFACE_HOVER),
         egui::StrokeKind::Inside,
     );
     let mut changed = false;
@@ -2619,20 +2657,31 @@ pub fn segmented<T: PartialEq + Copy>(
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         let on = *value == *option;
         let (fill, ink) = if on {
-            (ACCENT, INK)
+            (SURFACE_RAISED, CREAM)
         } else if resp.is_pointer_button_down_on() {
-            (ACCENT_MUTED, CREAM)
+            (SURFACE, CREAM)
         } else if resp.hovered() {
-            (SURFACE_HOVER, CREAM)
+            (Color32::TRANSPARENT, CREAM)
         } else {
             (Color32::TRANSPARENT, TEXT_DIM)
         };
-        p.rect_filled(r, CornerRadius::same(9), fill);
+        let corner = CornerRadius::same(RADIUS - 3);
+        if on {
+            p.add(SEGMENT_SHADOW.as_shape(r, corner));
+        }
+        p.rect_filled(r, corner, fill);
         p.text(
             r.center(),
             egui::Align2::CENTER_CENTER,
             *label,
-            FontId::proportional(size),
+            FontId::new(
+                size,
+                if on {
+                    brand_family()
+                } else {
+                    FontFamily::Proportional
+                },
+            ),
             ink,
         );
         paint_focus_ring(ui, &resp, r, false);
@@ -3108,16 +3157,22 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
-    /// The panel tone sits inside the ramp and leans the way the ramp does —
-    /// cooler, never warmer. The brown a mix of the brand orange produced
-    /// (red above blue) is what this pins against.
+    /// The panel is the midas hub's dark teal: it leans the way the ramp does —
+    /// cooler, never warmer (the brown a mix of the brand orange produced, red
+    /// above blue, is what this pins against) — and sits inside the ramp,
+    /// above [`INK`] and below the hover step, so a [`SURFACE`] card in it
+    /// and a hovered control on it still read as two different things.
     #[test]
-    fn the_panel_is_a_teal_near_black() {
+    fn the_panel_is_a_dark_teal() {
         assert!(
             PANEL.r() <= PANEL.b() && PANEL.r() <= PANEL.g(),
             "the panel has a warm cast: {PANEL:?}"
         );
-        assert!(luminance(INK) <= luminance(PANEL) && luminance(PANEL) <= luminance(SURFACE));
+        assert!(
+            PANEL.g() > PANEL.r() + 8,
+            "the panel is no longer teal: {PANEL:?}"
+        );
+        assert!(luminance(INK) <= luminance(PANEL) && luminance(PANEL) <= luminance(SURFACE_HOVER));
     }
 
     #[test]

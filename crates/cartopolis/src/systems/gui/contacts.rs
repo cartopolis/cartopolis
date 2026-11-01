@@ -1433,10 +1433,9 @@ fn section_label(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(text.to_uppercase())
-                .size(12.0)
-                .color(crate::systems::chats::LABEL_WARM)
-                .extra_letter_spacing(0.6),
+            egui::RichText::new(text)
+                .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
+                .color(theme::TEXT_DIM),
         );
         if let Some(n) = count {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

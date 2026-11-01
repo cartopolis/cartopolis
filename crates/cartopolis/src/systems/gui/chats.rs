@@ -62,10 +62,6 @@ const AVATAR_TONES: [egui::Color32; 6] = [
     egui::Color32::from_rgb(0xB8, 0x48, 0x68),
     egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
 ];
-/// The section labels' tone ("ONLINE NOW"): a warm tint of the brand orange,
-/// so the signposts in a list carry a little colour without competing with
-/// the unread badges, which are the full orange.
-pub(crate) const LABEL_WARM: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xA0, 0x6E);
 /// A row's resting card, so the list reads as a stack of rounded rows on the
 /// screen rather than as text on black: [`theme::SURFACE`] on the [`theme::PANEL`]
 /// page under a [`theme::CARD_SHADOW`], the midas hub's card (2026-11-01; it
@@ -538,22 +534,21 @@ pub(crate) fn segmented(
     let id = ui.id().with("chats_segmented");
 
     let p = ui.painter().clone();
+    // The midas hub's segmented control, as `theme::segmented`: a sunken track,
+    // the side you are on a raised card with the strong ink. World keeps its
+    // orange live dot, which is what says the map is live.
     p.rect_filled(
         rect,
-        egui::CornerRadius::same(12),
-        if glass {
-            theme::GLASS
-        } else {
-            theme::SURFACE_RAISED
-        },
+        egui::CornerRadius::same(theme::RADIUS),
+        if glass { theme::GLASS } else { theme::INK },
     );
     p.rect_stroke(
         rect,
-        egui::CornerRadius::same(12),
-        egui::Stroke::new(1.0, GLINE),
+        egui::CornerRadius::same(theme::RADIUS),
+        egui::Stroke::new(1.0, if glass { GLINE } else { theme::SURFACE_HOVER }),
         egui::StrokeKind::Inside,
     );
-    let corner = egui::CornerRadius::same(9);
+    let corner = egui::CornerRadius::same(theme::RADIUS - 3);
     let size = 14.0;
     let mut picked = None;
     for (i, &seg) in segs.iter().enumerate() {
@@ -566,16 +561,14 @@ pub(crate) fn segmented(
             picked = Some(seg);
         }
         let selected = seg == on;
-        let (fill, ink) = match seg {
-            Seg::Community => (theme::ACCENT, theme::INK),
-            Seg::World => (theme::BRAND, egui::Color32::WHITE),
-        };
         if selected {
-            p.rect_filled(r, corner, fill);
-        } else if resp.hovered() {
-            p.rect_filled(r, corner, theme::SURFACE_HOVER);
+            theme::paint_raised(&p, r, corner);
         }
-        let ink = if selected { ink } else { theme::TEXT_DIM };
+        let ink = if selected || resp.hovered() {
+            theme::CREAM
+        } else {
+            theme::TEXT_DIM
+        };
         match seg {
             Seg::Community => {
                 let icon = if left == "Chat" {
@@ -594,7 +587,7 @@ pub(crate) fn segmented(
                 let label = p.layout_no_wrap("World".into(), egui::FontId::proportional(size), ink);
                 let total = 7.0 + 6.0 + label.size().x;
                 let x0 = r.center().x - total / 2.0;
-                live_dot(&p, egui::pos2(x0 + 3.5, r.center().y), selected);
+                live_dot(&p, egui::pos2(x0 + 3.5, r.center().y), false);
                 p.galley(
                     egui::pos2(x0 + 13.0, r.center().y - label.size().y / 2.0),
                     label,

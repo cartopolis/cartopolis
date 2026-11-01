@@ -133,7 +133,7 @@ fn tokens() -> Vec<(&'static str, Value)> {
         ("--m-bg", pair(L_BG, INK)),
         ("--m-surface", pair(L_SURFACE, SURFACE)),
         ("--m-surface-raised", pair(L_SURFACE_RAISED, SURFACE_RAISED)),
-        ("--m-surface-sunken", pair(L_SURFACE_SUNKEN, PANEL)),
+        ("--m-surface-sunken", pair(L_SURFACE_SUNKEN, INK)),
         (
             "--c-glass",
             Pair(alpha(L_SURFACE, glass_pct), alpha(SURFACE, glass_pct)),

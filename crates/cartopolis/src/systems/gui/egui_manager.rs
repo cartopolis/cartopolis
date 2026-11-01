@@ -241,13 +241,13 @@ pub fn responsive_right_panel(
     viewport_w: f32,
     wide_width: f32,
 ) -> egui::Panel {
-    // The surface every panel shares (`theme::PANEL`, solid, the Chats screen's
-    // ink) and the glass rim, with room round the content. egui's own side-panel margin
+    // The surface every panel shares (`theme::PANEL`, glass like the panes over the
+    // map) and the glass rim, with room round the content. egui's own side-panel margin
     // is 8 x 2 pt, which set every title and row against the panel's edge; the
     // Chats screen sets its own frame over this one.
     let frame = egui::Frame::NONE
         .fill(crate::systems::theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::OVERLAY_LINE))
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::PANEL_RIM))
         .inner_margin(egui::Margin::symmetric(14, 10));
     if compact {
         egui::Panel::right(id)
@@ -329,7 +329,7 @@ pub fn bottom_sheet(
     let height = egui.viewport_pts().y * share;
     let frame = egui::Frame::NONE
         .fill(crate::systems::theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::OVERLAY_LINE))
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::PANEL_RIM))
         .inner_margin(egui::Margin::symmetric(14, 10));
     egui::Panel::bottom(id)
         .frame(frame)

@@ -1022,9 +1022,8 @@ fn heading(ui: &mut egui::Ui, text: &str, right: &str, today: bool) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(text.to_uppercase())
-                .size(theme::SIZE_CHIP)
-                .extra_letter_spacing(0.6)
+            egui::RichText::new(text)
+                .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
                 .color(if today { theme::BRAND } else { theme::TEXT_DIM }),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1885,9 +1884,9 @@ pub fn coming_up(
         Vec::new()
     };
     let label = match (rows, soon.is_empty()) {
-        (false, _) => "PLANS",
-        (true, true) => "NOTHING COMING UP",
-        (true, false) => "COMING UP",
+        (false, _) => "Plans",
+        (true, true) => "Nothing coming up",
+        (true, false) => "Coming up",
     };
     theme::list_group(ui, |ui| {
         egui::Frame::NONE
@@ -1897,8 +1896,7 @@ pub fn coming_up(
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(label)
-                            .size(theme::SIZE_CHIP)
-                            .extra_letter_spacing(0.6)
+                            .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
                             .color(theme::TEXT_DIM),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

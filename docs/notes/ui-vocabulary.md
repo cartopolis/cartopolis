@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -39,6 +39,21 @@ said `icons()`: that was the glyph preference list the icon font retired.)
 orange → monochrome on 2026-09-10, `monochrome-chrome.md` → charcoal and ember →
 teal) so nobody walks it again, and the web UI's colours are generated from
 these constants (`atlas-web-ui.md`).
+
+**Panels are styled after the midas hub's, on the person's word (2026-11-01).**
+Three passes were shown before that landed, and the misses are the useful part:
+making the panel glass at the old density changed nothing visible, and
+re-drawing the buttons alone was "barely better" — what was meant was the
+*panel*, the hub's dark teal with its teal rim (`theme::GLASS`, `PANEL_RIM`),
+"tealer, lighter" than the hub's own 7 % mix. Inside it the widgets follow the
+hub's component library (`@garage44/mithril`): a segmented control's choice is
+a raised card, not an accent plate; section heads are sentence case with the
+count in the faint tone ("Asking to join 1"); a panel title has no medallion; a
+secondary button is a dark surface with an icon in the text tone. One place
+deliberately departs from the hub: a button's hairline is `LINE`, not the hub's
+quieter border, which fails the 3:1 control boundary below. Midas screenshots
+for comparison are in midas's `docs/screens/`, and the mockups in
+`docs/mockups/ui-directions/`.
 
 **`theme::install` runs once, from `EguiManager::default`, before the first
 pass.** `set_fonts` only takes effect at the next `begin_pass` and painting with
