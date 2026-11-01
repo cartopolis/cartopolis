@@ -6,6 +6,19 @@ updated: 2026-11-01
 
 # The zoom ladder: one zoom from the street to the Milky Way
 
+## Built, 2026-11-01
+
+v2 built the same day, after the person steering said to build after the
+concept, in five commits on `session/s540`: grab, throw and double-tap the
+globe; the light as Auto / Light / Dark; the zoom rail; Earth & Moon, the
+Solar system, the Stars and the Milky Way; flights. Standing facts are in
+`docs/notes/zoom-ladder.md`. Built differently from the drawing: the rung's
+name shows on the rail's tag, not as a toast at the top; a planet or a star
+has its distance and light time on its label instead of a card; no
+two-finger tap to zoom out; Light draws no city lights beyond its line; Dark
+shows city lights everywhere and the land almost black. Not built: anything
+past the labels for the other planets (no visiting Mars).
+
 ## v2 — after review, 2026-11-01
 
 ![v2](v2.png)
