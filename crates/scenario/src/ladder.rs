@@ -13,6 +13,15 @@ pub const MAX_REACH: i64 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Rung {
+    /// The observable universe, its edge 46 billion light years away.
+    Universe,
+    /// The cosmic web: the 2MASS Redshift Survey's clusters and voids.
+    CosmicWeb,
+    /// The Local Volume: the galaxies within about 11 Mpc.
+    NearbyGalaxies,
+    /// The Milky Way's own group: the Magellanic Clouds, Andromeda, Triangulum
+    /// and the dwarfs.
+    LocalGroup,
     /// The Milky Way from above, the Sun a point in one of its arms.
     Galaxy,
     /// Real star systems and the lanes between them.
@@ -38,7 +47,11 @@ pub enum Rung {
 
 impl Rung {
     /// Every rung, coarsest first.
-    pub const ALL: [Rung; 12] = [
+    pub const ALL: [Rung; 16] = [
+        Rung::Universe,
+        Rung::CosmicWeb,
+        Rung::NearbyGalaxies,
+        Rung::LocalGroup,
         Rung::Galaxy,
         Rung::Stars,
         Rung::SolarSystem,
@@ -69,11 +82,18 @@ impl Rung {
             // Above the World rung a "height" is how far out the view is: the
             // Moon's whole orbit (384,400 km) fits from about a million km, the
             // planets from tens of millions, the nearest stars from a few
-            // hundred AU, the galaxy from a hundred light years or so.
+            // hundred AU, the galaxy from a hundred light years or so, the
+            // Local Group from a hundred thousand, the Local Volume (11 Mpc)
+            // from a few million, the redshift survey from tens of millions,
+            // the edge of the observable universe from a few billion.
             Rung::EarthMoon => (60_000_000.0, 2e10),
             Rung::SolarSystem => (2e10, 1e14),
             Rung::Stars => (1e14, 1e18),
-            Rung::Galaxy => (1e18, f64::INFINITY),
+            Rung::Galaxy => (1e18, 1e21),
+            Rung::LocalGroup => (1e21, 3e22),
+            Rung::NearbyGalaxies => (3e22, 5e23),
+            Rung::CosmicWeb => (5e23, 2e25),
+            Rung::Universe => (2e25, f64::INFINITY),
         }
     }
 
@@ -94,7 +114,8 @@ impl Rung {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Rung::Galaxy => "galaxy",
+            Rung::Universe | Rung::CosmicWeb => "galaxy cluster",
+            Rung::NearbyGalaxies | Rung::LocalGroup | Rung::Galaxy => "galaxy",
             Rung::Stars => "star system",
             Rung::SolarSystem => "body",
             Rung::EarthMoon => "body",

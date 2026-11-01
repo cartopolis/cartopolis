@@ -522,7 +522,7 @@ const RAIL_DISC: f32 = 30.0;
 /// How long the names stay after a tap on the current one, seconds.
 const RAIL_NAMES_HOLD: f64 = 4.0;
 
-/// The zoom rail on the right edge: − at the top (out, towards the Milky Way),
+/// The zoom rail on the right edge: − at the top (out, towards the universe),
 /// the track, + at the foot (in, towards the street). Returns the held zoom
 /// rate of the two discs and a height to go to, if the track or a rung's name
 /// asked for one.

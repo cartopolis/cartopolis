@@ -1,8 +1,8 @@
 //! The zoom rail: a thin ladder on the right edge naming the rung of places the
-//! camera is on, from the street to the Milky Way (`docs/mockups/zoom-ladder/`,
-//! v2). Earth mode only, on every device.
+//! camera is on, from the street to the edge of the observable universe
+//! (`docs/mockups/zoom-ladder/`, v2). Earth mode only, on every device.
 //!
-//! At rest it is a 4 pt track between a small − (out, towards the Milky Way) and
+//! At rest it is a 4 pt track between a small − (out, towards the universe) and
 //! a + (in, towards the street), with the current rung's name beside the thumb.
 //! Hovering or a finger on the track shows every rung's name as plain text;
 //! dragging along it sets the height, and a tap on a name goes to that rung. It
@@ -11,7 +11,7 @@
 //!
 //! **Every rung gets the same length of track**, whatever span of heights it
 //! covers, and within a rung the height runs on a log scale. The street's 2.5 km
-//! and the galaxy's 10²¹ m are each one step of the ladder, which is how people
+//! and the universe's 10²⁷ m are each one step of the ladder, which is how people
 //! think of them; a log scale over the whole range would give the street a
 //! sliver and the empty light years most of the rail.
 //!
@@ -30,6 +30,22 @@ pub struct RailRung {
 /// The rail from the top (furthest out) to the bottom (the street). "City" for
 /// the municipality: on a map, that is what a gemeente reads as.
 pub const RAIL: &[RailRung] = &[
+    RailRung {
+        rung: Rung::Universe,
+        label: "Universe",
+    },
+    RailRung {
+        rung: Rung::CosmicWeb,
+        label: "Cosmic web",
+    },
+    RailRung {
+        rung: Rung::NearbyGalaxies,
+        label: "Nearby galaxies",
+    },
+    RailRung {
+        rung: Rung::LocalGroup,
+        label: "Local Group",
+    },
     RailRung {
         rung: Rung::Galaxy,
         label: "Milky Way",
@@ -82,8 +98,9 @@ pub const RAIL: &[RailRung] = &[
 
 /// The lowest height the rail stands for: Earth mode's closest orbit.
 pub const FLOOR_M: f64 = 15.0;
-/// The highest: across the Milky Way and some.
-pub const TOP_M: f64 = 1e21;
+/// The highest: the observable universe's edge (4.4 × 10²⁶ m) inside the
+/// screen, a phone's narrow side included.
+pub const TOP_M: f64 = 3e27;
 
 /// A rung's band on the rail, its open ends closed at the floor and the top.
 fn band(r: &RailRung) -> (f64, f64) {
@@ -137,8 +154,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_rail_runs_from_the_galaxy_to_the_street() {
-        assert_eq!(RAIL.first().map(|r| r.rung), Some(Rung::Galaxy));
+    fn the_rail_runs_from_the_universe_to_the_street() {
+        assert_eq!(RAIL.first().map(|r| r.rung), Some(Rung::Universe));
         assert_eq!(RAIL.last().map(|r| r.rung), Some(Rung::Street));
         // Every rung of the ladder is on it, once.
         for r in Rung::ALL {
@@ -149,10 +166,13 @@ mod tests {
     #[test]
     fn position_and_height_are_inverses() {
         for alt in [
-            20.0, 900.0, 5_000.0, 150_000.0, 2e6, 8e6, 3.8e7, 4e8, 1e12, 1e17, 5e20,
+            20.0, 900.0, 5_000.0, 150_000.0, 2e6, 8e6, 3.8e7, 4e8, 1e12, 1e17, 5e20, 2e22, 1e24,
+            1e26,
         ] {
             let back = altitude_at(position_of(alt));
-            assert!((back / alt - 1.0).abs() < 1e-6, "{alt} came back as {back}");
+            // The position is an f32: one step of it is a few millionths of a
+            // rung, which is what a round trip may lose.
+            assert!((back / alt - 1.0).abs() < 1e-5, "{alt} came back as {back}");
         }
     }
 

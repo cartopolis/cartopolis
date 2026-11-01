@@ -32,6 +32,10 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::place_names::PlaceNames>()
             // The scenario over the map, if one is open (`systems::scenario`).
             .init_resource::<systems::scenario::ScenarioView>()
+            // The galaxies past the Milky Way, fetched once the view climbs
+            // towards them (`systems::cosmos`).
+            .init_resource::<systems::cosmos::GalaxyCatalogue>()
+            .watch_stream::<systems::cosmos::GalaxyCatalogue>()
             // The dock's mark disc and the card it opens (`systems::ui`).
             .init_resource::<systems::ui::MainMenu>()
             // The place card a picked search result opens (`systems::place_card`).
@@ -150,6 +154,7 @@ impl Plugin for GuiPlugin {
                 systems::scenario::drive_scenario
                     .before(systems::ui::render_main_menu)
                     .in_set(ClientPhase::Input),
+                systems::cosmos::drive_galaxies.in_set(ClientPhase::Stream),
                 systems::scenario::render_scenario_chrome
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),

@@ -1,5 +1,6 @@
 //! What lies past the globe's ceiling — the Earth and the Moon, the planets, the
-//! nearest stars and the Milky Way — as **one map at one scale**
+//! nearest stars, the Milky Way, the galaxies round it and the edge of the
+//! observable universe — as **one map at one scale**
 //! (`docs/mockups/zoom-ladder/`). Past the ceiling the 3D camera waits over the
 //! place it left and the zoom moves `CameraState::cosmos_alt` instead; this paints
 //! what is out there, behind every panel.
@@ -11,8 +12,12 @@
 //! further ten-fold the same width of screen towards the edge. So the zoom is
 //! one continuous movement — nothing swaps board — and the next thing out is
 //! always already at the rim: the planets around the Moon's orbit, the nearest
-//! stars around Neptune's, the Milky Way around them. Rings at round light-travel
-//! times are the ruler. Right at the ceiling the squeeze is off.
+//! stars around Neptune's, the Milky Way around them, the galaxies around it, the
+//! edge of the observable universe around those. Rings at round light-travel
+//! times are the ruler. Right at the ceiling the squeeze is off; it eases over
+//! the Milky Way so the spiral reads as one; and it lets go at the top of the
+//! rail, where the universe is drawn to scale with everything the surveys have
+//! mapped a small patch in its middle.
 //!
 //! **The Earth stays the 3D globe** while it is more than a speck: the camera
 //! keeps waiting at the ceiling, and its picture is widened round the globe (a
@@ -30,8 +35,10 @@
 //! elements put them today (`utils::planets`); the systems within 16 light years
 //! (`utils::near_stars`, HYG); the Milky Way schematic (four arms on a log
 //! spiral) but laid in the real galactic plane, its centre in Sagittarius
-//! 26,000 light years away. The view turns as it climbs: from the camera's own
-//! direction, to above the ecliptic, to above the galactic plane; and its middle
+//! 26,000 light years away; the galaxies from three catalogues atlas joins into
+//! one file (`GalaxyCatalogue`, fetched when the view nears them). The view
+//! turns as it climbs: from the camera's own direction, to above the ecliptic,
+//! to above the galactic plane, to above the supergalactic one; and its middle
 //! moves from the Earth to the Sun to the galactic centre — each only once the
 //! next one in is too small to lose.
 //!
@@ -44,6 +51,8 @@ use crate::utils::near_stars::NEAR_STARS;
 use crate::utils::planets::{self, AU_M, LIGHT_M_S, LIGHT_YEAR_M, PLANETS};
 use bevy::math::{DMat3, DQuat, DVec2, DVec3};
 use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task};
+use cartopolis_geo::formats::galaxies::{Catalogue, Galaxies};
 use egui::{pos2, vec2, Color32, Pos2};
 
 /// The Earth's radius, metres.
@@ -94,8 +103,15 @@ fn distance_words(m: f64) -> String {
         format!("{} km", thousands((m / 1000.0).round() as u64))
     } else if m < 0.05 * LIGHT_YEAR_M {
         format!("{:.2} AU", m / AU_M)
-    } else {
+    } else if m < 1.0e4 * LIGHT_YEAR_M {
         format!("{:.1} light years", m / LIGHT_YEAR_M)
+    } else if m < 1.0e6 * LIGHT_YEAR_M {
+        let ly = (m / LIGHT_YEAR_M / 1_000.0).round() as u64 * 1_000;
+        format!("{} light years", thousands(ly))
+    } else if m < 1.0e9 * LIGHT_YEAR_M {
+        format!("{:.1} million light years", m / LIGHT_YEAR_M / 1.0e6)
+    } else {
+        format!("{:.1} billion light years", m / LIGHT_YEAR_M / 1.0e9)
     }
 }
 
@@ -207,8 +223,18 @@ const SQUEEZE: f64 = 0.14;
 /// be the size of the globe it replaces, and fully on by the Moon's orbit.
 const SQUEEZE_FROM_M: f64 = 4.5e7;
 const SQUEEZE_TO_M: f64 = 2.0e9;
+/// The megaparsec, metres.
+const MPC_M: f64 = PC_M * 1.0e6;
+/// The supergalactic pole in galactic coordinates (de Vaucouleurs: l = 47.37°,
+/// b = +6.32°). The nearby galaxies lie in a sheet round that plane, so it is
+/// the one the cosmic web is seen from above.
+const SG_POLE_L_B: (f64, f64) = (47.37, 6.32);
+/// The edge of the observable universe: the comoving distance to the surface
+/// the cosmic microwave background was set free from, 46.5 billion light years
+/// (Planck 2018 parameters).
+const EDGE_M: f64 = 46.5e9 * LIGHT_YEAR_M;
 /// The ruler: round light-travel distances.
-const RINGS: [(f64, &str); 10] = [
+const RINGS: [(f64, &str); 15] = [
     (LIGHT_M_S, "1 light-second"),
     (LIGHT_M_S * 60.0, "1 light-minute"),
     (LIGHT_M_S * 3_600.0, "1 light-hour"),
@@ -219,7 +245,14 @@ const RINGS: [(f64, &str); 10] = [
     (LIGHT_YEAR_M * 1_000.0, "1,000 light years"),
     (LIGHT_YEAR_M * 10_000.0, "10,000 light years"),
     (LIGHT_YEAR_M * 100_000.0, "100,000 light years"),
+    (LIGHT_YEAR_M * 1.0e6, "1 million light years"),
+    (LIGHT_YEAR_M * 1.0e7, "10 million light years"),
+    (LIGHT_YEAR_M * 1.0e8, "100 million light years"),
+    (LIGHT_YEAR_M * 1.0e9, "1 billion light years"),
+    (LIGHT_YEAR_M * 1.0e10, "10 billion light years"),
 ];
+const GALAXY_DOT: Color32 = Color32::from_rgb(0xF2, 0xE8, 0xD8);
+const EDGE: Color32 = Color32::from_rgb(0xE8, 0xB8, 0x8A);
 const RING: Color32 = Color32::from_rgba_unmultiplied_const(0x9A, 0xB0, 0xB8, 46);
 const GALAXY_STAR: Color32 = Color32::from_rgb(0xD8, 0xE2, 0xFF);
 const GALAXY_BULGE: Color32 = Color32::from_rgb(0xFF, 0xE2, 0xAA);
@@ -228,6 +261,12 @@ const GALAXY_BULGE: Color32 = Color32::from_rgb(0xFF, 0xE2, 0xAA);
 fn eq_to_ecl(v: DVec3) -> DVec3 {
     let (s, c) = OBLIQUITY.sin_cos();
     DVec3::new(v.x, v.y * c + v.z * s, -v.y * s + v.z * c)
+}
+
+/// A direction from galactic longitude and latitude, degrees.
+fn galactic(l: f64, b: f64) -> DVec3 {
+    let (l, b) = (l.to_radians(), b.to_radians());
+    DVec3::new(b.cos() * l.cos(), b.cos() * l.sin(), b.sin())
 }
 
 /// Galactic coordinates to ecliptic ones.
@@ -290,6 +329,11 @@ impl View {
         let q = q0.slerp(to_ecliptic, f64::from(fade_in(alt, 1.0e8, 5.0e9)));
         let to_galaxy = DQuat::from_rotation_arc(q * DVec3::Z, gal_to_ecl(DVec3::Z)) * q;
         let q = q.slerp(to_galaxy, f64::from(fade_in(alt, 3.0e16, 3.0e18)));
+        // And above the supergalactic plane once the Local Volume is the
+        // scene, its sheet of galaxies seen face on.
+        let (l, b) = SG_POLE_L_B;
+        let to_sheet = DQuat::from_rotation_arc(q * DVec3::Z, gal_to_ecl(galactic(l, b))) * q;
+        let q = q.slerp(to_sheet, f64::from(fade_in(alt, 3.0e22, 3.0e23)));
         // The Earth in the middle, then the Sun once the inner planets are
         // small, then the galactic centre once the whole of it fits.
         let gc = gal_to_ecl(DVec3::X) * 26_000.0 * LIGHT_YEAR_M;
@@ -297,10 +341,17 @@ impl View {
             + gc * f64::from(fade_in(alt, 1.0e19, 4.0e20));
         let t = f64::from(fade_in(alt, SQUEEZE_FROM_M, SQUEEZE_TO_M));
         let knee = (60f64.ln() + (SQUEEZE.ln() - 60f64.ln()) * t).exp();
-        // Nothing lies past the Milky Way, so at the top of the rail the
-        // squeeze lets go again and the galaxy is drawn to scale, as a spiral
-        // rather than wound into rings round its middle.
-        let knee = knee * (1.6 / SQUEEZE).powf(f64::from(fade_in(alt, 1.5e20, 1.0e21)));
+        // Over the Milky Way the squeeze eases, so the galaxy reads as a
+        // spiral rather than wound into rings round its middle, and closes
+        // again as the Local Group comes in at the rim.
+        let knee = knee
+            * (0.6 / SQUEEZE).powf(f64::from(
+                fade_in(alt, 1.5e20, 6.0e20) * fade_out(alt, 2.0e21, 2.0e22),
+            ));
+        // Nothing lies past the edge of the observable universe, so at the top
+        // of the rail the squeeze lets go and the universe is drawn to scale:
+        // everything the surveys have mapped in its middle, the edge round it.
+        let knee = knee * (8.0 / SQUEEZE).powf(f64::from(fade_in(alt, 1.0e25, 1.0e27)));
         Self {
             middle,
             right: q * DVec3::X,
@@ -470,6 +521,7 @@ pub fn render_cosmos(
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
     mut camera_lens: Query<(&Projection, &mut Camera), With<crate::components::FreeCamera>>,
     mut galaxy: Local<Vec<(DVec3, f32)>>,
+    catalogue: Res<GalaxyCatalogue>,
 ) {
     let alt = camera_state.cosmos_alt;
     let Ok((projection, mut lens)) = camera_lens.single_mut() else {
@@ -624,18 +676,121 @@ pub fn render_cosmos(
             view.size(gc, 3_000.0 * LIGHT_YEAR_M).max(2.0),
             alpha(GALAXY_BULGE, gx * 0.35),
         );
-        for (pt, b) in galaxy.iter() {
-            let q = view.at(*pt);
-            if screen.contains(q) {
-                p.circle_filled(q, 1.1, alpha(GALAXY_STAR, gx * b));
+        // Once the whole galaxy is a few pixels its 4,400 points are one dot.
+        let mw_r = view.size(gc, 50_000.0 * LIGHT_YEAR_M);
+        if mw_r > 4.0 {
+            for (pt, b) in galaxy.iter() {
+                let q = view.at(*pt);
+                if screen.contains(q) {
+                    p.circle_filled(q, 1.1, alpha(GALAXY_STAR, gx * b));
+                }
             }
+        } else {
+            p.circle_filled(gc_at, mw_r.max(2.5), alpha(GALAXY_STAR, gx));
         }
         tags.push(Tag {
             at: gc_at + vec2(0.0, -14.0),
             align: egui::Align2::CENTER_BOTTOM,
             text: "Galactic centre · 26,000 light years".into(),
             size: theme::SIZE_SUB,
-            ink: alpha(theme::TEXT, gx * apart(gc_at, sun_at, 30.0, 80.0)),
+            ink: alpha(
+                theme::TEXT,
+                gx * apart(gc_at, sun_at, 30.0, 80.0) * fade_out(alt, 2.0e21, 6.0e21),
+            ),
+        });
+        tags.push(Tag {
+            at: gc_at + vec2(0.0, mw_r.max(2.5) + 8.0),
+            align: egui::Align2::CENTER_TOP,
+            text: "Milky Way · you".into(),
+            size: theme::SIZE_BODY,
+            ink: alpha(theme::CREAM, gx * fade_in(alt, 2.0e21, 6.0e21)),
+        });
+    }
+
+    // ── The galaxies: the Local Group, the Local Volume, the cosmic web ─────
+    // By distance, not by catalogue: Andromeda is the Local Volume
+    // catalogue's but comes in with the Local Group.
+    let (near_a, volume_a, far_a) = (
+        bd * fade_in(alt, 1.0e20, 6.0e20),
+        bd * fade_in(alt, 6.0e20, 4.0e21),
+        bd * fade_in(alt, 4.0e21, 3.0e22),
+    );
+    // A nearby galaxy comes in by its own distance: the view is flat, and one
+    // 30 million light years off straight above the Milky Way would otherwise
+    // be drawn among the dwarfs a hundred times nearer. The survey comes in as
+    // one, at the rim.
+    let fade = |g: &PlacedGalaxy| {
+        let d = g.light_years * LIGHT_YEAR_M;
+        if g.light_years < 3.6e7 {
+            bd * fade_in(alt, d * 0.03, d * 0.2)
+        } else {
+            far_a
+        }
+    };
+    // Kept off the Milky Way while it is a picture of its own; past the
+    // nearby galaxies the whole survey is a patch round it, and is drawn.
+    let keep_off = fade_out(alt, 3.0e23, 3.0e24);
+    // Fewer names on a narrow screen.
+    let names = if screen.width() < 600.0 { 12 } else { 30 };
+    let mut galaxy_tags = Vec::new();
+    if !catalogue.galaxies.is_empty() && near_a > 0.01 {
+        let mut named = paint_galaxies(
+            &p,
+            &view,
+            screen,
+            &catalogue.galaxies,
+            fade,
+            sun_at,
+            keep_off,
+        );
+        // The clusters first, then the brightest in our sky (luminosity over
+        // distance squared, so Andromeda before a brighter galaxy five times
+        // farther); a label's room goes to the first that asks.
+        let seen = |g: &PlacedGalaxy| f64::from(g.log_lum) - 2.0 * g.light_years.max(1.0).log10();
+        named.sort_by(|a, b| {
+            let cluster =
+                |g: &PlacedGalaxy| g.name.contains("Cluster") || g.name.contains("Supercluster");
+            cluster(b.0)
+                .cmp(&cluster(a.0))
+                .then(seen(b.0).total_cmp(&seen(a.0)))
+        });
+        for (g, q, a) in named.into_iter().take(names) {
+            galaxy_tags.push(Tag {
+                at: q + vec2(5.0, 0.0),
+                align: egui::Align2::LEFT_CENTER,
+                text: format!(
+                    "{} · {}",
+                    g.name,
+                    distance_words(g.light_years * LIGHT_YEAR_M)
+                ),
+                size: theme::SIZE_TINY,
+                // At the top the whole survey is a dot; its names would bury it.
+                ink: alpha(theme::TEXT, a * fade_out(alt, 1.0e26, 6.0e26)),
+            });
+        }
+    }
+
+    // ── The edge of the observable universe ─────────────────────────────────
+    let edge_r = view.ring(EDGE_M);
+    let ea = bd * crate::utils::sun::smoothstep(reach * 1.4, reach * 0.9, edge_r);
+    if ea > 0.01 {
+        p.circle_stroke(view.centre, edge_r, egui::Stroke::new(1.5, alpha(EDGE, ea)));
+        tags.push(Tag {
+            at: view.centre + vec2(0.0, -edge_r - 6.0),
+            align: egui::Align2::CENTER_BOTTOM,
+            text: "Edge of the observable universe · 46 billion light years".into(),
+            size: theme::SIZE_SUB,
+            ink: alpha(EDGE, ea),
+        });
+        // What the survey covers, once it is a patch in the middle.
+        let mapped = view.ring(2.0e9 * LIGHT_YEAR_M);
+        tags.push(Tag {
+            // Above the middle's own "Milky Way · you".
+            at: view.centre + vec2(mapped + 6.0, -6.0),
+            align: egui::Align2::LEFT_BOTTOM,
+            text: "every galaxy mapped here · 2 billion light years".into(),
+            size: theme::SIZE_TINY,
+            ink: alpha(theme::TEXT, ea * fade_in(alt, 3.0e25, 3.0e26)),
         });
     }
 
@@ -806,7 +961,7 @@ pub fn render_cosmos(
             align: egui::Align2::CENTER_TOP,
             text: sun_words,
             size: theme::SIZE_BODY,
-            ink: alpha(SUN, bd),
+            ink: alpha(SUN, bd * fade_out(alt, 2.0e21, 6.0e21)),
         },
         Tag {
             at: moon_at + vec2(8.0, 0.0),
@@ -822,6 +977,7 @@ pub fn render_cosmos(
     ];
     ordered.extend(planet_tags);
     ordered.append(&mut tags);
+    ordered.extend(galaxy_tags);
     ordered.extend(star_tags);
     ordered.extend(ring_tags);
 
@@ -833,8 +989,31 @@ pub fn render_cosmos(
     if alt > 1.0e13 && alt < 1.0e19 {
         said.push("stars within 16 light years, HYG v3.8");
     }
-    if gx > 0.5 {
+    if gx > 0.5 && alt < 3.0e21 {
         said.push("the Milky Way schematic: four arms on a log spiral");
+    }
+    let galaxy_words;
+    if near_a > 0.5 {
+        galaxy_words = match (&catalogue.failed, catalogue.galaxies.is_empty()) {
+            (Some(_), _) => "the galaxies could not be fetched".to_string(),
+            (None, true) => "fetching the galaxies…".to_string(),
+            (None, false) => {
+                let mut from = vec!["McConnachie 2012"];
+                if volume_a > 0.5 {
+                    from.push("UNGC 2013");
+                }
+                if far_a > 0.5 {
+                    // The why of the empty band, where there is room for it.
+                    from.push(if screen.width() < 600.0 {
+                        "2MRS 2012"
+                    } else {
+                        "2MRS 2012; the empty band is our own disc in the way"
+                    });
+                }
+                format!("galaxies: {}", from.join(" · "))
+            }
+        };
+        said.push(galaxy_words.as_str());
     }
     // Above the map's bottom bar, which sits over the background layer.
     let foot = pos2(screen.left() + 16.0, screen.bottom() - 64.0);
@@ -866,6 +1045,168 @@ pub fn render_cosmos(
     let mut room = screen.shrink2(vec2(48.0, 8.0));
     room.max.y = foot.y - 40.0;
     place_tags(&p, ordered, room);
+}
+
+/// One galaxy past the Milky Way, placed in the map's frame.
+struct PlacedGalaxy {
+    /// Ecliptic metres from the Sun.
+    at: DVec3,
+    log_lum: f32,
+    catalogue: Catalogue,
+    name: String,
+    light_years: f64,
+}
+
+/// The galaxies past the Milky Way (`cosmos/galaxies.bin`, atlas's `galaxies`
+/// dataset), fetched once the view climbs towards them and kept.
+#[derive(Resource, Default)]
+pub struct GalaxyCatalogue {
+    task: Option<Task<Result<Galaxies, String>>>,
+    galaxies: Vec<PlacedGalaxy>,
+    /// Why there are none, once asked and answered without them.
+    failed: Option<String>,
+}
+
+impl crate::systems::stream_watch::StreamBusy for GalaxyCatalogue {
+    const NAME: &'static str = "galaxies";
+    fn stream_busy(&self) -> bool {
+        self.task.is_some()
+    }
+}
+
+/// The height the catalogue is fetched from: the Local Group is still past the
+/// rim there, so it has arrived by the time it comes in.
+const GALAXIES_FROM_M: f64 = 1.0e19;
+
+/// Galaxies drawn at most: the file's order is the thinning (brightest of the
+/// redshift survey first), so a phone keeps every galaxy near enough to name
+/// and drops the survey's faintest.
+const GALAXIES_MAX: usize = if cfg!(any(target_os = "android", target_arch = "wasm32")) {
+    12_000
+} else {
+    50_000
+};
+
+async fn fetch_galaxies() -> Result<Galaxies, String> {
+    let base = crate::systems::osm_buildings::tdbag_url();
+    let url = format!("{}/cosmos/galaxies.bin", base.trim_end_matches('/'));
+    let bytes = crate::platform::http::fetch(crate::platform::http::Request::get(url)).await?;
+    Galaxies::decode(&bytes).map_err(|e| e.to_string())
+}
+
+/// Fetch the catalogue once the view is out far enough, and place it.
+pub fn drive_galaxies(
+    camera_state: Res<crate::resources::CameraState>,
+    mut catalogue: ResMut<GalaxyCatalogue>,
+) {
+    if let Some(task) = catalogue.task.as_mut() {
+        if !task.is_finished() {
+            return;
+        }
+        let Some(answer) = crate::platform::http::poll_task(task) else {
+            return;
+        };
+        catalogue.task = None;
+        match answer {
+            Ok(doc) => {
+                catalogue.galaxies = doc
+                    .galaxies
+                    .into_iter()
+                    .take(GALAXIES_MAX)
+                    .map(|g| {
+                        let eq = DVec3::from(g.xyz_mpc.map(f64::from)) * MPC_M;
+                        PlacedGalaxy {
+                            at: eq_to_ecl(eq),
+                            log_lum: g.log_lum,
+                            catalogue: g.catalogue,
+                            light_years: eq.length() / LIGHT_YEAR_M,
+                            name: g.name,
+                        }
+                    })
+                    .collect();
+                info!("cosmos: {} galaxies", catalogue.galaxies.len());
+            }
+            Err(e) => {
+                warn!("cosmos: no galaxies: {e}");
+                catalogue.failed = Some(e);
+            }
+        }
+        return;
+    }
+    let asked = !catalogue.galaxies.is_empty() || catalogue.failed.is_some();
+    if !asked && camera_state.cosmos_alt > GALAXIES_FROM_M {
+        catalogue.task = Some(IoTaskPool::get().spawn(fetch_galaxies()));
+    }
+}
+
+/// A galaxy's dot, pixels: by its luminosity, the Milky Way's own (10¹⁰·⁸ L☉
+/// in K) about three across, a dwarf one.
+fn galaxy_dot(log_lum: f32) -> f32 {
+    (0.6 + (log_lum - 8.0) * 0.45).clamp(0.6, 2.0)
+}
+
+/// The galaxies, one mesh of small squares (forty thousand circles would each
+/// be their own shape), at most one per two-pixel bin so the survey's far shell,
+/// squeezed into the rim, is not drawn over itself many times. Answers the
+/// named ones on screen, brightest first, for labels.
+#[allow(clippy::too_many_arguments)]
+fn paint_galaxies<'a>(
+    p: &egui::Painter,
+    view: &View,
+    screen: egui::Rect,
+    galaxies: &'a [PlacedGalaxy],
+    fade: impl Fn(&PlacedGalaxy) -> f32,
+    away_from: Pos2,
+    keep_off: f32,
+) -> Vec<(&'a PlacedGalaxy, Pos2, f32)> {
+    let (w, h) = (
+        (screen.width() / 2.0).ceil() as usize + 1,
+        (screen.height() / 2.0).ceil() as usize + 1,
+    );
+    let mut taken = vec![0u64; (w * h).div_ceil(64)];
+    let mut mesh = egui::Mesh::default();
+    let mut named = Vec::new();
+    for g in galaxies {
+        let a = fade(g);
+        if a < 0.01 {
+            continue;
+        }
+        let q = view.at(g.at);
+        if !screen.contains(q) {
+            continue;
+        }
+        // Not over the Milky Way the view is centred on, while it is drawn.
+        let a = a * apart(q, away_from, 4.0, 14.0).max(1.0 - keep_off);
+        if a < 0.01 {
+            continue;
+        }
+        let bin =
+            ((q.y - screen.top()) / 2.0) as usize * w + ((q.x - screen.left()) / 2.0) as usize;
+        let (word, bit) = (bin / 64, 1u64 << (bin % 64));
+        if taken[word] & bit != 0 && g.name.is_empty() {
+            continue;
+        }
+        taken[word] |= bit;
+        // The survey's 43,000 small and faint, so its clusters and voids show
+        // as density rather than as one lit disc; the named nearer ones a size up.
+        let (r, ink) = if g.catalogue == Catalogue::Redshift && g.name.is_empty() {
+            (galaxy_dot(g.log_lum) * 0.5, 0.3)
+        } else {
+            (galaxy_dot(g.log_lum).max(1.0), 0.8)
+        };
+        let ink = alpha(GALAXY_DOT, a * ink);
+        let i = mesh.vertices.len() as u32;
+        for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
+            mesh.colored_vertex(q + d, ink);
+        }
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i, i + 2, i + 3);
+        if !g.name.is_empty() {
+            named.push((g, q, a));
+        }
+    }
+    p.add(egui::Shape::mesh(mesh));
+    named
 }
 
 /// The schematic galaxy: points along four logarithmic spiral arms (pitch 12°)
@@ -912,12 +1253,25 @@ fn galaxy_points() -> Vec<(Vec2, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cartopolis_scenario::ladder::Rung;
 
     #[test]
     fn distances_read_in_the_unit_that_fits() {
         assert_eq!(distance_words(MOON_DIST_M), "384,400 km");
         assert_eq!(distance_words(1.52 * AU_M), "1.52 AU");
         assert_eq!(distance_words(4.24 * LIGHT_YEAR_M), "4.2 light years");
+        assert_eq!(
+            distance_words(163_000.0 * LIGHT_YEAR_M),
+            "163,000 light years"
+        );
+        assert_eq!(
+            distance_words(2.54e6 * LIGHT_YEAR_M),
+            "2.5 million light years"
+        );
+        assert_eq!(
+            distance_words(4.65e10 * LIGHT_YEAR_M),
+            "46.5 billion light years"
+        );
         assert_eq!(light_time_words(MOON_DIST_M), "1.3 light-seconds");
         assert_eq!(light_time_words(AU_M), "8 min of light");
     }
@@ -972,7 +1326,7 @@ mod tests {
         let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
         let mut alt = 4.0e7;
         let mut last: Option<(Pos2, Pos2)> = None;
-        while alt < 1.0e21 {
+        while alt < crate::systems::zoom_rail::TOP_M {
             let v = view_at(alt);
             let earth = DVec3::from(planets::position(&PLANETS[planets::EARTH], 1.793e9)) * AU_M;
             let (e, s) = (v.at(earth), v.at(DVec3::ZERO));
@@ -1002,6 +1356,35 @@ mod tests {
                     "{alt:e}: {s:?} came back as {back:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn at_the_top_the_universe_fits_a_phone() {
+        // The test view's half height is 300 px; a phone held upright is about
+        // 0.46 of that across.
+        let v = view_at(crate::systems::zoom_rail::TOP_M);
+        let r = f64::from(v.ring(EDGE_M));
+        assert!(r < 0.46 * 300.0 && r > 60.0, "{r}");
+        // And it is drawn to scale there, not squeezed.
+        assert!((r / (EDGE_M * v.px_per_m) - 1.0).abs() < 0.05, "{r}");
+    }
+
+    #[test]
+    fn each_catalogue_is_on_screen_on_its_own_rung() {
+        // Andromeda (2.5 million ly) on the Local Group's rung, Virgo (54
+        // million) on the nearby galaxies', and the survey's reach (2 billion)
+        // on the cosmic web's.
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        for (rung, ly) in [
+            (Rung::LocalGroup, 2.5e6),
+            (Rung::NearbyGalaxies, 5.4e7),
+            (Rung::CosmicWeb, 2.0e9),
+        ] {
+            let (lo, hi) = rung.altitudes();
+            let v = view_at((lo * hi).sqrt());
+            let q = v.at(v.middle + v.right * ly * LIGHT_YEAR_M);
+            assert!(screen.contains(q), "{rung:?}: {q:?}");
         }
     }
 
