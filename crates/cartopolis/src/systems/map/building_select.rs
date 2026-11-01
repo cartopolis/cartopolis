@@ -315,7 +315,7 @@ pub fn pick_building(
 ///
 /// Pure, and both halves are in window points and seconds. `None` — no click
 /// yet, or the last one already closed a pair — is never half of one.
-fn closes_a_double_click(last: Option<(Vec2, f32)>, at: Vec2, now: f32) -> bool {
+pub(crate) fn closes_a_double_click(last: Option<(Vec2, f32)>, at: Vec2, now: f32) -> bool {
     last.is_some_and(|(was, when)| {
         now - when <= DOUBLE_CLICK_SECS && at.distance(was) <= DOUBLE_CLICK_SLOP_PTS
     })

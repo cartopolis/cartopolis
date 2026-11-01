@@ -2213,6 +2213,10 @@ pub fn apply_teleport(
         );
     }
 
+    // A thrown globe or a double-tap's turn spins about the old anchor's frame,
+    // which the jump has just replaced.
+    camera_state.globe_fling = DVec3::ZERO;
+    camera_state.globe_aim = None;
     if let Ok((mut cell, mut tf)) = cameras.single_mut() {
         match camera_state.mode {
             // Same cell + orbit offset as camera_controls computes, so the

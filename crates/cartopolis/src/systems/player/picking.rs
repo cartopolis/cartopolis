@@ -28,6 +28,10 @@ pub struct PrimPickWorld<'w, 's> {
     online: Option<Res<'w, crate::resources::OnlineSession>>,
     /// Whether this frame's press is a finger's — see `EguiManager::owns_click`.
     touch: Res<'w, crate::systems::touch::TouchGestures>,
+    /// Whether the camera is over the globe, where the right button turns the
+    /// view (`free_camera::earth_mode`) and a menu about a point on the ground
+    /// has nothing to point at.
+    camera: Res<'w, crate::resources::CameraState>,
 }
 
 /// Whether the last left click this system processed landed on a prim.
@@ -240,8 +244,10 @@ pub fn prim_picking(
         }
     }
 
-    // Right-click: open context menu.
-    if mouse_buttons.just_pressed(MouseButton::Right) {
+    // Right-click: open context menu — on the ground, not over the globe.
+    let over_globe =
+        world.camera.mode == crate::resources::CameraMode::Orbit && world.camera.orbit_space;
+    if mouse_buttons.just_pressed(MouseButton::Right) && !over_globe {
         context_menu.visible = true;
         context_menu.screen_pos = cursor_position;
 

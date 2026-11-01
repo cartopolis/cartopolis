@@ -678,6 +678,76 @@ pub fn globe_spin_polar(dir: DVec3, north: DVec3, drag: Vec2, sens: f32) -> DVec
     (DQuat::from_axis_angle(east, tip) * spun).normalize()
 }
 
+/// Hold a camera direction short of the poles: the same latitude, at most
+/// [`GLOBE_LAT_LIMIT`], on the same meridian.
+fn clamp_globe_latitude(dir: DVec3, north: DVec3) -> DVec3 {
+    let along = dir.dot(north).clamp(-1.0, 1.0);
+    if along.asin().abs() <= GLOBE_LAT_LIMIT {
+        return dir;
+    }
+    let flat = dir - north * along;
+    if flat.length_squared() < 1e-18 {
+        return dir; // exactly over a pole: no meridian to walk back along
+    }
+    (flat.normalize() * GLOBE_LAT_LIMIT.cos() + north * GLOBE_LAT_LIMIT.sin() * along.signum())
+        .normalize()
+}
+
+/// Grab-the-globe, exactly: the camera direction that puts the point on the
+/// globe that was under the pointer (`grabbed`) under where the pointer is now
+/// (`under_now`, read through the same view). Both are directions from the
+/// Earth's centre.
+///
+/// The camera turns with the rotation that carries `under_now` onto `grabbed`:
+/// seen from the turned camera, `grabbed` sits where `under_now` was. Unlike
+/// [`globe_spin`], which turns by a rate set from the height, the place you took
+/// hold of cannot drift from the finger at any height. Returns the new direction
+/// and the rotation applied (for the throw), held short of the poles.
+pub fn globe_grab(dir: DVec3, north: DVec3, grabbed: DVec3, under_now: DVec3) -> (DVec3, DQuat) {
+    let rot = DQuat::from_rotation_arc(under_now.normalize(), grabbed.normalize());
+    let turned = clamp_globe_latitude((rot * dir).normalize(), north);
+    (turned, DQuat::from_rotation_arc(dir, turned))
+}
+
+/// Where a pointer ray meets the globe, as a direction from its centre — `None`
+/// when the pointer is off the disc. The ray is in render space, so the sphere's
+/// centre is given there (`center_render`); a direction is the same in both.
+fn globe_ray_hit(
+    cam: &Camera,
+    cam_gt: &GlobalTransform,
+    cursor: Vec2,
+    center_render: DVec3,
+    radius: f64,
+) -> Option<DVec3> {
+    let ray = cam.viewport_to_world(cam_gt, cursor).ok()?;
+    let origin = ray.origin.as_dvec3();
+    let dir = ray.direction.as_vec3().as_dvec3();
+    let oc = origin - center_render;
+    let b = oc.dot(dir);
+    let disc = b * b - (oc.length_squared() - radius * radius);
+    if disc < 0.0 {
+        return None;
+    }
+    let t = -b - disc.sqrt();
+    (t > 0.0).then(|| (origin + dir * t - center_render).normalize())
+}
+
+/// How long a thrown globe takes to lose two-thirds of its spin (s): it comes to
+/// rest in about a second, a flick crossing an ocean on the way.
+const GLOBE_FLING_TAU: f64 = 0.35;
+/// How quickly the throw's rate follows the drag (s): short enough that a hand
+/// which stops before letting go throws nothing.
+const GLOBE_FLING_FOLLOW: f64 = 0.05;
+/// A throw stops for good below this share of the view's width a second (about
+/// three pixels a second on a 1,000-pixel window). Without a floor an
+/// exponential decay never ends, and the camera — the floating origin — would
+/// rewrite its transform every frame for the rest of the session.
+const GLOBE_FLING_REST: f64 = 0.003;
+/// A double-tap or double-click on the globe brings it this much closer.
+const GLOBE_DOUBLE_TAP_ZOOM: f64 = 0.25;
+/// Arrow keys turn the globe by this share of the view's height a second.
+const GLOBE_KEY_RATE: f32 = 0.5;
+
 /// Absolute world position of a big_space grid cell's origin.
 pub(crate) fn cell_origin(cell: &GridCell) -> DVec3 {
     DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * WORLD_CELL_EDGE as f64
@@ -2874,6 +2944,17 @@ fn earth_mode(ctx: ModeCtx) {
     // Space tier only: horizontal drag of the "turn the view" gesture,
     // which spins the compass rather than the planet.
     let mut heading_delta = 0.0_f32;
+    // Space tier only: whether this frame's `rot_delta` is a hand holding the
+    // globe (a plain drag or one finger), which [`globe_grab`] follows exactly,
+    // rather than the arrow keys.
+    let mut grabbing = false;
+    camera_state.globe_clock += delta_time;
+    // Any hand on the globe catches a throw, and any drag cancels a double-tap's
+    // turn — the hand is steering now.
+    // (A finger landing arrives as a left press, `touch::emulate_mouse`.)
+    if mouse_input.any_just_pressed([MouseButton::Left, MouseButton::Middle, MouseButton::Right]) {
+        camera_state.globe_fling = DVec3::ZERO;
+    }
     if gizmo_state.active_axis.is_some()
         || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
     {
@@ -2887,9 +2968,14 @@ fn earth_mode(ctx: ModeCtx) {
         // middle-drag (or Ctrl+drag) turns the *view* — compass heading in
         // space, yaw/tilt on the surface. In space that keeps plain
         // left-drag as "grab the globe and spin it" with north still up.
+        // Over the globe the right button turns the view too: the context
+        // menu it opens on the ground has nothing to point at from orbit
+        // (`picking::prim_picking` keeps it shut there).
         let turning = mouse_input.pressed(MouseButton::Middle)
-            || (ctrl && mouse_input.pressed(MouseButton::Left));
+            || (ctrl && mouse_input.pressed(MouseButton::Left))
+            || (space && mouse_input.pressed(MouseButton::Right));
         let rotating = turning || (space && mouse_input.pressed(MouseButton::Left));
+        grabbing |= rotating && !turning;
         let panning = !rotating && !space && mouse_input.pressed(MouseButton::Left);
         if rotating || panning {
             let mut events = Vec2::ZERO;
@@ -2943,8 +3029,39 @@ fn earth_mode(ctx: ModeCtx) {
             }
         } else if space {
             rot_delta += touch.drag;
+            grabbing |= touch.fingers == 1;
         } else {
             pan_delta += touch.drag;
+        }
+    }
+    if grabbing && rot_delta != Vec2::ZERO {
+        camera_state.globe_aim = None;
+    }
+
+    // Keys (Earth mode, while no text field has the keyboard): + and − zoom,
+    // N puts north up, and over the globe the arrows turn it — Left looks
+    // further west, Up further north, as if the globe were dragged that way.
+    let keys = !egui_manager.ui_owns_keyboard(false, keyboard_input);
+    let key_zoom = if keys {
+        let inward = keyboard_input.any_pressed([KeyCode::Equal, KeyCode::NumpadAdd]) as i32
+            - keyboard_input.any_pressed([KeyCode::Minus, KeyCode::NumpadSubtract]) as i32;
+        inward as f32
+    } else {
+        0.0
+    };
+    if keys && keyboard_input.just_pressed(KeyCode::KeyN) {
+        camera_state.orbit_north_reset = true;
+    }
+    if keys && space {
+        let x = keyboard_input.pressed(KeyCode::ArrowLeft) as i32
+            - keyboard_input.pressed(KeyCode::ArrowRight) as i32;
+        let y = keyboard_input.pressed(KeyCode::ArrowUp) as i32
+            - keyboard_input.pressed(KeyCode::ArrowDown) as i32;
+        if x != 0 || y != 0 {
+            let h = window.map(|w| w.height()).unwrap_or(800.0);
+            rot_delta += Vec2::new(x as f32, y as f32) * h * GLOBE_KEY_RATE * delta_time;
+            camera_state.globe_fling = DVec3::ZERO;
+            camera_state.globe_aim = None;
         }
     }
 
@@ -2996,6 +3113,52 @@ fn earth_mode(ctx: ModeCtx) {
             (min_d, max_d),
         );
     }
+    // The + and − keys are the on-screen pair, held.
+    if key_zoom != 0.0 {
+        camera_state.orbit_distance_target = zoom_orbit_target(
+            camera_state.orbit_distance_target,
+            f64::from(osd_zoom_factor(key_zoom, delta_time)),
+            space,
+            radius,
+            (min_d, max_d),
+        );
+    }
+
+    // Double-tap (or double-click) on the globe: four times closer, turning
+    // onto the place tapped while the zoom glides in. A finger's verdict comes
+    // from the gesture recogniser; a mouse's is measured here.
+    if space && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+        let pressed = mouse_input.just_pressed(MouseButton::Left);
+        let cursor = window.and_then(|w| w.cursor_position());
+        let asked_twice = match (pressed, cursor) {
+            (true, Some(_)) if touch.touch_click() => touch.double_tap(),
+            (true, Some(at)) => {
+                let now = camera_state.globe_clock;
+                let paired = crate::systems::building_select::closes_a_double_click(
+                    camera_state.globe_last_click,
+                    at,
+                    now,
+                );
+                camera_state.globe_last_click = (!paired).then_some((at, now));
+                paired
+            }
+            _ => false,
+        };
+        let hit = cursor.zip(cam_render).and_then(|(at, (cam, cam_gt))| {
+            globe_ray_hit(cam, cam_gt, at, center - cell_origin(&camera_cell), radius)
+        });
+        if let (true, Some(hit)) = (asked_twice, hit) {
+            camera_state.globe_aim = Some(hit);
+            camera_state.globe_fling = DVec3::ZERO;
+            camera_state.orbit_distance_target = zoom_orbit_target(
+                camera_state.orbit_distance_target,
+                GLOBE_DOUBLE_TAP_ZOOM,
+                space,
+                radius,
+                (min_d, max_d),
+            );
+        }
+    }
     let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
     let old_d = camera_state.orbit_distance;
     camera_state.orbit_distance =
@@ -3014,23 +3177,15 @@ fn earth_mode(ctx: ModeCtx) {
             .and_then(|w| w.cursor_position())
             .zip(cam_render)
             .and_then(|(cursor, (cam, cam_gt))| {
-                // Proven ray construction (same call picking uses). The ray
-                // is in render space — world shifted by the camera's grid
-                // cell — so shift the sphere centre instead of the ray.
-                let ray = cam.viewport_to_world(cam_gt, cursor).ok()?;
-                let center_render = center - cell_origin(&camera_cell);
-                let origin = ray.origin.as_dvec3();
-                let dir = ray.direction.as_vec3().as_dvec3();
-                let oc = origin - center_render;
-                let b = oc.dot(dir);
-                let disc = b * b - (oc.length_squared() - radius * radius);
-                if disc < 0.0 {
-                    return None; // cursor misses the globe
-                }
-                let t = -b - disc.sqrt();
-                // Direction from the centre is translation-invariant, so
-                // it's valid in the world frame too.
-                (t > 0.0).then(|| (origin + dir * t - center_render).normalize())
+                // The ray is in render space — world shifted by the camera's
+                // grid cell — so the sphere's centre is shifted instead.
+                globe_ray_hit(
+                    cam,
+                    cam_gt,
+                    cursor,
+                    center - cell_origin(&camera_cell),
+                    radius,
+                )
             });
         if let Some(hit_dir) = cursor_hit {
             // Pull the orbit toward the cursor point at the pace of the
@@ -3057,46 +3212,128 @@ fn earth_mode(ctx: ModeCtx) {
     // re-derived from north below rather than rotated along, so the
     // horizon stays level and the view never rolls off north by itself.
     // Surface: the yaw/pitch turntable as before.
-    if rot_delta != Vec2::ZERO {
-        if space {
-            // Grab-the-globe: scale radians-per-pixel so the ground under
-            // the cursor tracks the drag at any distance. Two regimes,
-            // take whichever is smaller:
-            //  - near: the visible ground patch subtends ~fov·(alt/R) of
-            //    central angle, so rotation shrinks with altitude (the old
-            //    far-field-only formula stayed too fast in the mid-range);
-            //  - far: the whole globe spans 2·asin(R/d) of the view, so a
-            //    full-window drag sweeps about one globe-height.
-            let h = window.map(|w| w.height()).unwrap_or(800.0);
-            let fov = match &**projection {
-                Projection::Perspective(p) => p.fov,
-                _ => std::f32::consts::FRAC_PI_4,
-            };
-            let d = camera_state.orbit_distance;
-            let near_arc = fov * (((d - radius) / radius).max(0.0) as f32);
-            let far_arc = 2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
-            let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
+    if space {
+        // Grab-the-globe by rate: radians per pixel, so the ground under the
+        // cursor roughly tracks a drag at any distance. Two regimes, take
+        // whichever is smaller:
+        //  - near: the visible ground patch subtends ~fov·(alt/R) of central
+        //    angle, so rotation shrinks with altitude;
+        //  - far: the whole globe spans 2·asin(R/d) of the view, so a
+        //    full-window drag sweeps about one globe-height.
+        // The hand itself goes through `globe_grab`, which is exact; this rate
+        // is for the arrow keys, for a drag the pointer cannot place on the
+        // globe, and to say when a throw has come to rest.
+        let h = window.map(|w| w.height()).unwrap_or(800.0);
+        let fov = match &**projection {
+            Projection::Perspective(p) => p.fov,
+            _ => std::f32::consts::FRAC_PI_4,
+        };
+        let d = camera_state.orbit_distance;
+        let near_arc = fov * (((d - radius) / radius).max(0.0) as f32);
+        let far_arc = 2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
+        let view_arc = near_arc.min(far_arc);
+        let sens = (1.2 * view_arc / h).clamp(2e-6, ORBIT_ROT_SENS);
+        let north = globe.north_axis_local().as_dvec3();
+
+        // The hand on the globe: the point taken hold of stays under the
+        // pointer. Both ends of the motion are read through last frame's view,
+        // the one on screen. A drag that leaves the disc turns the globe about
+        // the middle of the screen instead, the way a globe on a stand turns.
+        let mut handled = false;
+        if grabbing && rot_delta != Vec2::ZERO {
+            let now = window.and_then(|w| w.cursor_position());
+            let centre_render = center - cell_origin(&camera_cell);
+            let hits = now.zip(cam_render).map(|(at, (cam, cam_gt))| {
+                (
+                    globe_ray_hit(cam, cam_gt, at - rot_delta, centre_render, radius),
+                    globe_ray_hit(cam, cam_gt, at, centre_render, radius),
+                )
+            });
+            match hits {
+                Some((Some(grabbed), Some(under_now))) => {
+                    let (turned, step) =
+                        globe_grab(camera_state.orbit_dir, north, grabbed, under_now);
+                    camera_state.orbit_dir = turned;
+                    // The throw follows the hand's last few frames.
+                    let (axis, angle) = step.to_axis_angle();
+                    let rate = axis * (angle / f64::from(delta_time.max(1e-4)));
+                    let k = 1.0 - (-f64::from(delta_time) / GLOBE_FLING_FOLLOW).exp();
+                    camera_state.globe_fling = camera_state.globe_fling.lerp(rate, k);
+                    handled = true;
+                }
+                Some((_, None)) if !north_lock => {
+                    let (at, size) = (now.unwrap_or_default(), window.map(|w| w.size()));
+                    let mid = size.unwrap_or(Vec2::splat(h)) * 0.5;
+                    let (a, b) = (at - rot_delta - mid, at - mid);
+                    if a.length() > 1.0 && b.length() > 1.0 {
+                        // Screen y runs down, so a positive angle is clockwise —
+                        // the way the heading turns the picture.
+                        let turn = (b.y.atan2(b.x) - a.y.atan2(a.x) + std::f32::consts::PI)
+                            .rem_euclid(std::f32::consts::TAU)
+                            - std::f32::consts::PI;
+                        camera_state.orbit_heading += turn;
+                        camera_state.orbit_north_reset = false;
+                    }
+                    camera_state.globe_fling = DVec3::ZERO;
+                    handled = true;
+                }
+                _ => {}
+            }
+        } else if grabbing {
+            // Held still: a hand that stops before letting go throws nothing.
+            let k = 1.0 - (-f64::from(delta_time) / GLOBE_FLING_FOLLOW).exp();
+            camera_state.globe_fling = camera_state.globe_fling.lerp(DVec3::ZERO, k);
+        }
+
+        if rot_delta != Vec2::ZERO && !handled {
             // Compass locked: spin about the true polar axis (north pinned
             // up, longitude-only horizontal, latitude clamped short of the
-            // pole) instead of the screen-relative grab-the-globe rotate,
-            // so the view can no longer be carried around the poles.
+            // pole) instead of the screen-relative rotate, so the view can no
+            // longer be carried around the poles.
             camera_state.orbit_dir = if north_lock {
-                globe_spin_polar(
-                    camera_state.orbit_dir,
-                    globe.north_axis_local().as_dvec3(),
-                    rot_delta,
-                    sens,
-                )
+                globe_spin_polar(camera_state.orbit_dir, north, rot_delta, sens)
             } else {
                 globe_spin(
                     camera_state.orbit_dir,
-                    globe.north_axis_local().as_dvec3(),
+                    north,
                     camera_state.orbit_up,
                     rot_delta,
                     sens,
                 )
             };
-        } else {
+        }
+
+        // Let go: the globe turns on by the throw, slowing to rest.
+        let spin = camera_state.globe_fling.length();
+        if !grabbing && spin > 0.0 {
+            if spin < GLOBE_FLING_REST * f64::from(view_arc) {
+                camera_state.globe_fling = DVec3::ZERO;
+            } else {
+                let step =
+                    DQuat::from_scaled_axis(camera_state.globe_fling * f64::from(delta_time));
+                camera_state.orbit_dir =
+                    clamp_globe_latitude((step * camera_state.orbit_dir).normalize(), north);
+                camera_state.globe_fling *= (-f64::from(delta_time) / GLOBE_FLING_TAU).exp();
+            }
+        }
+
+        // A double-tap's turn onto its place, at the pace of the zoom glide.
+        if let Some(aim) = camera_state.globe_aim {
+            let k = 1.0 - (-ZOOM_GLIDE_RATE * f64::from(delta_time)).exp();
+            let dir = camera_state.orbit_dir;
+            let to = DQuat::from_rotation_arc(dir, aim);
+            let (axis, angle) = to.to_axis_angle();
+            if angle < 1e-5 {
+                camera_state.globe_aim = None;
+            } else {
+                camera_state.orbit_dir =
+                    (DQuat::from_axis_angle(axis, angle * k) * dir).normalize();
+            }
+        }
+    } else {
+        camera_state.globe_fling = DVec3::ZERO;
+        camera_state.globe_aim = None;
+        if rot_delta != Vec2::ZERO {
             if !north_lock {
                 camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
             }
@@ -3827,6 +4064,41 @@ mod tests {
         }
         // …and it actually got there, rather than stalling early.
         assert!(latitude(dir) > GLOBE_LAT_LIMIT.to_degrees() - 1.0);
+    }
+
+    /// The place taken hold of stays under the hand: after the turn, the grabbed
+    /// point sits where the point now under the pointer sat, seen from the
+    /// camera — the same angle off the line of sight.
+    #[test]
+    fn globe_grab_keeps_the_grabbed_place_under_the_pointer() {
+        let dir = DVec3::new(0.2, 0.5, 1.0).normalize();
+        let grabbed = DVec3::new(0.25, 0.45, 1.0).normalize();
+        let under_now = DVec3::new(0.32, 0.47, 1.0).normalize();
+        let (turned, step) = globe_grab(dir, NORTH, grabbed, under_now);
+        assert!(
+            (turned.dot(grabbed) - dir.dot(under_now)).abs() < 1e-9,
+            "the grabbed place moved off the pointer"
+        );
+        assert!(
+            (step * dir - turned).length() < 1e-9,
+            "the step is the turn"
+        );
+        // Dragging east turns the camera west, so the globe follows the hand.
+        let east = NORTH.cross(dir).normalize();
+        assert!(turned.dot(east) < dir.dot(east));
+    }
+
+    /// However the hand drags, the camera stays short of the pole.
+    #[test]
+    fn globe_grab_stops_short_of_the_poles() {
+        let dir = DVec3::new(0.0, 0.99, 0.14).normalize();
+        let (turned, _) = globe_grab(
+            dir,
+            NORTH,
+            DVec3::new(0.0, 0.2, 1.0).normalize(),
+            DVec3::new(0.0, -0.3, 1.0).normalize(),
+        );
+        assert!(latitude(turned) <= GLOBE_LAT_LIMIT.to_degrees() + 1e-6);
     }
 
     /// Compass locked: a horizontal drag is a pure longitude spin — the

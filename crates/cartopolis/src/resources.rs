@@ -1658,6 +1658,22 @@ pub struct CameraState {
     /// re-armed toward north every frame, so the polar axis stays vertical on
     /// screen no matter how the globe is spun. Toggled by clicking the compass.
     pub orbit_north_lock: bool,
+    /// The globe's spin after a throw (space tier): the rotation axis about the
+    /// Earth's centre times its rate, radians a second, in the globe's local
+    /// frame. A drag writes it from the motion of its last few frames; on release
+    /// the orbit keeps turning by it and it decays to rest in about a second.
+    /// Zero whenever nothing is spinning — any press, a jump or the ground tier
+    /// clears it.
+    pub globe_fling: bevy::math::DVec3,
+    /// Where a double-tap asked the globe to turn to (space tier): a direction
+    /// from the Earth's centre the orbit eases onto while the zoom glides in.
+    /// `None` once it arrives, and on any drag.
+    pub globe_aim: Option<bevy::math::DVec3>,
+    /// The last mouse press on the globe, in window points and seconds of
+    /// [`Self::globe_clock`], so a second one can be told to be a double click.
+    pub globe_last_click: Option<(Vec2, f32)>,
+    /// Seconds Earth mode has run, for [`Self::globe_last_click`].
+    pub globe_clock: f32,
     /// Radians the follow camera has turned *by itself* (recentring behind the
     /// avatar), accumulated for the life of the app. Movement reads keys against
     /// the azimuth minus whatever of this accrued since the keys were pressed, so
@@ -1777,6 +1793,10 @@ impl Default for CameraState {
             reanchor_request: None,
             orbit_north_reset: false,
             orbit_north_lock: false,
+            globe_fling: bevy::math::DVec3::ZERO,
+            globe_aim: None,
+            globe_last_click: None,
+            globe_clock: 0.0,
             auto_yaw: 0.0,
             follow_rotate: false,
             first_person: false,
