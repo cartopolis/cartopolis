@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  .ph { position:relative; width:300px; }
+  .ph img { width:300px; height:655px; }
+  .dk { position:relative; }
+  .dk img { width:846px; height:476px; }
+  .find { width:432px; display:flex; flex-direction:column; gap:10px; }
+  .find div { background:#141A1C; border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:11px 14px 11px 48px; position:relative; font-size:13.5px; color:var(--sheet-dim); }
+  .find div b { color:var(--sheet-cream); font-weight:600; display:block; font-size:14.5px; margin-bottom:2px; }
+  .find .mark { left:10px; top:11px; box-shadow:none; width:26px; height:26px; font-size:13px; }
+  .lbl { color:var(--sheet-dim); font-size:13px; margin-top:8px; }
+</style></head>
+<body><script src="icons.js"></script>
+<h1>Zo is het <b>nu</b></h1>
+<p class="lede">Gefotografeerd op 2026-11-01 van <code>main</code> (d0103e24), headless op mac-1: telefoon 412×900 px op schaal 1,5 (<code>docs/phone-ui-shots.toml</code>) en desktop 1600×900. Het fundament is goed — één thema-bestand, contrast getest, iconen uit een eigen font, een glazen dock. Wat het rommelig maakt zit in <strong>gewicht en ordening</strong>, niet in de kleuren zelf.</p>
+
+<div class="row">
+  <div class="ph"><img class="today" src="today-phone-none.jpg">
+    <span class="mark" style="left:8px;top:120px">3</span><span class="mark" style="left:120px;top:560px">1</span>
+    <div class="lbl">Kaart, niets open</div></div>
+  <div class="ph"><img class="today" src="today-phone-layers.jpg">
+    <span class="mark" style="left:240px;top:150px">1</span><span class="mark" style="left:240px;top:320px">2</span>
+    <div class="lbl">Kaartlagen</div></div>
+  <div class="ph"><img class="today" src="today-phone-community.jpg">
+    <span class="mark" style="left:256px;top:120px">2</span><span class="mark" style="left:262px;top:262px">5</span>
+    <div class="lbl">Een community</div></div>
+  <div class="ph"><img class="today" src="today-phone-building.jpg">
+    <span class="mark" style="left:262px;top:250px">6</span><span class="mark" style="left:262px;top:560px">2</span>
+    <div class="lbl">Een gebouw</div></div>
+  <div class="find">
+    <div><span class="mark">1</span><b>Twee accenten vechten</b>Het thema zegt: teal is "dit is actief", oranje alleen voor het logo. Maar de lagen-schakelaars, de cameraknop, het World-segment en de badges zijn oranje. Dus "aan" heeft twee kleuren.</div>
+    <div><span class="mark">2</span><b>Elke knop weegt even zwaar</b>People · Topic · 5 · Edit, Message · Remove · Dismiss, From · To · Save — allemaal dezelfde omlijnde plaat. Niets zegt wat de hoofdactie is; "Remove" staat even rustig naast "Message".</div>
+    <div><span class="mark">3</span><b>Negen zwarte rondjes</b>Links vier losse knoppen (lagen, meten, kompas, tijd), onder vijf in de dock. Geen labels, geen groepering: kaartbediening en app-navigatie zien er hetzelfde uit.</div>
+    <div><span class="mark">4</span><b>Desktop is een uitgerekte telefoon</b>Het paneel plakt over de volle hoogte tegen de rechterrand; de plaatskaart is een klein kaartje midden-onder. Op 1600 px staat de meeste ruimte leeg of wordt afgedekt.</div>
+    <div><span class="mark">5</span><b>Afgekapte regels</b>"Wieke: Are you…", "Fietsers Groning…", "Laan Corpus den Hoor…" — te veel naast elkaar in één rij.</div>
+    <div><span class="mark">6</span><b>Kaarten zonder kop</b>Het gebouw is een tabel van negen getallen; wat het is en wat je ermee kunt komt pas onderaan.</div>
+  </div>
+</div>
+
+<div class="row" style="margin-top:34px">
+  <div class="dk"><img class="today" src="today-desk-community.jpg">
+    <span class="mark" style="left:800px;top:150px">4</span><span class="mark" style="left:560px;top:330px">2</span><div class="lbl">Desktop: community-paneel</div></div>
+  <div class="dk"><img class="today" src="today-desk-place.jpg">
+    <span class="mark" style="left:20px;top:110px">3</span><span class="mark" style="left:600px;top:400px">4</span><div class="lbl">Desktop: een plek aangetikt</div></div>
+</div>
+</body></html>

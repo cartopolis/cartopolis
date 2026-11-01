@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  /* Direction C: the teal palette, a different skeleton — tabs and a sheet about where you are. */
+  .C { --ink:#0F1416; --surface:#141A1C; --raised:#1F2829; --hover:#2A3536; --accent:#5CC6C0; --muted:#263F42;
+       --text:#E4ECEC; --dim:#9FB0B1; --cream:#F3F7F7; --glass:rgba(20,26,28,.88); --gline:rgba(255,255,255,.11); color:var(--text); font-size:14px; }
+  .glass { background:var(--glass); backdrop-filter:blur(18px); border:1px solid var(--gline); box-shadow:0 10px 30px rgba(0,0,0,.35); }
+  .solid { background:var(--surface); }
+  .av { width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; font-size:14px; flex:none; position:relative; }
+  .av.on::after { content:''; position:absolute; right:-1px; bottom:-1px; width:10px; height:10px; border-radius:50%; background:#4CD07D; border:2px solid var(--surface); }
+  .av.sq { border-radius:11px; }
+  .tabs { position:absolute; left:0; right:0; bottom:0; display:flex; justify-content:space-around; padding:8px 8px 26px; border-top:1px solid var(--gline); }
+  .tabs div { display:flex; flex-direction:column; align-items:center; gap:3px; font-size:11px; color:var(--dim); width:70px; position:relative; }
+  .tabs div i { display:flex; align-items:center; justify-content:center; width:56px; height:30px; border-radius:15px; font-style:normal; }
+  .tabs div.on { color:var(--cream); } .tabs div.on i { background:var(--muted); color:var(--accent); }
+  .tabs .n { position:absolute; left:42px; top:-2px; min-width:18px; height:18px; border-radius:9px; background:var(--accent); color:var(--ink); font-size:10.5px; font-weight:600; display:flex; align-items:center; justify-content:center; padding:0 5px; }
+  .search { display:flex; align-items:center; gap:10px; height:46px; border-radius:23px; padding:0 8px 0 16px; color:var(--dim); }
+  .fab { position:absolute; width:52px; height:52px; border-radius:18px; display:flex; align-items:center; justify-content:center; color:var(--text); }
+  .caps { position:absolute; display:flex; flex-direction:column; border-radius:16px; overflow:hidden; }
+  .caps div { width:44px; height:44px; display:flex; align-items:center; justify-content:center; }
+  .caps div + div { border-top:1px solid var(--gline); }
+  .sheet { position:absolute; left:0; right:0; border-radius:24px 24px 0 0; }
+  .handle { width:40px; height:5px; border-radius:3px; background:rgba(255,255,255,.25); margin:8px auto 4px; }
+  .sh { font-size:12px; letter-spacing:.6px; text-transform:uppercase; color:var(--dim); margin:14px 0 8px; display:flex; justify-content:space-between; }
+  .sh a { color:var(--accent); text-transform:none; letter-spacing:0; font-size:13px; }
+  h3 { font-size:20px; color:var(--cream); font-weight:600; letter-spacing:-.3px; }
+  .sub { color:var(--dim); font-size:13px; }
+  .people { display:flex; gap:14px; }
+  .people div { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:12px; color:var(--text); width:52px; }
+  .people .av { width:48px; height:48px; font-size:18px; }
+  .item { display:flex; align-items:center; gap:12px; padding:10px 0; }
+  .item + .item { border-top:1px solid var(--gline); }
+  .item .t { flex:1; min-width:0; }
+  .item b { color:var(--cream); font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .item small { color:var(--dim); font-size:12.5px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .when { width:46px; text-align:center; border-radius:12px; background:var(--raised); padding:5px 0; flex:none; }
+  .when b { font-size:15px; } .when small { font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; }
+  .pill { display:inline-flex; align-items:center; gap:5px; height:30px; padding:0 12px; border-radius:15px; background:var(--raised); font-size:13px; font-weight:600; color:var(--text); white-space:nowrap; }
+  .pill.on { background:var(--accent); color:var(--ink); }
+  .b { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:34px; padding:0 14px; border-radius:17px; font-weight:600; font-size:13px; }
+  .b.p { background:var(--accent); color:var(--ink); } .b.t { background:var(--raised); }
+  .unread { min-width:20px; height:20px; border-radius:10px; background:var(--accent); color:var(--ink); font-size:11px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; padding:0 6px; }
+  .mpin { position:absolute; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:11px; font-weight:600; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.8); }
+  .mpin .av { border:2.5px solid #fff; box-shadow:0 3px 8px rgba(0,0,0,.4); }
+  .mev { position:absolute; display:flex; align-items:center; gap:6px; height:28px; padding:0 10px 0 6px; border-radius:14px; background:#fff; color:#1B2326; font-size:12px; font-weight:600; box-shadow:0 3px 8px rgba(0,0,0,.35); }
+  .rail { position:absolute; left:0; top:0; bottom:0; width:84px; display:flex; flex-direction:column; align-items:center; gap:6px; padding:18px 0; border-right:1px solid var(--gline); }
+  .rail div { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:11px; color:var(--dim); }
+  .rail div i { display:flex; align-items:center; justify-content:center; width:56px; height:32px; border-radius:16px; font-style:normal; }
+  .rail div.on { color:var(--cream); } .rail div.on i { background:var(--muted); color:var(--accent); }
+</style></head>
+<body><script src="icons.js"></script>
+<h1>C · <b>Hier en nu</b> — de app opgebouwd rond waar je bent</h1>
+<p class="lede">De grootste stap, en een andere vraag: niet "hoe ziet het eruit" maar <strong>"wat zie je als eerste"</strong>. Cartopolis is "een vrij alternatief voor gemeenschappen om te praten en samen te werken" — maar wie de app opent ziet een kaart met negen knoppen en geen mens. Hier wordt de dock een <strong>vaste tabbalk</strong> (Map · Chats · Calendar · You) en ligt er op de kaart altijd een <strong>sheet over de plek die je bekijkt</strong>: wie er is, wat er gebeurt, wat er gezegd wordt. Het palet blijft teal. Alles op dit blad is <span class="tag">nieuw</span>.</p>
+
+<div class="principles">
+  <div><h3>Mensen eerst</h3><p>De sheet begint met de mensen hier en wat er vandaag gebeurt. De kaart toont ze als pins (de bestaande avatar-disc) en afspraken als labels.</p></div>
+  <div><h3>Vier tabs, geen menu-knop</h3><p>Map, Chats (gesprekken én communities), Calendar, You. Instellingen, account en ontwikkelaarstools onder You. Geen ☰ meer.</p></div>
+  <div><h3>Kaartbediening op de kaart</h3><p>Fly/Follow/Earth, lagen en het noorden worden één capsule op de kaart zelf; de camera een eigen ronde knop rechts boven de sheet.</p></div>
+  <div><h3>Kosten</h3><p>Groot: een nieuwe hoofdstructuur (<code>dock.rs</code>, <code>RightPanel</code>, de panel-keten), een "hier"-overzicht dat de server al kent maar nog niet per plek levert, en elke paneelpagina krijgt een tab als thuis.</p></div>
+</div>
+
+<div class="row">
+  <div class="desk C" style="background-image:url(map.jpg)">
+    <div class="rail solid">
+      <div style="margin-bottom:10px"><div class="av" style="background:#2E8B57;width:40px;height:40px">J</div></div>
+      <div class="on"><i><svg class="i"><use href="#map"/></svg></i>Map</div>
+      <div><i><svg class="i"><use href="#chat"/></svg></i>Chats</div>
+      <div><i><svg class="i"><use href="#cal"/></svg></i>Calendar</div>
+      <div><i><svg class="i"><use href="#user"/></svg></i>You</div>
+    </div>
+    <div class="solid abs" style="left:84px;top:0;bottom:0;width:380px;padding:16px 18px;border-right:1px solid var(--gline)">
+      <div class="search" style="background:var(--raised)"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search places and people</span></div>
+      <div style="margin-top:18px"><h3>Grote Markt</h3><div class="sub">Groningen · the square you're looking at</div></div>
+      <div style="display:flex;gap:6px;margin-top:12px"><span class="pill on">Everything</span><span class="pill">People</span><span class="pill">Events</span><span class="pill">Posts</span></div>
+      <div class="sh"><span>Here now · 3</span><a>All</a></div>
+      <div class="people"><div><div class="av on" style="background:#6B8E23">S</div>sanne</div><div><div class="av on" style="background:#C2185B">E</div>eva</div><div><div class="av on" style="background:#7B5BD6">T</div>tom</div><div><div class="av" style="background:var(--raised);color:var(--dim)"><svg class="i s"><use href="#plus"/></svg></div>Invite</div></div>
+      <div class="sh"><span>Today</span><a>Calendar</a></div>
+      <div class="item"><div class="when"><b>12</b><small>:00</small></div><div class="t"><b>Carillon concert</b><small>Martinitoren · Garage 44 · 8 going</small></div><span class="b t">Going?</span></div>
+      <div class="item"><div class="when"><b>19</b><small>:30</small></div><div class="t"><b>Vismarkt dinner</b><small>sanne · 2 going</small></div><span class="b p">Going</span></div>
+      <div class="sh"><span>Said nearby</span><a>Garage 44</a></div>
+      <div class="item"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>Plant swap on the corner, Saturday 10–1</b><small>sanne · 25 min · 6 replies</small></div></div>
+      <div class="item"><div class="av" style="background:#B5651D">K</div><div class="t"><b>Who has a ladder for the mural?</b><small>karim · 2 h · 3 replies</small></div></div>
+      <div class="item"><div class="av sq" style="background:#3D6FD6">G</div><div class="t"><b>Garage 44</b><small>community · 5 people · asks first</small></div><span class="b t">Visit</span></div>
+    </div>
+    <div class="mpin" style="left:760px;top:330px"><div class="av on" style="background:#6B8E23">S</div>sanne</div>
+    <div class="mpin" style="left:900px;top:420px"><div class="av on" style="background:#C2185B">E</div>eva</div>
+    <div class="mev" style="left:640px;top:470px"><svg class="i s"><use href="#cal"/></svg>Carillon 12:00</div>
+    <div class="caps glass" style="right:16px;top:16px"><div><svg class="i"><use href="#layers"/></svg></div><div style="color:var(--accent)"><svg class="i"><use href="#north"/></svg></div><div><svg class="i"><use href="#plane"/></svg></div><div><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="fab glass" style="right:16px;bottom:16px;border-radius:50%"><svg class="i"><use href="#camera"/></svg></div>
+  </div>
+  <div style="width:420px">
+    <div class="cap" style="margin:0"><h2><span>C1</span>Desktop</h2><ul>
+      <li><b>Links een rail</b> met de vier bestemmingen, daarnaast een vaste kolom, rechts de kaart. Zoals een mail- of chat-app: de kaart is de inhoud, niet het hele scherm.</li>
+      <li>De kolom op Map beschrijft <b>de plek in beeld</b> en ververst als je de kaart verschuift: wie, wat vandaag, wat er gezegd is, welke community hier thuis is.</li>
+      <li>Mensen en afspraken staan ook <b>op de kaart</b>, als avatar-pins en witte labels.</li>
+      <li>Kaartbediening (lagen, noorden, Fly/Follow/Earth, locatie) rechtsboven in één capsule; de camera rechtsonder.</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="row" style="margin-top:40px">
+  <div>
+    <div class="phone C" style="background-image:url(map-phone.jpg)">
+      <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+      <div class="search glass abs" style="left:12px;right:12px;top:52px"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search places and people</span></div>
+      <div class="caps glass" style="right:12px;top:112px"><div><svg class="i"><use href="#layers"/></svg></div><div style="color:var(--accent)"><svg class="i"><use href="#north"/></svg></div><div><svg class="i"><use href="#plane"/></svg></div></div>
+      <div class="mpin" style="left:110px;top:260px"><div class="av on" style="background:#6B8E23">S</div>sanne</div>
+      <div class="mpin" style="left:240px;top:330px"><div class="av on" style="background:#C2185B">E</div>eva</div>
+      <div class="mev" style="left:120px;top:400px"><svg class="i s"><use href="#cal"/></svg>Carillon 12:00</div>
+      <div class="fab glass" style="right:12px;bottom:262px;border-radius:50%"><svg class="i"><use href="#camera"/></svg></div>
+      <div class="sheet glass" style="bottom:0;height:248px;padding:0 18px">
+        <div class="handle"></div>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between"><div><h3>Grote Markt</h3><div class="sub">3 people here · 2 things today</div></div><div style="display:flex"><div class="av on" style="background:#6B8E23;margin-left:-8px;border:2px solid var(--surface)">S</div><div class="av on" style="background:#C2185B;margin-left:-8px;border:2px solid var(--surface)">E</div><div class="av on" style="background:#7B5BD6;margin-left:-8px;border:2px solid var(--surface)">T</div></div></div>
+        <div class="item" style="margin-top:6px"><div class="when"><b>12</b><small>:00</small></div><div class="t"><b>Carillon concert</b><small>Martinitoren · 8 going</small></div><span class="b t">Going?</span></div>
+      </div>
+      <div class="tabs glass" style="border-radius:0;box-shadow:none"><div class="on"><i><svg class="i"><use href="#map"/></svg></i>Map</div><div><span class="n">5</span><i><svg class="i"><use href="#chat"/></svg></i>Chats</div><div><i><svg class="i"><use href="#cal"/></svg></i>Calendar</div><div><i><svg class="i"><use href="#user"/></svg></i>You</div></div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>C2</span>Openen: de kaart, met wie er is</h2><ul>
+      <li>De sheet ligt laag: <b>naam van de plek, wie er is, het eerstvolgende</b>. Eén regel per ding.</li>
+      <li>Omhoog vegen → C3. De kaart blijft bovenaan zichtbaar.</li>
+      <li>Tabbalk vast onderin; Chats draagt het aantal ongelezen.</li>
+    </ul></div>
+  </div>
+
+  <div>
+    <div class="phone C" style="background-image:url(map-phone.jpg)">
+      <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+      <div class="search glass abs" style="left:12px;right:12px;top:52px"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search places and people</span></div>
+      <div class="sheet glass" style="top:160px;bottom:0;padding:0 18px">
+        <div class="handle"></div>
+        <h3>Grote Markt</h3><div class="sub">Groningen</div>
+        <div style="display:flex;gap:6px;margin-top:10px"><span class="pill on">Everything</span><span class="pill">People</span><span class="pill">Events</span><span class="pill">Posts</span></div>
+        <div class="sh"><span>Here now · 3</span></div>
+        <div class="people"><div><div class="av on" style="background:#6B8E23">S</div>sanne</div><div><div class="av on" style="background:#C2185B">E</div>eva</div><div><div class="av on" style="background:#7B5BD6">T</div>tom</div></div>
+        <div class="sh"><span>Today</span></div>
+        <div class="item"><div class="when"><b>12</b><small>:00</small></div><div class="t"><b>Carillon concert</b><small>Martinitoren · 8 going</small></div><span class="b t">Going?</span></div>
+        <div class="item"><div class="when"><b>19</b><small>:30</small></div><div class="t"><b>Vismarkt dinner</b><small>sanne · 2 going</small></div><span class="b p">Going</span></div>
+        <div class="sh"><span>Said nearby</span></div>
+        <div class="item"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>Plant swap on the corner</b><small>sanne · Garage 44 · 25 min</small></div></div>
+      </div>
+      <div class="tabs solid"><div class="on"><i><svg class="i"><use href="#map"/></svg></i>Map</div><div><span class="n">5</span><i><svg class="i"><use href="#chat"/></svg></i>Chats</div><div><i><svg class="i"><use href="#cal"/></svg></i>Calendar</div><div><i><svg class="i"><use href="#user"/></svg></i>You</div></div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>C3</span>Omhoog geveegd: de plek</h2><ul>
+      <li>Filters bovenaan; alles wat over deze plek gaat op één pagina.</li>
+      <li>Een gebouw of winkel aantikken vervangt "Grote Markt" door dat ding, met dezelfde opbouw (kop, wie, wanneer, gezegd) en de feiten eronder.</li>
+    </ul></div>
+  </div>
+
+  <div>
+    <div class="phone C solid">
+      <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+      <div style="position:absolute;inset:44px 0 0 0;padding:8px 18px">
+        <div style="display:flex;align-items:center;justify-content:space-between"><h3 style="font-size:26px">Chats</h3><span class="b p" style="width:38px;padding:0;border-radius:50%;height:38px"><svg class="i s"><use href="#plus"/></svg></span></div>
+        <div style="display:flex;gap:6px;margin-top:12px"><span class="pill on">All</span><span class="pill">People</span><span class="pill">Communities</span><span class="pill">Nearby</span></div>
+        <div class="sh"><span>Asking you</span></div>
+        <div class="item"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne wants to join Garage 44</b><small>"I live on the Verlengde Hereweg"</small></div><span class="b p">Let in</span></div>
+        <div class="sh"><span>Recent</span></div>
+        <div class="item"><div class="av sq" style="background:#3D6FD6">G</div><div class="t"><b>Garage 44</b><small># meet-ups · karim: I'll bring the drill</small></div><div style="text-align:right"><small style="color:var(--dim);font-size:12px">16:45</small><br><span class="unread">5</span></div></div>
+        <div class="item"><div class="av on" style="background:#6B8E23">S</div><div class="t"><b>sanne</b><small style="color:#FF9A66">sharing location · 60 min</small></div><small style="color:var(--dim);font-size:12px">16:44</small></div>
+        <div class="item"><div class="av sq" style="background:#8A3FB0">F</div><div class="t"><b>Fietsers Groningen</b><small># sunday-rides · joris: 10:00 at the station</small></div><div style="text-align:right"><small style="color:var(--dim);font-size:12px">16:45</small><br><span class="unread">2</span></div></div>
+        <div class="item"><div class="av on" style="background:#C2185B">E</div><div class="t"><b>eva</b><small>See you Saturday!</small></div><small style="color:var(--dim);font-size:12px">Fri</small></div>
+        <div class="item"><div class="av" style="background:#455A64"><svg class="i s"><use href="#pin"/></svg></div><div class="t"><b>Nearby chat</b><small>Grote Markt · 3 people</small></div><small style="color:var(--dim);font-size:12px">now</small></div>
+      </div>
+      <div class="tabs solid"><div><i><svg class="i"><use href="#map"/></svg></i>Map</div><div class="on"><span class="n">5</span><i><svg class="i"><use href="#chat"/></svg></i>Chats</div><div><i><svg class="i"><use href="#cal"/></svg></i>Calendar</div><div><i><svg class="i"><use href="#user"/></svg></i>You</div></div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>C4</span>Chats-tab</h2><ul>
+      <li>Gesprekken, communities en de chat in de buurt in <b>één lijst</b>, gefilterd met pillen — niet drie panelen (Chats, Communities, Contacts).</li>
+      <li>Wat op jou wacht (een aanvraag) staat bovenaan met één knop.</li>
+    </ul></div>
+  </div>
+</div>
+</body></html>

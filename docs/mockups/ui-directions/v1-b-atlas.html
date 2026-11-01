@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  /* Direction B: printed-atlas paper by day, the same layout in dark glass by night. */
+  .B { --paper:#FAF6EE; --paper2:#F1EBDF; --ink:#1B2326; --dim:#5C676A; --rule:rgba(27,35,38,.14);
+       --accent:#0E7C74; --accent-soft:#D6ECE8; --glass:rgba(250,246,238,.92); --gline:rgba(27,35,38,.10); color:var(--ink); font-size:14px; }
+  .N { --paper:#141A1C; --paper2:#1F2829; --ink:#EDF2F1; --dim:#9FB0B1; --rule:rgba(255,255,255,.12);
+       --accent:#5CC6C0; --accent-soft:#263F42; --glass:rgba(20,26,28,.88); --gline:rgba(255,255,255,.12); color:var(--ink); font-size:14px; }
+  .glass { background:var(--glass); backdrop-filter:blur(16px); border:1px solid var(--gline); box-shadow:0 8px 28px rgba(40,30,10,.18); }
+  .N .glass { box-shadow:0 8px 28px rgba(0,0,0,.4); }
+  .caps { font-size:11px; letter-spacing:1.6px; text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .big { font-size:28px; font-weight:600; letter-spacing:-.6px; line-height:1.1; }
+  .b { display:inline-flex; align-items:center; justify-content:center; gap:7px; height:40px; padding:0 16px; border-radius:20px; font-weight:600; font-size:14px; white-space:nowrap; }
+  .b.p { background:var(--ink); color:var(--paper); }
+  .b.t { border:1.5px solid var(--ink); color:var(--ink); }
+  .b.x { color:var(--accent); padding:0 6px; }
+  .b.ic { width:40px; padding:0; }
+  .leg { display:grid; grid-template-columns:auto 1fr auto; gap:0 8px; align-items:baseline; }
+  .leg span:nth-child(3n+2) { border-bottom:1.5px dotted var(--rule); transform:translateY(-4px); }
+  .leg span:nth-child(3n+1) { color:var(--dim); }
+  .leg span:nth-child(3n) { font-weight:600; text-align:right; }
+  .leg > span { padding:4px 0; }
+  .av { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; font-size:14px; flex:none; }
+  .dock { position:absolute; display:flex; gap:4px; padding:5px; border-radius:26px; }
+  .dock div { height:44px; padding:0 14px; border-radius:22px; display:flex; align-items:center; gap:7px; font-weight:600; font-size:13px; color:var(--dim); }
+  .dock div.on { background:var(--ink); color:var(--paper); }
+  .rose { position:absolute; width:58px; height:58px; border-radius:50%; display:flex; align-items:center; justify-content:center; }
+  .rose svg { width:58px; height:58px; }
+  .scale { position:absolute; font-size:11px; font-weight:600; color:var(--ink); }
+  .scale i { display:flex; height:6px; width:120px; border:1.5px solid var(--ink); margin-top:3px; }
+  .scale i b { flex:1; } .scale i b:nth-child(odd) { background:var(--ink); }
+  .msg { max-width:250px; padding:9px 12px; border-radius:16px; line-height:1.35; }
+  .msg.them { background:var(--paper2); border-bottom-left-radius:4px; }
+  .msg.me { background:var(--accent); color:#fff; margin-left:auto; border-bottom-right-radius:4px; }
+  .N .msg.me { color:#0F1416; }
+  .live { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--brand); box-shadow:0 0 0 3px rgba(253,96,18,.25); }
+  .hr { height:1px; background:var(--rule); margin:12px 0; }
+  .field { display:flex; align-items:center; gap:10px; height:44px; border-radius:22px; padding:0 6px 0 16px; background:var(--paper2); color:var(--dim); }
+  .swatch { display:flex; gap:10px; margin-top:6px; }
+  .swatch div { width:72px; } .swatch i { display:block; height:46px; border-radius:10px; border:1px solid rgba(0,0,0,.15); }
+  .swatch span { font-size:11.5px; color:var(--sheet-dim); display:block; margin-top:4px; }
+</style></head>
+<body><script src="icons.js"></script>
+<h1>B · <b>Atlas</b> — papier overdag, glas 's nachts</h1>
+<p class="lede">Een grotere stap: de UI neemt de taal van een <strong>gedrukte atlas</strong> over — warm papier, inkt, kleine kapitalen, stippellijnen tussen naam en waarde, een schaalstok en een windroos. De kaart is overdag licht; donkere panelen erop lezen als gaten. 's Avonds (de zon in de wereld, niet de klok van de telefoon) wordt dezelfde opmaak <strong>donker glas</strong> — de huidige teal. Eén layout, twee materialen. Alles op dit blad is <span class="tag">nieuw</span>.</p>
+
+<div class="principles">
+  <div><h3>Inkt als hoofdactie</h3><p>De gevulde knop is inkt-zwart op papier — zoals een stempel, niet een gekleurde knop. Teal blijft voor links en "aan", oranje voor live.</p></div>
+  <div><h3>Kaarten als legenda</h3><p>Feiten staan als in een kaartlegenda: naam · · · · waarde. Koppen in kleine kapitalen, titels groot en strak.</p></div>
+  <div><h3>De zon kiest</h3><p>Licht of donker volgt de zon boven de plek die je bekijkt (de app weet die al: <code>utils::sun</code>). Een instelling kan het vastzetten.</p></div>
+  <div><h3>Kosten</h3><p>Tweede palet in <code>theme.rs</code>, en alle contrasttests een tweede keer — die bestaan al, ze krijgen een extra kolom. De glas-blur blijft.</p></div>
+</div>
+
+<div class="row">
+  <div class="desk B" style="background-image:url(map.jpg)">
+    <div class="glass abs" style="left:16px;top:16px;width:360px;border-radius:24px;padding:6px">
+      <div class="field" style="background:transparent"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search the atlas</span><div class="av" style="background:#2E8B57">J</div></div>
+    </div>
+    <div class="glass abs" style="left:16px;top:84px;width:360px;border-radius:24px;padding:20px 22px 18px">
+      <div class="caps">Tower · Groningen</div>
+      <div class="big" style="margin:4px 0 2px">Martinitoren</div>
+      <div style="color:var(--dim)">Martinikerkhof · the city's landmark since 1482</div>
+      <div style="display:flex;gap:8px;margin:14px 0 4px"><span class="b p" style="flex:1"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="b t ic"><svg class="i s"><use href="#bookmark"/></svg></span><span class="b t ic"><svg class="i s"><use href="#share"/></svg></span></div>
+      <div class="hr"></div>
+      <div class="caps" style="margin-bottom:4px">Legend</div>
+      <div class="leg"><span>Height</span><span></span><span>97 m</span><span>Built</span><span></span><span>1482</span><span>Floor area</span><span></span><span>4 250 m²</span><span>Bells</span><span></span><span>62</span></div>
+      <div class="hr"></div>
+      <div class="caps" style="margin-bottom:8px">Here now</div>
+      <div style="display:flex;align-items:center;gap:10px"><div class="av" style="background:#6B8E23">S</div><div style="flex:1"><b>sanne</b> <span class="live"></span><div style="color:var(--dim);font-size:12.5px">sharing her location · 12 m away</div></div><span class="b x">Say hi</span></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px"><div class="av" style="background:#8A6FB0;border-radius:10px"><svg class="i s"><use href="#cal"/></svg></div><div style="flex:1"><b>Carillon concert</b><div style="color:var(--dim);font-size:12.5px">today 12:00 · Garage 44</div></div><span class="b x">Going?</span></div>
+    </div>
+    <div class="rose glass" style="right:20px;top:20px"><svg viewBox="0 0 58 58"><circle cx="29" cy="29" r="22" fill="none" stroke="#1B2326" stroke-opacity=".25"/><path d="M29 8l5 21h-10z" fill="#1B2326"/><path d="M29 50l5-21h-10z" fill="none" stroke="#1B2326" stroke-width="1.5"/><text x="29" y="7" font-size="0" /></svg></div>
+    <div class="glass abs" style="right:20px;top:90px;border-radius:20px;display:flex;flex-direction:column"><div style="padding:10px"><svg class="i"><use href="#layers"/></svg></div><div style="padding:10px;border-top:1px solid var(--gline)"><svg class="i"><use href="#locate"/></svg></div><div style="padding:10px;border-top:1px solid var(--gline)"><svg class="i"><use href="#sun"/></svg></div></div>
+    <div class="scale glass" style="right:20px;bottom:20px;padding:8px 12px;border-radius:12px">0 · · · · 50 · · · · 100 m<i><b></b><b></b><b></b><b></b></i></div>
+    <div class="abs" style="left:640px;top:300px"><svg class="i" style="width:40px;height:40px;fill:#1B2326;stroke:#FAF6EE;stroke-width:1.5"><use href="#pin"/></svg></div>
+    <div class="dock glass" style="left:50%;transform:translateX(-50%);bottom:16px">
+      <div class="on"><svg class="i s"><use href="#map"/></svg>Atlas</div><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div><svg class="i s"><use href="#people"/></svg>Community</div><div><svg class="i s"><use href="#plane"/></svg>Fly</div><div><svg class="i s"><use href="#menu"/></svg>More</div>
+    </div>
+  </div>
+  <div style="width:420px">
+    <div class="cap" style="margin:0"><h2><span>B1</span>Desktop, overdag</h2><ul>
+      <li><b>Links een atlaskolom</b>: zoeken en daaronder de kaart van wat je aantikte. Panelen komen aan de kant waar je leest, niet als slab rechts.</li>
+      <li>De plek leest als een <b>legenda-ingang</b>: kleine kapitalen, grote naam, één zin, feiten met stippellijn.</li>
+      <li><b>"Here now"</b>: mensen en afspraken op deze plek, onder de feiten — het sociale deel krijgt een vaste plek op elke plaatskaart.</li>
+      <li>Windroos en schaalstok zoals op papier; de zon-knop zet licht/donker vast.</li>
+      <li>Dock als <b>pillen met tekst</b>; de actieve is inkt.</li>
+    </ul></div>
+    <div class="cap"><h2><span>·</span>Het palet</h2>
+      <div class="swatch">
+        <div><i style="background:#FAF6EE"></i><span>Papier<br>#FAF6EE</span></div>
+        <div><i style="background:#F1EBDF"></i><span>Papier 2<br>#F1EBDF</span></div>
+        <div><i style="background:#1B2326"></i><span>Inkt<br>#1B2326</span></div>
+        <div><i style="background:#0E7C74"></i><span>Teal diep<br>#0E7C74</span></div>
+        <div><i style="background:#FD6012"></i><span>Live<br>#FD6012</span></div>
+      </div>
+      <ul style="margin-top:10px"><li>Inkt op papier ≈ 14:1; diep teal op papier ≈ 5:1 (te meten in de bestaande tests).</li></ul>
+    </div>
+  </div>
+</div>
+
+<div class="row" style="margin-top:40px">
+  <div>
+    <div class="phone B" style="background-image:url(map-phone.jpg)">
+      <div class="status dark"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+      <div class="glass abs" style="left:12px;right:12px;top:50px;border-radius:24px;padding:4px"><div class="field" style="background:transparent"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search the atlas</span><div class="av" style="background:#2E8B57">J</div></div></div>
+      <div class="rose glass" style="right:14px;top:112px;width:48px;height:48px"><svg viewBox="0 0 58 58" style="width:48px;height:48px"><path d="M29 10l5 19h-10z" fill="#1B2326"/><path d="M29 48l5-19h-10z" fill="none" stroke="#1B2326" stroke-width="1.5"/></svg></div>
+      <div class="abs" style="left:170px;top:290px"><svg class="i" style="width:38px;height:38px;fill:#1B2326;stroke:#FAF6EE;stroke-width:1.5"><use href="#pin"/></svg></div>
+      <div class="glass abs" style="left:0;right:0;bottom:0;border-radius:26px 26px 0 0;padding:10px 20px 0">
+        <div style="width:40px;height:5px;border-radius:3px;background:var(--rule);margin:0 auto 10px"></div>
+        <div class="caps">Tower · Groningen</div>
+        <div class="big" style="margin:3px 0 2px">Martinitoren</div>
+        <div style="color:var(--dim)">97 m · Martinikerkhof</div>
+        <div style="display:flex;gap:8px;margin:12px 0"><span class="b p" style="flex:1"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="b t ic"><svg class="i s"><use href="#bookmark"/></svg></span><span class="b t ic"><svg class="i s"><use href="#share"/></svg></span></div>
+        <div class="leg"><span>Built</span><span></span><span>1482</span><span>Here now</span><span></span><span>sanne <span class="live"></span></span></div>
+        <div class="dock" style="position:relative;justify-content:space-between;margin:10px -20px 0;padding:6px 10px 22px;border-top:1px solid var(--gline);border-radius:0">
+          <div class="on" style="padding:0 12px"><svg class="i s"><use href="#map"/></svg>Atlas</div><div style="padding:0 10px"><svg class="i"><use href="#chat"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#people"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#plane"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>B2</span>Telefoon, overdag</h2><ul>
+      <li>Licht glas op een lichte kaart: de sheet hoort bij de kaart in plaats van er een gat in te slaan.</li>
+      <li>De dock toont alleen de actieve bestemming met tekst; de rest is icoon — past op 274 pt.</li>
+    </ul></div>
+  </div>
+
+  <div>
+    <div class="phone B" style="background:var(--paper)">
+      <div class="status dark"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+      <div style="position:absolute;inset:44px 0 0 0;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--rule)"><svg class="i"><use href="#left"/></svg><div class="av" style="background:#6B8E23">S</div><div style="flex:1"><b>sanne</b><div class="caps" style="font-size:10px;letter-spacing:1.2px;color:var(--brand)">Sharing location · 60 min</div></div><svg class="i"><use href="#more"/></svg></div>
+        <div style="flex:1;padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+          <div class="caps" style="text-align:center;margin-bottom:4px">Today</div>
+          <div class="msg them">Where shall we have dinner Saturday?</div>
+          <div class="msg me">Somewhere near the Vismarkt?</div>
+          <div style="border:1px solid var(--rule);border-radius:16px;overflow:hidden;width:250px">
+            <div style="height:110px;background:url(map-phone.jpg) center/cover;position:relative"><svg class="i" style="position:absolute;left:110px;top:36px;width:30px;height:30px;fill:#1B2326;stroke:#FAF6EE"><use href="#pin"/></svg></div>
+            <div style="padding:10px 12px"><div class="caps" style="font-size:10px">Theatre · Stadsschouwburg</div><b>Then the show after?</b><div style="display:flex;gap:6px;margin-top:8px"><span class="b t" style="height:32px;padding:0 12px;font-size:13px">Show</span><span class="b t" style="height:32px;padding:0 12px;font-size:13px"><svg class="i s"><use href="#route"/></svg>Route</span></div></div>
+          </div>
+          <div class="msg them">Perfect. 19:00 at the corner?</div>
+        </div>
+        <div style="display:flex;gap:8px;padding:10px 12px 28px;border-top:1px solid var(--rule)"><div class="field" style="flex:1"><span style="flex:1">Message</span><svg class="i s"><use href="#pin"/></svg></div><span class="b p ic" style="width:44px;height:44px;border-radius:22px"><svg class="i s"><use href="#send"/></svg></span></div>
+      </div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>B3</span>Een gesprek</h2><ul>
+      <li>Een gedeelde plek is een <b>kaartuitsnede met legenda-kop</b>, niet een donker vak met coördinaten.</li>
+      <li>Live (gedeelde locatie) is het enige oranje op het scherm.</li>
+    </ul></div>
+  </div>
+
+  <div>
+    <div class="phone N" style="background-image:url(map-phone-dusk.jpg)">
+      <div class="status"><span>21:14</span><span class="notch"></span><span>●●● 64%</span></div>
+      <div class="glass abs" style="left:12px;right:12px;top:50px;border-radius:24px;padding:4px"><div class="field" style="background:transparent"><svg class="i"><use href="#search"/></svg><span style="flex:1">Search the atlas</span><div class="av" style="background:#2E8B57">J</div></div></div>
+      <div class="rose glass" style="right:14px;top:112px;width:48px;height:48px"><svg viewBox="0 0 58 58" style="width:48px;height:48px"><path d="M29 10l5 19h-10z" fill="#5CC6C0"/><path d="M29 48l5-19h-10z" fill="none" stroke="#EDF2F1" stroke-width="1.5"/></svg></div>
+      <div class="glass abs" style="left:0;right:0;bottom:0;border-radius:26px 26px 0 0;padding:10px 20px 0">
+        <div style="width:40px;height:5px;border-radius:3px;background:var(--rule);margin:0 auto 10px"></div>
+        <div class="caps">Tower · Groningen</div>
+        <div class="big" style="margin:3px 0 2px">Martinitoren</div>
+        <div style="color:var(--dim)">97 m · Martinikerkhof</div>
+        <div style="display:flex;gap:8px;margin:12px 0"><span class="b p" style="flex:1;background:var(--accent);color:#0F1416"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="b t ic" style="border-color:var(--ink)"><svg class="i s"><use href="#bookmark"/></svg></span><span class="b t ic"><svg class="i s"><use href="#share"/></svg></span></div>
+        <div class="leg"><span>Built</span><span></span><span>1482</span><span>Here now</span><span></span><span>sanne <span class="live"></span></span></div>
+        <div class="dock" style="position:relative;justify-content:space-between;margin:10px -20px 0;padding:6px 10px 22px;border-top:1px solid var(--gline);border-radius:0">
+          <div class="on" style="padding:0 12px;background:var(--accent);color:#0F1416"><svg class="i s"><use href="#map"/></svg>Atlas</div><div style="padding:0 10px"><svg class="i"><use href="#chat"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#people"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#plane"/></svg></div><div style="padding:0 10px"><svg class="i"><use href="#menu"/></svg></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="width:390px"><h2><span>B4</span>Dezelfde sheet, na zonsondergang</h2><ul>
+      <li>Op de plek gaat de zon onder → het materiaal wordt donker glas, de hoofdactie teal. <b>Layout en woorden blijven gelijk</b>.</li>
+      <li>Wisselt traag mee met de schemering, niet met een klap.</li>
+    </ul></div>
+  </div>
+</div>
+</body></html>
