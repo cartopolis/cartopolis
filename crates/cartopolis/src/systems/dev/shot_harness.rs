@@ -3992,6 +3992,14 @@ pub fn place_space_orbit(
     cam_state.orbit_initialized = true;
     cam_state.orbit_dir = globe.direction_local(shot.lat, shot.lng).as_dvec3();
     cam_state.orbit_distance = globe.radius as f64 + shot.alt;
+    // Past the globe's ceiling the camera waits there and the rest of the
+    // height is the cosmos's (`systems::cosmos`): `--at 52,5,4e17` is the stars.
+    let ceiling = crate::systems::free_camera::ORBIT_MAX_DISTANCE_SPACE;
+    if cam_state.orbit_distance > ceiling {
+        cam_state.orbit_distance = ceiling;
+        cam_state.cosmos_alt = shot.alt;
+        cam_state.cosmos_target = shot.alt;
+    }
     cam_state.orbit_distance_target = cam_state.orbit_distance;
     // Heading 0: the globe comes up north-up, like every other space arrival.
     cam_state.orbit_heading = 0.0;

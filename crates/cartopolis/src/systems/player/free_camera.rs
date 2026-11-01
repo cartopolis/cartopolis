@@ -522,7 +522,7 @@ const SPACE_ENTER_ALT: f64 = 55_000.0;
 /// (hysteresis band with `SPACE_ENTER_ALT`).
 const SPACE_EXIT_ALT: f64 = 48_000.0;
 /// Farthest the space camera may pull back from the Earth centre (m).
-const ORBIT_MAX_DISTANCE_SPACE: f64 = 45_000_000.0;
+pub(crate) const ORBIT_MAX_DISTANCE_SPACE: f64 = 45_000_000.0;
 /// If the globe descent lands farther than this (horizontal metres) from the
 /// current anchor, re-anchor the world to the sub-point instead of falling back
 /// to the flat home plane at the wrong coordinates (ADR-025, anchor-less model).
@@ -3037,6 +3037,13 @@ fn earth_mode(ctx: ModeCtx) {
     if grabbing && rot_delta != Vec2::ZERO {
         camera_state.globe_aim = None;
     }
+    // Out among the planets and stars the globe is a point: a drag there would
+    // turn it unseen and move the place the way down lands on.
+    if camera_state.cosmos_alt > 0.0 {
+        rot_delta = Vec2::ZERO;
+        heading_delta = 0.0;
+        grabbing = false;
+    }
 
     // Keys (Earth mode, while no text field has the keyboard): + and − zoom,
     // N puts north up, and over the globe the arrows turn it — Left looks
@@ -3076,9 +3083,13 @@ fn earth_mode(ctx: ModeCtx) {
     };
     // The wheel moves a *target*; the camera glides toward it below, so
     // zoom reads as a smooth fly instead of a per-notch height jump.
+    // Every zoom this frame, multiplied: past the globe's ceiling it is the
+    // cosmos's height that moves (`systems::cosmos`).
+    let mut zoom_mul = 1.0_f64;
     for event in mouse_wheel_events.read() {
         camera_state.rail_goal = None;
         let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
+        zoom_mul *= factor;
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
             factor,
@@ -3093,6 +3104,7 @@ fn earth_mode(ctx: ModeCtx) {
     // what keeps the space tier's "a step is a fraction of the altitude,
     // not of the Earth's radius" rule applying to the fingers too.
     if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+        zoom_mul /= f64::from(touch.pinch);
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
             1.0 / touch.pinch as f64,
@@ -3106,6 +3118,7 @@ fn earth_mode(ctx: ModeCtx) {
     // inherits the space tier's "a step is a fraction of the altitude"
     // rule along with the wheel and the pinch.
     if osd.zoom != 0.0 {
+        zoom_mul *= f64::from(osd_zoom_factor(osd.zoom, delta_time));
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
             f64::from(osd_zoom_factor(osd.zoom, delta_time)),
@@ -3118,17 +3131,26 @@ fn earth_mode(ctx: ModeCtx) {
     // may have to climb out of the surface tier first). Any other zoom —
     // wheel, pinch, the rail's own discs, the keys — takes over from it.
     if let Some(alt) = osd.rail_altitude {
-        camera_state.rail_goal = Some(alt.min(ORBIT_MAX_DISTANCE_SPACE - radius));
+        camera_state.rail_goal = Some(alt.min(crate::systems::zoom_rail::TOP_M));
     }
     if osd.zoom != 0.0 || key_zoom != 0.0 || (touch.pair() && touch.pinch != 1.0) {
         camera_state.rail_goal = None;
     }
+    let ceiling = ORBIT_MAX_DISTANCE_SPACE - radius;
     if let Some(goal) = camera_state.rail_goal {
-        let now = if space {
+        let now = if camera_state.cosmos_alt > 0.0 {
+            camera_state.cosmos_alt
+        } else if space {
             camera_state.orbit_distance - radius
         } else {
             camera_state.orbit_distance * f64::from(camera_state.orbit_pitch.sin())
         };
+        // Past the ceiling the cosmos takes the goal once the globe is there.
+        if goal > ceiling && space && camera_state.orbit_distance >= max_d * 0.98 {
+            camera_state.cosmos_target = goal;
+        } else if goal <= ceiling {
+            camera_state.cosmos_target = 0.0;
+        }
         camera_state.orbit_distance_target = if space {
             radius + goal
         } else if goal > SPACE_ENTER_ALT {
@@ -3144,6 +3166,7 @@ fn earth_mode(ctx: ModeCtx) {
     }
     // The + and − keys are the on-screen pair, held.
     if key_zoom != 0.0 {
+        zoom_mul *= f64::from(osd_zoom_factor(key_zoom, delta_time));
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
             f64::from(osd_zoom_factor(key_zoom, delta_time)),
@@ -3156,7 +3179,10 @@ fn earth_mode(ctx: ModeCtx) {
     // Double-tap (or double-click) on the globe: four times closer, turning
     // onto the place tapped while the zoom glides in. A finger's verdict comes
     // from the gesture recogniser; a mouse's is measured here.
-    if space && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+    if space
+        && camera_state.cosmos_alt == 0.0
+        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+    {
         let pressed = mouse_input.just_pressed(MouseButton::Left);
         let cursor = window.and_then(|w| w.cursor_position());
         let asked_twice = match (pressed, cursor) {
@@ -3189,6 +3215,38 @@ fn earth_mode(ctx: ModeCtx) {
             );
         }
     }
+    // Past the ceiling: the zoom moves the cosmos's height, and the globe
+    // waits at the ceiling. Zooming out against the ceiling steps into it;
+    // zooming back under it steps out, and the globe takes over again.
+    if space {
+        let at_ceiling = camera_state.orbit_distance >= max_d * 0.98;
+        if camera_state.cosmos_target > 0.0 {
+            camera_state.cosmos_target =
+                (camera_state.cosmos_target * zoom_mul).min(crate::systems::zoom_rail::TOP_M);
+            if camera_state.cosmos_target <= ceiling {
+                camera_state.cosmos_target = 0.0;
+            }
+        } else if zoom_mul > 1.0 && at_ceiling && camera_state.orbit_distance_target >= max_d {
+            camera_state.cosmos_target = ceiling * zoom_mul;
+        }
+        let goal = camera_state.cosmos_target.max(ceiling);
+        if camera_state.cosmos_target > 0.0 || camera_state.cosmos_alt > 0.0 {
+            let from = camera_state.cosmos_alt.max(ceiling);
+            let k = 1.0 - (-ZOOM_GLIDE_RATE * f64::from(delta_time)).exp();
+            let next = (from.ln() + (goal.ln() - from.ln()) * k).exp();
+            camera_state.cosmos_alt = if camera_state.cosmos_target == 0.0 && next < ceiling * 1.01
+            {
+                0.0
+            } else {
+                next
+            };
+            camera_state.orbit_distance_target = max_d;
+        }
+    } else {
+        camera_state.cosmos_alt = 0.0;
+        camera_state.cosmos_target = 0.0;
+    }
+
     let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
     let old_d = camera_state.orbit_distance;
     camera_state.orbit_distance =

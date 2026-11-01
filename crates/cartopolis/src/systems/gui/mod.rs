@@ -21,6 +21,7 @@ pub mod chats;
 pub mod communities;
 pub mod community_posts;
 pub mod contacts;
+pub mod cosmos;
 pub mod data_layers;
 pub mod dismiss;
 pub mod dock;

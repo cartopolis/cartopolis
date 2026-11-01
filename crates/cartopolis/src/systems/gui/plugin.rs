@@ -207,6 +207,10 @@ impl Plugin for GuiPlugin {
                 // menu, and a menu drawn before its own switch would open a frame
                 // late and dismiss itself on the click that opened it.
                 systems::dock::render_dock.before(systems::ui::render_main_menu),
+                // The rungs above the globe (`systems::cosmos`): painted on the
+                // background layer, so before every panel, which then draws over
+                // it as panels draw over the map.
+                systems::cosmos::render_cosmos.before(systems::ui::render_main_menu),
                 // The place card — a floating `Area` above the dock, so it stays
                 // out of the panel chain too. **Before the panels**: taking a pick
                 // out of `GeoNavState::pending_card` is also what closes the Search

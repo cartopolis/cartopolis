@@ -454,7 +454,7 @@ pub fn render_map_osd(
         && !camera.is_open()
         && !keyboard.is_open();
     if rail_on {
-        if let Some(alt) = rail.altitude() {
+        if let Some(alt) = rail.altitude().map(|a| a.max(camera_state.cosmos_alt)) {
             let fingers = Fingers::new(&touch, egui.ui_scale());
             let touch_ui = theme::touch_layout() || touch.ever();
             let (zoom, goal) = zoom_rail_control(

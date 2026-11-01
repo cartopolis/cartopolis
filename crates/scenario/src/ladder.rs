@@ -67,11 +67,11 @@ impl Rung {
             Rung::Continent => (3_000_000.0, 9_000_000.0),
             Rung::World => (9_000_000.0, 60_000_000.0),
             // Above the World rung a "height" is how far out the view is: the
-            // Moon's orbit (384,400 km) fits from a few hundred thousand km, the
-            // planets from a few million, the nearest stars from a few hundred
-            // AU, the galaxy from a thousand light years or so.
-            Rung::EarthMoon => (60_000_000.0, 3e9),
-            Rung::SolarSystem => (3e9, 1e14),
+            // Moon's whole orbit (384,400 km) fits from about a million km, the
+            // planets from tens of millions, the nearest stars from a few
+            // hundred AU, the galaxy from a hundred light years or so.
+            Rung::EarthMoon => (60_000_000.0, 2e10),
+            Rung::SolarSystem => (2e10, 1e14),
             Rung::Stars => (1e14, 1e18),
             Rung::Galaxy => (1e18, f64::INFINITY),
         }

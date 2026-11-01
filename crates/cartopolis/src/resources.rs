@@ -1678,6 +1678,14 @@ pub struct CameraState {
     /// the camera arrives or another zoom takes over: it can take two tiers to
     /// get there, and a surface orbit cannot aim at a height in space.
     pub rail_goal: Option<f64>,
+    /// How far out the view is past the globe's ceiling, metres: 0 while the
+    /// globe is the view, else a height above the Earth & Moon, Solar system,
+    /// Stars or Galaxy rung (`systems::cosmos`). The 3D camera waits at the
+    /// ceiling meanwhile, over the place it left, so coming back down lands
+    /// where you were.
+    pub cosmos_alt: f64,
+    /// Where [`Self::cosmos_alt`] is gliding to, on a log scale.
+    pub cosmos_target: f64,
     /// Radians the follow camera has turned *by itself* (recentring behind the
     /// avatar), accumulated for the life of the app. Movement reads keys against
     /// the azimuth minus whatever of this accrued since the keys were pressed, so
@@ -1802,6 +1810,8 @@ impl Default for CameraState {
             globe_last_click: None,
             globe_clock: 0.0,
             rail_goal: None,
+            cosmos_alt: 0.0,
+            cosmos_target: 0.0,
             auto_yaw: 0.0,
             follow_rotate: false,
             first_person: false,
