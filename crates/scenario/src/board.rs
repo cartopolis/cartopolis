@@ -321,10 +321,49 @@ impl AreaSet {
         self
     }
 
-    /// A field's index by its key.
+    /// A field's index by its key: the first, for a figure of one year.
     #[must_use]
     pub fn field(&self, key: &str) -> Option<usize> {
         self.fields.iter().position(|f| f.key == key)
+    }
+
+    /// The field of `key` that describes `year`. A **series** is one field per
+    /// year under one key (a forecast's population in 2023 … 2050): its latest
+    /// year at or before `year`, else its earliest. A figure that names no year
+    /// answers every year, and with no year asked the latest is given.
+    #[must_use]
+    pub fn field_at(&self, key: &str, year: Option<i32>) -> Option<usize> {
+        let of_key = || {
+            self.fields
+                .iter()
+                .enumerate()
+                .filter(move |(_, f)| f.key == key)
+        };
+        let latest = |cap: Option<i32>| {
+            of_key()
+                .filter(|(_, f)| match (f.year, cap) {
+                    (Some(y), Some(c)) => y <= c,
+                    _ => true,
+                })
+                .max_by_key(|(_, f)| f.year)
+                .map(|(i, _)| i)
+        };
+        latest(year).or_else(|| of_key().min_by_key(|(_, f)| f.year).map(|(i, _)| i))
+    }
+
+    /// The years a key's series is published for, rising; empty for a figure
+    /// of no year.
+    #[must_use]
+    pub fn years(&self, key: &str) -> Vec<i32> {
+        let mut out: Vec<i32> = self
+            .fields
+            .iter()
+            .filter(|f| f.key == key)
+            .filter_map(|f| f.year)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// An area's value of a field, where it is published.
@@ -355,15 +394,18 @@ impl AreaSet {
             }
         }
         for (cf, field) in child.fields.iter().enumerate() {
+            // A series rolls up year by year: each year's share is weighted
+            // by the same year's people.
             let weight = match &field.roll {
                 Roll::Keep => continue,
                 Roll::Sum => None,
-                Roll::Mean { weight } => match child.field(weight) {
+                Roll::Mean { weight } => match child.field_at(weight, field.year) {
                     Some(w) => Some(w),
                     None => continue,
                 },
             };
-            let pf = match self.field(&field.key) {
+            let same = |f: &Field| f.key == field.key && f.year == field.year;
+            let pf = match self.fields.iter().position(same) {
                 Some(f) => f,
                 None => {
                     self.fields.push(field.clone());
@@ -685,6 +727,47 @@ mod tests {
         assert_eq!(back.rung, Rung::District);
         assert_eq!(back.value(0, 1), Some(25.0));
         assert_eq!(back.field("old"), Some(1));
+    }
+
+    #[test]
+    fn a_series_rolls_up_year_by_year() {
+        let f = |key: &str, year: i32, roll: Roll| Field {
+            key: key.into(),
+            label: key.into(),
+            unit: String::new(),
+            roll,
+            year: Some(year),
+        };
+        let mean = || Roll::Mean {
+            weight: "people".into(),
+        };
+        let fields = vec![
+            f("people", 2014, Roll::Sum),
+            f("score", 2014, mean()),
+            f("people", 2015, Roll::Sum),
+            f("score", 2015, mean()),
+        ];
+        let mut kids = vec![square("a", 0.0, 0.0, 1.0), square("b", 1.0, 0.0, 1.0)];
+        kids[0].values = vec![100.0, 1.0, 300.0, 1.0];
+        kids[1].values = vec![300.0, 0.0, 100.0, 0.0];
+        for k in &mut kids {
+            k.parent = Some("P".into());
+        }
+        let child = AreaSet::new("kids".into(), "t".into(), kids).with_fields(fields);
+        let mut parent = AreaSet::new("p".into(), "t".into(), vec![square("P", 0.0, 0.0, 2.0)]);
+        parent.roll_up(&child);
+        assert_eq!(parent.years("score"), [2014, 2015]);
+        let score = |y| parent.value(0, parent.field_at("score", Some(y)).unwrap());
+        // Each year weighted by its own year's people.
+        assert_eq!(score(2014), Some(0.25));
+        assert_eq!(score(2015), Some(0.75));
+        // Before the series, its first year; after it, its last.
+        assert_eq!(score(2000), Some(0.25));
+        assert_eq!(score(2050), Some(0.75));
+        assert_eq!(
+            parent.field_at("score", None),
+            parent.field_at("score", Some(2015))
+        );
     }
 
     #[test]

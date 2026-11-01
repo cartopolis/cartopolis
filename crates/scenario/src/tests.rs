@@ -338,3 +338,95 @@ fn a_figure_layer_must_name_a_field_its_areas_have() {
     let unordered = FIGURES.replace("below = 25.0", "below = 5.0");
     assert!(Scenario::parse(&unordered).is_err());
 }
+
+const FORECAST: &str = r##"
+[scenario]
+name = "A forecast"
+mode = "replay"
+confidence = "modelled"
+sources = ["test"]
+clock = { start = "2023", end = "2050", forecast = "2024" }
+
+[[region_state]]
+id = "growth"
+board = "areas:gemeente"
+derive = "value"
+field = "people"
+change_since = "2023"
+range = ["people_low", "people_high"]
+state = [
+  { id = "shrinks", label = "shrinks", colour = "#b35806", below = 0.0 },
+  { id = "grows", label = "grows", colour = "#542788" },
+]
+"##;
+
+/// A gemeente whose population is a series with an interval: 1,000 in 2023,
+/// 900 (800–1,000) in 2030, 1,200 (1,000–1,400) in 2050.
+fn forecast_set() -> AreaSet {
+    let field = |key: &str, year: i32| board::Field {
+        key: key.into(),
+        label: key.into(),
+        unit: "people".into(),
+        roll: board::Roll::Sum,
+        year: Some(year),
+    };
+    let mut fields = Vec::new();
+    let mut values = Vec::new();
+    for (year, mid, lo, hi) in [
+        (2023, 1000.0, 1000.0, 1000.0),
+        (2030, 900.0, 800.0, 1000.0),
+        (2050, 1200.0, 1000.0, 1400.0),
+    ] {
+        for (key, v) in [("people", mid), ("people_low", lo), ("people_high", hi)] {
+            fields.push(field(key, year));
+            values.push(v);
+        }
+    }
+    let mut a = Area::new(
+        "GM1".into(),
+        "Somewhere".into(),
+        "NLD".into(),
+        vec![vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]]],
+    );
+    a.values = values;
+    AreaSet::new("gemeente".into(), "t".into(), vec![a])
+        .with_rung(Rung::Municipality)
+        .with_fields(fields)
+}
+
+#[test]
+fn a_series_plays_on_a_clock_of_years() {
+    let mut play = Play::new(Scenario::parse(FORECAST).unwrap(), vec![forecast_set()]).unwrap();
+    play.set_rung(Rung::Municipality);
+    let clock = play.scenario.clock;
+    assert_eq!(play.scenario.forecast, Some(time::YEAR));
+    let at = |play: &Play, year: &str| {
+        let t = clock.resolve(time::Stamp::parse(year).unwrap());
+        let f = play.at(t);
+        let p = &f.regions[0][0];
+        let layer = &play.scenario.region_states[0];
+        let set = play.layer_areas(0).unwrap();
+        (
+            layer.states[p.state].id.clone(),
+            p.value.unwrap().round(),
+            layer
+                .figure_range(set, 0, clock.year_at(t))
+                .map(|(l, h)| (l.round(), h.round())),
+        )
+    };
+    assert_eq!(at(&play, "2023"), ("grows".into(), 0.0, Some((0.0, 0.0))));
+    // Between published years the last one before holds: 2035 reads 2030.
+    assert_eq!(
+        at(&play, "2035"),
+        ("shrinks".into(), -10.0, Some((-20.0, 0.0)))
+    );
+    assert_eq!(at(&play, "2050"), ("grows".into(), 20.0, Some((0.0, 40.0))));
+}
+
+#[test]
+fn change_since_is_a_year_on_a_figure() {
+    let bad = FORECAST.replace("change_since = \"2023\"", "change_since = \"22:00\"");
+    assert!(Scenario::parse(&bad).is_err());
+    let not_a_figure = FORECAST.replace("derive = \"value\"\n", "");
+    assert!(Scenario::parse(&not_a_figure).is_err());
+}

@@ -62,6 +62,10 @@ struct ClockSpec {
     /// Where the clock stands when the scenario opens; its start when absent.
     #[serde(default)]
     opens: Option<Stamp>,
+    /// From here on the figures are a model's, not a measurement's: a
+    /// forecast's first year. Drawn hatched on the clock.
+    #[serde(default)]
+    forecast: Option<Stamp>,
 }
 
 #[derive(Deserialize)]
@@ -120,6 +124,8 @@ pub struct Scenario {
     pub clock: Clock,
     /// Where the clock stands when it opens.
     pub opens: Time,
+    /// Where a model takes over from measurement, when it does.
+    pub forecast: Option<Time>,
     pub tracks: Vec<Track>,
     pub region_states: Vec<RegionStates>,
 }
@@ -181,6 +187,7 @@ impl Scenario {
             }
         }
         let opens = meta.clock.opens.map_or(Time::ZERO, resolve);
+        let forecast = meta.clock.forecast.map(resolve);
         Ok(Scenario {
             meta: Meta {
                 name: meta.name,
@@ -192,6 +199,7 @@ impl Scenario {
             },
             clock,
             opens,
+            forecast,
             tracks,
             region_states,
         })
@@ -385,9 +393,9 @@ impl Play {
                     }
                 }
                 if let (Some(region::Derive::Value), Some(set)) = (layer.derive, set) {
-                    let field = layer.field.as_deref().and_then(|k| set.field(k));
+                    let year = self.scenario.clock.year_at(t);
                     for (a, area) in set.areas.iter().enumerate() {
-                        let Some(v) = field.and_then(|f| set.value(a, f)) else {
+                        let Some(v) = layer.figure(set, a, year) else {
                             continue;
                         };
                         if let Some(state) = layer.state_for_value(v) {

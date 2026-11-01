@@ -13,6 +13,12 @@
 //!
 //! A layer can stand on several boards, one per rung of the ladder (buurt,
 //! wijk, gemeente, provincie, country): the one read follows the camera.
+//!
+//! A figure can be a **series**, one value per year (`AreaSet::field_at`): on
+//! a clock of years the year the clock stands in picks the value, so a
+//! forecast plays to 2050 and a measured series back to 2014. Such a layer can
+//! read its figure as the change since a year (`change_since`), and name the
+//! two fields that bound it (`range`: a forecast's interval, a score's 95 %).
 
 use crate::board::{AreaSet, Board};
 use crate::time::{Span, Stamp, Time};
@@ -95,6 +101,14 @@ pub struct RegionStateSpec {
     /// For `derive = "value"`: the area field read.
     #[serde(default)]
     pub field: Option<String>,
+    /// Read the figure as its change, in %, since this year's value of it
+    /// (`"2023"`): growth and decline rather than size.
+    #[serde(default)]
+    pub change_since: Option<Stamp>,
+    /// The fields that bound the figure, low then high: how sure it is. Shown
+    /// beside the value wherever a set carries them; never coloured.
+    #[serde(default)]
+    pub range: Option<[String; 2]>,
     /// Only areas in these countries (ISO alpha-3) take part; all when empty.
     #[serde(default)]
     pub within: Vec<String>,
@@ -142,6 +156,10 @@ pub struct RegionStates {
     /// The boards it stands on, as written.
     pub boards: Vec<Board>,
     pub field: Option<String>,
+    /// The year a figure is read as a change since.
+    pub change_since: Option<i32>,
+    /// The fields bounding the figure, low and high.
+    pub range: Option<[String; 2]>,
     pub within: Vec<String>,
     pub derive: Option<Derive>,
     pub states: Vec<State>,
@@ -166,6 +184,20 @@ impl RegionStates {
         if spec.derive == Some(Derive::Value) && spec.field.is_none() {
             return Err(format!(
                 "region_state {id:?}: a figure's layer names its `field`"
+            ));
+        }
+        let change_since = match spec.change_since {
+            None => None,
+            Some(Stamp::Year(y)) => Some(y),
+            Some(_) => {
+                return Err(format!(
+                    "region_state {id:?}: `change_since` is a year (\"2023\")"
+                ))
+            }
+        };
+        if (change_since.is_some() || spec.range.is_some()) && spec.derive != Some(Derive::Value) {
+            return Err(format!(
+                "region_state {id:?}: `change_since` and `range` belong to a figure's layer"
             ));
         }
         let n_states = spec.states.len();
@@ -226,6 +258,8 @@ impl RegionStates {
             id,
             boards,
             field: spec.field,
+            change_since,
+            range: spec.range,
             within: spec.within,
             derive: spec.derive,
             states,
@@ -240,6 +274,41 @@ impl RegionStates {
         self.states
             .iter()
             .position(|s| s.below.map_or(true, |b| v < b))
+    }
+
+    /// The figure this layer shows for an area of `set` in `year`: the
+    /// field's value that year, or its change in % since `change_since`.
+    /// `None` where either is not published.
+    #[must_use]
+    pub fn figure(&self, set: &AreaSet, area: usize, year: Option<i32>) -> Option<f32> {
+        self.read(set, area, self.field.as_deref()?, year)
+    }
+
+    /// The bounds of [`RegionStates::figure`], low and high, read the same
+    /// way, where the set carries them.
+    #[must_use]
+    pub fn figure_range(
+        &self,
+        set: &AreaSet,
+        area: usize,
+        year: Option<i32>,
+    ) -> Option<(f32, f32)> {
+        let [lo, hi] = self.range.as_ref()?;
+        Some((
+            self.read(set, area, lo, year)?,
+            self.read(set, area, hi, year)?,
+        ))
+    }
+
+    fn read(&self, set: &AreaSet, area: usize, key: &str, year: Option<i32>) -> Option<f32> {
+        let v = set.value(area, set.field_at(key, year)?)?;
+        let Some(since) = self.change_since else {
+            return Some(v);
+        };
+        // The base is the figure itself that year, also for a bound.
+        let base_key = self.field.as_deref()?;
+        let base = set.value(area, set.field_at(base_key, Some(since))?)?;
+        (base != 0.0).then(|| (v / base - 1.0) * 100.0)
     }
 
     fn takes_part(&self, country: &str) -> bool {

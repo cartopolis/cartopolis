@@ -141,12 +141,19 @@ impl Clock {
         }
     }
 
+    /// The year `t` falls in, on a clock of years.
+    #[must_use]
+    pub fn year_at(&self, t: Time) -> Option<i32> {
+        self.start_year
+            .map(|y| (i64::from(y) + t.0.div_euclid(YEAR.0)) as i32)
+    }
+
     /// How a time reads on this clock: `"02:10"` on a wall clock, `"T+0:52"`
-    /// otherwise.
+    /// otherwise, and the year on a clock of years.
     #[must_use]
     pub fn label(&self, t: Time) -> String {
-        if let Some(y) = self.start_year {
-            return (i64::from(y) + t.0.div_euclid(YEAR.0)).to_string();
+        if let Some(y) = self.year_at(t) {
+            return y.to_string();
         }
         match self.start_wall {
             Some(start) => {
