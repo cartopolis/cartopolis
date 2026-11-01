@@ -46,9 +46,12 @@ enum Command {
     /// Write official-area sets for scenario layers (`official_areas`) into
     /// the served tree, where the client fetches them.
     Areas {
-        /// `cbs-2024` (buurt to country, with figures) or `ne-admin1-europe`.
+        /// `cbs-2024` (buurt to country, with figures), `ses-2023` (status
+        /// scores 2014–2023), `pbl-2050` (the forecast to 2050), `wlo-2025`
+        /// (the WLO futures to 2060) or `ne-admin1-europe`.
         set: String,
-        /// For `ne-admin1-europe`: a GeoJSON file or URL instead of Natural Earth's.
+        /// For `ne-admin1-europe`: a GeoJSON file or URL instead of Natural
+        /// Earth's; for `wlo-2025`, the workbook instead of PBL's.
         #[arg(long)]
         from: Option<String>,
         /// The directory the area files go in: the served site tree's `areas/`.

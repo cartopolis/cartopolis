@@ -21,6 +21,7 @@ pub mod plans;
 pub mod satellites;
 pub mod stamped;
 pub mod terrain;
+pub mod xlsx;
 
 use std::sync::Arc;
 
