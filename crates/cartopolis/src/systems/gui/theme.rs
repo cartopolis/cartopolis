@@ -380,18 +380,19 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x
 pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
-/// black it out under a chip. Pale and only mostly opaque: it has to lift
-/// [`LABEL_INK`] off tarmac, grass and water without reading as a second word.
-/// It used to be tinted toward the chrome's slate-teal, on the argument that a
-/// name should belong to the city around it; with the chrome monochrome there is
-/// no tint left to carry, and a **neutral** halo is the better answer anyway —
-/// the map underneath supplies all the hue in the frame, and a coloured plate
-/// over it was a second opinion about what colour a road is.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xEC, 0xE9, 0xE6, 205);
-/// The stroke inside [`LABEL_HALO`]. A hair lighter than [`INK`] and not the
-/// same constant: this one lies on a pale halo over an arbitrary tile, that one
-/// is the chrome's text-well fill, and the two are free to move apart.
-pub const LABEL_INK: Color32 = Color32::from_rgb(0x12, 0x11, 0x10);
+/// black it out under a chip. **Dark**, and only mostly opaque: a street name
+/// lies on the street, and a street is tarmac — dark grey — so the halo sinks
+/// into the road and the pale [`LABEL_INK`] reads as lettering painted on it.
+/// Over a pale square or water it surfaces as a soft shadow that keeps the
+/// letters lifted. The pair used to run the other way (near-black ink on a pale
+/// halo), and on tarmac the eye saw only the halo: a white outline round dark
+/// letters, which read as a sticker on the road rather than a name in it.
+/// Neutral, not tinted: the map underneath supplies all the hue in the frame.
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0x16, 0x17, 0x19, 190);
+/// The stroke inside [`LABEL_HALO`]: a warm off-white, the colour of road paint
+/// rather than of paper, and not [`CREAM`] — this one lies on tarmac in the
+/// world, that one is the chrome's, and the two are free to move apart.
+pub const LABEL_INK: Color32 = Color32::from_rgb(0xF6, 0xF3, 0xEC);
 
 /// A scenario over the map (`systems::scenario`, `docs/mockups/scenarios/`).
 /// A region's own colour is the scenario file's (it is data, like a legend);
@@ -3199,8 +3200,8 @@ mod tests {
             // tile with no panel anywhere near them.
             ("chip label over bright map", CREAM, chip_bright, 4.5),
             ("chip dim over bright map", TEXT_DIM, chip_bright, 4.5),
-            // And the halo, the same promise inverted: deep teal ink on its
-            // pale-teal halo, over tarmac at one end and open water at the
+            // And the halo, the same promise inverted: pale ink on its dark
+            // halo, over a sunlit square at one end and night tarmac at the
             // other.
             ("street name over bright map", LABEL_INK, halo_bright, 4.5),
             ("street name over dark map", LABEL_INK, halo_dark, 4.5),

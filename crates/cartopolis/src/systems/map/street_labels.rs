@@ -145,22 +145,34 @@ const GLYPH_PX: f32 = 40.0;
 /// hairline outline disappears in the first mip level — but not the 10 % of
 /// glyph height it used to be, which up close read as text printed on a white
 /// plate rather than a halo.
-const HALO_PX: i32 = 3;
+///
+/// This is the halo's **solid** core; [`HALO_FEATHER_PX`] fades it out beyond.
+const HALO_PX: i32 = 2;
+
+/// How far past [`HALO_PX`] the halo fades to nothing, in texture pixels. A
+/// hard-edged halo is a second outline drawn round the word, and over a pale
+/// square it read as exactly that; a feathered one reads as the shadow the
+/// letters cast, and keeps them lifted without adding a shape of its own.
+const HALO_FEATHER_PX: i32 = 3;
+
+/// Extra space between letters, as a fraction of [`GLYPH_PX`]. Street names in
+/// cartography are set open, and a name lying on the ground needs it more than
+/// most: foreshortening squeezes it, and the mip chain smears tight pairs into
+/// one shape a few levels down.
+const TRACKING: f32 = 0.06;
 
 /// Ink and halo, off the shared palette ([`theme::LABEL_INK`] over
-/// [`theme::LABEL_HALO`]) — near-black on a pale neutral, the map labels' own
-/// pair rather than the chrome's. It used to be tinted slate-teal so the names
-/// would belong to the city around them; the chrome carries no tint any more,
-/// and a neutral halo is the better answer on a map that supplies all the hue
-/// in the frame itself. Contrast is pinned in `theme`'s tests against both a
-/// white and a night basemap.
+/// [`theme::LABEL_HALO`]) — pale ink on a dark neutral, the map labels' own pair
+/// rather than the chrome's. The halo sinks into the tarmac a name lies on, so
+/// the letters read as painted on the road; it surfaces as a soft shadow only
+/// where the ground is light. Contrast is pinned in `theme`'s tests against
+/// both a white and a night basemap.
 const INK: [f32; 3] = srgb_of(theme::LABEL_INK);
 const HALO: [f32; 3] = srgb_of(theme::LABEL_HALO);
-/// The halo's own opacity, and deliberately not [`theme::LABEL_HALO`]'s alpha:
-/// that one is set for text over a dimmed overlay, this one has bare tarmac
-/// behind it. Just under 1.0, so it still reads as an outline around letters
-/// rather than as a plate laid over the road.
-const HALO_ALPHA: f32 = 0.95;
+/// The halo's own opacity at its core, and deliberately not
+/// [`theme::LABEL_HALO`]'s alpha: that one is set for text over a dimmed
+/// overlay, this one has bare ground behind it.
+const HALO_ALPHA: f32 = 0.85;
 
 /// A palette colour as sRGB fractions for the CPU rasteriser — which writes
 /// straight into an `Rgba8UnormSrgb` texture, so the bytes are the same encoding
@@ -907,11 +919,8 @@ fn label_image(level0: Vec<u8>, w: u32, h: u32) -> Image {
 /// Texture size for a name, in pixels. Shared by the raster and by the fit test,
 /// which needs the aspect ratio *before* any texture exists.
 fn text_extent(font: &fontdue::Font, text: &str) -> (u32, u32) {
-    let pad = (HALO_PX + 2) as f32;
-    let advance: f32 = text
-        .chars()
-        .map(|c| font.metrics(c, GLYPH_PX).advance_width)
-        .sum();
+    let pad = text_pad();
+    let (_, advance) = layout(font, text);
     let line = font
         .horizontal_line_metrics(GLYPH_PX)
         .map_or(GLYPH_PX * 1.25, |m| m.ascent - m.descent);
@@ -921,25 +930,50 @@ fn text_extent(font: &fontdue::Font, text: &str) -> (u32, u32) {
     )
 }
 
-/// Rasterise a name: ink over a pale halo, on transparent.
+/// Transparent margin round the text: room for the whole feathered halo, plus
+/// two pixels so the outermost mip levels do not clip it.
+fn text_pad() -> f32 {
+    (HALO_PX + HALO_FEATHER_PX + 2) as f32
+}
+
+/// Where each glyph's pen starts, and the run's total advance: the face's own
+/// advances and kerning, opened up by [`TRACKING`] between letters (not after
+/// the last, or every name is off-centre on its street).
+fn layout(font: &fontdue::Font, text: &str) -> (Vec<(char, f32)>, f32) {
+    let mut pens = Vec::new();
+    let mut pen = 0.0f32;
+    let mut prev: Option<char> = None;
+    for ch in text.chars() {
+        if let Some(p) = prev {
+            pen += font.horizontal_kern(p, ch, GLYPH_PX).unwrap_or(0.0) + TRACKING * GLYPH_PX;
+        }
+        pens.push((ch, pen));
+        pen += font.metrics(ch, GLYPH_PX).advance_width;
+        prev = Some(ch);
+    }
+    (pens, pen)
+}
+
+/// Rasterise a name: pale ink over a dark, feathered halo, on transparent.
 ///
 /// The halo is a dilation of the glyph coverage, not a second pass of offset
 /// text — an outline has to be even on every side of a letter, and four diagonal
-/// copies leave the horizontals thin.
+/// copies leave the horizontals thin. Past its solid core it is a blur of a wider
+/// dilation, so it fades out rather than ending on an edge of its own.
 fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
     let (w, h) = text_extent(font, text);
     let (wi, hi) = (w as i32, h as i32);
-    let pad = (HALO_PX + 2) as f32;
+    let pad = text_pad();
     let ascent = font
         .horizontal_line_metrics(GLYPH_PX)
         .map_or(GLYPH_PX, |m| m.ascent);
 
     // 1. Glyph coverage.
     let mut cov = vec![0u8; (w * h) as usize];
-    let mut pen = pad;
-    for ch in text.chars() {
+    for (ch, at) in layout(font, text).0 {
+        let pen = pad + at;
         let (m, bitmap) = font.rasterize(ch, GLYPH_PX);
-        let gx = pen as i32 + m.xmin;
+        let gx = pen.round() as i32 + m.xmin;
         let gy = (pad + ascent) as i32 - m.height as i32 - m.ymin;
         for row in 0..m.height {
             let y = gy + row as i32;
@@ -956,11 +990,18 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
                 cov[i] = cov[i].max(a);
             }
         }
-        pen += m.advance_width;
     }
 
-    // 2. Halo: a disc dilation of the coverage.
-    let halo = dilate_disc(&cov, wi, hi, HALO_PX);
+    // 2. Halo: a solid disc dilation of the coverage, under a box-blurred wider
+    //    one that carries it out to nothing.
+    let core = dilate_disc(&cov, wi, hi, HALO_PX);
+    let soft = box_blur(
+        &dilate_disc(&cov, wi, hi, HALO_PX + HALO_FEATHER_PX / 2),
+        wi,
+        hi,
+        HALO_FEATHER_PX,
+    );
+    let halo: Vec<u8> = core.iter().zip(&soft).map(|(c, s)| (*c).max(*s)).collect();
 
     // 3. Ink over halo, source-over onto transparent.
     let mut px = vec![0u8; cov.len() * 4];
@@ -979,6 +1020,39 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
         px[j + 3] = (out_a * 255.0) as u8;
     }
     (px, w, h)
+}
+
+/// The mean over the `(2r + 1)²` square round each pixel, off-image counting as
+/// zero. Separable — a row pass then a column pass, each a running sum — so it
+/// costs the same at any radius.
+fn box_blur(src: &[u8], w: i32, h: i32, r: i32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let n = (2 * r + 1) as u32;
+    let pass = |src: &[u32], len: usize, lines: usize, at: &dyn Fn(usize, usize) -> usize| {
+        let mut out = vec![0u32; src.len()];
+        for line in 0..lines {
+            let mut sum = 0u32;
+            // Prime the window with the first `r` samples to the right of 0.
+            for k in 0..(r as usize).min(len) {
+                sum += src[at(line, k)];
+            }
+            for i in 0..len {
+                let add = i + r as usize;
+                if add < len {
+                    sum += src[at(line, add)];
+                }
+                out[at(line, i)] = sum;
+                if let Some(drop) = i.checked_sub(r as usize) {
+                    sum -= src[at(line, drop)];
+                }
+            }
+        }
+        out
+    };
+    let src: Vec<u32> = src.iter().map(|v| u32::from(*v)).collect();
+    let rows = pass(&src, wu, hu, &|y, x| y * wu + x);
+    let cols = pass(&rows, hu, wu, &|x, y| y * wu + x);
+    cols.iter().map(|s| (s / (n * n)).min(255) as u8).collect()
 }
 
 /// The largest value within `r` pixels (Euclidean, `dx² + dy² ≤ r²`) of each
@@ -1340,17 +1414,64 @@ mod tests {
             alphas.iter().any(|a| *a == 0),
             "the texture is a solid block"
         );
-        // Somewhere there must be a pale halo pixel: opaque, but far lighter than
-        // the ink. Without it the names vanish over dark tarmac.
+        // Somewhere there must be a dark halo pixel: mostly opaque, and far darker
+        // than the ink. Without it the names vanish over a pale square.
         assert!(
-            px.chunks_exact(4)
-                .any(|p| p[3] > 200 && p[0] > 200 && p[1] > 200),
+            px.chunks_exact(4).any(|p| p[3] > 180 && p[0] < 60),
             "no halo — the ink has nothing to sit on"
         );
         assert!(
-            px.chunks_exact(4).any(|p| p[3] > 200 && p[0] < 60),
+            px.chunks_exact(4)
+                .any(|p| p[3] > 250 && p[0] > 200 && p[1] > 200),
             "no ink — the name would read as a smear"
         );
+        // And the halo fades rather than ending on an edge: a hard rim is the
+        // outline-round-a-sticker look this replaced.
+        let fading = alphas.iter().filter(|a| (20..120).contains(*a)).count();
+        assert!(
+            fading > alphas.len() / 20,
+            "the halo has a hard edge ({fading} of {} pixels in its fade)",
+            alphas.len()
+        );
+    }
+
+    #[test]
+    fn the_box_blur_matches_the_brute_force_one() {
+        let (w, h) = (23, 11);
+        let src: Vec<u8> = (0..w * h).map(|i| ((i * 97 + 13) % 256) as u8).collect();
+        for r in [1, 2, 3] {
+            let n = ((2 * r + 1) * (2 * r + 1)) as u32;
+            let mut want = vec![0u8; src.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut s = 0u32;
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            let (sx, sy) = (x + dx, y + dy);
+                            if sx >= 0 && sx < w && sy >= 0 && sy < h {
+                                s += u32::from(src[(sy * w + sx) as usize]);
+                            }
+                        }
+                    }
+                    want[(y * w + x) as usize] = (s / n) as u8;
+                }
+            }
+            assert_eq!(box_blur(&src, w, h, r), want, "r = {r}");
+        }
+    }
+
+    /// Tracking opens the name up between letters, never after the last one —
+    /// the advance has to end on the last glyph, or every label sits off-centre.
+    #[test]
+    fn tracking_sits_between_letters_only() {
+        let font = font();
+        let (pens, total) = layout(&font, "ab");
+        let a = font.metrics('a', GLYPH_PX).advance_width;
+        let b = font.metrics('b', GLYPH_PX).advance_width;
+        let kern = font.horizontal_kern('a', 'b', GLYPH_PX).unwrap_or(0.0);
+        assert_eq!(pens[0].1, 0.0);
+        assert!((pens[1].1 - (a + kern + TRACKING * GLYPH_PX)).abs() < 1e-3);
+        assert!((total - (pens[1].1 + b)).abs() < 1e-3);
     }
 
     /// The store is keyed and placed by cell, and the cell origin is what turns
