@@ -489,19 +489,72 @@ button.home-crumb:hover {
 
 /* ── A phone: the same levels, one screen at a time ── */
 @media (max-width: 760px) {
+    /* One quiet bar (`docs/mockups/mobile-header/`): the mark, the three
+       places as words with the open one underlined, and the account. The
+       filled switch, the gold Admin and the boxed theme switch made three
+       blocks of three colours in a phone's width. */
     .home-top {
-        gap: 8px;
-        padding: 0 8px;
+        align-items: stretch;
+        gap: 0;
+        padding: 0 10px 0 14px;
+    }
+
+    .home-top > * {
+        align-self: center;
+    }
+
+    .home-wordmark {
+        margin-right: 6px;
     }
 
     .home-crumbs,
-    .home-wordmark .wordmark {
+    .home-wordmark .wordmark,
+    .home-live {
         display: none;
     }
 
-    .home-seg-item {
-        font-size: 0.82rem;
-        padding: 5px 10px;
+    .home-top > .home-seg {
+        align-self: stretch;
+        background: none;
+        border: 0;
+        border-radius: 0;
+        gap: 0;
+        padding: 0;
+    }
+
+    .home-seg-item,
+    .home-seg-item.is-admin {
+        border-bottom: 2.5px solid transparent;
+        border-radius: 0;
+        color: var(--m-text-dim);
+        font-size: 0.95rem;
+        font-weight: 500;
+        margin-bottom: -1px;
+        padding: 0 10px;
+    }
+
+    .home-seg-item:hover:not(.is-on) {
+        background: none;
+    }
+
+    .home-seg-item.is-on,
+    .home-seg-item.is-admin.is-on {
+        background: none;
+        border-bottom-color: var(--m-accent);
+        box-shadow: none;
+        color: var(--m-text-strong);
+        font-weight: 600;
+    }
+
+    .home-top > .m-theme-switch {
+        background: none;
+        border-color: transparent;
+        box-shadow: none;
+    }
+
+    .home-seg-item.is-on .home-seg-count {
+        background: var(--c-brand);
+        color: #fff;
     }
 
     /* Community's first screen is the rail, drawn as a list with names. */
