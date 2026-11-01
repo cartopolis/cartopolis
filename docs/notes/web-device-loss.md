@@ -4,7 +4,7 @@ triggers: [DeviceLost, wasm, webgpu, "blue screen", "device lost", reload, sessi
            "GPU process", dawn, "gpu_preprocessing", "halt card", render_halt.rs,
            carto-halt-last, remember_halt, render_setup.rs, cartopolis/index.html,
            halt_action, HALT_RELOAD_MAX]
-updated: 2026-10-17
+updated: 2026-11-01
 ---
 
 # On the web a lost device is weather, and the client reloads instead of halting
@@ -91,3 +91,20 @@ after both reloads — came before the line existed, so its cause is not known.
 What the climb was holding is in
 [near-ground-layers-at-altitude.md](near-ground-layers-at-altitude.md).
 
+
+## A crash takes the same path (2026-11-01)
+
+A device loss leaves Rust alive to reload the page; a Rust panic (`panic =
+"abort"` on the web), a heap that cannot grow or a trap in the module does not.
+It ends in a `RuntimeError` on the window, and until 2026-11-01 nothing listened
+once the loader was gone: the last frame stayed on screen, frozen, and said
+nothing. `index.html`'s hand-over script now treats such an error *after the
+hand-over* as a halt, with `halt_action`'s policy written again in JS (two
+reloads, a streak forgotten after 120 s, then a "Cartopolis stopped" card) on the
+same `carto-halt-reloads` / `carto-halt-last` keys, so a crash and a device loss
+count as one streak and the card prints the panic's own line. The JS copy and
+`render_halt.rs` must change together.
+
+Not covered: a panic on a **worker** thread reaches that worker's error event,
+not the window's, so it is not seen here — the page thread keeps drawing, and
+the job it was waiting for never comes back.
