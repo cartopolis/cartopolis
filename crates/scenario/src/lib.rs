@@ -228,10 +228,25 @@ struct Join {
     visits: Option<Visits>,
 }
 
+/// How wide an area must be on screen, in points, before a layer reads its
+/// board rather than a coarser one: past this a buurt is a patch you can
+/// tell from its neighbours, below it a speckle. At 12 a phone in portrait
+/// showing the whole country reads its 342 municipalities; at 28 it fell back
+/// to the 12 provinces, and at 14 it sat on the edge between the two
+/// (2026-11-01).
+pub const MIN_AREA_PX: f64 = 12.0;
+
+/// Below this even the coarsest board is too small to read: a municipal
+/// figure has nothing to say from beyond the Moon.
+const MIN_VISIBLE_PX: f64 = 3.0;
+
 /// A scenario with its boards, ready to answer what is true at any time.
 pub struct Play {
     pub scenario: Scenario,
     pub areas: Vec<AreaSet>,
+    /// Per area set, how wide its typical area is, km: the median of its
+    /// areas' box widths, for [`Play::set_scale`].
+    typical_km: Vec<f64>,
     layers: Vec<Join>,
 }
 
@@ -323,15 +338,53 @@ impl Play {
                 visits,
             });
         }
+        let typical_km = areas.iter().map(typical_km).collect();
         Ok(Play {
             scenario,
             areas,
+            typical_km,
             layers,
         })
     }
 
+    /// Read each layer on the finest of its boards whose typical area is at
+    /// least [`MIN_AREA_PX`] wide at `km_per_px` (screen points), else on its
+    /// coarsest while that is still visible; true when any layer moved to
+    /// another board. A figure lens is read for how places differ, so a view
+    /// of the whole country shows its municipalities, not one country-sized
+    /// patch — which is what reading by camera height alone gave on a phone,
+    /// whose narrow view sees the whole country from the country rung. The
+    /// board shown now is kept down to 0.8 of the threshold, so a zoom resting
+    /// on it does not flicker between two.
+    pub fn set_scale(&mut self, km_per_px: f64) -> bool {
+        let mut moved = false;
+        for j in &mut self.layers {
+            let px = |k: usize| self.typical_km[j.sets[k]] / km_per_px.max(1e-9);
+            let mut finest_first: Vec<usize> = (0..j.sets.len()).collect();
+            finest_first.sort_by(|&a, &b| px(a).total_cmp(&px(b)));
+            let wide_enough = |k: usize| {
+                let keep = if j.active == Some(k) { 0.8 } else { 1.0 };
+                px(k) >= MIN_AREA_PX * keep
+            };
+            let active = finest_first
+                .iter()
+                .copied()
+                .find(|&k| wide_enough(k))
+                .or_else(|| {
+                    finest_first
+                        .last()
+                        .copied()
+                        .filter(|&k| px(k) >= MIN_VISIBLE_PX)
+                });
+            moved |= active != j.active;
+            j.active = active;
+        }
+        moved
+    }
+
     /// Read each layer on its board nearest `rung` (`ladder::Rung::nearest_of`);
-    /// true when any layer moved to another board.
+    /// true when any layer moved to another board. The client reads by
+    /// [`Play::set_scale`] instead, which looks at the areas themselves.
     pub fn set_rung(&mut self, rung: Rung) -> bool {
         let mut moved = false;
         for j in &mut self.layers {
@@ -505,6 +558,26 @@ impl Play {
         }
         out
     }
+}
+
+/// How wide a set's typical area is, km: the median over its areas of the
+/// square root of the box's area.
+fn typical_km(set: &AreaSet) -> f64 {
+    let mut w: Vec<f64> = set
+        .areas
+        .iter()
+        .map(|a| {
+            let [west, south, east, north] = a.bbox;
+            let mid = ((south + north) / 2.0).to_radians().cos().max(0.05);
+            let (dx, dy) = ((east - west) * 111.32 * mid, (north - south) * 110.574);
+            (dx.max(0.0) * dy.max(0.0)).sqrt()
+        })
+        .collect();
+    if w.is_empty() {
+        return 0.0;
+    }
+    w.sort_by(f64::total_cmp);
+    w[w.len() / 2]
 }
 
 #[cfg(test)]

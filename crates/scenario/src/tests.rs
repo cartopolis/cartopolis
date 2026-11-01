@@ -430,3 +430,24 @@ fn change_since_is_a_year_on_a_figure() {
     let not_a_figure = FORECAST.replace("derive = \"value\"\n", "");
     assert!(Scenario::parse(&not_a_figure).is_err());
 }
+
+#[test]
+fn a_figure_is_read_on_the_finest_board_wide_enough_to_see() {
+    let mut play = Play::new(Scenario::parse(FIGURES).unwrap(), figure_sets()).unwrap();
+    // The wijk is a 2° square at the equator (~222 km), each buurt 1°.
+    let name = |play: &Play| play.layer_areas(0).map(|s| s.name.clone());
+    // Close in, the buurten are wide: read them.
+    play.set_scale(1.0);
+    assert_eq!(name(&play).as_deref(), Some("buurt"));
+    // Further out a buurt is under 0.8 of 12 points (9), where the board
+    // shown is let go; the wijk is still over (19).
+    assert!(play.set_scale(12.0));
+    assert_eq!(name(&play).as_deref(), Some("wijk"));
+    // Back in a little: the wijk holds until a buurt is wide enough itself.
+    assert!(!play.set_scale(9.5));
+    assert!(play.set_scale(7.0));
+    assert_eq!(name(&play).as_deref(), Some("buurt"));
+    // From far enough nothing is readable.
+    play.set_scale(1_000.0);
+    assert!(play.layer_areas(0).is_none());
+}

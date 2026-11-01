@@ -31,10 +31,20 @@ names a field every one of its area sets has.
 `ladder::Rung` runs stars → solar system → world → continent → country →
 province → municipality → district (wijk) → neighbourhood (buurt) → street,
 each with the camera heights it is read at (`Rung::altitudes`; a place is then
-roughly 30–300 points across). A layer lists boards on several rungs; the
-client tells `Play::set_rung` the camera's rung and each layer reads its
-nearest board, the coarser of two equally near, and **nothing beyond two rungs**
-(`MAX_REACH`) — municipal figures have nothing to say from beyond the Moon.
+roughly 30–300 points across). A layer lists boards on several rungs.
+
+**Which board a layer reads follows the screen, not the camera's rung**
+(`Play::set_scale`, since 2026-11-01): the finest board whose typical area (the
+median box width) is at least `MIN_AREA_PX` = 12 points wide, else the coarsest
+while it is 3 points or more. Reading by rung (`Play::set_rung`: nearest board,
+the coarser on a tie, nothing beyond two rungs) put a phone that sees the whole
+country on the country rung, and every figure lens became one flat patch the
+size of the Netherlands — reported from a phone the day the lenses landed. At
+28 points that view showed the 12 provinces, at 14 it flipped between provinces
+and municipalities with the load order, at 12 it shows the 342 municipalities.
+The board shown is kept down to 0.8 of the threshold, so a zoom resting near it
+does not flicker. Area edges are a thin dark line (`ink::AREA_EDGE`), not the
+fill's own colour, or neighbours in one band merge into one patch.
 Cells (H3) and networks can be named as boards already; only official areas
 carry geometry, so the rungs above the country wait for those boards.
 

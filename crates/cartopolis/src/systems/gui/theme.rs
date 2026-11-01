@@ -414,6 +414,9 @@ pub mod scenario {
     /// The cone of where it may go.
     pub const CONE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x7A, 0x4A, 34);
     pub const CONE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x9A, 0x6A, 90);
+    /// The line between two areas of a figure: dark and thin, so neighbours
+    /// in the same band still read as two places.
+    pub const AREA_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x12, 0x18, 0x1A, 150);
     /// The glow round a group's head, and its members.
     pub const HEAD: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x6A, 0x3A, 90);
     pub const HEAD_DOT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xC9);

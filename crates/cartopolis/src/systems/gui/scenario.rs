@@ -4,10 +4,11 @@
 //! draws one layer of it, and nothing here knows what a figure or a drone is.
 //!
 //! **One layer, every rung.** A layer stands on boards at several rungs of the
-//! ladder (CBS figures per buurt, wijk, gemeente, provincie and country); the
-//! camera's height picks the rung (`ladder::Rung::at_altitude`) and the engine
-//! the nearest board it has, so zooming out turns buurten into wijken into
-//! gemeenten without a switch.
+//! ladder (CBS figures per buurt, wijk, gemeente, provincie and country); each
+//! frame the screen's scale picks the finest board whose areas are still wide
+//! enough to tell apart (`Play::set_scale`), so zooming out turns buurten into
+//! wijken into gemeenten without a switch, and a phone that sees the whole
+//! country sees its municipalities.
 //!
 //! **The areas come from our host**, `{CARTO_3DBAG_URL}/areas/<set>.bin`, as
 //! `atlas areas` writes them, fetched and decoded off the frame loop when a
@@ -350,8 +351,6 @@ pub fn drive_scenario(
     layers: Res<crate::systems::data_layers::DataLayers>,
     mut view: ResMut<ScenarioView>,
     time: Res<Time>,
-    globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
     let wanted = layers.scenario.as_deref();
     // Only on a change, so this is false on every frame but the switch's.
@@ -412,12 +411,8 @@ pub fn drive_scenario(
     let Some(o) = view.open.as_mut() else {
         return;
     };
-    let mut stale = false;
-    if let Ok((cell, tf)) = camera.single() {
-        stale |= o
-            .play
-            .set_rung(Rung::at_altitude(globe.altitude_m(cell, tf)));
-    }
+    // The board each layer is read on follows the screen's scale, which
+    // `render_scenario_map` measures; this only runs the clock.
     if o.playing {
         let step = time.delta_secs_f64() * o.speed + o.carry;
         let whole = step.floor();
@@ -428,7 +423,7 @@ pub fn drive_scenario(
             o.playing = false;
         }
     }
-    if stale || o.frame.t != o.t {
+    if o.frame.t != o.t {
         o.frame = o.play.at(o.t);
     }
 }
@@ -539,6 +534,26 @@ pub fn render_scenario_map(
         view: GlobalTransform::from(Transform::from_rotation(tf.rotation)),
         ui_scale,
     };
+    // Read each layer on the finest board it can show at this scale: the
+    // span of a hundredth of a degree of latitude at the view's middle.
+    let km_per_px = {
+        let d = 0.01;
+        let (a, b) = (
+            proj.screen([cam_lng, cam_lat - d]),
+            proj.screen([cam_lng, cam_lat + d]),
+        );
+        match (a, b) {
+            (Some(a), Some(b)) if a.distance(b) > 0.01 => {
+                2.0 * d * 110.574 / f64::from(a.distance(b))
+            }
+            // Straight overhead from far out a point can fail to project:
+            // a 60° view sees about its own height across 1,000 points.
+            _ => alt / 1000.0 / 1000.0,
+        }
+    };
+    if o.play.set_scale(km_per_px) {
+        o.frame = o.play.at(o.t);
+    }
     let painter = ctx
         .layer_painter(egui::LayerId::new(
             egui::Order::Background,
@@ -574,7 +589,6 @@ pub fn render_scenario_map(
             let state = &layer.states[p.state];
             let passed = state.when == Some(When::Passed);
             let fill = rgb(state.colour, if passed { 0.30 } else { 0.70 });
-            let edge = rgb(state.colour, 0.9);
             let (verts, idx) = o
                 .fills
                 .entry((set_key, a))
@@ -606,7 +620,10 @@ pub fn render_scenario_map(
                 let mut closed = ring.clone();
                 closed.extend(ring.first().copied());
                 for run in proj.runs(&closed) {
-                    painter.add(egui::Shape::line(run, egui::Stroke::new(0.8, edge)));
+                    painter.add(egui::Shape::line(
+                        run,
+                        egui::Stroke::new(0.8, ink::AREA_EDGE),
+                    ));
                 }
             }
         }
