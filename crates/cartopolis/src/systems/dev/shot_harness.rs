@@ -2141,11 +2141,19 @@ impl ShotHarness {
             .extension()
             .map(|s| s.to_string_lossy().into_owned());
         let width = (self.shots.len() - 1).to_string().len();
+        // Past a light year or so the metres go in powers of ten: as a whole
+        // number every height above 9.2·10¹⁸ m saturated to the same name.
+        let alt = self.shots[i].alt;
+        let alt = if alt < 1e15 {
+            format!("{}", alt as i64)
+        } else {
+            format!("{alt:.1e}")
+        };
         let name = format!(
             "{}_{:0width$}_{}m.{}",
             stem.as_deref().unwrap_or("shot"),
             i,
-            self.shots[i].alt as i64,
+            alt,
             ext.as_deref().unwrap_or("png"),
             width = width,
         );
@@ -3552,7 +3560,14 @@ pub fn place_camera(
     nav.pending_teleport = Some(Teleport {
         lat: shot.lat,
         lng: shot.lng,
-        altitude: Some(shot.alt),
+        // Past the globe's ceiling the camera waits at it and the rest is the
+        // cosmos's height (`place_space_orbit`); sent to 10²¹ m and more the camera
+        // itself overflowed the floating origin's grid and the run never got
+        // there.
+        altitude: Some(
+            shot.alt
+                .min(crate::systems::free_camera::ORBIT_MAX_DISTANCE_SPACE),
+        ),
         pose: Some(pose),
         // A scripted capture places the camera; it does not visit anywhere. The
         // arrival animation would put a half-formed avatar in the shot of every
