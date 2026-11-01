@@ -28,6 +28,14 @@ A en C sluiten elkaar niet uit (C's structuur met A's knopgewichten), en B's
 
 Nog niets besloten.
 
+## C v2 · scherm voor scherm
+
+Gevraagd 2026-11-01 na v1: gekozen voor C, "ik zie het nog niet". Elk scherm
+waar je in C komt (gebouw, lege plek, zonder account, zoeken, Calendar, You,
+community, gesprek, desktop met gesprek) en waar elk huidig paneel naartoe gaat.
+
+![C v2](v2-c-every-screen.png)
+
 ## Zo is het nu
 
 ![today](v1-today.png)
