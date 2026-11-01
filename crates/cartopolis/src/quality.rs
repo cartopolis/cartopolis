@@ -1461,6 +1461,11 @@ fn on_this_machine(budget: Budget) -> Budget {
     } else {
         budget
     };
+    let budget = if cfg!(target_arch = "wasm32") {
+        browser_guarded(budget)
+    } else {
+        budget
+    };
     with_msaa_override(with_shadow_distance_override(with_shadow_cascade_override(
         with_shadow_filter_override(budget),
     )))
@@ -1710,6 +1715,38 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         // resource whose exhaustion is a lost Vulkan device and a crash report,
         // and no amount of it is worth a phone's return journey being quick.
         warm_gpu_bytes: 0,
+        ..budget
+    }
+}
+
+/// What a browser tab cannot afford on **any** rung: the memory ceilings of
+/// [`Budget::browser`], kept whoever picked the preset.
+///
+/// The web build's bug of the same shape as [`handset_guarded`]'s: Settings ▸
+/// Graphics ▸ Detail ▸ "Full detail" wrote `desktop` → `Budget::desktop()`
+/// verbatim in the browser too, which is nine ground cells in progress at once
+/// (~1.3 GB of the 4 GiB heap), no ground-ring ceiling (1.27 GB of a 1.84 GB
+/// residency on 2026-10-20) and no per-frame upload cap — the configuration
+/// `docs/notes/upload-bursts.md` measured running the tab out of memory. Only
+/// memory is guarded; shadows, bloom, the tile raster and the streaming radii
+/// stay the rung's, so "Full detail" still means full detail.
+///
+/// Every field takes the smaller of the rung's own number and the browser
+/// rung's, so a rung asking for less keeps it.
+#[must_use]
+pub(crate) fn browser_guarded(budget: Budget) -> Budget {
+    let cap = Budget::browser();
+    let min_opt = |own: Option<usize>, ceiling: Option<usize>| match (own, ceiling) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    Budget {
+        upload_bytes_per_frame: min_opt(budget.upload_bytes_per_frame, cap.upload_bytes_per_frame),
+        resident_bytes_target: min_opt(budget.resident_bytes_target, cap.resident_bytes_target),
+        surface_ring_bytes: min_opt(budget.surface_ring_bytes, cap.surface_ring_bytes),
+        surface_jobs: budget.surface_jobs.min(cap.surface_jobs),
+        warm_bytes: budget.warm_bytes.min(cap.warm_bytes),
+        warm_gpu_bytes: budget.warm_gpu_bytes.min(cap.warm_gpu_bytes),
         ..budget
     }
 }
@@ -2144,6 +2181,66 @@ mod tests {
         // A rung that already asks for less keeps its own number.
         assert_eq!(
             handset_guarded(Budget::phone()).upload_bytes_per_frame,
+            Budget::phone().upload_bytes_per_frame
+        );
+    }
+
+    /// The browser's half of the test above: "Full detail" in a tab ran nine
+    /// ground cells at once with no ground-ring ceiling, which is what took the
+    /// web build's heap to its 4 GiB limit. Written against [`browser_guarded`]
+    /// for the same reason, since `on_this_machine`'s wasm arm is a `cfg!` this
+    /// host does not take.
+    #[test]
+    fn a_browser_keeps_the_memory_ceilings_on_every_rung() {
+        let cap = Budget::browser();
+        for (name, rung) in [
+            ("phone", Budget::phone()),
+            ("balanced", Budget::balanced()),
+            ("browser", Budget::browser()),
+            ("desktop", Budget::desktop()),
+        ] {
+            let guarded = browser_guarded(rung);
+            let at_most = |field: &str, got: Option<usize>, ceiling: Option<usize>| {
+                let (got, ceiling) = (got.expect(field), ceiling.expect(field));
+                assert!(got <= ceiling, "{name}: {field} {got} above {ceiling}");
+            };
+            at_most(
+                "upload_bytes_per_frame",
+                guarded.upload_bytes_per_frame,
+                cap.upload_bytes_per_frame,
+            );
+            at_most(
+                "resident_bytes_target",
+                guarded.resident_bytes_target,
+                cap.resident_bytes_target,
+            );
+            at_most(
+                "surface_ring_bytes",
+                guarded.surface_ring_bytes,
+                cap.surface_ring_bytes,
+            );
+            assert!(
+                guarded.surface_jobs <= cap.surface_jobs,
+                "{name}: surface_jobs"
+            );
+            assert!(guarded.warm_bytes <= cap.warm_bytes, "{name}: warm_bytes");
+            assert!(
+                guarded.warm_gpu_bytes <= cap.warm_gpu_bytes,
+                "{name}: warm_gpu_bytes"
+            );
+            // The picture stays the rung's.
+            assert_eq!(guarded.tier, rung.tier, "{name}");
+            assert_eq!(guarded.shadows, rung.shadows, "{name}");
+            assert_eq!(guarded.bloom, rung.bloom, "{name}");
+            assert_eq!(guarded.tile_px, rung.tile_px, "{name}");
+            assert_eq!(guarded.radius_bias, rung.radius_bias, "{name}");
+        }
+        // A rung asking for less keeps its own numbers.
+        let phone = browser_guarded(Budget::phone());
+        assert_eq!(phone.surface_jobs, Budget::phone().surface_jobs);
+        assert_eq!(phone.surface_ring_bytes, Budget::phone().surface_ring_bytes);
+        assert_eq!(
+            phone.upload_bytes_per_frame,
             Budget::phone().upload_bytes_per_frame
         );
     }

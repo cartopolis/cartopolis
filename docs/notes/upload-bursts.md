@@ -1,6 +1,6 @@
 ---
 topic: upload-bursts
-triggers: [wgpu::meter, meter.rs, render_census.rs, firefox_probe.ts, gpu_log.ts, "mesh owners", MapSurface, "gpu memory", "GPU memory", device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation, upload_meter.rs, stream_ledger.rs, quality.rs, lod22.rs, osm_buildings.rs, globe.rs, map_stream.rs, map_geometry.rs, DETAIL_FREEZE_ALT, get_mapped_range, CARTO_UPLOAD_KB, report_budget]
+triggers: [wgpu::meter, meter.rs, render_census.rs, firefox_probe.ts, gpu_log.ts, "mesh owners", MapSurface, "gpu memory", "GPU memory", device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, browser_guarded, tile_px, out of memory, allocation, upload_meter.rs, stream_ledger.rs, quality.rs, lod22.rs, osm_buildings.rs, globe.rs, map_stream.rs, map_geometry.rs, DETAIL_FREEZE_ALT, get_mapped_range, CARTO_UPLOAD_KB, report_budget]
 updated: 2026-10-20
 ---
 
@@ -207,6 +207,12 @@ Two things made this expensive to find, and both are fixed:
 - **A rule that only exists in the Android build is a rule no test can see.** This
   is the second time (`android_budget` was the first): `handset_guarded` is
   compiled on every target and `detect` reaches it through `cfg!`, not `#[cfg]`.
+
+The browser had the same hole until 2026-11-01: "Full detail" there was
+`Budget::desktop()` verbatim — nine ground cells in progress, no ground-ring
+ceiling, no upload cap, the configuration that ran the tab towards its 4 GiB heap.
+`quality::browser_guarded` applies the browser rung's memory ceilings to every rung
+on wasm, on the same `cfg!` rule; the picture fields stay the rung's.
 
 ## The ceiling reached the streamers that were never given one
 
