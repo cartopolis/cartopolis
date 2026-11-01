@@ -1025,7 +1025,17 @@ pub fn track_device_pose(
         // a *jump* is a teleport, because nothing on the write path re-anchors the
         // map and the world is built around the avatar. Tapping the button in a
         // city you were only browsing is the everyday long jump.
-        if crate::systems::driver::fix_is_far(anchor, fix, &avatars) {
+        let reach = crate::systems::driver::fix_reach(anchor, fix, &avatars);
+        if reach == crate::systems::driver::FixReach::Doubtful {
+            // Far but unsure of itself: wait for a better fix rather than carry
+            // the person kilometres on a guess (`FixReach::Doubtful`).
+            if fix_is_new {
+                tracing::info!(
+                    accuracy_m = fix.accuracy_m,
+                    "device fix is far but too uncertain to jump on — waiting for a better one"
+                );
+            }
+        } else if reach == crate::systems::driver::FixReach::Far {
             tracing::info!(
                 lat = fix.lat,
                 lng = fix.lng,

@@ -1,7 +1,7 @@
 ---
 topic: location
-triggers: [location.rs, platform::location, platform/android.rs, locate.rs, driver.rs, geo_nav.rs, LocationWatch, LocateTracking, GpsFix, stale_accuracy_m, FIRST_FIX_MAX_AGE, STALE_DRIFT_MS, start_location, run_location, GPS_TELEPORT_M, fix_is_far, place_avatar, FixGlide, SHORT_JUMP_M, "Waiting for GPS", "device fix", "GPS fix", geolocation, LocationManager, "fused provider"]
-updated: 2026-10-17
+triggers: [location.rs, platform::location, platform/android.rs, locate.rs, driver.rs, geo_nav.rs, LocationWatch, LocateTracking, GpsFix, stale_accuracy_m, FIRST_FIX_MAX_AGE, STALE_DRIFT_MS, start_location, run_location, GPS_TELEPORT_M, fix_reach, FixReach, place_avatar, FixGlide, SHORT_JUMP_M, "Waiting for GPS", "device fix", "GPS fix", geolocation, LocationManager, "fused provider"]
+updated: 2026-11-01
 ---
 
 # Where the device is: one shared watch, and a far fix is a teleport
@@ -69,7 +69,14 @@ write, glided over the following frames (`FixGlide`). The gap is measured from t
 world the avatar stands in. 2 km is past anything a vehicle covers between two 1 Hz
 fixes (7,200 km/h) and well inside the flat frame's honest range; it is a genuine
 distance, not a duration in disguise ([flight-at-speed.md](flight-at-speed.md)).
-`locate` uses the same `fix_is_far`, and both teleports are silent.
+`locate` uses the same `fix_reach`, and both teleports are silent.
+
+**A far fix jumps only when it is sure of itself** (`driver::FixReach`): its
+`accuracy_m` must be under half the gap, or the fix is `Doubtful` and left for a
+better one. Every far fix used to jump, and since a cached first fix is published
+up to ten minutes old with its accuracy widened by age (above), a phone could
+carry the avatar silently off to wherever it last was — which reads as the avatar
+landing somewhere at random. A near fix is a write at any accuracy.
 
 **The rule generalises: a *move* is a write, a *jump* is a teleport.** `Teleport`
 (`geo_nav::apply_teleport`) is the one operation that means "the world is somewhere

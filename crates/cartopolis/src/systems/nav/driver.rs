@@ -1096,7 +1096,16 @@ pub fn drive_driver_mode(
         // stands rather than against the previous fix, because the thing that must
         // not happen is the *world* being left behind, and the avatar's position is
         // what the map, the camera and every streamer are built around.
-        if fix_is_far(anchor, fix, &avatars) {
+        let reach = fix_reach(anchor, fix, &avatars);
+        if reach == FixReach::Doubtful {
+            // Far but unsure of itself: wait for a better fix (`FixReach`).
+            if fix_is_new {
+                tracing::info!(
+                    accuracy_m = fix.accuracy_m,
+                    "device fix is far but too uncertain to jump on — waiting for a better one"
+                );
+            }
+        } else if reach == FixReach::Far {
             tracing::info!(
                 lat = fix.lat,
                 lng = fix.lng,
@@ -1629,7 +1638,22 @@ fn placement(wx: f64, wz: f64, y: f32) -> (GridCell, Vec3) {
     grid.translation_to_grid(DVec3::new(wx, f64::from(y.max(motion::GROUND_Y)), wz))
 }
 
-/// Is this fix further from the avatar than [`GPS_TELEPORT_M`]?
+/// What a fix asks of the avatar: a write, a jump, or nothing yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FixReach {
+    /// Within [`GPS_TELEPORT_M`]: write the position (`place_avatar`).
+    Near,
+    /// Further, and sure of it: teleport.
+    Far,
+    /// Further, but the fix's own uncertainty is at least half the gap — a cold
+    /// network fix, or a cached one widened by its age (`stale_accuracy_m`). It
+    /// says too little about where the device is to move the person kilometres
+    /// on, so it is left for the next, better one.
+    Doubtful,
+}
+
+/// Is this fix further from the avatar than [`GPS_TELEPORT_M`], and sure enough
+/// of itself to jump on?
 ///
 /// Both sides are absolute world metres in the anchored flat frame — cell edge
 /// plus local translation for the avatar, [`lat_lng_to_world`] for the fix — so
@@ -1637,13 +1661,18 @@ fn placement(wx: f64, wz: f64, y: f32) -> (GridCell, Vec3) {
 /// An avatar that cannot be read at all counts as far: there is nothing to write
 /// a position into, and a teleport is the operation that creates the state the
 /// write would need.
-pub(crate) fn fix_is_far(
+///
+/// A far jump also wants the fix to be sure of itself (`accuracy_m` under half
+/// the gap). Every far fix used to jump, silently, so a stale cached position
+/// could carry the avatar off to wherever the phone last was, which reads as the
+/// avatar landing somewhere at random.
+pub(crate) fn fix_reach(
     anchor: (f64, f64, u32),
     fix: GpsFix,
     avatars: &Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
-) -> bool {
+) -> FixReach {
     let Ok((cell, tf)) = avatars.single() else {
-        return true;
+        return FixReach::Far;
     };
     let edge = f64::from(WORLD_CELL_EDGE);
     let here = DVec3::new(
@@ -1651,11 +1680,22 @@ pub(crate) fn fix_is_far(
         0.0,
         (cell.z as f64).mul_add(edge, f64::from(tf.translation.z)),
     );
-    gps_gap_m(anchor, fix.lat, fix.lng, here) > GPS_TELEPORT_M
+    reach_of(gps_gap_m(anchor, fix.lat, fix.lng, here), fix.accuracy_m)
+}
+
+/// [`fix_reach`]'s decision, from the gap and the fix's accuracy alone.
+fn reach_of(gap_m: f64, accuracy_m: f64) -> FixReach {
+    if gap_m <= GPS_TELEPORT_M {
+        FixReach::Near
+    } else if accuracy_m.is_finite() && accuracy_m * 2.0 < gap_m {
+        FixReach::Far
+    } else {
+        FixReach::Doubtful
+    }
 }
 
 /// Ground distance, in metres, between a `[lat, lng]` and a point already in the
-/// anchored world frame. Split out of [`fix_is_far`] so the units — the one thing
+/// anchored world frame. Split out of [`fix_reach`] so the units — the one thing
 /// that can silently be wrong about a threshold — are testable without a `World`.
 fn gps_gap_m(anchor: (f64, f64, u32), lat: f64, lng: f64, here: DVec3) -> f64 {
     let (fx, fz) = lat_lng_to_world(anchor, lat, lng);
@@ -4003,6 +4043,20 @@ mod tests {
     /// the anchored flat frame, and a threshold that silently compared degrees —
     /// or tile fractions — would read as "always near", i.e. as exactly the
     /// avatar-warping behaviour this replaced, with nothing to show for itself.
+    #[test]
+    fn a_far_fix_jumps_only_when_it_is_sure_of_itself() {
+        // Near is a write whatever the accuracy: there is no jump to doubt.
+        assert_eq!(reach_of(150.0, 5_000.0), FixReach::Near);
+        // A good fix in another city is a jump.
+        assert_eq!(reach_of(180_000.0, 12.0), FixReach::Far);
+        // A ten-minute-old cached fix (`stale_accuracy_m`: + 600 s × 13 m/s)
+        // five kilometres off says too little to move the person on.
+        assert_eq!(reach_of(5_000.0, 7_800.0), FixReach::Doubtful);
+        // So does a fix with no accuracy worth the name.
+        assert_eq!(reach_of(50_000.0, f64::NAN), FixReach::Doubtful);
+        assert_eq!(reach_of(50_000.0, f64::INFINITY), FixReach::Doubtful);
+    }
+
     #[test]
     fn a_distant_fix_is_a_teleport_and_a_nearby_one_is_not() {
         // Groningen, at the zoom the map anchors on.
