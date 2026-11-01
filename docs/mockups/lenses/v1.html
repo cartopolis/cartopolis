@@ -1,0 +1,256 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3 2 8.5 12 14l10-5.5L12 3Z"/><path d="m2 13.5 10 5.5 10-5.5"/></symbol>
+  <symbol id="lens" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v9h9"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/><path d="M8 9h8M8 12h5"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4V8Z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="mark" viewBox="0 0 24 24"><path d="M7 3h10v18l-5-4-5 4V3Z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></symbol>
+  <symbol id="up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="play" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></symbol>
+  <symbol id="split" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></symbol>
+</svg>
+</head>
+<body>
+
+<h1>Lenses — <b>reading the map, apart from how it looks</b> <span class="new">new</span></h1>
+<p class="lede">
+The Layers panel has two jobs that fight each other. Most of it says <b>how the world looks</b>:
+many switches, on or off, set once and left. Figures are something else: <b>what you are reading</b>
+— one at a time, with a source, a mode (Replay, Exercise, Live) and sometimes a clock. Ticking a
+switch to open a figure that closes the other one is a radio button dressed as a checkbox; on a
+phone the panel covers the whole map, so you cannot see what you picked; and the scenario's title
+card lands on top of the panel header. Scenarios, forecasts and simulations will add dozens more.
+This sheet moves all of it out of Layers into a <b>lens</b>: its own button, its own sheet that
+keeps the map visible, and a shelf to choose from.
+</p>
+
+<div class="principles">
+  <div><h3>Layers = how it looks. Lens = what you read.</h3><p>Layers keeps the switches (ground, names, clouds, hex grid). Everything with a source and a figure moves to the lens. One lens open at a time.</p></div>
+  <div><h3>Pick, never tick</h3><p>A lens shows one figure. The figure list is radio rows, and each row already shows the value <em>here</em>, so you choose by reading, not by trying.</p></div>
+  <div><h3>The map stays in view</h3><p>On a phone the lens is a bottom sheet with three heights: a strip, half, full. You choose with the map visible above your thumb. Landscape and desktop: a side panel.</p></div>
+  <div><h3>One place for how real it is</h3><p>Mode, source and close live in the sheet's header, not in a floating card. The coloured frame round the screen stays, so a screenshot still says Replay or Exercise.</p></div>
+</div>
+
+<h2><span>1</span>On a phone, portrait: the sheet at three heights</h2>
+<p class="sub">Apeldoorn's neighbourhoods, CBS 2024 (the map from <code>../scenarios/</code> v5-areas). The lens button is new and sits under Layers in the top-left column — the column for controls of the view (<code>map-chrome.md</code>) — because the dock already holds six discs. With a lens open it takes the mode's colour, so you can always see one is on.</p>
+
+<div class="row">
+  <!-- 1a peek -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-apd.jpg)">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc lensd"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs flag" style="top:112px; left:68px">new · lens, on</div>
+      <div class="abs sheet" style="height:196px; left:10px; right:10px; bottom:70px; border-radius:20px; border:1px solid var(--gline)">
+        <div class="grab"></div>
+        <div class="lt"><span class="mode">Replay</span><span class="name">Aged 65 and over</span>
+          <span class="icon-btn"><svg class="i s"><use href="#up"/></svg></span></div>
+        <div class="lt" style="margin-top:2px"><span class="src">CBS · Kerncijfers wijken en buurten 2024 · per buurt</span></div>
+        <div class="ramp"><i style="background:var(--b1)"></i><i style="background:var(--b2)"></i><i style="background:var(--b3)"></i><i style="background:var(--b4)"></i><i style="background:var(--b5)"></i></div>
+        <div class="ramp-l"><span>under 18 %</span><span>21</span><span>24</span><span>27 % and over</span></div>
+        <div class="here"><svg class="i s" style="color:var(--accent)"><use href="#pin"/></svg><span><b>Binnenstad</b><br><small>buurt · under the crosshair</small></span><span class="v">20 %</span></div>
+      </div>
+      <div class="abs dock">
+        <div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#globe"/></svg></div><div class="disc cam"><svg class="i"><use href="#cam"/></svg></div><div class="disc"><svg class="i"><use href="#mark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>1a</span>Strip — reading while you move</h3><ul>
+      <li>What replaces the floating title card and the states card: <b>one strip above the dock</b>, the figure's name, its scale, and the value where you are.</li>
+      <li>The whole map stays free; the strip stays out of the way of the top-left discs.</li>
+      <li>Swipe up, or tap the name, for the figures.</li>
+    </ul></div>
+  </div>
+
+  <!-- 1b half: pick a figure -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-apd.jpg); background-position:center -60px">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc lensd"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs sheet" style="height:510px">
+        <div class="grab"></div>
+        <div class="lt"><span class="mode">Replay</span><span class="name">Kerncijfers 2024</span>
+          <span class="icon-btn"><svg class="i s"><use href="#more"/></svg></span>
+          <span class="icon-btn"><svg class="i s"><use href="#x"/></svg></span></div>
+        <div class="lt" style="margin-top:2px"><span class="src">CBS via PDOK · published figures · values for <b style="color:var(--text)">Binnenstad</b></span></div>
+        <div class="sect">People</div>
+        <div class="fig on"><span class="radio"></span>Aged 65 and over<span class="mini" style="background:linear-gradient(90deg,var(--b1),var(--b3),var(--b5))"></span><span class="val">20 %</span></div>
+        <div class="fig"><span class="radio"></span>Aged under 15<span class="mini" style="background:linear-gradient(90deg,#ffffd4,#fe9929,#993404)"></span><span class="val">9 %</span></div>
+        <div class="fig"><span class="radio"></span>People per km²<span class="mini" style="background:linear-gradient(90deg,#fef0d9,#fc8d59,#b30000)"></span><span class="val">7,410</span></div>
+        <div class="sect">Homes</div>
+        <div class="fig"><span class="radio"></span>Single-person households<span class="mini" style="background:linear-gradient(90deg,#edf8fb,#8c96c6,#810f7c)"></span><span class="val">66 %</span></div>
+        <div class="fig"><span class="radio"></span>Owner-occupied homes<span class="mini" style="background:linear-gradient(90deg,#f7fcf5,#74c476,#00441b)"></span><span class="val">33 %</span></div>
+        <div class="fig"><span class="radio"></span>Average home value<span class="mini" style="background:linear-gradient(90deg,#fff5eb,#fd8d3c,#7f2704)"></span><span class="val">€ 312k</span></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>1b</span>Half — choose a figure</h3><ul>
+      <li><b>Radio rows</b>, not switches: one is on, tapping another moves it. The map above repaints as you tap.</li>
+      <li>Each row shows its own colour ramp and the <b>value at the crosshair</b>, so the list already answers "what is this place like" before you pick.</li>
+      <li>Groups (People, Homes …) come from the scenario file; a lens with forty figures stays a list you can scan.</li>
+      <li>⋯ holds Sources and About; ✕ closes the lens. Values are illustrative.</li>
+    </ul></div>
+  </div>
+
+  <!-- 1c full: the shelf -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-apd.jpg)">
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs sheet" style="height:790px; padding-top:8px">
+        <div class="grab"></div>
+        <div class="lt" style="margin-bottom:12px"><span class="name" style="font-size:22px">Lenses</span><span class="icon-btn"><svg class="i s"><use href="#x"/></svg></span></div>
+        <div class="search"><svg class="i s"><use href="#search"/></svg>Ask about this place…</div>
+        <div class="chips"><span class="chip on">Here · Apeldoorn</span><span class="chip">Everywhere</span><span class="chip">Live</span><span class="chip">What if</span></div>
+        <div class="q">Who lives here?</div>
+        <div class="card open"><div class="thumb" style="background-image:url(../scenarios/map-apd.jpg)"></div><div class="body"><div class="t">Kerncijfers 2024</div><div class="d">Age, households, homes — buurt to country</div><div class="m"><span class="mode">Replay</span>CBS · 6 figures · open</div></div></div>
+        <div class="q">What is coming?</div>
+        <div class="card"><div class="thumb" style="background-image:url(../scenarios/map-areas.jpg)"></div><div class="body"><div class="t">Population to 2050 <span class="nobuilt">not built</span></div><div class="d">PBL/CBS regional forecast, a high and a low future</div><div class="m"><span class="mode model">Model</span>PBL · 2024 → 2050</div></div></div>
+        <div class="q">What if?</div>
+        <div class="card"><div class="thumb" style="background-image:url(../scenarios/map-drones.jpg)"></div><div class="body"><div class="t">A drone night over Europe <span class="nobuilt">not built</span></div><div class="d">Tracks and when each province is reached</div><div class="m"><span class="mode ex">Exercise</span>invented · 6 hours</div></div></div>
+        <div class="card"><div class="thumb" style="background-image:url(../scenarios/map-nuke.jpg)"></div><div class="body"><div class="t">Fallout, two days after <span class="nobuilt">not built</span></div><div class="d">A modelled wind plume, shape only</div><div class="m"><span class="mode ex">Exercise</span>model · 48 hours</div></div></div>
+        <div class="q">Right now</div>
+        <div class="card" style="background:transparent; border:1px dashed var(--gline)"><div class="body"><div class="t" style="color:var(--dim)">No official alert for this area</div><div class="d">Live lenses appear here only from an official source.</div></div></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>1c</span>Full — the shelf of lenses</h3><ul>
+      <li>Tapping the lens button with nothing open opens <b>this</b>; with a lens open it opens 1b, and "All lenses" sits at the bottom of the figures.</li>
+      <li>Grouped by <b>the question</b> a person brings (v5-areas: "a question, not a dataset"), never by source or file.</li>
+      <li><b>Here</b> filters to lenses that have something to say about the place in view (a lens's boards and rungs, <code>MAX_REACH</code>); search covers figure names too.</li>
+      <li>Every card wears its mode, so an exercise never looks like news.</li>
+    </ul></div>
+  </div>
+
+  <!-- 1d tap a place -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-apd.jpg); background-position:center -40px">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc lensd"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs sheet" style="height:470px">
+        <div class="grab"></div>
+        <div class="lt"><span class="name" style="font-size:19px">Binnenstad</span><span class="icon-btn"><svg class="i s"><use href="#x"/></svg></span></div>
+        <div class="lt"><span class="src">buurt · Apeldoorn · 6,020 residents · CBS 2024</span></div>
+        <div class="prow" style="color:var(--dim); font-size:11px; padding-bottom:2px; margin-top:8px"><span></span><span style="text-align:right">here</span><span style="text-align:right">town · NL</span></div>
+        <div class="prow on"><span><span class="sw" style="display:inline-block; background:var(--b3); vertical-align:-1px; margin-right:7px"></span>Aged 65 and over</span><span class="v">20 %</span><span class="c">22 · 20.5</span></div>
+        <div class="prow"><span>Aged under 15</span><span class="v">9 %</span><span class="c">15 · 15.4</span></div>
+        <div class="prow"><span>People per km²</span><span class="v">7,410</span><span class="c">471 · 523</span></div>
+        <div class="prow"><span>Single-person households</span><span class="v">66 %</span><span class="c">37 · 39.9</span></div>
+        <div class="prow"><span>Owner-occupied homes</span><span class="v">33 %</span><span class="c">60 · 57</span></div>
+        <div class="prow"><span>Average home value</span><span class="v">€ 312k</span><span class="c">€ 380k · 405k</span></div>
+        <div class="btns"><span class="btn">Its town</span><span class="btn">Compare…</span><span class="btn p">Talk about it</span></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>1d</span>Tap a place — its card, in the same sheet</h3><ul>
+      <li>The place card <b>is the figure list turned round</b>: every figure of the lens for this one place, against its town and the country (compare, never rank).</li>
+      <li>Tapping a row switches the map to that figure — the second way to choose, from a place instead of from a list.</li>
+      <li>"Its town" climbs a rung; "Compare…" picks a second place; "Talk about it" opens the place's chat (v5-areas: every figure leads to people). <span class="new">new</span></li>
+    </ul></div>
+  </div>
+</div>
+
+<h2><span>2</span>Landscape, tablet and desktop: a side panel, and a clock when there is time</h2>
+<p class="sub">The same content as the sheet, as a panel on the left, so it never fights the Layers panel on the right, and the top-left column moves along its edge. A lens with a clock (a forecast, a replayed night) puts the time bar at the top of the panel, measured solid and modelled hatched, as v5-areas drew it. The forecast lens is not built.</p>
+
+<div class="row">
+  <div>
+    <div class="phone land" style="background-image:url(../scenarios/map-areas.jpg); background-position:right center; background-size:auto 130%">
+      <div class="frame" style="border-color:#8a8f94"></div>
+      <div class="abs" style="left:0; top:0; bottom:0; width:330px; background:var(--glass); border-right:1px solid var(--gline); padding:16px 16px 0 46px; z-index:8">
+        <div class="lt"><span class="mode model">Model</span><span class="name" style="font-size:15px">Population to 2050</span><span class="icon-btn"><svg class="i s"><use href="#x"/></svg></span></div>
+        <div class="time"><div class="bar"><span class="knob" style="left:68%"></span></div><div class="ticks"><span>2014</span><span>2024 measured</span><span style="color:var(--cream)">2035</span><span>2050</span></div></div>
+        <div class="lt" style="margin-top:8px; gap:6px"><span class="chip on" style="font-size:12px">High future</span><span class="chip" style="font-size:12px">Low future</span><span class="icon-btn" style="margin-left:auto; width:28px; height:28px"><svg class="i s"><use href="#play"/></svg></span></div>
+        <div class="fig on" style="margin-top:8px; font-size:13.5px"><span class="radio"></span>Aged 65 and over<span class="val">27 %</span></div>
+        <div class="fig" style="font-size:13.5px"><span class="radio"></span>Inhabitants<span class="val">+4 %</span></div>
+        <div class="fig" style="font-size:13.5px"><span class="radio"></span>Households<span class="val">+9 %</span></div>
+      </div>
+      <div class="abs" style="left:338px; top:16px; display:flex; flex-direction:column; gap:8px; z-index:6">
+        <div class="disc" style="width:38px;height:38px"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc" style="width:38px;height:38px; background:#8a8f94; color:#111"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs dock" style="left:330px; bottom:12px">
+        <div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#globe"/></svg></div><div class="disc cam"><svg class="i"><use href="#cam"/></svg></div><div class="disc"><svg class="i"><use href="#mark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+      </div>
+    </div>
+    <div class="cap" style="width:844px"><h3><span>2a</span>Landscape phone: the lens on the left, the map on the right</h3><ul>
+      <li>The screenshot from today — the panel over half the globe, the title card over its header — becomes a 330 pt column that holds the clock, the futures and the figures. Collapsing it leaves the strip of 1a along the bottom.</li>
+      <li>A model's lens is framed grey, a published one green, an exercise striped: the frame is the one thing that never moves into the panel.</li>
+      <li>Two futures are two scenarios on one clock (v5-areas); choosing between them is again a pick, never a tick.</li>
+    </ul></div>
+  </div>
+
+  <div style="width:520px">
+    <h3 style="color:var(--cream); font-size:17px; margin-bottom:10px">2b What the lens panel holds, top to bottom</h3>
+    <table class="t">
+      <tr><th>Part</th><th>Shown</th><th>From</th></tr>
+      <tr><td>Header</td><td>mode chip, lens name, ⋯ (sources, about), ✕</td><td>today's title card</td></tr>
+      <tr><td>Clock</td><td>only when the lens has time to move through; futures as chips</td><td>today's clock bar</td></tr>
+      <tr><td>Figures</td><td>radio rows, grouped, value here on each</td><td>Layers ▸ Figures</td></tr>
+      <tr><td>Scale</td><td>the open figure's bands with counts, in the strip and under the list</td><td>today's states card</td></tr>
+      <tr><td>Place</td><td>under the crosshair, or the tapped place's card (1d)</td><td>today's states card</td></tr>
+      <tr><td>Tracks</td><td>for a moving lens (drones), the selected track's card</td><td>today's track card</td></tr>
+    </table>
+    <p class="sub" style="margin-top:14px">Three floating cards and a panel section become one surface. It is also where future kinds go without new chrome: a simulation's controls take the clock's row, a counter lens (people affected) takes the place row.</p>
+  </div>
+</div>
+
+<h2><span>3</span>What Layers loses, and what it keeps</h2>
+<p class="sub">Layers goes back to switches about the look of the world. The hex grid stays there: it is a way of drawing, not a figure. Nothing else in Layers changes.</p>
+<div class="row">
+  <div class="panel">
+    <h4>Layers — today</h4>
+    <div class="sect" style="margin-top:0">From above</div>
+    <div class="tiles"><div class="tile on"><span class="tg"></span>Night side</div><div class="tile on"><span class="tg"></span>City lights</div><div class="tile on"><span class="tg"></span>Hex grid</div></div>
+    <div class="struck" style="margin-top:12px">
+      <div class="sect" style="margin-top:0">Figures</div>
+      <div class="tiles"><div class="tile"><span class="tg"></span>Aged 65 and over</div><div class="tile on"><span class="tg"></span>Aged under 15</div><div class="tile"><span class="tg"></span>People per km²</div><div class="tile"><span class="tg"></span>Single-person households</div><div class="tile"><span class="tg"></span>Owner-occupied</div><div class="tile"><span class="tg"></span>Home value</div></div>
+    </div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="panel">
+    <h4>Layers — after</h4>
+    <div class="sect" style="margin-top:0">From above</div>
+    <div class="tiles"><div class="tile on"><span class="tg"></span>Night side</div><div class="tile on"><span class="tg"></span>City lights</div><div class="tile on"><span class="tg"></span>Hex grid</div></div>
+    <div class="here" style="margin-top:14px"><svg class="i s" style="color:var(--replay)"><use href="#lens"/></svg><span><b>Lens open:</b> Aged 65 and over<br><small>change it under the lens button</small></span></div>
+  </div>
+  <div class="cap" style="width:560px"><ul style="margin-top:4px">
+    <li>One line in Layers says which lens is open, so nobody looks for the old Figures section in vain; it goes once the button is known.</li>
+    <li>The persisted <code>DataLayers::scenario</code> stays as it is — what moves is where it is changed, not what is saved.</li>
+    <li>On a phone, Layers keeps its full-width panel: switches are set and left, so covering the map there costs little.</li>
+  </ul></div>
+</div>
+
+<h2><span>4</span>Decisions in this sheet, and what is open</h2>
+<div class="notes">
+  <div><h3>Decided in the drawing</h3><ul>
+    <li><b>Lens, not layer.</b> The word the scenario sheets already use ("a lens with a clock", v1-engine). One open at a time; opening another replaces it, and the shelf's first card is the one you had.</li>
+    <li><b>Own button in the top-left column</b>, under Layers. The dock is full at six (<code>dock.rs</code>), and a lens is a control of the view, like Layers.</li>
+    <li><b>Bottom sheet in portrait, side panel otherwise</b>, with the same three parts. The strip is the resting state; nothing floats over the map except the frame.</li>
+    <li><b>Radio rows with the value here</b> for the figures; chips for futures and modes inside a lens.</li>
+    <li><b>Grouped by question</b> on the shelf; lens files gain a <code>question</code> and figure <code>group</code> line in their TOML.</li>
+  </ul></div>
+  <div><h3>Open</h3><ul>
+    <li><b>Two figures at once?</b> Not here: one lens, one figure. A side-by-side (split screen, <svg class="i s" style="vertical-align:-3px"><use href="#split"/></svg>) for comparing two futures or two years is the likely next step, drawn when there are two to compare.</li>
+    <li><b>The button's icon and name</b> ("Lens", "Figures", "Read") — the word reaches people only through the tooltip and the shelf title.</li>
+    <li><b>Where a community's own lens goes</b> (a neighbourhood survey, a plan's map): the shelf can hold them under "From your communities"; not drawn.</li>
+    <li><b>Live</b> stays empty until there is an official feed (NL-Alert has none we know of, scenarios README).</li>
+  </ul></div>
+</div>
+
+</body></html>
