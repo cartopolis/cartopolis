@@ -1856,6 +1856,18 @@ fn camera_in_space(
     cam.is_some_and(|(cell, tf)| globe.in_space(cell, tf))
 }
 
+/// Is the camera above [`crate::systems::osm_buildings::BUILDINGS_TOP_ALT`], where
+/// the 3D buildings give way to the footprints painted into the far map? Factored
+/// out for the same reason as [`camera_in_space`].
+fn camera_above_buildings(
+    globe: &crate::systems::globe::GlobeState,
+    cam: Option<(&GridCell, &Transform)>,
+) -> bool {
+    cam.is_some_and(|(cell, tf)| {
+        globe.altitude_m(cell, tf) > crate::systems::osm_buildings::BUILDINGS_TOP_ALT as f64
+    })
+}
+
 /// The visibility every toggle-gated entity group should be carrying right now.
 ///
 /// One value, derived once, consumed by both [`apply_feature_toggles`] and
@@ -1883,12 +1895,13 @@ pub struct ToggleWants {
 }
 
 impl ToggleWants {
-    fn of(dl: &DataLayers, in_space: bool, occlusion_revision: u32) -> Self {
+    fn of(dl: &DataLayers, in_space: bool, above_buildings: bool, occlusion_revision: u32) -> Self {
         // The panel toggle AND the space tier (from orbit the flat patch floats
         // over the globe, parallax-shifted — ADR-025). Folding both in here is
         // what keeps these systems the *sole* visibility writer for these
-        // entities, rather than racing another one.
-        let base = dl.buildings_enabled && !in_space;
+        // entities, rather than racing another one. The buildings also stop at
+        // `BUILDINGS_TOP_ALT`, where the far map paints their footprints instead.
+        let base = dl.buildings_enabled && !in_space && !above_buildings;
         let map = if dl.map_enabled && !in_space {
             Visibility::Inherited
         } else {
@@ -1939,6 +1952,7 @@ pub fn feature_toggles_changed(
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.get()),
+        camera_above_buildings(&globe, camera.get()),
         stream.occlusion_revision,
     );
     // `None` on the first evaluation, so the sweep always runs once — which is
@@ -2028,6 +2042,7 @@ pub fn apply_feature_toggles(
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.get()),
+        camera_above_buildings(&globe, camera.get()),
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
@@ -2154,6 +2169,7 @@ pub fn apply_feature_toggles_to_new(
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.get()),
+        camera_above_buildings(&globe, camera.get()),
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {

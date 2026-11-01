@@ -154,10 +154,16 @@ black screen.
 ## Still open
 
 - The near field — buildings, roads, trees, grass, water, street labels, the
-  avatar — is still flat. Everything it covers is within ~3 km of the anchor,
-  where the drop is under a metre, so this reads as correct; it is an
-  approximation all the same, and a layer that ever reaches further out will need
-  the same treatment the tiles got.
+  avatar — is still flat. "Within ~3 km of the anchor" was true only near
+  where a session started: a pan at altitude never moved the anchor, so after
+  one across the province the near field stood hundreds of metres over the map
+  (reported from a phone, 2026-11-01). Since then `geo_nav::recentre_anchor`
+  re-anchors under the camera once it is `RECENTRE_M` (10 km, 7.8 m of drop)
+  out, above 500 m and after the camera holds still; the drop near the camera
+  is bounded by that. Curving the near field instead was rejected: it would
+  sink the buildings into the flat streets at low altitude. Place names, which
+  reach 250 km, take the drop and a horizon test (`place_pins::place_delta`).
+  The tall-structure ring (±30 km of the camera) still floats at its edge.
 - None of this has been seen on a phone. The container renders it on lavapipe,
   which is trustworthy for geometry, placement and visibility and not for colour
   or lighting (`headless-shots-software-renderer.md`).

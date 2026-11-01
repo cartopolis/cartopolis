@@ -400,6 +400,11 @@ impl MapStream {
         self.pending_reanchor = Some((lat, lng));
     }
 
+    /// Is a re-anchor requested and not yet applied?
+    pub fn reanchor_pending(&self) -> bool {
+        self.pending_reanchor.is_some()
+    }
+
     /// Standing clipmap tiles textured from the aerial source
     /// (`systems::aerial`) — `aerial_tiles` in the `--shot` metrics.
     ///

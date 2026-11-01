@@ -34,10 +34,12 @@ What it costs: a second raster and texture for each z13 tile — 49 at most,
 ~70 MB of graphics memory on a desktop, a quarter of that at a phone's 256 px —
 and four z14 fetches each for its footprints.
 
-Not done, and why: v2's chart sinks the 3D buildings into the ground between 15
-and 50 km. Only the far OSM tier has a height ramp (`building_fade`); the 3DBAG
-shells and blocks would still vanish in one step at 50 km, so sinking one tier
-of three was left out. And the haze over the ground at 10 km is left as it is:
+v2's chart sinks the 3D buildings into the ground between 15 and 50 km. Only
+the far OSM tier has a height ramp (`building_fade`), so instead every 3D
+building stops at `osm_buildings::BUILDINGS_TOP_ALT` (10 km), in one step:
+measured 2026-11-01 on mac-1 at 12 km over Groningen on the phone rung, they
+were sub-pixel specks over their own painted footprints and held 258 MB of the
+332 MB resident (74 MB after). And the haze over the ground at 10 km is left as it is:
 v3 keeps it to ~15 km, and above that `CITY_ATMOSPHERE_ALT` already thins it.
 
 ## Footprints on a far tile cost sixteen fetches

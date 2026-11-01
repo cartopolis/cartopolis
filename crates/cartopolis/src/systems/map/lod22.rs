@@ -42,7 +42,7 @@ use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::cell_ring;
-use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
+use crate::systems::globe::GlobeState;
 use crate::systems::load_control;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
@@ -1319,9 +1319,9 @@ pub fn update_lod22(
     let Some((cell, tf)) = camera.get() else {
         return;
     };
-    // Freeze from orbit (same as map streaming / buildings), using geocentric
-    // altitude so it's right on the far side of the globe.
-    if globe.altitude_m(cell, tf) as f32 > GLOBE_SHOW_ALT {
+    // Freeze where buildings stop being drawn (same as `osm_buildings`), using
+    // geocentric altitude so it's right on the far side of the globe.
+    if globe.altitude_m(cell, tf) as f32 > crate::systems::osm_buildings::BUILDINGS_TOP_ALT {
         return;
     }
     let Ok(root) = bigspace.single() else {

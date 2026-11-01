@@ -2095,6 +2095,128 @@ pub fn apply_camera_reanchor(mut camera_state: ResMut<CameraState>, mut nav: Res
     });
 }
 
+// ─── Following the camera with the anchor ────────────────────────────────────
+
+/// How far the camera's ground point may drift from the map anchor before the
+/// world is re-centred under it, metres.
+///
+/// The near field — buildings, labels, pins, the street-level ground — is flat
+/// in the anchor's tangent plane, while the basemap under it follows the Earth's
+/// curve (`GlobeState::drop_at`). They part by d²/2R: 7.8 m here, 31 m at 20 km,
+/// 528 m at 82 km. Only a teleport over `SHORT_JUMP_M` or a descent from space
+/// used to move the anchor, so after a long pan at altitude everything the near
+/// field draws stood hundreds of metres over the map. This bounds that to what
+/// it is at 10 km.
+pub const RECENTRE_M: f64 = 10_000.0;
+
+/// Lowest camera altitude a re-centre happens at, metres: the street-level
+/// ground is gone above this (`map_geometry::FLAT_GROUND_OFF_M`), so the rebuild
+/// costs the basemap and the buildings, not the street, and a descent builds the
+/// street in the new frame. Below it the camera moves at walking or driving
+/// speed and the anchor is never far behind a teleport.
+const RECENTRE_MIN_ALT: f64 = 500.0;
+
+/// How long the camera has to hold still before a re-centre, seconds. The
+/// rebuild re-streams everything on screen, so it waits for the pan to end
+/// rather than landing mid-gesture, once per pan.
+const RECENTRE_STILL_S: f64 = 0.4;
+
+/// Re-centre the map anchor under the camera once it has drifted
+/// [`RECENTRE_M`] from it at altitude: the same rebuild a long teleport does,
+/// with nothing moving on Earth.
+///
+/// The camera keeps its place, view and altitude, and the avatar its place on
+/// Earth: both are carried into the new frame by their latitude and longitude.
+/// Online the avatar's new coordinates go to the sim, as on any jump
+/// (`place_avatar`), because the sim holds it in this client's frame.
+#[allow(clippy::too_many_arguments)]
+pub fn recentre_anchor(
+    time: Res<Time>,
+    nav: Res<GeoNavState>,
+    mut stream: ResMut<MapStream>,
+    mut camera_state: ResMut<CameraState>,
+    mut avatar_state: ResMut<AvatarState>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+    mut cameras: Query<(&mut GridCell, &mut Transform), (With<FreeCamera>, Without<Avatar>)>,
+    mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
+    mut still: Local<Option<(DVec3, f64)>>,
+) {
+    let Some(anchor) = stream.geo_anchor() else {
+        return;
+    };
+    let Ok((mut cam_cell, mut cam_tf)) = cameras.single_mut() else {
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    let cam = anchored_position_f64(&cam_cell, cam_tf.translation);
+    // Still: moved less than a thousandth of the altitude since it settled.
+    let settled_at = match *still {
+        Some((at, since)) if at.distance(cam) <= cam.y.abs().max(1.0) * 1e-3 => since,
+        _ => {
+            *still = Some((cam, now));
+            return;
+        }
+    };
+    if now - settled_at < RECENTRE_STILL_S
+        || !globe.ready
+        || nav.pending_teleport.is_some()
+        || stream.reanchor_pending()
+        || camera_state.flight.is_some()
+        || camera_state.rail_goal.is_some()
+        || globe.altitude_m(&cam_cell, &cam_tf) < RECENTRE_MIN_ALT
+    {
+        return;
+    }
+    let ground = match camera_state.mode {
+        CameraMode::Orbit if !camera_state.orbit_space => camera_state.orbit_focus,
+        CameraMode::Free => cam,
+        _ => return,
+    };
+    if ground.x.hypot(ground.z) < RECENTRE_M {
+        return;
+    }
+
+    let (lat, lng) = world_to_lat_lng(anchor, ground.x, ground.z);
+    stream.request_reanchor(lat, lng);
+    let snapped = crate::systems::map_stream::snap_anchor(lat, lng, anchor.2);
+    let next = (snapped.0, snapped.1, anchor.2);
+    // A point's place in the new frame: same latitude and longitude, same height.
+    let carry = |p: DVec3| {
+        let (plat, plng) = world_to_lat_lng(anchor, p.x, p.z);
+        let (x, z) = lat_lng_to_world(next, plat, plng);
+        DVec3::new(x, p.y, z)
+    };
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+
+    if let Ok((mut cell, mut tf)) = avatars.single_mut() {
+        let (avatar_cell, avatar_local) =
+            grid.translation_to_grid(carry(anchored_position_f64(&cell, tf.translation)));
+        place_avatar(
+            &mut cell,
+            &mut tf,
+            &mut avatar_state,
+            online.as_deref(),
+            avatar_cell,
+            avatar_local,
+        );
+    }
+
+    // The orbit camera is placed from its focus by `camera_controls`; the free
+    // camera is its own transform. Either way the pose itself is unchanged.
+    let (new_cell, local) = grid.translation_to_grid(carry(cam));
+    *cam_cell = new_cell;
+    cam_tf.translation = local;
+    if camera_state.mode == CameraMode::Orbit {
+        camera_state.orbit_focus = carry(camera_state.orbit_focus);
+    }
+    // A thrown globe spins about the old frame, as after a jump.
+    camera_state.globe_fling = DVec3::ZERO;
+    camera_state.globe_aim = None;
+    *still = None;
+    tracing::info!(lat, lng, "map re-centred under the camera");
+}
+
 // ─── Teleport ────────────────────────────────────────────────────────────────
 
 /// Move the avatar and camera to a picked geo target. Runs once the world

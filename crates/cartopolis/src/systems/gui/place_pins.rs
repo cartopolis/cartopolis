@@ -583,9 +583,24 @@ pub(crate) fn place_delta(
         // left at 0 over relief hangs in the air above its own hillside, or sinks
         // into it — and the pin is *pointing at* a place, so where its tip lands is
         // the whole feature.
-        let delta =
-            DVec3::new(wx, f64::from(terrain.ground_at(wx as f32, wz as f32)), wz) - cam_world;
-        (delta.x.hypot(delta.z) < MAX_FLAT_RANGE_M).then_some(delta)
+        //
+        // And the Earth's curve under it, as the basemap has (`GlobeState::drop_at`).
+        // Towns are named out to `MAX_FLAT_RANGE_M`, where the flat plane stands
+        // 4.9 km over the ground actually drawn: from 10 km up such a name was
+        // painted in the sky above the horizon.
+        let (fx, fz) = (wx as f32, wz as f32);
+        let y = terrain.ground_at(fx, fz) - globe.drop_at(fx.hypot(fz));
+        let point = DVec3::new(wx, f64::from(y), wz);
+        let delta = point - cam_world;
+        // Past the horizon, as in space: the camera on the far side of the
+        // sphere's tangent plane at the place. Tested against the sphere, not the
+        // measured ground, and with a margin, because at eye level in a polder the
+        // camera is below sea level and a dike beside it stands above the camera.
+        const HORIZON_MARGIN_M: f64 = 200.0;
+        let normal = globe.surface_normal(fx, fz).as_dvec3();
+        let sea = DVec3::new(wx, f64::from(-globe.drop_at(fx.hypot(fz))), wz);
+        let over = (cam_world - sea).dot(normal) > -HORIZON_MARGIN_M;
+        (over && delta.x.hypot(delta.z) < MAX_FLAT_RANGE_M).then_some(delta)
     }
 }
 

@@ -101,6 +101,14 @@ impl Plugin for NavPlugin {
                     // ordering is explicit.
                     .after(crate::systems::local_avatar::attach_avatar_to_bigspace)
                     .before(systems::free_camera::camera_controls),
+                // After a jump has had its say, and in the frame the anchor it asks
+                // for is applied: the camera and avatar it carries into the new
+                // frame must not be drawn for a frame against the old one.
+                systems::geo_nav::recentre_anchor
+                    .after(systems::geo_nav::apply_teleport)
+                    .after(crate::systems::local_avatar::attach_avatar_to_bigspace)
+                    .before(systems::map_stream::apply_reanchor)
+                    .before(systems::free_camera::camera_controls),
             )
                 .in_set(ClientPhase::Anchor),
         );

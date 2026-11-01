@@ -147,6 +147,20 @@ fn pace_fallback() {
 /// the source differs. Override with `CARTO_3DBAG_URL`; empty disables 3DBAG.
 const DEFAULT_3DBAG_URL: &str = "https://3dbag.cartopolis.org";
 
+/// Camera altitude (m, geocentric) above which no 3D building is drawn or
+/// streamed, in either tier — the far map's painted footprints and shadows
+/// (`docs/notes/painted-far-map.md`) stand in for them from here up.
+///
+/// Before this the meshes stayed to 50 km. At 10 km straight down a ten-metre
+/// house is about a pixel of a phone's frame, and the phone renders at half
+/// resolution with no anti-aliasing, so the roofs came out as scattered red and
+/// white specks standing over the painted footprints of the same buildings.
+///
+/// A step, not a fade: the 3DBAG shells have no height ramp to fade on (only the
+/// far OSM tier's `building_fade` does), and what steps is sub-pixel geometry
+/// over its own painted footprint.
+pub const BUILDINGS_TOP_ALT: f32 = 10_000.0;
+
 /// Resolve the 3DBAG host from `CARTO_3DBAG_URL` (empty string disables 3DBAG,
 /// falling back to OSM buildings everywhere).
 pub(crate) fn tdbag_url() -> String {
@@ -1295,13 +1309,13 @@ pub fn update_buildings(
     let Some((cell, tf)) = camera.get() else {
         return;
     };
-    // Freeze the building patch from orbit (ADR-025), same as map streaming:
-    // otherwise flying to space drags the fetch centre far from the anchor,
-    // despawning every local building and re-fetching an empty area — so
-    // buildings would flicker out and back on each space trip. Geocentric
-    // altitude, not local y (wrong on the far side of the globe).
+    // Freeze the building patch from where buildings stop being drawn
+    // (`BUILDINGS_TOP_ALT`) up: otherwise a pan up there drags the fetch centre
+    // across the country, fetching and meshing buildings nobody can see, and
+    // flying to space despawns every local building and re-fetches an empty
+    // area. Geocentric altitude, not local y (wrong on the far side of the globe).
     let cam_altitude = globe.altitude_m(cell, tf) as f32;
-    if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
+    if cam_altitude > BUILDINGS_TOP_ALT {
         return;
     }
     // The ring's centre, not necessarily the camera — see `grid::StreamCentre`.
