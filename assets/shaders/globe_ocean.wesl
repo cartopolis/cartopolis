@@ -35,12 +35,16 @@ import super::hex_grid;
 // night — xyz: towards the sun, render space. w: how dark the night side goes.
 // lights — x: city-light strength. y: 1 when the lights map (101) is bound.
 // tile — the tile's key for the hex grid (`hex_grid.wesl`): x, y, 2^z, w strength.
+// terminator — xyz: the real sun, render space. w: the light setting from above,
+//   0 the real night side, 1 Light (no night side, the real sunset line dashed),
+//   2 Dark (night all round).
 struct GlobeOceanUniform {
     ocean: vec4<f32>,
     tint: vec4<f32>,
     night: vec4<f32>,
     lights: vec4<f32>,
     tile: vec4<f32>,
+    terminator: vec4<f32>,
 }
 
 // Bindless where the platform has it, so the globe's tiles — each a material of
@@ -70,6 +74,12 @@ const NIGHT_DARKEN: f32 = 0.78;
 // A built-up texel's light at night, linear, before exposure: sodium-warm, and
 // bright enough to read at the daylight exposure space holds.
 const CITY_LIGHT: vec3<f32> = vec3<f32>(160.0, 115.0, 60.0);
+
+// The real sunset line under Light: warm, and dashed so it reads as a line
+// drawn on the map rather than an edge of the land. Dashes round a whole great
+// circle; about forty of them face the camera.
+const SUNSET_LINE: vec3<f32> = vec3<f32>(1.0, 0.84, 0.54);
+const SUNSET_DASHES: f32 = 80.0;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -132,11 +142,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         );
     }
 
+    // The real sunset line, for Light, which lights every side you turn to
+    // (`docs/mockups/zoom-ladder/`, v2): about a pixel and a half wide whatever
+    // the height, from the derivative of the distance to it. Outside any branch,
+    // because it takes a derivative.
+    let terminator = params.terminator;
+    let n = normalize(pbr_input.N);
+    let from_line = dot(n, terminator.xyz);
+    let on_line = 1.0 - smoothstep(0.0, 1.5 * fwidth(from_line), abs(from_line));
+    let across = normalize(cross(terminator.xyz, select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(terminator.y) > 0.9)));
+    let along = atan2(dot(n, cross(terminator.xyz, across)), dot(n, across));
+    let dash = step(0.45, fract(along * SUNSET_DASHES / 6.2831853));
+    let line = on_line * dash * step(0.5, terminator.w) * step(terminator.w, 1.5)
+        * clamp(ocean.x, 0.0, 1.0);
+    pbr_input.material.base_color = vec4<f32>(
+        mix(pbr_input.material.base_color.rgb, SUNSET_LINE, line * 0.85),
+        pbr_input.material.base_color.a,
+    );
+
     // The night side, from the real sun: a twilight band about 12° wide round the
     // terminator, then the ground darkened towards the space ambient's floor and
     // the built-up land lit (`docs/mockups/macro-view/`, v3). Ramped with
-    // `ocean.x`, which is `space_factor`, so it comes with the globe.
-    let into_night = smoothstep(0.06, -0.14, dot(normalize(pbr_input.N), night.xyz))
+    // `ocean.x`, which is `space_factor`, so it comes with the globe. Under Dark
+    // (`terminator.w` 2) every side is the night side.
+    let sunward = select(dot(n, night.xyz), -1.0, terminator.w > 1.5);
+    let into_night = smoothstep(0.06, -0.14, sunward)
         * night.w
         * clamp(ocean.x, 0.0, 1.0);
     if into_night > 0.0 {

@@ -992,10 +992,12 @@ fn run_client() {
             // A `--shot` capture must be deterministic, and an explicit `--time`
             // pins the clock, so both start in Manual; a normal launch tracks the
             // real local time of wherever the map opens.
-            sun_mode: if scripted || cli.time.is_some() {
-                resources::SunMode::Manual
-            } else {
-                resources::SunMode::Auto
+            sun_mode: match cli.light.as_deref() {
+                Some("light") => resources::SunMode::Day,
+                Some("dark") => resources::SunMode::Night,
+                Some(_) => resources::SunMode::Auto,
+                None if scripted || cli.time.is_some() => resources::SunMode::Manual,
+                None => resources::SunMode::Auto,
             },
             fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
             cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),

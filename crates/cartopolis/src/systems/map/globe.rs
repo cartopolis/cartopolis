@@ -1548,6 +1548,8 @@ pub struct GlobeNight {
     pub lights: Vec4,
     /// The hex grid's strength, 0 = off (`hex_grid.wesl`).
     pub hex: f32,
+    /// The real sunset line and the light setting (`GlobeOcean::terminator`).
+    pub terminator: Vec4,
 }
 
 /// How far the sun's direction moves, as the length of the difference, before
@@ -1565,12 +1567,31 @@ pub fn update_globe_night(
     tiles: Query<&MeshMaterial3d<GlobeSurfaceMaterial>, With<GlobeMesh>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     mut cursor: Local<usize>,
+    clock: Res<crate::systems::transit_live::WorldClock>,
+    globe: Res<GlobeState>,
 ) {
     let sun = crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad);
+    // Light holds the street at noon, but the line it draws from above is where
+    // the sun really sets now — the hour Auto would show, quantised as Auto's is.
+    let real_sun = if dev.sun_mode == crate::resources::SunMode::Day {
+        let hour = crate::utils::sun::solar_time_of_day(clock.now_unix, globe.anchor_lng);
+        crate::utils::sun::sun_direction((hour * 60.0).round() / 60.0, dev.sun_declination_rad)
+    } else {
+        sun
+    };
+    // The light setting, from above (`sky::globe_light_direction`): Light has no
+    // night side but draws where the real one begins; Dark is night all round,
+    // whatever the From above switch says, since night is what was asked for.
+    use crate::resources::SunMode;
+    let (dark, mode) = match dev.sun_mode {
+        SunMode::Day => (0.0, 1.0),
+        SunMode::Night => (1.0, 2.0),
+        SunMode::Auto | SunMode::Manual => (if layers.night_side { 1.0 } else { 0.0 }, 0.0),
+    };
     let want = GlobeNight {
-        night: sun.extend(if layers.night_side { 1.0 } else { 0.0 }),
+        night: sun.extend(dark),
         lights: Vec4::new(
-            if layers.night_side && layers.city_lights {
+            if dark > 0.0 && layers.city_lights {
                 1.0
             } else {
                 0.0
@@ -1580,11 +1601,14 @@ pub fn update_globe_night(
             0.0,
         ),
         hex: if layers.hex_grid { 1.0 } else { 0.0 },
+        terminator: real_sun.extend(mode),
     };
     let moved = (want.night.xyz() - night.night.xyz()).length() > NIGHT_SUN_STEP
         || want.night.w != night.night.w
         || want.lights.x != night.lights.x
-        || want.hex != night.hex;
+        || want.hex != night.hex
+        || want.terminator.w != night.terminator.w
+        || (want.terminator.xyz() - night.terminator.xyz()).length() > NIGHT_SUN_STEP;
     if *cursor == 0 && !moved {
         return;
     }
@@ -1604,12 +1628,14 @@ pub fn update_globe_night(
             m.extension.night != night.night
                 || m.extension.lights.x != night.lights.x
                 || m.extension.tile.w != night.hex
+                || m.extension.terminator != night.terminator
         });
         if stale {
             if let Some(mut m) = materials.get_mut(&mat.0) {
                 m.extension.night = night.night;
                 m.extension.lights.x = night.lights.x;
                 m.extension.tile.w = night.hex;
+                m.extension.terminator = night.terminator;
             }
         }
     }
@@ -1965,6 +1991,7 @@ pub fn update_globe_tiles(
                         };
                         // The night side as it is now (`update_globe_night`).
                         ext.night = night.night;
+                        ext.terminator = night.terminator;
                         ext.lights =
                             night
                                 .lights

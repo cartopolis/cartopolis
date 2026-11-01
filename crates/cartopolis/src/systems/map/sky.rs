@@ -855,6 +855,9 @@ pub(crate) fn apply_day_night_cycle(
     // Whether bevy's atmosphere draws the sky, which keeps the sun on through
     // twilight (`sun_light_in_atmosphere`).
     sky: Option<Res<systems::sky_dome::SkyMode>>,
+    // The direction the sun light was last given, which over the globe in Light
+    // and Dark follows the camera (`globe_light_direction`).
+    mut was_light: Local<Vec3>,
 ) {
     let mut camera = camera;
     // 0 on the ground, 1 in deep space, smooth in between: every lighting term
@@ -871,23 +874,43 @@ pub(crate) fn apply_day_night_cycle(
     let in_atmosphere = sky
         .as_ref()
         .is_some_and(|s| **s == systems::sky_dome::SkyMode::Atmosphere);
+    let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
+    // Over the globe, Light and Dark light it for reading rather than from the
+    // real sun; the camera's place round the planet decides from where.
+    let light_dir = camera
+        .single()
+        .ok()
+        .map(|(cell, tf, _, _, _)| {
+            let from_centre = (systems::free_camera::cell_origin(cell) + tf.translation.as_dvec3()
+                - globe.center_local.as_dvec3())
+            .normalize_or_zero()
+            .as_vec3();
+            globe_light_direction(
+                sun_dir,
+                dev.sun_mode,
+                space,
+                from_centre,
+                tf.rotation * Vec3::Y,
+            )
+        })
+        .unwrap_or(sun_dir);
     if !dev.is_changed()
         && !sky.as_ref().is_some_and(|s| s.is_changed())
         && (space - *was_space).abs() < SPACE_RAMP_STEP
         && *was_features == features
+        && light_dir.dot(*was_light) > LIGHT_TURN_STEP_COS
     {
         return;
     }
     *was_space = space;
     *was_features = features;
+    *was_light = light_dir;
 
     // Overcast: thick cloud (and, a little, rain) dims and flattens the ground
     // lighting — the direct sun drops, the sky's fill light rises, colours grey
     // out. Ground tier only (space has its own lighting model, and the planet
     // cloud sphere shades the globe there), so it fades out with `space`.
     let overcast = overcast(&dev) * (1.0 - space);
-
-    let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
 
     // Adapt exposure to the light level (eye/camera adaptation): brighten toward
     // twilight and night by up to NIGHT_EXPOSURE_LIFT stops so dusk and the lit city
@@ -950,7 +973,7 @@ pub(crate) fn apply_day_night_cycle(
         ));
     }
     for (mut tf, mut light) in sun.iter_mut() {
-        *tf = Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y);
+        *tf = Transform::from_translation(Vec3::ZERO).looking_to(-light_dir, Vec3::Y);
         light.color = sun_color;
         light.illuminance = illuminance;
     }
@@ -996,6 +1019,42 @@ pub(crate) fn apply_day_night_cycle(
             affects_lightmapped_meshes: true,
         };
     }
+}
+
+/// How far the globe's reading light may turn before the sun light is moved
+/// after it, as the cosine of the angle: a third of a degree.
+const LIGHT_TURN_STEP_COS: f32 = 0.999_98;
+
+/// Where the sun light comes from, given the real sun and the light setting.
+///
+/// In the street every setting is the real sun at its hour (Light is noon, Dark
+/// midnight). Over the globe, which crossfades in on `space` (`space_factor`),
+/// Light puts the sun over the viewer's shoulder — a little up and to the left
+/// of the line of sight, so the side you turn to is day and keeps its relief and
+/// a rim of air — and Dark puts it behind the planet and a little above, so the
+/// side you see is night with a thin dawn on its upper limb. Auto and a set
+/// time keep the real sun at every height: there the night side is the point.
+///
+/// `from_centre` is the camera's direction from the Earth's centre and `up` its
+/// screen-up, both in render space, where the real sun is too.
+pub(crate) fn globe_light_direction(
+    real: Vec3,
+    mode: resources::SunMode,
+    space: f32,
+    from_centre: Vec3,
+    up: Vec3,
+) -> Vec3 {
+    if space <= 0.0 || from_centre == Vec3::ZERO {
+        return real;
+    }
+    let right = (-from_centre).cross(up).normalize_or_zero();
+    let reading = match mode {
+        resources::SunMode::Day => from_centre + up * 0.45 - right * 0.35,
+        resources::SunMode::Night => -from_centre + up * 0.35,
+        resources::SunMode::Auto | resources::SunMode::Manual => return real,
+    };
+    real.lerp(reading.normalize_or(real), space.clamp(0.0, 1.0))
+        .normalize_or(real)
 }
 
 /// Change in `GlobeState::space_factor` worth re-applying the lighting for. The
@@ -2181,7 +2240,21 @@ pub(crate) fn update_globe_clouds(
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.centre = centre.extend(radius);
-        mat.sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad).extend(0.0);
+        // The light the globe under it is lit by, so Light and Dark do not
+        // leave a real night side drawn in the clouds.
+        let from_centre = (systems::free_camera::cell_origin(cell)
+            + cam_local.translation.as_dvec3()
+            - globe.center_local.as_dvec3())
+        .normalize_or_zero()
+        .as_vec3();
+        mat.sun_dir = globe_light_direction(
+            sun_direction(dev.time_of_day, dev.sun_declination_rad),
+            dev.sun_mode,
+            space,
+            from_centre,
+            cam_local.rotation * Vec3::Y,
+        )
+        .extend(0.0);
         // Coverage: live global Total Cloud Cover (GFS/TCDC, ADR-032) when it has
         // landed, else the fixed procedural baseline. `GLOBE_CLOUD_COVER` is the
         // fallback the shader's latitude banding varies (heavier ITCZ, clear

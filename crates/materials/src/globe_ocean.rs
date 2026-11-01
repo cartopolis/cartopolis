@@ -62,6 +62,8 @@ pub struct GlobeOceanUniform {
     pub lights: Vec4,
     /// [`GlobeOcean::tile`].
     pub tile: Vec4,
+    /// [`GlobeOcean::terminator`].
+    pub terminator: Vec4,
 }
 
 impl From<&GlobeOcean> for GlobeOceanUniform {
@@ -72,6 +74,7 @@ impl From<&GlobeOcean> for GlobeOceanUniform {
             night: e.night,
             lights: e.lights,
             tile: e.tile,
+            terminator: e.terminator,
         }
     }
 }
@@ -102,6 +105,11 @@ pub struct GlobeOcean {
     /// The tile's key for the optional hex grid (`hex_grid.wesl`): x, y, `2^z`,
     /// and w the layer's strength, 0 = off. Zero on the backstop sphere.
     pub tile: Vec4,
+    /// The light setting from above (`docs/mockups/zoom-ladder/`): xyz the real
+    /// sun in render space, w what the setting asks of the surface — 0 the real
+    /// night side (`night`), 1 Light (no night side; the real sunset line drawn
+    /// dashed), 2 Dark (night all round).
+    pub terminator: Vec4,
     /// Where the built-up land is on this tile, one channel, read off its own
     /// painted imagery (`globe::lights_mask`). `None` on the backstop sphere.
     #[texture(101)]

@@ -313,6 +313,165 @@ fn locate_overlay(
     clicked
 }
 
+/// Room the locate button's caption takes under its disc, so the disc below it
+/// does not sit on the words.
+const LOCATE_CAPTION_ROOM: f32 = 14.0;
+
+/// The three lights the disc offers, in the order a theme switcher lists them.
+/// A set time is Settings' alone: it needs a clock face to set.
+const LIGHT_CHOICES: [(crate::resources::SunMode, &str); 3] = [
+    (crate::resources::SunMode::Auto, "Auto"),
+    (crate::resources::SunMode::Day, "Light"),
+    (crate::resources::SunMode::Night, "Dark"),
+];
+
+/// What the light disc's caption says it does.
+fn light_hover(mode: crate::resources::SunMode) -> &'static str {
+    use crate::resources::SunMode;
+    match mode {
+        SunMode::Auto => "Light: Auto, the real sun and moon",
+        SunMode::Day => "Light: Light, day wherever you look",
+        SunMode::Night => "Light: Dark, night all round",
+        SunMode::Manual => "Light: a time you set (Settings ▸ World)",
+    }
+}
+
+/// A light setting's icon, drawn from primitives as the locate arrow is (the
+/// icon font has no sun or moon): Auto a half-filled circle, Light a sun, Dark
+/// a crescent, a set time a clock face.
+fn paint_light_icon(
+    p: &egui::Painter,
+    c: egui::Pos2,
+    r: f32,
+    mode: crate::resources::SunMode,
+    ink: egui::Color32,
+    behind: egui::Color32,
+) {
+    use crate::resources::SunMode;
+    let stroke = egui::Stroke::new(1.6, ink);
+    match mode {
+        SunMode::Auto => {
+            p.circle_stroke(c, r * 0.62, stroke);
+            let half: Vec<egui::Pos2> = (0..=16)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 16.0;
+                    c + egui::vec2(a.cos(), a.sin()) * r * 0.62
+                })
+                .collect();
+            p.add(egui::Shape::convex_polygon(half, ink, egui::Stroke::NONE));
+        }
+        SunMode::Day => {
+            p.circle_filled(c, r * 0.34, ink);
+            for i in 0..8 {
+                let a = std::f32::consts::TAU * i as f32 / 8.0;
+                let d = egui::vec2(a.cos(), a.sin());
+                p.line_segment([c + d * r * 0.55, c + d * r * 0.78], stroke);
+            }
+        }
+        SunMode::Night => {
+            p.circle_filled(c, r * 0.6, ink);
+            p.circle_filled(c + egui::vec2(r * 0.3, -r * 0.24), r * 0.5, behind);
+        }
+        SunMode::Manual => {
+            p.circle_stroke(c, r * 0.62, stroke);
+            p.line_segment([c, c + egui::vec2(0.0, -r * 0.42)], stroke);
+            p.line_segment([c, c + egui::vec2(r * 0.3, 0.0)], stroke);
+        }
+    }
+}
+
+/// The light disc under the locate button: it wears the current light's icon,
+/// and a press opens Auto · Light · Dark beside it, as a theme switcher does.
+/// Returns the light chosen, if one was.
+fn light_overlay(
+    ctx: &egui::Context,
+    top: f32,
+    mode: crate::resources::SunMode,
+    open: &mut bool,
+) -> Option<crate::resources::SunMode> {
+    let size = theme::ROUND_BUTTON_SIZE;
+    let mut chosen = None;
+    egui::Area::new(egui::Id::new("light_disc"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(column_x(size), top))
+        .show(ctx, |ui| {
+            let (resp, face) =
+                theme::map_disc(ui, size, *open, theme::ACCENT_RING, egui::Sense::click());
+            let behind = if *open { theme::ACCENT } else { theme::OVERLAY };
+            paint_light_icon(
+                ui.painter(),
+                face.center,
+                face.radius,
+                mode,
+                face.ink,
+                behind,
+            );
+            if resp.on_hover_text(light_hover(mode)).clicked() {
+                *open = !*open;
+            }
+        });
+    if !*open {
+        return None;
+    }
+    let pill_h = size - 8.0;
+    egui::Area::new(egui::Id::new("light_choices"))
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(column_x(size) + size + theme::OSD_GAP, top + 1.0),
+        )
+        .show(ctx, |ui| {
+            theme::overlay_frame()
+                .corner_radius(theme::RADIUS_PILL)
+                .inner_margin(egui::Margin::same(3))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.horizontal(|ui| {
+                        for (choice, label) in LIGHT_CHOICES {
+                            let on = mode == choice;
+                            let font = egui::FontId::proportional(theme::SIZE_SUB);
+                            let text_w = ui
+                                .painter()
+                                .layout_no_wrap(label.to_string(), font.clone(), theme::TEXT)
+                                .size()
+                                .x;
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(pill_h + text_w + 12.0, pill_h),
+                                egui::Sense::click(),
+                            );
+                            let (fill, ink) = match (on, resp.hovered()) {
+                                (true, _) => (theme::CREAM, theme::INK),
+                                (false, true) => (theme::SURFACE_HOVER, theme::CREAM),
+                                (false, false) => (egui::Color32::TRANSPARENT, theme::TEXT_DIM),
+                            };
+                            let p = ui.painter();
+                            p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_PILL), fill);
+                            let behind = if fill == egui::Color32::TRANSPARENT {
+                                theme::OVERLAY
+                            } else {
+                                fill
+                            };
+                            let icon_c =
+                                egui::pos2(rect.left() + pill_h * 0.5 + 2.0, rect.center().y);
+                            paint_light_icon(p, icon_c, pill_h * 0.36, choice, ink, behind);
+                            p.text(
+                                egui::pos2(rect.left() + pill_h + 2.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                font,
+                                ink,
+                            );
+                            if resp.clicked() {
+                                chosen = Some(choice);
+                            }
+                        }
+                    });
+                });
+        });
+    if chosen.is_some() {
+        *open = false;
+    }
+    chosen
+}
+
 /// How long one turn of the searching sweep takes, in seconds. Slow enough to
 /// read as "working on it" rather than as a spinner demanding attention — this
 /// wait is routinely thirty seconds and occasionally two minutes.
@@ -626,6 +785,9 @@ pub fn render_map_controls(
     touch: Res<crate::systems::touch::TouchGestures>,
     camera_screen: Res<crate::systems::camera_screen::CameraScreen>,
     mut high: ResMut<crate::systems::high_precision::HighPrecision>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
+    // Whether the light disc's three choices are open beside it.
+    mut light_open: Local<bool>,
 ) {
     // The camera is the whole screen. A chat's World view keeps these: its
     // header is one slim pill at the top centre (`chats::render_chat_world`).
@@ -760,7 +922,7 @@ pub fn render_map_controls(
     // do.
     // The bottom edge of what the column has drawn so far; each control below
     // adds its own gap before its own height.
-    let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
+    let mut column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
     if !avatars.is_empty() {
         let state = if tracking.active {
             LocateState::Tracking
@@ -796,6 +958,23 @@ pub fn render_map_controls(
                     high.on = false;
                 }
             }
+        }
+    }
+
+    // The light disc, last in the column: Auto, Light or Dark, as a theme
+    // switcher offers them (`docs/mockups/zoom-ladder/`, v2). The same setting
+    // as Settings ▸ World's Light row, which also holds a set time.
+    if !avatars.is_empty() {
+        column += theme::OSD_GAP + LOCATE_SIZE + LOCATE_CAPTION_ROOM;
+    }
+    if let Some(mode) = light_overlay(
+        egui.ctx(),
+        column + theme::OSD_GAP,
+        dev.sun_mode,
+        &mut light_open,
+    ) {
+        if dev.sun_mode != mode {
+            dev.sun_mode = mode;
         }
     }
 }

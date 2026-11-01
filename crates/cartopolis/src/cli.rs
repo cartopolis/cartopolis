@@ -173,6 +173,13 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "HOURS")]
     pub(crate) time: Option<f32>,
 
+    /// The light setting to start in — `auto`, `light` or `dark`, the light
+    /// disc's three (`docs/mockups/zoom-ladder/`). Over the globe Light lights
+    /// the side you look at and Dark is night all round; a `--time` beside it is
+    /// ignored, since both hold their own hour.
+    #[arg(long, value_parser = ["auto", "light", "dark"])]
+    pub(crate) light: Option<String>,
+
     /// Distance-fog density to start at (0–1); pairs with `--time` for isolating
     /// how much of a washed-out frame is the fog and how much is the lighting.
     #[arg(long, value_name = "DENSITY")]

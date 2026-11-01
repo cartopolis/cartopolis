@@ -1541,7 +1541,7 @@ fn world_tab(
 ) {
     ui.spacing_mut().item_spacing.y = 4.0;
 
-    section(ui, "Time");
+    section(ui, "Light");
     // `Manual` belongs here now. It used to be left out of this tab because
     // its controls were in the other panel, which made it a mode you could
     // land in and not get out of — the old copy literally told the reader to
@@ -1550,10 +1550,12 @@ fn world_tab(
         ui,
         &mut dev.sun_mode,
         &[
-            (SunMode::Auto, "Automatic"),
-            (SunMode::Day, "Day"),
-            (SunMode::Night, "Night"),
-            (SunMode::Manual, "Manual"),
+            // A theme switcher's names (`docs/mockups/zoom-ladder/`, v2), and
+            // the same three as the light disc on the map (`hud`).
+            (SunMode::Auto, "Auto"),
+            (SunMode::Day, "Light"),
+            (SunMode::Night, "Dark"),
+            (SunMode::Manual, "Set a time"),
         ],
     );
 
@@ -1615,8 +1617,10 @@ fn world_tab(
         ui,
         match dev.sun_mode {
             SunMode::Auto => "Sun and moon follow the real time where the map is anchored.",
-            SunMode::Day => "Held at noon.",
-            SunMode::Night => "Held at midnight.",
+            SunMode::Day => {
+                "Noon in the street. From above, the side you look at is day, and the real sunset line is dashed."
+            }
+            SunMode::Night => "Midnight in the street. From above, the Earth at night all round.",
             SunMode::Manual => "The clock is yours. Run the day loops it in the seconds beside it.",
         },
     );
