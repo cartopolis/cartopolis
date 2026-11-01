@@ -24,12 +24,42 @@ The cosmos is painted on egui's **background layer, before the panel chain**.
 A separate `Order::Background` layer paints over panels, as every floating
 `Area` does (`egui-shared-root-ui.md`).
 
-## Above the World rung, a board is real data at its own scale
+## Above the World rung, one map at one scale
 
-Earth & Moon is to scale from the waiting camera; the Solar system is
-log-scaled (a linear scale puts Mercury to Mars inside a few pixels of the
-Sun) and says so on screen; the Stars are to scale; the Milky Way is
-schematic and says so. The planets come from JPL's approximate Keplerian
+Until 2026-11-01 (evening) each rung was a board of its own at its own scale,
+crossfaded on height: the globe and a smaller flat Earth showed at once past
+the ceiling, the Sun jumped from an arrow at the edge to 0.7 of the screen
+away, the solar system stood still from 18 AU to 670 AU (its log scale was
+clamped), and the Stars board was a lone "Sun · you" for two decades of zoom
+before Alpha Centauri came in. The person steering asked for it gradual, with
+the proportions kept clear.
+
+Now every body is placed in one frame (ecliptic metres from the Sun; stars
+turned from equatorial, the galaxy from galactic, the camera's frame turned
+from render space by matching the pole and the Sun) and projected flat onto
+the view, then the distance from the middle goes through `c·ln(1 + r/c)`:
+to scale inside `c`, each further ten-fold the same width outside it. So the
+next thing out is already at the rim and moves in continuously; rings at round
+light-travel distances are the ruler. `c` is effectively infinite at the
+ceiling (the Earth here is the size of the globe it replaces, tested), 0.14 of
+half the screen height by the Moon's orbit, and lets go again near the top so
+the Milky Way is a spiral, not wound into rings round its centre.
+
+What looked wrong on the way and why it is the way it is:
+
+- **Orbits are drawn only when seen from above** (`face_on`): just past the
+  ceiling the view is still the camera's, edge-on to the ecliptic, and an orbit
+  is a straight line across the screen.
+- **The planets' orbits wait until the Sun is the middle**: the squeeze is
+  round the middle, and the Earth's own orbit runs through it while the Earth
+  is the middle — it came out a teardrop.
+- **Star lanes only between stars both on screen**: a lane to a star past the
+  rim crossed the whole picture.
+- The projection is orthographic, not perspective: a perspective camera put
+  the Sun behind it whenever it stood over the viewer's shoulder.
+
+The Milky Way is schematic and says so, but lies in the real galactic plane
+with its centre in Sagittarius. The planets come from JPL's approximate Keplerian
 elements (Standish, valid 1800–2050), checked against the calendar (the Earth
 at ~39° of heliocentric longitude on 1 November) and the Mars opposition of
 16 January 2025. The 46 star systems within 16 ly are HYG v3.8 (CC BY-SA
@@ -38,7 +68,8 @@ at ~39° of heliocentric longitude on 1 November) and the Mars opposition of
 (the v4.1 paths on GitHub and Codeberg answered 404 on 2026-11-01).
 
 The Moon is wherever `utils::sun::moon_direction` puts it, which is the sky
-dome's approximation (a fixed 18° declination), not an ephemeris.
+dome's approximation (a fixed 18° declination), not an ephemeris — its
+longitude only, laid on the ecliptic (the real orbit is within 5° of it).
 
 ## Light and Dark are the sun modes, not a globe setting
 

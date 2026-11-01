@@ -1,23 +1,29 @@
-//! The rungs above the globe: Earth & Moon, the Solar system, the Stars and the
-//! Milky Way (`docs/mockups/zoom-ladder/`). Past the globe's ceiling the 3D
-//! camera waits over the place it left and the zoom moves
-//! `CameraState::cosmos_alt` instead; this paints what is out there, behind
-//! every panel, fading in over the globe as the height passes the ceiling.
+//! What lies past the globe's ceiling — the Earth and the Moon, the planets, the
+//! nearest stars and the Milky Way — as **one map at one scale**
+//! (`docs/mockups/zoom-ladder/`). Past the ceiling the 3D camera waits over the
+//! place it left and the zoom moves `CameraState::cosmos_alt` instead; this paints
+//! what is out there, behind every panel.
 //!
-//! **Real bodies at real angles, drawn to the board's scale.** Earth & Moon is to
-//! scale, seen from the waiting camera: the Earth lit by the real Sun, the Moon
-//! where the sky code puts it (`utils::sun`), its orbit through both. The Solar
-//! system is the ecliptic from above, the planets where JPL's elements put them
-//! today (`utils::planets`), distances log-scaled — a linear scale would leave
-//! every inner planet inside one pixel of the Sun — and says so. The Stars are
-//! the systems within 16 light years (`utils::near_stars`, HYG) on the
-//! celestial equator's plane, to scale. The Milky Way is schematic: four arms
-//! on a log spiral, the Sun 26,000 light years out, and it says that too.
+//! **To scale in the middle, squeezed towards the edge.** Every body sits at its
+//! real place in one frame (the ecliptic, metres from the Sun) and is projected
+//! straight onto the screen; a distance from the middle of the screen then goes
+//! through `c·ln(1 + r/c)`, which leaves the middle to scale and gives each
+//! further ten-fold the same width of screen towards the edge. So the zoom is
+//! one continuous movement — nothing swaps board — and the next thing out is
+//! always already at the rim: the planets around the Moon's orbit, the nearest
+//! stars around Neptune's, the Milky Way around them. Rings at round light-travel
+//! times are the ruler. Right at the ceiling the squeeze is off, so the Earth
+//! drawn here is the size of the globe it replaces.
 //!
-//! **Home stays in view.** Each board is centred on what you came from — the
-//! Earth, then the Sun — and eases to its own middle only as you pull back, so
-//! a climb never loses the thread. Zooming back in heads for the Earth; there is
-//! nowhere else to land.
+//! **Real bodies at real places.** The Earth lit by the real Sun; the Moon at the
+//! sky code's longitude (`utils::sun`), on the ecliptic; the planets where JPL's
+//! elements put them today (`utils::planets`); the systems within 16 light years
+//! (`utils::near_stars`, HYG); the Milky Way schematic (four arms on a log
+//! spiral) but laid in the real galactic plane, its centre in Sagittarius
+//! 26,000 light years away. The view turns as it climbs: from the camera's own
+//! direction, to above the ecliptic, to above the galactic plane; and its middle
+//! moves from the Earth to the Sun to the galactic centre — each only once the
+//! next one in is too small to lose.
 //!
 //! Painted with egui on the background layer, before the panel chain, so the
 //! panels and the map's chrome stay on top.
@@ -26,19 +32,18 @@ use crate::systems::egui_manager::EguiRef;
 use crate::systems::theme;
 use crate::utils::near_stars::NEAR_STARS;
 use crate::utils::planets::{self, AU_M, LIGHT_M_S, LIGHT_YEAR_M, PLANETS};
+use bevy::math::{DMat3, DQuat, DVec2, DVec3};
 use bevy::prelude::*;
 use egui::{pos2, vec2, Color32, Pos2};
 
-/// The Earth's radius, metres, for the to-scale board.
+/// The Earth's radius, metres.
 const EARTH_R_M: f64 = 6_371_000.0;
 /// The Moon's.
 const MOON_R_M: f64 = 1_737_400.0;
 /// The Moon's mean distance, metres.
 const MOON_DIST_M: f64 = 384_400_000.0;
-/// The Sun's distance from the galactic centre, light years.
-const SUN_GALACTIC_LY: f64 = 26_000.0;
 
-/// Deep space behind the boards.
+/// Deep space behind it all.
 const SPACE: Color32 = Color32::from_rgb(0x04, 0x07, 0x0A);
 const EARTH_DAY: Color32 = Color32::from_rgb(0x5D, 0x8F, 0xBF);
 const EARTH_NIGHT: Color32 = Color32::from_rgb(0x0C, 0x1A, 0x2A);
@@ -171,7 +176,207 @@ fn paint_lit_sphere(
     p.add(egui::Shape::mesh(mesh));
 }
 
-/// Paint the rungs above the globe, while the view is out there.
+/// The Sun's radius, metres.
+const SUN_R_M: f64 = 696_000_000.0;
+/// The parsec, metres.
+const PC_M: f64 = 3.085_677_581_491_367e16;
+/// The tilt of the Earth's axis to its orbit, radians (23.439°).
+const OBLIQUITY: f64 = 0.409_092_6;
+/// Equatorial (J2000) to galactic: the rows are the galactic axes in equatorial
+/// coordinates, x towards the galactic centre and z the north galactic pole.
+const EQ_TO_GAL: [[f64; 3]; 3] = [
+    [-0.054_875_560_4, -0.873_437_090_2, -0.483_835_015_5],
+    [0.494_109_427_9, -0.444_829_630_0, 0.746_982_244_5],
+    [-0.867_666_149_0, -0.198_076_373_4, 0.455_983_776_2],
+];
+/// The squeeze at its strongest: the radius of the to-scale middle, as a share
+/// of half the screen's height. Each further ten-fold then takes
+/// `SQUEEZE · ln 10` of it, so half a screen holds about three.
+const SQUEEZE: f64 = 0.14;
+/// The squeeze is off just past the ceiling, where the Earth drawn here has to
+/// be the size of the globe it replaces, and fully on by the Moon's orbit.
+const SQUEEZE_FROM_M: f64 = 4.5e7;
+const SQUEEZE_TO_M: f64 = 2.0e9;
+/// The ruler: round light-travel distances.
+const RINGS: [(f64, &str); 10] = [
+    (LIGHT_M_S, "1 light-second"),
+    (LIGHT_M_S * 60.0, "1 light-minute"),
+    (LIGHT_M_S * 3_600.0, "1 light-hour"),
+    (LIGHT_M_S * 86_400.0, "1 light-day"),
+    (LIGHT_YEAR_M, "1 light year"),
+    (LIGHT_YEAR_M * 10.0, "10 light years"),
+    (LIGHT_YEAR_M * 100.0, "100 light years"),
+    (LIGHT_YEAR_M * 1_000.0, "1,000 light years"),
+    (LIGHT_YEAR_M * 10_000.0, "10,000 light years"),
+    (LIGHT_YEAR_M * 100_000.0, "100,000 light years"),
+];
+const RING: Color32 = Color32::from_rgba_unmultiplied_const(0x9A, 0xB0, 0xB8, 46);
+const GALAXY_STAR: Color32 = Color32::from_rgb(0xD8, 0xE2, 0xFF);
+const GALAXY_BULGE: Color32 = Color32::from_rgb(0xFF, 0xE2, 0xAA);
+
+/// Equatorial coordinates to ecliptic ones (both with x at the March equinox).
+fn eq_to_ecl(v: DVec3) -> DVec3 {
+    let (s, c) = OBLIQUITY.sin_cos();
+    DVec3::new(v.x, v.y * c + v.z * s, -v.y * s + v.z * c)
+}
+
+/// Galactic coordinates to ecliptic ones.
+fn gal_to_ecl(g: DVec3) -> DVec3 {
+    let [x, y, z] = EQ_TO_GAL;
+    eq_to_ecl(DVec3::from(x) * g.x + DVec3::from(y) * g.y + DVec3::from(z) * g.z)
+}
+
+/// The rotation from the render frame to the ecliptic one, fixed by two
+/// directions known in both: the celestial north pole and the Sun.
+fn render_to_ecliptic(north_r: DVec3, sun_r: DVec3, sun_e: DVec3) -> DMat3 {
+    let basis = |n: DVec3, s: DVec3| {
+        let a = n.normalize();
+        let b = (s - a * s.dot(a))
+            .try_normalize()
+            .unwrap_or_else(|| a.any_orthonormal_vector());
+        DMat3::from_cols(a, b, a.cross(b))
+    };
+    let (s, c) = OBLIQUITY.sin_cos();
+    basis(DVec3::new(0.0, s, c), sun_e) * basis(north_r, sun_r).transpose()
+}
+
+/// A distance from the middle of the screen, pixels, squeezed: unchanged well
+/// inside `c`, logarithmic well outside it.
+fn squeeze(lin: f64, c: f64) -> f64 {
+    c * (lin / c).ln_1p()
+}
+
+/// The one projection every body goes through.
+struct View {
+    /// What the middle of the screen looks at, ecliptic metres from the Sun.
+    middle: DVec3,
+    right: DVec3,
+    up: DVec3,
+    /// Towards the viewer.
+    back: DVec3,
+    px_per_m: f64,
+    /// The squeeze's knee, pixels.
+    c: f64,
+    centre: Pos2,
+}
+
+impl View {
+    /// Where the camera's frame (ecliptic) has turned to, what it looks at and
+    /// how far the squeeze has come, at a height above the Earth.
+    fn new(alt: f64, right0: DVec3, up0: DVec3, earth: DVec3, half_h: f64, focal: f64) -> Self {
+        let back0 = right0.cross(up0).normalize();
+        let right0 = up0.cross(back0).normalize();
+        let up0 = back0.cross(right0);
+        let q0 = DQuat::from_mat3(&DMat3::from_cols(right0, up0, back0));
+        // Up above the ecliptic once the Moon's orbit is the scene; above the
+        // galactic plane once the stars are.
+        let to_ecliptic = DQuat::from_rotation_arc(back0, DVec3::Z) * q0;
+        let q = q0.slerp(to_ecliptic, f64::from(fade_in(alt, 1.0e8, 5.0e9)));
+        let to_galaxy = DQuat::from_rotation_arc(q * DVec3::Z, gal_to_ecl(DVec3::Z)) * q;
+        let q = q.slerp(to_galaxy, f64::from(fade_in(alt, 3.0e16, 3.0e18)));
+        // The Earth in the middle, then the Sun once the inner planets are
+        // small, then the galactic centre once the whole of it fits.
+        let gc = gal_to_ecl(DVec3::X) * 26_000.0 * LIGHT_YEAR_M;
+        let middle = earth * f64::from(fade_out(alt, 2.0e10, 1.0e12))
+            + gc * f64::from(fade_in(alt, 1.0e19, 4.0e20));
+        let t = f64::from(fade_in(alt, SQUEEZE_FROM_M, SQUEEZE_TO_M));
+        let knee = (60f64.ln() + (SQUEEZE.ln() - 60f64.ln()) * t).exp();
+        // Nothing lies past the Milky Way, so at the top of the rail the
+        // squeeze lets go again and the galaxy is drawn to scale, as a spiral
+        // rather than wound into rings round its middle.
+        let knee = knee * (1.6 / SQUEEZE).powf(f64::from(fade_in(alt, 1.5e20, 1.0e21)));
+        Self {
+            middle,
+            right: q * DVec3::X,
+            up: q * DVec3::Y,
+            back: q * DVec3::Z,
+            px_per_m: focal / (alt + EARTH_R_M),
+            c: knee * half_h,
+            centre: Pos2::ZERO,
+        }
+    }
+
+    fn at(&self, p: DVec3) -> Pos2 {
+        let d = p - self.middle;
+        let v = DVec2::new(d.dot(self.right), d.dot(self.up)) * self.px_per_m;
+        let lin = v.length();
+        if lin < 1e-9 {
+            return self.centre;
+        }
+        let k = squeeze(lin, self.c) / lin;
+        pos2(
+            self.centre.x + (v.x * k) as f32,
+            self.centre.y - (v.y * k) as f32,
+        )
+    }
+
+    /// A body's radius on screen: to scale, shrunk as the squeeze shrinks the
+    /// map where it stands.
+    fn size(&self, p: DVec3, r_m: f64) -> f32 {
+        let d = p - self.middle;
+        let lin = DVec2::new(d.dot(self.right), d.dot(self.up)).length() * self.px_per_m;
+        (r_m * self.px_per_m / (1.0 + lin / self.c)) as f32
+    }
+
+    /// A ring's radius round the middle, pixels.
+    fn ring(&self, m: f64) -> f32 {
+        squeeze(m * self.px_per_m, self.c) as f32
+    }
+
+    /// The Sun's direction on screen from a body, and how far it stands
+    /// towards the viewer — what `paint_lit_sphere` takes.
+    fn sunlight(&self, body: DVec3) -> (Vec2, f32) {
+        let s = (-body).normalize_or_zero();
+        (
+            Vec2::new(s.dot(self.right) as f32, s.dot(self.up) as f32),
+            s.dot(self.back) as f32,
+        )
+    }
+}
+
+/// 1 once two points on screen are `hi` apart, 0 within `lo`: how a body fades
+/// as it closes on the one it circles.
+fn apart(a: Pos2, b: Pos2, lo: f32, hi: f32) -> f32 {
+    let t = ((a.distance(b) - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A label waiting for room: the ones placed first win.
+struct Tag {
+    at: Pos2,
+    align: egui::Align2,
+    text: String,
+    size: f32,
+    ink: Color32,
+}
+
+fn place_tags(p: &egui::Painter, tags: Vec<Tag>, screen: egui::Rect) {
+    let mut taken: Vec<egui::Rect> = Vec::new();
+    for t in tags {
+        if t.ink.a() < 4 {
+            continue;
+        }
+        let g = p.layout_no_wrap(t.text.clone(), egui::FontId::proportional(t.size), t.ink);
+        let r = t.align.anchor_size(t.at, g.size()).expand(2.0);
+        if !screen.contains_rect(r) || taken.iter().any(|o| o.intersects(r)) {
+            continue;
+        }
+        taken.push(r);
+        label(p, t.at, t.align, &t.text, t.size, t.ink);
+    }
+}
+
+/// A circle in the ecliptic plane round `about`, through the view.
+fn ecliptic_circle(view: &View, about: DVec3, r: f64) -> Vec<Pos2> {
+    (0..=128)
+        .map(|i| {
+            let a = std::f64::consts::TAU * f64::from(i) / 128.0;
+            view.at(about + DVec3::new(a.cos(), a.sin(), 0.0) * r)
+        })
+        .collect()
+}
+
+/// Paint what is past the ceiling, while the view is out there.
 #[allow(clippy::too_many_arguments)]
 pub fn render_cosmos(
     egui: EguiRef,
@@ -179,350 +384,336 @@ pub fn render_cosmos(
     dev: Res<crate::resources::DevPanelState>,
     clock: Res<crate::systems::transit_live::WorldClock>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&Transform, &Projection), With<crate::components::FreeCamera>>,
-    mut galaxy: Local<Vec<(Vec2, f32)>>,
+    camera: Query<&Transform, With<crate::components::FreeCamera>>,
+    camera_lens: Query<&Projection, With<crate::components::FreeCamera>>,
+    mut galaxy: Local<Vec<(DVec3, f32)>>,
 ) {
     let alt = camera_state.cosmos_alt;
     if alt <= 0.0 {
         return;
     }
-    let Ok((tf, projection)) = camera.single() else {
+    let (Ok(tf), Ok(projection)) = (camera.single(), camera_lens.single()) else {
         return;
     };
     let ctx = egui.ctx();
     let screen = ctx.content_rect();
     let p = ctx.layer_painter(egui::LayerId::background());
-    let ceiling = alt.min(45_000_000.0 - EARTH_R_M);
-    let backdrop = fade_in(alt, ceiling.max(3.0e7), 1.0e8);
-    p.rect_filled(screen, 0.0, alpha(SPACE, backdrop));
+    // Over a short climb past the ceiling, so the globe and the disc that
+    // replaces it (the same size there) are not both seen for long.
+    let ceiling = 45_000_000.0 - EARTH_R_M;
+    let bd = fade_in(alt, ceiling, ceiling * 1.5);
+    p.rect_filled(screen, 0.0, alpha(SPACE, bd));
 
     let fov = match projection {
         Projection::Perspective(pp) => pp.fov,
         _ => std::f32::consts::FRAC_PI_4,
     };
-    let half_h = screen.height() * 0.5;
-    let focal = half_h / (fov * 0.5).tan();
-    let centre = screen.center();
+    let half_h = f64::from(screen.height() * 0.5);
+    let focal = half_h / f64::from((fov * 0.5).tan());
     let now = clock.now_unix;
 
-    // The camera's frame, render space, which the sun and moon are in too.
-    let right = (tf.rotation * Vec3::X).as_dvec3();
-    let up = (tf.rotation * Vec3::Y).as_dvec3();
-    let out = camera_state.orbit_dir.normalize();
-    // The real sun and moon, whatever the light setting holds the street at.
+    // The real Sun and Moon, whatever the light setting holds the street at,
+    // and the frame they and the camera are in turned onto the ecliptic.
     let hour = crate::utils::sun::solar_time_of_day(now, globe.anchor_lng);
-    let sun = crate::utils::sun::sun_direction(hour, dev.sun_declination_rad).as_dvec3();
+    let sun_r = crate::utils::sun::sun_direction(hour, dev.sun_declination_rad).as_dvec3();
     let age = crate::utils::sun::lunar_age_days(now);
-    let moon_dir = crate::utils::sun::moon_direction(hour, age).as_dvec3();
-    let on_screen = |d: bevy::math::DVec3| Vec2::new(d.dot(right) as f32, d.dot(up) as f32);
-    let ink = theme::TEXT;
+    let moon_r = crate::utils::sun::moon_direction(hour, age).as_dvec3();
+    let earth = DVec3::from(planets::position(&PLANETS[planets::EARTH], now)) * AU_M;
+    let to_ecl = render_to_ecliptic(
+        globe.north_axis_local().as_dvec3(),
+        sun_r,
+        -earth.normalize(),
+    );
+    let mut view = View::new(
+        alt,
+        to_ecl * (tf.rotation * Vec3::X).as_dvec3(),
+        to_ecl * (tf.rotation * Vec3::Y).as_dvec3(),
+        earth,
+        half_h,
+        focal,
+    );
+    view.centre = screen.center();
+    let mut tags: Vec<Tag> = Vec::new();
 
-    // ── Earth & Moon, to scale ──────────────────────────────────────────────
-    let em = fade_out(alt, 1.5e10, 6.0e10) * backdrop;
-    if em > 0.01 {
-        let eye = EARTH_R_M + alt;
-        let project = |pt: bevy::math::DVec3| -> Option<(Pos2, f64)> {
-            let z = eye - pt.dot(out);
-            (z > 1.0).then(|| {
-                let x = pt.dot(right) / z * f64::from(focal);
-                let y = pt.dot(up) / z * f64::from(focal);
-                (pos2(centre.x + x as f32, centre.y - y as f32), z)
-            })
-        };
-        // The Moon's orbit, through where it is now and where it will be in a
-        // few hours: the plane the sky code moves it in.
-        let later = crate::utils::sun::moon_direction(hour + 3.0, age + 0.125).as_dvec3();
-        let normal = moon_dir.cross(later).normalize_or_zero();
-        if normal != bevy::math::DVec3::ZERO {
-            let a = moon_dir.normalize();
-            let b = normal.cross(a);
-            let ring: Vec<Pos2> = (0..=96)
-                .filter_map(|i| {
-                    let t = std::f64::consts::TAU * f64::from(i) / 96.0;
-                    project((a * t.cos() + b * t.sin()) * MOON_DIST_M).map(|(q, _)| q)
-                })
-                .collect();
-            p.add(egui::Shape::line(
-                ring,
-                egui::Stroke::new(1.0, alpha(ORBIT, em)),
-            ));
-        }
-        let earth_r = (focal as f64 * (EARTH_R_M / eye.max(EARTH_R_M * 1.01)).asin().tan()) as f32;
-        let toward = sun.dot(out) as f32;
-        paint_lit_sphere(
-            &p,
-            centre,
-            earth_r.max(2.0),
-            on_screen(sun),
-            toward,
-            alpha(EARTH_DAY, em),
-            alpha(EARTH_NIGHT, em),
-        );
-        p.circle_stroke(
-            centre,
-            earth_r.max(2.0) + 6.0,
-            egui::Stroke::new(2.0, alpha(theme::BRAND, em)),
-        );
-        label(
-            &p,
-            centre + vec2(0.0, earth_r.max(2.0) + 12.0),
-            egui::Align2::CENTER_TOP,
-            "Earth",
-            theme::SIZE_BODY,
-            alpha(theme::CREAM, em),
-        );
-        if let Some((m, z)) = project(moon_dir * MOON_DIST_M) {
-            let mr = (f64::from(focal) * MOON_R_M / z) as f32;
-            paint_lit_sphere(
-                &p,
-                m,
-                mr.max(2.5),
-                on_screen(sun),
-                toward,
-                alpha(MOON_DAY, em),
-                alpha(MOON_NIGHT, em),
-            );
-            label(
-                &p,
-                m + vec2(8.0, -4.0),
-                egui::Align2::LEFT_BOTTOM,
-                "Moon",
-                theme::SIZE_BODY,
-                alpha(theme::CREAM, em),
-            );
-            label(
-                &p,
-                m + vec2(8.0, 0.0),
-                egui::Align2::LEFT_TOP,
-                &format!(
-                    "{} · {}",
-                    distance_words(MOON_DIST_M),
-                    light_time_words(MOON_DIST_M)
-                ),
-                theme::SIZE_SUB,
-                alpha(ink, em),
-            );
-        }
-        // Where the Sun is: an arrow at the edge of the screen.
-        let s = on_screen(sun);
-        if s.length() > 1e-3 {
-            let d = s.normalize();
-            let edge = centre + vec2(d.x, -d.y) * (half_h * 0.86);
-            let au = planets::position(&PLANETS[planets::EARTH], now);
-            let sun_m = (au[0] * au[0] + au[1] * au[1] + au[2] * au[2]).sqrt() * AU_M;
-            p.circle_filled(edge, 5.0, alpha(SUN, em));
-            label(
-                &p,
-                edge + vec2(0.0, 10.0),
-                egui::Align2::CENTER_TOP,
-                &format!("to the Sun · {}", light_time_words(sun_m)),
-                theme::SIZE_SUB,
-                alpha(SUN, em),
-            );
+    // ── The ruler ───────────────────────────────────────────────────────────
+    let ruler = bd * fade_in(alt, 1.0e8, SQUEEZE_TO_M);
+    let reach = screen.width().hypot(screen.height()) * 0.5;
+    let mut ring_tags = Vec::new();
+    for (m, words) in RINGS {
+        let r = view.ring(m);
+        let a = ruler
+            * crate::utils::sun::smoothstep(24.0, 64.0, r)
+            * (1.0 - crate::utils::sun::smoothstep(reach * 0.9, reach, r));
+        if a > 0.01 {
+            p.circle_stroke(view.centre, r, egui::Stroke::new(1.0, alpha(RING, a)));
+            ring_tags.push(Tag {
+                at: view.centre + vec2(r, -r) * std::f32::consts::FRAC_1_SQRT_2 + vec2(3.0, -2.0),
+                align: egui::Align2::LEFT_BOTTOM,
+                text: words.to_string(),
+                size: theme::SIZE_TINY,
+                ink: alpha(theme::TEXT_DIM, a),
+            });
         }
     }
 
-    // ── The Solar system, the ecliptic from above, log distances ────────────
-    let ss = fade_in(alt, 1.0e10, 4.0e10) * fade_out(alt, 1.0e14, 5.0e14) * backdrop;
-    if ss > 0.01 {
-        let rmax = (alt / AU_M * 2.5).clamp(1.6, 45.0);
-        let rpx = half_h * 0.9;
-        let radial =
-            |r: f64| -> f32 { rpx * ((1.0 + r / 0.25).ln() / (1.0 + rmax / 0.25).ln()) as f32 };
-        let place = |xyz: [f64; 3]| -> Vec2 {
-            let r = (xyz[0] * xyz[0] + xyz[1] * xyz[1]).sqrt();
-            let a = xyz[1].atan2(xyz[0]);
-            Vec2::new(a.cos() as f32, -(a.sin() as f32)) * radial(r)
-        };
-        let earth_xyz = planets::position(&PLANETS[planets::EARTH], now);
-        let earth_at = place(earth_xyz);
-        // Earth in the middle as the board arrives, the Sun once it has.
-        let settle = fade_in(alt, 2.0e10, 3.0e11);
-        let sun_at = centre - egui::Vec2::new(earth_at.x, earth_at.y) * (1.0 - settle);
-        let glow = alpha(SUN, ss * 0.25);
-        p.circle_filled(sun_at, 16.0, glow);
-        p.circle_filled(sun_at, 9.0, alpha(SUN, ss));
-        label(
-            &p,
-            sun_at + vec2(0.0, 14.0),
-            egui::Align2::CENTER_TOP,
-            "Sun",
-            theme::SIZE_BODY,
-            alpha(SUN, ss),
-        );
-        for (i, planet) in PLANETS.iter().enumerate() {
-            let xyz = planets::position(planet, now);
-            let r = (xyz[0] * xyz[0] + xyz[1] * xyz[1]).sqrt();
-            let orbit_r = radial(r);
-            if orbit_r > half_h * 4.0 {
-                continue;
-            }
-            p.circle_stroke(sun_at, orbit_r, egui::Stroke::new(1.0, alpha(ORBIT, ss)));
-            let at = place(xyz);
-            let q = sun_at + egui::Vec2::new(at.x, at.y);
-            let size = if i >= 4 { 6.0 } else { 4.5 };
-            p.circle_filled(q, size, alpha(PLANET_TONES[i], ss));
-            let words = if i == planets::EARTH {
-                p.circle_stroke(
-                    q,
-                    size + 5.0,
-                    egui::Stroke::new(2.0, alpha(theme::BRAND, ss)),
-                );
-                "Earth · you".to_string()
-            } else {
-                let d = (0..3)
-                    .map(|k| (xyz[k] - earth_xyz[k]).powi(2))
-                    .sum::<f64>()
-                    .sqrt()
-                    * AU_M;
-                format!("{} · {}", planet.name, light_time_words(d))
-            };
-            label(
-                &p,
-                q + vec2(0.0, size + 4.0),
-                egui::Align2::CENTER_TOP,
-                &words,
-                theme::SIZE_SUB,
-                alpha(theme::CREAM, ss),
-            );
-        }
-        label(
-            &p,
-            pos2(screen.left() + 16.0, screen.bottom() - 16.0),
-            egui::Align2::LEFT_BOTTOM,
-            "The planets where they are today · distances log-scaled",
-            theme::SIZE_SUB,
-            alpha(theme::TEXT_DIM, ss),
-        );
-    }
-
-    // ── The Stars within 16 light years, to scale ───────────────────────────
-    let st = fade_in(alt, 1.0e14, 1.0e15) * fade_out(alt, 1.0e18, 5.0e18) * backdrop;
-    if st > 0.01 {
-        let px_per_ly = (f64::from(focal) / (alt / LIGHT_YEAR_M)) as f32;
-        let ly_per_pc = 3.261_563_8_f32;
-        let at = |s: &crate::utils::near_stars::NearStar| {
-            centre + vec2(s.xyz_pc[0], -s.xyz_pc[1]) * ly_per_pc * px_per_ly
-        };
-        // Each system's lane to its nearest neighbour (scenarios v3's lanes).
-        for (i, a) in NEAR_STARS.iter().enumerate() {
-            let near = NEAR_STARS
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .min_by(|(_, x), (_, y)| {
-                    let dx = |s: &crate::utils::near_stars::NearStar| {
-                        (0..3)
-                            .map(|k| (s.xyz_pc[k] - a.xyz_pc[k]).powi(2))
-                            .sum::<f32>()
-                    };
-                    dx(x).total_cmp(&dx(y))
-                });
-            if let Some((_, b)) = near {
-                p.line_segment([at(a), at(b)], egui::Stroke::new(1.0, alpha(LANE, st)));
-            }
-        }
-        // The Sun's lanes to the three nearest.
-        for s in NEAR_STARS.iter().take(3) {
-            p.line_segment([centre, at(s)], egui::Stroke::new(1.0, alpha(LANE, st)));
-        }
-        p.circle_filled(centre, 5.0, alpha(SUN, st));
-        p.circle_stroke(
-            centre,
-            11.0,
-            egui::Stroke::new(2.0, alpha(theme::BRAND, st)),
-        );
-        label(
-            &p,
-            centre + vec2(0.0, 14.0),
-            egui::Align2::CENTER_TOP,
-            "Sun · you",
-            theme::SIZE_BODY,
-            alpha(theme::CREAM, st),
-        );
-        let named = if px_per_ly > 22.0 {
-            NEAR_STARS.len()
-        } else {
-            8
-        };
-        for (i, s) in NEAR_STARS.iter().enumerate() {
-            let q = at(s);
-            if !screen.expand(40.0).contains(q) {
-                continue;
-            }
-            let r = if s.members > 1 { 3.5 } else { 2.5 };
-            p.circle_filled(q, r, alpha(theme::CREAM, st));
-            if i < named {
-                label(
-                    &p,
-                    q + vec2(5.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    &format!("{} · {:.1} ly", s.name, s.light_years),
-                    theme::SIZE_TINY,
-                    alpha(ink, st),
-                );
-            }
-        }
-        label(
-            &p,
-            pos2(screen.left() + 16.0, screen.bottom() - 16.0),
-            egui::Align2::LEFT_BOTTOM,
-            "Star systems within 16 light years, on the plane of the celestial equator · HYG v3.8",
-            theme::SIZE_SUB,
-            alpha(theme::TEXT_DIM, st),
-        );
-    }
-
-    // ── The Milky Way, schematic ────────────────────────────────────────────
-    let gx = fade_in(alt, 5.0e17, 3.0e18) * backdrop;
+    // ── The Milky Way, schematic, in the real galactic plane ────────────────
+    let sun_at = view.at(DVec3::ZERO);
+    let gx = bd * fade_in(alt, 3.0e17, 3.0e18);
     if gx > 0.01 {
         if galaxy.is_empty() {
-            *galaxy = galaxy_points();
+            *galaxy = galaxy_points()
+                .into_iter()
+                .map(|(pt, b)| {
+                    let g = DVec3::new(26_000.0 - f64::from(pt.y), f64::from(pt.x), 0.0);
+                    (gal_to_ecl(g) * LIGHT_YEAR_M, b)
+                })
+                .collect();
         }
-        let px_per_ly = (f64::from(focal) / (alt / LIGHT_YEAR_M)) as f32;
-        // The Sun in the middle as the board arrives; the galaxy's own middle
-        // once the whole of it fits.
-        let settle = fade_in(alt, 1.0e19, 4.0e20);
-        let gc_from_sun = vec2(0.0, -(SUN_GALACTIC_LY as f32)) * px_per_ly;
-        let gc = centre + gc_from_sun * (1.0 - settle);
-        let sun_at = gc - gc_from_sun;
+        let gc = gal_to_ecl(DVec3::X) * 26_000.0 * LIGHT_YEAR_M;
+        let gc_at = view.at(gc);
         p.circle_filled(
-            gc,
-            (3_000.0 * px_per_ly).max(2.0),
-            alpha(Color32::from_rgb(0xFF, 0xE2, 0xAA), gx * 0.35),
+            gc_at,
+            view.size(gc, 3_000.0 * LIGHT_YEAR_M).max(2.0),
+            alpha(GALAXY_BULGE, gx * 0.35),
         );
         for (pt, b) in galaxy.iter() {
-            let q = gc + vec2(pt.x, pt.y) * px_per_ly;
+            let q = view.at(*pt);
             if screen.contains(q) {
-                p.circle_filled(q, 1.1, alpha(Color32::from_rgb(0xD8, 0xE2, 0xFF), gx * b));
+                p.circle_filled(q, 1.1, alpha(GALAXY_STAR, gx * b));
             }
         }
-        p.circle_stroke(sun_at, 8.0, egui::Stroke::new(2.0, alpha(theme::BRAND, gx)));
-        label(
-            &p,
-            sun_at + vec2(12.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            "Sun · you",
-            theme::SIZE_BODY,
-            alpha(theme::CREAM, gx),
+        tags.push(Tag {
+            at: gc_at + vec2(0.0, -14.0),
+            align: egui::Align2::CENTER_BOTTOM,
+            text: "Galactic centre · 26,000 light years".into(),
+            size: theme::SIZE_SUB,
+            ink: alpha(theme::TEXT, gx * apart(gc_at, sun_at, 30.0, 80.0)),
+        });
+    }
+
+    // ── The nearest stars ───────────────────────────────────────────────────
+    let star_at: Vec<Pos2> = NEAR_STARS
+        .iter()
+        .map(|s| view.at(eq_to_ecl(DVec3::from(s.xyz_pc.map(f64::from))) * PC_M))
+        .collect();
+    let near = |i: usize| {
+        let a = &NEAR_STARS[i];
+        (0..NEAR_STARS.len()).filter(|j| *j != i).min_by(|x, y| {
+            let d = |s: &crate::utils::near_stars::NearStar| {
+                (0..3)
+                    .map(|k| (s.xyz_pc[k] - a.xyz_pc[k]).powi(2))
+                    .sum::<f32>()
+            };
+            d(&NEAR_STARS[*x]).total_cmp(&d(&NEAR_STARS[*y]))
+        })
+    };
+    let mut star_tags = Vec::new();
+    for (i, s) in NEAR_STARS.iter().enumerate() {
+        let q = star_at[i];
+        if !screen.expand(200.0).contains(q) {
+            continue;
+        }
+        let a = bd * apart(q, sun_at, 4.0, 18.0);
+        if a < 0.01 {
+            continue;
+        }
+        // A lane runs only between two stars on screen: one to a star far off
+        // past the rim crosses the whole picture and leads nowhere visible.
+        if let Some(j) = near(i).filter(|j| screen.contains(q) && screen.contains(star_at[*j])) {
+            p.line_segment([q, star_at[j]], egui::Stroke::new(1.0, alpha(LANE, a)));
+        }
+        if i < 3 && screen.contains(q) {
+            p.line_segment([sun_at, q], egui::Stroke::new(1.0, alpha(LANE, a)));
+        }
+        p.circle_filled(
+            q,
+            if s.members > 1 { 3.5 } else { 2.5 },
+            alpha(theme::CREAM, a),
         );
-        label(
+        star_tags.push(Tag {
+            at: q + vec2(5.0, 0.0),
+            align: egui::Align2::LEFT_CENTER,
+            text: format!("{} · {:.1} ly", s.name, s.light_years),
+            size: theme::SIZE_TINY,
+            ink: alpha(theme::TEXT, a),
+        });
+    }
+
+    // ── The Sun and the planets ─────────────────────────────────────────────
+    let earth_at = view.at(earth);
+    let you_apart = apart(earth_at, sun_at, 6.0, 20.0);
+    // An orbit seen edge-on is a line through the screen, not a ring: drawn
+    // only once the view has turned to look down on it.
+    let face_on = crate::utils::sun::smoothstep(0.6, 0.9, view.back.z.abs() as f32);
+    // And the planets' orbits only once the Sun is the middle: the squeeze is
+    // round the middle, and a ring running through it (the Earth's own, while
+    // the Earth is the middle) comes out as a teardrop.
+    let sun_middle = fade_in(alt, 1.0e11, 1.0e12);
+    let mut planet_tags = Vec::new();
+    for (i, planet) in PLANETS.iter().enumerate() {
+        let xyz = DVec3::from(planets::position(planet, now)) * AU_M;
+        let q = view.at(xyz);
+        let a = bd * apart(q, sun_at, 3.0, 12.0);
+        if a < 0.01 {
+            continue;
+        }
+        p.add(egui::Shape::line(
+            ecliptic_circle(&view, DVec3::ZERO, xyz.truncate().length()),
+            egui::Stroke::new(
+                1.0,
+                alpha(
+                    ORBIT,
+                    a * face_on * sun_middle * apart(q, sun_at, 6.0, 30.0),
+                ),
+            ),
+        ));
+        if i == planets::EARTH {
+            continue;
+        }
+        p.circle_filled(q, if i >= 4 { 4.5 } else { 3.5 }, alpha(PLANET_TONES[i], a));
+        planet_tags.push(Tag {
+            at: q + vec2(0.0, 7.0),
+            align: egui::Align2::CENTER_TOP,
+            text: format!(
+                "{} · {}",
+                planet.name,
+                light_time_words(xyz.distance(earth))
+            ),
+            size: theme::SIZE_SUB,
+            ink: alpha(theme::CREAM, a),
+        });
+    }
+    let sun_r = view.size(DVec3::ZERO, SUN_R_M).max(5.0);
+    p.circle_filled(sun_at, sun_r * 1.8, alpha(SUN, bd * 0.25));
+    p.circle_filled(sun_at, sun_r, alpha(SUN, bd));
+
+    // ── The Earth and the Moon, to scale ────────────────────────────────────
+    let moon_ecl = to_ecl * moon_r;
+    let moon = earth
+        + DVec3::new(moon_ecl.x, moon_ecl.y, 0.0)
+            .try_normalize()
+            .unwrap_or(DVec3::X)
+            * MOON_DIST_M;
+    let moon_at = view.at(moon);
+    let ma = bd * apart(moon_at, earth_at, 4.0, 14.0);
+    if ma > 0.01 {
+        p.add(egui::Shape::line(
+            ecliptic_circle(&view, earth, MOON_DIST_M),
+            egui::Stroke::new(
+                1.0,
+                alpha(ORBIT, ma * face_on * apart(moon_at, earth_at, 8.0, 40.0)),
+            ),
+        ));
+    }
+    let earth_r = view.size(earth, EARTH_R_M).max(2.5);
+    let (light, toward) = view.sunlight(earth);
+    paint_lit_sphere(
+        &p,
+        earth_at,
+        earth_r,
+        light,
+        toward,
+        alpha(EARTH_DAY, bd * you_apart.max(0.3)),
+        alpha(EARTH_NIGHT, bd * you_apart.max(0.3)),
+    );
+    if ma > 0.01 {
+        let (light, toward) = view.sunlight(moon);
+        paint_lit_sphere(
             &p,
-            gc + vec2(0.0, -14.0),
-            egui::Align2::CENTER_BOTTOM,
-            "Galactic centre · 26,000 light years",
-            theme::SIZE_SUB,
-            alpha(ink, gx),
-        );
-        label(
-            &p,
-            pos2(screen.left() + 16.0, screen.bottom() - 16.0),
-            egui::Align2::LEFT_BOTTOM,
-            "The Milky Way from above · schematic: four arms on a log spiral, not each arm as mapped",
-            theme::SIZE_SUB,
-            alpha(theme::TEXT_DIM, gx),
+            moon_at,
+            view.size(moon, MOON_R_M).max(2.0),
+            light,
+            toward,
+            alpha(MOON_DAY, ma),
+            alpha(MOON_NIGHT, ma),
         );
     }
+    // Home: the ring stays on the Earth, wherever the Earth has shrunk to.
+    p.circle_stroke(
+        earth_at,
+        earth_r + 6.0,
+        egui::Stroke::new(2.0, alpha(theme::BRAND, bd)),
+    );
+
+    // ── Labels, the nearer first ────────────────────────────────────────────
+    let sun_words = if you_apart < 0.5 {
+        "Sun · you".to_string()
+    } else {
+        format!("Sun · {}", light_time_words(earth.length()))
+    };
+    let mut ordered = vec![
+        Tag {
+            at: earth_at + vec2(0.0, earth_r + 10.0),
+            align: egui::Align2::CENTER_TOP,
+            text: "Earth · you".into(),
+            size: theme::SIZE_BODY,
+            ink: alpha(theme::CREAM, bd * you_apart),
+        },
+        Tag {
+            at: sun_at + vec2(0.0, sun_r + 10.0),
+            align: egui::Align2::CENTER_TOP,
+            text: sun_words,
+            size: theme::SIZE_BODY,
+            ink: alpha(SUN, bd),
+        },
+        Tag {
+            at: moon_at + vec2(8.0, 0.0),
+            align: egui::Align2::LEFT_CENTER,
+            text: format!(
+                "Moon · {} · {}",
+                distance_words(MOON_DIST_M),
+                light_time_words(MOON_DIST_M)
+            ),
+            size: theme::SIZE_SUB,
+            ink: alpha(theme::CREAM, ma),
+        },
+    ];
+    ordered.extend(planet_tags);
+    ordered.append(&mut tags);
+    ordered.extend(star_tags);
+    ordered.extend(ring_tags);
+
+    // What the picture is, and where its bodies come from.
+    let mut said = Vec::new();
+    if fade_in(alt, 1.0e9, 1.0e10) > 0.5 && alt < 3.0e16 {
+        said.push("planets where they are today");
+    }
+    if alt > 1.0e13 && alt < 1.0e19 {
+        said.push("stars within 16 light years, HYG v3.8");
+    }
+    if gx > 0.5 {
+        said.push("the Milky Way schematic: four arms on a log spiral");
+    }
+    // Above the map's bottom bar, which sits over the background layer.
+    let foot = pos2(screen.left() + 16.0, screen.bottom() - 64.0);
+    if !said.is_empty() {
+        label(
+            &p,
+            foot,
+            egui::Align2::LEFT_BOTTOM,
+            &{
+                let words = said.join(" · ");
+                let mut c = words.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                    .unwrap_or_default()
+            },
+            theme::SIZE_SUB,
+            alpha(theme::TEXT_DIM, bd),
+        );
+    }
+    label(
+        &p,
+        foot - vec2(0.0, 18.0),
+        egui::Align2::LEFT_BOTTOM,
+        "To scale in the middle, squeezed towards the edge · rings at light-travel distances",
+        theme::SIZE_SUB,
+        alpha(theme::TEXT_DIM, ruler),
+    );
+    // Clear of the rail on the right and of the captions and the bar below.
+    let mut room = screen.shrink2(vec2(48.0, 8.0));
+    room.max.y = foot.y - 40.0;
+    place_tags(&p, ordered, room);
 }
 
 /// The schematic galaxy: points along four logarithmic spiral arms (pitch 12°)
@@ -580,16 +771,79 @@ mod tests {
     }
 
     #[test]
-    fn the_boards_hand_over_without_a_gap() {
-        // At every height past the ceiling at least one board is mostly drawn.
-        let mut alt = 1.0e8;
+    fn the_galactic_centre_is_in_sagittarius() {
+        let [x, ..] = EQ_TO_GAL;
+        let v = DVec3::from(x);
+        let ra = v.y.atan2(v.x).to_degrees().rem_euclid(360.0);
+        let dec = v.z.asin().to_degrees();
+        assert!(
+            (ra - 266.40).abs() < 0.1 && (dec + 28.94).abs() < 0.1,
+            "{ra} {dec}"
+        );
+    }
+
+    #[test]
+    fn the_frame_turns_the_sun_and_the_pole_onto_the_ecliptic() {
+        let north_r = DVec3::new(0.0, 0.79, -0.61).normalize();
+        let sun_r = DVec3::new(0.3, 0.6, 0.74).normalize();
+        let sun_e = DVec3::new(-0.77, -0.64, 0.0).normalize();
+        let m = render_to_ecliptic(north_r, sun_r, sun_e);
+        let (s, c) = OBLIQUITY.sin_cos();
+        assert!((m * north_r).distance(DVec3::new(0.0, s, c)) < 1e-9);
+        // The two inputs are not exactly the obliquity apart; the Sun keeps
+        // its angle from the pole and lands on the ecliptic side it should.
+        assert!((m * sun_r).dot(sun_e) > 0.95);
+    }
+
+    /// A view as the system builds it, for a camera looking at the Earth.
+    fn view_at(alt: f64) -> View {
+        let earth = DVec3::from(planets::position(&PLANETS[planets::EARTH], 1.793e9)) * AU_M;
+        let mut v = View::new(alt, DVec3::X, DVec3::Z, earth, 300.0, 724.0);
+        v.centre = pos2(400.0, 300.0);
+        v
+    }
+
+    #[test]
+    fn at_the_ceiling_the_earth_is_the_globe_s_size() {
+        let v = view_at(45_000_000.0 - EARTH_R_M);
+        let earth = v.middle;
+        let r = v.size(earth, EARTH_R_M);
+        let globe = 724.0 * EARTH_R_M / 45_000_000.0;
+        assert!((f64::from(r) / globe - 1.0).abs() < 0.01, "{r} vs {globe}");
+        assert_eq!(v.at(earth), pos2(400.0, 300.0));
+    }
+
+    #[test]
+    fn a_climb_moves_home_smoothly_and_never_off_screen() {
+        // The Earth (home) stays on screen from the ceiling to the top of the
+        // rail, and a 5 % climb never moves it, or the Sun, by a jump.
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let mut alt = 4.0e7;
+        let mut last: Option<(Pos2, Pos2)> = None;
         while alt < 1.0e21 {
-            let em = fade_out(alt, 1.5e10, 6.0e10);
-            let ss = fade_in(alt, 1.0e10, 4.0e10) * fade_out(alt, 1.0e14, 5.0e14);
-            let st = fade_in(alt, 1.0e14, 1.0e15) * fade_out(alt, 1.0e18, 5.0e18);
-            let gx = fade_in(alt, 5.0e17, 3.0e18);
-            assert!(em.max(ss).max(st).max(gx) > 0.45, "nothing at {alt:e}");
-            alt *= 1.5;
+            let v = view_at(alt);
+            let earth = DVec3::from(planets::position(&PLANETS[planets::EARTH], 1.793e9)) * AU_M;
+            let (e, s) = (v.at(earth), v.at(DVec3::ZERO));
+            assert!(screen.contains(e), "home off screen at {alt:e}: {e:?}");
+            if let Some((le, ls)) = last {
+                assert!(e.distance(le) < 20.0, "Earth jumps at {alt:e}");
+                // Off screen it may race in from afar; on screen it may not.
+                if screen.contains(s) && screen.contains(ls) {
+                    assert!(s.distance(ls) < 40.0, "Sun jumps at {alt:e}");
+                }
+            }
+            last = Some((e, s));
+            alt *= 1.05;
         }
+    }
+
+    #[test]
+    fn the_squeeze_leaves_the_middle_to_scale() {
+        assert!((squeeze(10.0, 1.0e6) - 10.0).abs() < 1e-3);
+        // Each further ten-fold takes the same room.
+        let c = 40.0;
+        let a = squeeze(1.0e5, c) - squeeze(1.0e4, c);
+        let b = squeeze(1.0e6, c) - squeeze(1.0e5, c);
+        assert!((a - b).abs() < 0.5);
     }
 }
