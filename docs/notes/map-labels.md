@@ -1,7 +1,7 @@
 ---
 topic: rendering
 triggers: [street_labels.rs, vector_tiles/labels.rs, systems::street_labels, "street names", "labels", "place_labels", "text on the map", fontdue, HEIGHT_BANDS, GroundLayer::StreetLabel]
-updated: 2026-10-17
+updated: 2026-11-01
 ---
 
 # Text on the map lies on the ground, and is not baked into the tiles
@@ -50,9 +50,14 @@ building in front of it hides it, and it does not move.
   declutter pass compares world footprints. The pass therefore only runs when the
   loaded cells change, the band changes, or the camera turns — not per frame.
 - **The text is a texture** (`fontdue`, the same rasteriser the departure boards
-  use, in `theme::BRAND_TTF` — no new asset). Ink with a pale halo dilated out of
-  the glyph coverage: a street name crosses tarmac, grass, water and a terracotta
-  roof inside one word, and no flat colour survives all four. Textures are cached
+  use, in `theme::BRAND_TTF` — no new asset). A halo dilated out of the glyph
+  coverage: a street name crosses tarmac, grass, water and a terracotta roof
+  inside one word, and no flat colour survives all four. **Pale ink on a dark,
+  feathered halo**, set slightly open (`TRACKING`). It was near-black ink on a
+  hard pale halo until 2026-11-01, and on tarmac the eye saw only the halo — a
+  white outline round dark letters, a sticker on the road. Inverted, the halo
+  sinks into the road and the name reads as painted on it; feathered, it shows
+  over a pale square as a shadow rather than a second outline. Textures are cached
   by name and built at most a few per frame — mass texture uploads are the
   documented way to lose the device on a weak iGPU.
 - **It is a rung on the ground ladder, not a decal floating over it.** The quads
