@@ -6,6 +6,22 @@ updated: 2026-11-01
 
 # The zoom ladder: one zoom from the street to the Milky Way
 
+## v2 — after review, 2026-11-01
+
+![v2](v2.png)
+
+The person steering: the light switch should sit with the other light
+settings, as a dark / light / auto toggle like a theme switcher; the zoom rail
+was massive. So the light is today's `SunMode` (Automatic / Day / Night /
+Manual) renamed Auto / Light / Dark / Set a time, shown as a disc in the
+top-left column that opens the three beside it, and in Settings ▸ World.
+What each means from above is new: Light lights the globe from over your
+shoulder (today's Day still leaves its far side dark), Dark is the Earth at
+night all round. The rail is a 4 px track between a small + and −, 30 px wide
+(28 on a phone, in place of the + / − pair), naming only the current rung;
+hovering or dragging shows the other names as plain text. The rest of v1
+stands.
+
 ## v1 — proposed 2026-11-01
 
 ![v1](v1.png)
