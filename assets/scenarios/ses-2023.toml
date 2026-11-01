@@ -1,0 +1,91 @@
+# Prosperity, schooling and work, buurt to country, 2014–2023
+# (docs/notes/scenarios.md).
+#
+# SCP's statusscores, as CBS has made them since SCP stopped in 2017: the
+# socio-economic status per buurt, wijk and gemeente (SES-WOA), the mean over
+# the area's households of three parts — financial prosperity, education and
+# recent work — each recalculated to the 2024 boundaries for every year, so a
+# buurt is the same buurt throughout. A score is relative: 0 is about the
+# Dutch average, and an area differs from it by a few tenths.
+#
+# v5-areas: no status lens by default — it ranks neighbourhoods and can
+# stigmatise them. So it sits behind its own question on the shelf, in one
+# cool sequential ramp with no red and no "worst", its bands named lower or
+# higher than the average; a buurt's 95 % interval is shown beside its score,
+# and a score CBS keeps back stays empty. The parts are published per wijk and
+# up only here: per buurt they would double that file.
+
+[scenario]
+name = "Prosperity, schooling and work"
+mode = "replay"
+confidence = "documented"
+summary = "How households in each area compare on prosperity, education and work, year by year since 2014."
+question = "How do prosperity, schooling and work differ?"
+sources = [
+  "CBS, Sociaal-economische status; scores per wijk en buurt, regio-indeling 2024 (StatLine 86092NED), CC BY 4.0",
+  "Method: SCP's statusscores, continued by CBS since 2022",
+  "Areas 2024: CBS, Wijk- en buurtkaart, via PDOK; provinces and the country: Kadaster, via PDOK",
+  "Province and country scores: rolled up from the gemeenten by households, by Cartopolis",
+]
+clock = { start = "2014", end = "2023", opens = "2023" }
+
+[[region_state]]
+id = "ses"
+group = "Overall"
+label = "Socio-economic status"
+boards = ["areas:ses-buurt-2024", "areas:ses-wijk-2024", "areas:ses-gemeente-2024", "areas:ses-provincie-2024", "areas:ses-land-2024"]
+derive = "value"
+field = "ses"
+range = ["ses_low", "ses_high"]
+state = [
+  { id = "a", label = "much lower (under −0.3)", colour = "#f1eef6", below = -0.3 },
+  { id = "b", label = "lower (−0.3 – −0.1)", colour = "#bdc9e1", below = -0.1 },
+  { id = "c", label = "about average (±0.1)", colour = "#74a9cf", below = 0.1 },
+  { id = "d", label = "higher (0.1 – 0.3)", colour = "#2b8cbe", below = 0.3 },
+  { id = "e", label = "much higher (0.3 up)", colour = "#045a8d" },
+]
+
+[[region_state]]
+id = "ses_prosperity"
+group = "Its three parts"
+label = "Prosperity"
+boards = ["areas:ses-wijk-2024", "areas:ses-gemeente-2024", "areas:ses-provincie-2024", "areas:ses-land-2024"]
+derive = "value"
+field = "ses_prosperity"
+state = [
+  { id = "a", label = "much lower (under −0.15)", colour = "#f0f9e8", below = -0.15 },
+  { id = "b", label = "lower (−0.15 – −0.05)", colour = "#bae4bc", below = -0.05 },
+  { id = "c", label = "about average (±0.05)", colour = "#7bccc4", below = 0.05 },
+  { id = "d", label = "higher (0.05 – 0.15)", colour = "#43a2ca", below = 0.15 },
+  { id = "e", label = "much higher (0.15 up)", colour = "#0868ac" },
+]
+
+[[region_state]]
+id = "ses_education"
+group = "Its three parts"
+label = "Education"
+boards = ["areas:ses-wijk-2024", "areas:ses-gemeente-2024", "areas:ses-provincie-2024", "areas:ses-land-2024"]
+derive = "value"
+field = "ses_education"
+state = [
+  { id = "a", label = "much lower (under −0.15)", colour = "#f0f9e8", below = -0.15 },
+  { id = "b", label = "lower (−0.15 – −0.05)", colour = "#bae4bc", below = -0.05 },
+  { id = "c", label = "about average (±0.05)", colour = "#7bccc4", below = 0.05 },
+  { id = "d", label = "higher (0.05 – 0.15)", colour = "#43a2ca", below = 0.15 },
+  { id = "e", label = "much higher (0.15 up)", colour = "#0868ac" },
+]
+
+[[region_state]]
+id = "ses_work"
+group = "Its three parts"
+label = "Recent work"
+boards = ["areas:ses-wijk-2024", "areas:ses-gemeente-2024", "areas:ses-provincie-2024", "areas:ses-land-2024"]
+derive = "value"
+field = "ses_work"
+state = [
+  { id = "a", label = "much lower (under −0.15)", colour = "#f0f9e8", below = -0.15 },
+  { id = "b", label = "lower (−0.15 – −0.05)", colour = "#bae4bc", below = -0.05 },
+  { id = "c", label = "about average (±0.05)", colour = "#7bccc4", below = 0.05 },
+  { id = "d", label = "higher (0.05 – 0.15)", colour = "#43a2ca", below = 0.15 },
+  { id = "e", label = "much higher (0.15 up)", colour = "#0868ac" },
+]

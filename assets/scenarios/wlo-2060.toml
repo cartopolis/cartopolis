@@ -1,0 +1,126 @@
+# Two futures to 2060, per COROP region (docs/notes/scenarios.md).
+#
+# The WLO 2025 (Welvaart en Leefomgeving), the planning offices' long-term
+# scenarios: CPB and PBL describe a High and a Low future for the country, and
+# PBL works them out per COROP region for 2021 (measured), 2040, 2050 and
+# 2060, as `atlas areas wlo-2025` reads them from PBL's workbook. Between those
+# years a figure holds at the last one; nothing is interpolated.
+#
+# Two futures side by side are two figures on one clock (v5-areas: "weigh two
+# futures"), High and Low under each heading, so switching between them keeps
+# the year. The change bands are the same as the PBL/CBS forecast's, so the
+# two lenses read alike; the 65-plus bands are the CBS lens's.
+
+[scenario]
+name = "WLO 2025: two futures"
+mode = "replay"
+confidence = "modelled"
+summary = "How many people and households per region in 2040, 2050 and 2060, in the planning offices' High and Low futures."
+question = "Which futures are on the table?"
+sources = [
+  "PBL (2025), Toekomstverkenning WLO, Regionale ontwikkelingen en ruimtegebruik (WLO2025_PBL_Regio), CC BY",
+  "Scenarios: CPB and PBL, Welvaart en Leefomgeving 2025",
+  "COROP regions 2021: CBS, Gebiedsindelingen, via PDOK; the country: Kadaster, via PDOK",
+  "Counts in thousands as published, so a small region's share is good to about a point",
+]
+clock = { start = "2021", end = "2060", forecast = "2022", opens = "2050" }
+
+[[region_state]]
+id = "people_high"
+group = "People"
+label = "High future, change since 2021"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "people_high"
+change_since = "2021"
+state = [
+  { id = "a", label = "down 10 % or more", colour = "#b35806", below = -10.0 },
+  { id = "b", label = "down 3 – 10 %", colour = "#f1a340", below = -3.0 },
+  { id = "c", label = "about the same", colour = "#f7f7f7", below = 3.0 },
+  { id = "d", label = "up 3 – 10 %", colour = "#d8daeb", below = 10.0 },
+  { id = "e", label = "up 10 – 20 %", colour = "#998ec3", below = 20.0 },
+  { id = "f", label = "up 20 % or more", colour = "#542788" },
+]
+
+[[region_state]]
+id = "people_low"
+group = "People"
+label = "Low future, change since 2021"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "people_low"
+change_since = "2021"
+state = [
+  { id = "a", label = "down 10 % or more", colour = "#b35806", below = -10.0 },
+  { id = "b", label = "down 3 – 10 %", colour = "#f1a340", below = -3.0 },
+  { id = "c", label = "about the same", colour = "#f7f7f7", below = 3.0 },
+  { id = "d", label = "up 3 – 10 %", colour = "#d8daeb", below = 10.0 },
+  { id = "e", label = "up 10 – 20 %", colour = "#998ec3", below = 20.0 },
+  { id = "f", label = "up 20 % or more", colour = "#542788" },
+]
+
+[[region_state]]
+id = "households_high"
+group = "Households"
+label = "High future, change since 2021"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "households_high"
+change_since = "2021"
+state = [
+  { id = "a", label = "down 10 % or more", colour = "#b35806", below = -10.0 },
+  { id = "b", label = "down 3 – 10 %", colour = "#f1a340", below = -3.0 },
+  { id = "c", label = "about the same", colour = "#f7f7f7", below = 3.0 },
+  { id = "d", label = "up 3 – 10 %", colour = "#d8daeb", below = 10.0 },
+  { id = "e", label = "up 10 – 20 %", colour = "#998ec3", below = 20.0 },
+  { id = "f", label = "up 20 % or more", colour = "#542788" },
+]
+
+[[region_state]]
+id = "households_low"
+group = "Households"
+label = "Low future, change since 2021"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "households_low"
+change_since = "2021"
+state = [
+  { id = "a", label = "down 10 % or more", colour = "#b35806", below = -10.0 },
+  { id = "b", label = "down 3 – 10 %", colour = "#f1a340", below = -3.0 },
+  { id = "c", label = "about the same", colour = "#f7f7f7", below = 3.0 },
+  { id = "d", label = "up 3 – 10 %", colour = "#d8daeb", below = 10.0 },
+  { id = "e", label = "up 10 – 20 %", colour = "#998ec3", below = 20.0 },
+  { id = "f", label = "up 20 % or more", colour = "#542788" },
+]
+
+[[region_state]]
+id = "share_65_plus_high"
+group = "Aged 65 and over"
+label = "High future"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "share_65_plus_high"
+state = [
+  { id = "a", label = "under 10 %", colour = "#ffffcc", below = 10.0 },
+  { id = "b", label = "10 – 15 %", colour = "#c7e9b4", below = 15.0 },
+  { id = "c", label = "15 – 20 %", colour = "#7fcdbb", below = 20.0 },
+  { id = "d", label = "20 – 25 %", colour = "#41b6c4", below = 25.0 },
+  { id = "e", label = "25 – 30 %", colour = "#2c7fb8", below = 30.0 },
+  { id = "f", label = "30 % and over", colour = "#253494" },
+]
+
+[[region_state]]
+id = "share_65_plus_low"
+group = "Aged 65 and over"
+label = "Low future"
+boards = ["areas:wlo-corop-2021", "areas:wlo-land-2021"]
+derive = "value"
+field = "share_65_plus_low"
+state = [
+  { id = "a", label = "under 10 %", colour = "#ffffcc", below = 10.0 },
+  { id = "b", label = "10 – 15 %", colour = "#c7e9b4", below = 15.0 },
+  { id = "c", label = "15 – 20 %", colour = "#7fcdbb", below = 20.0 },
+  { id = "d", label = "20 – 25 %", colour = "#41b6c4", below = 25.0 },
+  { id = "e", label = "25 – 30 %", colour = "#2c7fb8", below = 30.0 },
+  { id = "f", label = "30 % and over", colour = "#253494" },
+]

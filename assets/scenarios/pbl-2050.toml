@@ -1,0 +1,56 @@
+# Population to 2050, per gemeente (docs/notes/scenarios.md).
+#
+# PBL and CBS's regional forecast 2023–2050 (PEARL), as `atlas areas pbl-2050`
+# writes it: per municipality, province and the country, each year with its
+# 67 % interval — two in three futures fall inside it. It is the last such
+# forecast: PBL and CBS have said they will make no more, and the WLO's
+# regional futures (wlo-2060.toml) follow it. Made on the 2021
+# municipalities; one that has merged since is added into its successor, which
+# then shows no interval (a sum of bounds is no bound of a sum).
+
+[scenario]
+name = "Population to 2050"
+mode = "replay"
+confidence = "modelled"
+summary = "How many people each municipality is expected to have, year by year to 2050, and how sure that is."
+question = "Will more or fewer people live here?"
+sources = [
+  "PBL/CBS, Regionale prognose 2023–2050; bevolking, intervallen, regio-indeling 2021 (CBS StatLine 85173NED), CC BY 4.0",
+  "Municipalities 2024: CBS, Wijk- en buurtkaart, via PDOK; provinces and the country: Kadaster, via PDOK",
+  "Merged municipalities summed by Cartopolis onto the 2024 boundaries",
+]
+clock = { start = "2023", end = "2050", forecast = "2024", opens = "2050" }
+
+[[region_state]]
+id = "growth"
+group = "People"
+label = "Change since 2023"
+boards = ["areas:pbl-gemeente-2024", "areas:pbl-provincie-2024", "areas:pbl-land-2024"]
+derive = "value"
+field = "people"
+change_since = "2023"
+range = ["people_low", "people_high"]
+state = [
+  { id = "a", label = "down 10 % or more", colour = "#b35806", below = -10.0 },
+  { id = "b", label = "down 3 – 10 %", colour = "#f1a340", below = -3.0 },
+  { id = "c", label = "about the same", colour = "#f7f7f7", below = 3.0 },
+  { id = "d", label = "up 3 – 10 %", colour = "#d8daeb", below = 10.0 },
+  { id = "e", label = "up 10 – 20 %", colour = "#998ec3", below = 20.0 },
+  { id = "f", label = "up 20 % or more", colour = "#542788" },
+]
+
+[[region_state]]
+id = "people"
+group = "People"
+label = "Inhabitants"
+boards = ["areas:pbl-gemeente-2024", "areas:pbl-provincie-2024", "areas:pbl-land-2024"]
+derive = "value"
+field = "people"
+range = ["people_low", "people_high"]
+state = [
+  { id = "a", label = "under 20,000", colour = "#f2f0f7", below = 20000.0 },
+  { id = "b", label = "20,000 – 50,000", colour = "#cbc9e2", below = 50000.0 },
+  { id = "c", label = "50,000 – 100,000", colour = "#9e9ac8", below = 100000.0 },
+  { id = "d", label = "100,000 – 250,000", colour = "#756bb1", below = 250000.0 },
+  { id = "e", label = "250,000 and over", colour = "#54278f" },
+]

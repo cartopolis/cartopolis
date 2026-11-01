@@ -60,10 +60,24 @@ struct Shipped {
     toml: &'static str,
 }
 
-const SHIPPED: &[Shipped] = &[Shipped {
-    id: "cbs-2024",
-    toml: include_str!("../../../../../assets/scenarios/cbs-2024.toml"),
-}];
+const SHIPPED: &[Shipped] = &[
+    Shipped {
+        id: "cbs-2024",
+        toml: include_str!("../../../../../assets/scenarios/cbs-2024.toml"),
+    },
+    Shipped {
+        id: "ses-2023",
+        toml: include_str!("../../../../../assets/scenarios/ses-2023.toml"),
+    },
+    Shipped {
+        id: "pbl-2050",
+        toml: include_str!("../../../../../assets/scenarios/pbl-2050.toml"),
+    },
+    Shipped {
+        id: "wlo-2060",
+        toml: include_str!("../../../../../assets/scenarios/wlo-2060.toml"),
+    },
+];
 
 /// A layer the Layers panel offers: its key (`"<file>/<layer>"`) and label.
 pub struct Offered {
@@ -374,6 +388,7 @@ pub fn drive_scenario(
         } else if l.tasks.is_empty() {
             let Some(l) = view.loading.take() else { return };
             let t = l.scenario.opens;
+            let speed = default_speed(&l.scenario);
             match Play::new(l.scenario, l.sets) {
                 Ok(play) => {
                     let frame = play.at(t);
@@ -384,7 +399,7 @@ pub fn drive_scenario(
                         t,
                         carry: 0.0,
                         playing: false,
-                        speed: 60.0,
+                        speed,
                         frame,
                         fills: HashMap::new(),
                         selected: None,
@@ -754,6 +769,9 @@ fn figure(v: f32, unit: &str) -> String {
         } else {
             grouped
         }
+    } else if v.abs() < 1.0 && v != 0.0 {
+        // A score of a few tenths (SES-WOA) needs its second decimal.
+        format!("{v:.2}")
     } else {
         format!("{v:.1}")
     };
@@ -1076,26 +1094,93 @@ fn paint_ramp(p: &egui::Painter, r: egui::Rect, states: &[cartopolis_scenario::r
 fn value_at(o: &Open, layer: usize, p: LonLat) -> Option<(&str, Option<String>)> {
     let set = o.play.layer_areas(layer)?;
     let a = set.area_at(p)?;
-    let value = o.play.scenario.region_states[layer]
+    Some((set.areas[a].name.as_str(), shown(o, layer, set, a, true)))
+}
+
+/// A layer's figure for one area at the clock's year, as it reads: a change
+/// signed and in %, else in the field's unit (left off where `unit` is false
+/// and the unit is not what makes it read as a number at all, €).
+fn shown(o: &Open, layer: usize, set: &AreaSet, a: usize, unit: bool) -> Option<String> {
+    let l = &o.play.scenario.region_states[layer];
+    let year = o.play.scenario.clock.year_at(o.t);
+    let v = l.figure(set, a, year)?;
+    if l.change_since.is_some() {
+        return Some(change(v));
+    }
+    let u = l
         .field
         .as_deref()
         .and_then(|k| set.field(k))
-        .and_then(|f| Some(figure(set.value(a, f)?, &set.fields[f].unit)));
-    Some((set.areas[a].name.as_str(), value))
+        .map_or("", |f| set.fields[f].unit.as_str());
+    Some(figure(v, if unit || u == "k€" { u } else { "" }))
+}
+
+/// How sure the figure under the crosshair is, where its set says: `likely
+/// 44,100 – 50,900`.
+fn range_at(o: &Open, layer: usize, p: LonLat) -> Option<String> {
+    let set = o.play.layer_areas(layer)?;
+    let a = set.area_at(p)?;
+    let l = &o.play.scenario.region_states[layer];
+    let (lo, hi) = l.figure_range(set, a, o.play.scenario.clock.year_at(o.t))?;
+    let read = |v| {
+        if l.change_since.is_some() {
+            change(v)
+        } else {
+            figure(v, "")
+        }
+    };
+    let (lo, hi) = (read(lo), read(hi));
+    // Narrower than the figure's own rounding says nothing.
+    (lo != hi).then(|| format!("likely {lo} – {hi}"))
 }
 
 /// The same figure for the place's whole municipality or country, from the
-/// board on that rung. Without its unit, which the value beside it already
-/// names, unless the unit is what makes it read as a number at all (€).
+/// board on that rung.
 fn value_on_rung(o: &Open, layer: usize, p: LonLat, rung: Rung) -> Option<String> {
-    let key = o.play.scenario.region_states[layer].field.as_deref()?;
     let set = o.play.areas.iter().find(|s| s.rung == rung)?;
-    let (a, f) = (set.area_at(p)?, set.field(key)?);
-    let unit = set.fields[f].unit.as_str();
-    Some(figure(
-        set.value(a, f)?,
-        if unit == "k€" { unit } else { "" },
-    ))
+    shown(o, layer, set, set.area_at(p)?, false)
+}
+
+/// A change in %, always signed: `+4.2 %`, `−12 %`.
+fn change(v: f32) -> String {
+    let n = if v.abs() < 10.0 {
+        format!("{:.1} %", v.abs())
+    } else {
+        figure(v.abs(), "%")
+    };
+    match v {
+        v if v > 0.0 => format!("+{n}"),
+        v if v < 0.0 => format!("\u{2212}{n}"),
+        _ => n,
+    }
+}
+
+/// How fast a scenario's clock plays when it opens: a year a second on a
+/// clock of years, else a minute a second.
+fn default_speed(s: &Scenario) -> f64 {
+    if s.clock.start_year.is_some() {
+        cartopolis_scenario::time::YEAR.0 as f64
+    } else {
+        60.0
+    }
+}
+
+/// Where the open figure stands on its clock, for the strip: the year, and
+/// whether it is a model's from there.
+fn when_label(o: &Open) -> Option<String> {
+    let clock = o.play.scenario.clock;
+    let year = clock.year_at(o.t)?;
+    let forecast = o.play.scenario.forecast.is_some_and(|f| o.t >= f);
+    let layer = &o.play.scenario.region_states[o.layer];
+    let since = layer
+        .change_since
+        .map(|y| format!(", since {y}"))
+        .unwrap_or_default();
+    Some(if forecast {
+        format!("{year} forecast{since}")
+    } else {
+        format!("{year}{since}")
+    })
 }
 
 /// A header's title: `size` taken whatever its words, so the close button
@@ -1144,12 +1229,15 @@ fn strip_body(
             asked.sheet = Some(Sheet::Figures);
         }
     });
-    let per = o
+    let mut per = o
         .play
         .layer_areas(o.layer)
         .map_or("nothing to show at this height".to_owned(), |s| {
             format!("per {}", s.rung.label())
         });
+    if let Some(w) = when_label(o) {
+        per = format!("{per} · {w}");
+    }
     dim(ui, format!("{} · {per}", meta.name));
     ui.add_space(4.0);
     ramp(ui, &layer.states);
@@ -1197,10 +1285,14 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
         egui::FontId::proportional(theme::SIZE_BODY),
         theme::CREAM,
     );
+    let below = match here.and_then(|p| range_at(o, o.layer, p)) {
+        Some(r) => format!("{rung} · {r}"),
+        None => format!("{rung} · every figure here"),
+    };
     p.text(
         egui::pos2(left, r.bottom() - 6.0),
         egui::Align2::LEFT_BOTTOM,
-        format!("{rung} · every figure here"),
+        below,
         egui::FontId::proportional(theme::SIZE_TINY),
         theme::TEXT_DIM,
     );
@@ -1682,10 +1774,13 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
     group_label(ui, &format!("Scale · {}", layer.label));
     match set {
         Some(s) => {
-            let year = field
-                .and_then(|(s, f)| s.fields[f].year)
-                .map(|y| format!(" · {y}"))
-                .unwrap_or_default();
+            let year = match when_label(o) {
+                Some(w) => format!(" · {w}"),
+                None => field
+                    .and_then(|(s, f)| s.fields[f].year)
+                    .map(|y| format!(" · {y}"))
+                    .unwrap_or_default(),
+            };
             dim(ui, format!("per {}{year}", s.rung.label()));
         }
         None => dim(ui, "Nothing to show at this height"),
@@ -1802,9 +1897,21 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
     }
 }
 
+/// The speeds a clock plays at: clock seconds a second, and their words. A
+/// clock of years steps through years; any other through minutes.
+fn speeds(o: &Open) -> &'static [(f64, &'static str)] {
+    const YEAR: f64 = cartopolis_scenario::time::YEAR.0 as f64;
+    if o.play.scenario.clock.start_year.is_some() {
+        &[(YEAR, "1 yr/s"), (5.0 * YEAR, "5 yr/s")]
+    } else {
+        &[(1.0, "1×"), (60.0, "60×"), (600.0, "600×")]
+    }
+}
+
 fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
     let clock = o.play.scenario.clock;
     let end = clock.end;
+    let years = clock.start_year.is_some();
     ui.horizontal(|ui| {
         let play_word = if o.playing { "Pause" } else { "Play" };
         if theme::action_button(ui, play_word).clicked() {
@@ -1818,7 +1925,7 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
                 .size(theme::SIZE_TITLE)
                 .color(theme::TEXT),
         );
-        for &(speed, word) in &[(1.0, "1×"), (60.0, "60×"), (600.0, "600×")] {
+        for &(speed, word) in speeds(o) {
             if ui
                 .selectable_label(
                     o.speed == speed,
@@ -1830,16 +1937,51 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
             }
         }
     });
-    let mut minutes = o.t.minutes() as f32;
-    let slider = egui::Slider::new(&mut minutes, 0.0..=end.minutes() as f32).show_value(false);
     // A slider's rail is `slider_width` long whatever room it is given.
     ui.spacing_mut().slider_width = ui.available_width();
-    if ui.add(slider).changed() {
-        o.t = Clock::from_minutes(f64::from(minutes));
-        o.carry = 0.0;
+    if years {
+        // Whole years: a figure describes a year, never a moment in one.
+        let year = cartopolis_scenario::time::YEAR.0;
+        let mut y = o.t.0.div_euclid(year);
+        let slider = egui::Slider::new(&mut y, 0..=end.0.div_euclid(year)).show_value(false);
+        if ui.add(slider).changed() {
+            o.t = Clock(y * year);
+            o.carry = 0.0;
+        }
+    } else {
+        let mut minutes = o.t.minutes() as f32;
+        let slider = egui::Slider::new(&mut minutes, 0.0..=end.minutes() as f32).show_value(false);
+        if ui.add(slider).changed() {
+            o.t = Clock::from_minutes(f64::from(minutes));
+            o.carry = 0.0;
+        }
+    }
+    // Measured, then a model's: the forecast part of the rail hatched
+    // (v5-areas), so a 2050 figure never reads as a count.
+    if let Some(f) = o.play.scenario.forecast.filter(|&f| f < end) {
+        let (r, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+        let split = r.left() + r.width() * (f.0.max(0) as f32 / end.0.max(1) as f32);
+        let p = ui.painter();
+        let measured = egui::Rect::from_min_max(r.min, egui::pos2(split, r.max.y));
+        p.rect_filled(
+            measured,
+            egui::CornerRadius::same(theme::RADIUS_SM),
+            theme::LINE,
+        );
+        let model = egui::Rect::from_min_max(egui::pos2(split, r.min.y), r.max);
+        p.rect_filled(
+            model,
+            egui::CornerRadius::same(theme::RADIUS_SM),
+            theme::SURFACE_RAISED,
+        );
+        stripes(p, model, theme::LINE);
     }
     ui.horizontal(|ui| {
         dim(ui, clock.label(Clock::ZERO));
+        if let Some(f) = o.play.scenario.forecast.filter(|&f| f < end) {
+            dim(ui, format!("· forecast from {}", clock.label(f)));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             dim(ui, clock.label(end));
         });
@@ -1909,9 +2051,41 @@ mod tests {
             .expect("cbs on the shelf");
         assert_eq!(cbs.question.as_deref(), Some("Who lives here?"));
         assert_eq!(cbs.first, "cbs-2024/share_65_plus");
-        assert_eq!(cbs.figures, offered().len());
-        let sc = Scenario::parse(SHIPPED[0].toml).expect("parses");
-        assert!(sc.region_states.iter().all(|r| r.group.is_some()));
+        let of_cbs = offered()
+            .iter()
+            .filter(|o| o.key.starts_with("cbs-2024/"))
+            .count();
+        assert_eq!(cbs.figures, of_cbs);
+        assert_eq!(shelf().len(), SHIPPED.len());
+        for s in SHIPPED {
+            let sc = Scenario::parse(s.toml).expect("parses");
+            assert!(sc.meta.question.is_some(), "{}", s.id);
+            assert!(
+                sc.region_states.iter().all(|r| r.group.is_some()),
+                "{}",
+                s.id
+            );
+        }
+    }
+
+    /// The planning offices' lenses run on clocks of years, and the
+    /// forecasts say where measurement ends.
+    #[test]
+    fn forecasts_play_in_years_from_where_measuring_ends() {
+        for id in ["pbl-2050", "wlo-2060"] {
+            let s = SHIPPED.iter().find(|s| s.id == id).expect(id);
+            let sc = Scenario::parse(s.toml).expect("parses");
+            assert_eq!(sc.clock.label(sc.clock.end), id[4..].to_string(), "{id}");
+            assert!(sc.forecast.is_some(), "{id}");
+            assert_eq!(default_speed(&sc), cartopolis_scenario::time::YEAR.0 as f64);
+        }
+    }
+
+    #[test]
+    fn a_change_is_signed() {
+        assert_eq!(change(4.25), "+4.2 %");
+        assert_eq!(change(-12.0), "\u{2212}12 %");
+        assert_eq!(change(0.0), "0.0 %");
     }
 
     #[test]
@@ -1922,5 +2096,6 @@ mod tests {
         assert_eq!(figure(1200.0, ""), "1,200");
         assert_eq!(figure(17_942_942.0, ""), "17,942,942");
         assert_eq!(figure(412.0, ""), "412");
+        assert_eq!(figure(-0.526, ""), "-0.53");
     }
 }

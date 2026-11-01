@@ -1,6 +1,6 @@
 ---
 topic: scenarios
-triggers: [crates/scenario, cartopolis_scenario, scenario.rs, official_areas.rs, ladder.rs, cbs-2024.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024"]
+triggers: [crates/scenario, cartopolis_scenario, scenario.rs, official_areas.rs, xlsx.rs, ladder.rs, cbs-2024.toml, ses-2023.toml, pbl-2050.toml, wlo-2060.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024", SES-WOA, statusscores, "regionale prognose", WLO, COROP, "change_since", "field_at"]
 updated: 2026-11-01
 ---
 
@@ -71,8 +71,72 @@ all 342 landed in one) and the figures rolled up.
 The client fetches them from `{CARTO_3DBAG_URL}/areas/<set>.bin` when a layer
 opens and decodes them off the frame loop; nothing is embedded. Like every
 atlas dataset, **deploying atlas does not write them**: run `atlas areas
-cbs-2024 --out /data/3dbag/site/areas` on the host once (`atlas-run-on-the-host`
+<set> --out /data/3dbag/site/areas` for each of `cbs-2024`, `ses-2023`,
+`pbl-2050` and `wlo-2025` on the host once (`atlas-run-on-the-host`
 in memory has the identity it needs).
+
+## Figures over time: a series per year, played by the clock
+
+Added 2026-11-01 for the planning offices' figures (the person asked for SCP
+and CPB as the next examples, "generic so the other uses fit later"). A figure
+over time is a **series**: one `Field` per year under one key, and
+`AreaSet::field_at(key, year)` gives the latest year at or before the one
+asked, else the earliest. The scenario's clock of years picks the year
+(`Clock::year_at`), so the same layer plays a forecast forward and a measured
+series back; **between published years the last one holds** — nothing is
+interpolated, which matters for the WLO's 2021/2040/2050/2060. `roll_up`
+carries a series year by year, each share weighted by its own year's weight.
+
+Two layer options, both only on a figure layer: `change_since = "2023"` reads
+the figure as its change in % since that year (growth, not size), and
+`range = [low, high]` names the fields that bound it (a forecast's 67 %
+interval, a score's 95 %), shown as "likely … – …" under the value and never
+coloured. The clock's `forecast = "2024"` marks where measurement stops: the
+clock bar hatches from there and the strip says "2050 forecast". Two futures
+are **two figures on one clock** (High and Low under one heading), so switching
+keeps the year.
+
+| lens | set (`atlas areas …`) | boards | years | took (mac-2, 2026-11-01) |
+|---|---|---|---|---|
+| `ses-2023` | `ses-2023` | buurt → land | 2014–2023, measured | 14 min; buurt 4.7 MB, wijk 1.7 MB, gemeente 280 KB |
+| `pbl-2050` | `pbl-2050` | gemeente → land | 2023–2050, forecast | 2.5 min; gemeente 300 KB |
+| `wlo-2060` | `wlo-2025` | COROP → land | 2021, 2040, 2050, 2060 | 2 s, 43 KB + 6 KB |
+
+What each source is, and the traps:
+
+- **SCP is no longer a publisher of area figures.** Its open data are survey
+  microdata at DANS; its *statusscores* per postcode stopped after 2017 and CBS
+  took them over in 2022 as **SES-WOA** (StatLine 86092NED: buurt, wijk,
+  gemeente, every year recalculated to the 2024 boundaries). That table is the
+  SCP example. A score is relative (0 ≈ the Dutch average), so its lens follows
+  v5's rule for status: behind its own question, one cool ramp, no red, bands
+  named by distance from the average. Negative scores are scores — unlike the
+  Kerncijfers, where a negative is one of CBS's "kept back" codes; here null is
+  kept back. The three parts are on wijk and up only: as series they would
+  double the buurt file.
+- **PBL/CBS's regional forecast 2023–2050 is the last one** (85173NED, with its
+  67 % interval). PBL and CBS announced they will make no more; the WLO's
+  regional scenarios replace it. It is on the 2021 municipalities: fourteen have
+  merged since (`MERGED_SINCE_2021`), each summed into its successor, whose
+  interval is then left empty. A 2024 municipality with no forecast fails the
+  run, so a new merger cannot slip through unsummed.
+- **CPB's WLO futures are national; PBL regionalises them** per COROP region
+  (2021 division) in `WLO2025_PBL_Regio.xlsx`, CC BY, in thousands — a small
+  region's 65-plus share is good to about a point. Read with `atlas::xlsx`, a
+  minimal zip-and-cells reader, rather than a first spreadsheet crate. COROP
+  regions stand on the province rung, so they also read from a municipality's
+  height.
+- **CBS's OData v3 refuses any query of 10,000 rows or more** with a 500 and
+  pages no further (`$skip` is refused too). `cbs_rows` asks by region-code
+  prefix and splits a refused prefix into its ten longer ones (`BU` → `BU0`…).
+  The v4 service pages, but in long format with opaque measure codes.
+
+The geometry is copied into each source's files (a `ses-buurt-2024` holds the
+same outlines as `cbs-buurt-2024`): simple, and every board stays one file.
+It costs: ten years of four figures make the SES buurt file 4.7 MB against
+the Kerncijfers' 2.9 MB, all fetched when the lens opens. If
+a third source lands on the buurt rung, the next step is figure-only files
+joined to one geometry board by code.
 
 ## A lens, not a layer
 
