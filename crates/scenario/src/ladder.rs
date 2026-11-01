@@ -13,10 +13,14 @@ pub const MAX_REACH: i64 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Rung {
+    /// The Milky Way from above, the Sun a point in one of its arms.
+    Galaxy,
     /// Real star systems and the lanes between them.
     Stars,
-    /// The Sun, the planets, the Moon.
+    /// The Sun and the planets.
     SolarSystem,
+    /// The Earth and the Moon's orbit, to scale.
+    EarthMoon,
     World,
     Continent,
     Country,
@@ -34,9 +38,11 @@ pub enum Rung {
 
 impl Rung {
     /// Every rung, coarsest first.
-    pub const ALL: [Rung; 10] = [
+    pub const ALL: [Rung; 12] = [
+        Rung::Galaxy,
         Rung::Stars,
         Rung::SolarSystem,
+        Rung::EarthMoon,
         Rung::World,
         Rung::Continent,
         Rung::Country,
@@ -59,9 +65,15 @@ impl Rung {
             Rung::Province => (220_000.0, 800_000.0),
             Rung::Country => (800_000.0, 3_000_000.0),
             Rung::Continent => (3_000_000.0, 9_000_000.0),
-            Rung::World => (9_000_000.0, 400_000_000.0),
-            Rung::SolarSystem => (400_000_000.0, 1e16),
-            Rung::Stars => (1e16, f64::INFINITY),
+            Rung::World => (9_000_000.0, 60_000_000.0),
+            // Above the World rung a "height" is how far out the view is: the
+            // Moon's orbit (384,400 km) fits from a few hundred thousand km, the
+            // planets from a few million, the nearest stars from a few hundred
+            // AU, the galaxy from a thousand light years or so.
+            Rung::EarthMoon => (60_000_000.0, 3e9),
+            Rung::SolarSystem => (3e9, 1e14),
+            Rung::Stars => (1e14, 1e18),
+            Rung::Galaxy => (1e18, f64::INFINITY),
         }
     }
 
@@ -82,8 +94,10 @@ impl Rung {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Rung::Galaxy => "galaxy",
             Rung::Stars => "star system",
             Rung::SolarSystem => "body",
+            Rung::EarthMoon => "body",
             Rung::World => "world region",
             Rung::Continent => "continent",
             Rung::Country => "country",

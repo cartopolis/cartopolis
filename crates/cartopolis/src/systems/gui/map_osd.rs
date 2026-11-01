@@ -213,6 +213,11 @@ pub struct OsdInput {
     ///
     /// [`fly`]: Self::fly
     pub walk: Vec2,
+    /// A height the zoom rail asked for (metres above the ground): a drag along
+    /// it, or a tap on a rung's name. Earth mode glides there and holds the
+    /// goal until it arrives or another zoom takes over
+    /// (`CameraState::rail_goal`).
+    pub rail_altitude: Option<f64>,
 }
 
 /// The fingers the on-screen controls own this frame, in **egui** points.
@@ -372,6 +377,7 @@ pub fn render_map_osd(
     avatar_state: Res<crate::resources::AvatarState>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
     mut body: BodyControls,
+    mut rail: RailView,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -432,32 +438,291 @@ pub fn render_map_osd(
                 }
                 hand_button(ctx, &fingers, &mut areas, &mut body);
             }
-            Cluster::Zoom => {
-                next.zoom = vertical_pair(
-                    ctx,
-                    &fingers,
-                    &mut areas,
-                    "osd_zoom",
-                    Mark::Plus,
-                    Mark::Minus,
-                );
-            }
+            // The zoom rail below is Earth mode's control, on every device.
+            Cluster::Zoom => {}
         }
-        // Published in the window's points, which is what the touchscreen
-        // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
-        // Padded by the miss band, so a grab that lands beside a control is
-        // claimed rather than handed to the camera as a gesture.
-        regions.set_if_neq(crate::systems::touch::UiClaimRegions {
-            rects: areas
-                .iter()
-                .map(|r| to_window(r.expand(CLAIM_PAD), ui_scale))
-                .collect(),
-        });
     } else {
         *stick_finger = None;
-        regions.set_if_neq(crate::systems::touch::UiClaimRegions::default());
     }
+
+    // The zoom rail (`systems::zoom_rail`): Earth mode, wherever nothing covers
+    // the map's right edge — the same rules as the clusters', less the touch
+    // screen, since a desktop wants it too.
+    let rail_on = camera_state.mode == CameraMode::Orbit
+        && !driver.active
+        && right_panel.is(RightPanel::None)
+        && !camera.is_open()
+        && !keyboard.is_open();
+    if rail_on {
+        if let Some(alt) = rail.altitude() {
+            let fingers = Fingers::new(&touch, egui.ui_scale());
+            let touch_ui = theme::touch_layout() || touch.ever();
+            let (zoom, goal) = zoom_rail_control(
+                egui.ctx(),
+                &fingers,
+                &mut areas,
+                alt,
+                &mut rail.state,
+                touch_ui,
+            );
+            next.zoom = zoom;
+            next.rail_altitude = goal;
+        }
+    }
+
+    // Published in the window's points, which is what the touchscreen
+    // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
+    // Padded by the miss band, so a grab that lands beside a control is
+    // claimed rather than handed to the camera as a gesture.
+    let ui_scale = egui.ui_scale();
+    regions.set_if_neq(crate::systems::touch::UiClaimRegions {
+        rects: areas
+            .iter()
+            .map(|r| to_window(r.expand(CLAIM_PAD), ui_scale))
+            .collect(),
+    });
     osd.set_if_neq(next);
+}
+
+/// What the zoom rail reads: the camera's height, and how open it is.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct RailView<'w, 's> {
+    globe: Res<'w, crate::systems::globe::GlobeState>,
+    camera: Query<
+        'w,
+        's,
+        (&'static big_space::prelude::GridCell, &'static Transform),
+        With<crate::components::FreeCamera>,
+    >,
+    state: Local<'s, RailState>,
+}
+
+impl RailView<'_, '_> {
+    /// The camera's height above the ground, metres, once the globe can say.
+    fn altitude(&self) -> Option<f64> {
+        let (cell, tf) = self.camera.single().ok()?;
+        self.globe.ready.then(|| self.globe.altitude_m(cell, tf))
+    }
+}
+
+/// The rail's own state between frames.
+#[derive(Default)]
+pub struct RailState {
+    /// Until when (egui seconds) every rung's name stays shown after a tap on
+    /// the current one — the touch screen's hover.
+    names_until: f64,
+}
+
+/// Track length of the zoom rail, points: shorter where a phone's height is.
+const RAIL_TRACK: f32 = 250.0;
+const RAIL_TRACK_TOUCH: f32 = 200.0;
+/// The rail's discs: smaller than the map's other discs, since the rail is a
+/// quiet control (`docs/mockups/zoom-ladder/`, v2 — "the zoom knob is massive").
+const RAIL_DISC: f32 = 30.0;
+/// How long the names stay after a tap on the current one, seconds.
+const RAIL_NAMES_HOLD: f64 = 4.0;
+
+/// The zoom rail on the right edge: − at the top (out, towards the Milky Way),
+/// the track, + at the foot (in, towards the street). Returns the held zoom
+/// rate of the two discs and a height to go to, if the track or a rung's name
+/// asked for one.
+fn zoom_rail_control(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    areas: &mut Vec<egui::Rect>,
+    alt: f64,
+    state: &mut RailState,
+    touch_ui: bool,
+) -> (f32, Option<f64>) {
+    use crate::systems::zoom_rail::{altitude_at, index_of, position_of, RAIL};
+    let mut wish = 0.0;
+    let mut goal = None;
+    let now = ctx.input(|i| i.time);
+    let track_len = if touch_ui {
+        RAIL_TRACK_TOUCH
+    } else {
+        RAIL_TRACK
+    };
+    let mut names_rects: Vec<egui::Rect> = Vec::new();
+    let area = egui::Area::new(egui::Id::new("zoom_rail"))
+        .anchor(
+            egui::Align2::RIGHT_CENTER,
+            egui::vec2(-theme::OSD_MARGIN, 0.0),
+        )
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let held = |resp: &egui::Response, hit: egui::Rect| {
+                    (resp.is_pointer_button_down_on()
+                        && resp.interact_pointer_pos().is_some_and(|p| hit.contains(p)))
+                        || fingers.pressing(hit)
+                };
+                let disc = |ui: &mut egui::Ui, mark: Mark| {
+                    let (resp, face) = theme::map_disc(
+                        ui,
+                        RAIL_DISC,
+                        false,
+                        theme::ACCENT_RING,
+                        egui::Sense::click_and_drag(),
+                    );
+                    paint_mark(ui.painter(), face.center, RAIL_DISC * 0.2, mark, face.ink);
+                    resp
+                };
+                let resp = disc(ui, Mark::Minus);
+                if held(&resp, reach(resp.rect, true, false)) {
+                    wish -= 1.0;
+                }
+
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(RAIL_DISC, track_len),
+                    egui::Sense::click_and_drag(),
+                );
+                let x = rect.center().x;
+                let y_at = |pos: f32| rect.top() + pos * track_len;
+                let pointer = resp
+                    .interact_pointer_pos()
+                    .filter(|_| resp.is_pointer_button_down_on())
+                    .or_else(|| {
+                        fingers
+                            .held
+                            .iter()
+                            .map(|(_, p)| *p)
+                            .find(|p| rect.expand(6.0).contains(*p))
+                    });
+                if let Some(p) = pointer {
+                    goal = Some(altitude_at((p.y - rect.top()) / track_len));
+                }
+                let p = ui.painter();
+                p.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    egui::Stroke::new(4.0, theme::OVERLAY),
+                );
+                p.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                );
+                let n = RAIL.len() as f32;
+                for (i, r) in RAIL.iter().enumerate() {
+                    let y = y_at((i as f32 + 0.5) / n);
+                    // The rungs above the Earth in the lilac the app uses for
+                    // what is public and beyond the street.
+                    let tick = if r.rung <= cartopolis_scenario::ladder::Rung::EarthMoon {
+                        theme::PUBLIC
+                    } else {
+                        theme::TEXT_DIM
+                    };
+                    p.line_segment(
+                        [egui::pos2(x - 5.0, y), egui::pos2(x + 5.0, y)],
+                        egui::Stroke::new(1.5, tick),
+                    );
+                }
+                let current = index_of(alt);
+                let thumb_y = y_at(position_of(alt));
+                p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::CREAM);
+                p.circle_stroke(
+                    egui::pos2(x, thumb_y),
+                    9.5,
+                    egui::Stroke::new(3.0, theme::OVERLAY_LINE),
+                );
+
+                // Hovering the names themselves keeps them, or the hand could
+                // never reach one.
+                let names_zone = rect
+                    .expand2(egui::vec2(0.0, 12.0))
+                    .with_min_x(rect.left() - 150.0);
+                let hovering = ui
+                    .ctx()
+                    .pointer_hover_pos()
+                    .is_some_and(|h| names_zone.contains(h));
+                let names = hovering || pointer.is_some() || now < state.names_until;
+                let font = egui::FontId::proportional(theme::SIZE_SUB);
+                if names {
+                    for (i, r) in RAIL.iter().enumerate() {
+                        let y = y_at((i as f32 + 0.5) / n);
+                        let ink = if i == current {
+                            theme::CREAM
+                        } else if r.rung <= cartopolis_scenario::ladder::Rung::EarthMoon {
+                            theme::PUBLIC
+                        } else {
+                            theme::TEXT
+                        };
+                        let at = egui::pos2(x - 16.0, y);
+                        let galley = p.layout_no_wrap(r.label.to_string(), font.clone(), ink);
+                        let text_rect = egui::Align2::RIGHT_CENTER
+                            .anchor_size(at, galley.size())
+                            .expand2(egui::vec2(6.0, 2.0));
+                        if i == current {
+                            p.rect_filled(
+                                text_rect,
+                                egui::CornerRadius::same(theme::RADIUS),
+                                theme::OVERLAY,
+                            );
+                        } else {
+                            // A halo rather than a plate, so the names read over
+                            // the map without a panel behind them.
+                            for d in [
+                                egui::vec2(1.0, 0.0),
+                                egui::vec2(-1.0, 0.0),
+                                egui::vec2(0.0, 1.0),
+                                egui::vec2(0.0, -1.0),
+                            ] {
+                                p.text(
+                                    at + d,
+                                    egui::Align2::RIGHT_CENTER,
+                                    r.label,
+                                    font.clone(),
+                                    theme::INK,
+                                );
+                            }
+                        }
+                        p.text(at, egui::Align2::RIGHT_CENTER, r.label, font.clone(), ink);
+                        let name = ui.interact(
+                            text_rect,
+                            egui::Id::new(("zoom_rail_name", i)),
+                            egui::Sense::click(),
+                        );
+                        if name.clicked() || fingers.lifted_in(text_rect) {
+                            goal = Some(crate::systems::zoom_rail::rung_altitude(i));
+                            state.names_until = 0.0;
+                        }
+                        names_rects.push(text_rect);
+                    }
+                } else {
+                    let label = RAIL[current].label;
+                    let at = egui::pos2(x - 16.0, thumb_y);
+                    let galley = p.layout_no_wrap(label.to_string(), font.clone(), theme::CREAM);
+                    let tag = egui::Align2::RIGHT_CENTER
+                        .anchor_size(at, galley.size())
+                        .expand2(egui::vec2(7.0, 3.0));
+                    p.rect_filled(tag, egui::CornerRadius::same(theme::RADIUS), theme::OVERLAY);
+                    p.rect_stroke(
+                        tag,
+                        egui::CornerRadius::same(theme::RADIUS),
+                        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                        egui::StrokeKind::Inside,
+                    );
+                    p.text(at, egui::Align2::RIGHT_CENTER, label, font, theme::CREAM);
+                    let tag_resp =
+                        ui.interact(tag, egui::Id::new("zoom_rail_tag"), egui::Sense::click());
+                    if tag_resp.clicked() || fingers.lifted_in(tag) {
+                        state.names_until = now + RAIL_NAMES_HOLD;
+                    }
+                    names_rects.push(tag);
+                }
+
+                let resp = disc(ui, Mark::Plus);
+                if held(&resp, reach(resp.rect, false, true)) {
+                    wish += 1.0;
+                }
+            });
+        });
+    // The names are the rail's too: a finger landing on one is not a drag of
+    // the globe under it.
+    let claimed = names_rects
+        .iter()
+        .fold(area.response.rect, |a, r| a.union(*r));
+    areas.push(claimed);
+    (wish, goal)
 }
 
 /// An egui rect in the window's own logical points.

@@ -3077,6 +3077,7 @@ fn earth_mode(ctx: ModeCtx) {
     // The wheel moves a *target*; the camera glides toward it below, so
     // zoom reads as a smooth fly instead of a per-notch height jump.
     for event in mouse_wheel_events.read() {
+        camera_state.rail_goal = None;
         let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
@@ -3113,6 +3114,34 @@ fn earth_mode(ctx: ModeCtx) {
             (min_d, max_d),
         );
     }
+    // The zoom rail: a height, held as a goal until the camera gets there (it
+    // may have to climb out of the surface tier first). Any other zoom —
+    // wheel, pinch, the rail's own discs, the keys — takes over from it.
+    if let Some(alt) = osd.rail_altitude {
+        camera_state.rail_goal = Some(alt.min(ORBIT_MAX_DISTANCE_SPACE - radius));
+    }
+    if osd.zoom != 0.0 || key_zoom != 0.0 || (touch.pair() && touch.pinch != 1.0) {
+        camera_state.rail_goal = None;
+    }
+    if let Some(goal) = camera_state.rail_goal {
+        let now = if space {
+            camera_state.orbit_distance - radius
+        } else {
+            camera_state.orbit_distance * f64::from(camera_state.orbit_pitch.sin())
+        };
+        camera_state.orbit_distance_target = if space {
+            radius + goal
+        } else if goal > SPACE_ENTER_ALT {
+            // Out of the surface orbit first; the space tier takes it from there.
+            max_d
+        } else {
+            goal / f64::from(camera_state.orbit_pitch.sin().max(0.1))
+        }
+        .clamp(min_d, max_d);
+        if (now / goal - 1.0).abs() < 0.01 {
+            camera_state.rail_goal = None;
+        }
+    }
     // The + and − keys are the on-screen pair, held.
     if key_zoom != 0.0 {
         camera_state.orbit_distance_target = zoom_orbit_target(
@@ -3148,6 +3177,7 @@ fn earth_mode(ctx: ModeCtx) {
             globe_ray_hit(cam, cam_gt, at, center - cell_origin(&camera_cell), radius)
         });
         if let (true, Some(hit)) = (asked_twice, hit) {
+            camera_state.rail_goal = None;
             camera_state.globe_aim = Some(hit);
             camera_state.globe_fling = DVec3::ZERO;
             camera_state.orbit_distance_target = zoom_orbit_target(

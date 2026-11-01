@@ -1674,6 +1674,10 @@ pub struct CameraState {
     pub globe_last_click: Option<(Vec2, f32)>,
     /// Seconds Earth mode has run, for [`Self::globe_last_click`].
     pub globe_clock: f32,
+    /// A height the zoom rail asked for (metres above the ground), held until
+    /// the camera arrives or another zoom takes over: it can take two tiers to
+    /// get there, and a surface orbit cannot aim at a height in space.
+    pub rail_goal: Option<f64>,
     /// Radians the follow camera has turned *by itself* (recentring behind the
     /// avatar), accumulated for the life of the app. Movement reads keys against
     /// the azimuth minus whatever of this accrued since the keys were pressed, so
@@ -1797,6 +1801,7 @@ impl Default for CameraState {
             globe_aim: None,
             globe_last_click: None,
             globe_clock: 0.0,
+            rail_goal: None,
             auto_yaw: 0.0,
             follow_rotate: false,
             first_person: false,
