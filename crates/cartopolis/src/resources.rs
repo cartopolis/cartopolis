@@ -1678,6 +1678,10 @@ pub struct CameraState {
     /// the camera arrives or another zoom takes over: it can take two tiers to
     /// get there, and a surface orbit cannot aim at a height in space.
     pub rail_goal: Option<f64>,
+    /// The height a jump to [`Self::rail_goal`] has flown through so far and
+    /// its speed (`zoom_rail::flight_step`): the camera follows this, not the
+    /// goal, so every rung between is passed rather than skipped.
+    pub rail_way: Option<(f64, f64)>,
     /// How far out the view is past the globe's ceiling, metres: 0 while the
     /// globe is the view, else a height above the Earth & Moon, Solar system,
     /// Stars or Galaxy rung (`systems::cosmos`). The 3D camera waits at the
@@ -1849,6 +1853,7 @@ impl Default for CameraState {
             globe_last_click: None,
             globe_clock: 0.0,
             rail_goal: None,
+            rail_way: None,
             cosmos_alt: 0.0,
             cosmos_target: 0.0,
             cosmos_pan: bevy::math::DVec3::ZERO,

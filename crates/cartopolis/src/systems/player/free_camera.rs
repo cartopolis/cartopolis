@@ -3139,7 +3139,13 @@ fn earth_mode(ctx: ModeCtx) {
         camera_state.rail_goal = None;
     }
     let ceiling = ORBIT_MAX_DISTANCE_SPACE - radius;
-    if let Some(goal) = camera_state.rail_goal {
+    if camera_state.rail_goal.is_none() {
+        camera_state.rail_way = None;
+    }
+    if let Some(end) = camera_state
+        .rail_goal
+        .map(|g| g.max(crate::systems::zoom_rail::FLOOR_M))
+    {
         let now = if camera_state.cosmos_alt > 0.0 {
             camera_state.cosmos_alt
         } else if space {
@@ -3147,6 +3153,23 @@ fn earth_mode(ctx: ModeCtx) {
         } else {
             camera_state.orbit_distance * f64::from(camera_state.orbit_pitch.sin())
         };
+        // The camera follows a height that flies to the goal through every
+        // rung between (`zoom_rail::flight_step`), not the goal itself.
+        let (way, speed) = camera_state.rail_way.unwrap_or((now.max(1.0), 0.0));
+        let (mut way, speed) =
+            crate::systems::zoom_rail::flight_step(way, speed, end, f64::from(delta_time));
+        // It waits at the ceiling until the camera is on the same side of it:
+        // the globe has to reach the ceiling before the cosmos can take over,
+        // and the cosmos let go before the globe can come down.
+        if (way > ceiling) != (now > ceiling) {
+            way = if now > ceiling {
+                ceiling
+            } else {
+                ceiling * 1.02
+            };
+        }
+        camera_state.rail_way = Some((way, speed));
+        let goal = way;
         // Past the ceiling the cosmos takes the goal once the globe is there.
         if goal > ceiling && space && camera_state.orbit_distance >= max_d * 0.98 {
             camera_state.cosmos_target = goal;
@@ -3162,8 +3185,9 @@ fn earth_mode(ctx: ModeCtx) {
             goal / f64::from(camera_state.orbit_pitch.sin().max(0.1))
         }
         .clamp(min_d, max_d);
-        if (now / goal - 1.0).abs() < 0.01 {
+        if way == end && (now / end - 1.0).abs() < 0.01 {
             camera_state.rail_goal = None;
+            camera_state.rail_way = None;
         }
     }
     // The + and − keys are the on-screen pair, held.

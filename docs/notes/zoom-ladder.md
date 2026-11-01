@@ -141,6 +141,30 @@ What the code does not say:
   within 0.02° (`galaxies::LANDMARKS`): Coma's NGC 4889 is in the survey as a
   bare 2MASX id, not as NGC.
 
+## A jump along the rail flies through every rung
+
+Until 2026-11-01 (late) a tap on a rung's name glided the height at a rate
+proportional to what was left (`ZOOM_GLIDE_RATE`, 6/s in log height): fastest
+at the start, so a tap from World to Milky Way climbed seven and a half powers
+of ten in its first four frames past the ceiling and ten and a half in 0.4 s,
+and the view's turn onto the ecliptic, the middle moving to the Sun and the
+stars fading in all went by in a handful of frames. The view itself was
+continuous; the speed was the fault.
+
+Now the camera follows a height that flies to the goal
+(`zoom_rail::flight_step`, `CameraState::rail_way`): it speeds up at 10 powers
+of ten a second², holds to at most 5 rungs and at most 7 powers of ten a
+second, and slows to a stop on the goal. Rungs past the Earth span up to four
+powers of ten each, which is why both caps: by rungs alone the Stars rung went
+by in 0.2 s. The street to the edge of the universe takes about five seconds
+(tested in `zoom_rail.rs`), one rung under one. A new goal mid-way bends the
+movement instead of restarting it, so a finger sliding along the track is
+followed smoothly. The height waits at the ceiling until the camera is on the
+same side of it, since the globe has to reach the ceiling before the cosmos can
+take over. While it flies the rail keeps every name out and rings the goal, so
+the thumb is seen passing each rung. The wheel, a pinch and the − / + discs
+still glide as before: they move a step at a time already.
+
 ## Light and Dark are the sun modes, not a globe setting
 
 The light disc's Auto / Light / Dark are `SunMode::{Auto, Day, Night}`, and a

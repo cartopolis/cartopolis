@@ -149,9 +149,118 @@ pub fn rung_altitude(i: usize) -> f64 {
     altitude_at((i as f32 + 0.5) / RAIL.len() as f32)
 }
 
+/// The most rungs a jump along the rail passes in a second.
+const FLIGHT_RUNGS_PER_S: f64 = 5.0;
+/// And the most powers of ten: the rungs past the Earth span up to four each,
+/// and the view turns and changes its middle within one or two of them.
+const FLIGHT_DECADES_PER_S: f64 = 7.0;
+/// How fast a jump picks up speed and slows to a stop, powers of ten per
+/// second squared.
+const FLIGHT_DECADES_PER_S2: f64 = 10.0;
+
+/// How fast a jump may go at a height, in natural-log units of height per
+/// second: no faster than [`FLIGHT_RUNGS_PER_S`] through the rung it is on, nor
+/// than [`FLIGHT_DECADES_PER_S`].
+fn flight_speed_cap(alt_m: f64) -> f64 {
+    let (lo, hi) = band(&RAIL[index_of(alt_m)]);
+    ((hi / lo).ln() * FLIGHT_RUNGS_PER_S).min(FLIGHT_DECADES_PER_S * std::f64::consts::LN_10)
+}
+
+/// One frame of a jump to `goal_m`: where the height it flies through is now,
+/// and how fast it moves (natural-log units a second, up positive), from where
+/// it was and how fast it moved.
+///
+/// A jump along the rail **flies through every rung on the way**, rather than
+/// gliding at a rate proportional to what is left: that covered twenty powers
+/// of ten in its first quarter second, and the view's turns, its moving middle
+/// and the catalogues fading in all flashed past in a few frames. This one
+/// picks up speed, keeps to the caps above and slows to a stop on the goal; a
+/// new goal mid-way (a finger moving along the track) bends the same movement
+/// rather than starting another.
+#[must_use]
+pub fn flight_step(at_m: f64, speed: f64, goal_m: f64, dt: f64) -> (f64, f64) {
+    let accel = FLIGHT_DECADES_PER_S2 * std::f64::consts::LN_10;
+    let (at, goal) = (at_m.ln(), goal_m.ln());
+    let left = goal - at;
+    // As fast as allowed here, and no faster than can still stop on the goal.
+    let want = left.signum() * flight_speed_cap(at_m).min((2.0 * accel * left.abs()).sqrt());
+    let speed = speed + (want - speed).clamp(-accel * dt, accel * dt);
+    let next = at + speed * dt;
+    if (goal - next) * left <= 0.0 {
+        (goal_m, 0.0)
+    } else {
+        (next.exp(), speed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Flies a jump at 60 frames a second and returns the heights it passed
+    /// through, one a frame, until it stops.
+    fn fly(from: f64, to: f64) -> Vec<f64> {
+        let (mut at, mut speed) = (from, 0.0);
+        let mut seen = vec![at];
+        while at != to {
+            (at, speed) = flight_step(at, speed, to, 1.0 / 60.0);
+            seen.push(at);
+            assert!(seen.len() < 60 * 60, "{from} → {to} never arrived");
+        }
+        seen
+    }
+
+    #[test]
+    fn a_jump_stops_on_its_goal_from_either_side() {
+        for (from, to) in [(200.0, 2.4e26), (2.4e26, 200.0), (5e6, 6e6), (1e12, 1e11)] {
+            let seen = fly(from, to);
+            assert_eq!(*seen.last().unwrap(), to);
+            // Never past it on the way.
+            let (lo, hi) = (from.min(to), from.max(to));
+            assert!(seen.iter().all(|a| *a >= lo * 0.999 && *a <= hi * 1.001));
+        }
+    }
+
+    #[test]
+    fn every_rung_on_the_way_is_on_screen_for_a_while() {
+        // The street to the edge of the universe: no rung passed in under a
+        // tenth of a second, no power of ten in under a fourteenth, and the
+        // whole of it in a few seconds rather than a few frames.
+        let from = rung_altitude(RAIL.len() - 1);
+        let to = rung_altitude(0);
+        let seen = fly(from, to);
+        let secs = seen.len() as f64 / 60.0;
+        assert!(
+            (3.0..7.0).contains(&secs),
+            "the whole ladder took {secs:.2} s"
+        );
+        for i in 1..RAIL.len() - 1 {
+            let frames = seen.iter().filter(|a| index_of(**a) == i).count();
+            assert!(frames >= 6, "{} passed in {frames} frames", RAIL[i].label);
+        }
+        for w in seen.windows(2) {
+            let decades = (w[1] / w[0]).log10();
+            assert!(decades <= FLIGHT_DECADES_PER_S / 60.0 + 1e-9, "{decades}");
+        }
+    }
+
+    #[test]
+    fn a_short_hop_is_short() {
+        let seen = fly(rung_altitude(3), rung_altitude(4));
+        assert!(seen.len() < 60, "one rung took {} frames", seen.len());
+    }
+
+    #[test]
+    fn a_new_goal_bends_the_movement_without_a_jolt() {
+        let (mut at, mut speed) = (rung_altitude(RAIL.len() - 1), 0.0);
+        for _ in 0..30 {
+            (at, speed) = flight_step(at, speed, rung_altitude(0), 1.0 / 60.0);
+        }
+        let before = speed;
+        (_, speed) = flight_step(at, speed, rung_altitude(RAIL.len() - 1), 1.0 / 60.0);
+        let most = FLIGHT_DECADES_PER_S2 * std::f64::consts::LN_10 / 60.0;
+        assert!((before - speed).abs() <= most + 1e-9);
+    }
 
     #[test]
     fn the_rail_runs_from_the_universe_to_the_street() {

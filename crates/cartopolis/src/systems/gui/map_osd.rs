@@ -462,6 +462,7 @@ pub fn render_map_osd(
                 &fingers,
                 &mut areas,
                 alt,
+                camera_state.rail_goal,
                 &mut rail.state,
                 touch_ui,
             );
@@ -525,12 +526,14 @@ const RAIL_NAMES_HOLD: f64 = 4.0;
 /// The zoom rail on the right edge: − at the top (out, towards the universe),
 /// the track, + at the foot (in, towards the street). Returns the held zoom
 /// rate of the two discs and a height to go to, if the track or a rung's name
-/// asked for one.
+/// asked for one. While a jump flies (`flying_to`), a ring marks where it is
+/// going and the names stay out, so the thumb is seen passing every rung.
 fn zoom_rail_control(
     ctx: &egui::Context,
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
     alt: f64,
+    flying_to: Option<f64>,
     state: &mut RailState,
     touch_ui: bool,
 ) -> (f32, Option<f64>) {
@@ -618,6 +621,13 @@ fn zoom_rail_control(
                 }
                 let current = index_of(alt);
                 let thumb_y = y_at(position_of(alt));
+                if let Some(to) = flying_to {
+                    p.circle_stroke(
+                        egui::pos2(x, y_at(position_of(to))),
+                        8.0,
+                        egui::Stroke::new(2.0, theme::CREAM),
+                    );
+                }
                 p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::CREAM);
                 p.circle_stroke(
                     egui::pos2(x, thumb_y),
@@ -634,7 +644,8 @@ fn zoom_rail_control(
                     .ctx()
                     .pointer_hover_pos()
                     .is_some_and(|h| names_zone.contains(h));
-                let names = hovering || pointer.is_some() || now < state.names_until;
+                let names =
+                    hovering || pointer.is_some() || flying_to.is_some() || now < state.names_until;
                 let font = egui::FontId::proportional(theme::SIZE_SUB);
                 if names {
                     for (i, r) in RAIL.iter().enumerate() {
