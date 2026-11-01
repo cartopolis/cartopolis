@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  /* The midas hub's tokens (midas web/src/theme.css, itself generated from theme.rs), on glass. */
+  .D { --bg:rgba(15,20,22,.62); --card:rgba(20,26,28,.80); --raised:#1f2829; --text:#e2e9ea; --strong:#f4f8f8; --dim:#aac2c6; --faint:#63797c;
+       --border:rgba(244,248,248,.09); --accent:#5cc6c0; --on:#0f1416; --soft:#263f42; --atext:#a8dcd8; --shadow:0 6px 20px rgba(0,0,0,.45);
+       --rim:rgba(244,248,248,.16); --seg:rgba(31,40,41,.7); --segon:#2a3536; }
+  .L { --bg:rgba(241,245,245,.62); --card:rgba(255,255,255,.86); --raised:#f8fafa; --text:#1f2829; --strong:#0f1416; --dim:#546568; --faint:#84979a;
+       --border:rgba(15,20,22,.08); --accent:#5cc6c0; --on:#0f1416; --soft:#d9f0ee; --atext:#17696a; --shadow:0 6px 20px rgba(15,20,22,.10);
+       --rim:rgba(255,255,255,.9); --seg:rgba(231,237,237,.8); --segon:#ffffff; }
+  .D, .L { color:var(--text); font-size:14px; }
+  .pane { position:absolute; background:var(--bg); backdrop-filter:blur(22px) saturate(1.2); border:1px solid var(--rim); box-shadow:0 18px 50px rgba(0,0,0,.35); overflow:hidden; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); }
+  .hd { display:flex; align-items:center; gap:10px; padding:14px 16px 10px; }
+  .hd h3 { flex:1; font-size:18px; font-weight:600; color:var(--strong); }
+  .x { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--dim); }
+  .seg { display:flex; background:var(--seg); border-radius:12px; padding:3px; margin:0 16px; }
+  .seg div { flex:1; text-align:center; padding:7px 0; border-radius:9px; color:var(--dim); font-size:13px; }
+  .seg .on { background:var(--segon); color:var(--strong); font-weight:600; box-shadow:var(--shadow); }
+  .lbl { font-size:12.5px; font-weight:600; color:var(--dim); margin:14px 16px 8px; }
+  .lbl i { font-style:normal; color:var(--faint); margin-left:4px; }
+  .row { display:flex; align-items:center; gap:12px; padding:11px 14px; }
+  .row + .row { border-top:1px solid var(--border); }
+  .row .t { flex:1; min-width:0; }
+  .row b { display:block; color:var(--strong); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row small { display:block; color:var(--dim); font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .av { width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; flex:none; }
+  .sq { border-radius:10px; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:6px; background:var(--soft); color:var(--atext); font-size:12px; font-weight:600; }
+  .tag.o { background:rgba(253,96,18,.16); color:#d9500c; }
+  .D .tag.o { color:#ff9a66; }
+  .num { min-width:20px; height:20px; padding:0 6px; border-radius:10px; background:var(--strong); color:var(--card); font-size:11px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; }
+  .D .num { background:var(--accent); color:var(--on); }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:34px; padding:0 14px; border-radius:9px; font-weight:600; font-size:13px; }
+  .btn.p { background:var(--accent); color:var(--on); }
+  .btn.s { background:var(--soft); color:var(--atext); }
+  .needs { border-left:3px solid #fd6012; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .nav { padding:6px 10px; }
+  .nav div { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:9px; color:var(--text); }
+  .nav .on { background:var(--accent); color:var(--on); font-weight:600; }
+  .dock { position:absolute; display:flex; gap:4px; padding:6px; border-radius:22px; }
+  .dock div { width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--text); }
+  .dock .on { background:var(--accent); color:var(--on); }
+  .bar { height:4px; border-radius:2px; background:var(--border); position:relative; margin-top:8px; }
+  .bar i { position:absolute; left:0; top:0; bottom:0; width:40%; border-radius:2px; background:linear-gradient(90deg,#fd6012,#ffb08a); }
+</style></head>
+<body><script src="icons.js"></script>
+<h1>Midas-thema, <b>glazen panelen</b></h1>
+<p class="lede">Gevraagd 2026-11-01: "het thema van midas met een glass look voor de panels". De kleuren zijn die van midas (die komen uit <code>theme.rs</code>). Wat midas eigen maakt is de <strong>opbouw</strong>: kaarten met een zachte schaduw op een pagina, een gevuld teal item voor "hier ben je", een wit/donker segment voor de keuze, een oranje rand voor "wacht op jou". Hier ligt die pagina als <strong>glas over de kaart</strong>: de stad schijnt wazig door het paneel, de kaarten erop zijn bijna dicht zodat tekst leesbaar blijft. Links donker (zoals de app nu), rechts licht (zoals midas overdag).</p>
+
+<div style="display:flex;gap:28px">
+  <div class="desk D" style="width:850px;height:560px;background-image:url(map.jpg);background-size:1280px 720px;background-position:-200px -80px">
+    <div class="dock pane" style="left:120px;bottom:14px"><div><svg class="i"><use href="#search"/></svg></div><div class="on"><svg class="i"><use href="#people"/></svg></div><div><svg class="i"><use href="#plane"/></svg></div><div><svg class="i"><use href="#bookmark"/></svg></div><div><svg class="i"><use href="#menu"/></svg></div></div>
+    <div class="pane" style="right:12px;top:12px;bottom:12px;width:370px;border-radius:20px">
+      <div class="hd"><div class="av sq" style="background:#3D6FD6">G</div><h3>Garage 44</h3><div class="x"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="seg"><div class="on">Posts</div><div>Topics 3</div><div>People 5</div></div>
+      <div class="card needs" style="margin:14px 16px 0"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne wants to join</b><small>"I live on the Verlengde Hereweg"</small></div><span class="btn p">Let in</span></div></div>
+      <div class="lbl">Coming up <i>2</i></div>
+      <div class="card" style="margin:0 16px">
+        <div class="row"><span class="dot" style="background:#fd6012"></span><div class="t"><b>Vismarkt dinner</b><small>today 19:30 · 2 going</small></div><span class="tag">Going</span></div>
+        <div class="row"><span class="dot" style="background:var(--accent)"></span><div class="t"><b>Buurtvergadering</b><small>Tue 20:00 · a call</small></div><span class="tag o">Answer</span></div>
+      </div>
+      <div class="lbl">Posts <i>12</i></div>
+      <div class="card" style="margin:0 16px"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>Plant swap on the corner</b><small>sanne · 25 min · 6 replies</small></div><span class="num">6</span></div>
+        <div class="row"><div class="av" style="background:#B5651D">K</div><div class="t"><b>Who has a ladder for the mural?</b><small>karim · 2 h</small></div></div></div>
+      <div style="display:flex;gap:8px;margin:14px 16px"><span class="btn p" style="flex:1"><svg class="i s"><use href="#plus"/></svg>Write a post</span><span class="btn s"><svg class="i s"><use href="#pin"/></svg>On the map</span></div>
+    </div>
+  </div>
+
+  <div class="desk L" style="width:850px;height:560px;background-image:url(map.jpg);background-size:1280px 720px;background-position:-200px -80px">
+    <div class="dock pane" style="left:120px;bottom:14px"><div><svg class="i"><use href="#search"/></svg></div><div class="on"><svg class="i"><use href="#people"/></svg></div><div><svg class="i"><use href="#plane"/></svg></div><div><svg class="i"><use href="#bookmark"/></svg></div><div><svg class="i"><use href="#menu"/></svg></div></div>
+    <div class="pane" style="right:12px;top:12px;bottom:12px;width:370px;border-radius:20px">
+      <div class="hd"><div class="av sq" style="background:#3D6FD6">G</div><h3>Garage 44</h3><div class="x"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="seg"><div class="on">Posts</div><div>Topics 3</div><div>People 5</div></div>
+      <div class="card needs" style="margin:14px 16px 0"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne wants to join</b><small>"I live on the Verlengde Hereweg"</small></div><span class="btn p">Let in</span></div></div>
+      <div class="lbl">Coming up <i>2</i></div>
+      <div class="card" style="margin:0 16px">
+        <div class="row"><span class="dot" style="background:#fd6012"></span><div class="t"><b>Vismarkt dinner</b><small>today 19:30 · 2 going</small></div><span class="tag">Going</span></div>
+        <div class="row"><span class="dot" style="background:var(--accent)"></span><div class="t"><b>Buurtvergadering</b><small>Tue 20:00 · a call</small></div><span class="tag o">Answer</span></div>
+      </div>
+      <div class="lbl">Posts <i>12</i></div>
+      <div class="card" style="margin:0 16px"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>Plant swap on the corner</b><small>sanne · 25 min · 6 replies</small></div><span class="num">6</span></div>
+        <div class="row"><div class="av" style="background:#B5651D">K</div><div class="t"><b>Who has a ladder for the mural?</b><small>karim · 2 h</small></div></div></div>
+      <div style="display:flex;gap:8px;margin:14px 16px"><span class="btn p" style="flex:1"><svg class="i s"><use href="#plus"/></svg>Write a post</span><span class="btn s"><svg class="i s"><use href="#pin"/></svg>On the map</span></div>
+    </div>
+  </div>
+</div>
+<div style="display:flex;gap:28px;margin-top:6px"><div class="cap" style="width:850px"><h2><span>1</span>Donker glas</h2><ul><li>Het paneel is de midas-pagina (#0f1416) op 62 % over een wazige stad; de kaarten erop 80 %, met de midas-schaduw.</li><li>Kost het minst: de app is al donker en heeft de blur al voor de zwevende kaartjes.</li></ul></div>
+<div class="cap" style="width:850px"><h2><span>2</span>Licht glas</h2><ul><li>De lichte helft van midas (#f1f5f5 pagina, witte kaarten). Licht glas op een lichte kaart leest als één geheel.</li><li>Kost meer: de app heeft geen licht thema; alle kleuren moeten een tweede waarde krijgen.</li></ul></div></div>
+
+<div style="display:flex;gap:28px;margin-top:30px">
+  <div class="phone D" style="background-image:url(map-phone.jpg)">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+    <div class="pane" style="left:0;right:0;top:0;bottom:0;border:0;border-radius:0;padding-top:44px">
+      <div class="hd"><h3 style="font-size:22px">Community</h3><div class="x" style="background:var(--seg)"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="seg"><div class="on">Community</div><div>World</div></div>
+      <div class="card needs" style="margin:14px 16px 0"><div class="row"><div class="t"><b>Message requests</b><small>2 people want to talk</small></div><span class="btn p">Answer</span></div></div>
+      <div class="lbl">Conversations <i>4</i></div>
+      <div class="card" style="margin:0 16px">
+        <div class="row"><div class="av sq" style="background:#3D6FD6">G</div><div class="t"><b>Garage 44</b><small># meet-ups · karim: I'll bring the drill</small></div><span class="num">5</span></div>
+        <div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne</b><small style="color:#ff9a66">sharing location · 60 min</small></div></div>
+        <div class="row"><div class="av sq" style="background:#8A3FB0">F</div><div class="t"><b>Fietsers Groningen</b><small># sunday-rides · joris: 10:00</small></div><span class="num">2</span></div>
+        <div class="row"><div class="av" style="background:#C2185B">E</div><div class="t"><b>eva</b><small>See you Saturday!</small></div></div>
+      </div>
+      <div class="lbl">Coming up</div>
+      <div class="card" style="margin:0 16px"><div class="row"><span class="dot" style="background:#fd6012"></span><div class="t"><b>Vismarkt dinner</b><small>today 19:30</small></div><span class="tag">Going</span></div></div>
+    </div>
+  </div>
+  <div class="phone L" style="background-image:url(map-phone.jpg)">
+    <div class="status dark"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+    <div class="pane" style="left:0;right:0;top:0;bottom:0;border:0;border-radius:0;padding-top:44px">
+      <div class="hd"><h3 style="font-size:22px">Community</h3><div class="x" style="background:var(--seg)"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="seg"><div class="on">Community</div><div>World</div></div>
+      <div class="card needs" style="margin:14px 16px 0"><div class="row"><div class="t"><b>Message requests</b><small>2 people want to talk</small></div><span class="btn p">Answer</span></div></div>
+      <div class="lbl">Conversations <i>4</i></div>
+      <div class="card" style="margin:0 16px">
+        <div class="row"><div class="av sq" style="background:#3D6FD6">G</div><div class="t"><b>Garage 44</b><small># meet-ups · karim: I'll bring the drill</small></div><span class="num">5</span></div>
+        <div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne</b><small style="color:#d9500c">sharing location · 60 min</small></div></div>
+        <div class="row"><div class="av sq" style="background:#8A3FB0">F</div><div class="t"><b>Fietsers Groningen</b><small># sunday-rides · joris: 10:00</small></div><span class="num">2</span></div>
+        <div class="row"><div class="av" style="background:#C2185B">E</div><div class="t"><b>eva</b><small>See you Saturday!</small></div></div>
+      </div>
+      <div class="lbl">Coming up</div>
+      <div class="card" style="margin:0 16px"><div class="row"><span class="dot" style="background:#fd6012"></span><div class="t"><b>Vismarkt dinner</b><small>today 19:30</small></div><span class="tag">Going</span></div></div>
+    </div>
+  </div>
+  <div class="phone D" style="background-image:url(map-phone.jpg)">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+    <div class="pane" style="left:10px;right:10px;bottom:10px;border-radius:24px;padding-bottom:6px">
+      <div class="hd"><div class="t" style="flex:1"><h3>Martinitoren</h3><small style="color:var(--dim)">Tower · 97 m · Martinikerkhof</small></div><div class="x"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="card" style="margin:0 14px"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne is here</b><small style="color:#ff9a66">sharing location · 12 m</small></div><span class="btn s">Say hi</span></div></div>
+      <div style="display:flex;gap:8px;margin:12px 14px"><span class="btn p" style="flex:1"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="btn s"><svg class="i s"><use href="#bookmark"/></svg>Save</span></div>
+    </div>
+  </div>
+  <div class="phone L" style="background-image:url(map-phone.jpg)">
+    <div class="status dark"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+    <div class="pane" style="left:10px;right:10px;bottom:10px;border-radius:24px;padding-bottom:6px">
+      <div class="hd"><div class="t" style="flex:1"><h3>Martinitoren</h3><small style="color:var(--dim)">Tower · 97 m · Martinikerkhof</small></div><div class="x"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="card" style="margin:0 14px"><div class="row"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>sanne is here</b><small style="color:#d9500c">sharing location · 12 m</small></div><span class="btn s">Say hi</span></div></div>
+      <div style="display:flex;gap:8px;margin:12px 14px"><span class="btn p" style="flex:1"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="btn s"><svg class="i s"><use href="#bookmark"/></svg>Save</span></div>
+    </div>
+  </div>
+</div>
+<div style="display:flex;gap:28px;margin-top:6px">
+  <div class="cap" style="width:390px"><h2><span>3</span>Telefoon, donker</h2><ul><li>Een paneel vult het scherm, maar de stad blijft er wazig achter: je weet waar je bent.</li></ul></div>
+  <div class="cap" style="width:390px"><h2><span>4</span>Telefoon, licht</h2><ul><li>Dezelfde opbouw met de lichte midas-tinten.</li></ul></div>
+  <div class="cap" style="width:390px"><h2><span>5</span>Kaartje over de kaart, donker</h2><ul><li>Zwevende kaartjes zijn al glas; ze krijgen dezelfde kaart-in-paneel-opbouw.</li></ul></div>
+  <div class="cap" style="width:390px"><h2><span>6</span>Kaartje over de kaart, licht</h2><ul><li>Overdag licht, 's avonds donker kan later nog (richting B).</li></ul></div>
+</div>
+</body></html>

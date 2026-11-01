@@ -36,6 +36,13 @@ community, gesprek, desktop met gesprek) en waar elk huidig paneel naartoe gaat.
 
 ![C v2](v2-c-every-screen.png)
 
+## v3 · midas-thema met glazen panelen
+
+Gevraagd 2026-11-01: "het thema van midas met een glass look voor de panels". Donker
+en licht naast elkaar.
+
+![v3](v3-midas-glass.png)
+
 ## Zo is het nu
 
 ![today](v1-today.png)
