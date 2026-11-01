@@ -1,7 +1,7 @@
 ---
 topic: session
-triggers: [session.rs, login_screen.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth, local_avatar.rs, ws_transport.rs, systems::session, can_simulate, ws_url, drive_session, SessionKind, wants_avatar, "--offline"]
-updated: 2026-10-17
+triggers: [session.rs, login_screen.rs, network.rs, keep_avatar_across_reconnect, last_place, last_avatar, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth, local_avatar.rs, ws_transport.rs, systems::session, can_simulate, ws_url, drive_session, SessionKind, wants_avatar, "--offline"]
+updated: 2026-11-01
 ---
 
 # Two modes, decided at runtime: offline and online
@@ -179,6 +179,22 @@ is the streamed map and a camera. The one exception is the shot harness — ever
 scripted run is offline, so `ShotHarness::wants_avatar` reads what each shot says
 it is of (`--shot-mode avatar`, `--ui sit`, `--ui driver`) and spawns one for
 those.
+
+**Where the avatar comes back is the server's to say.** The sim spawns every
+avatar at the origin of its client's map frame — the map anchor, which follows
+the last long jump and the last pan at altitude — because it holds avatars in
+their client's frame and does not know where that is anchored. So a sign-in
+landed the avatar somewhere that looked random, most visibly on signing out and
+in again in one run, where nothing restored it. Since protocol 46 the sim keeps
+where each account's avatar was left (`accounts.last_lat`/`last_lng`, written
+when the connection's `AvatarGuard` drops, never for a call guest) and sends it
+in `ServerHelloAck::last_place`; `session::keep_avatar_across_reconnect` puts the
+avatar there on every sign-in, falling back to `user.json`'s `last_avatar` once a
+launch when the server has none. A reconnect after a lost link uses the client's
+own memory instead and drops the handshake's place. Within `SHORT_JUMP_M` of the
+anchor it is a write; further, a silent `Teleport`, so the camera comes too —
+which means a launch opened on a place link far from the avatar now goes to the
+avatar, the price of the avatar never being left somewhere it was not.
 
 ## The wire has no account creation
 

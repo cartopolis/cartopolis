@@ -630,9 +630,9 @@ fn schedule_reconnect(
 /// **A reconnect puts the avatar back where it was.** A lost session is torn down
 /// like any other, so the avatar is despawned with it, and the sim that takes the
 /// reconnect spawns a *new* avatar at the origin of its flat frame — which is the
-/// map anchor, i.e. wherever the last teleport landed. Switching to another app
-/// on the phone and back therefore dropped the avatar at that spot rather than
-/// where it had walked to.
+/// map anchor, i.e. wherever the last long jump or pan at altitude left it.
+/// Switching to another app on the phone and back therefore dropped the avatar
+/// at that spot rather than where it had walked to.
 ///
 /// So while a session has an avatar this remembers where it stands — as a
 /// latitude and longitude, because the map may re-anchor while the client waits
@@ -642,21 +642,27 @@ fn schedule_reconnect(
 /// The camera is left alone: the view the person switched away from is still
 /// the view they come back to.
 ///
-/// **The launch's first sign-in does the same from `user.json`** (`last_avatar`),
-/// so closing the app and opening it again finds the avatar where it was left
-/// rather than on the anchor's tile centre. Only while that spot is within
-/// [`geo_nav::SHORT_JUMP_M`] of the anchor: the restored camera re-anchored the
-/// map around it, and anything further means this launch deliberately started
-/// somewhere else (a place link, or a jump made before the session came up) —
-/// the avatar then starts there, where the camera is. A sign-in later in the
-/// same run starts where the sim puts them, as it always has.
+/// **Every other sign-in puts it where the server says it was left**
+/// (`ServerHelloAck::last_place`, kept per account), so signing out and in
+/// again, opening the app tomorrow or signing in on another device all find the
+/// avatar where it was, not on whatever the map is anchored to. A server with no
+/// place for the account falls back to the launch's `user.json` (`last_avatar`).
+/// Within [`geo_nav::SHORT_JUMP_M`] of the anchor the avatar is placed in the
+/// frame and the camera stays; further, it goes there by a silent [`Teleport`],
+/// which brings the camera and re-anchors the map, because an avatar kilometres
+/// out of its frame is the one thing the flat frame cannot hold
+/// (`docs/notes/device-location.md`).
 ///
 /// [`geo_nav::place_avatar`]: crate::systems::geo_nav::place_avatar
+/// [`Teleport`]: crate::systems::geo_nav::Teleport
+#[allow(clippy::too_many_arguments)]
 pub fn keep_avatar_across_reconnect(
     mut session: ResMut<SessionState>,
     anchor: Res<MapAnchor>,
     online: Option<Res<OnlineSession>>,
     mut store: ResMut<UserStore>,
+    mut identity: ResMut<AuthIdentity>,
+    mut nav: ResMut<geo_nav::GeoNavState>,
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
     mut last: Local<Option<(f64, f64, f64)>>,
@@ -668,39 +674,48 @@ pub fn keep_avatar_across_reconnect(
         return;
     };
     let edge = f64::from(WORLD_CELL_EDGE);
-    if !session.resumed && !*launch_restore_done && session.is_online() {
+    // What this sign-in should come back to, if anything: the server's word
+    // first, then (once a launch) the device's own.
+    let arrival = if session.resumed || !session.is_online() {
+        None
+    } else if let Some(g) = identity.arrival.take() {
         *launch_restore_done = true;
-        let saved = store.data.last_avatar.filter(|a| {
-            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, a.lat, a.lng);
-            a.lat.is_finite() && a.lng.is_finite() && wx.hypot(wz) < geo_nav::SHORT_JUMP_M
-        });
-        if let (Some(a), Some(sess)) = (saved, online.as_deref()) {
-            let y = if a.y.is_finite() {
-                a.y.clamp(0.0, 10_000.0)
+        Some((g.latitude, g.longitude, 0.0))
+    } else if !*launch_restore_done {
+        *launch_restore_done = true;
+        store
+            .data
+            .last_avatar
+            .map(|a| (a.lat, a.lng, if a.y.is_finite() { a.y } else { 0.0 }))
+    } else {
+        None
+    };
+    if let (Some((lat, lng, y)), Some(sess)) = (arrival, online.as_deref()) {
+        if lat.is_finite() && lng.is_finite() && lat.abs() <= 90.0 && lng.abs() <= 180.0 {
+            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
+            if wx.hypot(wz) < geo_nav::SHORT_JUMP_M {
+                let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+                    .translation_to_grid(DVec3::new(wx, y.clamp(0.0, 10_000.0), wz));
+                geo_nav::place_avatar(
+                    &mut cell,
+                    &mut tf,
+                    &mut avatar_state,
+                    Some(sess),
+                    to_cell,
+                    to_local,
+                );
             } else {
-                0.0
-            };
-            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, a.lat, a.lng);
-            let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
-                .translation_to_grid(DVec3::new(wx, y, wz));
-            geo_nav::place_avatar(
-                &mut cell,
-                &mut tf,
-                &mut avatar_state,
-                Some(sess),
-                to_cell,
-                to_local,
-            );
-            info!(
-                lat = a.lat,
-                lng = a.lng,
-                "session: avatar put back where it was last launch"
-            );
+                nav.pending_teleport = Some(geo_nav::Teleport::geo(lat, lng, None).silently());
+            }
+            info!(lat, lng, "session: avatar put back where it was left");
         }
     }
     if session.resumed {
         session.resumed = false;
         *launch_restore_done = true;
+        // The reconnect's own handshake names the place the lost session was
+        // left, which is this one at best and a stale save at worst.
+        identity.arrival = None;
         if let (Some((lat, lng, y)), Some(sess)) = (*last, online.as_deref()) {
             let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
             let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
@@ -1504,6 +1519,8 @@ mod tests {
         app.init_resource::<SessionState>()
             .init_resource::<UserStore>()
             .init_resource::<AvatarState>()
+            .init_resource::<AuthIdentity>()
+            .init_resource::<geo_nav::GeoNavState>()
             .insert_resource(MapAnchor {
                 geo: Some((53.2194, 6.5665, 14)),
             })
@@ -1554,9 +1571,61 @@ mod tests {
         assert!(!app.world().resource::<SessionState>().resumed);
     }
 
+    /// Signing out and in again in the same run used to leave the avatar on the
+    /// map anchor, wherever that was. The server's word on where it was left
+    /// wins, on every sign-in, over the device's own memory.
+    #[test]
+    fn every_sign_in_goes_where_the_server_says_it_was_left() {
+        use crate::systems::user_store::SavedAvatar;
+        let anchor = (53.2194, 6.5665, 14);
+        let mut app = App::new();
+        app.init_resource::<SessionState>()
+            .init_resource::<AvatarState>()
+            .init_resource::<UserStore>()
+            .init_resource::<AuthIdentity>()
+            .init_resource::<geo_nav::GeoNavState>()
+            .insert_resource(MapAnchor { geo: Some(anchor) })
+            .add_systems(Update, keep_avatar_across_reconnect);
+        let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
+        app.insert_resource(OnlineSession { intent_tx });
+        let device = geo_nav::world_to_lat_lng(anchor, -300.0, 40.0);
+        app.world_mut().resource_mut::<UserStore>().data.last_avatar = Some(SavedAvatar {
+            lat: device.0,
+            lng: device.1,
+            y: 0.0,
+        });
+        app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Online;
+        app.world_mut()
+            .spawn((Avatar, GridCell::default(), Transform::default()));
+
+        for (x, z) in [(200.0, -150.0), (-900.0, 600.0)] {
+            // A sign-in: the handshake says where, and the avatar is new.
+            let (lat, lng) = geo_nav::world_to_lat_lng(anchor, x, z);
+            app.world_mut().resource_mut::<AuthIdentity>().arrival =
+                Some(cartopolis_core::GeoAnchor {
+                    latitude: lat,
+                    longitude: lng,
+                });
+            app.update();
+            let p = app.world().resource::<AvatarState>().position;
+            let at = Vec3::new(p.x, 0.0, p.z);
+            let want = Vec3::new(x as f32, 0.0, z as f32);
+            assert!(at.distance(want) < 0.5, "avatar at {at}, left at {want}");
+            assert!(
+                matches!(
+                    rx.try_recv(),
+                    Ok(cartopolis_core::NetMessage::Teleport { .. })
+                ),
+                "the sim was not told where the avatar is"
+            );
+            assert!(app.world().resource::<AuthIdentity>().arrival.is_none());
+        }
+    }
+
     /// Closing the app and opening it again finds the avatar where it was left —
     /// the first sign-in of a launch reads `last_avatar` the way a reconnect reads
-    /// its own memory — unless that spot is far from where this launch opened.
+    /// its own memory, when the server has no place for the account — and a spot
+    /// far from where this launch opened is jumped to rather than written.
     #[test]
     fn the_first_sign_in_puts_the_avatar_back_where_it_was_left() {
         use crate::systems::user_store::SavedAvatar;
@@ -1568,6 +1637,8 @@ mod tests {
             app.init_resource::<SessionState>()
                 .init_resource::<AvatarState>()
                 .init_resource::<UserStore>()
+                .init_resource::<AuthIdentity>()
+                .init_resource::<geo_nav::GeoNavState>()
                 .insert_resource(MapAnchor { geo: Some(anchor) })
                 .add_systems(Update, keep_avatar_across_reconnect);
             let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
@@ -1596,11 +1667,21 @@ mod tests {
                 );
                 assert!(sent, "the sim was not told where the avatar is");
             } else {
+                // Far: not written into this frame, but jumped to.
                 assert!(
                     at.length() < 0.01,
-                    "a far-off spot moved the avatar to {at}"
+                    "a far-off spot was written into the frame at {at}"
                 );
                 assert!(!sent);
+                let jump = app
+                    .world_mut()
+                    .resource_mut::<geo_nav::GeoNavState>()
+                    .pending_teleport
+                    .take()
+                    .expect("a far-off spot was not teleported to");
+                assert!((jump.lat - saved.0).abs() < 1e-9 && (jump.lng - saved.1).abs() < 1e-9);
+                assert!(jump.silent);
+                continue;
             }
             // …and from then on the store follows the avatar.
             let kept = app

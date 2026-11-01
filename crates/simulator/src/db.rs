@@ -793,6 +793,41 @@ pub fn recent_chat(conn: &Connection, channel: &str, limit: i64) -> anyhow::Resu
 }
 
 // ---------------------------------------------------------------------------
+// Where an account's avatar was left (V42).
+// ---------------------------------------------------------------------------
+
+/// Where `account`'s avatar stood when its last session ended, if it ever stood
+/// anywhere. The sim cannot place it there itself — it holds an avatar in its
+/// client's map frame, which it does not know — so this goes to the client in
+/// `ServerHelloAck::last_place`, and the client moves it.
+pub fn last_place(conn: &Connection, account: &str) -> anyhow::Result<Option<GeoAnchor>> {
+    let row: Option<(Option<f64>, Option<f64>)> = conn
+        .query_row(
+            "SELECT last_lat, last_lng FROM accounts WHERE id = ?1",
+            rusqlite::params![account],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((Some(latitude), Some(longitude))) => Some(GeoAnchor {
+            latitude,
+            longitude,
+        }),
+        _ => None,
+    })
+}
+
+/// Remember where `account`'s avatar was left. The sim already filtered the
+/// coordinate when it took it from an intent (`SimWorld::apply_intent`).
+pub fn save_last_place(conn: &Connection, account: &str, place: GeoAnchor) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE accounts SET last_lat = ?2, last_lng = ?3 WHERE id = ?1",
+        rusqlite::params![account, place.latitude, place.longitude],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Blocks and reports (V9). See that migration for why a block is keyed by
 // username and a report keeps its own copy of the message.
 // ---------------------------------------------------------------------------

@@ -396,6 +396,10 @@ struct AvatarGuard {
     presence: Option<(String, SharedConn)>,
     /// The session `crate::stats` is counting, ended with the connection.
     stats: Option<(Arc<crate::stats::Stats>, uuid::Uuid)>,
+    /// The account whose avatar this is, and the database, so the place it was
+    /// left is remembered for its next sign-in (`db::save_last_place`). `None`
+    /// for a call's guest, who is not somebody using the world.
+    place: Option<(String, SharedConn)>,
 }
 
 impl Drop for AvatarGuard {
@@ -417,14 +421,18 @@ impl Drop for AvatarGuard {
             }
         }
         let avatar_id = self.avatar_id;
+        let place = self.place.take();
         if let Ok(mut w) = self.world.try_write() {
-            w.remove_avatar(avatar_id);
+            let left_at = w.remove_avatar(avatar_id);
+            drop(w);
+            remember_place(place, left_at);
         } else {
             let world = self.world.clone();
             match tokio::runtime::Handle::try_current() {
                 Ok(h) => {
                     h.spawn(async move {
-                        world.write().await.remove_avatar(avatar_id);
+                        let left_at = world.write().await.remove_avatar(avatar_id);
+                        remember_place(place, left_at);
                     });
                 }
                 // No runtime left (process teardown) — the world is going away
@@ -433,6 +441,25 @@ impl Drop for AvatarGuard {
             }
         }
         tracing::info!(avatar_id, "avatar removed (disconnect)");
+    }
+}
+
+/// Write where an avatar was left to its account, off the runtime's workers.
+/// An avatar that never said where it was (no map yet) keeps the old place.
+fn remember_place(
+    place: Option<(String, SharedConn)>,
+    left_at: Option<cartopolis_core::GeoAnchor>,
+) {
+    let (Some((account, conn)), Some(at)) = (place, left_at) else {
+        return;
+    };
+    if let Ok(h) = tokio::runtime::Handle::try_current() {
+        h.spawn(async move {
+            let saved = db::call(&conn, move |c| db::save_last_place(c, &account, at)).await;
+            if let Err(e) = saved.and_then(|r| r) {
+                tracing::warn!("could not remember where an avatar was left: {e:#}");
+            }
+        });
     }
 }
 
@@ -801,6 +828,9 @@ pub async fn handle_connection<T: FrameTransport>(
         avatar_id,
         presence: Some((principal.to_string(), conn.clone())),
         stats: counted,
+        place: guest_of
+            .is_none()
+            .then(|| (principal.to_string(), conn.clone())),
     };
     tracing::info!(%principal, %username, avatar_id, "client authenticated");
     // Display name for chat (the ack moves `username`).
@@ -836,6 +866,19 @@ pub async fn handle_connection<T: FrameTransport>(
     // the chat hub. Reading the block list is a hop to the blocking pool, and a
     // client that already held its ack could speak to — or be spoken to by — a
     // neighbour in that gap, which the hub would silently not deliver.
+    // Where this account's avatar was left, for the client to put it back
+    // (`ServerHelloAck::last_place`). A guest has no place of its own, and a
+    // database error only costs the avatar its old spot.
+    let last_place = if guest_of.is_some() {
+        None
+    } else {
+        let account = principal_key.clone();
+        db::call(&conn, move |c| db::last_place(c, &account))
+            .await
+            .ok()
+            .and_then(|p| p.ok())
+            .flatten()
+    };
     let ack = encode_app_frame(&NetMessage::ServerHelloAck {
         session_id,
         tick_hz: config.tick_hz,
@@ -846,6 +889,7 @@ pub async fn handle_connection<T: FrameTransport>(
         osm_tile_url_template: config.osm_tile_url_template.clone(),
         api_base_url: config.resolved_api_base_url(),
         server_name: config.server_name(),
+        last_place,
     })?;
     framed.send(Bytes::from(ack)).await?;
 

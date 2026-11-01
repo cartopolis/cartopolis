@@ -309,8 +309,10 @@ impl SimWorld {
         id
     }
 
-    pub fn remove_avatar(&mut self, id: u64) {
-        self.avatars.remove(&id);
+    /// Retire an avatar, handing back where on Earth it last stood (its
+    /// client's `geo`), for the account to come back to (`db::save_last_place`).
+    pub fn remove_avatar(&mut self, id: u64) -> Option<GeoAnchor> {
+        self.avatars.remove(&id).and_then(|a| a.geo)
     }
 
     /// Record who an avatar is, once the handshake knows.

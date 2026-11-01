@@ -1370,6 +1370,7 @@ mod tests {
             osm_tile_url_template: String::new(),
             api_base_url: String::new(),
             server_name: "test.example".into(),
+            last_place: None,
         })
         .unwrap()
     }

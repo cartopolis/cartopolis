@@ -784,9 +784,11 @@ pub fn apply_network_snapshot(
                 session_token,
                 api_base_url,
                 server_name,
+                last_place,
                 ..
             } => {
                 local_sim_id.0 = Some(your_avatar_id);
+                auth.identity.arrival = last_place;
                 // Avatar ids are a server's own and start again at 1 when it
                 // restarts; a look kept from before belongs to whoever had the
                 // id then. A phone that reconnected drew the bot that got

@@ -220,6 +220,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "a more personal look — AvatarLook.skin_tone lightens or darkens the skin, AvatarLook.extras names things worn beyond the outfit (a beard, glasses), and AvatarLook.face carries the body's shape controls as well as the face's (docs/notes/makehuman-avatars.md)",
     },
+    ProtocolRevision {
+        version: 46,
+        adr: "",
+        summary: "the avatar comes back where it was — ServerHelloAck.last_place, where the account's avatar stood when its last session ended, kept by the sim per account, which the client puts the avatar back at on every sign-in and on any device (docs/notes/session-modes.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -1147,6 +1152,17 @@ pub enum NetMessage {
         /// Every identity inside an encrypted chat is a full address, so that a
         /// chat can one day reach people on other servers (`crate::address`).
         server_name: String,
+        /// Where this account's avatar stood when its last session ended
+        /// (protocol 46), or `None` if it has never stood anywhere.
+        ///
+        /// **The client places the avatar, not the sim.** The sim spawns every
+        /// avatar at the origin of its client's map frame, which is wherever that
+        /// map happens to be anchored — the last long jump, the last pan at
+        /// altitude — so a sign-in used to land the avatar somewhere that looked
+        /// random. The sim cannot do better on its own: it does not know the
+        /// client's anchor. So it says where, and the client moves the avatar
+        /// there the way a teleport does (`session::keep_avatar_across_reconnect`).
+        last_place: Option<GeoAnchor>,
     },
     ServerError {
         request_id: u32,
@@ -3110,6 +3126,10 @@ mod tests {
             osm_tile_url_template: String::new(),
             api_base_url: String::new(),
             server_name: "cartopolis.org".into(),
+            last_place: Some(GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            }),
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();

@@ -1935,6 +1935,10 @@ pub struct AuthIdentity {
     /// (`NetMessage::Permissions`, resent when an operator changes its roles).
     /// It decides what the client *offers* — the server checks every one itself.
     pub permissions: Vec<String>,
+    /// Where the server says this account's avatar was left
+    /// (`ServerHelloAck::last_place`), until
+    /// `session::keep_avatar_across_reconnect` has put it back there.
+    pub arrival: Option<cartopolis_core::GeoAnchor>,
 }
 
 impl AuthIdentity {

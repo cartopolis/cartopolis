@@ -106,3 +106,73 @@ async fn password_login_then_token_reconnect_then_reject() {
         "bad password should be rejected"
     );
 }
+
+/// Where the avatar was left comes back in the next sign-in's handshake, so the
+/// client can put it there (`ServerHelloAck::last_place`) — on any device, and
+/// not on whatever its map happens to be anchored to.
+#[tokio::test]
+async fn the_next_sign_in_is_told_where_the_avatar_was_left() {
+    use cartopolis_core::GeoAnchor;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("place.db").to_str().unwrap().to_string();
+    {
+        let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+        ensure_account(&conn, "dev", "dev").unwrap();
+    }
+    let config = SimConfig {
+        database_path: db,
+        listen: "127.0.0.1:0".into(),
+        ..SimConfig::default()
+    };
+    let handle = serve(Arc::new(config)).await.unwrap();
+    let addr = handle.local_addr.to_string();
+    let password = || AuthCredential::Password {
+        username: "dev".into(),
+        password: "dev".into(),
+    };
+    let place_in = |ack: NetMessage| match ack {
+        NetMessage::ServerHelloAck { last_place, .. } => last_place,
+        other => panic!("expected ServerHelloAck, got {other:?}"),
+    };
+
+    // A new account has never stood anywhere.
+    let mut first = connect(&addr).await;
+    assert_eq!(place_in(hello(&mut first, password()).await), None);
+    let left = GeoAnchor {
+        latitude: 53.2163,
+        longitude: 6.5711,
+    };
+    let intent = encode_app_frame(&NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: 0.0,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote: None,
+        expression: None,
+        seated: None,
+        geo: Some(left),
+    })
+    .unwrap();
+    first.send(Bytes::from(intent)).await.unwrap();
+    // Leave once the sim has had time to take the intent. Each probe below is a
+    // session of its own that never says where it is, which must leave the
+    // remembered place alone.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    drop(first);
+
+    // The guard writes the place off the connection's task, so give it a beat.
+    let mut told = None;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut again = connect(&addr).await;
+        told = place_in(hello(&mut again, password()).await);
+        if told.is_some() {
+            break;
+        }
+    }
+    assert_eq!(told, Some(left));
+}
