@@ -15,6 +15,7 @@ name = "Kerncijfers wijken en buurten 2024"
 mode = "replay"
 confidence = "documented"
 summary = "Who lives where: CBS's key figures per buurt, wijk and gemeente."
+question = "Who lives here?"
 sources = [
   "CBS, Kerncijfers wijken en buurten 2024, via PDOK (CC BY 4.0)",
   "Provinces and the country: Kadaster, Bestuurlijke gebieden, via PDOK",
@@ -24,6 +25,7 @@ clock = { start = "2024", end = "2024" }
 
 [[region_state]]
 id = "share_65_plus"
+group = "People"
 label = "Aged 65 and over"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"
@@ -39,6 +41,7 @@ state = [
 
 [[region_state]]
 id = "share_0_15"
+group = "People"
 label = "Aged under 15"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"
@@ -53,6 +56,7 @@ state = [
 
 [[region_state]]
 id = "density"
+group = "People"
 label = "People per km²"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"
@@ -67,6 +71,7 @@ state = [
 
 [[region_state]]
 id = "single_households"
+group = "Homes"
 label = "Single-person households"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"
@@ -81,6 +86,7 @@ state = [
 
 [[region_state]]
 id = "owner_occupied"
+group = "Homes"
 label = "Owner-occupied homes"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"
@@ -95,6 +101,7 @@ state = [
 
 [[region_state]]
 id = "home_value"
+group = "Homes"
 label = "Average home value"
 boards = ["areas:cbs-buurt-2024", "areas:cbs-wijk-2024", "areas:cbs-gemeente-2024", "areas:cbs-provincie-2024", "areas:cbs-land-2024"]
 derive = "value"

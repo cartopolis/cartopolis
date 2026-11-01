@@ -71,6 +71,10 @@ struct MetaSpec {
     mode: Mode,
     #[serde(default)]
     summary: String,
+    /// The question a person brings to it ("Who lives here?"), which is what
+    /// the shelf of lenses lists it under.
+    #[serde(default)]
+    question: Option<String>,
     sources: Vec<String>,
     #[serde(default)]
     confidence: Confidence,
@@ -93,6 +97,7 @@ pub struct Meta {
     pub name: String,
     pub mode: Mode,
     pub summary: String,
+    pub question: Option<String>,
     pub sources: Vec<String>,
     pub confidence: Confidence,
 }
@@ -181,6 +186,7 @@ impl Scenario {
                 name: meta.name,
                 mode: meta.mode,
                 summary: meta.summary,
+                question: meta.question,
                 sources: meta.sources,
                 confidence: meta.confidence,
             },

@@ -133,18 +133,19 @@ fn bar_spacing(viewport_w: f32, discs: usize) -> f32 {
     disc_spacing(viewport_w - 2.0 * (BAR_PAD + theme::OSD_MARGIN), discs)
 }
 
-/// Where the top-left map controls start, clear of the layers disc above them.
+/// Where the top-left map controls start, clear of the layers and lens discs
+/// above them.
 /// Read by `hud::render_map_controls`; one constant because the compass and
 /// everything stacked under it have to agree.
 ///
 /// The gap is [`theme::OSD_GROUP_GAP`], not [`theme::OSD_GAP`], and the
-/// difference is the whole reason that constant exists: the layers disc opens a
-/// *panel* and the compass column under it controls the *view*. With one gap for
+/// difference is the whole reason that constant exists: the layers and lens discs
+/// open *surfaces* and the compass column under them controls the *view*. With one gap for
 /// both, four dark discs 8 pt apart read as one strip of chrome down the corner
-/// and nothing said where the panel toggle ended.
+/// and nothing said where the surface toggles ended.
 #[must_use]
 pub fn reserved_top() -> f32 {
-    TOP_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GROUP_GAP
+    TOP_MARGIN + 2.0 * theme::ROUND_BUTTON_SIZE + theme::OSD_GAP + theme::OSD_GROUP_GAP
 }
 
 /// Draw the dock and the layers disc, and route clicks into the (mutually
@@ -161,7 +162,10 @@ pub fn render_dock(
     mut say: ResMut<crate::systems::chat_overlay::ChatOverlay>,
     avatars: Query<(), With<crate::components::Avatar>>,
     mut camera: ResMut<crate::systems::camera_screen::CameraScreen>,
+    mut lens: ResMut<crate::systems::scenario::ScenarioView>,
+    data_layers: Res<crate::systems::data_layers::DataLayers>,
 ) {
+    let has_lens = data_layers.scenario.is_some();
     // Driving owns the screen — its own chrome already occupies the bottom.
     // So does the camera, which is the whole screen. A chat's World view does
     // not: it keeps the dock, whose chat disc writes to that chat.
@@ -282,6 +286,31 @@ pub fn render_dock(
                 if theme::round_button(ui, layers_icon, RightPanel::Layers.label(), open).clicked()
                 {
                     clicked = Some(RightPanel::Layers);
+                }
+            });
+        // The lens (`systems::scenario`): figures you read, one at a time,
+        // apart from the switches Layers holds. Under Layers because it is a
+        // control of the view too, and because the row above is full.
+        egui::Area::new(egui::Id::new("lens_disc"))
+            .anchor(
+                egui::Align2::LEFT_TOP,
+                egui::vec2(
+                    LEFT_MARGIN,
+                    TOP_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP,
+                ),
+            )
+            .show(ctx, |ui| {
+                let on = crate::systems::scenario::lens_disc_on(&lens, has_lens);
+                if theme::round_button(
+                    ui,
+                    crate::systems::icons::POLL,
+                    "Lens: figures about places",
+                    on,
+                )
+                .clicked()
+                {
+                    crate::systems::scenario::press_lens_disc(&mut lens, has_lens);
+                    menu.open = false;
                 }
             });
     }

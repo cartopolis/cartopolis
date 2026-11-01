@@ -28,5 +28,12 @@ left panel, with the clock and futures at its top when the lens has time. The
 scenario's title card, states card and clock bar fold into that one surface;
 the mode frame round the screen stays.
 
-Nothing decided yet. Open: two figures at once (split screen), the button's
-name and icon, a community's own lenses on the shelf.
+Agreed 2026-11-01 ("build it as drawn") and built the same day, in
+`systems::scenario` (the sheet) and `systems::dock` (the disc). Built
+differently from the drawing: the place card is the place under the
+crosshair, opened from the strip's place row (a tap on the map still opens
+the ring of actions); the shelf has no search or Here filter while it holds
+one lens; the disc wears the ordinary engaged plate rather than the mode's
+colour (the chrome is monochrome, `monochrome-chrome.md`); "Its town",
+"Compare…" and "Talk about it" are not built. Still open: two figures at
+once (split screen), a community's own lenses on the shelf.

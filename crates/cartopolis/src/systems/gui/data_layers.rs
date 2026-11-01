@@ -521,7 +521,8 @@ pub struct DataLayers {
     pub city_lights: bool,
     /// From above: the hex grid over the land (`hex_grid.wesl`), off by default.
     pub hex_grid: bool,
-    /// From above: the scenario layer open over the map (`systems::scenario`),
+    /// The lens open over the map (`systems::scenario`), chosen under its own
+    /// disc rather than in this panel,
     /// as `<file>/<layer>`. Not saved: a layer left open must not greet the
     /// next start.
     /// `CARTO_SCENARIO=cbs-2024/share_65_plus` opens one for a capture.
@@ -2495,29 +2496,25 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 ],
                 None,
             );
-            // Scenario layers over the map, from buurt to country
-            // (`systems::scenario`). One at a time, so ticking one closes another.
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("Figures")
-                    .size(theme::SIZE_TINY)
-                    .color(theme::TEXT_DIM),
-            );
-            ui.add_space(4.0);
-            let offered = crate::systems::scenario::offered();
-            let was: Vec<bool> = offered
-                .iter()
-                .map(|o| dl.scenario.as_deref() == Some(o.key.as_str()))
-                .collect();
-            let mut on = was.clone();
-            let mut tiles: Vec<_> = offered
-                .iter()
-                .zip(on.iter_mut())
-                .map(|(o, on)| (tile(icons::TUNE, o.label.as_str(), false, false, None), on))
-                .collect();
-            tile_grid(ui, &mut tiles, None);
-            if let Some(i) = (0..offered.len()).find(|&i| on[i] != was[i]) {
-                dl.scenario = on[i].then(|| offered[i].key.clone());
+            // Figures moved to the lens (`systems::scenario`, its disc under
+            // this panel's): something read, one at a time, not a switch. One
+            // line here says which is open, for whoever looks for it here.
+            if let Some(open) = dl.scenario.as_deref().and_then(|k| {
+                crate::systems::scenario::offered()
+                    .iter()
+                    .find(|o| o.key == k)
+            }) {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!("{}  Lens open: {}", icons::POLL, open.label))
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new("Change it with the lens button, under this panel's")
+                        .size(theme::SIZE_TINY)
+                        .color(theme::TEXT_DIM),
+                );
             }
         }
         LayerCategory::City => {

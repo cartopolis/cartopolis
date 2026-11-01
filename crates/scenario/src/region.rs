@@ -82,6 +82,10 @@ pub struct RegionStateSpec {
     /// What the layer shows, in words a person reads ("Aged 65 and over").
     #[serde(default)]
     pub label: Option<String>,
+    /// Which heading the lens lists it under ("People", "Homes"); the
+    /// figures without one come first, under none.
+    #[serde(default)]
+    pub group: Option<String>,
     /// One board, or …
     #[serde(default)]
     pub board: Option<Board>,
@@ -134,6 +138,7 @@ pub struct State {
 pub struct RegionStates {
     pub id: String,
     pub label: String,
+    pub group: Option<String>,
     /// The boards it stands on, as written.
     pub boards: Vec<Board>,
     pub field: Option<String>,
@@ -217,6 +222,7 @@ impl RegionStates {
         }
         Ok(RegionStates {
             label: spec.label.unwrap_or_else(|| id.clone()),
+            group: spec.group,
             id,
             boards,
             field: spec.field,

@@ -1,7 +1,7 @@
 ---
 topic: scenarios
 triggers: [crates/scenario, cartopolis_scenario, scenario.rs, official_areas.rs, ladder.rs, cbs-2024.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024"]
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # Scenarios: generic layers on a ladder of places
@@ -73,6 +73,19 @@ opens and decodes them off the frame loop; nothing is embedded. Like every
 atlas dataset, **deploying atlas does not write them**: run `atlas areas
 cbs-2024 --out /data/3dbag/site/areas` on the host once (`atlas-run-on-the-host`
 in memory has the identity it needs).
+
+## A lens, not a layer
+
+Opened from its own disc under Layers, not from the Layers panel
+(`docs/mockups/lenses/`, built 2026-11-01). Ticking a figure tile that closed
+the other was a radio dressed as a checkbox, and on a phone the panel covered
+the map you were choosing for. The lens is one surface (`scenario::Sheet`): a
+bottom sheet in portrait (strip, figures, place, shelf), a column on the left
+otherwise. Its rect goes to `place_pins::map_area` through egui's memory
+(`scenario::lens_rect`), so pins under it do not eat its taps. Switching to
+another figure of the same file keeps the loaded areas (`switch_figure`); only
+another file fetches. A scenario file may give itself a `question` (the
+shelf's heading) and each region state a `group` (the figures' heading).
 
 ## Drawn as an overlay, culled by a box
 

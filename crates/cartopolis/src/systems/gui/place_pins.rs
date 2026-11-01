@@ -542,6 +542,12 @@ pub(crate) fn map_area(
     if let Some(sheet) = route.sheet_rect {
         map_rect.max.y = map_rect.max.y.min(sheet.top());
     }
+    // The lens, last frame: a sheet along the bottom, or a column on the left.
+    match crate::systems::scenario::lens_rect(egui.ctx()) {
+        Some((lens, true)) => map_rect.max.y = map_rect.max.y.min(lens.top()),
+        Some((lens, false)) => map_rect.min.x = map_rect.min.x.max(lens.right()),
+        None => {}
+    }
     map_rect
 }
 
