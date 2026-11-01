@@ -3215,6 +3215,48 @@ fn earth_mode(ctx: ModeCtx) {
             );
         }
     }
+    // A jump in flight (`geo_nav::apply_teleport` holds it): up until both ends
+    // are in view, across with the globe turning under the camera, down over
+    // the place, then the jump lands. A hand on the globe or any zoom stops it
+    // where it is, as a hand would expect.
+    if let Some(mut f) = camera_state.flight.clone() {
+        use crate::resources::FlightPhase;
+        let took_over =
+            (grabbing && rot_delta != Vec2::ZERO) || zoom_mul != 1.0 || osd.rail_altitude.is_some();
+        let alt_now = if space {
+            camera_state.orbit_distance - radius
+        } else {
+            camera_state.orbit_distance * f64::from(camera_state.orbit_pitch.sin())
+        };
+        let land = f.arrive_alt.max(crate::systems::geo_nav::FLIGHT_LAND_ALT);
+        match f.phase {
+            FlightPhase::Landing | FlightPhase::Cancelled => {}
+            _ if took_over => f.phase = FlightPhase::Cancelled,
+            FlightPhase::Up => {
+                camera_state.rail_goal = None;
+                camera_state.orbit_distance_target =
+                    if space { radius + f.peak_alt } else { max_d }.clamp(min_d, max_d);
+                if space && alt_now >= f.peak_alt * 0.6 {
+                    camera_state.globe_aim = Some(globe.direction_local(f.lat, f.lng).as_dvec3());
+                    f.phase = FlightPhase::Across;
+                }
+            }
+            FlightPhase::Across => {
+                camera_state.orbit_distance_target = (radius + f.peak_alt).clamp(min_d, max_d);
+                if camera_state.globe_aim.is_none() {
+                    f.phase = FlightPhase::Down;
+                }
+            }
+            FlightPhase::Down => {
+                camera_state.orbit_distance_target = (radius + land).clamp(min_d, max_d);
+                if space && (alt_now / land - 1.0).abs() < 0.03 {
+                    f.phase = FlightPhase::Landing;
+                }
+            }
+        }
+        camera_state.flight = Some(f);
+    }
+
     // Past the ceiling: the zoom moves the cosmos's height, and the globe
     // waits at the ceiling. Zooming out against the ceiling steps into it;
     // zooming back under it steps out, and the globe takes over again.

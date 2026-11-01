@@ -2102,6 +2102,83 @@ pub fn apply_camera_reanchor(mut camera_state: ResMut<CameraState>, mut nav: Res
 /// big_space `GridCell` + local translation, the same convention the streamed
 /// map uses, so tiles and buildings load around the destination automatically.
 /// Online, the sim still owns the avatar, so the server may pull it back.
+/// Shortest jump that is flown rather than cut, metres along the ground: under
+/// it the destination is in view already, or nearly.
+const FLIGHT_MIN_M: f64 = 80_000.0;
+/// The height a flight comes down to before it lands, metres: just inside the
+/// space tier, whose floor is 48 km (`free_camera::SPACE_EXIT_ALT`).
+pub(crate) const FLIGHT_LAND_ALT: f64 = 56_000.0;
+/// The height the jump then arrives at when the destination is lower: just
+/// under the space tier, so it lands as a ground orbit centred on the place
+/// itself. A jump into the space tier lands over the anchor's tile centre,
+/// which is up to 20 km from the place (measured over Tokyo, 2026-11-01).
+const FLIGHT_GROUND_ALT: f64 = 47_000.0;
+
+/// Whether the pending jump is (still) being flown, starting a flight for it
+/// when it should be. A flight that was cancelled drops the jump.
+fn hold_for_flight(
+    nav: &mut GeoNavState,
+    camera_state: &mut CameraState,
+    globe: &crate::systems::globe::GlobeState,
+    cameras: &Query<(&mut GridCell, &mut Transform), (With<FreeCamera>, Without<Avatar>)>,
+    current_alt: Option<f64>,
+) -> bool {
+    use crate::resources::{Flight, FlightPhase};
+    let Some(tp) = nav.pending_teleport.as_ref() else {
+        return false;
+    };
+    match camera_state
+        .flight
+        .as_ref()
+        .map(|f| (f.phase, f.lat, f.lng))
+    {
+        Some((FlightPhase::Cancelled, ..)) => {
+            nav.pending_teleport = None;
+            nav.pending_label = None;
+            camera_state.flight = None;
+            return true;
+        }
+        Some((FlightPhase::Landing, lat, lng)) if lat == tp.lat && lng == tp.lng => return false,
+        // Still on its way to this jump.
+        Some((_, lat, lng)) if lat == tp.lat && lng == tp.lng => return true,
+        // Another jump replaced the one being flown: fly to that instead.
+        _ => {}
+    }
+    camera_state.flight = None;
+    let flies = camera_state.mode == CameraMode::Orbit
+        && !tp.silent
+        && tp.pose.is_none()
+        && globe.ready
+        && camera_state.cosmos_alt == 0.0;
+    if !flies {
+        return false;
+    }
+    let Ok((cell, tf)) = cameras.single() else {
+        return false;
+    };
+    let here = (crate::systems::free_camera::cell_origin(cell) + tf.translation.as_dvec3()
+        - globe.center_local.as_dvec3())
+    .normalize_or_zero();
+    let there = globe.direction_local(tp.lat, tp.lng).as_dvec3();
+    let ground_m = here.angle_between(there) * f64::from(globe.radius);
+    if !(ground_m > FLIGHT_MIN_M) {
+        return false;
+    }
+    let now = current_alt.unwrap_or(FLIGHT_LAND_ALT);
+    let arrive_alt = tp.altitude.unwrap_or(now);
+    camera_state.flight = Some(Flight {
+        lat: tp.lat,
+        lng: tp.lng,
+        arrive_alt,
+        // High enough that both ends are on screen, never lower than either.
+        peak_alt: (ground_m * 1.1)
+            .clamp(FLIGHT_LAND_ALT * 2.0, 20_000_000.0)
+            .max(now),
+        phase: FlightPhase::Up,
+    });
+    true
+}
+
 pub fn apply_teleport(
     mut nav: ResMut<GeoNavState>,
     mut stream: ResMut<MapStream>,
@@ -2132,7 +2209,29 @@ pub fn apply_teleport(
         .single()
         .ok()
         .map(|(cell, tf)| globe.altitude_m(cell, tf));
-    let tp = nav.pending_teleport.take().unwrap();
+    // A jump somebody chose, in Earth mode, far enough to cross the globe, is
+    // flown (`free_camera::fly`): held pending here until the flight is over the
+    // destination, then landed as an ordinary jump.
+    if hold_for_flight(&mut nav, &mut camera_state, &globe, &cameras, current_alt) {
+        return;
+    }
+    let landing = camera_state
+        .flight
+        .take()
+        .filter(|f| f.phase == crate::resources::FlightPhase::Landing);
+    let mut tp = nav.pending_teleport.take().unwrap();
+    if let Some(f) = &landing {
+        // Land just under the space tier, looking straight down on the place,
+        // and glide the rest of the way: a cut from orbit to a street is the
+        // jump the flight was for avoiding.
+        if f.arrive_alt < FLIGHT_GROUND_ALT {
+            tp.altitude = Some(FLIGHT_GROUND_ALT);
+            camera_state.orbit_pitch = 1.5;
+            camera_state.rail_goal = Some(f.arrive_alt);
+        } else {
+            tp.altitude = Some(f.arrive_alt);
+        }
+    }
     // Taken with the teleport it belongs to, never on its own: a label left
     // behind by a jump that never applied would end up naming the next one.
     let label = nav.pending_label.take();

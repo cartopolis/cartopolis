@@ -1686,6 +1686,10 @@ pub struct CameraState {
     pub cosmos_alt: f64,
     /// Where [`Self::cosmos_alt`] is gliding to, on a log scale.
     pub cosmos_target: f64,
+    /// A jump being flown rather than cut (`docs/mockups/zoom-ladder/`): up
+    /// until both ends fit, across, down, then the jump itself lands
+    /// (`geo_nav::apply_teleport` holds it pending meanwhile).
+    pub flight: Option<Flight>,
     /// Radians the follow camera has turned *by itself* (recentring behind the
     /// avatar), accumulated for the life of the app. Movement reads keys against
     /// the azimuth minus whatever of this accrued since the keys were pressed, so
@@ -1776,6 +1780,34 @@ impl Default for CameraMode {
     }
 }
 
+/// A jump in flight over the globe (`CameraState::flight`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flight {
+    /// Where to, as the pending jump says.
+    pub lat: f64,
+    pub lng: f64,
+    /// The height the jump arrives at, metres.
+    pub arrive_alt: f64,
+    /// How high the path climbs, metres: enough that both ends are in view.
+    pub peak_alt: f64,
+    pub phase: FlightPhase,
+}
+
+/// Where a [`Flight`] is on its way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlightPhase {
+    /// Climbing towards the peak.
+    Up,
+    /// Turning the globe onto the destination.
+    Across,
+    /// Coming down over it.
+    Down,
+    /// Over the destination: the jump may land.
+    Landing,
+    /// A hand took over: the jump is dropped where the view stands.
+    Cancelled,
+}
+
 impl Default for CameraState {
     fn default() -> Self {
         Self {
@@ -1812,6 +1844,7 @@ impl Default for CameraState {
             rail_goal: None,
             cosmos_alt: 0.0,
             cosmos_target: 0.0,
+            flight: None,
             auto_yaw: 0.0,
             follow_rotate: false,
             first_person: false,
