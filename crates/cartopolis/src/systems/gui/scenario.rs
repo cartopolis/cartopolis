@@ -155,7 +155,37 @@ struct Open {
     fills: HashMap<(usize, usize), (Vec<LonLat>, Vec<u32>)>,
     /// The track whose card is open.
     selected: Option<usize>,
+    /// The colour each area is drawn in now, eased towards its state's, so a
+    /// year played or a figure switched flows over rather than snapping.
+    colours: HashMap<(usize, usize), egui::Rgba>,
+    /// The band picked on the scale: every other band fades back.
+    focus: Option<usize>,
+    /// The band under the pointer on the scale, last frame: a preview of the
+    /// pick.
+    peek: Option<usize>,
 }
+
+impl Open {
+    /// The band the map singles out: one being pointed at, else the picked one.
+    fn singled(&self) -> Option<usize> {
+        self.peek.or(self.focus)
+    }
+
+    /// The band of the open figure at a place, for the marker on its scale.
+    fn band_at(&self, layer: usize, p: LonLat) -> Option<usize> {
+        let a = self.play.layer_areas(layer)?.area_at(p)?;
+        self.frame
+            .regions
+            .get(layer)?
+            .iter()
+            .find(|r| r.area == Some(a))
+            .map(|r| r.state)
+    }
+}
+
+/// How fast a drawn colour closes on its state's: most of the way in a
+/// fifth of a second.
+const EASE_PER_S: f32 = 12.0;
 
 /// A layer whose areas are still on their way.
 struct Loading {
@@ -294,6 +324,9 @@ impl ScenarioView {
         };
         o.layer = i;
         o.key = wanted.to_owned();
+        // Another figure has other bands; the colours ease over on their own.
+        o.focus = None;
+        o.peek = None;
         true
     }
 
@@ -402,6 +435,10 @@ pub fn drive_scenario(
                         frame,
                         fills: HashMap::new(),
                         selected: None,
+                        colours: HashMap::new(),
+                        // `CARTO_LENS_BAND=2` singles out a band, for a capture.
+                        focus: crate::env_value("CARTO_LENS_BAND").and_then(|b| b.parse().ok()),
+                        peek: None,
                     });
                 }
                 Err(e) => view.error = Some((l.key, e.to_string())),
@@ -554,15 +591,23 @@ pub fn render_scenario_map(
     if o.play.set_scale(km_per_px) {
         o.frame = o.play.at(o.t);
     }
+    // The map's width, but its whole height: the strips the dock reserves
+    // are for taps, and a fill stopping short of them reads as a gap. The
+    // lens's own column is taken out of the map too, but the map runs on
+    // under it, so the fills do: else a bare band stands down the left.
+    let mut x_range = map_rect.x_range();
+    if let Some((lens, false)) = lens_rect(&ctx) {
+        if map_rect.left() >= lens.right() - 1.0 {
+            x_range.min = ctx.viewport_rect().left();
+        }
+    }
     let painter = ctx
         .layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("scenario_map"),
         ))
-        // The map's width, but its whole height: the strips the dock reserves
-        // are for taps, and a fill stopping short of them reads as a gap.
         .with_clip_rect(egui::Rect::from_x_y_ranges(
-            map_rect.x_range(),
+            x_range,
             ctx.viewport_rect().y_range(),
         ));
 
@@ -570,6 +615,21 @@ pub fn render_scenario_map(
     if o.fills.len() > MAX_FILLS {
         o.fills.clear();
     }
+    if o.colours.len() > MAX_FILLS {
+        o.colours.clear();
+    }
+    // The pointer, where it rests on the bare map: a finger has no hover, and
+    // over a disc or a card the map is not what it points at.
+    let pointer = ctx.pointer_hover_pos().filter(|&at| {
+        !theme::touch_layout()
+            && map_rect.contains(at)
+            && ctx
+                .layer_id_at(at)
+                .is_none_or(|l| l.order == egui::Order::Background)
+    });
+    let ease = 1.0 - (-EASE_PER_S * ctx.input(|i| i.stable_dt).min(0.1)).exp();
+    let mut easing = false;
+    let singled = o.singled();
     let li = o.layer;
     if let (Some(places), Some(set)) = (o.frame.regions.get(li), o.play.layer_areas(li)) {
         let set_key = o
@@ -579,6 +639,8 @@ pub fn render_scenario_map(
             .position(|a| a.name == set.name)
             .unwrap_or(0);
         let layer = &o.play.scenario.region_states[li];
+        // The area under the pointer, and its band.
+        let mut hovered: Option<(usize, usize)> = None;
         for p in places {
             let Some(a) = p.area else { continue };
             let area = &set.areas[a];
@@ -588,7 +650,22 @@ pub fn render_scenario_map(
             }
             let state = &layer.states[p.state];
             let passed = state.when == Some(When::Passed);
-            let fill = rgb(state.colour, if passed { 0.30 } else { 0.70 });
+            let alpha = match singled {
+                // A band picked on the scale: the rest stay as a hint of
+                // where they are, no more.
+                Some(band) if band != p.state => 0.08,
+                _ if passed => 0.30,
+                _ => 0.70,
+            };
+            let target = egui::Rgba::from(rgb(state.colour, alpha));
+            // A new area fades in from nothing, so a finer board arriving
+            // on a zoom comes up rather than popping.
+            let drawn = o
+                .colours
+                .entry((set_key, a))
+                .or_insert(egui::Rgba::TRANSPARENT);
+            *drawn = eased(*drawn, target, ease, &mut easing);
+            let fill = egui::Color32::from(*drawn);
             let (verts, idx) = o
                 .fills
                 .entry((set_key, a))
@@ -604,6 +681,9 @@ pub fn render_scenario_map(
                 else {
                     continue;
                 };
+                if hovered.is_none() && pointer.is_some_and(|q| in_triangle(q, &pts)) {
+                    hovered = Some((a, p.state));
+                }
                 let mut ids = [0u32; 3];
                 for (k, (&i, pos)) in tri.iter().zip(pts).enumerate() {
                     ids[k] = *at.entry(i).or_insert_with(|| {
@@ -627,6 +707,38 @@ pub fn render_scenario_map(
                 }
             }
         }
+        // The place being read stands out: the one under the pointer, else
+        // the one under the crosshair, whose figure the strip gives.
+        let marked = hovered
+            .map(|(a, _)| a)
+            .or_else(|| set.area_at([cam_lng, cam_lat]));
+        if let Some(a) = marked {
+            for ring in set.areas[a].polygons.iter().flatten() {
+                let mut closed = ring.clone();
+                closed.extend(ring.first().copied());
+                for run in proj.runs(&closed) {
+                    painter.add(egui::Shape::line(
+                        run.clone(),
+                        egui::Stroke::new(4.5, ink::AREA_HALO),
+                    ));
+                    painter.add(egui::Shape::line(run, egui::Stroke::new(2.0, theme::CREAM)));
+                }
+            }
+        }
+        if let (Some((a, band)), Some(at)) = (hovered, pointer) {
+            let value = shown(o, li, set, a, true);
+            area_tooltip(
+                &ctx,
+                at,
+                &set.areas[a].name,
+                value,
+                &layer.states[band],
+                set.rung,
+            );
+        }
+    }
+    if easing {
+        ctx.request_repaint();
     }
 
     // Tracks: the cone, the path behind and ahead, the times along it, where
@@ -740,6 +852,72 @@ pub fn render_scenario_map(
         );
         painter.galley(chip.min + theme::CHIP_PADDING, galley, ink::TRACK);
     }
+}
+
+/// A drawn colour a step closer to its target, `ease` of the way; `moving`
+/// is raised while it is still visibly short of it.
+fn eased(now: egui::Rgba, target: egui::Rgba, ease: f32, moving: &mut bool) -> egui::Rgba {
+    let (a, b) = (now.to_array(), target.to_array());
+    if a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.004) {
+        return target;
+    }
+    *moving = true;
+    let c: [f32; 4] = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * ease);
+    egui::Rgba::from_rgba_premultiplied(c[0], c[1], c[2], c[3])
+}
+
+/// Between two chrome tones, `t` of the way, for a hover that eases in.
+fn lerp_colour(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    a.lerp_to_gamma(b, t.clamp(0.0, 1.0))
+}
+
+/// Whether a point lies in a screen triangle, either winding.
+fn in_triangle(q: egui::Pos2, t: &[egui::Pos2]) -> bool {
+    let side = |a: egui::Pos2, b: egui::Pos2| (b - a).x * (q - a).y - (b - a).y * (q - a).x;
+    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
+    let neg = d0 < 0.0 || d1 < 0.0 || d2 < 0.0;
+    let pos = d0 > 0.0 || d1 > 0.0 || d2 > 0.0;
+    !(neg && pos)
+}
+
+/// The card beside the pointer over an area: its name, the figure there and
+/// the band that colours it.
+fn area_tooltip(
+    ctx: &egui::Context,
+    at: egui::Pos2,
+    name: &str,
+    value: Option<String>,
+    band: &cartopolis_scenario::region::State,
+    rung: Rung,
+) {
+    egui::Area::new(egui::Id::new("lens_area_tip"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(at + egui::vec2(18.0, 18.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                // Pinned, or a size-to-content `Area` grows every frame.
+                ui.set_max_width(220.0);
+                ui.label(
+                    egui::RichText::new(name)
+                        .size(theme::SIZE_BODY)
+                        .color(theme::CREAM),
+                );
+                ui.label(
+                    egui::RichText::new(value.unwrap_or_else(|| "not published".to_owned()))
+                        .size(theme::SIZE_HEADING)
+                        .strong()
+                        .color(theme::CREAM),
+                );
+                ui.horizontal(|ui| {
+                    let (r, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(r, theme::RADIUS_SM, rgb(band.colour, 1.0));
+                    dim(ui, format!("{} · {}", band.label, rung.label()));
+                });
+            });
+        });
 }
 
 /// The colour and words of a mode's frame.
@@ -871,6 +1049,9 @@ pub fn render_scenario_chrome(
     let ctx = egui.ctx_mut().clone();
     let lens = layers.scenario.is_some();
     let shown = view.sheet.shown(lens);
+    // Pointing at a band lasts while the scale is drawn under it; the map,
+    // which painted already, catches up with a change next frame.
+    let peeked = view.open.as_mut().and_then(|o| o.peek.take());
     if let Some(o) = view.open.as_ref() {
         paint_frame(&ctx, o.play.scenario.meta.mode);
         if o.playing {
@@ -891,6 +1072,9 @@ pub fn render_scenario_chrome(
                 || place_card.place.is_some()));
     if hidden {
         ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
+        if peeked.is_some() {
+            ctx.request_repaint();
+        }
         return;
     }
 
@@ -960,6 +1144,9 @@ pub fn render_scenario_chrome(
     });
     let rect = shown_area.response.rect;
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(RECT_ID), (rect, shape == Shape::Sheet)));
+    if view.open.as_ref().and_then(|o| o.peek) != peeked {
+        ctx.request_repaint();
+    }
 
     if let Some(key) = asked.open {
         if layers.scenario.as_deref() != Some(key.as_str()) {
@@ -1034,12 +1221,19 @@ fn grabber(ui: &mut egui::Ui, shown: Sheet, lens: bool) -> Option<Sheet> {
 /// The mode as a chip: what kind of truth the colours are.
 fn mode_chip(ui: &mut egui::Ui, mode: Mode) {
     let (colour, word) = mode_frame(mode);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 20.0), egui::Sense::hover());
+    // As wide as its word, a pill like every other chip.
+    let font = egui::FontId::proportional(theme::SIZE_CHIP);
+    let w = ui
+        .painter()
+        .layout_no_wrap(word.to_owned(), font, theme::INK)
+        .size()
+        .x;
+    let (r, _) = ui.allocate_exact_size(egui::vec2(w + 18.0, 20.0), egui::Sense::hover());
     if mode == Mode::Exercise {
         ui.painter().rect_filled(r, theme::RADIUS_SM, theme::INK);
         stripes(ui.painter(), r, colour.gamma_multiply(0.55));
     } else {
-        ui.painter().rect_filled(r, theme::RADIUS_SM, colour);
+        ui.painter().rect_filled(r, theme::RADIUS_PILL, colour);
     }
     ui.painter().text(
         r.center(),
@@ -1060,27 +1254,119 @@ fn honest(meta: &cartopolis_scenario::Meta) -> &'static str {
     }
 }
 
-/// A layer's bands as one bar, light to dark, its first and last words under
-/// it.
-fn ramp(ui: &mut egui::Ui, states: &[cartopolis_scenario::region::State]) {
-    let (r, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::hover());
-    paint_ramp(ui.painter(), r, states);
-    if let (Some(first), Some(last)) = (states.first(), states.last()) {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(&first.label)
-                    .size(theme::SIZE_TINY)
-                    .color(theme::TEXT_DIM),
+/// The scale's bar, and the room over it for the marker.
+const LEGEND_BAR_PTS: f32 = 12.0;
+const LEGEND_MARK_PTS: f32 = 8.0;
+
+/// The open figure's bands as one bar, light to dark, that answers: pointing
+/// at a band singles its areas out on the map, a tap keeps them so (a second
+/// tap lets go), and a marker stands over the band of the place under the
+/// crosshair. Under it, the first and last band's words, or the singled one's.
+fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
+    let n = o.play.scenario.region_states[o.layer].states.len();
+    if n == 0 {
+        return;
+    }
+    let (r, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), LEGEND_MARK_PTS + LEGEND_BAR_PTS + 4.0),
+        egui::Sense::hover(),
+    );
+    let bar = egui::Rect::from_min_size(
+        egui::pos2(r.left(), r.top() + LEGEND_MARK_PTS + 2.0),
+        egui::vec2(r.width(), LEGEND_BAR_PTS),
+    );
+    let w = bar.width() / n as f32;
+    let singled = o.singled();
+    let (mut peek, mut tapped) = (None, None);
+    let states = &o.play.scenario.region_states[o.layer].states;
+    for (i, s) in states.iter().enumerate() {
+        let seg = egui::Rect::from_min_size(
+            egui::pos2(bar.left() + w * i as f32, bar.top()),
+            egui::vec2(w, bar.height()),
+        );
+        let id = ui.id().with(("lens_band", i));
+        // Taller than it looks, so a finger finds it.
+        let resp = ui
+            .interact(seg.expand2(egui::vec2(0.0, 8.0)), id, egui::Sense::click())
+            .on_hover_text(&s.label);
+        if resp.hovered() {
+            peek = Some(i);
+        }
+        if resp.clicked() {
+            tapped = Some(i);
+        }
+        let ctx = ui.ctx();
+        let lit = ctx.animate_bool_with_time(id.with("lit"), singled.is_none_or(|b| b == i), 0.15);
+        let up = ctx.animate_bool_with_time(id.with("up"), singled == Some(i), 0.15);
+        let seg = seg.expand2(egui::vec2(0.0, 2.5 * up));
+        let round = (LEGEND_BAR_PTS * 0.5) as u8;
+        let mut corners = egui::CornerRadius::ZERO;
+        if i == 0 {
+            corners.nw = round;
+            corners.sw = round;
+        }
+        if i + 1 == n {
+            corners.ne = round;
+            corners.se = round;
+        }
+        ui.painter()
+            .rect_filled(seg, corners, rgb(s.colour, 0.2 + 0.8 * lit));
+        if up > 0.01 {
+            ui.painter().rect_stroke(
+                seg,
+                corners,
+                egui::Stroke::new(1.5 * up, theme::CREAM),
+                egui::StrokeKind::Outside,
             );
+        }
+    }
+    // The marker glides to the band of the place under the crosshair.
+    if let Some(band) = here.and_then(|p| o.band_at(o.layer, p)) {
+        let target = bar.left() + w * (band as f32 + 0.5);
+        let x = ui
+            .ctx()
+            .animate_value_with_time(ui.id().with("lens_mark"), target, 0.25);
+        let tip = bar.top() - 2.0;
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(x - 5.0, tip - 6.0),
+                egui::pos2(x + 5.0, tip - 6.0),
+                egui::pos2(x, tip),
+            ],
+            theme::CREAM,
+            egui::Stroke::new(1.0, theme::INK),
+        ));
+    }
+    let tiny = |t: &str, c| egui::RichText::new(t).size(theme::SIZE_TINY).color(c);
+    ui.horizontal(|ui| match singled {
+        Some(b) => {
+            ui.label(tiny(&states[b].label, theme::CREAM));
+            if o.focus.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let all = ui.add(
+                        egui::Label::new(tiny("Show all", theme::ACCENT))
+                            .sense(egui::Sense::click()),
+                    );
+                    if all.clicked() {
+                        tapped = o.focus;
+                    }
+                });
+            }
+        }
+        None => {
+            ui.label(tiny(&states[0].label, theme::TEXT_DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(&last.label)
-                        .size(theme::SIZE_TINY)
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(tiny(&states[n - 1].label, theme::TEXT_DIM));
             });
-        });
+        }
+    });
+    // The map paints before this, so it sees a pick only next frame.
+    if tapped.is_some() {
+        ui.ctx().request_repaint();
+    }
+    o.peek = peek;
+    if let Some(t) = tapped {
+        o.focus = if o.focus == Some(t) { None } else { Some(t) };
     }
 }
 
@@ -1257,7 +1543,7 @@ fn strip_body(
     }
     dim(ui, format!("{} · {per}", meta.name));
     ui.add_space(4.0);
-    ramp(ui, &layer.states);
+    legend(ui, o, here);
     if let Some(r) = here_row(ui, o, here) {
         if r.clicked() {
             asked.sheet = Some(Sheet::Place);
@@ -1283,18 +1569,29 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
     ui.add_space(6.0);
     let rung = o.play.layer_areas(o.layer).map_or("", |s| s.rung.label());
     let (r, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 42.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::click());
+    let hot = ui
+        .ctx()
+        .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
     let p = ui.painter();
-    p.rect_filled(
+    p.rect(
         r,
         theme::RADIUS,
-        if resp.hovered() {
-            theme::SURFACE_HOVER
-        } else {
-            theme::SURFACE_RAISED
-        },
+        lerp_colour(theme::SURFACE_RAISED, theme::SURFACE_HOVER, hot),
+        egui::Stroke::new(1.0, lerp_colour(theme::SURFACE_RAISED, theme::ACCENT, hot)),
+        egui::StrokeKind::Inside,
     );
-    let left = r.left() + 10.0;
+    // The place's own colour down its edge: the row and the outlined area
+    // on the map are the same place.
+    if let Some(band) = here.and_then(|q| o.band_at(o.layer, q)) {
+        let colour = o.play.scenario.region_states[o.layer].states[band].colour;
+        let edge = egui::Rect::from_min_size(
+            r.left_top() + egui::vec2(5.0, 7.0),
+            egui::vec2(4.0, r.height() - 14.0),
+        );
+        p.rect_filled(edge, theme::RADIUS_PILL, rgb(colour, 1.0));
+    }
+    let left = r.left() + 16.0;
     p.text(
         egui::pos2(left, r.top() + 7.0),
         egui::Align2::LEFT_TOP,
@@ -1313,11 +1610,19 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
         egui::FontId::proportional(theme::SIZE_TINY),
         theme::TEXT_DIM,
     );
+    // A chevron that leans in on hover: the row opens something.
     p.text(
-        egui::pos2(r.right() - 10.0, r.center().y),
+        egui::pos2(r.right() - 8.0 + 2.0 * hot, r.center().y),
+        egui::Align2::RIGHT_CENTER,
+        crate::systems::icons::CHEVRON_RIGHT,
+        egui::FontId::proportional(theme::SIZE_TITLE),
+        lerp_colour(theme::TEXT_DIM, theme::CREAM, hot),
+    );
+    p.text(
+        egui::pos2(r.right() - 30.0, r.center().y),
         egui::Align2::RIGHT_CENTER,
         value.unwrap_or_else(|| "not published".to_owned()),
-        egui::FontId::proportional(theme::SIZE_VALUE),
+        egui::FontId::proportional(theme::SIZE_TITLE),
         theme::CREAM,
     );
     Some(resp.on_hover_text("Every figure for this place"))
@@ -1331,31 +1636,40 @@ fn figure_row(
     label: &str,
     states: &[cartopolis_scenario::region::State],
     value: Option<&str>,
+    band: Option<usize>,
 ) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_PTS),
         egui::Sense::click(),
     );
+    let ctx = ui.ctx();
+    let hot = ctx.animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
+    let lit = ctx.animate_bool_with_time(resp.id.with("on"), on, 0.18);
     let p = ui.painter();
-    if on {
-        p.rect(
-            r,
-            theme::RADIUS,
-            theme::ACCENT_MUTED,
-            egui::Stroke::new(1.5, theme::ACCENT),
-            egui::StrokeKind::Inside,
-        );
-    } else if resp.hovered() {
-        p.rect_filled(r, theme::RADIUS, theme::SURFACE_HOVER);
-    }
+    let fill = lerp_colour(
+        lerp_colour(egui::Color32::TRANSPARENT, theme::SURFACE_HOVER, hot),
+        theme::ACCENT_MUTED,
+        lit,
+    );
+    p.rect(
+        r,
+        theme::RADIUS,
+        fill,
+        egui::Stroke::new(1.5 * lit, theme::ACCENT),
+        egui::StrokeKind::Inside,
+    );
+    // The radio: its dot grows in as it is picked.
     let dot = egui::pos2(r.left() + 16.0, r.center().y);
     p.circle_stroke(
         dot,
         7.0,
-        egui::Stroke::new(2.0, if on { theme::ACCENT } else { theme::LINE }),
+        egui::Stroke::new(
+            2.0,
+            lerp_colour(theme::LINE, theme::ACCENT, lit.max(hot * 0.5)),
+        ),
     );
-    if on {
-        p.circle_filled(dot, 3.5, theme::ACCENT);
+    if lit > 0.01 {
+        p.circle_filled(dot, 3.5 * lit, theme::ACCENT);
     }
     let value_left = match value {
         Some(v) => {
@@ -1382,6 +1696,21 @@ fn figure_row(
         MINI_RAMP,
     );
     paint_ramp(p, mini, states);
+    // Where the place here falls on this figure's scale.
+    if let Some(b) = band {
+        let w = mini.width() / states.len().max(1) as f32;
+        let x = mini.left() + w * (b as f32 + 0.5);
+        p.rect(
+            egui::Rect::from_center_size(
+                egui::pos2(x, mini.center().y),
+                egui::vec2(3.0, mini.height() + 6.0),
+            ),
+            1.0,
+            theme::CREAM,
+            egui::Stroke::new(1.0, theme::INK),
+            egui::StrokeKind::Outside,
+        );
+    }
     let text_left = r.left() + 32.0;
     let g = p.layout(
         label.to_owned(),
@@ -1477,6 +1806,7 @@ fn figures_body(
                     &layer.label,
                     &layer.states,
                     value.as_deref(),
+                    here.and_then(|p| o.band_at(i, p)),
                 )
                 .clicked()
                 {
@@ -1809,11 +2139,26 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
         .get(li)
         .map(Vec::as_slice)
         .unwrap_or_default();
+    // A band's row singles it out on the map, as the strip's scale does.
+    let mut tapped = None;
     for (si, s) in layer.states.iter().enumerate() {
-        ui.horizontal(|ui| {
+        let on = o.focus == Some(si);
+        let row = ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
             ui.painter().rect_filled(r, 2.0, rgb(s.colour, 0.85));
-            ui.label(egui::RichText::new(&s.label).size(theme::SIZE_SUB));
+            if on {
+                ui.painter().rect_stroke(
+                    r,
+                    2.0,
+                    egui::Stroke::new(1.5, theme::CREAM),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            ui.label(
+                egui::RichText::new(&s.label)
+                    .size(theme::SIZE_SUB)
+                    .color(if on { theme::CREAM } else { theme::TEXT }),
+            );
             // A count belongs to a derived state (how many regions are under
             // threat); a figure's bands are for reading, not ranking.
             if layer.field.is_none() {
@@ -1823,6 +2168,13 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
                 });
             }
         });
+        let resp = row
+            .response
+            .interact(egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            tapped = Some(si);
+        }
     }
     if let Some(set) = set {
         ui.add_space(6.0);
@@ -1880,6 +2232,10 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
     if let Some(p) = pick {
         o.selected = p;
     }
+    if let Some(t) = tapped {
+        o.focus = if o.focus == Some(t) { None } else { Some(t) };
+        ui.ctx().request_repaint();
+    }
     // The picked track: what its cone reaches, and when.
     if let Some(i) = o.selected {
         let tr = &o.play.scenario.tracks[i];
@@ -1925,13 +2281,56 @@ fn speeds(o: &Open) -> &'static [(f64, &'static str)] {
     }
 }
 
+/// The clock's round play button: a light plate with a triangle, or two
+/// bars while it plays (the icon font has no pause).
+fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
+    let d = theme::close_button_size().max(32.0);
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::click());
+    let hot = ui
+        .ctx()
+        .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
+    let p = ui.painter();
+    let c = r.center();
+    p.circle_filled(
+        c,
+        d * 0.5,
+        lerp_colour(theme::ACCENT, theme::ACCENT_RING, hot),
+    );
+    let s = d * 0.2;
+    if playing {
+        for dx in [-0.45, 0.45] {
+            p.rect_filled(
+                egui::Rect::from_center_size(
+                    c + egui::vec2(dx * s, 0.0),
+                    egui::vec2(s * 0.5, s * 1.7),
+                ),
+                1.0,
+                theme::INK,
+            );
+        }
+    } else {
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                c + egui::vec2(-0.6 * s, -s),
+                c + egui::vec2(1.0 * s, 0.0),
+                c + egui::vec2(-0.6 * s, s),
+            ],
+            theme::INK,
+            egui::Stroke::NONE,
+        ));
+    }
+    resp
+}
+
 fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
     let clock = o.play.scenario.clock;
     let end = clock.end;
     let years = clock.start_year.is_some();
     ui.horizontal(|ui| {
-        let play_word = if o.playing { "Pause" } else { "Play" };
-        if theme::action_button(ui, play_word).clicked() {
+        if play_button(ui, o.playing)
+            .on_hover_text(if o.playing { "Pause" } else { "Play" })
+            .clicked()
+        {
             if !o.playing && o.t >= end {
                 o.t = Clock::ZERO;
             }
@@ -1939,20 +2338,17 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
         }
         ui.label(
             egui::RichText::new(clock.label(o.t))
-                .size(theme::SIZE_TITLE)
-                .color(theme::TEXT),
+                .size(theme::SIZE_HEADING)
+                .strong()
+                .color(theme::CREAM),
         );
-        for &(speed, word) in speeds(o) {
-            if ui
-                .selectable_label(
-                    o.speed == speed,
-                    egui::RichText::new(word).size(theme::SIZE_SUB),
-                )
-                .clicked()
-            {
-                o.speed = speed;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            for &(speed, word) in speeds(o).iter().rev() {
+                if theme::chip(ui, word, o.speed == speed).clicked() {
+                    o.speed = speed;
+                }
             }
-        }
+        });
     });
     // A slider's rail is `slider_width` long whatever room it is given.
     ui.spacing_mut().slider_width = ui.available_width();

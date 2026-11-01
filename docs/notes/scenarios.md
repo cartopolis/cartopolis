@@ -161,6 +161,17 @@ another figure of the same file keeps the loaded areas (`switch_figure`); only
 another file fetches. A scenario file may give itself a `question` (the
 shelf's heading) and each region state a `group` (the figures' heading).
 
+The lens answers back (asked 2026-11-01, "too static"): the area being read
+is outlined on the map — under the pointer on a desktop, with a card beside
+it, else under the crosshair; the scale's bands single theirs out (pointing
+previews, a tap keeps it, `CARTO_LENS_BAND=n` for a capture) and a marker
+stands over the band here, as a tick does on each figure's small scale; and
+an area's colour eases to its state's (`Open::colours`), so a played year or
+a switched figure flows over and a finer board fades in. **The map paints
+before the chrome**, so a band picked on the scale reaches the map a frame
+later, and the chrome asks for that frame itself. A finger has no hover: on
+a phone the crosshair is the pointer.
+
 ## Drawn as an overlay, culled by a box
 
 `systems::scenario` paints the layer as egui shapes projected through
