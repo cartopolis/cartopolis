@@ -20,7 +20,9 @@ shoulder (today's Day still leaves its far side dark), Dark is the Earth at
 night all round. The rail is a 4 px track between a small + and −, 30 px wide
 (28 on a phone, in place of the + / − pair), naming only the current rung;
 hovering or dragging shows the other names as plain text. The rest of v1
-stands.
+stands. − sits at the top of the rail, next to the Milky Way, and + at the
+foot next to the street (asked the same day): up stays higher, and each button
+sits at the end it moves towards.
 
 ## v1 — proposed 2026-11-01
 
