@@ -28,6 +28,7 @@ pub mod buildings;
 pub mod bv3d;
 pub mod contamination;
 pub mod dikes;
+pub mod galaxies;
 pub mod gardens;
 pub mod gasfield;
 pub mod geom;
@@ -677,6 +678,17 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "tall/coverage.json",
         typical_minutes: 1,
         run: tall::run,
+    },
+    Dataset {
+        id: "galaxies",
+        label: "Galaxies (Local Group to 2MRS)",
+        description: "Every galaxy the zoom past the Milky Way draws: the Local Group \
+                      (McConnachie), the Local Volume to 11 Mpc (Karachentsev's UNGC) and \
+                      the 2MASS Redshift Survey beyond it, as one file. The whole sky, \
+                      whatever the area.",
+        coverage: "cosmos/coverage.json",
+        typical_minutes: 1,
+        run: galaxies::run,
     },
     Dataset {
         id: "terrain",

@@ -35,6 +35,7 @@ pub mod brp;
 pub mod coverage;
 pub mod decks;
 pub mod dikes;
+pub mod galaxies;
 pub mod lod22;
 pub mod osm_buildings;
 pub mod registers;
