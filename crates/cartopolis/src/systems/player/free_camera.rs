@@ -3037,9 +3037,11 @@ fn earth_mode(ctx: ModeCtx) {
     if grabbing && rot_delta != Vec2::ZERO {
         camera_state.globe_aim = None;
     }
-    // Out among the planets and stars the globe is a point: a drag there would
-    // turn it unseen and move the place the way down lands on.
+    // Out among the planets and stars a drag moves the map of them
+    // (`systems::cosmos`), never the globe: turning it there would move the
+    // place the way down lands on.
     if camera_state.cosmos_alt > 0.0 {
+        camera_state.cosmos_drag += rot_delta;
         rot_delta = Vec2::ZERO;
         heading_delta = 0.0;
         grabbing = false;
@@ -3287,6 +3289,9 @@ fn earth_mode(ctx: ModeCtx) {
     } else {
         camera_state.cosmos_alt = 0.0;
         camera_state.cosmos_target = 0.0;
+    }
+    if camera_state.cosmos_alt == 0.0 {
+        camera_state.cosmos_pan = DVec3::ZERO;
     }
 
     let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();

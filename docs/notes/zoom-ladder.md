@@ -17,8 +17,25 @@ are all tuned to it. Rather than raise it, the zoom past it moves
 `CameraState::cosmos_alt` (up to 10²¹ m) while the 3D camera waits at the
 ceiling over the place it left, and `systems::cosmos` paints the rungs above
 in egui. Coming back under the ceiling hands the view back to the globe where
-it was — which is why a drag is ignored out there: turning the unseen globe
+it was — which is why a drag out there never turns the globe: turning it
 would move where the way down lands.
+
+**The globe stays the Earth out there** (2026-11-01, asked for: the painted
+disc that replaced it read as a different ball). The camera does not move;
+its `Camera::sub_camera_view` is set larger than the whole image, by the
+factor the Earth has shrunk on the map, and offset to where the map puts the
+Earth, so the real globe — tiles, atmosphere, night side — shrinks and moves
+with it. Space is painted round it with a round hole (`fill_around`); below
+2 px across the painted disc takes over. The globe keeps the camera's own
+side and its own light while the map turns to above the ecliptic: at the
+sizes where the two differ it reads as the same planet.
+
+**A drag pans** (`CameraState::cosmos_pan`): the point under the pointer
+follows it, read back through the squeeze (`View::under`), so a drag from the
+rim brings what was there to the middle, and the zoom then goes into it. The
+pan is clamped so the Earth stays within 0.4 of the screen's short side of the
+middle (or where it already was, past that), and that room shrinks to none
+between 2× and 1.05× the ceiling — the way down always lands home.
 
 The cosmos is painted on egui's **background layer, before the panel chain**.
 A separate `Order::Background` layer paints over panels, as every floating

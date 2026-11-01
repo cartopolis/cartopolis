@@ -12,8 +12,18 @@
 //! one continuous movement — nothing swaps board — and the next thing out is
 //! always already at the rim: the planets around the Moon's orbit, the nearest
 //! stars around Neptune's, the Milky Way around them. Rings at round light-travel
-//! times are the ruler. Right at the ceiling the squeeze is off, so the Earth
-//! drawn here is the size of the globe it replaces.
+//! times are the ruler. Right at the ceiling the squeeze is off.
+//!
+//! **The Earth stays the 3D globe** while it is more than a speck: the camera
+//! keeps waiting at the ceiling, and its picture is widened round the globe (a
+//! `SubCameraView` larger than the whole image) by as much as the Earth has
+//! shrunk, and shifted to where the Earth is on this map; space is painted
+//! round it, with a hole. Below two pixels across a painted disc takes over.
+//!
+//! **A drag moves the map**: the point under the hand follows it, read back
+//! through the squeeze (`View::under`), so anything on screen can be pulled to
+//! the middle and zoomed into. The Earth is held on screen, and the drag is
+//! let go of again just past the ceiling so the way down lands home.
 //!
 //! **Real bodies at real places.** The Earth lit by the real Sun; the Moon at the
 //! sky code's longitude (`utils::sun`), on the ecliptic; the planets where JPL's
@@ -246,6 +256,12 @@ fn squeeze(lin: f64, c: f64) -> f64 {
     c * (lin / c).ln_1p()
 }
 
+/// The other way: how far from the middle, before the squeeze, a point drawn
+/// `r` pixels out is.
+fn unsqueeze(r: f64, c: f64) -> f64 {
+    c * (r / c).exp_m1()
+}
+
 /// The one projection every body goes through.
 struct View {
     /// What the middle of the screen looks at, ecliptic metres from the Sun.
@@ -313,9 +329,31 @@ impl View {
     /// A body's radius on screen: to scale, shrunk as the squeeze shrinks the
     /// map where it stands.
     fn size(&self, p: DVec3, r_m: f64) -> f32 {
-        let d = p - self.middle;
-        let lin = DVec2::new(d.dot(self.right), d.dot(self.up)).length() * self.px_per_m;
-        (r_m * self.px_per_m / (1.0 + lin / self.c)) as f32
+        (r_m * self.px_per_m / self.shrink(p)) as f32
+    }
+
+    /// How much the squeeze shrinks things where `p` stands: 1 in the middle.
+    fn shrink(&self, p: DVec3) -> f64 {
+        1.0 + self.plane(p - self.middle).length() * self.px_per_m / self.c
+    }
+
+    /// An offset in the view's plane, metres right and up.
+    fn plane(&self, d: DVec3) -> DVec2 {
+        DVec2::new(d.dot(self.right), d.dot(self.up))
+    }
+
+    /// Where the view's plane is under a point on screen, metres right and up
+    /// of the middle: the inverse of [`Self::at`].
+    fn under(&self, s: Pos2) -> DVec2 {
+        let v = DVec2::new(
+            f64::from(s.x - self.centre.x),
+            f64::from(self.centre.y - s.y),
+        );
+        let r = v.length();
+        if r < 1e-9 {
+            return DVec2::ZERO;
+        }
+        v * (unsqueeze(r, self.c) / r / self.px_per_m)
     }
 
     /// A ring's radius round the middle, pixels.
@@ -376,33 +414,84 @@ fn ecliptic_circle(view: &View, about: DVec3, r: f64) -> Vec<Pos2> {
         .collect()
 }
 
-/// Paint what is past the ceiling, while the view is out there.
+/// Space over the whole screen but a round hole, where the 3D globe shows
+/// through: the four bands round the hole's square, then the ring between the
+/// square and the circle, its rays meeting the square's corners exactly.
+fn fill_around(p: &egui::Painter, screen: egui::Rect, c: Pos2, r: f32, ink: Color32) {
+    let square = egui::Rect::from_center_size(c, vec2(2.0 * r, 2.0 * r));
+    if !screen.intersects(square) {
+        p.rect_filled(screen, 0.0, ink);
+        return;
+    }
+    for band in [
+        egui::Rect::from_min_max(screen.min, pos2(screen.max.x, square.min.y)),
+        egui::Rect::from_min_max(pos2(screen.min.x, square.max.y), screen.max),
+        egui::Rect::from_min_max(
+            pos2(screen.min.x, square.min.y),
+            pos2(square.min.x, square.max.y),
+        ),
+        egui::Rect::from_min_max(
+            pos2(square.max.x, square.min.y),
+            pos2(screen.max.x, square.max.y),
+        ),
+    ] {
+        let band = band.intersect(screen);
+        if band.width() > 0.0 && band.height() > 0.0 {
+            p.rect_filled(band, 0.0, ink);
+        }
+    }
+    let mut mesh = egui::Mesh::default();
+    // A multiple of eight, so a ray falls on each corner.
+    let n = 64;
+    for i in 0..=n {
+        let a = std::f32::consts::TAU * i as f32 / n as f32;
+        let d = Vec2::from_angle(a);
+        let edge = d / d.x.abs().max(d.y.abs());
+        mesh.colored_vertex(c + vec2(d.x, d.y) * r, ink);
+        mesh.colored_vertex(c + vec2(edge.x, edge.y) * r, ink);
+        if i > 0 {
+            let k = 2 * i as u32;
+            mesh.add_triangle(k - 2, k - 1, k);
+            mesh.add_triangle(k - 1, k + 1, k);
+        }
+    }
+    p.add(egui::Shape::mesh(mesh));
+}
+
+/// Paint what is past the ceiling, while the view is out there, and frame the
+/// 3D globe to the size and place the Earth has there.
 #[allow(clippy::too_many_arguments)]
 pub fn render_cosmos(
     egui: EguiRef,
-    camera_state: Res<crate::resources::CameraState>,
+    mut camera_state: ResMut<crate::resources::CameraState>,
     dev: Res<crate::resources::DevPanelState>,
     clock: Res<crate::systems::transit_live::WorldClock>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
-    camera_lens: Query<&Projection, With<crate::components::FreeCamera>>,
+    mut camera_lens: Query<(&Projection, &mut Camera), With<crate::components::FreeCamera>>,
     mut galaxy: Local<Vec<(DVec3, f32)>>,
 ) {
     let alt = camera_state.cosmos_alt;
+    let Ok((projection, mut lens)) = camera_lens.single_mut() else {
+        return;
+    };
     if alt <= 0.0 {
+        camera_state.cosmos_drag = Vec2::ZERO;
+        if lens.sub_camera_view.is_some() {
+            lens.sub_camera_view = None;
+        }
         return;
     }
-    let (Ok(tf), Ok(projection)) = (camera.single(), camera_lens.single()) else {
+    let Ok(tf) = camera.single() else {
         return;
     };
     let ctx = egui.ctx();
     let screen = ctx.content_rect();
     let p = ctx.layer_painter(egui::LayerId::background());
-    // Over a short climb past the ceiling, so the globe and the disc that
-    // replaces it (the same size there) are not both seen for long.
-    let ceiling = 45_000_000.0 - EARTH_R_M;
+    // Where the 3D camera waits, from the Earth's centre, and its height there.
+    let wait_m = crate::systems::free_camera::ORBIT_MAX_DISTANCE_SPACE;
+    let ceiling = wait_m - f64::from(globe.radius);
     let bd = fade_in(alt, ceiling, ceiling * 1.5);
-    p.rect_filled(screen, 0.0, alpha(SPACE, bd));
 
     let fov = match projection {
         Projection::Perspective(pp) => pp.fov,
@@ -433,6 +522,65 @@ pub fn render_cosmos(
         focal,
     );
     view.centre = screen.center();
+
+    // ── Moving about: a drag carries the point under the hand with it ──────
+    // Read through the squeeze, so a drag from the rim to the middle brings
+    // what was at the rim to the middle, however far out it is.
+    let drag = std::mem::take(&mut camera_state.cosmos_drag) / ctx.zoom_factor();
+    let mut pan = view.plane(camera_state.cosmos_pan);
+    if drag != Vec2::ZERO {
+        let at = ctx
+            .input(|i| i.pointer.latest_pos())
+            .filter(|at| screen.contains(*at))
+            .unwrap_or(view.centre);
+        pan += view.under(at - vec2(drag.x, drag.y)) - view.under(at);
+    }
+    // Held so the Earth stays on screen, and let go of entirely just past
+    // the ceiling, where the globe takes the view back from the middle.
+    let home = view.plane(earth - view.middle);
+    let room = f64::from(screen.width().min(screen.height())) * 0.4;
+    let reach = (unsqueeze(room, view.c) / view.px_per_m)
+        * f64::from(fade_in(alt, ceiling * 1.05, ceiling * 2.0));
+    let off = home - pan;
+    let limit = reach.max(home.length());
+    if off.length() > limit {
+        pan = home - off.normalize() * limit;
+    }
+    camera_state.cosmos_pan = view.right * pan.x + view.up * pan.y;
+    view.middle += camera_state.cosmos_pan;
+
+    // ── The Earth is the 3D globe while it is more than a speck ─────────────
+    // The camera stays where it waits; its picture is widened round the
+    // globe instead (a sub-view larger than the whole), by as much as the
+    // Earth has shrunk here, and moved to where the Earth is drawn.
+    let earth_at = view.at(earth);
+    let wide = ((alt + f64::from(globe.radius)) / wait_m * view.shrink(earth)).clamp(1.0, 1.0e4);
+    let globe_r = (focal * f64::from(globe.radius)
+        / (wait_m * wait_m - f64::from(globe.radius).powi(2)).sqrt()
+        / wide) as f32;
+    let solid = globe_r >= 2.0;
+    let sub = lens.physical_target_size().filter(|_| solid).map(|full| {
+        let ppp = ctx.pixels_per_point();
+        let e = (earth_at - screen.min) * ppp;
+        let size = full.as_dvec2() * wide;
+        bevy::camera::SubCameraView {
+            full_size: full,
+            offset: Vec2::new(
+                (f64::from(full.x) * 0.5 - f64::from(e.x) * wide) as f32,
+                (f64::from(full.y) * 0.5 - f64::from(e.y) * wide) as f32,
+            ),
+            size: UVec2::new(size.x.round() as u32, size.y.round() as u32),
+        }
+    });
+    if lens.sub_camera_view != sub {
+        lens.sub_camera_view = sub;
+    }
+    if solid {
+        // A little past the limb, for the atmosphere's rim.
+        fill_around(&p, screen, earth_at, globe_r * 1.05, alpha(SPACE, bd));
+    } else {
+        p.rect_filled(screen, 0.0, alpha(SPACE, bd));
+    }
     let mut tags: Vec<Tag> = Vec::new();
 
     // ── The ruler ───────────────────────────────────────────────────────────
@@ -540,7 +688,6 @@ pub fn render_cosmos(
     }
 
     // ── The Sun and the planets ─────────────────────────────────────────────
-    let earth_at = view.at(earth);
     let you_apart = apart(earth_at, sun_at, 6.0, 20.0);
     // An orbit seen edge-on is a line through the screen, not a ring: drawn
     // only once the view has turned to look down on it.
@@ -605,17 +752,22 @@ pub fn render_cosmos(
             ),
         ));
     }
-    let earth_r = view.size(earth, EARTH_R_M).max(2.5);
-    let (light, toward) = view.sunlight(earth);
-    paint_lit_sphere(
-        &p,
-        earth_at,
-        earth_r,
-        light,
-        toward,
-        alpha(EARTH_DAY, bd * you_apart.max(0.3)),
-        alpha(EARTH_NIGHT, bd * you_apart.max(0.3)),
-    );
+    let earth_r = if solid {
+        globe_r
+    } else {
+        let earth_r = view.size(earth, EARTH_R_M).max(2.5);
+        let (light, toward) = view.sunlight(earth);
+        paint_lit_sphere(
+            &p,
+            earth_at,
+            earth_r,
+            light,
+            toward,
+            alpha(EARTH_DAY, bd * you_apart.max(0.3)),
+            alpha(EARTH_NIGHT, bd * you_apart.max(0.3)),
+        );
+        earth_r
+    };
     if ma > 0.01 {
         let (light, toward) = view.sunlight(moon);
         paint_lit_sphere(
@@ -834,6 +986,22 @@ mod tests {
             }
             last = Some((e, s));
             alt *= 1.05;
+        }
+    }
+
+    #[test]
+    fn what_is_under_the_hand_is_what_was_drawn_there() {
+        // A drag reads the map back through the squeeze, at every rung.
+        for alt in [1.0e8, 1.0e12, 1.0e17, 1.0e20] {
+            let v = view_at(alt);
+            for s in [pos2(410.0, 290.0), pos2(780.0, 20.0), pos2(30.0, 590.0)] {
+                let d = v.under(s);
+                let back = v.at(v.middle + v.right * d.x + v.up * d.y);
+                assert!(
+                    back.distance(s) < 0.01,
+                    "{alt:e}: {s:?} came back as {back:?}"
+                );
+            }
         }
     }
 

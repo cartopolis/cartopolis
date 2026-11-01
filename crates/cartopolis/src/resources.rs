@@ -1686,6 +1686,13 @@ pub struct CameraState {
     pub cosmos_alt: f64,
     /// Where [`Self::cosmos_alt`] is gliding to, on a log scale.
     pub cosmos_target: f64,
+    /// How far a drag out there has moved the middle of the view, ecliptic
+    /// metres (`systems::cosmos`). Held short of the edge of the screen by the
+    /// height, so zooming back down always comes home.
+    pub cosmos_pan: bevy::math::DVec3,
+    /// The pointer's movement this frame while the view is past the ceiling,
+    /// logical pixels, for `systems::cosmos` to turn into [`Self::cosmos_pan`].
+    pub cosmos_drag: Vec2,
     /// A jump being flown rather than cut (`docs/mockups/zoom-ladder/`): up
     /// until both ends fit, across, down, then the jump itself lands
     /// (`geo_nav::apply_teleport` holds it pending meanwhile).
@@ -1844,6 +1851,8 @@ impl Default for CameraState {
             rail_goal: None,
             cosmos_alt: 0.0,
             cosmos_target: 0.0,
+            cosmos_pan: bevy::math::DVec3::ZERO,
+            cosmos_drag: Vec2::ZERO,
             flight: None,
             auto_yaw: 0.0,
             follow_rotate: false,
