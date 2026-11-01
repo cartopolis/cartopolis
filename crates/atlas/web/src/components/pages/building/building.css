@@ -148,6 +148,13 @@
     }
 }
 
+/* Two to a row on a phone left a stepper field room for "3." of "3.00 m". */
+@media (max-width: 600px) {
+    .designer__fields {
+        grid-template-columns: 1fr;
+    }
+}
+
 .designer__issue {
     margin: 0;
 

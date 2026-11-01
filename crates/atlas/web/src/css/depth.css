@@ -77,6 +77,21 @@ body::before {
     box-shadow: inset -1px 0 0 var(--c-highlight);
 }
 
+/* Once the nav and the context are drawers over the page (the shell's own
+   breakpoint), they take the denser glass: through the soft one the list
+   beneath read as a blur of buttons behind the form. */
+@container m-shell (width < 1100px) {
+    .m-shell__context {
+        background: var(--c-glass);
+    }
+}
+
+@container m-shell (width < 720px) {
+    .m-shell__nav {
+        background: var(--c-glass);
+    }
+}
+
 /* Inside the nav pane already: no second sheet of glass. */
 .m-shell__nav-head,
 .m-shell__nav-foot {

@@ -21,3 +21,59 @@
     display: inline-flex;
     gap: var(--m-space-1);
 }
+
+/* On a phone each claim is a card, one line per column: as a table the
+   address wrapped to four lines and the rest scrolled out of sight. The labels
+   follow the columns' order in claims.tsx. */
+@media (max-width: 600px) {
+    .claims .m-table,
+    .claims .m-table tbody,
+    .claims .m-table tr,
+    .claims .m-table td {
+        display: block;
+    }
+
+    .claims .m-table thead {
+        display: none;
+    }
+
+    .claims .m-table tr {
+        border-bottom: 1px solid var(--m-border);
+        padding: var(--m-space-2) 0;
+    }
+
+    .claims .m-table td {
+        border: 0;
+        display: flex;
+        gap: var(--m-space-3);
+        padding: 2px var(--m-space-3);
+    }
+
+    .claims .m-table td::before {
+        color: var(--m-text-dim);
+        flex: none;
+        font-size: var(--m-font-size-sm);
+        width: 5.5rem;
+    }
+
+    .claims .m-table td:nth-child(1) {
+        color: var(--m-text-strong);
+        font-weight: 600;
+    }
+
+    .claims .m-table td:nth-child(2)::before {
+        content: 'Owner';
+    }
+
+    .claims .m-table td:nth-child(3)::before {
+        content: 'Claimed';
+    }
+
+    .claims .m-table td:nth-child(4)::before {
+        content: 'Building';
+    }
+
+    .claims .m-table td.m-table__empty::before {
+        content: none;
+    }
+}

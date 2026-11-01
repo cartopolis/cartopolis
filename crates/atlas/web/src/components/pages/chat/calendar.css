@@ -927,4 +927,35 @@
     .cal-month-wrap {
         grid-template-columns: 1fr;
     }
+
+    /* Seven columns in a phone's width cut every plan to "09…": the week
+       scrolls sideways instead, its days and its hours held in view. */
+    .cal-week {
+        overflow: auto;
+    }
+
+    .cal-week-head,
+    .cal-week-body {
+        grid-template-columns: 44px repeat(7, 92px);
+        min-width: min-content;
+    }
+
+    .cal-week-head {
+        position: sticky;
+        top: 0;
+        z-index: 4;
+    }
+
+    .cal-week-body {
+        flex: none;
+        overflow: visible;
+    }
+
+    .cal-gutter,
+    .cal-hours {
+        background: var(--m-surface);
+        left: 0;
+        position: sticky;
+        z-index: 3;
+    }
 }

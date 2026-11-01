@@ -121,3 +121,27 @@
     font-size: var(--m-font-size-sm);
     margin: 0;
 }
+
+/* On a phone the badge and the switch go under the name: in one row with the
+   arrows and the logo they left the name a column one word wide. */
+@media (max-width: 600px) {
+    .signin-admin__head {
+        display: grid;
+        grid-template-columns: auto auto 1fr auto;
+        column-gap: var(--m-space-3);
+        row-gap: var(--m-space-1);
+
+        & > .signin-admin__order {
+            grid-row: span 2;
+        }
+
+        & > .signin-admin__name {
+            grid-column: span 2;
+        }
+
+        & > :nth-child(4) {
+            grid-column: 3;
+            justify-self: start;
+        }
+    }
+}

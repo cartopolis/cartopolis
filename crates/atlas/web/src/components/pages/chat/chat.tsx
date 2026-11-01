@@ -110,6 +110,11 @@ const REASONS = [
     {label: 'Something else', value: 'other'},
 ]
 
+/** Whether typing is on a touch screen's keyboard, which has no Shift+Enter. */
+function touchKeyboard(): boolean {
+    return matchMedia('(pointer: coarse)').matches
+}
+
 /** How someone is shown: the bare name for a neighbour, else the full address. */
 function shown(address: string, me: string | null): string {
     const [name, server] = address.split('@')
@@ -4162,7 +4167,9 @@ export class Chat extends MithrilComponent {
                 <textarea
                     oninput={(e: Event) => (s.draft = {...s.draft, [key]: (e.target as HTMLTextAreaElement).value})}
                     onkeydown={(e: KeyboardEvent) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
+                        // A phone keyboard has no Shift+Enter, so there Enter is the new
+                        // line and Send sends.
+                        if (e.key === 'Enter' && !e.shiftKey && !touchKeyboard()) {
                             e.preventDefault()
                             send()
                         }
@@ -4195,7 +4202,9 @@ export class Chat extends MithrilComponent {
                             </button>
                         </span>
                     )}
-                    <span class="chat-sub">🔐 end-to-end encrypted · Enter to send, Shift+Enter for a new line</span>
+                    <span class="chat-sub">
+                        {touchKeyboard() ? '🔐 end-to-end encrypted' : '🔐 end-to-end encrypted · Enter to send, Shift+Enter for a new line'}
+                    </span>
                     <Button disabled={!(s.draft[key] ?? '').trim()} size="sm" type="submit" variant="primary">Send</Button>
                 </div>
             </form>

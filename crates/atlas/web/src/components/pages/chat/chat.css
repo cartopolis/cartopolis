@@ -15,14 +15,18 @@
 .chat {
     display: flex;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
 }
 
+/* Centred by the card's auto margins, not by `align-items: center`: a card
+   taller than the window centred that way hangs off the top, out of reach of
+   the scroll (on a phone it cut off the logo). Auto margins fall to zero. */
 .chat-signin {
-    align-items: center;
     display: flex;
-    justify-content: center;
     min-height: 100vh;
+    min-height: 100dvh;
+    padding-block: var(--m-space-5);
 }
 
 /*
@@ -620,8 +624,9 @@
     font-size: 1.3rem;
 }
 
-.chat-door {
-    margin: var(--m-space-5) auto;
+/* Beats `.auth`'s own 6vh top margin (login.css, which loads later). */
+.chat-signin > .chat-door {
+    margin: auto;
 }
 
 .chat-welcome-mark {
@@ -3611,6 +3616,7 @@
 
 .chat.is-guest {
     height: 100vh;
+    height: 100dvh;
 }
 
 .chat.is-guest .chat-call {
@@ -3802,4 +3808,13 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--m-space-2);
+}
+
+/* The composer sets its own type, so the page's 16px floor for fields on a
+   touch screen (app.css) does not reach it: iOS zooms into anything smaller. */
+@media (pointer: coarse) {
+    .chat-composer textarea,
+    .chat-edit textarea {
+        font-size: 16px;
+    }
 }

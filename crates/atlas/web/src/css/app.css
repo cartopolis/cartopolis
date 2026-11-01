@@ -97,10 +97,31 @@ h3 {
     letter-spacing: 0;
 }
 
+/* The library's buttons never wrap, so on a phone a long label ran out of its
+   button and off the screen ("Another OpenID server (a community's own…").
+   There it wraps, and the button grows a line instead. */
+@media (max-width: 600px) {
+    .m-button {
+        line-height: 1.25;
+        padding-block: 6px;
+        white-space: normal;
+    }
+}
+
 /* Fields are controls: their edge is the 3:1 line, as LINE is in the client. */
 .m-input,
 .m-select {
     border-color: var(--m-border-strong);
+}
+
+/* iOS zooms the page into any field under 16px when it takes focus, and does
+   not zoom back out: on a touch screen every field is at least that. */
+@media (pointer: coarse) {
+    input:not([type='checkbox'], [type='radio'], [type='range']),
+    select,
+    textarea {
+        font-size: max(16px, 1em);
+    }
 }
 
 .m-badge,

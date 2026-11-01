@@ -36,6 +36,10 @@
     display: inline-flex;
     gap: 2px;
     padding: 3px;
+    /* A row wider than a phone scrolls sideways, rather than wrapping a label onto two lines. */
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
 }
 
 .stats-seg button {
@@ -47,6 +51,8 @@
     font: inherit;
     font-size: 13px;
     padding: 5px 11px;
+    white-space: nowrap;
+    flex: none;
 }
 
 .stats-seg button.is-on {

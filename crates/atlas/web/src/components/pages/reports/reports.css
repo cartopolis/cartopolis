@@ -70,3 +70,13 @@
 .reports-act > :first-child {
     flex: 1;
 }
+
+/* On a phone the note takes the whole width and the button goes under it:
+   side by side, the field's label wrapped to three words a line and its
+   placeholder was cut off. */
+@media (max-width: 600px) {
+    .reports-act {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}
