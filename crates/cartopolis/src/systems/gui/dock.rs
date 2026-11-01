@@ -218,58 +218,60 @@ pub fn render_dock(
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS_PILL))
                     .inner_margin(egui::Margin::same(pad.round() as i8))
                     .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut panel_disc = |ui: &mut egui::Ui, panel: RightPanel| {
-                        let open = right_panel.is(panel);
-                        if theme::bar_button(ui, panel.icon(), panel.label(), open).clicked() {
-                            clicked = Some(panel);
-                        }
-                    };
-                    panel_disc(ui, RightPanel::Search);
-                    // Say — the one disc here that opens no panel. A tap raises
-                    // the composer over the map; the log, the rooms and the
-                    // blocks are in ☰ ▸ Nearby chat. It carries the accent while
-                    // the composer is up, the same "this is the live one" the
-                    // panel discs wear.
-                    if has_session
-                        && theme::bar_button(
-                            ui,
-                            crate::systems::icons::CHAT,
-                            "Say something",
-                            say.composing,
-                        )
-                        .clicked()
-                    {
-                        say_clicked = true;
-                    }
-                    // The view-mode disc (Follow, Fly, Earth): it wears the
-                    // current mode's glyph and a tap steps to the next mode on
-                    // offer — Follow only in a signed-in session
-                    // (`free_camera::follow_available`); the same cycle Tab
-                    // walks. It spent a day in the top right corner
-                    // (2026-10-18) and was not found there.
-                    mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
-                    // The camera, orange: taking a picture and posting it is
-                    // what the dock is for most, out walking
-                    // (`docs/mockups/social-camera/`). The same size as every
-                    // other disc.
-                    if has_camera && camera_disc(ui).clicked() {
-                        camera_clicked = true;
-                    }
-                    panel_disc(ui, RightPanel::Places);
-                    // The menu closes the row: everything that is not a place.
-                    //
-                    // A hamburger, not the app mark. The mark is the brand, and a
-                    // logo sitting in a row of pictures-of-what-they-do reads as
-                    // decoration — nothing about it said there was a menu behind
-                    // it, which is a problem for the one disc that is the only
-                    // route to Settings, sign-in and Exit.
-                    if theme::bar_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
-                        .clicked()
-                    {
-                        menu_clicked = true;
-                    }
-                });
+                        ui.horizontal(|ui| {
+                            let mut panel_disc = |ui: &mut egui::Ui, panel: RightPanel| {
+                                let open = right_panel.is(panel);
+                                if theme::bar_button(ui, panel.icon(), panel.label(), open)
+                                    .clicked()
+                                {
+                                    clicked = Some(panel);
+                                }
+                            };
+                            panel_disc(ui, RightPanel::Search);
+                            // Say — the one disc here that opens no panel. A tap raises
+                            // the composer over the map; the log, the rooms and the
+                            // blocks are in ☰ ▸ Nearby chat. It carries the accent while
+                            // the composer is up, the same "this is the live one" the
+                            // panel discs wear.
+                            if has_session
+                                && theme::bar_button(
+                                    ui,
+                                    crate::systems::icons::CHAT,
+                                    "Say something",
+                                    say.composing,
+                                )
+                                .clicked()
+                            {
+                                say_clicked = true;
+                            }
+                            // The view-mode disc (Follow, Fly, Earth): it wears the
+                            // current mode's glyph and a tap steps to the next mode on
+                            // offer — Follow only in a signed-in session
+                            // (`free_camera::follow_available`); the same cycle Tab
+                            // walks. It spent a day in the top right corner
+                            // (2026-10-18) and was not found there.
+                            mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
+                            // The camera, orange: taking a picture and posting it is
+                            // what the dock is for most, out walking
+                            // (`docs/mockups/social-camera/`). The same size as every
+                            // other disc.
+                            if has_camera && camera_disc(ui).clicked() {
+                                camera_clicked = true;
+                            }
+                            panel_disc(ui, RightPanel::Places);
+                            // The menu closes the row: everything that is not a place.
+                            //
+                            // A hamburger, not the app mark. The mark is the brand, and a
+                            // logo sitting in a row of pictures-of-what-they-do reads as
+                            // decoration — nothing about it said there was a menu behind
+                            // it, which is a problem for the one disc that is the only
+                            // route to Settings, sign-in and Exit.
+                            if theme::bar_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
+                                .clicked()
+                            {
+                                menu_clicked = true;
+                            }
+                        });
                     });
             });
 

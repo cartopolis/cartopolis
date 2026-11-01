@@ -235,8 +235,7 @@ fn core_shape(rect: &egui::epaint::RectShape) -> Option<egui::Shape> {
     if r.height() < SHEEN_MIN_HEIGHT || r.width() < 4.0 * RIM_WIDTH {
         return None;
     }
-    let radius = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne))
-        .min(r.height() * 0.5);
+    let radius = f32::from(rect.corner_radius.nw.max(rect.corner_radius.ne)).min(r.height() * 0.5);
     let inner = (radius - RIM_WIDTH).max(2.0).round() as u8;
     let mut core = egui::epaint::RectShape::filled(
         r.shrink(RIM_WIDTH),
@@ -807,7 +806,12 @@ mod tests {
         }];
         // 800×400 points at 2× — the same screen a phone would lay out.
         assert!(
-            insert_backdrops(&mut shapes, [1600, 800], 2.0, Some(egui::TextureId::User(9))),
+            insert_backdrops(
+                &mut shapes,
+                [1600, 800],
+                2.0,
+                Some(egui::TextureId::User(9))
+            ),
             "glass was found"
         );
 
@@ -831,15 +835,27 @@ mod tests {
             panic!("the core is a rect inside the pane");
         };
         assert_eq!(core.fill, theme::GLASS_CORE);
-        assert_eq!(core.rect, rect.shrink(RIM_WIDTH), "the core leaves the rim clear");
+        assert_eq!(
+            core.rect,
+            rect.shrink(RIM_WIDTH),
+            "the core leaves the rim clear"
+        );
         let egui::Shape::Rect(backdrop) = &group[0] else {
             panic!("the backdrop is drawn first, under the tint");
         };
         let egui::Shape::Rect(glass) = &group[1] else {
             panic!("the glass rect itself is drawn second");
         };
-        assert_eq!(glass.fill, theme::GLASS_RIM, "the pane itself is the clear rim");
-        assert_eq!(backdrop.fill, egui::Color32::WHITE, "the backdrop is untinted");
+        assert_eq!(
+            glass.fill,
+            theme::GLASS_RIM,
+            "the pane itself is the clear rim"
+        );
+        assert_eq!(
+            backdrop.fill,
+            egui::Color32::WHITE,
+            "the backdrop is untinted"
+        );
         assert_eq!(backdrop.corner_radius, glass.corner_radius);
         let brush = backdrop.brush.as_ref().expect("the backdrop is textured");
         assert_eq!(brush.fill_texture_id, egui::TextureId::User(7));

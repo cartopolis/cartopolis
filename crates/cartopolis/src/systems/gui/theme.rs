@@ -1434,12 +1434,7 @@ pub fn round_button(
 /// [`round_button`] for a disc that sits *in* a glass bar (the dock): at rest
 /// it is only its glyph, since the bar is already the surface — a dark disc on
 /// a dark pane read as a hole in it. Hover and the engaged plate are the same.
-pub fn bar_button(
-    ui: &mut egui::Ui,
-    icon: &str,
-    tooltip: &str,
-    selected: bool,
-) -> egui::Response {
+pub fn bar_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, selected: bool) -> egui::Response {
     round_button_on(
         ui,
         icon,
@@ -2438,11 +2433,7 @@ pub fn back_title(ui: &mut egui::Ui, title: &str) -> bool {
 
 /// [`back_title`] plus room for a page's own actions, laid out right-to-left
 /// from the close (the calendar's + and ⋯).
-pub fn back_title_with(
-    ui: &mut egui::Ui,
-    title: &str,
-    extra: impl FnOnce(&mut egui::Ui),
-) -> bool {
+pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut egui::Ui)) -> bool {
     let mut back = false;
     let row_h = close_button_size().max(30.0);
     ui.allocate_ui_with_layout(
@@ -3050,8 +3041,15 @@ mod tests {
             Color32::from_white_alpha(GLASS_SHEEN_PEAK),
             over(GLASS_CORE, over(GLASS_RIM, BRIGHT_MAP)),
         );
-        for (f, b) in [(flat.r(), core.r()), (flat.g(), core.g()), (flat.b(), core.b())] {
-            assert!(b <= f, "the core {core:?} is lighter than the flat pane {flat:?}");
+        for (f, b) in [
+            (flat.r(), core.r()),
+            (flat.g(), core.g()),
+            (flat.b(), core.b()),
+        ] {
+            assert!(
+                b <= f,
+                "the core {core:?} is lighter than the flat pane {flat:?}"
+            );
         }
         assert!(contrast(TEXT_DIM, core) >= contrast(TEXT_DIM, flat));
     }
