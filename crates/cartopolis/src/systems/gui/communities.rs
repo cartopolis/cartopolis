@@ -630,6 +630,7 @@ fn card_row_with(
         } else {
             crate::systems::chats::ROW_CARD
         })
+        .shadow(theme::CARD_SHADOW)
         .corner_radius(egui::CornerRadius::same(14))
         .inner_margin(egui::Margin::symmetric(8, 7))
         .show(ui, |ui| {

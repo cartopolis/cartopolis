@@ -66,10 +66,11 @@ const AVATAR_TONES: [egui::Color32; 6] = [
 /// so the signposts in a list carry a little colour without competing with
 /// the unread badges, which are the full orange.
 pub(crate) const LABEL_WARM: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xA0, 0x6E);
-/// A row's resting card: white at 4 %, so the list reads as a stack of
-/// rounded rows on the screen rather than as text on black.
-pub(crate) const ROW_CARD: egui::Color32 =
-    egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 10);
+/// A row's resting card, so the list reads as a stack of rounded rows on the
+/// screen rather than as text on black: [`theme::SURFACE`] on the [`theme::PANEL`]
+/// page under a [`theme::CARD_SHADOW`], the midas hub's card (2026-11-01; it
+/// was white at 4 %, a lighter card on a lighter page and no shadow).
+pub(crate) const ROW_CARD: egui::Color32 = theme::SURFACE;
 
 /// Blend `base` toward `over` by `k`.
 pub(crate) fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
@@ -725,7 +726,7 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     } else {
         ROW_CARD
     };
-    p.rect_filled(rect, card, fill);
+    theme::paint_card(p, rect, card, fill);
     // Something new in it: a brand stripe down the card's left edge, so an
     // unread chat is found by the eye before the badge is read.
     if row.unread > 0 {
@@ -1595,7 +1596,8 @@ fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 66.0), egui::Sense::click());
     let p = ui.painter();
     let card = egui::CornerRadius::same(16);
-    p.rect_filled(
+    theme::paint_card(
+        p,
         rect,
         card,
         if resp.hovered() || resp.is_pointer_button_down_on() {

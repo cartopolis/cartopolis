@@ -162,17 +162,22 @@ fn tokens() -> Vec<(&'static str, Value)> {
             "--m-backdrop",
             Pair(alpha(INK, 40.0), alpha(Color32::BLACK, 60.0)),
         ),
+        // Dark: the midas hub's card shadow (`--lift-2`), as `theme::CARD_SHADOW`.
         (
             "--m-shadow-color",
-            Pair(alpha(INK, 8.0), alpha(Color32::BLACK, 45.0)),
+            Pair(alpha(INK, 8.0), alpha(Color32::BLACK, 60.0)),
         ),
         // Depth: what makes a surface read as a pane of glass and a button as
         // a thing standing on it (`depth.css`). Light from above: a rim and an
         // inner highlight along the top edge, a shade along the bottom, and the
         // accent's own glow under whatever is live.
+        // Dark: the client's glass, so a card is the midas hub's card — solid
+        // [`SURFACE`] on [`INK`] to the eye, with the street map behind only a
+        // whisper. It was the raised step at 55 %, a lighter, thinner pane than
+        // anything the app or the hub draws (2026-11-01).
         (
             "--c-glass-soft",
-            Pair(alpha(L_SURFACE, 62.0), alpha(SURFACE_RAISED, 55.0)),
+            Pair(alpha(L_SURFACE, 62.0), alpha(SURFACE, glass_pct)),
         ),
         (
             "--c-rim",

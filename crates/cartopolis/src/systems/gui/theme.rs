@@ -44,7 +44,7 @@
 //!
 //! **Docked panels are solid; what floats over the map is glass.** [`PANEL`]
 //! is opaque, because a panel is where you read. [`GLASS`] — windows, menus,
-//! readouts over the map — is [`SURFACE`] at 84 % over a blurred copy of the
+//! readouts over the map — is [`SURFACE`] at 92 % over a blurred copy of the
 //! frame (`systems::glass`), with white-at-low-alpha rims ([`OVERLAY_LINE`])
 //! rather than drawn borders. The alpha is the one number *not* free to move
 //! for looks: the contrast tests over a bright basemap are measured through it.
@@ -96,7 +96,7 @@ pub const INK: Color32 = Color32::from_rgb(0x0F, 0x14, 0x16);
 ///
 /// Opaque, and used as such by the handful of call sites that need a solid
 /// panel colour; the *panel and window fill* is [`GLASS`], which is this at
-/// 95 %. Keep the two in step — a solid box beside a glass one that were meant
+/// 92 %. Keep the two in step — a solid box beside a glass one that were meant
 /// to be the same surface is exactly the drift the shared frames exist to stop.
 pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x1A, 0x1C);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
@@ -255,7 +255,7 @@ pub const CODE_API: Color32 = Color32::from_rgb(0x8F, 0xCB, 0xFF);
 pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
 
 /// The fill of the boxes that float *over* the map (status HUD, stats, driver
-/// chrome) — the same 84 % glass a panel is made of, and blurred behind by
+/// chrome) — the same 92 % glass a panel is made of, and blurred behind by
 /// `systems::glass` in the same way.
 ///
 /// **It shares [`GLASS`]'s alpha rather than having one of its own**, which is a
@@ -273,13 +273,21 @@ pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
 /// beige land on near-white paper — so the composite an overlay lands on is
 /// `SURFACE` over *white*, three steps lighter than the panel these colours were
 /// picked against. [`TEXT_DIM`] measured 4.12:1 there, [`ACCENT_TEXT`] 4.11:1 and
-/// [`ERROR`] 3.59:1. It went to 92 % and now back to 84 %, and the difference
-/// between the two visits is that the tones themselves were lifted in between —
-/// this alpha is a *measured* floor now rather than an eyeballed one, and
+/// [`ERROR`] 3.59:1. It went to 92 %, back to 84 % once the tones themselves
+/// were lifted, and to 92 % again for the midas hub's cards ([`GLASS`]) — 84 %
+/// is a *measured* floor now rather than an eyeballed one, and
 /// `text_clears_every_surface_it_can_land_on` is what keeps it one.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 215);
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 235);
 
-/// The panel and window fill: [`SURFACE`] at 84 %.
+/// The panel and window fill: [`SURFACE`] at 92 %.
+///
+/// **Raised from 84 % on 2026-11-01, to the midas hub's cards.** The hub draws
+/// these same tones (its `theme.css` is a copy of the web's, generated from
+/// this file) as solid [`SURFACE`] cards on [`INK`], and beside it a pane at
+/// 84 % over a bright map came out a thin mid grey rather than that teal
+/// near-black. 92 % keeps the blur showing at the rim ([`GLASS_RIM`]) and the
+/// tone of a hub card where the type sits. Everything below about 84 % being
+/// the floor still holds: a denser pane only raises every ratio.
 ///
 /// **The one thing that makes the chrome read as glass rather than as paint.**
 /// A panel used to be opaque, which over a moving map is a rectangle cut out of
@@ -297,14 +305,14 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0
 /// every text tone still clears 4.5:1 against the worst background a panel can
 /// have — the basemap at its brightest, which is white paper, because the
 /// imagery is a map rather than a photograph. [`TEXT_DIM`] measures 5.06:1 there
-/// at this alpha and **4.40:1 one step further** (alpha 205), and it is the tone
+/// at 84 % and **4.40:1 one step further** (alpha 205), and it is the tone
 /// egui hands to every hint and unit in the app.
 /// `text_clears_every_surface_it_can_land_on` is where that is checked; it
 /// composites through this constant, so lowering it moves every one of those
 /// ratios at once. Note what the test cannot know: it measures against the
 /// *unblurred* white, which is the honest worst case — a blur cannot make a
 /// white page darker.
-pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 215);
+pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 235);
 
 /// The clear rim of a glass pane over a blur (`systems::glass`): [`GLASS`]'s
 /// colour, thin, so the blurred city shows through at five sixths of its light.
@@ -321,7 +329,7 @@ pub const GLASS_RIM: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A,
 /// two together, plus the sheen's brightest row, come out no lighter over white
 /// paper than [`GLASS`] does (`the_glass_core_is_no_lighter_than_the_flat_pane`),
 /// so every ratio measured through [`GLASS`] holds where the type is.
-pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 222);
+pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 248);
 
 /// The white at the very top of a glass pane's sheen (`systems::glass`), as an
 /// alpha; it fades to nothing by 40 % of the pane's height. Counted in the
@@ -329,8 +337,8 @@ pub const GLASS_CORE: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A
 /// its title sits.
 pub const GLASS_SHEEN_PEAK: u8 = 12;
 
-/// The docked side panels' surface: one flat near-black, between [`INK`] and
-/// [`SURFACE`], with the same teal cast as the ramp it belongs to.
+/// The docked side panels' surface: one flat near-black, the ramp's bottom
+/// ([`INK`]), with the same teal cast as the ramp it belongs to.
 ///
 /// Two warmer versions were tried and dropped the same day (2026-10-04): a
 /// lift with a brand-orange corner glow (read as a lighting effect, not a
@@ -346,7 +354,14 @@ pub const GLASS_SHEEN_PEAK: u8 = 12;
 /// Floating readouts and menus over the map stay glass. Being opaque, a panel
 /// also no longer pays for `systems::glass`'s blur, which only runs behind the
 /// glass fills.
-pub const PANEL: Color32 = Color32::from_rgb(0x12, 0x18, 0x19);
+///
+/// **[`INK`] since 2026-11-01, the midas hub's page.** The hub lays these
+/// tones out as cards of [`SURFACE`] on a page of [`INK`], each with a soft
+/// shadow ([`CARD_SHADOW`]), and the layering is most of its depth. The panel
+/// was a step lighter than [`INK`], so a [`SURFACE`] card in it stood off it
+/// by less than one step and the list read flat. A constant of its own still,
+/// so the two can part again.
+pub const PANEL: Color32 = INK;
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -1712,6 +1727,25 @@ const LIFT_SHADOW: Shadow = Shadow {
     color: Color32::from_black_alpha(100),
 };
 
+/// The shadow under a card in a panel ([`list_group`], a chat row, a community
+/// row): the midas hub's `--lift-2`, as near as one egui shadow comes — a few
+/// points down, soft, darker than the page, so a [`SURFACE`] card on a
+/// [`PANEL`] reads as lying on it rather than printed into it.
+pub const CARD_SHADOW: Shadow = Shadow {
+    offset: [0, 4],
+    blur: 14,
+    spread: 0,
+    color: Color32::from_black_alpha(150),
+};
+
+/// A card in a panel, painted: its [`CARD_SHADOW`] and then its fill. For the
+/// rows that are painted rather than laid out in a `Frame` (a `Frame` takes
+/// `.shadow(CARD_SHADOW)`).
+pub fn paint_card(p: &egui::Painter, rect: egui::Rect, corner: CornerRadius, fill: Color32) {
+    p.add(CARD_SHADOW.as_shape(rect, corner));
+    p.rect_filled(rect, corner, fill);
+}
+
 /// Alpha of the sheen at the very top of a lit control. Low on purpose: it
 /// fades to nothing by the middle, where the glyph is, so no contrast pair in
 /// this file is measured through it.
@@ -2280,6 +2314,7 @@ pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
     let out = egui::Frame::NONE
         .fill(SURFACE)
         .stroke(egui::Stroke::new(1.0, LIST_LINE))
+        .shadow(CARD_SHADOW)
         .corner_radius(egui::CornerRadius::same(16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

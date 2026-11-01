@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # The chrome is monochrome glass, and the logo is not
@@ -77,7 +77,8 @@ that floats over arbitrary imagery.
 
 ## The glass, the blur, and the one number that is not a taste knob
 
-`GLASS` is `SURFACE` at 84 %, and it is the panel and window fill. Alongside the
+`GLASS` is `SURFACE` at 92 %, and it is the panel and window fill (84 % until
+2026-11-01; see "The midas hub's tones" below). Alongside the
 translucency: a white-at-low-alpha rim (`OVERLAY_LINE`) rather than a drawn
 border, wider radii (`RADIUS` 6→8, `RADIUS_LG` 10→14), a softer and further
 shadow — and a real backdrop blur (`systems::glass`).
@@ -140,6 +141,35 @@ Upward, nothing measures it and a rendered city is the only instrument — that 
 how the pre-blur value was chosen (93 % passed every ratio and still showed the
 city through the body copy). Check a change here against a shot of a dense city,
 not against the table.
+
+## The midas hub's tones (2026-11-01)
+
+The midas hub's page (`jeroen/midas`, `web/src/theme.css`) is a copy of the
+web's generated `theme.css`, so its colours *are* these constants; what the
+person saw as "midas's panel tones" was how it lays them out in dark mode:
+layers of solid `SURFACE` cards on an `INK` page, each with a soft shadow, and
+`ACCENT_RING` on `ACCENT_MUTED` tags. The person put it as "the colours of the
+panel layers, and the depth", and kept the orange as an accent. In both halves
+at once:
+
+- `GLASS`, `OVERLAY` 84 → 92 %, `GLASS_CORE` 87 → 97 %: at 84 % a card over a
+  bright map came out a thin mid grey beside the hub's teal near-black. The rim
+  stays clear, so the blur is still seen. The web's `--c-glass-soft` (dark)
+  went from `SURFACE_RAISED` at 55 % to the same `GLASS` alpha of `SURFACE`.
+- Tags: `contacts::fact` and the web's toned `.m-badge` are the hub's flat
+  teal tag; a neutral web badge keeps its rim, the only thing marking it on a
+  card.
+- Layers: `PANEL` is `INK`, the hub's page (it was a step lighter, so a
+  `SURFACE` card in a panel stood off it by less than a step), and the cards
+  in it — `list_group`, chat, community and contact rows (`chats::ROW_CARD`,
+  which was white at 4 %) — are `SURFACE` under `theme::CARD_SHADOW`, the
+  hub's `--lift-2` as one egui shadow. The web's cards take the same lift, and
+  its dark `--m-shadow-color` went from 45 to 60 % black.
+- Turning the Layers panel's brand-orange "on" teal was tried and taken back
+  the same day: the orange is wanted there as an accent.
+
+When midas's copy of `theme.css` is refreshed it picks up the token changes;
+the rest is layout, and lives in each repository.
 
 ## The focus ring is two rings
 

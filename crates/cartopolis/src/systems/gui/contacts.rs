@@ -1114,8 +1114,9 @@ pub fn render_person_card(
     }
 }
 
-/// One of the small grey facts on a card (`.facts div`); `new` is the amber
-/// "new account" one.
+/// One of the small facts on a card (`.facts div`), a teal tag as the midas
+/// hub and the web draw them ([`theme::ACCENT_RING`] on [`theme::ACCENT_MUTED`],
+/// 7.4:1); `new` is the amber "new account" one.
 fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
     let (fill, ink) = if new {
         (
@@ -1123,7 +1124,7 @@ fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
             egui::Color32::from_rgb(0xFF, 0xD2, 0x7A),
         )
     } else {
-        (theme::SURFACE_RAISED, theme::TEXT)
+        (theme::ACCENT_MUTED, theme::ACCENT_RING)
     };
     let text_w = ui
         .painter()
@@ -1472,6 +1473,7 @@ fn person_row(
         } else {
             crate::systems::chats::ROW_CARD
         })
+        .shadow(theme::CARD_SHADOW)
         .corner_radius(egui::CornerRadius::same(14))
         .inner_margin(egui::Margin::symmetric(8, 7))
         .show(ui, |ui| {
