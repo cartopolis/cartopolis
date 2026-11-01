@@ -1,0 +1,234 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Cartopolis — zoom ladder v1: from the street to the Milky Way</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+
+<h1>One zoom from the street to the <b>Milky Way</b> <span class="new">new</span></h1>
+<p class="lede">Asked for 2026-11-01: where are the solar system and the Milky Way? Moving from one layer to the next should be
+seamless; turning the globe is laborious; the real sun and its night side are beautiful but get in the way of finding a place.
+Today the camera stops at about 38,600 km, the globe stops dead when you let go, a jump is an instant cut, and above the globe
+there is nothing but the sky dome. This sheet proposes one continuous zoom with a rail that names where you are, a globe you can
+grab and throw, light that serves the reader, and three new rungs above the Earth.</p>
+
+<div class="principles">
+  <div><h3>One zoom, all the way up</h3><p>Wheel, pinch or the rail take you from your door to the galaxy without a mode switch. Each rung fades into the next on height, as the globe already does.</p></div>
+  <div><h3>The rail says where you are</h3><p>A thin ladder on the right edge names the rung you are on. Tap a rung to fly there; drag along it to zoom. It replaces the + / − pair.</p></div>
+  <div><h3>Grab the globe</h3><p>The place under your finger stays under your finger. Let go while moving and it keeps turning. Double-tap to go closer to a place.</p></div>
+  <div><h3>Earth is home</h3><p>Zooming in anywhere above the Moon heads back to the Earth, and lands where you left. You cannot get lost among the stars.</p></div>
+</div>
+
+<h2><span>1</span>The globe with the rail</h2>
+<p class="sub">Desktop, 8,000 km over Europe, in even light. Everything orange is new. The rail's rungs are the scenario ladder's
+(<code>ladder::Rung</code>), with three added above it.</p>
+<div class="screen" style="background-image:url(../macro-view/globe-8000.jpg); background-position:center;">
+  <svg class="abs" style="left:0;top:0;width:1600px;height:1000px" viewBox="0 0 1600 1000">
+    <path d="M 1120 60 C 1230 260, 1240 640, 1150 960" stroke="#ffd58a" stroke-width="1.6" stroke-dasharray="7 6" fill="none" opacity=".75"/>
+    <text x="1010" y="250" fill="#ffd58a" font-size="13" font-family="Jakarta" opacity=".95">sunset line →</text>
+  </svg>
+  <div class="abs disc" style="left:16px;top:14px"><svg class="i" viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5zM3 13l9 5 9-5"/></svg></div>
+  <div class="abs disc" style="left:16px;top:70px"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l3 9-3 9-3-9z" fill="#5CC6C0" stroke="none"/></svg></div>
+  <div class="abs disc" style="left:16px;top:126px"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div>
+  <div class="abs toast glass" style="left:50%;transform:translateX(-50%);top:18px">World <small>8,000 km · Europe</small></div>
+  <div class="abs glass seg2" style="left:16px;bottom:22px"><div class="on">◐ Even light</div><div>☀ Real sun</div></div>
+  <div class="abs dock">
+    <div class="disc"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></div>
+    <div class="disc"><svg class="i" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2-8z"/></svg></div>
+    <div class="disc brand"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="3"/><circle cx="12" cy="13.5" r="3.5"/></svg></div>
+    <div class="disc"><svg class="i" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg></div>
+    <div class="disc"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></div>
+  </div>
+  <div class="abs glass rail">
+    <div class="spine"></div>
+    <div class="r far major"><span>Milky Way</span><i></i></div>
+    <div class="r far major"><span>Stars</span><i></i></div>
+    <div class="r far major"><span>Solar system</span><i></i></div>
+    <div class="r far major"><span>Earth &amp; Moon</span><i></i></div>
+    <div class="r gap"></div>
+    <div class="r on major"><span>World</span><i></i></div>
+    <div class="r major"><span>Continent</span><i></i></div>
+    <div class="r major"><span>Country</span><i></i></div>
+    <div class="r"><span>Province</span><i></i></div>
+    <div class="r major"><span>City</span><i></i></div>
+    <div class="r"><span>District</span><i></i></div>
+    <div class="r"><span>Neighbourhood</span><i></i></div>
+    <div class="r major"><span>Street</span><i></i></div>
+  </div>
+  <div class="callout" style="left:1290px;top:150px;max-width:200px">The <b>rail</b>: tap a rung to fly there, drag along it to zoom. Above the gap, the new rungs (lilac).</div>
+  <div class="callout" style="left:330px;top:600px"><b>Grab</b> Sweden and drag it: Sweden stays under the pointer. Let go moving and the globe turns on, slowing in about a second.</div>
+  <div class="callout" style="left:470px;top:250px"><b>Double-click</b> a place to fly closer to it (×4); a name label flies all the way to that place.</div>
+  <div class="callout" style="left:250px;top:880px;max-width:340px"><b>Even light</b>: the side you look at is day. The real sunset line stays drawn, so night is still readable.</div>
+  <div class="callout" style="left:90px;top:130px;max-width:200px">The <b>locate</b> button flies home from any rung, even from the Milky Way.</div>
+</div>
+
+<h2><span>2</span>The way up: three new rungs above the Earth</h2>
+<p class="sub">Past the globe the Earth shrinks to a disc, then to a node. Above the World rung distances are no longer drawn to
+scale (a planet would be a sub-pixel dot); each rung is a board of real bodies at real angles, with log-scaled distances, as on
+the scenarios v3 sheet. The camera stays pointed at home until you pan away.</p>
+<div class="up">
+  <div><div class="frame"><img src="../macro-view/globe-8000.jpg" style="object-position:center"><div class="alt">World · 8,000 km</div></div>
+    <div class="fcap"><b>World.</b> Today's globe, today's ceiling raised. Grab, throw, double-tap.</div></div>
+  <div><div class="frame"><canvas id="moon" width="640" height="480"></canvas><div class="alt">Earth &amp; Moon · 600,000 km</div></div>
+    <div class="fcap"><b>Earth &amp; Moon</b> <span class="new">new</span> To scale. The Moon where it is tonight, the Earth lit by the real Sun: at this height the phase is the information.</div></div>
+  <div><div class="frame"><img src="../scenarios/system.jpg"><div class="alt">Solar system</div></div>
+    <div class="fcap"><b>Solar system</b> <span class="new">new</span> The planets at today's angles round the Sun, distances log-scaled. Tap a planet: its card (distance now, light time).</div></div>
+  <div><div class="frame"><img src="../scenarios/stars.jpg" style="object-position:40% 50%"><div class="alt">Stars · 16 light years</div></div>
+    <div class="fcap"><b>Stars</b> <span class="new">new</span> The 45 real star systems within 16 light years (HYG), as nodes and lanes. Sol in the middle.</div></div>
+  <div><div class="frame"><canvas id="galaxy" width="640" height="480"></canvas><div class="alt">Milky Way · 100,000 ly</div></div>
+    <div class="fcap"><b>Milky Way</b> <span class="new">new</span> Seen from above, the arms as mapped; "you" marks the Sun, 26,000 light years from the centre.</div></div>
+</div>
+<div class="notes">
+  <div><h3>Seamless, not a series of screens</h3><ul>
+    <li>One number drives it all: the camera's height, from 15 m to 10<sup>21</sup> m. Each rung crossfades into the next over its band, never switches.</li>
+    <li>The node a board is centred on is the thing you came from: the Earth in the solar system, Sol among the stars, Sol's place in the galaxy. Zoom out from anywhere and home stays in view.</li>
+    <li>A rung's name appears for a moment at the top as you cross into it ("Solar system · light from the Sun takes 8 min 20 s").</li>
+  </ul></div>
+  <div><h3>The way down always lands</h3><ul>
+    <li>Above the Moon, zooming in pulls towards the Earth whatever is under the pointer; a planet or a star is a card, not a door. Visiting Mars is a later decision.</li>
+    <li>Coming back down, the globe turns to the place you left and the camera lands at the height you left from — not at whatever was under the pointer 10<sup>20</sup> m up.</li>
+    <li>Real data only: JPL's mean orbital elements for the planets, the Moon from the sky code's own formulae, HYG for the stars. Fiction (scenarios v3's sandbox) stays out of this.</li>
+  </ul></div>
+</div>
+
+<h2><span>3</span>Turning the globe</h2>
+<p class="sub">What each hand does, above about 50 km where the globe takes over from the ground. Below it nothing changes.</p>
+<div class="gest">
+  <div><svg viewBox="0 0 300 150"><circle cx="150" cy="80" r="62" fill="#1d3d57" stroke="#6aa3c8"/><path d="M118 66c10-14 30-16 40-6s4 24-10 28-34-6-30-22z" fill="#6f8a55"/><circle cx="140" cy="72" r="6" fill="none" stroke="#FD6012" stroke-width="2.5"/><path d="M140 72 C 170 66, 196 70, 214 82" stroke="#FD6012" stroke-width="2" fill="none" stroke-dasharray="4 4"/><circle cx="214" cy="82" r="6" fill="none" stroke="#FD6012" stroke-width="2.5"/><text x="150" y="140" fill="#A5B2B7" font-size="12" text-anchor="middle" font-family="JakartaR">the point stays under the finger</text></svg>
+    <h3>Grab</h3><p>Dragging turns the globe so the point you pressed stays under the pointer, at every height. Drag off the edge of the disc and the globe turns round its own axis instead.</p>
+    <div class="was"><b>Today:</b> a turn rate set from the height, so the place you grabbed drifts from the finger.</div></div>
+  <div><svg viewBox="0 0 300 150"><circle cx="150" cy="80" r="62" fill="#1d3d57" stroke="#6aa3c8"/><path d="M70 40 A 90 90 0 0 1 230 40" stroke="#FD6012" stroke-width="2.5" fill="none"/><path d="M222 30l10 10-14 4" fill="none" stroke="#FD6012" stroke-width="2.5"/><text x="80" y="30" fill="#ffb48a" font-size="12" font-family="JakartaR">let go</text><text x="208" y="20" fill="#ffb48a" font-size="12" font-family="JakartaR">…slows</text><text x="150" y="140" fill="#A5B2B7" font-size="12" text-anchor="middle" font-family="JakartaR">throw it; a touch stops it</text></svg>
+    <h3>Throw</h3><p>Let go while moving and the globe keeps turning, slowing to a stop in about a second. One flick crosses an ocean; a touch catches it.</p>
+    <div class="was"><b>Today:</b> stops dead on release; crossing to Japan takes four or five drags.</div></div>
+  <div><svg viewBox="0 0 300 150"><circle cx="150" cy="80" r="62" fill="#1d3d57" stroke="#6aa3c8"/><circle cx="168" cy="70" r="9" fill="none" stroke="#FD6012" stroke-width="2.5"/><circle cx="168" cy="70" r="16" fill="none" stroke="#FD6012" stroke-width="1.5" opacity=".5"/><text x="190" y="62" fill="#ffb48a" font-size="12" font-family="JakartaR">× 2 tap</text><text x="150" y="140" fill="#A5B2B7" font-size="12" text-anchor="middle" font-family="JakartaR">closer to that place</text></svg>
+    <h3>Double-tap</h3><p>Double-tap (double-click) flies four times closer, centred on that place. Two-finger tap goes four times out. A tapped name label flies to the place itself.</p>
+    <div class="was"><b>Today:</b> nothing; only the wheel, pinch or + / −.</div></div>
+  <div><svg viewBox="0 0 300 150"><circle cx="150" cy="80" r="62" fill="#1d3d57" stroke="#6aa3c8"/><path d="M110 120 A 50 50 0 0 1 106 46" stroke="#FD6012" stroke-width="2.5" fill="none"/><path d="M190 120 A 50 50 0 0 0 194 46" stroke="#FD6012" stroke-width="2.5" fill="none"/><text x="150" y="20" fill="#ffb48a" font-size="12" text-anchor="middle" font-family="JakartaR">right-drag · twist · N</text><text x="150" y="140" fill="#A5B2B7" font-size="12" text-anchor="middle" font-family="JakartaR">turn and tilt, north again</text></svg>
+    <h3>Turn, tilt, keys</h3><p>Right-drag turns and tilts (two-finger twist on a phone). Arrow keys turn the globe, + and − zoom, N or the compass puts north up.</p>
+    <div class="was"><b>Today:</b> middle-drag or Ctrl-drag; the right button does nothing; no keys.</div></div>
+</div>
+
+<h2><span>4</span>Light for reading, the real sun on request</h2>
+<p class="sub">Only the globe from above changes. The street, the city and the Settings ▸ World sun (Auto / Day / Night / Manual) stay as they are.</p>
+<div class="light">
+  <div><div class="frame"><img src="../macro-view/globe-8000-night.jpg"><div class="alt">Real sun · today</div></div>
+    <div class="fcap"><b>Real sun (today).</b> Beautiful, and right for "where is it night now?". But half of what you are looking for is in the dark, and which half depends on the hour you open the app.</div></div>
+  <div><div class="frame"><img src="../macro-view/globe-8000.jpg"><svg style="position:absolute;inset:0;width:100%;height:100%" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice"><path d="M 905 7 C 1010 200, 1010 700, 905 900" stroke="#ffd58a" stroke-width="3" stroke-dasharray="12 10" fill="none" opacity=".8"/><text x="1000" y="520" fill="#ffd58a" font-size="30" font-family="Jakarta">night →</text></svg><div class="alt">Even light <span class="new">new</span></div></div>
+    <div class="fcap"><b>Even light (proposed default from above).</b> The sun stands behind your shoulder, a little to the upper left, so whatever you turn to is in day and still has relief and a rim. The real sunset line stays as a dashed line, city lights only beyond it.</div></div>
+  <div><div class="frame" style="background:#0b1114;display:grid;place-items:center">
+      <div style="display:flex;flex-direction:column;gap:18px;align-items:center">
+        <div class="seg2" style="font-size:16px"><div class="on">◐ Even light</div><div>☀ Real sun</div></div>
+        <div style="color:var(--dim);font-size:13px;font-family:JakartaR;max-width:360px;text-align:center">Bottom left of the screen whenever the globe is drawn. The choice is kept. From the Earth &amp; Moon rung up the light is always real: there, which side is lit is what you came to see.</div>
+      </div></div>
+    <div class="fcap"><b>The switch.</b> One tap, beside the map, not in Settings. The scenario lenses that are about time (a storm, a night of drones) can ask for the real sun when they open.</div></div>
+</div>
+
+<h2><span>5</span>Flights instead of cuts, and the rail on a phone</h2>
+<div class="pair" style="grid-template-columns:1fr 820px">
+  <div>
+    <p class="sub">Every jump — a rung on the rail, a search result, locate, Back — becomes one flight: up the ladder until both ends fit
+    on screen, across, and down again (the zoom-and-pan path of van Wijk &amp; Nuij, 2003). It takes 1 to 4 seconds depending on how far it
+    goes, and any touch stops it where it is. The rung names pass by at the top, so you see how far you went.</p>
+    <svg viewBox="0 0 860 380" style="width:100%;background:var(--surface);border:1px solid var(--gline);border-radius:14px">
+      <g font-family="JakartaR" font-size="12" fill="#A5B2B7">
+        <text x="20" y="340">Street</text><text x="20" y="282">City</text><text x="20" y="224">Country</text><text x="20" y="166">Continent</text><text x="20" y="108">World</text><text x="20" y="50">Earth &amp; Moon</text>
+      </g>
+      <g stroke="rgba(255,255,255,.07)"><path d="M120 336H840M120 278H840M120 220H840M120 162H840M120 104H840M120 46H840"/></g>
+      <path d="M140 336 C 260 336, 300 110, 480 104 S 700 336, 820 336" stroke="#FD6012" stroke-width="3" fill="none"/>
+      <path d="M140 336 C 200 336, 230 250, 330 245 S 470 336, 520 336" stroke="#5CC6C0" stroke-width="2.5" fill="none" stroke-dasharray="6 5"/>
+      <circle cx="140" cy="336" r="6" fill="#F3F7F9"/><circle cx="820" cy="336" r="6" fill="#FD6012"/><circle cx="520" cy="336" r="5" fill="#5CC6C0"/>
+      <g font-family="Jakarta" font-size="13"><text x="120" y="366" fill="#F3F7F9">Groningen</text><text x="770" y="366" fill="#ffb48a">Tokyo · 3.5 s</text><text x="470" y="366" fill="#5CC6C0">Utrecht · 1.4 s</text></g>
+      <text x="840" y="20" fill="#A5B2B7" font-size="12" text-anchor="end" font-family="JakartaR">height (log) against distance along the ground</text>
+    </svg>
+  </div>
+  <div class="phones" style="gap:40px">
+    <div><div class="phone"><div class="scr" style="background:#04070a url(../macro-view/globe-8000.jpg) 50% 42%/600px auto no-repeat">
+      <div class="sb"><span>21:40</span><span>●●● 82%</span></div>
+      <div class="abs toast glass" style="left:50%;transform:translateX(-50%);top:52px;font-size:14px">World <small>8,000 km</small></div>
+      <div class="abs glass prail"><div class="pz">+</div><div class="pl">World</div><div class="pz">−</div></div>
+      <div class="abs glass seg2" style="left:10px;bottom:96px;font-size:12px"><div class="on">◐ Even</div><div>☀ Real</div></div>
+      <div class="abs dock" style="bottom:22px;gap:10px"><div class="disc"></div><div class="disc"></div><div class="disc brand"></div><div class="disc"></div><div class="disc"></div></div>
+    </div></div><div class="pcap"><b>Folded.</b> Today's + / − pair, with the rung's name between them. Hold + or − to keep zooming.</div></div>
+    <div><div class="phone"><div class="scr" style="background:#04070a url(../macro-view/globe-8000.jpg) 50% 42%/600px auto no-repeat">
+      <div class="sb"><span>21:40</span><span>●●● 82%</span></div>
+      <div class="abs glass rail" style="right:8px;width:160px">
+        <div class="spine"></div>
+        <div class="r far major"><span>Milky Way</span><i></i></div><div class="r far major"><span>Stars</span><i></i></div>
+        <div class="r far major"><span>Solar system</span><i></i></div><div class="r far major"><span>Earth &amp; Moon</span><i></i></div>
+        <div class="r gap"></div>
+        <div class="r on major"><span>World</span><i></i></div><div class="r major"><span>Continent</span><i></i></div>
+        <div class="r major"><span>Country</span><i></i></div><div class="r"><span>Province</span><i></i></div>
+        <div class="r major"><span>City</span><i></i></div><div class="r"><span>District</span><i></i></div>
+        <div class="r"><span>Neighbourhood</span><i></i></div><div class="r major"><span>Street</span><i></i></div>
+      </div>
+      <div class="abs dock" style="bottom:22px;gap:10px"><div class="disc"></div><div class="disc"></div><div class="disc brand"></div><div class="disc"></div><div class="disc"></div></div>
+    </div></div><div class="pcap"><b>Open.</b> Tap the name: the whole ladder. Tap a rung to fly, slide a thumb along it to zoom. Closes after a flight.</div></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div><h3>Rules</h3><ul>
+    <li>Height is the one control. The rail, the wheel, pinch and flights all move the same number; no rung is a mode you have to leave.</li>
+    <li>Every jump is a flight you can interrupt; nothing teleports the view in front of you (a <code>Teleport</code> still happens underneath, out of sight, when the flight lands).</li>
+    <li>The globe obeys the hand: the grabbed point stays under it; a throw keeps turning; a touch stops.</li>
+    <li>Light from above is for reading by default; the real sun is one tap away and is the only light above the World rung.</li>
+    <li>Above the World rung only real bodies at real angles; distances are log-scaled and say so.</li>
+  </ul></div>
+  <div><h3>Build order, each step useful alone</h3><ul>
+    <li><b>1. The globe in the hand</b>: grab, throw, double-tap, right-drag, keys; the even light and its switch.</li>
+    <li><b>2. Flights</b>: one flight for the rail, search, locate and Back.</li>
+    <li><b>3. The rail</b>, folded on phones, over today's rungs.</li>
+    <li><b>4. Earth &amp; Moon</b>: the ceiling raised past the Moon, the Moon a real body.</li>
+    <li><b>5. Solar system, Stars, Milky Way</b> as boards above it, with planet and star cards.</li>
+  </ul></div>
+</div>
+
+<script>
+// seeded random, so a re-render draws the same sky
+let s = 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+function stars(g, w, h, n, a) { for (let i = 0; i < n; i++) { g.fillStyle = `rgba(255,255,255,${a * rnd()})`; g.fillRect(rnd() * w, rnd() * h, 1.3, 1.3); } }
+
+// Earth & Moon, to scale: at 600,000 km with a 45° view, the Moon's orbit spans most of the frame.
+{ const c = document.getElementById("moon"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.fillStyle = "#04070a"; g.fillRect(0, 0, W, H); stars(g, W, H, 500, .8);
+  const cx = W * .5, cy = H * .53, orbit = H * .4, er = 9, sun = Math.PI * .97; // sun to the left
+  g.strokeStyle = "rgba(160,190,200,.35)"; g.setLineDash([4, 5]); g.beginPath(); g.ellipse(cx, cy, orbit, orbit * .55, 0, 0, 7); g.stroke(); g.setLineDash([]);
+  // the Earth: lit half towards the Sun
+  g.fillStyle = "#0c1a2a"; g.beginPath(); g.arc(cx, cy, er, 0, 7); g.fill();
+  g.fillStyle = "#5d8fbf"; g.beginPath(); g.arc(cx, cy, er, sun - Math.PI / 2, sun + Math.PI / 2); g.fill();
+  g.strokeStyle = "#FD6012"; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy, er + 6, 0, 7); g.stroke();
+  // the Moon, a waxing gibbous
+  const ma = -2.2, mx = cx + Math.cos(ma) * orbit, my = cy + Math.sin(ma) * orbit * .55;
+  g.fillStyle = "#2a2d30"; g.beginPath(); g.arc(mx, my, 4, 0, 7); g.fill();
+  g.fillStyle = "#d9d6cc"; g.beginPath(); g.arc(mx, my, 4, sun - Math.PI / 2, sun + Math.PI / 2); g.fill();
+  g.font = "15px Jakarta"; g.fillStyle = "#F3F7F9"; g.fillText("Earth", cx - 20, cy + 32);
+  g.fillText("Moon", mx - 20, my - 10); g.font = "12.5px JakartaR"; g.fillStyle = "#A5B2B7";
+  g.fillText("384,400 km · light 1.3 s", mx - 40, my + 22);
+  g.fillStyle = "#ffd58a"; g.font = "13px JakartaR"; g.fillText("← to the Sun · 8 min 20 s of light", 16, H - 18);
+}
+
+// The Milky Way from above: a bar and four log-spiral arms, the Sun on the Orion spur.
+{ const c = document.getElementById("galaxy"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.fillStyle = "#03050a"; g.fillRect(0, 0, W, H);
+  const cx = W * .5, cy = H * .5, R = H * .46, pitch = 0.22;
+  const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * .45);
+  glow.addColorStop(0, "rgba(255,226,170,.85)"); glow.addColorStop(.4, "rgba(220,190,150,.25)"); glow.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = glow; g.fillRect(0, 0, W, H);
+  const arms = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+  for (const a0 of arms) for (let i = 0; i < 2600; i++) {
+    const t = rnd() * 3.4, r = R * 0.16 * Math.exp(pitch * t * 1.9), th = a0 + t + (rnd() - .5) * .35;
+    if (r > R) continue;
+    const x = cx + Math.cos(th) * r + (rnd() - .5) * 10, y = cy + Math.sin(th) * r + (rnd() - .5) * 10;
+    const b = rnd(); g.fillStyle = b > .97 ? "rgba(255,170,190,.9)" : `rgba(${200 + 55 * b},${210 + 40 * b},255,${.25 + .5 * b})`;
+    g.fillRect(x, y, 1.4, 1.4);
+  }
+  g.save(); g.translate(cx, cy); g.rotate(.45); g.fillStyle = "rgba(255,220,160,.45)"; g.beginPath(); g.ellipse(0, 0, R * .2, R * .06, 0, 0, 7); g.fill(); g.restore();
+  // the Sun: 26,000 ly of a ~50,000 ly radius
+  const sa = 2.25, sr = R * .52, sx = cx + Math.cos(sa) * sr, sy = cy + Math.sin(sa) * sr;
+  g.strokeStyle = "#FD6012"; g.lineWidth = 2; g.beginPath(); g.arc(sx, sy, 7, 0, 7); g.stroke();
+  g.fillStyle = "#fff"; g.beginPath(); g.arc(sx, sy, 2, 0, 7); g.fill();
+  g.font = "15px Jakarta"; g.fillStyle = "#F3F7F9"; g.fillText("you", sx - 46, sy + 5);
+  g.font = "12px JakartaR"; g.fillStyle = "#A5B2B7";
+  g.fillText("Perseus Arm", cx + R * .5, cy - R * .62); g.fillText("Scutum–Centaurus Arm", cx - R * .95, cy - R * .5);
+  g.fillText("26,000 light years to the centre", 16, H - 18);
+}
+</script>
+</body></html>
