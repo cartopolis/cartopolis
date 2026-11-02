@@ -1,7 +1,7 @@
 ---
 topic: lenses
 triggers: [data_layers.rs, scenario.rs, Figures, "Layers panel", lens, lenses, "scenario chrome", render_scenario_chrome, DataLayers::scenario, "bottom sheet", portrait]
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Lenses: reading the map, apart from how it looks
@@ -37,3 +37,16 @@ one lens; the disc wears the ordinary engaged plate rather than the mode's
 colour (the chrome is monochrome, `monochrome-chrome.md`); "Its town",
 "Compare…" and "Talk about it" are not built. Still open: two figures at
 once (split screen), a community's own lenses on the shelf.
+
+## v2 — agreed 2026-11-02
+
+![v2](v2.png)
+
+Asked 2026-11-02: once a lens is picked its sheet stays up over half a
+phone's map; "we want maximum room to see the map; the key may sit behind an
+icon". On a phone in portrait the lens rests as one row — mode, figure, its
+value under the crosshair, and a palette button that opens the key (the
+strip of v1: source and year, scale, place row). A pick off the shelf or the
+figures, or a drag on the map, drops the sheet to that row, and the scale
+card under the figures goes, the key holding it. Agreed as drawn the same
+day. Landscape and desktop keep the v1 column.

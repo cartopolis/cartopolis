@@ -167,6 +167,10 @@ from the list or the place card — drops it to the strip, and a drag that
 starts on the bare map (`EguiManager::map_dragged`, decided by where the
 press landed) lowers whatever is raised, as a flick down on the grabber
 does. The column, beside the map rather than over it, stays where it is.
+And the strip itself is one row on the sheet ("maximum room for the map;
+the key may sit behind an icon"): the figure and its value here, with the
+scale, the year and the place row behind a palette button
+(`ScenarioView::key`, off by default, `CARTO_LENS_KEY=1` for a capture).
 
 The lens answers back (asked 2026-11-01, "too static"): the area being read
 is outlined on the map — under the pointer on a desktop, with a card beside

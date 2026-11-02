@@ -31,7 +31,8 @@
 //! rows that show their value under the crosshair, so one is picked by reading,
 //! not by trying. It writes `DataLayers::scenario` (`"<file>/<layer>"`), which
 //! is what persists; for a capture, `CARTO_SCENARIO=cbs-2024/share_65_plus` and
-//! `CARTO_LENS=strip|figures|place|shelf`.
+//! `CARTO_LENS=strip|figures|place|shelf` (and `CARTO_LENS_KEY=1` for the
+//! strip's key on the sheet).
 
 use crate::components::FreeCamera;
 use crate::resources::MapAnchor;
@@ -247,6 +248,10 @@ pub struct ScenarioView {
     error: Option<(String, String)>,
     /// How much of the lens is up. Kept when the lens or its figure changes.
     sheet: Sheet,
+    /// Whether the strip on the sheet shows the key (the scale, the year and
+    /// the place), or only the figure and its value. Off by default: the map
+    /// is what is read. `CARTO_LENS_KEY=1` for a capture.
+    key: bool,
 }
 
 impl Default for ScenarioView {
@@ -256,6 +261,7 @@ impl Default for ScenarioView {
             loading: None,
             error: None,
             sheet: Sheet::from_env(),
+            key: crate::env_value("CARTO_LENS_KEY").is_some_and(|v| v == "1"),
         }
     }
 }
@@ -1133,6 +1139,7 @@ pub fn render_scenario_chrome(
         open,
         loading,
         error,
+        key,
         ..
     } = &mut *view;
     let shown_area = area.order(egui::Order::Foreground).show(&ctx, |ui| {
@@ -1147,8 +1154,8 @@ pub fn render_scenario_chrome(
                 (Sheet::Shelf, _) => {
                     shelf_body(ui, layers.scenario.as_deref(), lens, body_h, &mut asked)
                 }
-                (Sheet::Strip, Some(o)) => strip_body(ui, o, here, shape, &mut asked),
-                (Sheet::Figures, Some(o)) => figures_body(ui, o, here, body_h, &mut asked),
+                (Sheet::Strip, Some(o)) => strip_body(ui, o, here, shape, key, &mut asked),
+                (Sheet::Figures, Some(o)) => figures_body(ui, o, here, shape, body_h, &mut asked),
                 (Sheet::Place, Some(o)) => place_body(ui, o, here, body_h, &mut asked),
                 _ => waiting_body(
                     ui,
@@ -1531,30 +1538,66 @@ fn file_of(o: &Open) -> &str {
 
 /// Strip: the figure, its scale, and its value under the crosshair. The
 /// figure's name raises the figures, the place opens its card.
+///
+/// On the sheet the map is what is being read, so the strip is one row —
+/// the figure and its value here — and the scale, the year and the place
+/// fold behind the key button (`key`), open while it is on.
 fn strip_body(
     ui: &mut egui::Ui,
     o: &mut Open,
     here: Option<LonLat>,
     shape: Shape,
+    key: &mut bool,
     asked: &mut Asked,
 ) {
     let meta = &o.play.scenario.meta;
     let layer = &o.play.scenario.region_states[o.layer];
+    let folds = shape == Shape::Sheet;
+    let value = here
+        .filter(|_| folds && !*key)
+        .and_then(|p| value_at(o, o.layer, p))
+        .and_then(|(_, v)| v);
     ui.horizontal(|ui| {
         mode_chip(ui, meta.mode);
-        let name = ui.add(
-            egui::Label::new(
-                egui::RichText::new(&layer.label)
-                    .size(theme::SIZE_BODY)
-                    .color(theme::TEXT),
-            )
-            .truncate()
-            .sense(egui::Sense::click()),
-        );
-        if name.on_hover_text("Choose another figure").clicked() {
-            asked.sheet = Some(Sheet::Figures);
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if folds {
+                let tip = if *key { "Hide the key" } else { "Show the key" };
+                if theme::bar_button(ui, crate::systems::icons::PALETTE, tip, *key).clicked() {
+                    *key = !*key;
+                }
+            }
+            if let Some(v) = value {
+                let at = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(v)
+                            .size(theme::SIZE_VALUE)
+                            .color(theme::CREAM),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if at.on_hover_text("Every figure for this place").clicked() {
+                    asked.sheet = Some(Sheet::Place);
+                }
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let name = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&layer.label)
+                            .size(theme::SIZE_BODY)
+                            .color(theme::TEXT),
+                    )
+                    .truncate()
+                    .sense(egui::Sense::click()),
+                );
+                if name.on_hover_text("Choose another figure").clicked() {
+                    asked.sheet = Some(Sheet::Figures);
+                }
+            });
+        });
     });
+    if folds && !*key {
+        return;
+    }
     let mut per = o
         .play
         .layer_areas(o.layer)
@@ -1790,6 +1833,7 @@ fn figures_body(
     ui: &mut egui::Ui,
     o: &mut Open,
     here: Option<LonLat>,
+    shape: Shape,
     body_h: f32,
     asked: &mut Asked,
 ) {
@@ -1837,7 +1881,8 @@ fn figures_body(
                 }
             }
             ui.add_space(8.0);
-            scale_card(ui, o);
+            // On the sheet the strip's key holds the scale (`docs/mockups/lenses/v2`).
+            scale_card(ui, o, shape == Shape::Column);
         });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -2133,29 +2178,31 @@ fn dim(ui: &mut egui::Ui, text: impl Into<String>) {
     );
 }
 
-/// The open figure's bands, what is next to be reached, and the tracks to
-/// pick one from.
-fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
+/// The open figure's bands (where `bands`: on the sheet the strip's key holds
+/// them), what is next to be reached, and the tracks to pick one from.
+fn scale_card(ui: &mut egui::Ui, o: &mut Open, bands: bool) {
     let clock = o.play.scenario.clock;
     let li = o.layer;
     let layer = &o.play.scenario.region_states[li];
     let set = o.play.layer_areas(li);
     let field = set.and_then(|s| Some((s, s.field(layer.field.as_deref()?)?)));
-    group_label(ui, &format!("Scale · {}", layer.label));
-    match set {
-        Some(s) => {
-            let year = match when_label(o) {
-                Some(w) => format!(" · {w}"),
-                None => field
-                    .and_then(|(s, f)| s.fields[f].year)
-                    .map(|y| format!(" · {y}"))
-                    .unwrap_or_default(),
-            };
-            dim(ui, format!("per {}{year}", s.rung.label()));
+    if bands {
+        group_label(ui, &format!("Scale · {}", layer.label));
+        match set {
+            Some(s) => {
+                let year = match when_label(o) {
+                    Some(w) => format!(" · {w}"),
+                    None => field
+                        .and_then(|(s, f)| s.fields[f].year)
+                        .map(|y| format!(" · {y}"))
+                        .unwrap_or_default(),
+                };
+                dim(ui, format!("per {}{year}", s.rung.label()));
+            }
+            None => dim(ui, "Nothing to show at this height"),
         }
-        None => dim(ui, "Nothing to show at this height"),
+        ui.add_space(4.0);
     }
-    ui.add_space(4.0);
     let places = o
         .frame
         .regions
@@ -2164,7 +2211,7 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
         .unwrap_or_default();
     // A band's row singles it out on the map, as the strip's scale does.
     let mut tapped = None;
-    for (si, s) in layer.states.iter().enumerate() {
+    for (si, s) in layer.states.iter().enumerate().filter(|_| bands) {
         let on = o.focus == Some(si);
         let row = ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());

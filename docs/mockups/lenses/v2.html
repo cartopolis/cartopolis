@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  body { width:1560px; }
+  .one { display:flex; align-items:center; gap:8px; height:40px; }
+  .one .name { color:var(--cream); font-size:15px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .one .v { color:var(--cream); font-size:16px; }
+  .pal { width:40px; height:40px; border-radius:50%; display:grid; place-items:center; color:var(--text); flex:none; }
+  .pal.on { background:var(--accent); color:var(--ink); }
+  .tap { position:absolute; width:46px; height:46px; border-radius:50%; border:2px solid var(--brand); background:rgba(253,96,18,.18); z-index:30; }
+  .drag { position:absolute; z-index:30; color:var(--brand); font-size:13px; font-family:Jakarta; }
+  .sheet.small { left:10px; right:10px; bottom:70px; border-radius:20px; border:1px solid var(--gline); padding:6px 12px 6px; }
+  .sheet.small .grab { margin-bottom:4px; }
+  .measure { position:absolute; right:-6px; z-index:31; font-size:11px; color:#fff; background:rgba(253,96,18,.9); padding:1px 6px; border-radius:6px; }
+</style>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3 2 8.5 12 14l10-5.5L12 3Z"/><path d="m2 13.5 10 5.5 10-5.5"/></symbol>
+  <symbol id="lens" viewBox="0 0 24 24"><path d="M5 20V12M10 20V8M15 20v-6M20 20V5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/><path d="M8 9h8M8 12h5"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4V8Z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="mark" viewBox="0 0 24 24"><path d="M7 3h10v18l-5-4-5 4V3Z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></symbol>
+  <symbol id="palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-.9.7-1.5 1.6-1.5H17a4 4 0 0 0 4-4c0-4.6-4-8.2-9-8.2Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="10.5" r="1"/></symbol>
+</svg>
+</head>
+<body>
+
+<h1>Lenses — <b>the map first, the key behind an icon</b> <span class="new">v2</span></h1>
+<p class="lede">
+Asked 2026-11-02: once a lens is picked, its sheet stays up over half a phone's map, and the strip
+under it still takes a fifth of the screen. <b>The map is what is being read</b>, so on a phone in
+portrait the lens rests as <b>one row</b> — the figure and its value here — and the scale, the year
+and the place fold behind a palette button. A pick drops the sheet to that row, and so does
+dragging the map. Landscape and desktop keep the column of v1, which sits beside the map.
+</p>
+
+<h2><span>2</span>On a phone, portrait</h2>
+<p class="sub">Population to 2050, per gemeente, the crosshair on Assen. Sizes are the app's: the row is one 40 pt button high, as tall as the dock's discs.</p>
+
+<div class="row">
+  <!-- 2a rest -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-areas.jpg)">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc on"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs sheet small">
+        <div class="grab"></div>
+        <div class="one"><span class="mode">Replay</span><span class="name">Change since 2023</span><span class="v">+5.5 %</span><span class="pal"><svg class="i"><use href="#palette"/></svg></span></div>
+      </div>
+      <div class="measure" style="bottom:136px; right:auto; left:14px">≈ 64 pt</div>
+      <div class="abs dock">
+        <div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#globe"/></svg></div><div class="disc cam"><svg class="i"><use href="#cam"/></svg></div><div class="disc"><svg class="i"><use href="#mark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>2a</span>Rest — one row</h3><ul>
+      <li>Where a lens rests, and where every pick lands: the <b>mode</b>, the <b>figure</b>, its <b>value under the crosshair</b>, and the <b>palette</b> for the key.</li>
+      <li>Tap the figure's name (or the grabber, or swipe up) for the figures — 2c. Tap the value for the place card.</li>
+      <li>Today's strip is about 200 pt; this is about 64.</li>
+    </ul></div>
+  </div>
+
+  <!-- 2b key -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-areas.jpg)">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc on"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="abs sheet small">
+        <div class="grab"></div>
+        <div class="one"><span class="mode">Replay</span><span class="name">Change since 2023</span><span class="pal on"><svg class="i"><use href="#palette"/></svg></span></div>
+        <div class="lt" style="margin-top:2px"><span class="src">Population to 2050 · per gemeente · 2050 forecast, since 2023</span></div>
+        <div class="ramp"><i style="background:#b35806"></i><i style="background:#f1a340"></i><i style="background:#f7f7f7"></i><i style="background:#d8daeb"></i><i style="background:#998ec3"></i><i style="background:#542788"></i></div>
+        <div class="ramp-l"><span>down 10 % or more</span><span>up 20 % or more</span></div>
+        <div class="here" style="margin-bottom:6px"><svg class="i s" style="color:var(--accent)"><use href="#pin"/></svg><span><b>Assen</b><br><small>gemeente · likely −1.6 % – +13 %</small></span><span class="v">+5.5 % ›</span></div>
+      </div>
+      <div class="tap" style="bottom:232px; right:24px"></div>
+      <div class="abs dock">
+        <div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#globe"/></svg></div><div class="disc cam"><svg class="i"><use href="#cam"/></svg></div><div class="disc"><svg class="i"><use href="#mark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>2b</span>The key — on the palette</h3><ul>
+      <li>The palette wears the engaged plate while the key is open; a second tap folds it away.</li>
+      <li>The key is today's strip: where the figures come from and which year, the scale (point at a band to single its areas out), and the place row. The value moves into that row.</li>
+      <li>It stays open until you fold it, across picks: who reads the key keeps it.</li>
+    </ul></div>
+  </div>
+
+  <!-- 2c pick -->
+  <div>
+    <div class="phone" style="background-image:url(../scenarios/map-areas.jpg); background-position:center -60px">
+      <div class="frame"></div>
+      <div class="status"><span>16:20</span><span class="notch"></span><span>4G ▮▮▮</span></div>
+      <div class="abs col">
+        <div class="disc"><svg class="i"><use href="#layers"/></svg></div>
+        <div class="disc on"><svg class="i"><use href="#lens"/></svg></div>
+      </div>
+      <div class="drag" style="top:420px; left:150px">✋ drag the map → 2a</div>
+      <div class="abs sheet" style="height:270px; left:10px; right:10px; bottom:70px; border-radius:20px; border:1px solid var(--gline)">
+        <div class="grab"></div>
+        <div class="lt"><span class="mode">Replay</span><span class="name">Population to 2050</span>
+          <span class="icon-btn"><svg class="i s"><use href="#x"/></svg></span></div>
+        <div class="lt" style="margin-top:2px"><span class="src">Not a real event · a model's estimate · values for <b style="color:var(--text)">Assen</b></span></div>
+        <div class="sect">People</div>
+        <div class="fig on"><span class="radio"></span>Change since 2023<span class="mini" style="background:linear-gradient(90deg,#b35806,#f7f7f7,#542788)"></span><span class="val">+5.5 %</span></div>
+        <div class="fig"><span class="radio"></span>Inhabitants<span class="mini" style="background:linear-gradient(90deg,#f2f0f7,#9e9ac8,#54278f)"></span><span class="val">73,200</span></div>
+        <div class="tap" style="top:150px; left:4px"></div>
+        <div class="btns"><span class="btn">Sources</span><span class="btn">All lenses</span></div>
+      </div>
+      <div class="abs dock">
+        <div class="disc"><svg class="i"><use href="#search"/></svg></div><div class="disc"><svg class="i"><use href="#chat"/></svg></div><div class="disc"><svg class="i"><use href="#globe"/></svg></div><div class="disc cam"><svg class="i"><use href="#cam"/></svg></div><div class="disc"><svg class="i"><use href="#mark"/></svg></div><div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+      </div>
+    </div>
+    <div class="cap"><h3><span>2c</span>Choosing — and back down</h3><ul>
+      <li>The figures, as in v1. <b>A tap on a figure picks it and drops the sheet to 2a</b>, so you see what you picked; a lens off the shelf does the same.</li>
+      <li><b>Dragging the map</b> drops whatever is raised to 2a: someone panning is looking at the map.</li>
+      <li>The scale card under the list goes: the key (2b) holds it.</li>
+    </ul></div>
+  </div>
+</div>
+
+</body></html>
