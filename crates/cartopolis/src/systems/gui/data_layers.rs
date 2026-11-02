@@ -847,6 +847,9 @@ struct MinimalSave {
     grass: bool,
     furniture: bool,
     street_detail: bool,
+    traffic: bool,
+    people: bool,
+    birds: bool,
     layers: Vec<bool>,
     fog_density: f32,
     cloud_cover: f32,
@@ -1764,23 +1767,28 @@ pub fn open_url(url: &str) {
     }
 }
 
-/// "Minimal mode": while **driver mode** is on, strip the map to just the vector
-/// tiles + the route so the line being driven reads clearly. Off go the 3D
-/// buildings, trees, live vehicles, every streamed overlay (transit stops, shops),
-/// and the weather (clouds, fog, rain — and live weather is frozen so it can't
-/// re-apply).
+/// "Driving mode" for the map: while **driver mode** is on, the map keeps what a
+/// driver finds the way and judges the route by, and loses what only competes
+/// with the line being driven.
 ///
-/// What stays is the basemap *and its legibility*: the vector tiles
-/// (`map_enabled`), the road textures and the water shading. Turning those off too
-/// — the first cut did — leaves a driver navigating a plain khaki field with the
-/// route line floating on it, which strips out exactly the thing being driven on.
-/// Clutter goes; the map does not.
+/// **Kept:** the basemap and its legibility (vector tiles, road textures, water
+/// shading), the 3D buildings and the trees — the landmarks a junction is
+/// recognised by, "left after the church" — and the street detail, which is
+/// traffic signals, zebra paint and barriers: the things a turn is announced
+/// *at*. The first cut stripped all of that too and left a flat khaki field with
+/// roads on it, on which the route was legible and the city was not; nobody
+/// finds a street by its colour (2026-11-02, "the map must show the details
+/// needed to find the way and to judge the route").
 ///
-/// **Planning a route no longer triggers this.** It used to key off the Route panel
+/// **Dimmed:** the generated traffic and crowds (invented cars on a navigation
+/// view read as real ones), the street furniture and the grass (near-field
+/// clutter with no bearing on the way), every streamed overlay (transit stops,
+/// shops), and the weather — fog hides the road ahead, and live weather is
+/// frozen so it can't re-apply.
+///
+/// **Planning a route does not trigger this.** It used to key off the Route panel
 /// being open, which meant looking up a route tore down the view you were looking
-/// at — the planner is a form, and a form has no business turning the city off.
-/// Driving is the mode that wants a bare map, so driving is what gets one
-/// (`systems::driver`).
+/// at — the planner is a form, and a form has no business changing the map.
 ///
 /// The user's state is snapshotted on entry and restored verbatim on exit, so this
 /// never destroys their settings. It only *sets* at the two edges (cached in
@@ -1802,18 +1810,26 @@ pub fn apply_minimal_mode(
                 grass: dl.grass_enabled,
                 furniture: dl.furniture_enabled,
                 street_detail: dl.street_detail_enabled,
+                traffic: dl.traffic_enabled,
+                people: dl.people_enabled,
+                birds: dl.birds_enabled,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
                 cloud_cover: dev.cloud_cover,
                 precipitation: dev.precipitation,
                 weather_live: weather.live,
             });
-            dl.buildings_enabled = false;
+            // Buildings, trees and street detail are left as the user had
+            // them: they are how the way is found (see above).
             dl.vehicles_enabled = false;
-            dl.trees_enabled = false;
+            // The invented traffic, crowds and crows. They were never in this
+            // list, so every drive ran through 180 generated cars that a driver
+            // cannot tell from the ones the map is supposed to be about.
+            dl.traffic_enabled = false;
+            dl.people_enabled = false;
+            dl.birds_enabled = false;
             dl.grass_enabled = false;
             dl.furniture_enabled = false;
-            dl.street_detail_enabled = false;
             for l in &mut dl.layers {
                 l.enabled = false;
             }
@@ -1832,6 +1848,9 @@ pub fn apply_minimal_mode(
                 dl.grass_enabled = saved.grass;
                 dl.furniture_enabled = saved.furniture;
                 dl.street_detail_enabled = saved.street_detail;
+                dl.traffic_enabled = saved.traffic;
+                dl.people_enabled = saved.people;
+                dl.birds_enabled = saved.birds;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
                 }
@@ -3662,6 +3681,9 @@ mod tests {
             grass: true,
             furniture: true,
             street_detail: true,
+            traffic: true,
+            people: true,
+            birds: true,
             layers: vec![false; LAYER_DEFS.len()],
             fog_density: 0.4,
             cloud_cover: 0.7,

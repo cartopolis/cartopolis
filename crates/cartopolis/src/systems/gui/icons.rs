@@ -258,14 +258,8 @@ icons! {
     /// Turn back.
     U_TURN = "\u{eba1}", "u_turn_left";
 
-    // ─── What is coming up on the route ──────────────────────────────────────
-    /// Fuel station.
-    FUEL = "\u{e546}", "local_gas_station";
-    /// Charging point.
-    CHARGING = "\u{e56d}", "ev_station";
-    /// Parking.
-    PARKING = "\u{e54f}", "local_parking";
-    /// A café — a rest stop on the road, and the drink POI category.
+    // ─── Places ──────────────────────────────────────────────────────────────
+    /// A café — the drink POI category.
     DRINK = "\u{eb44}", "local_cafe";
 
     // ─── The on-screen keyboard ──────────────────────────────────────────────

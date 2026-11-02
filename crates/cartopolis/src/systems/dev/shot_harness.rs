@@ -2014,7 +2014,14 @@ impl ShotHarness {
                 || self.ui_for(i).iter().any(|u| {
                     matches!(
                         u.as_str(),
-                        "all" | "avatar" | "appearance" | "sit" | "driver" | "walk" | "firstperson"
+                        "all"
+                            | "avatar"
+                            | "appearance"
+                            | "sit"
+                            | "driver"
+                            | "overview"
+                            | "walk"
+                            | "firstperson"
                     )
                 })
         })
@@ -2506,6 +2513,8 @@ const UI_ELEMENTS: &[&str] = &[
     "bookmarks",
     "route",
     "driver",
+    // Driver mode with the route overview up (`driver::OverviewFrame`).
+    "overview",
     "walk",
     "search",
     "place",
@@ -2694,10 +2703,13 @@ pub fn open_scripted_ui(
     // Driver mode is a *mode*, not a panel: it takes the map over (bare basemap,
     // locked chase camera, navigation chrome). Written unconditionally like the
     // panels, so a preset that doesn't ask for it also leaves it.
-    if want("driver") {
+    if want("driver") || want("overview") {
         // Armed rather than entered: the endpoints seeded below still have to go
         // through a worker solve, and driver mode needs the answer.
         driver.arm();
+        if want("overview") {
+            driver.arm_overview();
+        }
     } else {
         driver.exit();
     }
@@ -2946,7 +2958,7 @@ pub fn open_scripted_ui(
     } else {
         walk.stop();
     }
-    if want("route") || want("driver") || want("walk") {
+    if want("route") || want("driver") || want("overview") || want("walk") {
         let seed = |var: &str, default: (f64, f64)| {
             std::env::var(var)
                 .ok()

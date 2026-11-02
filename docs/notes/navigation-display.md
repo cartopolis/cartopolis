@@ -1,6 +1,6 @@
 ---
 topic: navigation
-triggers: [driver.rs, route_ahead.rs, navigation.rs, free_camera.rs, gui/data_layers.rs, user_store.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown, apply_minimal_mode, "minimal mode", drive_lookahead, pose_before_drive, sky_prefs, "course over ground", DriverArrow, "--ui driver"]
+triggers: [driver.rs, route_ahead.rs, navigation.rs, free_camera.rs, gui/data_layers.rs, user_store.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown, apply_minimal_mode, "minimal mode", drive_lookahead, pose_before_drive, sky_prefs, "course over ground", DriverArrow, "--ui driver", "--ui overview", OverviewFrame, overview, "trip bar"]
 updated: 2026-11-02
 ---
 
@@ -14,17 +14,20 @@ would otherwise be re-litigated. Where the position comes from is
 mode for a headless capture (`DriverState::arm`, because the solve it waits for
 is a worker round trip).
 
-## Driving strips the map; planning does not
+## Driving keeps the map you find the way by; planning changes nothing
 
-"Minimal mode" (`data_layers::apply_minimal_mode`) used to key off the Route
-*panel* being open, so looking a route up turned off the buildings, the trees and
-the weather — the planner is a form, and a form has no business turning the city
-off — and closing the panel also erased the drawn line. Both are tied to driver
-mode now; the line stays until the route is cleared. What minimal mode keeps is
-the basemap *and its legibility* (vector tiles, road textures, water shading): the
-first cut turned those off too and left a driver on a plain khaki field with a
-line floating over it. It sets only at the two edges and restores a snapshot
-verbatim, so a layer re-enabled mid-drive is not what gets restored.
+`data_layers::apply_minimal_mode` is keyed off driver mode, never the planner:
+looking a route up used to turn the city off, and a form has no business doing
+that. While driving it **keeps** the basemap and its legibility, the 3D buildings,
+the trees and the street detail (signals, zebra paint, barriers) — the landmarks a
+junction is recognised by and the things a turn is announced at. It **dims** the
+invented traffic, crowds and crows, the live vehicles, street furniture, grass,
+every streamed overlay and the weather. Until 2026-11-02 it did the reverse for the
+buildings, trees and street detail and left a flat khaki field of roads ("the map
+must show the details needed to find the way and to judge the route"), while never
+touching the generated traffic at all — 180 invented cars on a navigation view. It
+sets only at the two edges and restores a snapshot verbatim, so a layer re-enabled
+mid-drive is not what gets restored.
 
 ## The heading is a course over ground, never the avatar's facing
 
@@ -59,35 +62,31 @@ temporary clear sky. Any mode that borrows persisted state owes the store the sa
 view past itself, because the exit path that restores it is exactly what a killed
 process never runs.
 
-## The rail's scale is not linear, and it can't be
+## The layout is Organic Maps', and the rail is gone
 
-The route rail runs the vehicle at the foot to the destination at the top. A
-linear metres-to-pixels mapping is the obvious choice and it fails at exactly the
-distances driving happens over: on a 40 km route, everything inside the next
-2 km — which is all a driver can act on — lands inside the bottom 2 % of a 236 px
-track, one unreadable clump, while the empty motorway middle gets nine tenths of
-the pixels. So the near field gets a disproportionate share
-(`driver::RAIL_NEAR_SPAN_M` / `RAIL_NEAR_FRACTION`) and the rest is compressed.
-Both reference navigation views do the same thing, which is what suggested it.
+Since 2026-11-02 the chrome is one turn card across the top (the manoeuvre on a
+sign-coloured plate, the countdown, the street, "then" for a close second turn)
+and one trip bar across the bottom (Stop, arrival clock, time left, distance left,
+the route menu, a hairline of progress), with the speed disc above the bar's left
+end and Overview / Re-centre above its right. The user named Organic Maps as the
+reference after the satnav layout — blue card top-left, a strip of numbers and a
+**route rail** of services down the right edge — was judged not pretty: badges
+beside numbers read as a dashboard, and the reference puts nothing on the map but
+the route. With the rail went the services half of the corridor query
+(`route_ahead` asks Overpass for `maxspeed` ways only); a 4.8 km Groningen route had
+returned 45 amenities, 43 of them parking, for a widget nobody now reads. Services
+as pins *on the map* is where they would come back.
 
-The break is drawn as a notch across the track rather than left implicit. A scale
-that changes silently halfway up is a lie about distance, and distance is the
-only thing being read off it.
+**Heading-up is the default orientation, not 3D**, because the buildings now stay
+on: from the 3D view's 22° the first facade beside the street filled the screen and
+hid the route, the arrow and the junction. Seeing down a street between 20 m
+buildings takes a camera steeper than ~70°; the flat rig is 77°.
 
-## Measured: what a city corridor actually returns
-
-**2026-07-30, Groningen, 4.8 km car route (53.2194,6.5665 → 53.2350,6.5300), one
-Overpass corridor query.** The first cut asked for `amenity~fuel|charging_station|
-parking` at a 150 m corridor and got **45 amenities, 43 of them parking** — the
-rail rendered as an identical column of `P` badges with a "+38", and the single
-charging point on the route was pushed off it entirely.
-
-Two fixes, both needed: the query now only counts a car park that is *named*, a
-structure, or a park-and-ride (an unnamed `amenity=parking` rectangle behind a
-terrace is not somewhere you are told to drive to), and `MAX_PARKING` caps
-parking's share of the rail whatever the query returns. Same route after: 16
-items. The cap is the load-bearing half — the query narrowing is a guess about
-tagging conventions that will be wrong in some city, and the cap holds regardless.
+**Overview** pulls the rig back and lays it nearly flat until the rest of the route
+is on screen (`OverviewFrame`, fitted on the box's radius and the viewport's
+aspect, 240 m to 25 km). It is a toggle that stays, because judging a route is not
+a glance; it is done with the rig, not a teleport, because Follow would take the
+avatar along.
 
 ## Rejected: road class as a stand-in for the speed limit
 
@@ -102,15 +101,6 @@ For the same reason `route_ahead::parse_maxspeed` refuses the implicit zone code
 (`NL:urban`, `DE:rural`) that are a large minority of `maxspeed` values. Resolving
 them means shipping a per-country default table that changes by legislation and
 silently rots; the tag says "whatever the law says here", and we do not know that.
-
-## Rejected: feeding the rail from the streamed data layers
-
-`data_layers` already streams POIs, so reusing them looks free. It is not: driver
-mode's minimal mode turns every layer off (that is the point of it), and layers
-stream in a grid around the *camera*, so the rail would only ever know about the
-few hundred metres you are already looking at. The far two thirds of the route —
-the part the widget exists to show — would be blank. Hence a corridor query along
-the route polyline instead, once per route, cached by the query string.
 
 ## Leaving the route is a request, not an error
 
@@ -147,7 +137,7 @@ position, clipped inside long segments too, and scans the whole line only when
 nothing in that window is within `OFF_ROUTE_M`. The global nearest was a full scan
 every frame and, worse, *jumped*: where a route comes back along the next street,
 a fix drifting toward it was placed on the leg ten minutes ahead, with the card,
-the rail and the ETA going with it. A new route generation clears the hint, since
+the trip bar and the ETA going with it. A new route generation clears the hint, since
 distances along the old line mean nothing on the new one.
 
 The card never names the **departure**: it sits at 0 m, so choosing it opened every
@@ -291,23 +281,21 @@ always opens now; the routing and save-place entries need only a point on the
 map, and "Create object…" gates on there being a session to create the object in
 (see [retired/regions.md](retired/regions.md)).
 
-## The trip strip cannot hide behind a panel
+## The trip bar stands down behind a panel, and Stop moves onto the card
 
-It is anchored to the right edge, which is where the docked panels are, and egui
-paints floating `Area`s *above* panels — there is no z-order between an `Area` and
-a panel to lose (the same constraint the place-pin culling in `place_pins.rs`
-works around). So it stands down while a right panel is open rather than drawing
-over the route's own turn list. The manoeuvre card, compass and speed pill are
-clear of that edge and stay put.
+egui paints floating `Area`s *above* panels — there is no z-order between an `Area`
+and a panel to lose — so the bar, the speed disc and the buttons over the bar all
+stand down while a panel is open (the planner rises from that same bottom edge).
+Stop must stay reachable on a phone, which has no Escape key, so the card — the
+only box always drawn — carries Stop in its last row meanwhile, inside the height
+it always reserves (`CARD_HEIGHT`, which `hud` stacks the compass from). Escape
+still leaves driver mode, gated on `EguiManager::ui_owns_keyboard`.
 
-That takes the **Stop** button with it, which is why Escape leaves driver mode
-too: opening the Places list mid-drive otherwise removed the only way out. It is
-gated on `EguiManager::ui_owns_keyboard`, so typing an address does not end a trip.
-
-**Every box in this chrome pins its own width** (`CARD_WIDTH`, the strip's and the
-pill's `set_width`). The first bottom bar used `vertical_centered` inside a
-size-to-content `Area` and grew to swallow the lower third of the window within a
-few frames — the general egui trap in [map-chrome.md](map-chrome.md).
+**Every box in this chrome pins its own width** (`set_width` on the card and the
+bar, `set_width` on the speed column). An earlier bottom bar used
+`vertical_centered` inside a size-to-content `Area` and grew to swallow the lower
+third of the window within a few frames — the general egui trap in
+[map-chrome.md](map-chrome.md).
 
 ## Driver mode owns two platform resources, not just a camera
 

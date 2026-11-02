@@ -8,22 +8,19 @@
 //! is what strips the map, locks the camera into a chase view, and swaps the
 //! avatar for a heading arrow.
 //!
-//! The layout is a satnav's, taken from the two reference navigation views this
-//! was specified against: the next manoeuvre on a card at the top left with the
-//! compass under it, the trip — arrival clock, time left, distance left — as a
-//! narrow strip down the right edge, and the current speed in a pill at the bottom
-//! centre. The first cut put all three trip numbers in one wide bar across the
-//! bottom, which read as a dashboard rather than as a navigation view.
+//! The layout is Organic Maps' (2026-11-02, the reference the user named after
+//! the satnav layout was judged not pretty): one turn card across the top — the
+//! manoeuvre on a sign-coloured plate, the distance, the street — and one trip bar
+//! across the bottom with Stop, the arrival clock, time and distance left, and the
+//! route menu, the speed in a disc above its left end. The map between them is
+//! left to the map. It replaced a satnav arrangement with a route rail of services
+//! down the right edge, which put a column of badges beside a column of numbers
+//! and read as a dashboard; the reference puts nothing on the map but the route.
+//! The services corridor query ([`crate::systems::route_ahead`]) still runs, for
+//! the speed limit it carries.
 //!
-//! **The right strip is a route rail, not a column of numbers.** Under the trip
-//! figures it runs the drive as one vertical track — the vehicle at the foot, the
-//! destination capped at the top, and the services, saved places and other things
-//! you will pass marked along it in proportion ([`route_rail`]). That is the
-//! element both references build their right-hand side around, and it answers the
-//! question the numbers cannot: not *how far* is left, but *what* is left. What
-//! goes on it is [`crate::systems::route_ahead`]'s problem; placing it is this
-//! module's, and the scale it is placed on is the interesting part
-//! ([`RAIL_NEAR_SPAN_M`]).
+//! **Overview** pulls the rig back until the rest of the route is on screen
+//! ([`OverviewFrame`]): judging a route mid-drive is part of driving it.
 //!
 //! **Leaving the route asks for a new one.** Missing a turn is the normal case,
 //! not a fault, so the display re-solves from where the vehicle actually is
@@ -63,17 +60,16 @@
 //! driver. Not speech: there is no TTS in this tree and a tone is unambiguous at
 //! 120 km/h with the window open.
 //!
-//! **Stop and Route live on the manoeuvre card**, which is the only box that is
-//! always drawn. Stop was on the trip strip, and the strip stands down behind any
-//! docked panel — on a phone, which has no Escape key, that could leave a drive
-//! with no exit at all. Route reopens the planner without leaving the mode, which
-//! is otherwise unreachable mid-drive: the dock, the main menu and the planner
-//! are all suppressed, so there was no way to change the destination, read the turn
-//! list or switch travel mode short of ending the trip.
+//! **Stop is always reachable.** It is on the trip bar, and the bar stands down
+//! behind any docked panel — so while one is open the card, the only box always
+//! drawn, carries Stop in its last row. A phone has no Escape key, and a drive
+//! with no exit was reached once already. The bar's menu reopens the planner
+//! without leaving the mode, which is otherwise unreachable mid-drive: the dock,
+//! the main menu and the planner are all suppressed.
 //!
-//! The speed pill carries the posted limit beside the speedometer, as a painted
-//! road sign rather than a themed readout ([`speed_limit_sign`]) — same reasoning
-//! as [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
+//! The speed disc carries the posted limit over it, as a painted road sign
+//! rather than a themed readout ([`speed_limit_sign`]) — same reasoning as
+//! [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
 //! road class the planner routes on is a cost estimate, not a legal limit, and a
 //! sign confidently showing the wrong number is worse than no sign.
 //!
@@ -160,7 +156,7 @@ use crate::systems::geo_nav::{
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
 use crate::systems::navigation::RouteState;
-use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
+use crate::systems::route_ahead::RouteAhead;
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
 use crate::systems::theme;
 
@@ -365,14 +361,19 @@ const OFF_ROUTE_GRACE: f32 = 2.0;
 pub enum MapOrientation {
     /// The map turns with you: the course points up the screen, flat and from
     /// high up. The one that makes "next left" mean the left of the screen.
+    ///
+    /// **The default**, since driving keeps the 3D buildings (2026-11-02): from
+    /// the tilted 3D view at 22° the first facade beside the street filled the
+    /// screen and hid the route, the arrow and the junction outright. Seeing down
+    /// a street between 20 m buildings takes a camera looking down steeper than
+    /// about 70°, which this one (77°) is.
+    #[default]
     HeadingUp,
     /// The map is held north-up and the arrow turns instead — for reading the map
     /// as a map.
     NorthUp,
-    /// Heading-up, dropped behind and tilted into the road: the "3D" view, and
-    /// the default because it is the one both reference screenshots show and the
-    /// one a driver reads a junction from.
-    #[default]
+    /// Heading-up, dropped behind and tilted into the road: the "3D" view a driver
+    /// reads an open junction from — and the one the buildings block in a city.
     Perspective,
 }
 
@@ -619,6 +620,56 @@ struct CameraSave {
     first_person: bool,
 }
 
+/// What the route overview frames: the box around the vehicle and the rest of
+/// the route, in world-XZ metres from the vehicle.
+///
+/// Fitted by the rig rather than by a teleport: driver mode holds the camera on
+/// the vehicle (Follow, `drive_locked`), and a framing teleport there would take
+/// the avatar with it. So the overview is the chase rig pulled back and laid
+/// nearly flat, looking at the box's centre — the same look-ahead vector every
+/// orientation already aims through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverviewFrame {
+    /// The box's centre, from the vehicle.
+    centre: Vec2,
+    /// Half the box's width and depth.
+    half: Vec2,
+}
+
+/// How flat the overview looks down, in radians (~83°). Not quite nadir, so a
+/// heading-up overview still says which way is ahead.
+const OVERVIEW_PITCH: f32 = 1.45;
+/// Margin round the fitted route, and the furthest the overview pulls back.
+const OVERVIEW_MARGIN: f32 = 1.15;
+const OVERVIEW_MAX_DISTANCE: f32 = 25_000.0;
+
+impl OverviewFrame {
+    fn around(points: impl Iterator<Item = Vec2>) -> Option<Self> {
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for p in points {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        (lo.x <= hi.x).then(|| Self {
+            centre: (lo + hi) * 0.5,
+            half: (hi - lo) * 0.5,
+        })
+    }
+
+    /// Rig distance that fits the box on a viewport of `aspect` (width over
+    /// height), for a 45° vertical field of view.
+    ///
+    /// Fitted on the box's radius, so it holds whichever way the heading-up
+    /// view is turned; and the camera stands over the vehicle rather than over
+    /// the centre, so the centre's offset is added to what has to fit.
+    fn distance(self, aspect: f32) -> f32 {
+        let tan_half = (std::f32::consts::FRAC_PI_8).tan();
+        let radius = self.half.length() + 0.25 * self.centre.length();
+        let fit = radius / (tan_half * aspect.clamp(0.3, 1.0));
+        (fit * OVERVIEW_MARGIN).clamp(FLAT_DISTANCE, OVERVIEW_MAX_DISTANCE)
+    }
+}
+
 /// The rig offsets a user's own camera input has accumulated, and when it last
 /// arrived. Identity is "the driving pose", which is what a default must be.
 ///
@@ -764,6 +815,13 @@ pub struct DriverState {
     /// answered that by planning a fresh route to where you already are would be
     /// hard to read as anything but broken.
     pub arrived: bool,
+    /// The route overview is up: the rig pulls back and flattens until the rest
+    /// of the route is on screen ([`OverviewFrame`]). A toggle, not a peek — it
+    /// stays until the driver taps it away, because judging the route (is that
+    /// the motorway, where does it cross the river) is not a glance.
+    pub overview: bool,
+    /// What the overview has to fit, measured this frame by `drive_driver_mode`.
+    overview_frame: Option<OverviewFrame>,
     /// The user's own camera offsets on top of the rig — see [`Peek`].
     peek: Peek,
     /// Since when the position has been further than [`OFF_ROUTE_M`] from the
@@ -797,6 +855,8 @@ pub struct DriverState {
     /// — the `--ui driver` shot preset seeds endpoints and cannot wait — arms this
     /// instead of racing the solver.
     armed: bool,
+    /// …and with the overview up once it does (the `--ui overview` preset).
+    armed_overview: bool,
 }
 
 impl DriverState {
@@ -815,6 +875,8 @@ impl DriverState {
         self.rerouting = false;
         self.arrived = false;
         self.peek = Peek::default();
+        self.overview = false;
+        self.overview_frame = None;
         self.progress = None;
         self.speed_ms = 0.0;
         self.last_sample = None;
@@ -834,6 +896,12 @@ impl DriverState {
     /// Ask for driver mode without a route yet: it starts the moment one solves.
     pub fn arm(&mut self) {
         self.armed = true;
+    }
+
+    /// Arm with the route overview up: entering resets the overview, so it has to
+    /// be asked for on the far side of the edge.
+    pub fn arm_overview(&mut self) {
+        self.armed_overview = true;
     }
 
     /// The camera pose as it was *before* driver mode took the rig, or `None`
@@ -867,6 +935,7 @@ impl DriverState {
         }
         self.active = false;
         self.armed = false;
+        self.armed_overview = false;
         self.watch = None;
         self.progress = None;
         self.glide.reset();
@@ -877,6 +946,8 @@ impl DriverState {
         self.retry_requested = false;
         self.arrived = false;
         self.peek = Peek::default();
+        self.overview = false;
+        self.overview_frame = None;
         tracing::info!("driver mode off");
     }
 }
@@ -1111,6 +1182,7 @@ pub fn drive_driver_mode(
     if driver.armed && route.route.is_some() {
         driver.armed = false;
         driver.enter();
+        driver.overview = std::mem::take(&mut driver.armed_overview);
     }
     // The mode exists only for a route to drive. Clearing one, or editing an
     // endpoint, drops straight out — better than driving a line that is gone.
@@ -1346,6 +1418,25 @@ pub fn drive_driver_mode(
         Some((offset, snapped_yaw(driver.course, seg_yaw)))
     });
     driver.snap = snap;
+
+    // What the overview has to fit: the rest of the route, around the vehicle.
+    // Measured every frame (it is a few hundred points, thinned) so the overview
+    // shrinks as the route is driven, and only while it is up.
+    driver.overview_frame = if driver.overview {
+        let along = progress.map_or(0.0, |p| p.along_m);
+        driver.geom.as_ref().and_then(|g| {
+            let start = g.cum.partition_point(|&c| c < along);
+            let ahead = g.points.get(start..)?;
+            let stride = (ahead.len() / 300).max(1);
+            let pts = ahead.iter().step_by(stride).chain(ahead.last()).map(|p| {
+                let (x, z) = lat_lng_to_world(anchor, p[0], p[1]);
+                Vec2::new((x - here.x) as f32, (z - here.z) as f32)
+            });
+            OverviewFrame::around(std::iter::once(Vec2::ZERO).chain(pts))
+        })
+    } else {
+        None
+    };
     // ── The end of the trip ──
     //
     // Latched (see `DriverState::arrived`): once, on the frame the destination
@@ -1899,8 +1990,29 @@ pub fn steady_driver_camera(
     apply_gesture(&mut driver.peek, gesture, ease);
 
     let (base, base_pitch, lookahead) = driver.orientation.rig();
-    let distance = base * rig_scale(driver.speed_ms, driver.progress) * driver.peek.zoom;
-    let pitch = (base_pitch + driver.peek.pitch).clamp(0.12, 1.50);
+    // The overview replaces the chase pose outright: pulled back to fit the rest
+    // of the route, laid nearly flat, aimed at the middle of it. Peeking is
+    // meaningless over it, so a gesture is read (to keep the drag anchor honest)
+    // and then dropped.
+    let overview = driver
+        .overview_frame
+        .filter(|_| driver.overview)
+        .map(|frame| {
+            let v = egui.viewport_pts();
+            let aspect = if v.y > 0.0 { v.x / v.y } else { 1.0 };
+            (frame.distance(aspect), frame.centre)
+        });
+    if overview.is_some() {
+        driver.peek = Peek::default();
+    }
+    let distance = match overview {
+        Some((d, _)) => d,
+        None => base * rig_scale(driver.speed_ms, driver.progress) * driver.peek.zoom,
+    };
+    let pitch = match overview {
+        Some(_) => OVERVIEW_PITCH,
+        None => (base_pitch + driver.peek.pitch).clamp(0.12, 1.50),
+    };
     camera_state.distance += (distance - camera_state.distance) * ease;
     camera_state.pitch += (pitch - camera_state.pitch) * ease;
     // Aim down the road the vehicle is on, in world XZ. Along the **course**, not
@@ -1910,8 +2022,12 @@ pub fn steady_driver_camera(
     // bottom of the screen. Eased through the offset itself, so switching
     // orientation slides the aim point along with the tilt instead of snapping the
     // horizon.
-    let aim =
-        Vec2::new(driver.course.sin(), driver.course.cos()) * camera_state.distance * lookahead;
+    let aim = match overview {
+        Some((_, centre)) => centre,
+        None => {
+            Vec2::new(driver.course.sin(), driver.course.cos()) * camera_state.distance * lookahead
+        }
+    };
     let toward_aim = (aim - camera_state.drive_lookahead) * ease;
     camera_state.drive_lookahead += toward_aim;
 
@@ -2151,6 +2267,7 @@ pub fn update_driver_arrow(
     mut hidden: Local<bool>,
     time: Res<Time>,
     mut drawn_yaw: Local<Option<f32>>,
+    camera_state: Res<CameraState>,
 ) {
     // Reconciled every frame while driving, not once on the edge: the model holders
     // are spawned asynchronously (`avatar::spawn_avatar` waits on the glTF), so an
@@ -2244,12 +2361,17 @@ pub fn update_driver_arrow(
     };
     *drawn_yaw = Some(yaw);
     let rotation = Quat::from_rotation_y(yaw);
+    // Grown with the rig once it pulls back past the flat chase distance — the
+    // overview looks down from kilometres, where a 14 m kite is a speck — and
+    // never shrunk below its own size.
+    let scale = Vec3::splat((camera_state.distance / FLAT_DISTANCE).max(1.0));
     let translation = tf.translation + offset + Vec3::Y * ARROW_Y;
     match arrows.single_mut() {
         Ok((_, mut acell, mut atf)) => {
             *acell = *cell;
             atf.translation = translation;
             atf.rotation = rotation;
+            atf.scale = scale;
         }
         Err(_) => {
             let Ok(root) = bigspace.single() else {
@@ -2261,6 +2383,7 @@ pub fn update_driver_arrow(
                 Transform {
                     translation,
                     rotation,
+                    scale,
                     ..default()
                 },
                 *cell,
@@ -2341,147 +2464,92 @@ fn arrow_mesh() -> Mesh {
 }
 
 // ─── The navigation chrome ───────────────────────────────────────────────────
+//
+// Laid out the way Organic Maps lays out its navigation, which is the reference
+// the user named when the satnav layout was judged not pretty (2026-11-02): one
+// turn card across the top, one trip bar across the bottom, the speed in a disc
+// above the bar's left end — and the map between them left to the map. The rail
+// of services that ran down the right edge is gone: a column of P badges beside a
+// column of numbers is what made the screen read as a dashboard, and nothing in
+// the reference stands on the map but the route.
 
-/// Width of the manoeuvre card, and the vertical space it claims. Fixed rather
-/// than sized to content so the compass beneath it has a place to be — the same
-/// reason the status HUD pins its width (`hud::HUD_WIDTH`).
-pub const CARD_WIDTH: f32 = 190.0;
-/// …including the control row along its bottom, which is why this is 146 and not
-/// the 118 of the instruction alone. `hud` stacks the compass from it, so the
-/// number and the card cannot drift apart.
-pub const CARD_HEIGHT: f32 = 146.0;
+/// Width of the turn card on a wide viewport. On a compact one it spans the
+/// screen less its margins, as the reference's does on a phone.
+pub const CARD_WIDTH: f32 = 340.0;
+/// The card's height — fixed, and the same in every state, because `hud` stacks
+/// the compass under it from this number and a card that grew with its words
+/// would slide the compass about mid-drive.
+pub const CARD_HEIGHT: f32 = 96.0;
 /// Where the card sits, and therefore where everything under it stacks from.
 pub const CARD_MARGIN: f32 = 12.0;
 
-/// Width of the trip strip down the right-hand edge. Wide enough for the route
-/// rail's badges to sit on the track without touching its edges.
-const STRIP_WIDTH: f32 = 116.0;
+/// The manoeuvre plate at the card's left edge: the turn glyph, big, on a
+/// sign-coloured square — the one part of the card read without reading.
+const TILE: f32 = 64.0;
 
-/// Height of the route rail's track. The one dimension the widget's usefulness
-/// scales with — everything on the route between here and the destination has to
-/// find a distinct pixel on it.
-///
-/// Shorter on a phone, where the strip is stacked *under* the card rather than
-/// beside it (see [`render_driver_hud`]) and the two share one column of screen.
-const RAIL_HEIGHT: f32 = 236.0;
-const RAIL_HEIGHT_COMPACT: f32 = 132.0;
+/// The trip bar along the bottom: as wide as the screen allows, up to this.
+const BAR_MAX_WIDTH: f32 = 520.0;
+/// Its height, which everything stacked above it (the speed disc, the overview
+/// button, the GPS note) clears.
+const BAR_HEIGHT: f32 = 62.0;
 
-/// How far the GPS chip clears the bottom edge.
-///
-/// Above the speed pill's band on purpose: the Re-centre button is anchored to the
-/// bottom *right* at [`PILL_BOTTOM`], and a chip on the bottom left at the same
-/// height shared a y-band with it — which on a 274 pt viewport is not a near miss
-/// but an overlap, the chip being the wider of the two.
-const CHIP_BOTTOM: f32 = PILL_BOTTOM + 36.0;
-
-/// Where the two anchored boxes go, for a viewport width.
-struct DriverLayout {
-    card_width: f32,
-    strip_width: f32,
-    /// The strip's offset from the top, which on a narrow viewport is *below* the
-    /// card rather than beside it.
-    strip_top: f32,
-    rail_height: f32,
-}
-
-/// Fit the chrome to the screen it is on.
-///
-/// **Nothing in this module read the viewport at all**, which is how a layout that
-/// is unusable on the target device survived: every box is anchored to a corner,
-/// and on a desktop the corners are far enough apart that no arithmetic is needed.
-/// At the 274 pt an Android phone reports, the 190 pt card and the 116 pt strip
-/// each fit and cannot both fit — anchored to opposite edges they overlapped by
-/// 56 pt, one drawing over the other's numbers.
-///
-/// So on a compact viewport the strip stacks under the card instead of beside it.
-/// Stacking down the *right* edge specifically: the column under the card on the
-/// left belongs to the compass and the locate button (`hud::render_map_controls`
-/// stacks them from [`CARD_HEIGHT`]). The rail loses height to pay for it, because
-/// the strip now shares one screen's height with the card rather than owning its
-/// own edge.
-///
-/// A pure function because "does the chrome fit" is arithmetic, and this is another
-/// case of a thing that cannot be checked by looking on the machine it is built on.
-fn driver_layout(viewport_x: f32, compact: bool) -> DriverLayout {
-    let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
-    DriverLayout {
-        card_width: CARD_WIDTH.min(usable),
-        strip_width: STRIP_WIDTH.min(usable),
-        strip_top: if compact {
-            CARD_MARGIN + CARD_HEIGHT + 8.0
-        } else {
-            CARD_MARGIN
-        },
-        rail_height: if compact {
-            RAIL_HEIGHT_COMPACT
-        } else {
-            RAIL_HEIGHT
-        },
-    }
-}
-
-/// Half-width of the track, and the radius of a marker badge sitting on it.
-const RAIL_HALF_W: f32 = 4.0;
-const RAIL_BADGE_R: f32 = 9.5;
-
-/// Minimum vertical gap between two badges. Below this they overlap into an
-/// unreadable stack, so the rail spreads them apart (and drops what will not fit)
-/// rather than drawing a smear that is technically in proportion.
-const RAIL_MIN_GAP: f32 = 21.0;
-
-/// The rail's near field: the first [`RAIL_NEAR_SPAN_M`] of route get
-/// [`RAIL_NEAR_FRACTION`] of the track.
-///
-/// A purely linear rail is the obvious design and it is the wrong one. On a 40 km
-/// route the next three things you pass all land inside the bottom 2 % of the
-/// track — one blurred clump — while the empty motorway stretch nobody needs to
-/// read gets nine tenths of the pixels. Both reference layouts solve it the same
-/// way, by giving what is about to happen a disproportionate share and compressing
-/// the rest, so the rail stays readable at the only end where the answer changes
-/// minute to minute. The break is *drawn* (a notch across the track) rather than
-/// left implicit: a scale that changes silently halfway up is a lie about
-/// distance, and a driver reads distance off this.
-const RAIL_NEAR_SPAN_M: f64 = 2_000.0;
-const RAIL_NEAR_FRACTION: f32 = 0.45;
+/// The speed disc's diameter.
+const SPEED_DISC: f32 = 58.0;
 
 /// How close the manoeuvre after this one has to be before the card previews it.
 /// Two turns in quick succession is the case a card showing only the next one gets
 /// wrong — you take the first and are already in the second before it appears.
 const THEN_PREVIEW_M: f64 = 300.0;
 
-/// How far ahead something on the route has to be before the rail's caption
-/// names it as the next thing you will pass ([`route_rail`]).
-const RAIL_NEXT_MIN_M: f64 = 40.0;
-
 /// Tolerance before the speedometer calls you over the limit, in km/h. Speed is
 /// measured from successive positions and the limit comes off a map; flashing red
 /// at 51 in a 50 on that evidence would be noise.
 const OVER_LIMIT_TOLERANCE_KMH: f32 = 4.0;
 
-/// How far the speed pill clears the bottom edge — over the chat/action bar,
-/// which is docked there and would otherwise sit on top of it.
-const PILL_BOTTOM: f32 = 62.0;
+/// Where the boxes go, for a viewport width.
+struct DriverLayout {
+    card_width: f32,
+    bar_width: f32,
+}
 
-/// The navigation chrome, laid out the way a satnav lays it out: the next
-/// manoeuvre on a card at the top left, the trip — arrival clock, time left,
-/// distance left — as a compact strip down the right edge, and the current speed
-/// in a pill at the bottom centre. The compass is drawn by
-/// [`crate::systems::hud`], which already owns it; driver mode only moves it down
-/// past the card.
+/// Fit the chrome to the screen it is on. A pure function because "does the
+/// chrome fit" is arithmetic, and the machine this is built on cannot look.
+fn driver_layout(viewport_x: f32, compact: bool) -> DriverLayout {
+    let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
+    DriverLayout {
+        card_width: if compact {
+            usable
+        } else {
+            CARD_WIDTH.min(usable)
+        },
+        bar_width: BAR_MAX_WIDTH.min(usable),
+    }
+}
+
+/// How far the trip bar's bottom edge clears the viewport's.
+fn bar_bottom() -> f32 {
+    theme::OSD_MARGIN + 4.0
+}
+
+/// Where the things stacked over the bar's two ends sit: their bottom edge.
+fn above_bar() -> f32 {
+    bar_bottom() + BAR_HEIGHT + theme::OSD_GAP
+}
+
+/// The navigation chrome: the turn card at the top, the trip bar at the bottom,
+/// the speed above the bar's left end, Overview / Re-centre above its right.
+/// The compass is drawn by [`crate::systems::hud`], which already owns it;
+/// driver mode only moves it down past the card.
 ///
 /// **Every box here pins its own width.** An anchored, size-to-content
 /// [`egui::Area`] whose content reaches for the *available* width grows a little
-/// each frame — this frame's size becomes next frame's available width — and
-/// stretches across the screen. `hud`'s module note documents the same trap; the
-/// first cut of this bar hit it and swallowed the lower third of the window.
+/// each frame and stretches across the screen (`map-chrome.md`).
 ///
-/// **The trip strip yields to a right-hand panel.** It is anchored to the right
-/// edge, which is exactly where the docked panels are, and egui paints floating
-/// `Area`s *above* panels — so the rail drew straight over the open Route panel
-/// and its turn list. It cannot be put behind one (there is no z-order between an
-/// `Area` and a panel to lose), so it stands down while one is open, the same
-/// resolution `hud::render_map_controls` reached for the status box. The manoeuvre
-/// card, the compass and the speed pill are all clear of that edge and stay.
+/// **The bar stands down behind a docked panel, and Stop moves onto the card.**
+/// egui paints floating `Area`s above panels, so a bar left up would be drawn
+/// over the planner's turn list or the Places panel; but Stop has to stay
+/// reachable on a phone, which has no Escape key. So while a panel is open the
+/// card grows a Stop button in its last row, in the height it always reserves.
 pub fn render_driver_hud(
     egui: EguiRef,
     mut driver: ResMut<DriverState>,
@@ -2495,11 +2563,10 @@ pub fn render_driver_hud(
     if !driver.active {
         return;
     }
-    // Every number on this screen — the distance to the next turn, the ETA, the
-    // speed, the progress edge — is a function of where the vehicle is, and driving
-    // produces no egui input at all. Without this the HUD is tessellated once and
-    // then re-presented unchanged until something is tapped, i.e. it freezes at the
-    // moment the driver stops touching the phone. See `EguiManager::animating`.
+    // Every number on this screen is a function of where the vehicle is, and
+    // driving produces no egui input at all. Without this the HUD is tessellated
+    // once and then re-presented unchanged until something is tapped
+    // (`EguiManager::animating`).
     egui.animating();
     // The route being *driven*, which during a reroute is the one being replaced.
     let Some(r) = route.displayed() else {
@@ -2511,366 +2578,390 @@ pub fn render_driver_hud(
     let rerouting = driver.rerouting;
     let failed = driver.solve_error.clone();
     let step = r.steps.get(progress.step);
-    // Phone layout. At 274 pt — the viewport an Android phone actually reports —
-    // the card (190) and the strip (116) both fit the width and cannot both fit it
-    // at once: right- and left-anchored, they overlapped by 56 pt, one drawing over
-    // the other. Nothing here read the viewport at all, which is how that survived:
-    // every box is anchored to a corner, and on a desktop the corners are far apart.
     let viewport_x = egui.viewport_pts().x;
     let DriverLayout {
         card_width,
-        strip_width,
-        strip_top,
-        rail_height,
+        bar_width,
     } = driver_layout(viewport_x, egui.compact());
-    // What any full-width box may claim, the chip included.
     let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
-    // Escape used to leave from here. It is `systems::dismiss`'s rung 8 now, for
-    // the reason that module exists: this was the *only* Escape handler in the
-    // client that actually worked, so it stepped past a menu or a dialog drawn
-    // over the trip and ended the trip instead. Stop is still on the manoeuvre
-    // card, which is always drawn — a touch device has no Escape key, and that
-    // was already the real exit.
+    // `RightPanel` is the shared state; the two booleans are the older panels
+    // that only publish their own (`hud` ORs the same three for the same reason).
+    let panel_open = data_layers.panel_open
+        || bookmarks.panel_open
+        || !right_panel.is(crate::resources::RightPanel::None);
     let ctx = egui.ctx().clone();
-    let panel = |fill: egui::Color32| {
-        egui::Frame::NONE
-            .fill(fill)
-            .corner_radius(8.0)
-            .inner_margin(egui::Margin::symmetric(10, 8))
-    };
 
-    // ── The manoeuvre card ──
-    //
-    // **Everything that must always be reachable lives on this box**, because this
-    // box is the only one that is always drawn. The trip strip stands down whenever
-    // a right-hand panel is open, and it used to carry Stop — so opening the Places
-    // list on a phone, which has no Escape key to fall back on, left a drive with
-    // no exit at all.
     let mut done = false;
     let mut retry = false;
     let mut open_planner = false;
+    let mut toggle_overview = false;
+    let mut recentre = false;
+
+    // ── The turn card ──
+    //
+    // The plate's colour is the state, in signage colours rather than the app's:
+    // blue for an instruction, amber while the route is being replaced (leaving
+    // the line is the normal case, and the display is already fixing it), red for
+    // what it cannot fix, green for being there. The card itself is the app's
+    // glass, so it reads as part of the same screen as everything else.
+    let (plate, glyph, title, sub): (egui::Color32, &str, String, String) = if arrived {
+        (
+            ARRIVE_GREEN,
+            icons::FINISH,
+            "Arrived".to_string(),
+            route.to.label.trim().to_string(),
+        )
+    } else if let Some(err) = &failed {
+        (
+            OFF_ROUTE_RED,
+            icons::WARNING,
+            "No new route".to_string(),
+            err.clone(),
+        )
+    } else if rerouting {
+        (
+            REROUTE_AMBER,
+            icons::REFRESH,
+            "Rerouting…".to_string(),
+            "from where you are".to_string(),
+        )
+    } else if off_route {
+        // Reached only when a reroute cannot be asked for yet — the cooldown, or
+        // a fix too poor to act on.
+        (
+            OFF_ROUTE_RED,
+            icons::WARNING,
+            "Off route".to_string(),
+            format!("{} from the route", format_distance(progress.off_route_m)),
+        )
+    } else {
+        let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
+        (
+            DRIVE_BLUE,
+            icons::maneuver(maneuver),
+            countdown(progress.step_distance_m),
+            step.and_then(|s| s.name.clone()).unwrap_or_default(),
+        )
+    };
+    let instructing = !arrived && failed.is_none() && !rerouting && !off_route;
+    let then = r
+        .steps
+        .get(progress.step + 1)
+        .filter(|_| instructing && next_step_gap(r, progress) <= THEN_PREVIEW_M)
+        .map(|s| s.maneuver);
+
     egui::Area::new(egui::Id::new("driver_maneuver"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
         .show(&ctx, |ui| {
-            // Amber, not red, while the route is being replaced: leaving the line
-            // is the normal case (you missed a turn), and the display is already
-            // fixing it. Red is reserved for the state it cannot fix — which now
-            // includes a reroute that came back empty. Green is the trip being
-            // over — the one card that is not an instruction.
-            panel(if arrived {
-                ARRIVE_GREEN
-            } else if rerouting {
-                REROUTE_AMBER
-            } else if off_route || failed.is_some() {
-                theme::ERROR
-            } else {
-                DRIVE_BLUE
-            })
-            .show(ui, |ui| {
-                ui.set_width(card_width - 20.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    if arrived {
-                        // The card the whole drive was for. It names the place
-                        // the user asked for rather than the road the route
-                        // ended on — "Arrived" over a street name reads as one
-                        // more instruction, and this is the opposite of one.
-                        ui.label(big("Arrived", 21.0, theme::CREAM));
-                        let where_to = route.to.label.trim();
-                        if !where_to.is_empty() {
+            let frame = theme::overlay_frame().inner_margin(egui::Margin::same(10));
+            let inset = frame.inner_margin.sum() + egui::Vec2::splat(2.0 * frame.stroke.width);
+            frame.show(ui, |ui| {
+                ui.set_width(card_width - inset.x);
+                ui.set_height(CARD_HEIGHT - inset.y);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    let (tile, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(TILE), egui::Sense::hover());
+                    ui.painter().rect_filled(tile, 12.0, plate);
+                    ui.painter().text(
+                        tile.center(),
+                        egui::Align2::CENTER_CENTER,
+                        glyph,
+                        egui::FontId::proportional(40.0),
+                        theme::CREAM,
+                    );
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.horizontal(|ui| {
+                            ui.label(big(
+                                &title,
+                                if instructing { 30.0 } else { 22.0 },
+                                theme::CREAM,
+                            ));
+                            // The turn after this one, when it follows at once —
+                            // right-aligned, a footnote to the instruction.
+                            if let Some(next) = then {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 3.0;
+                                        ui.label(
+                                            egui::RichText::new(icons::maneuver(next))
+                                                .size(18.0)
+                                                .color(theme::TEXT),
+                                        );
+                                        ui.label(small("then", theme::TEXT_DIM));
+                                    },
+                                );
+                            }
+                        });
+                        if !sub.is_empty() {
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(where_to).size(12.5).color(theme::CREAM),
+                                    egui::RichText::new(sub.as_str())
+                                        .size(theme::SIZE_BODY)
+                                        .color(theme::TEXT),
                                 )
                                 .truncate(),
                             );
                         }
-                    } else if let Some(err) = &failed {
-                        // The state that used to end the drive without saying
-                        // anything: `route` went to `None`, the tick dropped out of
-                        // driver mode, and the explanation was in a panel nobody
-                        // could see. The route being replaced is still drawn under
-                        // this card, so "keep going on the old line" is a real
-                        // option beside Retry and Stop.
-                        ui.label(big("No new route", 18.0, theme::INK));
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(err.as_str())
-                                    .size(11.5)
-                                    .color(theme::INK),
-                            )
-                            .truncate(),
-                        );
-                        ui.label(small("still following the previous route", theme::INK));
-                    } else if rerouting {
-                        ui.label(big("Rerouting…", 19.0, theme::INK));
-                        ui.label(small("from your current position", theme::INK));
-                    } else if off_route {
-                        // Reached only when a reroute cannot be asked for yet — the
-                        // cooldown, or a fix too poor to act on.
-                        ui.label(big("Off route", 20.0, theme::INK));
-                        ui.label(small(
-                            &format!("{} from the route", format_distance(progress.off_route_m)),
-                            theme::INK,
-                        ));
-                    } else {
-                        // Glyph and distance on one line, street name under it —
-                        // the satnav arrangement, and it keeps the card short
-                        // enough to leave the compass its place below.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
-                            ui.label(big(icons::maneuver(maneuver), 34.0, theme::CREAM));
-                            ui.label(big(
-                                &countdown(progress.step_distance_m),
-                                24.0,
-                                theme::CREAM,
-                            ));
-                        });
-                        // Street name, and — when the manoeuvre after this one
-                        // follows immediately — a preview of it on the same row.
-                        // Right-aligned so it reads as a footnote to the turn
-                        // rather than as a competing instruction, and inside the
-                        // card so the compass below keeps its place.
-                        ui.horizontal(|ui| {
-                            if let Some(name) = step.and_then(|s| s.name.as_deref()) {
-                                ui.label(egui::RichText::new(name).size(12.5).color(theme::CREAM));
-                            }
-                            let Some(next) = r.steps.get(progress.step + 1) else {
-                                return;
-                            };
-                            if next_step_gap(r, progress) > THEN_PREVIEW_M {
-                                return;
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.x = 3.0;
-                                    ui.label(
-                                        egui::RichText::new(icons::maneuver(next.maneuver))
-                                            .size(16.0)
-                                            .color(theme::CREAM),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("then")
-                                            .size(11.0)
-                                            .color(theme::CREAM.gamma_multiply(0.75)),
-                                    );
-                                },
-                            );
-                        });
-                        approach_bar(ui, progress.step_distance_m);
-                    }
+                        let buttons = failed.is_some() || panel_open;
+                        if buttons {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if failed.is_some()
+                                    && theme::action_button(ui, "Retry")
+                                        .on_hover_text("Ask for a route from here again")
+                                        .clicked()
+                                {
+                                    retry = true;
+                                }
+                                if panel_open
+                                    && theme::action_button(
+                                        ui,
+                                        if arrived { "Done" } else { "Stop" },
+                                    )
+                                    .on_hover_text("Leave navigation and put the map back")
+                                    .clicked()
+                                {
+                                    done = true;
+                                }
+                            });
+                        } else if instructing {
+                            approach_bar(ui, progress.step_distance_m);
+                        }
+                    });
+                });
+            });
+        });
 
-                    // ── The controls that are always there ──
-                    //
-                    // Stop, because a touch device has no Escape and the strip that
-                    // used to carry it can be covered. Route, because mid-drive
-                    // every other way back is suppressed — the dock, the main menu
-                    // and the planner itself — so there was no way to change the
-                    // destination, read the turn list or switch travel mode without
-                    // first ending the trip.
-                    ui.add_space(5.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 5.0;
-                        if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new(if arrived { "Done" } else { "Stop" })
-                                    .size(12.0),
-                            ))
-                            .on_hover_text("Leave driver mode and put the map back")
-                            .clicked()
+    // Nothing else while a panel is docked: the bar, the speed and the buttons
+    // above the bar are all on the bottom edge the planner sheet rises from, and
+    // the card carries Stop meanwhile.
+    if !panel_open {
+        // ── The trip bar, bottom centre ──
+        let ((hh, mm, _), local_clock) = clock.hms();
+        let arrival = arrival_clock(hh, mm, progress.remaining_s, local_clock);
+        let driven = if r.distance_m > 1.0 {
+            (1.0 - progress.remaining_m / r.distance_m).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        egui::Area::new(egui::Id::new("driver_bar"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bar_bottom()))
+            .show(&ctx, |ui| {
+                let frame = theme::overlay_frame().inner_margin(egui::Margin::symmetric(8, 8));
+                let inset = frame.inner_margin.sum() + egui::Vec2::splat(2.0 * frame.stroke.width);
+                let shown = frame.show(ui, |ui| {
+                    ui.set_width(bar_width - inset.x);
+                    ui.set_height(BAR_HEIGHT - inset.y);
+                    ui.horizontal_centered(|ui| {
+                        let gap = ui.spacing().item_spacing.x;
+                        if theme::round_button(
+                            ui,
+                            if arrived { icons::CHECK } else { icons::CLEAR },
+                            if arrived { "Done" } else { "Stop navigation" },
+                            false,
+                        )
+                        .clicked()
                         {
                             done = true;
                         }
-                        if failed.is_some()
-                            && ui
-                                .add(egui::Button::new(egui::RichText::new("Retry").size(12.0)))
-                                .on_hover_text("Ask for a route from here again")
-                                .clicked()
-                        {
-                            retry = true;
+                        let stats = (ui.available_width() - theme::ROUND_BUTTON_SIZE - 3.0 * gap)
+                            .max(90.0)
+                            / 3.0;
+                        let time_left = if arrived {
+                            "—".to_string()
+                        } else {
+                            format_duration(progress.remaining_s)
+                        };
+                        let to_go = if arrived {
+                            "—".to_string()
+                        } else {
+                            format_distance(progress.remaining_m)
+                        };
+                        for (value, caption) in [
+                            (
+                                arrival.as_str(),
+                                if arrived { "arrived" } else { "arrival" },
+                            ),
+                            (time_left.as_str(), "left"),
+                            (to_go.as_str(), "to go"),
+                        ] {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(stats, BAR_HEIGHT - inset.y),
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.label(big(value, 19.0, theme::CREAM));
+                                    ui.label(small(caption, theme::TEXT_DIM));
+                                },
+                            );
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(egui::Button::new(egui::RichText::new("Route").size(12.0)))
-                                .on_hover_text("Open the planner — destination, turn list, mode")
-                                .clicked()
-                            {
-                                open_planner = true;
-                            }
-                        });
+                        if theme::round_button(
+                            ui,
+                            icons::MENU,
+                            "Route — destination, turn list, travel mode",
+                            false,
+                        )
+                        .clicked()
+                        {
+                            open_planner = true;
+                        }
                     });
                 });
+                // How much of the trip is behind you, as a hairline along the
+                // bar's top edge — the reference's progress line, drawn on the
+                // frame rather than laid out so it costs the bar no height.
+                let rect = shown.response.rect.shrink2(egui::vec2(14.0, 0.0));
+                let y = rect.top() + 1.5;
+                let p = ui.painter();
+                p.line_segment(
+                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                    egui::Stroke::new(3.0, theme::OVERLAY_LINE),
+                );
+                if driven > 0.0 {
+                    p.line_segment(
+                        [
+                            egui::pos2(rect.left(), y),
+                            egui::pos2(rect.left() + rect.width() * driven, y),
+                        ],
+                        egui::Stroke::new(3.0, ROUTE_BLUE),
+                    );
+                }
             });
-        });
 
-    // ── What the position is worth, bottom left ──
-    //
-    // The provider's own message when there is one, otherwise the quality of the
-    // fix itself (`GpsQuality`). Before this, "the watch has started and nothing has
-    // arrived", "±50 m in a tunnel" and a metre-accurate lock all rendered as the
-    // same confident arrow on the same confident card.
-    let chip = driver
-        .gps_error
-        .as_ref()
-        .map(|err| format!("{err} — following the avatar"))
-        .or_else(|| driver.gps.chip());
-    if let Some(chip) = chip {
-        egui::Area::new(egui::Id::new("driver_gps_chip"))
-            .anchor(
-                egui::Align2::LEFT_BOTTOM,
-                egui::vec2(CARD_MARGIN, -CHIP_BOTTOM),
-            )
+        // ── The speed, above the bar's left end, with the limit over it ──
+        let speed_kmh = driver.speed_ms * 3.6;
+        let limit = ahead.limit_at(progress.along_m);
+        let over = limit.is_some_and(|l| speed_kmh > f32::from(l) + OVER_LIMIT_TOLERANCE_KMH);
+        let left = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
+        egui::Area::new(egui::Id::new("driver_speed"))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(left, -above_bar()))
             .show(&ctx, |ui| {
-                panel(theme::OVERLAY).show(ui, |ui| {
-                    ui.set_width(260.0_f32.min(usable) - 20.0);
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(chip).size(11.0).color(theme::WARN))
-                            .truncate(),
+                ui.set_width(SPEED_DISC);
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    if let Some(limit) = limit {
+                        speed_limit_sign(ui, limit);
+                    }
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(SPEED_DISC), egui::Sense::hover());
+                    let p = ui.painter();
+                    let c = rect.center();
+                    p.circle_filled(c, SPEED_DISC * 0.5, theme::OVERLAY);
+                    p.circle_stroke(
+                        c,
+                        SPEED_DISC * 0.5,
+                        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                    );
+                    // Over the limit turns the *speed* red, not the sign: the sign
+                    // states a fact about the road and reads the same whatever the
+                    // vehicle is doing.
+                    p.text(
+                        c - egui::vec2(0.0, 5.0),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{speed_kmh:.0}"),
+                        egui::FontId::new(22.0, theme::brand_family()),
+                        if over { SIGN_RED } else { theme::CREAM },
+                    );
+                    p.text(
+                        c + egui::vec2(0.0, 13.0),
+                        egui::Align2::CENTER_CENTER,
+                        "km/h",
+                        egui::FontId::proportional(theme::SIZE_TINY),
+                        theme::TEXT_DIM,
                     );
                 });
             });
-    }
 
-    // ── The trip strip, right edge — unless a panel is docked there ──
-    //
-    // `RightPanel` is the shared state; the two booleans are the older panels
-    // that only publish their own (`hud` ORs the same three for the same reason).
-    let right_panel_open = data_layers.panel_open
-        || bookmarks.panel_open
-        || !right_panel.is(crate::resources::RightPanel::None);
-
-    let ((hh, mm, _), local_clock) = clock.hms();
-    let arrival = arrival_clock(hh, mm, progress.remaining_s, local_clock);
-    // Not an early `return`: the speed pill and its limit sign are drawn below and
-    // sit at the bottom centre, nowhere near the panel.
-    if !right_panel_open {
-        egui::Area::new(egui::Id::new("driver_strip"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-CARD_MARGIN, strip_top))
+        // ── Overview and Re-centre, above the bar's right end ──
+        //
+        // Overview is the route judged rather than driven: the rig pulls back
+        // until the rest of it is on screen ([`OverviewFrame`]). Re-centre comes
+        // up beside it only while the view is held off the rig — an offer, not
+        // the mechanism; the peek expires on its own ([`PEEK_TIMEOUT`]).
+        let right = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
+        let peeking = driver.peeking();
+        let overview = driver.overview;
+        egui::Area::new(egui::Id::new("driver_view_buttons"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-right, -above_bar()))
             .show(&ctx, |ui| {
-                panel(theme::OVERLAY).show(ui, |ui| {
-                    ui.set_width(strip_width - 20.0);
-                    ui.vertical_centered(|ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        // Arrival first: on a drive of any length it is the number
-                        // being planned around, which is why a satnav puts it top.
-                        // A pace smaller when it carries the " UTC" suffix, which
-                        // otherwise wraps onto a second line in a 96 pt column and
-                        // pushes the rail down.
-                        ui.label(big(
-                            &arrival,
-                            if local_clock { 24.0 } else { 18.0 },
-                            theme::CREAM,
-                        ));
-                        if arrived {
-                            // The same clock, now a fact rather than a forecast.
-                            // What is left is nothing, and `format_duration`
-                            // floors at "1 min" — a trip that is over must not
-                            // still claim a minute of it.
-                            ui.label(small("arrived", theme::TEXT_DIM));
-                            ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if peeking
+                        && theme::round_button(
+                            ui,
+                            icons::HERE,
+                            "Put the camera back behind the arrow",
+                            false,
+                        )
+                        .clicked()
+                    {
+                        recentre = true;
+                    }
+                    if theme::round_button(
+                        ui,
+                        icons::CAT_MAP,
+                        if overview {
+                            "Back to following the road"
                         } else {
-                            ui.label(small("arrival", theme::TEXT_DIM));
-                            ui.add_space(6.0);
-                            ui.label(big(
-                                &format_distance(progress.remaining_m),
-                                21.0,
-                                theme::TEXT,
-                            ));
-                            ui.label(small(
-                                &format_duration(progress.remaining_s),
-                                theme::TEXT_DIM,
-                            ));
-                        }
-                        ui.add_space(8.0);
-                        route_rail(ui, &ahead, progress, rail_height);
-                        // Stop used to live here, and here is exactly where it
-                        // could not be relied on — this whole strip stands down
-                        // behind a docked panel. It is on the manoeuvre card now.
-                    });
+                            "See the rest of the route"
+                        },
+                        overview,
+                    )
+                    .clicked()
+                    {
+                        toggle_overview = true;
+                    }
                 });
             });
-    }
 
-    // ── The speed pill, bottom centre, with the limit beside it ──
-    let speed_kmh = driver.speed_ms * 3.6;
-    let limit = ahead.limit_at(progress.along_m);
-    let over = limit.is_some_and(|l| speed_kmh > f32::from(l) + OVER_LIMIT_TOLERANCE_KMH);
-    egui::Area::new(egui::Id::new("driver_speed"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -PILL_BOTTOM))
-        .show(&ctx, |ui| {
-            egui::Frame::NONE
-                .fill(theme::OVERLAY)
-                .corner_radius(18.0)
-                .inner_margin(egui::Margin::symmetric(16, 6))
-                .show(ui, |ui| {
-                    ui.set_width(if limit.is_some() { 124.0 } else { 84.0 });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 5.0;
-                        // Over the limit turns the *speed* red, not the sign: the
-                        // sign states a fact about the road and must read the same
-                        // whatever the vehicle is doing.
-                        ui.label(big(
-                            &format!("{speed_kmh:.0}"),
-                            22.0,
-                            if over { theme::ERROR } else { theme::CREAM },
-                        ));
-                        ui.label(small("km/h", theme::TEXT_DIM));
-                        if let Some(limit) = limit {
-                            ui.add_space(4.0);
-                            speed_limit_sign(ui, limit);
-                        }
+        // ── What the position is worth, centred above the bar ──
+        //
+        // The provider's own message when there is one, otherwise the quality of
+        // the fix itself (`GpsQuality`) — only when there is something to say, so
+        // a good lock adds nothing to the screen.
+        let chip = driver
+            .gps_error
+            .as_ref()
+            .map(|err| format!("{err} — following the avatar"))
+            .or_else(|| driver.gps.chip());
+        if let Some(chip) = chip {
+            let width = (usable - 2.0 * (SPEED_DISC + theme::OSD_GAP)).clamp(80.0, 260.0);
+            egui::Area::new(egui::Id::new("driver_gps_chip"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -above_bar()))
+                .show(&ctx, |ui| {
+                    theme::chip_frame().show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(chip)
+                                    .size(theme::SIZE_CHIP)
+                                    .color(theme::WARN),
+                            )
+                            .truncate(),
+                        );
                     });
                 });
-        });
-
-    // ── Re-centre, bottom right, only while the view is being held off the rig ──
-    //
-    // It is an offer, not a requirement — the peek expires on its own
-    // ([`PEEK_TIMEOUT`]) — but a locked camera that has visibly stopped tracking
-    // needs to say, in the frame it stops, that this is recoverable and how.
-    // Bottom *right*: the left is the manoeuvre card's column and the centre is
-    // the speed pill, and this must not move either of them while it comes and
-    // goes.
-    let mut recentre = false;
-    if driver.peeking() {
-        egui::Area::new(egui::Id::new("driver_recentre"))
-            .anchor(
-                egui::Align2::RIGHT_BOTTOM,
-                egui::vec2(-CARD_MARGIN, -PILL_BOTTOM),
-            )
-            .show(&ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(theme::OVERLAY)
-                    .corner_radius(16.0)
-                    .inner_margin(egui::Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("Re-centre").size(12.5).strong(),
-                            ))
-                            .on_hover_text("Put the camera back behind the arrow")
-                            .clicked()
-                        {
-                            recentre = true;
-                        }
-                    });
-            });
+        }
     }
+
     if recentre {
+        driver.recentre();
+    }
+    if toggle_overview {
+        driver.overview = !driver.overview;
         driver.recentre();
     }
     if retry {
         driver.retry_route();
     }
     // Opening the planner does not leave driver mode: the drive carries on behind
-    // it, the strip stands down as it does for any docked panel, and the card —
+    // it, the bar stands down as it does for any docked panel, and the card —
     // Stop included — stays put.
     if open_planner {
         *right_panel = crate::resources::RightPanel::Route;
     }
-
     // Arriving and stopping are the same act as far as the mode is concerned —
     // the route line stays drawn either way, because clearing it is the planner's
     // business and a driver who has just parked may well want to see it.
@@ -2879,7 +2970,7 @@ pub fn render_driver_hud(
     }
 }
 
-/// The satnav blue the manoeuvre card is painted in. Not a theme colour: the
+/// The satnav blue the manoeuvre plate is painted in. Not a theme colour: the
 /// palette is the accent's warm one, and a *direction* instruction is the one piece
 /// of chrome that has to read as a road sign rather than as part of the app.
 const DRIVE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x14, 0x6E, 0xD2);
@@ -2904,6 +2995,15 @@ const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
 /// card fill that has to carry `theme::CREAM`. So it is the amber a road sign
 /// would use, dark enough to be a plate.
 const REROUTE_AMBER: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x5A, 0x0C);
+
+/// The plate for what the display cannot fix — off the route with no reroute yet,
+/// or a reroute that came back empty. A sign red dark enough to carry
+/// `theme::CREAM`; `theme::ERROR` is a pale *text* colour and cannot be a plate.
+const OFF_ROUTE_RED: egui::Color32 = egui::Color32::from_rgb(0xA3, 0x2A, 0x22);
+
+/// The route line's own blue (`navigation`'s fill), for the trip bar's progress
+/// line: the bar and the line on the map are the same object.
+const ROUTE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x29, 0x87, 0xE6);
 
 /// The distance to the next manoeuvre, as a countdown rather than a measurement.
 ///
@@ -2968,179 +3068,6 @@ fn next_step_gap(route: &Route, progress: Progress) -> f64 {
         .steps
         .get(progress.step + 1)
         .map_or(f64::INFINITY, |s| s.distance_m)
-}
-
-/// The route rail: the drive from here to the destination as one vertical track,
-/// with what you will pass marked along it in proportion.
-///
-/// Bottom is the vehicle, top is the destination, and the track carries only what
-/// is *left* — a rail that also showed the road already driven would spend pixels
-/// on the one part of the route that can no longer change. The scale is the
-/// two-zone one [`RAIL_NEAR_SPAN_M`] documents.
-///
-/// Badges are laid out bottom-up and pushed apart to [`RAIL_MIN_GAP`], so a clump
-/// of car parks in one street becomes a legible column rather than one smudge;
-/// anything pushed past the destination cap is dropped and counted, because a
-/// badge drawn over the flag would claim to be the end of the route.
-fn route_rail(ui: &mut egui::Ui, ahead: &RouteAhead, progress: Progress, height: f32) {
-    let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let x = rect.center().x;
-    let top = rect.top() + RAIL_BADGE_R;
-    let bottom = rect.bottom() - RAIL_BADGE_R;
-    let span = bottom - top;
-
-    // The track. Drawn in the route's own blue so the rail and the line on the
-    // map are visibly the same object.
-    painter.rect_filled(
-        egui::Rect::from_min_max(
-            egui::pos2(x - RAIL_HALF_W, top),
-            egui::pos2(x + RAIL_HALF_W, bottom),
-        ),
-        RAIL_HALF_W,
-        DRIVE_BLUE,
-    );
-
-    let remaining = progress.remaining_m.max(1.0);
-    let y_of = |d: f64| bottom - span * rail_t(d, remaining);
-
-    // The scale break, when there is one — see `RAIL_NEAR_SPAN_M`.
-    if remaining > RAIL_NEAR_SPAN_M {
-        let y = y_of(RAIL_NEAR_SPAN_M);
-        painter.line_segment(
-            [
-                egui::pos2(x - RAIL_HALF_W - 3.0, y),
-                egui::pos2(x + RAIL_HALF_W + 3.0, y),
-            ],
-            egui::Stroke::new(1.0, theme::OVERLAY_LINE),
-        );
-    }
-
-    // Markers, bottom-up, spread apart. `along_m` is measured from the start of
-    // the route; the rail measures from the vehicle.
-    let base = progress.along_m;
-    let mut placed: Vec<(f32, &crate::systems::route_ahead::AheadItem)> = Vec::new();
-    let mut last_y = f32::INFINITY;
-    let mut dropped = 0usize;
-    for item in ahead.ahead_of(base) {
-        if item.kind == AheadKind::Destination {
-            continue; // drawn as the cap, below
-        }
-        let y = y_of(item.along_m - base).min(last_y - RAIL_MIN_GAP);
-        if y < top + RAIL_MIN_GAP {
-            dropped += 1;
-            continue;
-        }
-        last_y = y;
-        placed.push((y, item));
-    }
-
-    for (y, item) in &placed {
-        let c = egui::pos2(x, *y);
-        painter.circle_filled(c, RAIL_BADGE_R, theme::SURFACE);
-        painter.circle_stroke(c, RAIL_BADGE_R, egui::Stroke::new(1.0, theme::OVERLAY_LINE));
-        painter.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            item.kind.icon(),
-            egui::FontId::proportional(11.0),
-            theme::TEXT,
-        );
-        // A badge is 19 px across and the name never fits, so the name is a
-        // tooltip. `interact` rather than a widget: the rail is one allocated
-        // rect, and hover regions inside it are hit-tested by hand.
-        let hit = egui::Rect::from_center_size(c, egui::Vec2::splat(RAIL_BADGE_R * 2.0));
-        ui.interact(
-            hit,
-            ui.id().with(("rail", item.along_m.to_bits())),
-            egui::Sense::hover(),
-        )
-        .on_hover_text(format!(
-            "{}\n{} ahead · {} off the route",
-            item.title(),
-            format_distance(item.along_m - base),
-            format_distance(item.off_m),
-        ));
-    }
-
-    // The destination cap, and the vehicle at the foot.
-    painter.circle_filled(egui::pos2(x, top), RAIL_BADGE_R + 1.0, theme::ACCENT);
-    painter.text(
-        egui::pos2(x, top),
-        egui::Align2::CENTER_CENTER,
-        AheadKind::Destination.icon(),
-        egui::FontId::proportional(11.0),
-        theme::INK,
-    );
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(x, bottom - 7.0),
-            egui::pos2(x - 6.0, bottom + 4.0),
-            egui::pos2(x + 6.0, bottom + 4.0),
-        ],
-        theme::CREAM,
-        egui::Stroke::NONE,
-    ));
-
-    // How many would not fit, parked beside the destination cap — against the end
-    // of the rail rather than against whichever badge happens to be topmost, which
-    // read as a count of *that* thing.
-    if dropped > 0 {
-        painter.text(
-            egui::pos2(x + RAIL_BADGE_R + 5.0, top),
-            egui::Align2::LEFT_CENTER,
-            format!("+{dropped}"),
-            egui::FontId::proportional(10.0),
-            theme::TEXT_DIM,
-        );
-    }
-
-    // What is next, spelled out under the rail — the rail says where things are,
-    // this says what the nearest one is, which is the question actually being
-    // asked while driving.
-    // Not what you are already beside: a charging point at the kerb you set off
-    // from read "0 m · Charging" for the first minute of the drive, a fact about
-    // where you are standing presented as the next thing ahead.
-    match ahead.next_ahead(base + RAIL_NEXT_MIN_M) {
-        Some(next) => {
-            ui.label(big(
-                &format_distance(next.along_m - base),
-                15.0,
-                theme::CREAM,
-            ));
-            // Truncated, not wrapped: a long POI name is three lines in a 96 px
-            // column, and the strip is a fixed-height box with a button under it —
-            // the wrap pushed Stop off the bottom of the panel.
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(next.title())
-                        .size(10.5)
-                        .color(theme::TEXT_DIM),
-                )
-                .truncate(),
-            );
-        }
-        None if ahead.status == AheadStatus::Fetching => {
-            ui.label(small("scanning route…", theme::TEXT_DIM));
-        }
-        None => {}
-    }
-}
-
-/// Where a distance ahead sits on the rail: 0 at the vehicle, 1 at the
-/// destination. See [`RAIL_NEAR_SPAN_M`] for why this is not `d / remaining`.
-fn rail_t(d: f64, remaining: f64) -> f32 {
-    let d = d.clamp(0.0, remaining);
-    if remaining <= RAIL_NEAR_SPAN_M {
-        return (d / remaining) as f32;
-    }
-    if d <= RAIL_NEAR_SPAN_M {
-        return RAIL_NEAR_FRACTION * (d / RAIL_NEAR_SPAN_M) as f32;
-    }
-    RAIL_NEAR_FRACTION
-        + (1.0 - RAIL_NEAR_FRACTION)
-            * ((d - RAIL_NEAR_SPAN_M) / (remaining - RAIL_NEAR_SPAN_M)) as f32
 }
 
 /// A European speed-limit sign: the number in a red annulus. Painted rather than
@@ -3766,36 +3693,6 @@ mod tests {
         assert!(driver.active && driver.watch.is_some() && driver.snap_pending);
         driver.exit();
         assert!(!driver.active && driver.watch.is_none() && driver.progress.is_none());
-    }
-
-    /// The rail's scale: pinned to its ends, monotonic in between, and — the part
-    /// that is the whole point — giving the near field a share of the track far
-    /// out of proportion to its share of the distance.
-    #[test]
-    fn the_rail_scale_favours_the_near_field_without_going_backwards() {
-        // Short route: no break, plain linear.
-        assert!((rail_t(0.0, 1_000.0) - 0.0).abs() < 1e-6);
-        assert!((rail_t(500.0, 1_000.0) - 0.5).abs() < 1e-6);
-        assert!((rail_t(1_000.0, 1_000.0) - 1.0).abs() < 1e-6);
-
-        // Long route: the first RAIL_NEAR_SPAN_M — 5% of a 40 km drive — gets
-        // RAIL_NEAR_FRACTION of the track. Linearly it would get 5% of it, and
-        // every marker in it would land inside a dozen pixels.
-        let remaining = 40_000.0;
-        assert!((rail_t(0.0, remaining) - 0.0).abs() < 1e-6);
-        assert!((rail_t(RAIL_NEAR_SPAN_M, remaining) - RAIL_NEAR_FRACTION).abs() < 1e-6);
-        assert!((rail_t(remaining, remaining) - 1.0).abs() < 1e-6);
-        let mut prev = -1.0;
-        for i in 0..=400 {
-            let t = rail_t(remaining * f64::from(i) / 400.0, remaining);
-            assert!(t >= prev, "rail scale went backwards at {i}");
-            prev = t;
-        }
-
-        // Past the destination and behind the vehicle both clamp onto the track —
-        // an item projected a metre beyond the end must not paint off the widget.
-        assert!((rail_t(remaining * 2.0, remaining) - 1.0).abs() < 1e-6);
-        assert!((rail_t(-50.0, remaining) - 0.0).abs() < 1e-6);
     }
 
     /// The reroute cooldown is the loop breaker: a solve can legitimately return a
@@ -4520,52 +4417,54 @@ mod tests {
         assert!(DriverState::default().cues.0);
     }
 
-    /// The chrome has to fit the screen it is on. At 274 pt — the viewport an
-    /// Android phone reports — the card and the strip each fit the width and cannot
-    /// both fit it, so anchored to opposite edges they overlapped by 56 pt.
+    /// The chrome has to fit the screen it is on, down to the 274 pt an Android
+    /// phone reports: the card and the bar inside the margins, and the three
+    /// things stacked over the bar's ends — the speed disc, the view buttons and
+    /// the GPS note between them — side by side without touching.
     #[test]
     fn the_chrome_fits_every_viewport_it_is_drawn_on() {
         for width in [274.0_f32, 320.0, 400.0, 640.0, 800.0, 1280.0] {
             let compact = width < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
             let l = driver_layout(width, compact);
+            let usable = width - 2.0 * CARD_MARGIN + 1e-3;
+            assert!(l.card_width <= usable, "the card overflows {width} pt");
+            assert!(l.bar_width <= usable, "the bar overflows {width} pt");
+            // Speed disc left, two round buttons right, the note's floor between.
+            let row = SPEED_DISC + 80.0 + 2.0 * theme::ROUND_BUTTON_SIZE + 4.0 * theme::OSD_GAP;
             assert!(
-                l.card_width <= width - 2.0 * CARD_MARGIN + 1e-3,
-                "the card overflows {width} pt"
-            );
-            assert!(
-                l.strip_width <= width - 2.0 * CARD_MARGIN + 1e-3,
-                "the strip overflows {width} pt"
-            );
-            // Either they are side by side with room to spare, or the strip has
-            // been stacked clear of the card.
-            let side_by_side =
-                CARD_MARGIN + l.card_width <= width - CARD_MARGIN - l.strip_width + 1e-3;
-            let stacked = l.strip_top >= CARD_MARGIN + CARD_HEIGHT;
-            assert!(
-                side_by_side || stacked,
-                "card and strip overlap at {width} pt: card {} strip {} top {}",
-                l.card_width,
-                l.strip_width,
-                l.strip_top
+                row <= l.bar_width + 1e-3,
+                "the row over the bar overlaps at {width} pt"
             );
         }
-        // The desktop layout is unchanged: full-size boxes, both at the top.
-        let wide = driver_layout(1280.0, false);
-        assert_eq!(wide.card_width, CARD_WIDTH);
-        assert_eq!(wide.strip_width, STRIP_WIDTH);
-        assert_eq!(wide.strip_top, CARD_MARGIN);
-        assert_eq!(wide.rail_height, RAIL_HEIGHT);
+        // A phone's card spans the screen, as the reference's does; a desktop's
+        // is a card in the corner.
+        assert_eq!(
+            driver_layout(400.0, true).card_width,
+            400.0 - 2.0 * CARD_MARGIN
+        );
+        assert_eq!(driver_layout(1280.0, false).card_width, CARD_WIDTH);
     }
 
-    /// The GPS chip must not share a y-band with the Re-centre button, which is
-    /// anchored to the opposite bottom corner — on a narrow viewport that is an
-    /// overlap, not a near miss.
+    /// The overview fits the rest of the route: further back for a longer one,
+    /// further on a portrait phone than on a landscape window, never closer than
+    /// the flat chase view and never past its ceiling.
     #[test]
-    fn the_gps_chip_clears_the_bottom_row() {
+    fn the_overview_pulls_back_to_fit_the_route() {
+        let frame = |half: f32| {
+            OverviewFrame::around([Vec2::ZERO, Vec2::new(0.0, 2.0 * half)].into_iter()).unwrap()
+        };
+        let short = frame(300.0).distance(1.6);
+        let long = frame(3_000.0).distance(1.6);
+        assert!(long > short, "{long} vs {short}");
         assert!(
-            CHIP_BOTTOM > PILL_BOTTOM + 24.0,
-            "the chip sits in the Re-centre button's row"
+            frame(3_000.0).distance(0.45) > long,
+            "a portrait screen fits less"
         );
+        assert!(frame(1.0).distance(1.6) >= FLAT_DISTANCE);
+        assert!(frame(500_000.0).distance(0.45) <= OVERVIEW_MAX_DISTANCE);
+        // The centre is where the route is, not where the vehicle is.
+        assert_eq!(frame(300.0).centre, Vec2::new(0.0, 300.0));
+        assert!(OverviewFrame::around(std::iter::empty()).is_none());
     }
 
     /// The whole point of the glide: between two fixes the marker must cover the

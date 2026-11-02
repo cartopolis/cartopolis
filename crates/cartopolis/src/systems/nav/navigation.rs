@@ -1908,6 +1908,8 @@ pub enum SheetDetent {
 /// reaching both sides of a 2000 pt window stops reading as something sitting on
 /// the map.
 const SHEET_MAX_WIDTH: f32 = 420.0;
+/// The solved route's time, the largest type on the sheet: it is the answer.
+const SUMMARY_TIME_PTS: f32 = 26.0;
 /// The Start button never gets narrower than this, whatever Clear has taken from
 /// the row: it is the one control on the sheet you came to press.
 const START_MIN_WIDTH_PTS: f32 = 96.0;
@@ -2022,33 +2024,27 @@ fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
     }
 }
 
-/// The travel modes, as one segmented row of equal-width chips.
+/// The travel modes, as the theme's segmented control: one sunken track, the
+/// chosen mode a raised card on it.
 ///
-/// Equal width and not size-to-content: three chips whose widths follow their
-/// words ("Car", "Bike", "Walk") read as three unrelated buttons, and this is
-/// one control with three positions. Icon *and* word — the picture is what is
-/// read at a glance, over and over, and the words are short enough to keep
-/// beside it.
+/// It was three bordered chips with the chosen one filled in the accent, which
+/// read as three buttons and spent the accent — the colour of the one thing on
+/// the sheet to press, Start — on a setting (2026-11-02, "a bit like Organic
+/// Maps"). Icon *and* time: the picture is read at a glance, and the three times
+/// side by side say "walk it" or "take the bike" without another tap.
 fn mode_chips(ui: &mut egui::Ui, route: &RouteState, reserved: f32, actions: &mut PanelActions) {
-    let n = TravelMode::ALL.len() as f32;
-    let gap = ui.spacing().item_spacing.x;
-    let width = ((ui.available_width() - reserved - (n - 1.0) * gap) / n).max(36.0);
-    let size = egui::vec2(width, theme::row_height());
-    for mode in TravelMode::ALL {
-        let selected = route.mode == mode;
-        if theme::chip_sized(
-            ui,
-            &chip_label(mode, route.duration_for(mode)),
-            selected,
-            size,
-        )
-        .on_hover_text(mode.label())
-        .clicked()
-            && !selected
-        {
-            actions.mode = Some(mode);
+    let labels: Vec<(TravelMode, String)> = TravelMode::ALL
+        .into_iter()
+        .map(|m| (m, chip_label(m, route.duration_for(m))))
+        .collect();
+    let options: Vec<(TravelMode, &str)> = labels.iter().map(|(m, s)| (*m, s.as_str())).collect();
+    let mut chosen = route.mode;
+    let width = (ui.available_width() - reserved).max(108.0);
+    ui.allocate_ui(egui::vec2(width, theme::row_height().max(30.0)), |ui| {
+        if theme::segmented(ui, &mut chosen, &options) {
+            actions.mode = Some(chosen);
         }
-    }
+    });
 }
 
 /// A mode chip's words: the mode's time once it is known, its name until then.
@@ -2284,38 +2280,44 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
             );
         }
         (SolveStatus::Idle, Some(r)) => {
+            // The reference's summary: the time big, the arrival clock opposite
+            // it, and the distance and destination as one quiet line under them.
+            let ((h, m, _), local) = clock;
+            let arrive = crate::systems::driver::arrival_clock(h, m, r.duration_s, local);
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format_duration(r.duration_s))
-                        .size(theme::SIZE_HEADING)
-                        .strong(),
+                        .size(SUMMARY_TIME_PTS)
+                        .family(theme::brand_family())
+                        .color(theme::CREAM),
                 );
-                let door = if route.door.is_some() && route.door == route.to.coord {
-                    " · to the door"
-                } else {
-                    ""
-                };
-                let ((h, m, _), local) = clock;
-                let arrive = crate::systems::driver::arrival_clock(h, m, r.duration_s, local);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "· {}{door} · arrive {arrive}",
-                        format_distance(r.distance_m)
-                    ))
-                    .color(theme::TEXT_DIM),
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("arrive {arrive}"))
+                            .size(theme::SIZE_VALUE)
+                            .color(theme::TEXT),
+                    );
+                });
             });
+            let door = if route.door.is_some() && route.door == route.to.coord {
+                " · to the door"
+            } else {
+                ""
+            };
             let to = route.to.label.trim_start_matches(PICKED_PREFIX).trim();
-            if !to.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("to {to}"))
-                            .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .truncate(),
-                );
-            }
+            let line = if to.is_empty() {
+                format!("{}{door}", format_distance(r.distance_m))
+            } else {
+                format!("{}{door} · to {to}", format_distance(r.distance_m))
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(line)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                )
+                .truncate(),
+            );
         }
         (SolveStatus::Idle, None) => {
             ui.label(

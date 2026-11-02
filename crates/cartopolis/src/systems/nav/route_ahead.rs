@@ -1,38 +1,27 @@
-//! What lies ahead on the route being driven: the services beside it, the user's
-//! own saved places near it, and the speed limit of the road under the vehicle.
+//! The speed limit of the road ahead, for the sign over the speed disc.
 //!
 //! [`crate::systems::driver`] measures *where* you are on the route and draws the
-//! chrome; this module answers *what is coming*, which is the other half of a
-//! navigation display. Both reference layouts this was specified against carry it:
-//! a rail down the right edge running from the vehicle to the destination with the
-//! things you will pass marked along it in proportion, and a speed-limit sign
-//! beside the speedometer. Neither can be derived from a solved [`Route`] — a
-//! route is a polyline, a distance and a list of turns, and it knows nothing about
-//! the petrol station at kilometre nine or the 30 zone you are entering.
+//! chrome; this module answers what the law says about the road there. It cannot
+//! be derived from a solved [`Route`] — a route is a polyline, a distance and a
+//! list of turns, and it knows nothing about the 30 zone you are entering.
+//!
+//! It also used to find the services beside the route — fuel, charging, named car
+//! parks, rest areas — and the user's saved places near it, for a rail down the
+//! right edge of the navigation display. The rail went with the move to an
+//! Organic Maps layout (2026-11-02), and the services query with it: an Overpass
+//! answer nothing on screen reads is load on a rate-limited service for nothing.
+//! Services as pins on the map is where they would come back.
 //!
 //! **One Overpass request per route, not per cell.** The streamed data layers
-//! ([`crate::systems::data_layers`]) fetch a grid of cells around the *camera*,
-//! which is the wrong shape here twice over: driver mode's minimal mode turns
-//! every layer off, and a rail that only knew about the cells near you would leave
-//! the far two thirds of the route blank — exactly the part the widget exists to
-//! show. So this asks Overpass for a *corridor* instead, with `around` over the
-//! route's own polyline, once, when the route changes. The answer is cached by the
-//! shape of that polyline, so re-entering driver mode on the same route costs
-//! nothing.
-//!
-//! **The rail fills in two stages and is useful before the network answers.**
-//! Saved places are local, so they are projected onto the route the frame the
-//! route changes; the corridor services and the speed limits merge in when the
-//! request lands. A rail that stayed empty until Overpass replied would be blank
-//! for the first seconds of every drive, which is when it is looked at most.
+//! ([`crate::systems::data_layers`]) fetch a grid of cells around the *camera*;
+//! this asks for a *corridor* instead, with `around` over the route's own
+//! polyline, once, when the route changes. The answer is cached by the query, so
+//! re-entering driver mode on the same route costs nothing.
 //!
 //! **Distances are in the driver's frame, not the planner's.** Everything here is
 //! measured along [`RouteGeom`] — the pin lead-ins stripped, cumulative metres per
-//! vertex — the same geometry `driver::Progress` is projected onto. A rail item at
-//! "9.4 km" and a readout saying "9.4 km to go" therefore mean the same thing;
-//! measuring one against `Route::distance_m` and the other against the polyline
-//! would put them a few dozen metres apart and there would be no way to tell which
-//! was lying.
+//! vertex — the same geometry `driver::Progress` is projected onto, so a limit
+//! sampled at "9.4 km" is under the vehicle when the bar says 9.4 km are behind.
 
 use crate::platform::sync::{Arc, Mutex};
 use std::collections::hash_map::DefaultHasher;
@@ -45,18 +34,8 @@ use crate::platform::storage;
 use crate::systems::driver::{nearest_on_polyline, DriverState, RouteGeom};
 use crate::systems::navigation::RouteState;
 use crate::systems::osm_buildings::overpass_query;
-use crate::systems::user_store::UserStore;
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
-
-/// Corridor half-width for the services query, in metres. Wide enough to catch a
-/// filling station set back behind its forecourt, narrow enough that a parallel
-/// high street does not empty itself onto the rail.
-const POI_CORRIDOR_M: u32 = 150;
-
-/// …and for the rest areas, which are laid out along motorways at a greater
-/// stand-off than a town-centre amenity.
-const REST_CORRIDOR_M: u32 = 300;
 
 /// Corridor half-width for the speed-limit query. Deliberately tight: this is
 /// asking "which road am I on", and at 150 m every service road, cycleway and
@@ -80,15 +59,6 @@ pub const SPEED_SAMPLE_M: f64 = 25.0;
 /// sample and leave a hole in the middle of its own zone.
 const SPEED_WALK_M: f64 = 12.0;
 
-/// A POI has to be within this of the route to be worth a rail marker. Wider than
-/// the query corridor is pointless; narrower discards things the query paid for.
-const POI_NEAR_M: f64 = POI_CORRIDOR_M as f64 + 20.0;
-
-/// A saved place gets a rail marker within this of the route. Generous compared
-/// with the services: a place the *user* saved is worth mentioning even when it is
-/// a couple of streets off, and there are only ever tens of them.
-const SAVED_NEAR_M: f64 = 400.0;
-
 /// Vertices of the route polyline are dropped until they are this far apart before
 /// going into the `around` filter. Overpass takes a linestring, so the segments
 /// between kept vertices are still covered — this only trades query length for a
@@ -109,138 +79,22 @@ const CORRIDOR_STEP_M: f64 = 300.0;
 /// straight, so the corner-cutting the step trades away costs almost nothing.
 const MAX_CORRIDOR_POINTS: usize = 400;
 
-/// Ceiling on rail markers kept from one corridor. The rail is 240 px tall and
-/// can show perhaps a dozen; the rest are counted, not drawn.
-const MAX_ITEMS: usize = 24;
-
-/// …and how many of them may be parking.
-///
-/// Measured, not guessed: a 4.8 km route across Groningen came back with 45
-/// amenities, all but two of them parking, and the rail rendered as a column of
-/// identical `P` badges with a "+38" — the one charging point on the route was
-/// pushed off it. Parking is the most numerous driving amenity in any city centre
-/// and the least urgent (you look for it at the end of a drive, not during one),
-/// so it gets a fixed minority of the rail and fuel/charging/rest keep their
-/// places. The query is narrowed too — see [`corridor_query`] — but a cap is what
-/// makes the guarantee hold in a city this rule did not anticipate.
-const MAX_PARKING: usize = 6;
-
 // ─── Model ───────────────────────────────────────────────────────────────────
 
-/// What a rail marker is. Deliberately a small closed set rather than the
-/// data-layer categories: this is a *driving* readout, so it carries the things
-/// a drive is interrupted for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AheadKind {
-    Fuel,
-    Charging,
-    Parking,
-    RestArea,
-    /// One of the user's own places from the Places tree.
-    Saved,
-    /// The end of the route. Always present, always last.
-    Destination,
-}
+/// The result an [`IoTaskPool`] task hands back: one limit per sample.
+type CorridorResult = Result<Vec<Option<u16>>, String>;
 
-impl AheadKind {
-    /// The badge's icon, out of the bundled subset ([`crate::systems::icons`]).
-    ///
-    /// This was a probe-and-fall-back list of emoji, because the glyph came from
-    /// whatever font stack egui had and half of these had no glyph in it. With
-    /// the icon font shipped there is one answer per kind.
-    pub fn icon(self) -> &'static str {
-        use crate::systems::icons;
-        match self {
-            Self::Fuel => icons::FUEL,
-            Self::Charging => icons::CHARGING,
-            Self::Parking => icons::PARKING,
-            Self::RestArea => icons::DRINK,
-            Self::Saved => icons::BOOKMARK,
-            Self::Destination => icons::FINISH,
-        }
-    }
-
-    /// What it is called when there is no name to show.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Fuel => "Fuel",
-            Self::Charging => "Charging",
-            Self::Parking => "Parking",
-            Self::RestArea => "Rest area",
-            Self::Saved => "Saved place",
-            Self::Destination => "Destination",
-        }
-    }
-
-    /// Sort weight when two markers land on the same pixel and one has to win.
-    /// The destination outranks everything; a place the user saved outranks a
-    /// generic amenity, because they put it there.
-    fn priority(self) -> u8 {
-        match self {
-            Self::Destination => 3,
-            Self::Saved => 2,
-            Self::Fuel | Self::Charging => 1,
-            Self::Parking | Self::RestArea => 0,
-        }
-    }
-}
-
-/// One thing you will pass, placed on the route by projection.
-#[derive(Clone, Debug)]
-pub struct AheadItem {
-    /// Metres from the start of the driven polyline — the same frame as
-    /// `driver::Progress::along_m`.
-    pub along_m: f64,
-    /// Metres from the route to the thing itself.
-    pub off_m: f64,
-    pub kind: AheadKind,
-    /// Its name, when OSM or the user gave it one.
-    pub name: Option<String>,
-}
-
-impl AheadItem {
-    /// What to show for it: its name, else what it is.
-    pub fn title(&self) -> &str {
-        self.name.as_deref().unwrap_or_else(|| self.kind.label())
-    }
-}
-
-/// Where the corridor request has got to, so the rail can say so instead of
-/// looking empty.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum AheadStatus {
-    /// No route, or nothing asked for yet.
-    #[default]
-    Idle,
-    Fetching,
-    Ready,
-    /// The corridor request failed. The rail still works — saved places and the
-    /// destination are local — so this is a caption, not an error state.
-    Failed(String),
-}
-
-/// The result an [`IoTaskPool`] task hands back.
-type CorridorResult = Result<(Vec<AheadItem>, Vec<Option<u16>>), String>;
-
-/// Everything known about the road ahead of the vehicle.
+/// What is known about the road ahead of the vehicle.
 #[derive(Resource, Default)]
 pub struct RouteAhead {
-    /// Markers, sorted by `along_m`, in the driven polyline's frame.
-    pub items: Vec<AheadItem>,
     /// Speed limit in km/h per [`SPEED_SAMPLE_M`] of route; `None` where OSM has
     /// no `maxspeed` (which is most minor roads, and is why this is an option
     /// rather than a default).
     pub limits: Vec<Option<u16>>,
-    pub status: AheadStatus,
-    /// Length of the polyline the above were measured against, so the rail never
-    /// scales items by a route they do not belong to.
-    pub total_m: f64,
     /// `RouteState::generation` this belongs to. A change invalidates all of it.
     generation: Option<u32>,
-    /// Set while the corridor request is out, so a slow reply is not re-requested
-    /// every frame.
+    /// Where the corridor request leaves its answer.
     in_flight: Arc<Mutex<Option<CorridorResult>>>,
-    requested: bool,
 }
 
 impl RouteAhead {
@@ -253,41 +107,25 @@ impl RouteAhead {
         self.limits.get(i).copied().flatten()
     }
 
-    /// Markers still in front of a position, nearest first.
-    pub fn ahead_of(&self, along_m: f64) -> impl Iterator<Item = &AheadItem> {
-        self.items.iter().filter(move |i| i.along_m >= along_m)
-    }
-
-    /// The next thing you will pass.
-    pub fn next_ahead(&self, along_m: f64) -> Option<&AheadItem> {
-        self.ahead_of(along_m).next()
-    }
-
     /// Drop everything; the route it described is gone.
     fn reset(&mut self) {
-        self.items.clear();
         self.limits.clear();
-        self.total_m = 0.0;
-        self.status = AheadStatus::Idle;
         self.generation = None;
-        self.requested = false;
         self.in_flight = Arc::default();
     }
 }
 
 // ─── The system ──────────────────────────────────────────────────────────────
 
-/// Keep [`RouteAhead`] in step with the route being driven: project the saved
-/// places immediately, ask Overpass for the corridor once, merge its answer in.
+/// Keep [`RouteAhead`] in step with the route being driven: ask Overpass for the
+/// corridor once, take its answer when it lands.
 ///
 /// Gated on driver mode being active. Planning a route deliberately costs nothing
-/// on the network beyond the solve itself — the same rule that stops the planner
-/// stripping the map (`driver`'s module note) applies to its data appetite.
+/// on the network beyond the solve itself.
 pub fn drive_route_ahead(
     mut ahead: ResMut<RouteAhead>,
     route: Res<RouteState>,
     driver: Res<DriverState>,
-    store: Res<UserStore>,
 ) {
     if !driver.active {
         if ahead.generation.is_some() {
@@ -296,11 +134,10 @@ pub fn drive_route_ahead(
         return;
     }
     // `displayed`, not `route`: a reroute in flight has no solved route for a
-    // while, and dropping the rail for the duration would empty the strip of
-    // everything it knows about the road ahead — which is unchanged past the turn
-    // that was missed. The generation is what identifies a rail's polyline, and a
-    // reroute deliberately does not bump it (`RouteState::reroute_from`), so this
-    // holds its markers and its speed limits until a different route lands.
+    // while, and the road past the missed turn is unchanged. The generation is
+    // what identifies the polyline, and a reroute deliberately does not bump it
+    // (`RouteState::reroute_from`), so the limits hold until a different route
+    // lands.
     let Some(r) = route.displayed() else {
         if ahead.generation.is_some() {
             ahead.reset();
@@ -316,16 +153,11 @@ pub fn drive_route_ahead(
             return;
         };
         ahead.generation = Some(route.generation);
-        ahead.total_m = geom.total_m;
-        ahead.items = local_items(&geom, &store, &route.to.label);
-        ahead.status = AheadStatus::Fetching;
-
         let slot = ahead.in_flight.clone();
         let corridor = corridor_points(&geom);
         let points = geom.points.clone();
         let cum = geom.cum.clone();
         let total = geom.total_m;
-        ahead.requested = true;
         IoTaskPool::get()
             .spawn(async move {
                 let built = fetch_corridor(&corridor, &points, &cum, total).await;
@@ -337,74 +169,25 @@ pub fn drive_route_ahead(
         return;
     }
 
-    // Merge a landed corridor.
     let landed = ahead.in_flight.lock().ok().and_then(|mut g| g.take());
-    let Some(landed) = landed else {
-        return;
-    };
-    ahead.requested = false;
     match landed {
-        Ok((mut items, limits)) => {
-            ahead.limits = limits;
-            items.append(&mut ahead.items);
-            sort_items(&mut items);
-            ahead.items = items;
-            ahead.status = AheadStatus::Ready;
+        Some(Ok(limits)) => {
             tracing::info!(
-                items = ahead.items.len(),
-                limited = ahead.limits.iter().filter(|l| l.is_some()).count(),
-                "route corridor ready"
+                limited = limits.iter().filter(|l| l.is_some()).count(),
+                "route speed limits ready"
             );
+            ahead.limits = limits;
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "route corridor fetch failed");
-            ahead.status = AheadStatus::Failed(e);
-        }
+        Some(Err(e)) => tracing::warn!(error = %e, "route corridor fetch failed"),
+        None => {}
     }
-}
-
-/// The markers that need no network: the user's own places near the line, and the
-/// destination itself.
-fn local_items(geom: &RouteGeom, store: &UserStore, destination: &str) -> Vec<AheadItem> {
-    let mut out: Vec<AheadItem> = store
-        .data
-        .bookmarks
-        .iter()
-        .filter_map(|b| {
-            let (along, off) = nearest_on_polyline(&geom.points, &geom.cum, [b.lat, b.lng]);
-            (off <= SAVED_NEAR_M).then(|| AheadItem {
-                along_m: along,
-                off_m: off,
-                kind: AheadKind::Saved,
-                name: Some(b.name.clone()),
-            })
-        })
-        .collect();
-    out.push(AheadItem {
-        along_m: geom.total_m,
-        off_m: 0.0,
-        kind: AheadKind::Destination,
-        name: (!destination.trim().is_empty()).then(|| destination.trim().to_string()),
-    });
-    sort_items(&mut out);
-    out
-}
-
-/// Order the rail: by distance along, and where two coincide, by what matters
-/// more — the rail draws them in this order and the later one loses the pixel.
-fn sort_items(items: &mut [AheadItem]) {
-    items.sort_by(|a, b| {
-        a.along_m
-            .total_cmp(&b.along_m)
-            .then(b.kind.priority().cmp(&a.kind.priority()))
-    });
 }
 
 /// The polyline handed to Overpass' `around`, thinned to [`CORRIDOR_STEP_M`].
 fn corridor_points(geom: &RouteGeom) -> Vec<[f64; 2]> {
     // Widen the step rather than truncate the route: a corridor that stops
-    // two-thirds of the way along would leave the rail confidently empty for the
-    // rest of the drive, which reads as "nothing ahead" rather than "not asked".
+    // two-thirds of the way along would leave the sign confidently blank for the
+    // rest of the drive, which reads as "no limit" rather than "not asked".
     let step = CORRIDOR_STEP_M.max(geom.total_m / MAX_CORRIDOR_POINTS as f64);
     let mut out = Vec::new();
     let mut last_at = f64::NEG_INFINITY;
@@ -416,7 +199,7 @@ fn corridor_points(geom: &RouteGeom) -> Vec<[f64; 2]> {
         }
     }
     // The end matters as much as the start: without it the corridor stops short of
-    // the destination by up to one step, which is where the rail is busiest.
+    // the destination by up to one step.
     if let Some(last) = geom.points.last() {
         if out.last() != Some(last) {
             out.push(*last);
@@ -427,13 +210,8 @@ fn corridor_points(geom: &RouteGeom) -> Vec<[f64; 2]> {
 
 // ─── The corridor request ────────────────────────────────────────────────────
 
-/// Ask Overpass for everything the rail and the speed sign need, in one request.
-///
-/// Two output sets in one query rather than two queries: the services want their
-/// position (`out center`, so a fuel *way* answers with a point) and the speed
-/// limits want geometry (`out geom`, so a way can be matched against the route
-/// vertex by vertex). Overpass will emit both from one pass over the corridor,
-/// which halves the round-trips and the rate-limit exposure.
+/// Ask Overpass for the speed limits along the corridor (`out geom`, so a way can
+/// be matched against the route vertex by vertex).
 async fn fetch_corridor(
     corridor: &[[f64; 2]],
     points: &[[f64; 2]],
@@ -469,26 +247,11 @@ fn corridor_query(corridor: &[[f64; 2]]) -> String {
         .map(|p| format!("{:.5},{:.5}", p[0], p[1]))
         .collect::<Vec<_>>()
         .join(",");
-    // Parking is asked for far more narrowly than fuel and charging: `amenity=
-    // parking` is also every unnamed rectangle behind a terrace, and a city street
-    // has dozens. A car park worth a rail marker is one you could be told to drive
-    // to — it has a name, or it is a structure, or it is a park-and-ride.
     format!(
         "[out:json][timeout:90];\
-         (\
-         nwr(around:{poi},{poly})[\"amenity\"~\"^(fuel|charging_station)$\"];\
-         nwr(around:{poi},{poly})[\"amenity\"=\"parking\"][\"name\"];\
-         nwr(around:{poi},{poly})[\"amenity\"=\"parking\"]\
-         [\"parking\"~\"^(multi-storey|underground|park_and_ride)$\"];\
-         nwr(around:{rest},{poly})[\"highway\"~\"^(rest_area|services)$\"];\
-         )->.p;\
-         way(around:{spd},{poly})[\"highway\"][\"maxspeed\"]->.s;\
-         .p out center {max};\
-         .s out geom;",
-        poi = POI_CORRIDOR_M,
-        rest = REST_CORRIDOR_M,
+         way(around:{spd},{poly})[\"highway\"][\"maxspeed\"];\
+         out geom;",
         spd = SPEED_CORRIDOR_M,
-        max = MAX_ITEMS * 8,
     )
 }
 
@@ -519,7 +282,7 @@ fn remark_of(text: &str) -> Option<String> {
         .map(|r| r.trim().to_string())
 }
 
-/// Turn one corridor response into rail markers and a speed-limit sample array.
+/// Turn one corridor response into a speed-limit sample array.
 fn parse_corridor(text: &str, points: &[[f64; 2]], cum: &[f64], total_m: f64) -> CorridorResult {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if let Some(remark) = json.get("remark").and_then(|r| r.as_str()) {
@@ -536,82 +299,17 @@ fn parse_corridor(text: &str, points: &[[f64; 2]], cum: &[f64], total_m: f64) ->
     // a trunk, the two halves of a dual carriageway — the nearer one is the one
     // being driven, and it must not depend on which came back first.
     let mut best: Vec<Option<(u16, f64)>> = vec![None; samples];
-    let mut items: Vec<AheadItem> = Vec::new();
-
     for el in elements {
         let tags = el.get("tags");
         let tag = |k: &str| tags.and_then(|t| t.get(k)).and_then(|v| v.as_str());
-
-        // A way that came back with geometry *and* a maxspeed is from the speed
-        // set; anything else is a service to put on the rail. The two sets are
-        // disjoint in practice, and this rule is what keeps them apart if a
-        // parking aisle ever carries a limit.
         if let (Some(limit), Some(geometry)) = (
             tag("maxspeed").and_then(parse_maxspeed),
             el.get("geometry").and_then(|g| g.as_array()),
         ) {
             stamp_limit(&mut best, limit, geometry, points, cum);
-            continue;
         }
-
-        let Some(kind) = classify(tag("amenity"), tag("highway")) else {
-            continue;
-        };
-        let Some(at) = element_point(el) else {
-            continue;
-        };
-        let (along, off) = nearest_on_polyline(points, cum, at);
-        if off > POI_NEAR_M {
-            continue;
-        }
-        items.push(AheadItem {
-            along_m: along,
-            off_m: off,
-            kind,
-            name: tag("name").map(str::to_string),
-        });
     }
-
-    // Nearest-first, then thin: the rail compresses the far end of a long route to
-    // a few pixels, so a cap that dropped near items would be the one thing the
-    // widget must not do.
-    items.sort_by(|a, b| a.along_m.total_cmp(&b.along_m));
-    let mut parking = 0usize;
-    items.retain(|i| {
-        if i.kind != AheadKind::Parking {
-            return true;
-        }
-        parking += 1;
-        parking <= MAX_PARKING
-    });
-    items.truncate(MAX_ITEMS);
-    sort_items(&mut items);
-
-    let limits = best.into_iter().map(|b| b.map(|(l, _)| l)).collect();
-    Ok((items, limits))
-}
-
-/// Where an Overpass element is: a node's own position, or a way/relation's
-/// `center` (which `out center` supplies).
-fn element_point(el: &serde_json::Value) -> Option<[f64; 2]> {
-    let pair = |v: &serde_json::Value| {
-        Some([
-            v.get("lat").and_then(serde_json::Value::as_f64)?,
-            v.get("lon").and_then(serde_json::Value::as_f64)?,
-        ])
-    };
-    pair(el).or_else(|| el.get("center").and_then(pair))
-}
-
-/// Which rail marker an element's tags mean, if any.
-fn classify(amenity: Option<&str>, highway: Option<&str>) -> Option<AheadKind> {
-    match (amenity, highway) {
-        (Some("fuel"), _) => Some(AheadKind::Fuel),
-        (Some("charging_station"), _) => Some(AheadKind::Charging),
-        (Some("parking"), _) => Some(AheadKind::Parking),
-        (_, Some("rest_area" | "services")) => Some(AheadKind::RestArea),
-        _ => None,
-    }
+    Ok(best.into_iter().map(|b| b.map(|(l, _)| l)).collect())
 }
 
 /// Walk a matched way's geometry and stamp its limit onto every route sample it
@@ -864,80 +562,28 @@ mod tests {
         // otherwise narrowing the query keeps serving the old broad answer.
         assert_ne!(
             corridor_cache_key(&a),
-            corridor_cache_key(&a.replace("fuel", "bar"))
-        );
-    }
-
-    /// A dense city centre must not be able to push the one charging point off the
-    /// rail with car parks. Regression: a 4.8 km Groningen route returned 45
-    /// amenities, 43 of them parking.
-    #[test]
-    fn parking_cannot_crowd_the_rail() {
-        let (points, cum, total) = geom();
-        let mut elements: Vec<serde_json::Value> = (0..30)
-            .map(|i| {
-                serde_json::json!({
-                    "type": "node", "id": i, "lat": 53.0 + f64::from(i) * 0.0003, "lon": 6.0,
-                    "tags": { "amenity": "parking", "name": format!("P{i}") }
-                })
-            })
-            .collect();
-        // One charging point, right at the far end — the last thing a nearest-first
-        // truncation would keep.
-        elements.push(serde_json::json!({
-            "type": "node", "id": 99, "lat": 53.0098, "lon": 6.0,
-            "tags": { "amenity": "charging_station" }
-        }));
-        let text = serde_json::json!({ "elements": elements }).to_string();
-
-        let (items, _) = parse_corridor(&text, &points, &cum, total).expect("parses");
-        assert_eq!(
-            items
-                .iter()
-                .filter(|i| i.kind == AheadKind::Parking)
-                .count(),
-            MAX_PARKING
-        );
-        assert!(
-            items.iter().any(|i| i.kind == AheadKind::Charging),
-            "the charging point must survive a car park flood"
+            corridor_cache_key(&a.replace("maxspeed", "name"))
         );
     }
 
     #[test]
-    fn corridor_response_splits_into_services_and_limits() {
+    fn corridor_response_stamps_its_limits_along_the_route() {
         let (points, cum, total) = geom();
         let text = serde_json::json!({
             "elements": [
-                { "type": "node", "id": 1, "lat": 53.003, "lon": 6.0005,
-                  "tags": { "amenity": "fuel", "name": "Tank" } },
-                { "type": "way", "id": 2, "center": { "lat": 53.006, "lon": 6.0 },
-                  "tags": { "amenity": "parking" } },
-                // Far off the corridor — projected out, not drawn.
-                { "type": "node", "id": 3, "lat": 53.003, "lon": 6.02,
-                  "tags": { "amenity": "fuel" } },
                 { "type": "way", "id": 4,
                   "tags": { "highway": "residential", "maxspeed": "30" },
                   "geometry": [ { "lat": 53.0, "lon": 6.0 }, { "lat": 53.004, "lon": 6.0 } ] },
+                // A way with no usable limit stamps nothing.
+                { "type": "way", "id": 5,
+                  "tags": { "highway": "primary", "maxspeed": "NL:urban" },
+                  "geometry": [ { "lat": 53.006, "lon": 6.0 }, { "lat": 53.009, "lon": 6.0 } ] },
             ]
         })
         .to_string();
-
-        let (items, limits) = parse_corridor(&text, &points, &cum, total).expect("parses");
-        assert_eq!(
-            items.len(),
-            2,
-            "the far fuel station is out of the corridor"
-        );
-        assert_eq!(items[0].kind, AheadKind::Fuel);
-        assert_eq!(items[0].name.as_deref(), Some("Tank"));
-        assert_eq!(items[1].kind, AheadKind::Parking);
-        assert!(
-            items[0].along_m < items[1].along_m,
-            "sorted along the route"
-        );
+        let limits = parse_corridor(&text, &points, &cum, total).expect("parses");
         assert_eq!(limits[0], Some(30));
-        assert_eq!(limits[20], None, "beyond the tagged way");
+        assert_eq!(limits[30], None, "beyond the tagged way");
     }
 
     #[test]
@@ -945,73 +591,5 @@ mod tests {
         let (points, cum, total) = geom();
         let text = r#"{"remark":"runtime error: Query timed out","elements":[]}"#;
         assert!(parse_corridor(text, &points, &cum, total).is_err());
-    }
-
-    #[test]
-    fn the_destination_sorts_last_and_saved_places_project() {
-        let (points, cum, total) = geom();
-        let g = RouteGeom {
-            points,
-            cum,
-            total_m: total,
-            step_along: vec![],
-        };
-        let mut store = UserStore::load();
-        store.data.bookmarks = vec![
-            crate::systems::user_store::Bookmark {
-                id: 1,
-                name: "Near the road".into(),
-                lat: 53.005,
-                lng: 6.0005,
-                altitude: 0.0,
-                pose: default(),
-                folder: None,
-                photo: None,
-            },
-            crate::systems::user_store::Bookmark {
-                id: 2,
-                name: "Miles away".into(),
-                lat: 53.005,
-                lng: 6.2,
-                altitude: 0.0,
-                pose: default(),
-                folder: None,
-                photo: None,
-            },
-        ];
-        let items = local_items(&g, &store, "Grote Markt");
-        assert_eq!(items.len(), 2, "only the near place, plus the destination");
-        assert_eq!(items[0].kind, AheadKind::Saved);
-        assert_eq!(items[0].name.as_deref(), Some("Near the road"));
-        assert_eq!(items[1].kind, AheadKind::Destination);
-        assert_eq!(items[1].name.as_deref(), Some("Grote Markt"));
-        assert!((items[1].along_m - total).abs() < 1.0);
-    }
-
-    #[test]
-    fn ahead_of_a_position_drops_what_is_behind() {
-        let ahead = RouteAhead {
-            items: vec![
-                AheadItem {
-                    along_m: 100.0,
-                    off_m: 0.0,
-                    kind: AheadKind::Fuel,
-                    name: None,
-                },
-                AheadItem {
-                    along_m: 900.0,
-                    off_m: 0.0,
-                    kind: AheadKind::Parking,
-                    name: None,
-                },
-            ],
-            ..default()
-        };
-        assert_eq!(ahead.ahead_of(0.0).count(), 2);
-        assert_eq!(
-            ahead.next_ahead(500.0).map(|i| i.kind),
-            Some(AheadKind::Parking)
-        );
-        assert!(ahead.next_ahead(1000.0).is_none());
     }
 }
