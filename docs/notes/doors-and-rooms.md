@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key, systems::interiors, building_facts.rs, collision.rs, building_design.rs]
-updated: 2026-10-17
+triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key, systems::interiors, building_facts.rs, collision.rs, building_design.rs, Access, private, sync_owned_buildings, is_public]
+updated: 2026-11-02
 ---
 
 # Doors, and what is behind them
@@ -186,6 +186,20 @@ stands 3.2 m up: without the lift in the ground reference every avatar upstairs
 read as flying and the walls of every upper storey stopped being walls. Online
 the sim position stays flat and the lift is a display offset, so that path never
 had the bug — which is the kind of asymmetry to check both sides of.
+
+## Houses are private: a door opens only to the public or the owner
+
+Decided by the owner on 2026-11-02: people may go inside **public** buildings
+and **their own claimed** ones, nothing else. So a door opens only for a building
+whose register use is public (`building_facts::uses::is_public`: shop, meeting,
+education, healthcare, lodging, sport — a shop with flats over it counts) or one
+the signed-in person owns (`/api/buildings/mine`, refetched each minute by
+`collision::sync_owned_buildings`; the 16-digit pand id is the join). Everything
+else is `collision::Access::Private`, and a closed footprint is solid and
+doorless whatever `hollow` says: it blocks, it ejects, and the Fly and Earth
+cameras are kept out of it (`height-aware-collision.md`). The rooms `interiors`
+builds behind a private door are still built, and unreachable. Offline nobody is
+signed in, so only public buildings open.
 
 ## What a door does *not* do
 

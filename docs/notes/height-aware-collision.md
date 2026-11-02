@@ -1,7 +1,7 @@
 ---
 topic: height-aware-collision
-triggers: [collision.rs, Footprint, Body, BuildingColliders, segment_fraction, with_extent, "camera inside building", "collision on bridges", "flying through buildings", CAMERA_COLLIDE_MAX_Y, systems/player/avatar.rs, systems/net/network.rs, systems/player/free_camera.rs, systems/map/osm_buildings.rs, systems/map/lod22.rs, steer_velocity, eject_avatar_from_buildings, buildings_enabled, AIRBORNE_EPS]
-updated: 2026-10-17
+triggers: [collision.rs, Footprint, Body, BuildingColliders, segment_fraction, with_extent, "camera inside building", "collision on bridges", "flying through buildings", CAMERA_COLLIDE_MAX_Y, systems/player/avatar.rs, systems/net/network.rs, systems/player/free_camera.rs, systems/map/osm_buildings.rs, systems/map/lod22.rs, steer_velocity, eject_avatar_from_buildings, buildings_enabled, AIRBORNE_EPS, TRUNK_RADIUS, closed_roof_at, "walking through trees"]
+updated: 2026-11-02
 ---
 
 # Colliders have a vertical extent, and the avatar and camera are tested against it
@@ -29,11 +29,25 @@ solid is stepped over.
   (ground .. ground + object height).
 - Every footprint also blocks by *crossing a wall* between two positions
   (anti-tunnelling at flight speed, where a step is tens of metres).
-- Online steering probes `max(0.6, speed * 0.12)` ahead, so it scales with the
-  altitude speed factor.
+- Online steering probes `max(0.6, speed * 0.25)` ahead, so it scales with the
+  altitude speed factor. It was `0.12` s until 2026-11-02, and a running avatar
+  went through houses: the probe starts at the last snapshot (one way plus up to
+  a tick old) and the steered intent needs another one way to reach the sim, so
+  the turn arrived most of a metre past the facade. Behind a hollow building's
+  wall nothing ejected it, and it was simply indoors. 0.25 s covers a 100 ms
+  round trip plus the tick; the cost is stopping `speed × 0.25` short of a wall.
 - The follow camera does a pre-lerp boom test and a post-lerp sight-line resolve
   from the head to the real camera position, both through
-  `segment_fraction(from, from_y, to, to_y)`, which is height-aware.
+  `segment_fraction(from, from_y, to, to_y)`, which is height-aware. Fly and
+  Earth have no boom: after the mode runs, `camera_controls` asks
+  `closed_roof_at` whether the lens is inside a building it may not enter
+  (`Access`, `doors-and-rooms.md`); Fly refuses the move, anything else is put
+  2 m over the roof. A `--shot` is exempt.
+- Every drawn tree is a `TRUNK_RADIUS` (0.4 m) prop circle: the tile trees
+  through `CellPlaces::colliders`, the Overpass ones as `street_detail` squares.
+  The props are bucketed (`PROP_BUCKET_M`) because a wooded cell plants
+  thousands. Like every prop they stop only an avatar below `PROP_HEIGHT`, and
+  they ride the furniture layer's gate (`sync_prop_colliders`).
 
 Known gap: descending onto a roof passes into the building and is ejected; the
 sim is flat and cannot land the avatar on a roof, offline could (a `roof_under`

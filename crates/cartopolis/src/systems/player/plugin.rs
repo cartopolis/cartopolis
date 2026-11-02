@@ -219,6 +219,8 @@ impl Plugin for PlayerPlugin {
                     // appears, and a floor with no walls is a way to walk out into
                     // solid ground.
                     systems::collision::sync_bore_colliders.before(avatar::handle_avatar_movement),
+                    // Which buildings this person owns, so their doors open to them.
+                    systems::collision::sync_owned_buildings.before(avatar::handle_avatar_movement),
                     // What the avatar is standing next to, and the nearest house number.
                     systems::interact::track_interaction_target
                         .after(avatar::handle_avatar_movement),

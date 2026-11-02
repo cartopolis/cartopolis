@@ -78,6 +78,17 @@ pub mod uses {
     pub const SPORT: u16 = 1 << 8;
     pub const CELL: u16 = 1 << 9;
     pub const OTHER: u16 = 1 << 10;
+
+    /// The uses that make a building somewhere the public may walk into: a
+    /// shop, a hall, a school, a clinic, a hotel, a gym. A shop with flats over
+    /// it counts — its door is the shop's. Homes, offices, industry and cells
+    /// are private (`collision::Access`).
+    pub const PUBLIC: u16 = SHOP | MEETING | EDUCATION | HEALTHCARE | LODGING | SPORT;
+
+    #[must_use]
+    pub fn is_public(mask: u16) -> bool {
+        mask & PUBLIC != 0
+    }
 }
 
 /// An English label for the lowest set bit, for a readout. `None` for an empty

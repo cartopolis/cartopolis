@@ -2279,8 +2279,19 @@ fn build_lod22_from_body(
         // — a shell is back-face culled, so walking into one is a hole in the
         // world with the street showing through it.
         let hollow = !doors.is_empty() && crate::systems::interiors::can_hold_a_room(&outline);
+        // …and open to this person only if it is public or theirs: houses are
+        // private, and a closed one is solid whatever is behind its door.
+        let access =
+            if fact.is_some_and(|f| crate::systems::building_facts::uses::is_public(f.uses)) {
+                crate::systems::collision::Access::Public
+            } else {
+                crate::systems::collision::Access::Private(
+                    (!b.id.is_empty()).then(|| std::sync::Arc::from(b.id.as_str())),
+                )
+            };
         let pending_fp =
-            crate::systems::collision::Footprint::with_doors(outline.clone(), &doors, hollow);
+            crate::systems::collision::Footprint::with_doors(outline.clone(), &doors, hollow)
+                .map(|f| f.with_access(access));
 
         // A door on the facade at each entrance the register lists.
         //

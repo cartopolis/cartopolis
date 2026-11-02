@@ -55,8 +55,39 @@ pub const EJECT_MARGIN: f32 = 1.0;
 pub const COLLIDE_PROBE_M: f32 = 0.6;
 
 /// How many seconds of travel the online steering probe looks ahead, when that is
-/// further than [`COLLIDE_PROBE_M`]. About two sim ticks.
-pub const PROBE_LOOKAHEAD_S: f32 = 0.12;
+/// further than [`COLLIDE_PROBE_M`].
+///
+/// The probe starts from the last snapshot, which is already a one-way trip and
+/// up to a tick old, and the steered intent takes another one-way trip to reach
+/// the sim. At 0.12 s (two ticks) a running avatar was carried most of a metre
+/// past the facade before the turn arrived; 0.25 s covers a 100 ms round trip
+/// plus the tick.
+pub const PROBE_LOOKAHEAD_S: f32 = 0.25;
+
+/// Collision radius of a tree, metres: the trunk plus the avatar's shoulder. The
+/// crown is overhead and never collides.
+pub const TRUNK_RADIUS: f32 = 0.4;
+
+/// Edge of the buckets the prop circles are kept in, metres. Larger than twice
+/// the largest prop radius (a fountain's 2 m), so a 3×3 neighbourhood of buckets
+/// holds every circle that can reach a point.
+const PROP_BUCKET_M: f32 = 8.0;
+
+/// Who may go inside a building with doors.
+///
+/// Houses are private: only public buildings (shops, schools, halls — the
+/// register's use, `building_facts::uses::is_public`) and the buildings a person
+/// has claimed open their doors. A closed building is a solid mass to the avatar
+/// and to every camera, whatever rooms `systems::interiors` built behind it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Access {
+    /// Anybody may enter (and anything that is not a building: walls, tunnels).
+    #[default]
+    Public,
+    /// Only the owner of this pand may enter. `None` is a building the register
+    /// has no id for, which nobody can have claimed.
+    Private(Option<std::sync::Arc<str>>),
+}
 
 /// A building footprint as a closed polygon in world-XZ metres (`x` = east,
 /// `y` = south, i.e. world `z`), with a cached AABB for a cheap broad-phase.
@@ -78,6 +109,9 @@ pub struct Footprint {
     /// Whether there is a room behind the door — see the module header. Hollow
     /// buildings collide on their walls only; solid ones are a no-go region.
     hollow: bool,
+    /// Whether the doors are open to this person ([`Access`]). A closed footprint
+    /// is solid and doorless whatever `hollow` and `doors` say.
+    access: Access,
     /// The vertical extent this footprint occupies, in the same absolute frame as
     /// the avatar's feet (metres above the anchor's ground). Unbounded by default,
     /// which is what a footprint was before it had a height: a wall that reaches
@@ -168,6 +202,7 @@ impl Footprint {
             max,
             doors: doors.to_vec(),
             hollow,
+            access: Access::Public,
             bottom: f32::NEG_INFINITY,
             top: f32::INFINITY,
         })
@@ -183,6 +218,13 @@ impl Footprint {
             self.bottom = bottom;
             self.top = top;
         }
+        self
+    }
+
+    /// Say who may enter ([`Access`]).
+    #[must_use]
+    pub fn with_access(mut self, access: Access) -> Self {
+        self.access = access;
         self
     }
 
@@ -217,18 +259,19 @@ impl Footprint {
     /// Even-odd ray cast: true when `p` is strictly inside the ring — and not
     /// standing in one of its doorways.
     ///
-    /// Always false for a hollow building, and that is the whole of what makes
-    /// one walkable: nothing about its inside is a place the avatar may not be,
-    /// so nothing blocks a step taken there and nothing ejects it back out. What
-    /// stops it at the facade is [`Self::crosses_wall`].
-    fn contains(&self, p: Vec2) -> bool {
-        if self.hollow {
+    /// Always false for a hollow building that is `open` to this person, and
+    /// that is the whole of what makes one walkable: nothing about its inside is
+    /// a place the avatar may not be, so nothing blocks a step taken there and
+    /// nothing ejects it back out. What stops it at the facade is
+    /// [`Self::crosses_wall`]. A closed building is solid and has no doorways.
+    fn contains(&self, p: Vec2, open: bool) -> bool {
+        if self.hollow && open {
             return false;
         }
         if !self.aabb_contains(p) {
             return false;
         }
-        if self.in_a_doorway(p) {
+        if open && self.in_a_doorway(p) {
             return false;
         }
         let n = self.ring.len();
@@ -257,7 +300,7 @@ impl Footprint {
     /// [`COLLIDE_PROBE_M`] ahead of the avatar, which from just outside a facade
     /// lands well inside the room, so asking "is that point solid?" would answer
     /// no and walk the avatar straight through the brickwork.
-    fn crosses_wall(&self, from: Vec2, to: Vec2) -> bool {
+    fn crosses_wall(&self, from: Vec2, to: Vec2, open: bool) -> bool {
         let (lo, hi) = (from.min(to), from.max(to));
         if self.max.x < lo.x || self.min.x > hi.x || self.max.y < lo.y || self.min.y > hi.y {
             return false;
@@ -280,7 +323,7 @@ impl Footprint {
             }
             // Where it went through, not where it ended up: a doorway is a hole
             // in a particular part of a particular wall.
-            if !self.in_a_doorway(from + d * t) {
+            if !open || !self.in_a_doorway(from + d * t) {
                 return true;
             }
         }
@@ -335,7 +378,13 @@ pub struct BuildingColliders {
     /// `world_places::WorldPlaces` each time it changes rather than published by
     /// the streamer directly, because the same extraction feeds the interaction
     /// prompt and the two must not disagree about where a bench is.
-    props: Vec<(Vec2, f32)>,
+    ///
+    /// Bucketed by [`PROP_BUCKET_M`] because the trees are here too: a wooded
+    /// cell plants thousands, and a linear scan per probe was the whole ring.
+    props: HashMap<(i32, i32), Vec<(Vec2, f32)>>,
+    /// The pand ids of the buildings the signed-in person owns, which open their
+    /// doors to them ([`Access::Private`]). Fetched by [`sync_owned_buildings`].
+    owned: std::collections::HashSet<String>,
     /// Street-detail footprints (walls, fences, hedges, bollards — the Overpass
     /// layer, `systems::street_detail`), keyed by its z14 cell and dropped with
     /// it. Same lifetime contract as `lod22`: the streamer that draws the mesh
@@ -381,7 +430,7 @@ impl BuildingColliders {
     /// fired through the road.
     #[must_use]
     pub fn slide_in_bore(&self, from: Vec2, to: Vec2) -> Vec2 {
-        let crosses = |a: Vec2, b: Vec2| self.tunnels.iter().any(|f| f.crosses_wall(a, b));
+        let crosses = |a: Vec2, b: Vec2| self.tunnels.iter().any(|f| f.crosses_wall(a, b, true));
         if !crosses(from, to) {
             return to;
         }
@@ -432,8 +481,33 @@ impl BuildingColliders {
     }
 
     /// Replace the street-furniture circles.
-    pub fn set_props(&mut self, props: Vec<(Vec2, f32)>) {
-        self.props = props;
+    pub fn set_props(&mut self, props: impl IntoIterator<Item = (Vec2, f32)>) {
+        self.props.clear();
+        for (c, r) in props {
+            self.props.entry(prop_bucket(c)).or_default().push((c, r));
+        }
+    }
+
+    /// The prop circles that can reach `p`.
+    fn props_near(&self, p: Vec2) -> impl Iterator<Item = &(Vec2, f32)> {
+        let (bx, bz) = prop_bucket(p);
+        (-1..=1)
+            .flat_map(move |dx| (-1..=1).map(move |dz| (bx + dx, bz + dz)))
+            .filter_map(|k| self.props.get(&k))
+            .flatten()
+    }
+
+    /// Replace the set of buildings the signed-in person owns.
+    pub fn set_owned(&mut self, owned: std::collections::HashSet<String>) {
+        self.owned = owned;
+    }
+
+    /// Whether `f`'s doors are open to the signed-in person.
+    fn open(&self, f: &Footprint) -> bool {
+        match &f.access {
+            Access::Public => true,
+            Access::Private(pand) => pand.as_ref().is_some_and(|p| self.owned.contains(&**p)),
+        }
     }
 
     /// Install (or replace) one street-detail cell's footprints.
@@ -462,8 +536,7 @@ impl BuildingColliders {
         if body.feet >= body.ground + Body::PROP_HEIGHT {
             return false;
         }
-        self.props
-            .iter()
+        self.props_near(p)
             .any(|(c, r)| c.distance_squared(p) < r * r)
     }
 
@@ -481,6 +554,31 @@ impl BuildingColliders {
             .chain(self.features.values().flatten())
     }
 
+    /// The buildings alone: the OSM patch and the 3DBAG cells, without the inner
+    /// walls, the street detail or the tunnels.
+    fn iter_buildings(&self) -> impl Iterator<Item = &Footprint> {
+        let detail = if self.detail_off {
+            &[]
+        } else {
+            self.detail.as_slice()
+        };
+        let lod22_on = !self.lod22_off;
+        detail
+            .iter()
+            .chain(self.lod22.values().filter(move |_| lod22_on).flatten())
+    }
+
+    /// The top of the building a camera at `p`, height `y`, is inside and may not
+    /// be — a private house, or a shell with no room in it — or `None` where the
+    /// lens is outside, or inside a building that is open to this person.
+    #[must_use]
+    pub fn closed_roof_at(&self, p: Vec2, y: f32) -> Option<f32> {
+        self.iter_buildings()
+            .filter(|f| f.top.is_finite() && f.spans(y) && f.contains(p, self.open(f)))
+            .map(|f| f.top)
+            .reduce(f32::max)
+    }
+
     /// The footprints an avatar with this `body` can actually run into.
     fn iter_at(&self, body: Body) -> impl Iterator<Item = &Footprint> {
         self.iter().filter(move |f| f.blocks(body))
@@ -488,7 +586,7 @@ impl BuildingColliders {
 
     /// True if `p` (world XZ) lies inside any footprint or prop in the way.
     fn blocked(&self, p: Vec2, body: Body) -> bool {
-        self.iter_at(body).any(|f| f.contains(p)) || self.in_prop(p, body)
+        self.iter_at(body).any(|f| f.contains(p, self.open(f))) || self.in_prop(p, body)
     }
 
     /// True if the move `from → to` is refused — the question every mover here
@@ -501,13 +599,15 @@ impl BuildingColliders {
         if self.in_prop(to, body) {
             return true;
         }
-        self.iter_at(body)
-            .any(|f| f.contains(to) || f.crosses_wall(from, to))
+        self.iter_at(body).any(|f| {
+            let open = self.open(f);
+            f.contains(to, open) || f.crosses_wall(from, to, open)
+        })
     }
 
     /// The footprint containing `p`, if any is in the way.
     fn hit(&self, p: Vec2, body: Body) -> Option<&Footprint> {
-        self.iter_at(body).find(|f| f.contains(p))
+        self.iter_at(body).find(|f| f.contains(p, self.open(f)))
     }
 
     /// How far along the sight line `from → to` the first wall is, as a fraction
@@ -531,7 +631,10 @@ impl BuildingColliders {
     /// already indoors (or a building streamed in on top of it), and pulling the
     /// camera to zero there would jam it inside the avatar's head.
     pub fn segment_fraction(&self, from: Vec2, from_y: f32, to: Vec2, to_y: f32) -> Option<f32> {
-        if self.iter().any(|f| f.spans(from_y) && f.contains(from)) {
+        if self
+            .iter()
+            .any(|f| f.spans(from_y) && f.contains(from, self.open(f)))
+        {
             return None;
         }
         let d = to - from;
@@ -631,8 +734,7 @@ impl BuildingColliders {
         if body.feet >= body.ground + Body::PROP_HEIGHT {
             return None;
         }
-        self.props
-            .iter()
+        self.props_near(p)
             .find(|(c, r)| c.distance_squared(p) < r * r)
             .map(|(c, _)| (p - *c).normalize_or_zero())
             .filter(|v| *v != Vec2::ZERO)
@@ -715,6 +817,84 @@ pub fn sync_prop_colliders(
     } else {
         Vec::new()
     });
+}
+
+/// The [`PROP_BUCKET_M`] bucket a point falls in.
+fn prop_bucket(p: Vec2) -> (i32, i32) {
+    (
+        (p.x / PROP_BUCKET_M).floor() as i32,
+        (p.y / PROP_BUCKET_M).floor() as i32,
+    )
+}
+
+/// How often the owned buildings are asked for again, seconds. A claim is made
+/// on the web page, which does not tell this client; a minute is the longest a
+/// new owner waits at their own door.
+const OWNED_REFRESH_S: f64 = 60.0;
+
+/// The in-flight fetch of the owned buildings, and when the next one is due.
+#[derive(Default)]
+pub struct OwnedFetch {
+    task: Option<bevy::tasks::Task<Result<String, String>>>,
+    next_at: f64,
+}
+
+/// Keep [`BuildingColliders`]' owned set in step with the server's
+/// `/api/buildings/mine`, so the buildings the person claimed open their doors to
+/// them ([`Access::Private`]). Signed out, nobody owns anything.
+pub fn sync_owned_buildings(
+    time: Res<Time>,
+    mut colliders: ResMut<BuildingColliders>,
+    mut fetch: Local<OwnedFetch>,
+) {
+    if !crate::systems::model_assets::have_endpoint() {
+        fetch.task = None;
+        fetch.next_at = 0.0;
+        if !colliders.owned.is_empty() {
+            colliders.set_owned(Default::default());
+        }
+        return;
+    }
+    if let Some(task) = fetch.task.as_mut() {
+        let Some(result) = crate::platform::http::poll_task(task) else {
+            return;
+        };
+        fetch.task = None;
+        match result {
+            Ok(body) => {
+                let owned = parse_owned(&body);
+                if owned != colliders.owned {
+                    colliders.set_owned(owned);
+                }
+            }
+            // A server older than the claims answers 404, which means nobody
+            // owns anything here; keep what we had on any other failure.
+            Err(e) => debug!("owned buildings not fetched: {e}"),
+        }
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if now < fetch.next_at {
+        return;
+    }
+    fetch.next_at = now + OWNED_REFRESH_S;
+    fetch.task = Some(
+        bevy::tasks::IoTaskPool::get()
+            .spawn(async { crate::systems::model_assets::api_get("/api/buildings/mine").await }),
+    );
+}
+
+/// `{"buildings": [{"pand_id": …}, …]}` → the pand ids.
+fn parse_owned(body: &str) -> std::collections::HashSet<String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Default::default();
+    };
+    json["buildings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["pand_id"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// Mirror the streamed tunnels into the collider index, on exactly the terms
@@ -868,10 +1048,10 @@ mod tests {
     #[test]
     fn contains_inside_and_outside() {
         let sq = unit_square();
-        assert!(sq.contains(Vec2::ZERO));
-        assert!(sq.contains(Vec2::new(4.9, -4.9)));
-        assert!(!sq.contains(Vec2::new(5.1, 0.0)));
-        assert!(!sq.contains(Vec2::new(0.0, 100.0)));
+        assert!(sq.contains(Vec2::ZERO, true));
+        assert!(sq.contains(Vec2::new(4.9, -4.9), true));
+        assert!(!sq.contains(Vec2::new(5.1, 0.0), true));
+        assert!(!sq.contains(Vec2::new(0.0, 100.0), true));
     }
 
     #[test]
@@ -1013,6 +1193,83 @@ mod tests {
             c.slide(Vec2::new(0.0, -4.0), Vec2::new(0.0, -6.0), Body::standing()),
             Vec2::new(0.0, -6.0)
         );
+    }
+
+    fn private_square(pand: &str) -> Footprint {
+        hollow_square().with_access(Access::Private(Some(std::sync::Arc::from(pand))))
+    }
+
+    /// Houses are private: a house's door does not open, its inside is solid,
+    /// and an avatar that ends up in it anyway is pushed back out.
+    #[test]
+    fn a_private_house_is_solid_to_a_stranger() {
+        let c = colliders_with(private_square("0014100010938357"));
+        let outside = Vec2::new(0.0, -6.0);
+        assert_eq!(
+            c.slide(outside, Vec2::new(0.0, -4.0), Body::standing()),
+            outside,
+            "the door of somebody else's house must not open"
+        );
+        assert!(
+            c.eject_dir(Vec2::new(0.0, -4.0), Body::standing())
+                .is_some(),
+            "a stranger carried inside by lag must be walked back out"
+        );
+    }
+
+    /// …and opens to its owner exactly as a public building does.
+    #[test]
+    fn a_private_house_opens_to_its_owner() {
+        let mut c = colliders_with(private_square("0014100010938357"));
+        c.set_owned(["0014100010938357".to_string()].into_iter().collect());
+        assert_eq!(
+            c.slide(Vec2::new(0.0, -6.0), Vec2::new(0.0, -4.0), Body::standing()),
+            Vec2::new(0.0, -4.0)
+        );
+        assert!(c
+            .eject_dir(Vec2::new(0.0, -4.0), Body::standing())
+            .is_none());
+    }
+
+    /// A lens in a closed building is reported with the roof to rise over; in an
+    /// open one it is left where it is.
+    #[test]
+    fn the_camera_is_kept_out_of_closed_buildings_only() {
+        let fp = |a: Access| hollow_square().with_extent(0.0, 12.0).with_access(a);
+        let private = colliders_with(fp(Access::Private(None)));
+        assert_eq!(private.closed_roof_at(Vec2::ZERO, 5.0), Some(12.0));
+        assert_eq!(
+            private.closed_roof_at(Vec2::ZERO, 15.0),
+            None,
+            "above the roof"
+        );
+        assert_eq!(
+            private.closed_roof_at(Vec2::new(8.0, 0.0), 5.0),
+            None,
+            "outside"
+        );
+        let public = colliders_with(fp(Access::Public));
+        assert_eq!(public.closed_roof_at(Vec2::ZERO, 5.0), None);
+    }
+
+    /// Trees are props: a trunk stops the avatar, wherever its bucket is.
+    #[test]
+    fn a_tree_trunk_stops_the_avatar_across_bucket_edges() {
+        let mut c = BuildingColliders::default();
+        // On a bucket corner, so the probe and the trunk are in different buckets.
+        c.set_props([(Vec2::new(PROP_BUCKET_M, PROP_BUCKET_M), TRUNK_RADIUS)]);
+        let from = Vec2::new(PROP_BUCKET_M - 1.0, PROP_BUCKET_M);
+        let to = Vec2::new(PROP_BUCKET_M + 0.1, PROP_BUCKET_M);
+        assert_eq!(c.slide(from, to, Body::standing()), from);
+    }
+
+    #[test]
+    fn owned_buildings_parse_from_the_servers_answer() {
+        let owned = parse_owned(
+            r#"{"buildings":[{"pand_id":"0014100010938357","address":"x"}],"limit":1}"#,
+        );
+        assert!(owned.contains("0014100010938357"));
+        assert!(parse_owned("not json").is_empty());
     }
 
     /// Only the walls. From either side of them.

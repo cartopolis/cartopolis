@@ -1924,6 +1924,15 @@ fn spawn_geometry_task(
                                                 )
                                             });
                                         }
+                                        // Every drawn tree is solid at its trunk,
+                                        // through the same circles as the
+                                        // crossing masts (`CellPlaces::colliders`).
+                                        cell_places.colliders.extend(trees.iter().map(|t| {
+                                            (
+                                                Vec2::new(t.x, t.z),
+                                                crate::systems::collision::TRUNK_RADIUS,
+                                            )
+                                        }));
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,

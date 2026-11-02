@@ -772,6 +772,16 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             };
             meshes.push((class, mesh));
         }
+        // The trunk is solid; the crown is not, since it is overhead.
+        for t in &instances {
+            let at = Vec2::new(t.x, t.z);
+            colliders.extend(square_collider(
+                at + Vec2::new(ox, oz),
+                crate::systems::collision::TRUNK_RADIUS,
+                ground_at(at),
+                t.height,
+            ));
+        }
     }
 
     // ── Road context index (for signals + crossings) ─────────────────────

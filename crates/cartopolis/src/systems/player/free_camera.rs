@@ -305,6 +305,9 @@ const CAMERA_COLLIDE_MIN: f32 = 0.18;
 /// facade; the second is what stops a wall right behind the avatar from putting
 /// the lens inside its skull.
 const CAMERA_WALL_CLEARANCE_M: f32 = 0.25;
+/// Metres above the roof a Fly or Earth lens is put when it ends up inside a
+/// building it may not enter.
+const CAMERA_ROOF_CLEARANCE_M: f32 = 2.0;
 const CAMERA_HEAD_MIN_M: f32 = 0.6;
 /// The boom comes in fast (the wall is already in shot) and goes back out slowly
 /// (or every doorway makes the camera lunge).
@@ -1611,6 +1614,8 @@ impl DragReplay {
 pub struct FollowRig<'w, 's> {
     colliders: Res<'w, crate::systems::collision::BuildingColliders>,
     layers: Res<'w, crate::systems::data_layers::DataLayers>,
+    /// Present during a scripted capture, which places the lens where it is told.
+    shot: Option<Res<'w, crate::systems::shot_harness::ShotHarness>>,
     smoothing: Local<'s, RigSmoothing>,
     /// What the drag moved the camera by this frame, for `systems::camera_pacing`.
     applied_drag: Option<ResMut<'w, crate::systems::camera_pacing::AppliedDrag>>,
@@ -1753,6 +1758,7 @@ pub fn camera_controls(
         }
     }
     let attached = attached.filter(|_| attach.active());
+    let before_move = (camera_cell, camera_transform.translation);
 
     let ctx = ModeCtx {
         keyboard_input: &keyboard_input,
@@ -1782,6 +1788,45 @@ pub fn camera_controls(
         (None, CameraMode::Avatar) => follow_mode(ctx),
         (None, CameraMode::Free) => fly_mode(ctx),
         (None, CameraMode::Orbit) => earth_mode(ctx),
+    }
+
+    // Houses are private: Fly and Earth may not put the lens inside a building
+    // the person may not enter (`collision::Access`). Follow keeps its own boom
+    // test, which already stops at every wall. A scripted capture is exempt — it
+    // photographs what it is told to.
+    if attached.is_none()
+        && mode != CameraMode::Avatar
+        && rig.shot.is_none()
+        && rig.layers.buildings_enabled
+        && !rig.colliders.is_empty()
+    {
+        let eye = |cell: &GridCell, t: Vec3| {
+            (
+                crate::grid::anchored_xz(cell, t),
+                (cell_origin(cell).y + t.y as f64) as f32,
+            )
+        };
+        let (p, y) = eye(&camera_cell, camera_transform.translation);
+        if let Some(top) = rig.colliders.closed_roof_at(p, y) {
+            let (was_p, was_y) = eye(&before_move.0, before_move.1);
+            if mode == CameraMode::Free && rig.colliders.closed_roof_at(was_p, was_y).is_none() {
+                // Flown into a facade: the move is refused and the glide stops.
+                camera_cell = before_move.0;
+                camera_transform.translation = before_move.1;
+                camera_state.free_velocity = Vec3::ZERO;
+            } else {
+                // Already inside (an Earth orbit swung through it, or a jump
+                // landed there): out over the roof.
+                camera_transform.translation.y += top + CAMERA_ROOF_CLEARANCE_M - y;
+            }
+            if mode == CameraMode::Free {
+                camera_state.free_saved = Some((
+                    camera_cell,
+                    camera_transform.translation,
+                    camera_state.free_camera_rotation,
+                ));
+            }
+        }
     }
 
     // Depth range for the space tier — applied in EVERY camera mode, not just
