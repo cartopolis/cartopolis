@@ -183,34 +183,36 @@ by in 0.2 s. The street to the edge of the universe takes about five seconds
 movement instead of restarting it, so a finger sliding along the track is
 followed smoothly. The height waits at the ceiling until the camera is on the
 same side of it, since the globe has to reach the ceiling before the cosmos can
-take over. While it flies the rail keeps every name out and rings the goal, so
+take over. While it flies the rail names the rung it passes and rings the goal, so
 the thumb is seen passing each rung. The wheel, a pinch and the − / + discs
 still glide as before: they move a step at a time already.
 
-## The rail opens only when asked, and stands aside on a phone
+## The rail names one rung, and stands aside on a phone
 
 Reported 2026-11-02 as "the rail is in the way; its names appear suddenly when
-I pinch near it". Two causes, both from reading egui's one pointer as if it
-were a mouse:
+I pinch near it", then "the texts beside the rail are not really needed, and
+the rail is a bit long". Two causes, both from reading egui's one pointer as
+if it were a mouse:
 
-- **The names opened on egui's hover within 150 pt of the track.** On a
-  touchscreen that hover is the first finger down (`touch-input.md`, "A hand
-  has several fingers"), so a pinch anywhere near the right edge flashed all
-  sixteen names up at once.
+- **The list of all sixteen names opened on egui's hover within 150 pt of the
+  track.** On a touchscreen that hover is the first finger down
+  (`touch-input.md`, "A hand has several fingers"), so a pinch anywhere near
+  the right edge flashed the list up.
 - **Any claimed finger on the track set the height**, from the frame it
   landed. A pinch's first finger lands a few hundredths of a second before
   the second, so a pinch begun on the rail jumped the camera before it zoomed.
 
-Now (`map_osd::zoom_rail_control`): a mouse opens the names by resting
-0.25 s on the track itself, and keeps them while it is over the names. A
-finger never hovers; the track takes only a finger that **landed** on it and
-stayed alone for 0.12 s or moved 4 pt, and lets go of it for good when any
-second finger comes down. A tap that lifts sooner still goes where it
-tapped. The full list, every name tappable, is for picking (the hover, or a
-tap on the tag); while a thumb drags or a jump flies, only the names round
-the thumb show, fading out three rungs away, so a drag reads a few names and
-not a wall. Everything fades (0.15 s) rather than switching, and the rail
-dims to 55 % 2.5 s after it was last used or the rung last changed.
+Now (`map_osd::zoom_rail_control`) the list is gone. The rail names only the
+rung the camera is on, beside the thumb, and only while something moves: it
+fades out 2 s after the rung last changed or the rail was last used (a mouse
+over it counts; a finger never hovers), and the whole rail dims to 55 %. The
+track is drawn in two tones without ticks, lilac above the Earth. A tap on
+the track goes to the middle of the rung it landed on (`rung_altitude`, the
+Milky Way's exception included), where the list's names used to go; a drag
+goes to the height under it. The track takes only a finger that **landed**
+on it and stayed alone for 0.12 s or moved 4 pt, and lets go for good when
+any second finger comes down. Tracks are 170 pt (desktop) and 140 pt (phone),
+down from 250 and 200.
 
 On a phone the rail stands at the foot of the right edge, over the dock,
 where the + / − pair was — the middle of the edge is where the other hand
