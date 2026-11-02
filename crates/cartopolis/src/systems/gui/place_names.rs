@@ -20,8 +20,8 @@
 //! would overlap a placed one is left out.
 //!
 //! **A name is a button.** Clicking or long-pressing one opens the map's ring of
-//! actions on the place (`ui::render_context_menu`): go there, route to or
-//! from it, save or share it under its own name, its municipality's plans.
+//! actions on the place (`ui::render_context_menu`), for now only Go there and
+//! Route here.
 
 use crate::components::FreeCamera;
 use crate::resources::{ContextMenuState, MapAnchor, MapPlace};

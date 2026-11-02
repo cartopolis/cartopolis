@@ -87,10 +87,11 @@ localities are left out. A station gets its name only when it starts with a
 loaded town's name (rail stations do; metro and tram stops get the icon).
 
 Every drawn name is a click target (2026-11-02): a click or a long press opens
-the map's action ring on the place (`ContextMenuState::place`), with Go there
-first. Each name senses through its own `Area`, as a saved pin does, because a
-bare painter takes no clicks and the world's click handlers would then act on
-the ground underneath it.
+the map's action ring on the place (`ContextMenuState::place`), offering
+only Go there and Route here (asked to keep it short, 2026-11-02). Each name
+senses through its own `Area`, as a saved pin does, because a bare painter
+takes no clicks and the world's click handlers would then act on the ground
+underneath it.
 
 ## From above: clouds as a setting, the night side
 
