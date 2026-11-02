@@ -29,10 +29,10 @@
 //! portrait, over a map that stays in view while you pick, and a column on the
 //! left otherwise, clear of the right-hand panels. The figures in it are radio
 //! rows that show their value under the crosshair, so one is picked by reading,
-//! not by trying. It writes `DataLayers::scenario` (`"<file>/<layer>"`), which
+//! not by trying. A lens that is on needs no sheet (v3): the disc is lit, and
+//! a pick, the ✕ or a drag on the map puts the sheet away. It writes `DataLayers::scenario` (`"<file>/<layer>"`), which
 //! is what persists; for a capture, `CARTO_SCENARIO=cbs-2024/share_65_plus` and
-//! `CARTO_LENS=strip|figures|place|shelf` (and `CARTO_LENS_KEY=1` for the
-//! strip's key on the sheet).
+//! `CARTO_LENS=figures|place|shelf`.
 
 use crate::components::FreeCamera;
 use crate::resources::MapAnchor;
@@ -199,14 +199,15 @@ struct Loading {
 
 /// How much of the lens is up (`docs/mockups/lenses/`): the one surface a
 /// lens has, a bottom sheet in portrait and a column on the left otherwise.
+/// A lens that is on needs none of it (v3): its colours are on the map, its
+/// mode's frame round it, and the lens disc is lit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sheet {
-    /// Nothing up: no lens open, and the shelf put away.
+    /// Nothing up: where a lens rests, and where none is open.
     #[default]
     Hidden,
-    /// The figure, its scale and its value here: where an open lens rests.
-    Strip,
-    /// The lens's figures to pick one from, with its clock and its tracks.
+    /// The open figure's key and the lens's figures to pick one from, with
+    /// its clock and its tracks.
     Figures,
     /// The place under the crosshair, every figure of the lens for it.
     Place,
@@ -215,10 +216,9 @@ pub enum Sheet {
 }
 
 impl Sheet {
-    /// `CARTO_LENS=strip|figures|place|shelf`, for a capture.
+    /// `CARTO_LENS=figures|place|shelf`, for a capture.
     fn from_env() -> Sheet {
         match crate::env_value("CARTO_LENS").as_deref() {
-            Some("strip") => Sheet::Strip,
             Some("figures") => Sheet::Figures,
             Some("place") => Sheet::Place,
             Some("shelf") => Sheet::Shelf,
@@ -226,13 +226,11 @@ impl Sheet {
         }
     }
 
-    /// What is drawn, given whether a lens is open: an open lens is never
-    /// out of sight (its colours are on the map, so what they mean must be
-    /// too), and with none open there is only the shelf.
+    /// What is drawn, given whether a lens is open: with none open there is
+    /// only the shelf.
     fn shown(self, lens: bool) -> Sheet {
         match (self, lens) {
             (Sheet::Shelf, _) => Sheet::Shelf,
-            (Sheet::Hidden, true) => Sheet::Strip,
             (_, false) => Sheet::Hidden,
             (s, true) => s,
         }
@@ -248,10 +246,6 @@ pub struct ScenarioView {
     error: Option<(String, String)>,
     /// How much of the lens is up. Kept when the lens or its figure changes.
     sheet: Sheet,
-    /// Whether the strip on the sheet shows the key (the scale, the year and
-    /// the place), or only the figure and its value. Off by default: the map
-    /// is what is read. `CARTO_LENS_KEY=1` for a capture.
-    key: bool,
 }
 
 impl Default for ScenarioView {
@@ -261,20 +255,18 @@ impl Default for ScenarioView {
             loading: None,
             error: None,
             sheet: Sheet::from_env(),
-            key: crate::env_value("CARTO_LENS_KEY").is_some_and(|v| v == "1"),
         }
     }
 }
 
 /// The lens disc under Layers (`systems::dock`). With a lens open it raises
-/// the figures, or drops back to the strip; with none it opens the shelf, or
-/// puts it away.
+/// its sheet, or hides it, the lens staying on; with none it opens the
+/// shelf, or puts it away.
 pub fn press_lens_disc(view: &mut ScenarioView, lens: bool) {
     view.sheet = match (view.sheet.shown(lens), lens) {
-        (Sheet::Strip, true) => Sheet::Figures,
-        (_, true) => Sheet::Strip,
-        (Sheet::Shelf, false) => Sheet::Hidden,
-        (_, false) => Sheet::Shelf,
+        (Sheet::Hidden, true) => Sheet::Figures,
+        (Sheet::Hidden, false) => Sheet::Shelf,
+        _ => Sheet::Hidden,
     };
 }
 
@@ -720,7 +712,7 @@ pub fn render_scenario_map(
             }
         }
         // The place being read stands out: the one under the pointer, else
-        // the one under the crosshair, whose figure the strip gives.
+        // the one under the crosshair, whose figure the key gives.
         let marked = hovered
             .map(|(a, _)| a)
             .or_else(|| set.area_at([cam_lng, cam_lat]));
@@ -1004,6 +996,9 @@ const SHELF_SHARE: f32 = 0.8;
 const HEADER_PTS: f32 = 96.0;
 /// The body never shrinks below this, however short the viewport.
 const BODY_MIN_PTS: f32 = 120.0;
+/// What the open figure's key costs at the head of the figures: its line,
+/// its scale and the place row.
+const KEY_PTS: f32 = 110.0;
 /// The grabber's row, its bar, and the drag in one frame that moves it.
 const GRABBER_ROW_PTS: f32 = 16.0;
 const GRABBER_W: f32 = 40.0;
@@ -1061,6 +1056,10 @@ pub fn render_scenario_chrome(
     let ctx = egui.ctx_mut().clone();
     let lens = layers.scenario.is_some();
     let mut shown = view.sheet.shown(lens);
+    // A lens that would not open says so, whether its sheet is up or not.
+    if lens && shown == Sheet::Hidden && view.error.is_some() {
+        shown = Sheet::Figures;
+    }
     // Pointing at a band lasts while the scale is drawn under it; the map,
     // which painted already, catches up with a change next frame.
     let peeked = view.open.as_mut().and_then(|o| o.peek.take());
@@ -1089,16 +1088,12 @@ pub fn render_scenario_chrome(
         }
         return;
     }
-    // On the sheet, a drag that starts on the map is someone looking at the
-    // map: whatever is raised drops to where it rests, as a flick down would.
-    let rest = if lens { Sheet::Strip } else { Sheet::Hidden };
-    if shape == Shape::Sheet && shown != rest && egui.map_dragged() {
-        view.sheet = rest;
-        shown = rest;
-        if shown == Sheet::Hidden {
-            ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
-            return;
-        }
+    // A drag that starts on the map is someone looking at the map: the
+    // sheet goes, the lens staying on.
+    if egui.map_dragged() {
+        view.sheet = Sheet::Hidden;
+        ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
+        return;
     }
 
     let here = map_anchor.geo.and_then(|anchor| {
@@ -1139,7 +1134,6 @@ pub fn render_scenario_chrome(
         open,
         loading,
         error,
-        key,
         ..
     } = &mut *view;
     let shown_area = area.order(egui::Order::Foreground).show(&ctx, |ui| {
@@ -1148,14 +1142,13 @@ pub fn render_scenario_chrome(
             // content reaches for the available width grows every frame.
             ui.set_width(width);
             if shape == Shape::Sheet {
-                asked.sheet = grabber(ui, shown, lens);
+                asked.sheet = grabber(ui);
             }
             match (shown, open.as_mut()) {
                 (Sheet::Shelf, _) => {
-                    shelf_body(ui, layers.scenario.as_deref(), lens, body_h, &mut asked)
+                    shelf_body(ui, layers.scenario.as_deref(), body_h, &mut asked)
                 }
-                (Sheet::Strip, Some(o)) => strip_body(ui, o, here, shape, key, &mut asked),
-                (Sheet::Figures, Some(o)) => figures_body(ui, o, here, shape, body_h, &mut asked),
+                (Sheet::Figures, Some(o)) => figures_body(ui, o, here, body_h, &mut asked),
                 (Sheet::Place, Some(o)) => place_body(ui, o, here, body_h, &mut asked),
                 _ => waiting_body(
                     ui,
@@ -1172,11 +1165,10 @@ pub fn render_scenario_chrome(
         ctx.request_repaint();
     }
 
-    // On the sheet a pick is made to be seen: a lens off the shelf or a
-    // figure from the list drops the sheet to the strip, over the map it
-    // changed. The strip's name, or the grabber, raises the figures again.
-    if shape == Shape::Sheet && asked.open.is_some() {
-        asked.sheet = Some(Sheet::Strip);
+    // A pick is made to be seen: a lens off the shelf or a figure from the
+    // list hides the sheet, over the map it changed. The lit disc raises it.
+    if asked.open.is_some() {
+        asked.sheet = Some(Sheet::Hidden);
     }
     if let Some(key) = asked.open {
         if layers.scenario.as_deref() != Some(key.as_str()) {
@@ -1216,10 +1208,9 @@ fn paint_frame(ctx: &egui::Context, mode: Mode) {
     }
 }
 
-/// The bar that says the sheet moves, and moves it: a tap or a flick up
-/// raises the strip to the figures, a flick down lowers anything to the
-/// strip (or away, with no lens open).
-fn grabber(ui: &mut egui::Ui, shown: Sheet, lens: bool) -> Option<Sheet> {
+/// The bar that says the sheet moves, and moves it: a tap or a flick down
+/// puts it away, an open lens staying on.
+fn grabber(ui: &mut egui::Ui) -> Option<Sheet> {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), GRABBER_ROW_PTS),
         egui::Sense::click_and_drag(),
@@ -1230,22 +1221,7 @@ fn grabber(ui: &mut egui::Ui, shown: Sheet, lens: bool) -> Option<Sheet> {
         egui::CornerRadius::same(theme::RADIUS_PILL),
         if live { theme::ACCENT } else { theme::LINE },
     );
-    let down = if lens { Sheet::Strip } else { Sheet::Hidden };
-    if resp.clicked() {
-        return Some(if shown == Sheet::Strip {
-            Sheet::Figures
-        } else {
-            down
-        });
-    }
-    let dy = resp.drag_delta().y;
-    if dy <= -GRABBER_FLICK_PTS && shown == Sheet::Strip {
-        Some(Sheet::Figures)
-    } else if dy >= GRABBER_FLICK_PTS && shown != down {
-        Some(down)
-    } else {
-        None
-    }
+    (resp.clicked() || resp.drag_delta().y >= GRABBER_FLICK_PTS).then_some(Sheet::Hidden)
 }
 
 /// The mode as a chip: what kind of truth the colours are.
@@ -1498,7 +1474,7 @@ fn default_speed(s: &Scenario) -> f64 {
     }
 }
 
-/// Where the open figure stands on its clock, for the strip: the year, and
+/// Where the open figure stands on its clock, for its key: the year, and
 /// whether it is a model's from there.
 fn when_label(o: &Open) -> Option<String> {
     let clock = o.play.scenario.clock;
@@ -1536,68 +1512,10 @@ fn file_of(o: &Open) -> &str {
     o.key.split_once('/').map_or(o.key.as_str(), |(f, _)| f)
 }
 
-/// Strip: the figure, its scale, and its value under the crosshair. The
-/// figure's name raises the figures, the place opens its card.
-///
-/// On the sheet the map is what is being read, so the strip is one row —
-/// the figure and its value here — and the scale, the year and the place
-/// fold behind the key button (`key`), open while it is on.
-fn strip_body(
-    ui: &mut egui::Ui,
-    o: &mut Open,
-    here: Option<LonLat>,
-    shape: Shape,
-    key: &mut bool,
-    asked: &mut Asked,
-) {
-    let meta = &o.play.scenario.meta;
-    let layer = &o.play.scenario.region_states[o.layer];
-    let folds = shape == Shape::Sheet;
-    let value = here
-        .filter(|_| folds && !*key)
-        .and_then(|p| value_at(o, o.layer, p))
-        .and_then(|(_, v)| v);
-    ui.horizontal(|ui| {
-        mode_chip(ui, meta.mode);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if folds {
-                let tip = if *key { "Hide the key" } else { "Show the key" };
-                if theme::bar_button(ui, crate::systems::icons::PALETTE, tip, *key).clicked() {
-                    *key = !*key;
-                }
-            }
-            if let Some(v) = value {
-                let at = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(v)
-                            .size(theme::SIZE_VALUE)
-                            .color(theme::CREAM),
-                    )
-                    .sense(egui::Sense::click()),
-                );
-                if at.on_hover_text("Every figure for this place").clicked() {
-                    asked.sheet = Some(Sheet::Place);
-                }
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let name = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&layer.label)
-                            .size(theme::SIZE_BODY)
-                            .color(theme::TEXT),
-                    )
-                    .truncate()
-                    .sense(egui::Sense::click()),
-                );
-                if name.on_hover_text("Choose another figure").clicked() {
-                    asked.sheet = Some(Sheet::Figures);
-                }
-            });
-        });
-    });
-    if folds && !*key {
-        return;
-    }
+/// The open figure's key, at the head of its sheet: how real it is, per what
+/// and when, its scale, and its value under the crosshair as a row that opens
+/// the place.
+fn key_body(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>, asked: &mut Asked) {
     let mut per = o
         .play
         .layer_areas(o.layer)
@@ -1607,19 +1525,12 @@ fn strip_body(
     if let Some(w) = when_label(o) {
         per = format!("{per} · {w}");
     }
-    dim(ui, format!("{} · {per}", meta.name));
+    dim(ui, format!("{} · {per}", honest(&o.play.scenario.meta)));
     ui.add_space(4.0);
     legend(ui, o, here);
     if let Some(r) = here_row(ui, o, here) {
         if r.clicked() {
             asked.sheet = Some(Sheet::Place);
-        }
-    }
-    // The column has no grabber: its way to the figures is a button.
-    if shape == Shape::Column {
-        ui.add_space(4.0);
-        if theme::action_button(ui, "Figures").clicked() {
-            asked.sheet = Some(Sheet::Figures);
         }
     }
 }
@@ -1802,7 +1713,7 @@ fn group_label(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// The lens's header: its mode, its name, and the way out.
+/// The lens's header: its mode, its name, and the way to put the sheet away.
 fn lens_header(ui: &mut egui::Ui, o: &Open, asked: &mut Asked) {
     let meta = &o.play.scenario.meta;
     ui.horizontal(|ui| {
@@ -1819,38 +1730,29 @@ fn lens_header(ui: &mut egui::Ui, o: &Open, asked: &mut Asked) {
             .truncate(),
         );
         if theme::close_button(ui)
-            .on_hover_text("Close the lens")
+            .on_hover_text("Hide; the lens stays on")
             .clicked()
         {
-            asked.close = true;
+            asked.sheet = Some(Sheet::Hidden);
         }
     });
 }
 
-/// Figures: every figure of the lens to pick one from, each with its value
-/// here, then the open one's scale, the clock and the tracks.
+/// Figures: the open figure's key, then every figure of the lens to pick one
+/// from, each with its value here, the clock and the tracks; at its foot the
+/// way to another lens, and to none.
 fn figures_body(
     ui: &mut egui::Ui,
     o: &mut Open,
     here: Option<LonLat>,
-    shape: Shape,
     body_h: f32,
     asked: &mut Asked,
 ) {
     lens_header(ui, o, asked);
-    let place = here
-        .and_then(|p| value_at(o, o.layer, p))
-        .map(|(n, _)| n.to_owned());
-    dim(
-        ui,
-        match place {
-            Some(n) => format!("{} · values for {n}", honest(&o.play.scenario.meta)),
-            None => honest(&o.play.scenario.meta).to_owned(),
-        },
-    );
+    key_body(ui, o, here, asked);
     ui.add_space(4.0);
     egui::ScrollArea::vertical()
-        .max_height(body_h)
+        .max_height((body_h - KEY_PTS).max(BODY_MIN_PTS))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             if o.play.scenario.clock.end > Clock::ZERO {
@@ -1881,8 +1783,7 @@ fn figures_body(
                 }
             }
             ui.add_space(8.0);
-            // On the sheet the strip's key holds the scale (`docs/mockups/lenses/v2`).
-            scale_card(ui, o, shape == Shape::Column);
+            scale_card(ui, o);
         });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -1894,6 +1795,9 @@ fn figures_body(
         });
         if theme::action_button(ui, "All lenses").clicked() {
             asked.sheet = Some(Sheet::Shelf);
+        }
+        if theme::action_button(ui, "Lens off").clicked() {
+            asked.close = true;
         }
     });
 }
@@ -2060,7 +1964,6 @@ fn place_row(
 fn shelf_body(
     ui: &mut egui::Ui,
     open_key: Option<&str>,
-    lens: bool,
     body_h: f32,
     asked: &mut Asked,
 ) {
@@ -2076,7 +1979,7 @@ fn shelf_body(
             ),
         );
         if theme::close_button(ui).clicked() {
-            asked.sheet = Some(if lens { Sheet::Strip } else { Sheet::Hidden });
+            asked.sheet = Some(Sheet::Hidden);
         }
     });
     dim(
@@ -2178,29 +2081,17 @@ fn dim(ui: &mut egui::Ui, text: impl Into<String>) {
     );
 }
 
-/// The open figure's bands (where `bands`: on the sheet the strip's key holds
-/// them), what is next to be reached, and the tracks to pick one from.
-fn scale_card(ui: &mut egui::Ui, o: &mut Open, bands: bool) {
+/// Under the figures: a derived state's bands with how many areas are in
+/// each, what is next to be reached, and the tracks to pick one from. A
+/// figure's bands are in its key, at the head of the sheet.
+fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
     let clock = o.play.scenario.clock;
     let li = o.layer;
     let layer = &o.play.scenario.region_states[li];
     let set = o.play.layer_areas(li);
-    let field = set.and_then(|s| Some((s, s.field(layer.field.as_deref()?)?)));
-    if bands {
-        group_label(ui, &format!("Scale · {}", layer.label));
-        match set {
-            Some(s) => {
-                let year = match when_label(o) {
-                    Some(w) => format!(" · {w}"),
-                    None => field
-                        .and_then(|(s, f)| s.fields[f].year)
-                        .map(|y| format!(" · {y}"))
-                        .unwrap_or_default(),
-                };
-                dim(ui, format!("per {}{year}", s.rung.label()));
-            }
-            None => dim(ui, "Nothing to show at this height"),
-        }
+    let counted = layer.field.is_none();
+    if counted {
+        group_label(ui, &format!("Areas · {}", layer.label));
         ui.add_space(4.0);
     }
     let places = o
@@ -2209,9 +2100,9 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open, bands: bool) {
         .get(li)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    // A band's row singles it out on the map, as the strip's scale does.
+    // A band's row singles it out on the map, as the key's scale does.
     let mut tapped = None;
-    for (si, s) in layer.states.iter().enumerate().filter(|_| bands) {
+    for (si, s) in layer.states.iter().enumerate().filter(|_| counted) {
         let on = o.focus == Some(si);
         let row = ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
@@ -2229,14 +2120,11 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open, bands: bool) {
                     .size(theme::SIZE_SUB)
                     .color(if on { theme::CREAM } else { theme::TEXT }),
             );
-            // A count belongs to a derived state (how many regions are under
-            // threat); a figure's bands are for reading, not ranking.
-            if layer.field.is_none() {
-                let n = places.iter().filter(|p| p.state == si).count();
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(n.to_string()).size(theme::SIZE_SUB));
-                });
-            }
+            // How many regions are under threat: a derived state's count.
+            let n = places.iter().filter(|p| p.state == si).count();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(n.to_string()).size(theme::SIZE_SUB));
+            });
         });
         let resp = row
             .response
@@ -2486,22 +2374,24 @@ mod tests {
         }
     }
 
-    /// The lens disc: a lens rests at the strip and the disc raises its
-    /// figures; with none open the disc is the shelf's switch.
+    /// The lens disc: a lens rests with no sheet up and the disc raises and
+    /// hides its sheet, the lens staying on; with none open the disc is the
+    /// shelf's switch.
     #[test]
     fn the_lens_disc_steps_the_sheet() {
         let mut view = ScenarioView {
             sheet: Sheet::Hidden,
             ..ScenarioView::default()
         };
-        assert_eq!(view.sheet.shown(true), Sheet::Strip);
+        assert_eq!(view.sheet.shown(true), Sheet::Hidden);
+        assert!(lens_disc_on(&view, true));
         press_lens_disc(&mut view, true);
         assert_eq!(view.sheet, Sheet::Figures);
         press_lens_disc(&mut view, true);
-        assert_eq!(view.sheet, Sheet::Strip);
+        assert_eq!(view.sheet, Sheet::Hidden);
         view.sheet = Sheet::Place;
         press_lens_disc(&mut view, true);
-        assert_eq!(view.sheet, Sheet::Strip);
+        assert_eq!(view.sheet, Sheet::Hidden);
 
         // Closed: the figures and the place have nothing to show.
         view.sheet = Sheet::Figures;

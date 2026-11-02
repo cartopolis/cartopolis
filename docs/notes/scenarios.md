@@ -102,7 +102,7 @@ the figure as its change in % since that year (growth, not size), and
 `range = [low, high]` names the fields that bound it (a forecast's 67 %
 interval, a score's 95 %), shown as "likely … – …" under the value and never
 coloured. The clock's `forecast = "2024"` marks where measurement stops: the
-clock bar hatches from there and the strip says "2050 forecast". Two futures
+clock bar hatches from there and the key says "2050 forecast". Two futures
 are **two figures on one clock** (High and Low under one heading), so switching
 keeps the year.
 
@@ -154,23 +154,24 @@ Opened from its own disc under Layers, not from the Layers panel
 (`docs/mockups/lenses/`, built 2026-11-01). Ticking a figure tile that closed
 the other was a radio dressed as a checkbox, and on a phone the panel covered
 the map you were choosing for. The lens is one surface (`scenario::Sheet`): a
-bottom sheet in portrait (strip, figures, place, shelf), a column on the left
+bottom sheet in portrait (figures, place, shelf), a column on the left
 otherwise. Its rect goes to `place_pins::map_area` through egui's memory
 (`scenario::lens_rect`), so pins under it do not eat its taps. Switching to
 another figure of the same file keeps the loaded areas (`switch_figure`); only
 another file fetches. A scenario file may give itself a `question` (the
 shelf's heading) and each region state a `group` (the figures' heading).
 
-On the sheet the raised heights get out of the way (asked 2026-11-02: "the
-dialog is in the way on mobile"): a pick — a lens off the shelf, a figure
-from the list or the place card — drops it to the strip, and a drag that
-starts on the bare map (`EguiManager::map_dragged`, decided by where the
-press landed) lowers whatever is raised, as a flick down on the grabber
-does. The column, beside the map rather than over it, stays where it is.
-And the strip itself is one row on the sheet ("maximum room for the map;
-the key may sit behind an icon"): the figure and its value here, with the
-scale, the year and the place row behind a palette button
-(`ScenarioView::key`, off by default, `CARTO_LENS_KEY=1` for a capture).
+A lens that is on needs no surface at all (`docs/mockups/lenses/v3`, asked
+2026-11-02: "why can't a lens be on and its dialog be clicked away? The lens
+icon can say whether one is on"). On and shown are two things: on is the
+coloured map, the mode's frame and the lit disc; the sheet (the open
+figure's key over the figures) is raised by the disc and put away by its
+✕, the disc, a pick off the shelf or the figures, or a drag that starts on
+the bare map (`EguiManager::map_dragged`, decided by where the press
+landed). "Lens off" turns it off. The same in the column. An earlier
+resting strip, then a one-row strip with the key behind a palette (v2), were
+dropped for it the same day: nothing has to rest over the map when the
+sheet is one tap away.
 
 The lens answers back (asked 2026-11-01, "too static"): the area being read
 is outlined on the map — under the pointer on a desktop, with a card beside

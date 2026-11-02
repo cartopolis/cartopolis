@@ -50,3 +50,15 @@ strip of v1: source and year, scale, place row). A pick off the shelf or the
 figures, or a drag on the map, drops the sheet to that row, and the scale
 card under the figures goes, the key holding it. Agreed as drawn the same
 day. Landscape and desktop keep the v1 column.
+
+## v3 — agreed 2026-11-02
+
+![v3](v3.png)
+
+Asked against v2 the same day: "why can't a lens be on, and its dialog be
+clicked away? The lens icon can say whether a lens is on." On and shown
+become two things. A lens on is the coloured map, the mode's frame and the
+lit disc, with no sheet and no strip; the disc raises the sheet, which holds
+the open figure's key over the figures, and ✕, the disc, a pick or a drag on
+the map hide it again. "Lens off" turns it off. The same on every screen.
+v2's one-row strip and palette were not kept.
