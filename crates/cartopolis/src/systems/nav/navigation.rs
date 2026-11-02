@@ -599,7 +599,8 @@ impl RouteState {
         let Some(at) = self.from.coord else {
             return false;
         };
-        if crate::systems::driver::metres_between([at.0, at.1], [here.0, here.1]) <= HERE_REFRESH_M {
+        if crate::systems::driver::metres_between([at.0, at.1], [here.0, here.1]) <= HERE_REFRESH_M
+        {
             return false;
         }
         self.from.coord = Some(here);
@@ -2180,13 +2181,10 @@ pub fn render_route_sheet(
     // Where "My position" resolves to: the avatar, when there is one — it is
     // where the person is in the world, and a device fix moves it there — and
     // the camera only with no avatar to ask (offline, a scripted capture).
-    let avatar_here = map_anchor
-        .geo
-        .filter(|_| !bodies.is_empty())
-        .map(|anchor| {
-            let p = avatar.position;
-            world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.z))
-        });
+    let avatar_here = map_anchor.geo.filter(|_| !bodies.is_empty()).map(|anchor| {
+        let p = avatar.position;
+        world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.z))
+    });
     let here = avatar_here.or_else(|| {
         camera
             .get()
@@ -2746,7 +2744,11 @@ fn start_line(
         (HERE_LABEL.to_string(), theme::ACCENT)
     } else {
         (
-            route.from.label.trim_start_matches(PICKED_PREFIX).to_string(),
+            route
+                .from
+                .label
+                .trim_start_matches(PICKED_PREFIX)
+                .to_string(),
             theme::TEXT,
         )
     };
@@ -2760,7 +2762,10 @@ fn start_line(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(w - RAIL_PTS - 4.0);
     let galley = ui.painter().layout_job(job);
-    let at = egui::pos2(rect.left() + RAIL_PTS, rect.center().y - galley.size().y / 2.0);
+    let at = egui::pos2(
+        rect.left() + RAIL_PTS,
+        rect.center().y - galley.size().y / 2.0,
+    );
     ui.painter().galley(at, galley, colour);
     if resp
         .on_hover_text("Change the starting point")
@@ -2838,7 +2843,11 @@ fn endpoint_line(
                         actions.cleared = Some(end);
                     }
                     if wp.in_flight {
-                        ui.add(egui::Spinner::new().size(theme::SIZE_BODY).color(theme::ACCENT));
+                        ui.add(
+                            egui::Spinner::new()
+                                .size(theme::SIZE_BODY)
+                                .color(theme::ACCENT),
+                        );
                     }
                 });
             },
