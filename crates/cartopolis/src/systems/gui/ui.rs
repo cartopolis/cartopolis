@@ -735,7 +735,7 @@ pub fn sync_dialog_to_selection(
 /// save or share here as a place, build here. On an object the ring is the
 /// object's instead: touch it, edit it, script it, delete it, follow it. On a
 /// place's name (`systems::place_names`, a click or a long press) it is the
-/// place's, and short for now: go there, or route there.
+/// place's, and short: go there, route there, or read it through a lens.
 ///
 /// At 16 system parameters this is at Bevy's cap. The next thing that needs world
 /// access here should be grouped into a `SystemParam` rather than added to the
@@ -823,7 +823,7 @@ pub fn render_context_menu(
         });
     } else if place.is_some() && lat_lng.is_some() {
         // A name on the map seen from a distance: the first wish is to go and
-        // look, so Go there leads. Kept to two on purpose (asked 2026-11-02):
+        // look, so Go there leads. Kept short on purpose (asked 2026-11-02):
         // saving, sharing and plans for a whole town wait for a reason to be here.
         actions.push(RingAction {
             key: "go_there",
@@ -836,6 +836,12 @@ pub fn render_context_menu(
             icon: icons::ROUTE,
             label: "Route here",
             hint: "Set this place as the destination",
+        });
+        actions.push(RingAction {
+            key: "lenses",
+            icon: icons::POLL,
+            label: "Lenses",
+            hint: "Read this place through one of the lenses",
         });
     } else if lat_lng.is_some() {
         // "Route to here" is the default act — a point on a map is a place you
@@ -943,6 +949,11 @@ pub fn render_context_menu(
         ("go_there", Some((lat, lng)), _) => {
             if let Some(p) = &place {
                 context_menu.go_there = Some((lat, lng, p.view_altitude_m, p.name.clone()));
+            }
+        }
+        ("lenses", Some((lat, lng)), _) => {
+            if let Some(p) = &place {
+                context_menu.lenses_at = Some((lat, lng, p.name.clone()));
             }
         }
         ("save", Some((lat, lng)), _) => {

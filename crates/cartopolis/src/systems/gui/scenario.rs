@@ -272,6 +272,12 @@ pub fn press_lens_disc(view: &mut ScenarioView, lens: bool) {
     };
 }
 
+/// Put up the shelf of lenses, whatever is open: the ring on a place's name
+/// asks for it (`place_names`), to read that place through one.
+pub fn open_shelf(view: &mut ScenarioView) {
+    view.sheet = Sheet::Shelf;
+}
+
 /// Whether the lens disc wears its engaged plate: a lens is open, or the
 /// shelf is up.
 #[must_use]

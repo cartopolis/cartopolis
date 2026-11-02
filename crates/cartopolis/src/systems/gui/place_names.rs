@@ -20,8 +20,8 @@
 //! would overlap a placed one is left out.
 //!
 //! **A name is a button.** Clicking or long-pressing one opens the map's ring of
-//! actions on the place (`ui::render_context_menu`), for now only Go there and
-//! Route here.
+//! actions on the place (`ui::render_context_menu`): Go there, Route here and
+//! Lenses, which centres the place and puts up the shelf of lenses.
 
 use crate::components::FreeCamera;
 use crate::resources::{ContextMenuState, MapAnchor, MapPlace};
@@ -235,6 +235,7 @@ pub fn render_place_names(
     // and the ring's Go there comes back here to be flown.
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
+    mut lenses: ResMut<crate::systems::scenario::ScenarioView>,
 ) {
     if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
         nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(
@@ -243,6 +244,13 @@ pub fn render_place_names(
             Some(altitude),
         ));
         nav.pending_label = Some(name);
+    }
+    // Lenses: the place goes under the crosshair, which is the "here" a lens
+    // reads, at the height the map is already at; then the shelf comes up.
+    if let Some((lat, lng, name)) = menu.lenses_at.take() {
+        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(lat, lng, None));
+        nav.pending_label = Some(name);
+        crate::systems::scenario::open_shelf(&mut lenses);
     }
     let mut anchored = WorldAnchored::new(egui.ctx(), "place_names");
     if driver.active || !layers.place_names || names.tiles.is_empty() {

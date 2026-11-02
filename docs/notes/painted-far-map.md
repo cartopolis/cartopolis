@@ -88,7 +88,9 @@ loaded town's name (rail stations do; metro and tram stops get the icon).
 
 Every drawn name is a click target (2026-11-02): a click or a long press opens
 the map's action ring on the place (`ContextMenuState::place`), offering
-only Go there and Route here (asked to keep it short, 2026-11-02). Each name
+only Go there, Route here and Lenses (asked to keep it short, 2026-11-02);
+Lenses centres the place under the crosshair, the "here" a lens reads, and
+puts up the shelf (`scenario::open_shelf`). Each name
 senses through its own `Area`, as a saved pin does, because a bare painter
 takes no clicks and the world's click handlers would then act on the ground
 underneath it.

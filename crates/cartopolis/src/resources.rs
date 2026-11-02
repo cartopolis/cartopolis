@@ -1112,6 +1112,10 @@ pub struct ContextMenuState {
     /// The ring's Go there was chosen: taken by `place_names::render_place_names`,
     /// which hands it to `GeoNavState` as a teleport with the place's name.
     pub go_there: Option<(f64, f64, f64, String)>,
+    /// The ring's Lenses was chosen on a place: taken by
+    /// `place_names::render_place_names`, which centres the map on it and puts
+    /// up the shelf of lenses.
+    pub lenses_at: Option<(f64, f64, String)>,
 }
 
 /// Twist / taper / top-shear / slice parameters edited together in the dialog.
