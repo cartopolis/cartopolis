@@ -1,7 +1,7 @@
 ---
 topic: zoom-ladder
-triggers: [zoom_rail.rs, cosmos.rs, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
-updated: 2026-11-01
+triggers: [zoom_rail.rs, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
+updated: 2026-11-02
 ---
 
 # The zoom ladder: one zoom from the street to the edge of the universe
@@ -75,8 +75,23 @@ What looked wrong on the way and why it is the way it is:
 - The projection is orthographic, not perspective: a perspective camera put
   the Sun behind it whenever it stood over the viewer's shoulder.
 
-The Milky Way is schematic and says so, but lies in the real galactic plane
-with its centre in Sagittarius. The planets come from JPL's approximate Keplerian
+**The Milky Way is built from measurements** (2026-11-02; until then four
+invented arms of random dots, asked "is it realistic?"). The arms are Reid et
+al. 2019's log-spiral fits to the parallaxes of ~200 young massive stars
+(ApJ 885, 131, table 2, `cosmos::ARMS`; arXiv 1910.03357), carried on 150°
+past the azimuths measured at falling brightness, because the far side behind
+the centre has no parallaxes and drawn empty it read as half a galaxy. The
+long bar is Wegg, Gerhard & Portail 2015 (5 kpc half length, 28° to the
+Sun–centre line, near end at positive longitude), the disc exponential with
+a 2.6 kpc scale length. The Sun is 8.15 kpc (26,600 ly) out, the distance
+the arms were fitted with, and lands on the Local arm's inner edge as in the
+paper's figure 1 (tested). Check the handedness against that figure turned
+so the Sun is left: the bar's near end then points up-left. A tap on "Milky
+Way" goes to 6·10²⁰ m, not its band's middle (`zoom_rail::rung_altitude`):
+at 3·10¹⁹ m the Sun is still the middle and the disc is squeezed into a
+crescent round it.
+
+The planets come from JPL's approximate Keplerian
 elements (Standish, valid 1800–2050), checked against the calendar (the Earth
 at ~39° of heliocentric longitude on 1 November) and the Mars opposition of
 16 January 2025. The 46 star systems within 16 ly are HYG v3.8 (CC BY-SA
@@ -110,7 +125,13 @@ What the code does not say:
 
 - **VizieR's own server in Strasbourg did not answer the VPS on 2026-11-01**
   (connect timeout, three tries) while the Harvard mirror answered in half a
-  second; the dataset tries the mirror first.
+  second; the dataset tries the mirror first. **The mirror flakes too**: on
+  2026-11-02 it answered 200 with no body after 60 s for a few minutes, the
+  run failed, and a re-run three minutes later took 2 s. The file was first
+  published then — until that day everything past the Milky Way was empty
+  rings with "the galaxies could not be fetched", which is what the person
+  steering saw as "zooming past the Milky Way is broken". After a run, check
+  `curl -I https://3dbag.cartopolis.org/cosmos/galaxies.bin`.
 - **2MRS is taken only beyond 11 Mpc.** Nearer, a galaxy's own motion is a
   large part of its redshift (Andromeda's cz is −300 km/s); the UNGC has real
   distances for those. Distances are `cz / 70`.
@@ -131,9 +152,10 @@ What the code does not say:
 - **Capturing it**: `--shot-mode earth --at 53.2,6.57,3e27` (without the
   mode the camera is not put in the cosmos at all, and the picture is black).
   Before 2026-11-01 any height past ~10²¹ m overflowed the floating origin's
-  grid in the harness; the teleport now stops at the ceiling. Until atlas has
-  run on the host, point `CARTO_3DBAG_URL` at a local tree holding
-  `cosmos/galaxies.bin` (`atlas run --datasets galaxies --out /tmp/site`).
+  grid in the harness; the teleport now stops at the ceiling. A capture
+  fetches the live file; to try a new one, point `CARTO_3DBAG_URL` at a local
+  tree holding `cosmos/galaxies.bin` (`atlas run --datasets galaxies --out
+  /tmp/site`).
 - Labels go to the clusters first, then by how bright a galaxy looks from
   here (luminosity over distance squared): by luminosity alone Andromeda lost
   its place to galaxies five times farther.

@@ -144,9 +144,17 @@ pub fn index_of(alt_m: f64) -> usize {
 
 /// The height a tap on a rung's name goes to: the middle of its band, on the
 /// log scale — where its places are a comfortable size.
+///
+/// But the Milky Way: in the middle of its band the view still has the Sun in
+/// the middle and the screen holds 1,400 light years to scale, so the 100,000
+/// across is squeezed into a crescent round it. It reads as a spiral once its
+/// centre is the middle and the squeeze has eased (`cosmos::View::new`).
 #[must_use]
 pub fn rung_altitude(i: usize) -> f64 {
-    altitude_at((i as f32 + 0.5) / RAIL.len() as f32)
+    match RAIL[i].rung {
+        Rung::Galaxy => 6.0e20,
+        _ => altitude_at((i as f32 + 0.5) / RAIL.len() as f32),
+    }
 }
 
 /// The most rungs a jump along the rail passes in a second.

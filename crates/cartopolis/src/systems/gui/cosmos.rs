@@ -33,10 +33,10 @@
 //! **Real bodies at real places.** The Earth lit by the real Sun; the Moon at the
 //! sky code's longitude (`utils::sun`), on the ecliptic; the planets where JPL's
 //! elements put them today (`utils::planets`); the systems within 16 light years
-//! (`utils::near_stars`, HYG); the Milky Way schematic (four arms on a log
-//! spiral) but laid in the real galactic plane, its centre in Sagittarius
-//! 26,000 light years away; the galaxies from three catalogues atlas joins into
-//! one file (`GalaxyCatalogue`, fetched when the view nears them). The view
+//! (`utils::near_stars`, HYG); the Milky Way's arms where the parallaxes of
+//! young stars put them (Reid et al. 2019), its bar and its disc, in the real
+//! galactic plane with its centre in Sagittarius 26,600 light years away; the
+//! galaxies from three catalogues atlas joins into one file (`GalaxyCatalogue`, fetched when the view nears them). The view
 //! turns as it climbs: from the camera's own direction, to above the ecliptic,
 //! to above the galactic plane, to above the supergalactic one; and its middle
 //! moves from the Earth to the Sun to the galactic centre — each only once the
@@ -336,7 +336,7 @@ impl View {
         let q = q.slerp(to_sheet, f64::from(fade_in(alt, 3.0e22, 3.0e23)));
         // The Earth in the middle, then the Sun once the inner planets are
         // small, then the galactic centre once the whole of it fits.
-        let gc = gal_to_ecl(DVec3::X) * 26_000.0 * LIGHT_YEAR_M;
+        let gc = gal_to_ecl(DVec3::X) * GC_LY * LIGHT_YEAR_M;
         let middle = earth * f64::from(fade_out(alt, 2.0e10, 1.0e12))
             + gc * f64::from(fade_in(alt, 1.0e19, 4.0e20));
         let t = f64::from(fade_in(alt, SQUEEZE_FROM_M, SQUEEZE_TO_M));
@@ -520,7 +520,7 @@ pub fn render_cosmos(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
     mut camera_lens: Query<(&Projection, &mut Camera), With<crate::components::FreeCamera>>,
-    mut galaxy: Local<Vec<(DVec3, f32)>>,
+    mut galaxy: Local<Vec<(DVec3, f32, Color32)>>,
     catalogue: Res<GalaxyCatalogue>,
 ) {
     let alt = camera_state.cosmos_alt;
@@ -656,42 +656,49 @@ pub fn render_cosmos(
         }
     }
 
-    // ── The Milky Way, schematic, in the real galactic plane ────────────────
+    // ── The Milky Way, its arms where they were measured ────────────────────
     let sun_at = view.at(DVec3::ZERO);
     let gx = bd * fade_in(alt, 3.0e17, 3.0e18);
     if gx > 0.01 {
         if galaxy.is_empty() {
             *galaxy = galaxy_points()
                 .into_iter()
-                .map(|(pt, b)| {
-                    let g = DVec3::new(26_000.0 - f64::from(pt.y), f64::from(pt.x), 0.0);
-                    (gal_to_ecl(g) * LIGHT_YEAR_M, b)
+                .map(|(pt, b, ink)| {
+                    let g = DVec3::new(GC_LY - f64::from(pt.y), f64::from(pt.x), 0.0);
+                    (gal_to_ecl(g) * LIGHT_YEAR_M, b, ink)
                 })
                 .collect();
         }
-        let gc = gal_to_ecl(DVec3::X) * 26_000.0 * LIGHT_YEAR_M;
+        let gc = gal_to_ecl(DVec3::X) * GC_LY * LIGHT_YEAR_M;
         let gc_at = view.at(gc);
-        p.circle_filled(
-            gc_at,
-            view.size(gc, 3_000.0 * LIGHT_YEAR_M).max(2.0),
-            alpha(GALAXY_BULGE, gx * 0.35),
-        );
-        // Once the whole galaxy is a few pixels its 4,400 points are one dot.
+        // Once the whole galaxy is a few pixels its points are one dot.
         let mw_r = view.size(gc, 50_000.0 * LIGHT_YEAR_M);
         if mw_r > 4.0 {
-            for (pt, b) in galaxy.iter() {
+            // One mesh of small squares: some 7,000 circles a frame was a
+            // tessellation's worth of work for something this small.
+            let mut mesh = egui::Mesh::default();
+            let r = 0.75;
+            for (pt, b, ink) in galaxy.iter() {
                 let q = view.at(*pt);
-                if screen.contains(q) {
-                    p.circle_filled(q, 1.1, alpha(GALAXY_STAR, gx * b));
+                if !screen.contains(q) {
+                    continue;
                 }
+                let ink = alpha(*ink, gx * b);
+                let i = mesh.vertices.len() as u32;
+                for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
+                    mesh.colored_vertex(q + d, ink);
+                }
+                mesh.add_triangle(i, i + 1, i + 2);
+                mesh.add_triangle(i, i + 2, i + 3);
             }
+            p.add(egui::Shape::mesh(mesh));
         } else {
             p.circle_filled(gc_at, mw_r.max(2.5), alpha(GALAXY_STAR, gx));
         }
         tags.push(Tag {
             at: gc_at + vec2(0.0, -14.0),
             align: egui::Align2::CENTER_BOTTOM,
-            text: "Galactic centre · 26,000 light years".into(),
+            text: format!("Galactic centre · {} light years", thousands(GC_LY as u64)),
             size: theme::SIZE_SUB,
             ink: alpha(
                 theme::TEXT,
@@ -990,7 +997,7 @@ pub fn render_cosmos(
         said.push("stars within 16 light years, HYG v3.8");
     }
     if gx > 0.5 && alt < 3.0e21 {
-        said.push("the Milky Way schematic: four arms on a log spiral");
+        said.push("the Milky Way's arms as measured, Reid et al. 2019; its far side carried on");
     }
     let galaxy_words;
     if near_a > 0.5 {
@@ -1209,10 +1216,51 @@ fn paint_galaxies<'a>(
     named
 }
 
-/// The schematic galaxy: points along four logarithmic spiral arms (pitch 12°)
-/// and a central bar, light years from the centre, each with a brightness. A
-/// fixed seed, so it is the same galaxy every time.
-fn galaxy_points() -> Vec<(Vec2, f32)> {
+/// The Sun's distance from the galactic centre, light years: the 8.15 kpc the
+/// arm model below was fitted with (Reid et al. 2019).
+const GC_LY: f64 = 26_600.0;
+/// Light years in a kiloparsec.
+const LY_PER_KPC: f32 = 3_261.6;
+
+/// The Milky Way's spiral arms as Reid et al. (2019, ApJ 885, 131, table 2)
+/// fitted them to the parallaxes of ~200 young massive stars: each a log
+/// spiral `ln(R / R_kink) = −(β − β_kink)·tan ψ`, with a different pitch on
+/// either side of the kink. β is the azimuth round the centre from the Sun,
+/// growing the way the Galaxy turns; R in kpc. Columns: the β range measured
+/// (degrees), β_kink, R_kink, ψ below and above the kink (degrees), and the
+/// arm's 1σ width at the kink (kpc).
+const ARMS: [(f32, f32, f32, f32, f32, f32, f32); 7] = [
+    // 3-kpc (near)
+    (15.0, 18.0, 15.0, 3.52, -4.2, -4.2, 0.18),
+    // Norma
+    (5.0, 54.0, 18.0, 4.46, -1.0, 19.5, 0.14),
+    // Scutum–Centaurus
+    (0.0, 104.0, 23.0, 4.91, 14.1, 12.1, 0.23),
+    // Sagittarius–Carina
+    (2.0, 97.0, 24.0, 6.04, 17.1, 1.0, 0.27),
+    // Local (the Orion spur, the Sun on its inner edge)
+    (-8.0, 34.0, 9.0, 8.26, 11.4, 11.4, 0.31),
+    // Perseus
+    (-23.0, 115.0, 40.0, 8.87, 10.3, 8.7, 0.35),
+    // Outer
+    (-16.0, 71.0, 18.0, 12.24, 3.0, 9.4, 0.65),
+];
+/// How far an arm is carried on past the azimuths measured, degrees: the far
+/// side of the Galaxy, behind its centre, has no parallaxes yet, and is drawn
+/// fainter for it.
+const ARM_REACH_DEG: f32 = 150.0;
+/// Where H II regions glow along the arms.
+const GALAXY_HII: Color32 = Color32::from_rgb(0xFF, 0xA8, 0xC4);
+
+/// The Milky Way as points, light years from its centre in its own plane (y
+/// towards the Sun, x the way the Galaxy turns there, towards l = 90°), each
+/// with a brightness and a colour: the arms as measured and carried on fainter
+/// round the far side; the long bar (Wegg, Gerhard & Portail 2015: 5 kpc half
+/// length, 28° from the line to the Sun, its near end at positive longitude)
+/// and the boxy bulge in it; and the old disc, exponential with a 2.6 kpc
+/// scale length (Bland-Hawthorn & Gerhard 2016). A fixed seed, so it is the
+/// same galaxy every time.
+fn galaxy_points() -> Vec<(Vec2, f32, Color32)> {
     let mut seed: u32 = 0x9E37_79B9;
     let mut rnd = move || {
         seed ^= seed << 13;
@@ -1220,31 +1268,63 @@ fn galaxy_points() -> Vec<(Vec2, f32)> {
         seed ^= seed << 5;
         (seed as f32) / (u32::MAX as f32)
     };
-    let pitch = 12f32.to_radians().tan();
-    let mut out = Vec::with_capacity(4_400);
-    for arm in 0..4 {
-        let offset = std::f32::consts::FRAC_PI_2 * arm as f32;
-        for _ in 0..1_000 {
-            let t = rnd() * 2.6;
-            let r = 7_000.0 * (pitch * t * 3.0).exp();
-            if r > 52_000.0 {
+    let kpc = |x: f32, y: f32| Vec2::new(x, y) * LY_PER_KPC;
+    let mut out = Vec::with_capacity(7_000);
+
+    // The arms: points along each, spread across it by its width.
+    for &(lo, hi, kink, r_kink, psi_lo, psi_hi, width) in &ARMS {
+        let span = (hi - lo) + 2.0 * ARM_REACH_DEG;
+        let n = (span * 6.0) as usize;
+        for _ in 0..n {
+            let beta = lo - ARM_REACH_DEG + rnd() * span;
+            let psi = if beta <= kink { psi_lo } else { psi_hi };
+            let r = r_kink * (-(beta - kink).to_radians() * psi.to_radians().tan()).exp();
+            // Inside the bar's reach an arm is the bar's; past 17 kpc the
+            // disc has thinned out.
+            if !(3.0..17.0).contains(&r) {
                 continue;
             }
-            let a = offset + t * 3.0 + (rnd() - 0.5) * 0.25;
-            let spread = 1_200.0 + r * 0.05;
-            let x = a.cos() * r + (rnd() - 0.5) * spread;
-            let y = a.sin() * r + (rnd() - 0.5) * spread;
-            out.push((Vec2::new(x, y), 0.3 + 0.6 * rnd()));
+            let beyond = (lo - beta).max(beta - hi).max(0.0) / ARM_REACH_DEG;
+            let b = beta.to_radians();
+            let centre = kpc(r * b.sin(), r * b.cos());
+            // Two uniform draws make a bump close enough to a Gaussian.
+            let w = (width + 0.042 * (r - r_kink)).max(0.1);
+            let across = (rnd() + rnd() + rnd() - 1.5) * 2.0 * w;
+            let at = centre + Vec2::new(b.sin(), b.cos()) * across * LY_PER_KPC;
+            let measured = 1.0 - 0.6 * beyond.sqrt();
+            let (ink, glow) = if rnd() < 0.07 {
+                (GALAXY_HII, 0.9)
+            } else {
+                (GALAXY_STAR, 0.35 + 0.45 * rnd())
+            };
+            out.push((at, glow * measured, ink));
         }
     }
-    // The bar, about 27,000 light years long, tilted to the Sun's line.
-    for _ in 0..400 {
-        let along = (rnd() - 0.5) * 27_000.0;
-        let across = (rnd() - 0.5) * 4_000.0;
-        let (s, c) = 0.45f32.sin_cos();
+
+    // The long bar and the boxy bulge at its middle.
+    let (s, c) = 28f32.to_radians().sin_cos();
+    let along_axis = Vec2::new(s, c);
+    let across_axis = Vec2::new(c, -s);
+    for i in 0..1_400 {
+        let (half, thick) = if i < 900 { (5.0, 0.45) } else { (1.6, 0.7) };
+        let along = (rnd() + rnd() - 1.0) * half;
+        let across = (rnd() + rnd() + rnd() - 1.5) * thick;
+        let at = (along_axis * along + across_axis * across) * LY_PER_KPC;
+        out.push((at, 0.35 + 0.4 * rnd(), GALAXY_BULGE));
+    }
+
+    // The old disc, faint and smooth: surface density falling as e^(−R/2.6
+    // kpc), so a radius drawn as the sum of two exponential draws.
+    for _ in 0..2_200 {
+        let r = -2.6 * (rnd().max(1e-6) * rnd().max(1e-6)).ln();
+        if !(2.0..18.0).contains(&r) {
+            continue;
+        }
+        let a = rnd() * std::f32::consts::TAU;
         out.push((
-            Vec2::new(c * along - s * across, s * along + c * across),
-            0.5 + 0.4 * rnd(),
+            kpc(r * a.sin(), r * a.cos()),
+            0.15 + 0.15 * rnd(),
+            GALAXY_BULGE,
         ));
     }
     out
@@ -1386,6 +1466,37 @@ mod tests {
             let q = v.at(v.middle + v.right * ly * LIGHT_YEAR_M);
             assert!(screen.contains(q), "{rung:?}: {q:?}");
         }
+    }
+
+    #[test]
+    fn a_tap_on_the_milky_way_shows_all_of_it() {
+        // Where the rail's "Milky Way" goes, the galactic centre is the middle
+        // and every point of the galaxy is on screen.
+        let i = crate::systems::zoom_rail::RAIL
+            .iter()
+            .position(|r| r.rung == Rung::Galaxy)
+            .unwrap();
+        let v = view_at(crate::systems::zoom_rail::rung_altitude(i));
+        let gc = gal_to_ecl(DVec3::X) * GC_LY * LIGHT_YEAR_M;
+        assert!(v.at(gc).distance(v.centre) < 5.0);
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let points = galaxy_points();
+        assert!(points.len() > 5_000);
+        for (pt, _, _) in points {
+            let g = DVec3::new(GC_LY - f64::from(pt.y), f64::from(pt.x), 0.0);
+            let q = v.at(gal_to_ecl(g) * LIGHT_YEAR_M);
+            assert!(screen.contains(q), "{pt:?} at {q:?}");
+        }
+    }
+
+    #[test]
+    fn the_sun_is_on_the_local_arm_s_inner_edge() {
+        // The arms' frame and the Sun's place agree: the Local arm passes
+        // just outside the Sun, within its width (Reid et al. 2019, fig. 1).
+        let (_, _, kink, r_kink, psi, _, w) = ARMS[4];
+        let r = r_kink * (kink.to_radians() * psi.to_radians().tan()).exp();
+        let sun = GC_LY as f32 / LY_PER_KPC;
+        assert!(r > sun && r - sun < 1.5 * w, "{r} kpc vs the Sun's {sun}");
     }
 
     #[test]
