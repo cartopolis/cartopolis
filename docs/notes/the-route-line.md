@@ -1,7 +1,7 @@
 ---
 topic: navigation
 triggers: [navigation.rs, systems::navigation, "route line", "route ribbon", ribbon, ribbon_faces_up, bevel_join_never_spikes, ROUTE_Y, RouteLine, RouteCasing, RoutePin, route_width_scale, ROUTE_WIDTH_PER_ALT, CONNECTOR_HALF_WIDTH, frame_route, FRAME_MAX_ALT, route_meshes, route_rendered, "Fit button", "giant arrowhead", mitre, miter]
-updated: 2026-10-17
+updated: 2026-11-02
 ---
 
 # The route line
@@ -26,6 +26,23 @@ anything:
   `RoutePin` beside it), above every ground sheet. Those rungs used to be bare
   numbers written in this file (18, 20, 22, 22) on a ladder whose other end moved —
   [the-ground-stack.md](the-ground-stack.md) has what that cost.
+
+## Its own layers are separated by height, not by rungs
+
+The casing, the fill, the pins' white ring and the pins are each lifted
+`LAYER_LIFT_M` (0.1 m × the width band) over the one below. The rungs alone held
+them until the line was draped on the terrain: the fill's vertices sample the
+ground at different points from the casing's, so wherever the ground bends between
+them the fill lies centimetres *under* its own casing, and from the 3D chase view's
+shallow angle the line came out mottled dark and light (seen 2026-11-02). 64 depth
+units is a millimetre or two at chase range; a 10 cm lift is thousands. Same for the
+driver arrow, whose white face floats 6 cm over its navy rim in one vertex-coloured
+mesh.
+
+**The line, the pins and the arrow are not fogged** (`fog_enabled: false`). The
+distance fog greyed a route planned from 4 km up into a pale thread a shade off the
+haze, with the pins lost in it; it is a mark on the map, and the city's haze is not
+its business.
 
 **How to tell the cases apart.** `ShotMetrics` carries `route_meshes` and
 `route_rendered`, so "not spawned" and "spawned but not rendered" are one
@@ -60,8 +77,16 @@ Six metres of world geometry is a comfortable fifteen pixels at 1 km up and a
 two pins on it and nothing between them — correct, present, invisible. Every map
 app draws its route in screen space; this one cannot, because the line lies in the
 road surface and takes the sun, the terrain and the depth ladder with it. So the
-metres are scaled instead (`route_width_scale`: ~0.0017 × altitude, i.e. about 8 px
-of a phone screen, reaching the base width at ~1.9 km, capped at 64×).
+metres are scaled instead (`route_width_scale`: ~0.0034 × altitude, about six
+*logical* points on a phone or a desktop window, reaching the base width at ~0.9 km,
+capped at 64×). It was 0.0017, sized as "8 px of a 2772 px phone" — physical
+pixels, so under 3 pt in fact, and a pale thread from 4.5 km on any screen
+(2026-11-02).
+
+The pins **rise over the roofs** in the widened bands (`PIN_RISE_M` × band, 24 m at
+2×): a pin is where the user pointed, often a building, and the default start by the
+Grote Markt was drawn, counted as rendered, and under a roof from 4.5 km up. At
+street and chase height they stay on the ground.
 
 The scale is **stepped in powers of two**, and the band is in the mesh's redraw
 key. A width that tracked altitude continuously would re-triangulate the whole
@@ -73,6 +98,18 @@ The other end has a band too: below 40 m (only the street-level camera is that l
 the line is a footpath — 0.125× the width, 0.15 m up — because from behind a
 walking avatar the 6.4 m band and 14 m start disc covered a whole square and the
 avatar in it (2026-10-06).
+
+**Driving never takes the footpath band.** The 3D chase rig tightens onto a
+junction to about 41 m, a metre over `STREET_LEVEL_ALT`, and without the floor a turn
+flipped the line between road and footpath width — a whole-route rebuild each way.
+
+## What rebuilds it
+
+The redraw key is the route generation, the anchor, the terrain revision, the
+width band, whether driver mode is on (no start pin while driving: it lay under the
+arrow) — and the deck revision **only for a route that climbs onto a deck**
+(`levels > 0`). Keyed unconditionally, every deck cell streaming in or out
+anywhere re-draped the whole line.
 
 ## It stays until it is cleared
 

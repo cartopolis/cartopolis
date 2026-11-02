@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [navigation.rs, "route panel", "route planner", "bottom sheet", "detent", place_pins.rs, place_card.rs, egui_manager.rs, "responsive_right_panel"]
-updated: 2026-08-23
+updated: 2026-11-02
 ---
 
 # The route planner is a bottom sheet
@@ -73,6 +73,16 @@ long as the field holds focus, which is why that module *predicts* the height
 instead. A surface that does lift self-corrects, so it uses the simpler,
 non-flickering trigger (the keyboard holds its target across the frame egui takes
 focus away; `text_edit_focused()` does not).
+
+## The peek has to say where the route goes
+
+Collapsed, the sheet showed the duration the mode chip above it already showed and
+nothing else: the destination is in the body the solve folds away, so a route on
+screen did not say where it went or when you would be there. The summary carries
+the arrival clock beside the distance and "to <destination>" under them (2026-11-02).
+A start that this device cannot offer ("Needs a GPS position") is a dim note in the
+button's place, not a disabled button — faded to half contrast over the glass it
+read as a rendering fault.
 
 ## Rejected: a shorter right panel
 

@@ -1,7 +1,7 @@
 ---
 topic: navigation
 triggers: [driver.rs, route_ahead.rs, navigation.rs, free_camera.rs, gui/data_layers.rs, user_store.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown, apply_minimal_mode, "minimal mode", drive_lookahead, pose_before_drive, sky_prefs, "course over ground", DriverArrow, "--ui driver"]
-updated: 2026-10-17
+updated: 2026-11-02
 ---
 
 # The navigation display
@@ -131,6 +131,31 @@ the current position. Three things this depends on:
   also true for every unrelated re-solve — switching travel mode mid-drive re-runs
   the search — and the card would then announce "Rerouting… from your current
   position" for something the user had just asked for deliberately.
+- **A reroute must be cheap, and three things made it slow** (fixed 2026-11-02).
+  The graph cache aged out after three idle minutes *while driving*, so the first
+  missed turn after a quiet stretch refetched the whole corridor; it is no longer
+  aged while driver mode or a walk is following the route. A reroute searched the
+  other two travel modes before publishing, the walk being the slowest A* of the
+  three; it skips them (their chips go blank until the next ordinary solve). And it
+  went through `set_endpoint_at`, which relabelled the start as raw coordinates and
+  sent a reverse geocode; it is "My position" now.
+
+## The vehicle is found near where it was, not anywhere on the route
+
+`project_near` searches the route from 300 m behind to 800 m ahead of last frame's
+position, clipped inside long segments too, and scans the whole line only when
+nothing in that window is within `OFF_ROUTE_M`. The global nearest was a full scan
+every frame and, worse, *jumped*: where a route comes back along the next street,
+a fix drifting toward it was placed on the leg ten minutes ahead, with the card,
+the rail and the ETA going with it. A new route generation clears the hint, since
+distances along the old line mean nothing on the new one.
+
+The card never names the **departure**: it sits at 0 m, so choosing it opened every
+drive on "◯ Now", an instruction to do nothing. The arrow takes its bearing from
+the line 12 m ahead rather than from the current sub-metre graph segment, and eases
+its turn, so it no longer twitches at every vertex or cuts when the snap engages.
+It is drawn white on a navy rim: blue on the blue line, it was the least visible
+mark on the screen.
 
 ## Arriving is a latched state, and it switches the reroute machinery off
 

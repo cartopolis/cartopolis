@@ -250,6 +250,15 @@ const ARROW_HALF_WIDTH: f32 = 4.0;
 /// Height above the ground plane. Above the route line (0.5 m, see
 /// `navigation::ROUTE_Y`) so the arrow reads as riding *on* it.
 const ARROW_Y: f32 = 0.7;
+/// The arrow's dark rim, as a scale of the kite it surrounds, and how far the
+/// white face floats over it ([`arrow_mesh`]). A few centimetres is thousands of
+/// depth quanta at chase range, so the two never fight.
+const ARROW_RIM_SCALE: f32 = 1.3;
+const ARROW_FACE_LIFT: f32 = 0.06;
+/// Face and rim, as linear vertex colours (the material is white and unlit, so
+/// these are what is drawn). The rim is the route casing's navy.
+const ARROW_FACE_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const ARROW_RIM_RGBA: [f32; 4] = [0.006, 0.040, 0.150, 1.0];
 
 /// How far past a manoeuvre's own position it stays "the next manoeuvre". Without
 /// it the card flips to the following turn a metre before you reach the junction,
@@ -292,6 +301,14 @@ const REROUTE_COOLDOWN: f32 = 10.0;
 /// display incapable of noticing that it was wrong, which is the one thing it must
 /// always be able to do.
 const SNAP_M: f64 = 25.0;
+
+/// How far ahead along the route the snapped arrow takes its bearing from.
+const HEADING_AHEAD_M: f64 = 12.0;
+
+/// How fast the drawn arrow turns toward its target heading, per second. Quick
+/// enough to follow a junction turn within a few tenths of a second; slow enough
+/// that a jump between the snapped and the measured yaw is a turn, not a cut.
+const ARROW_TURN_RATE: f32 = 10.0;
 
 /// How far a device fix may be from where the avatar already stands before it is
 /// applied as a **teleport** rather than as a position write.
@@ -927,24 +944,91 @@ impl RouteGeom {
 /// last junction until you are nearer the next one, which on a 200 m straight
 /// freezes the remaining distance and then drops it 200 m at once.
 pub fn nearest_on_polyline(points: &[[f64; 2]], cum: &[f64], at: [f64; 2]) -> (f64, f64) {
+    nearest_in_window(points, cum, at, (f64::NEG_INFINITY, f64::INFINITY))
+}
+
+/// How far behind and ahead of the last projection [`project_near`] looks before
+/// it gives up and scans the whole route.
+///
+/// Wide enough for a second of motorway driving many times over and for a fix
+/// that jumped after a tunnel, which is all a position does between two frames.
+const NEAR_BEHIND_M: f64 = 300.0;
+const NEAR_AHEAD_M: f64 = 800.0;
+
+/// [`nearest_on_polyline`], searching only the stretch of route around `hint`
+/// metres along — the last frame's answer — and falling back to the whole line
+/// when nothing in that window is within [`OFF_ROUTE_M`].
+///
+/// Two reasons, and the second is the one a driver sees. A whole-route scan is
+/// every segment every frame, a `cos()` each, which is real time on a phone
+/// once a route is a few thousand points long. And a global nearest jumps: on a
+/// cloverleaf, or where the route comes back along the next street over, the
+/// closest segment can be a leg ten minutes ahead, and the card, the rail and
+/// the ETA all jump there with it for as long as the two lie closer than the
+/// fix's noise.
+pub(crate) fn project_near(geom: &RouteGeom, at: [f64; 2], hint: Option<f64>) -> (f64, f64) {
+    let Some(hint) = hint else {
+        return nearest_on_polyline(&geom.points, &geom.cum, at);
+    };
+    let window = (hint - NEAR_BEHIND_M, hint + NEAR_AHEAD_M);
+    let near = nearest_in_window(&geom.points, &geom.cum, at, window);
+    if near.1 <= OFF_ROUTE_M {
+        near
+    } else {
+        nearest_on_polyline(&geom.points, &geom.cum, at)
+    }
+}
+
+/// The projection onto the part of the polyline between `window.0` and
+/// `window.1` metres along it.
+///
+/// Clipped to the window *within* a segment as well, not only by which segments
+/// are visited: one long straight that merely starts inside the window would
+/// otherwise let its far end — the stretch the window exists to exclude — win.
+fn nearest_in_window(
+    points: &[[f64; 2]],
+    cum: &[f64],
+    at: [f64; 2],
+    window: (f64, f64),
+) -> (f64, f64) {
     let mut best = (0.0, f64::MAX);
-    for (i, w) in points.windows(2).enumerate() {
-        let (a, b) = (w[0], w[1]);
+    let segments = points
+        .len()
+        .saturating_sub(1)
+        .min(cum.len().saturating_sub(1));
+    // Segment `i` spans `cum[i]..cum[i + 1]`: the first that ends inside the
+    // window, through the last that starts inside it.
+    let first = cum.partition_point(|&c| c < window.0).saturating_sub(1);
+    let last = cum.partition_point(|&c| c <= window.1).min(segments);
+    for i in first.min(last)..last {
+        let (a, b) = (points[i], points[i + 1]);
         // Work in local metres about `a`, so the projection is a plain 2D one.
         let mid = (a[0] + b[0]) * 0.5;
         let mx = 111_320.0 * mid.to_radians().cos();
         let seg = ((b[1] - a[1]) * mx, (b[0] - a[0]) * 110_540.0);
         let pt = ((at[1] - a[1]) * mx, (at[0] - a[0]) * 110_540.0);
         let len2 = seg.0 * seg.0 + seg.1 * seg.1;
+        let len = len2.sqrt();
+        let (t_lo, t_hi) = if len > 1e-6 {
+            (
+                ((window.0 - cum[i]) / len).max(0.0),
+                ((window.1 - cum[i]) / len).min(1.0),
+            )
+        } else {
+            (0.0, 1.0)
+        };
+        if t_lo > t_hi {
+            continue;
+        }
         let t = if len2 > 1e-9 {
-            ((pt.0 * seg.0 + pt.1 * seg.1) / len2).clamp(0.0, 1.0)
+            ((pt.0 * seg.0 + pt.1 * seg.1) / len2).clamp(t_lo, t_hi)
         } else {
             0.0
         };
         let (dx, dy) = (pt.0 - seg.0 * t, pt.1 - seg.1 * t);
         let off = (dx * dx + dy * dy).sqrt();
         if off < best.1 {
-            best = (cum[i] + t * len2.sqrt(), off);
+            best = (cum[i] + t * len, off);
         }
     }
     best
@@ -955,7 +1039,18 @@ pub fn nearest_on_polyline(points: &[[f64; 2]], cum: &[f64], at: [f64; 2]) -> (f
 /// Pure over the measured geometry so the arithmetic that produces the bottom bar
 /// is testable without a camera, a window, or a fix.
 pub(crate) fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress {
-    let (along, off) = nearest_on_polyline(&geom.points, &geom.cum, at);
+    project_onto_route_near(geom, route, at, None)
+}
+
+/// [`project_onto_route`], searching around `hint` metres along first
+/// ([`project_near`]) — what a tick that measured the route last frame passes.
+pub(crate) fn project_onto_route_near(
+    geom: &RouteGeom,
+    route: &Route,
+    at: [f64; 2],
+    hint: Option<f64>,
+) -> Progress {
+    let (along, off) = project_near(geom, at, hint);
     let remaining_m = (geom.total_m - along).max(0.0);
     // Time is scaled from the planner's own answer rather than from the current
     // speed: the planner knows the speed limits of the road ahead, and a driver
@@ -965,10 +1060,15 @@ pub(crate) fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) 
     } else {
         0.0
     };
+    // The departure is never the step being driven toward: it sits at 0 m, so
+    // choosing it put "◯ Now" on the card for the first frames of every drive —
+    // an instruction to do nothing, at the one moment the driver looks for the
+    // first real turn.
     let step = geom
         .step_along
         .iter()
-        .position(|&s| s > along - STEP_PASSED_M)
+        .zip(&route.steps)
+        .position(|(&s, step)| s > along - STEP_PASSED_M && step.maneuver != Maneuver::Depart)
         .unwrap_or(route.steps.len().saturating_sub(1));
     let step_distance_m = geom
         .step_along
@@ -1047,6 +1147,9 @@ pub fn drive_driver_mode(
     if driver.geom_generation != Some(route.generation) {
         driver.geom = RouteGeom::build(r);
         driver.geom_generation = Some(route.generation);
+        // Distances along the old line mean nothing on the new one, so the next
+        // projection must not search around one ([`project_near`]).
+        driver.progress = None;
         // A different route is a different trip. Arriving is latched against the
         // route it was measured on, so a reroute — or a destination changed
         // mid-drive — has to clear it, or the display would open the new one with
@@ -1205,7 +1308,7 @@ pub fn drive_driver_mode(
     let progress = driver
         .geom
         .as_ref()
-        .map(|g| project_onto_route(g, r, [lat, lng]));
+        .map(|g| project_onto_route_near(g, r, [lat, lng], driver.progress.map(|p| p.along_m)));
 
     // ── Where the marker is *drawn* ──
     //
@@ -1226,7 +1329,16 @@ pub fn drive_driver_mode(
             return None;
         }
         let geom = driver.geom.as_ref()?;
-        let (on, ahead) = point_along(geom, p.along_m)?;
+        let (on, _) = point_along(geom, p.along_m)?;
+        // The road's direction a few metres on, not the current segment's: the
+        // noded graph cuts a street into sub-metre pieces, and an arrow taking each
+        // one's bearing twitches at every vertex it crosses.
+        let (ahead, _) = point_along(geom, p.along_m + HEADING_AHEAD_M)?;
+        let ahead = if ahead == on {
+            point_along(geom, p.along_m)?.1
+        } else {
+            ahead
+        };
         let (sx, sz) = lat_lng_to_world(anchor, on[0], on[1]);
         let (ax, az) = lat_lng_to_world(anchor, ahead[0], ahead[1]);
         let seg_yaw = f32::atan2((ax - sx) as f32, (az - sz) as f32);
@@ -2037,6 +2149,8 @@ pub fn update_driver_arrow(
         (With<DriverArrow>, Without<Avatar>),
     >,
     mut hidden: Local<bool>,
+    time: Res<Time>,
+    mut drawn_yaw: Local<Option<f32>>,
 ) {
     // Reconciled every frame while driving, not once on the edge: the model holders
     // are spawned asynchronously (`avatar::spawn_avatar` waits on the glTF), so an
@@ -2063,6 +2177,7 @@ pub fn update_driver_arrow(
     };
 
     if !driver.active {
+        *drawn_yaw = None;
         if *hidden {
             *hidden = false;
             set_visibility(&mut commands, Visibility::Inherited);
@@ -2087,8 +2202,14 @@ pub fn update_driver_arrow(
             // (`navigation::ROUTE_Y` explains that fight in full) — is the top of
             // `ground_stack::GroundLayer`, not a number chosen here.
             let fill = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.60, 0.98),
+                // White, so the mesh's vertex colours are what is drawn
+                // (`arrow_mesh`: a white face on a navy rim).
+                base_color: Color::WHITE,
                 unlit: true,
+                // Not hazed into the view like the city around it: at the 3D
+                // view's shallow angle the fog had already greyed the arrow
+                // into the street it stands on. Same for the route line.
+                fog_enabled: false,
                 depth_bias: GroundLayer::DriverArrow.depth_bias(),
                 cull_mode: None,
                 ..default()
@@ -2107,6 +2228,21 @@ pub fn update_driver_arrow(
         Some((offset, yaw)) => (Vec3::new(offset.x, 0.0, offset.y), yaw),
         None => (Vec3::ZERO, driver.course),
     };
+    // Eased toward the target rather than set: the target switches between the
+    // road's bearing and the measured course as the snap engages and lets go, and
+    // the measured course itself steps once a fix. Shortest way round.
+    let yaw = match *drawn_yaw {
+        Some(prev) => {
+            let mut delta = (yaw - prev).rem_euclid(std::f32::consts::TAU);
+            if delta > std::f32::consts::PI {
+                delta -= std::f32::consts::TAU;
+            }
+            let k = 1.0 - (-ARROW_TURN_RATE * time.delta_secs()).exp();
+            prev + delta * k
+        }
+        None => yaw,
+    };
+    *drawn_yaw = Some(yaw);
     let rotation = Quat::from_rotation_y(yaw);
     let translation = tf.translation + offset + Vec3::Y * ARROW_Y;
     match arrows.single_mut() {
@@ -2147,31 +2283,49 @@ pub fn update_driver_arrow(
 ///
 /// The same silhouette as the locate button's icon, which is the point: the
 /// button and the thing it centres on read as one object.
+///
+/// **White on a dark rim, in one mesh by vertex colour.** It was a blue kite, a
+/// shade off the route's own blue and lying on top of it, so the one thing a
+/// driver looks for on the map was the one thing that did not stand out from
+/// it. Every satnav draws the vehicle as the brightest mark on screen with a
+/// dark edge; the rim is what separates it from the route line *and* from a
+/// pale street. The face sits [`ARROW_FACE_LIFT`] over the rim rather than
+/// fighting it at the same height.
 fn arrow_mesh() -> Mesh {
-    let (l, w) = (ARROW_HALF_LENGTH, ARROW_HALF_WIDTH);
-    // Nose, left tail, the notch between them, right tail.
-    let points = [
-        Vec2::new(0.0, l),
-        Vec2::new(-w, -0.72 * l),
-        Vec2::new(0.0, -0.30 * l),
-        Vec2::new(w, -0.72 * l),
-    ];
     let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    // Two triangles about the notch, each wound to face +Y or it is backface-culled
-    // into invisibility — the trap `navigation::ribbon_faces_up` guards for the
-    // route line.
-    for (a, b, c) in [
-        (points[0], points[1], points[2]),
-        (points[0], points[2], points[3]),
+    for (scale, y, color) in [
+        (ARROW_RIM_SCALE, 0.0, ARROW_RIM_RGBA),
+        (1.0, ARROW_FACE_LIFT, ARROW_FACE_RGBA),
     ] {
-        let up = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0.0;
-        let (b, c) = if up { (b, c) } else { (c, b) };
-        let base = positions.len() as u32;
-        for p in [a, b, c] {
-            positions.push([p.x, 0.0, p.y]);
+        let (l, w) = (ARROW_HALF_LENGTH * scale, ARROW_HALF_WIDTH * scale);
+        // Nose, left tail, the notch between them, right tail. The rim is the
+        // same kite grown about its centre, nudged back so its nose leads the
+        // face's by as much as its tails trail.
+        let shift = -(scale - 1.0) * 0.14 * ARROW_HALF_LENGTH;
+        let points = [
+            Vec2::new(0.0, l + shift),
+            Vec2::new(-w, -0.72 * l + shift),
+            Vec2::new(0.0, -0.30 * l + shift),
+            Vec2::new(w, -0.72 * l + shift),
+        ];
+        // Two triangles about the notch, each wound to face +Y or it is
+        // backface-culled into invisibility — the trap
+        // `navigation::ribbon_faces_up` guards for the route line.
+        for (a, b, c) in [
+            (points[0], points[1], points[2]),
+            (points[0], points[2], points[3]),
+        ] {
+            let up = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0.0;
+            let (b, c) = if up { (b, c) } else { (c, b) };
+            let base = positions.len() as u32;
+            for p in [a, b, c] {
+                positions.push([p.x, y, p.y]);
+                colors.push(color);
+            }
+            indices.extend([base, base + 1, base + 2]);
         }
-        indices.extend([base, base + 1, base + 2]);
     }
     Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -2182,6 +2336,7 @@ fn arrow_mesh() -> Mesh {
         vec![[0.0, 1.0, 0.0]; positions.len()],
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -2293,6 +2448,10 @@ const RAIL_NEAR_FRACTION: f32 = 0.45;
 /// Two turns in quick succession is the case a card showing only the next one gets
 /// wrong — you take the first and are already in the second before it appears.
 const THEN_PREVIEW_M: f64 = 300.0;
+
+/// How far ahead something on the route has to be before the rail's caption
+/// names it as the next thing you will pass ([`route_rail`]).
+const RAIL_NEXT_MIN_M: f64 = 40.0;
 
 /// Tolerance before the speedometer calls you over the limit, in km/h. Speed is
 /// measured from successive positions and the limit comes off a map; flashing red
@@ -2940,7 +3099,10 @@ fn route_rail(ui: &mut egui::Ui, ahead: &RouteAhead, progress: Progress, height:
     // What is next, spelled out under the rail — the rail says where things are,
     // this says what the nearest one is, which is the question actually being
     // asked while driving.
-    match ahead.next_ahead(base) {
+    // Not what you are already beside: a charging point at the kerb you set off
+    // from read "0 m · Charging" for the first minute of the drive, a fact about
+    // where you are standing presented as the next thing ahead.
+    match ahead.next_ahead(base + RAIL_NEXT_MIN_M) {
         Some(next) => {
             ui.label(big(
                 &format_distance(next.along_m - base),
@@ -3018,7 +3180,7 @@ fn small(text: &str, color: egui::Color32) -> egui::RichText {
 /// that second value, which this did, produces the one arrival time a driver
 /// cannot detect as wrong: an hour or two out, in the right format, in a box whose
 /// whole job is to be glanced at.
-fn arrival_clock(h: u32, m: u32, remaining_s: f64, local: bool) -> String {
+pub(crate) fn arrival_clock(h: u32, m: u32, remaining_s: f64, local: bool) -> String {
     let mins = (i64::from(h) * 60 + i64::from(m) + (remaining_s / 60.0).round() as i64)
         .rem_euclid(24 * 60);
     let suffix = if local { "" } else { " UTC" };
@@ -3454,6 +3616,56 @@ mod tests {
         assert_eq!(past.step, 2);
     }
 
+    /// At the start of a drive the card names the first real manoeuvre, never the
+    /// departure it is standing on ("◯ Now").
+    #[test]
+    fn the_card_never_names_the_departure() {
+        let route = fixture();
+        let geom = RouteGeom::build(&route).unwrap();
+        let p = project_onto_route(&geom, &route, route.steps[0].at);
+        assert_eq!(route.steps[0].maneuver, Maneuver::Depart);
+        assert_eq!(p.step, 1, "the card opened on the departure");
+        assert!(p.step_distance_m > NOW_M, "and counted it down as Now");
+    }
+
+    /// A route that comes back past itself — out along one street and home along
+    /// the next one over — must keep the vehicle on the leg it is driving. Nearest
+    /// over the whole line puts a fix nearer the return leg ten minutes ahead.
+    #[test]
+    fn a_hint_keeps_the_projection_on_its_own_leg() {
+        let east = |m: f64| m / (111_320.0 * 53.0_f64.to_radians().cos());
+        let north = |m: f64| m / 110_540.0;
+        // North 1 km, east 30 m, back south 1 km.
+        let points = vec![
+            [53.0, 6.0],
+            [53.0 + north(1000.0), 6.0],
+            [53.0 + north(1000.0), 6.0 + east(30.0)],
+            [53.0, 6.0 + east(30.0)],
+        ];
+        let mut cum = vec![0.0];
+        for w in points.windows(2) {
+            cum.push(cum.last().unwrap() + metres_between(w[0], w[1]));
+        }
+        let geom = RouteGeom {
+            total_m: *cum.last().unwrap(),
+            points,
+            cum,
+            step_along: Vec::new(),
+        };
+        // Half-way up the first leg, drifted 20 m toward the return leg.
+        let at = [53.0 + north(500.0), 6.0 + east(20.0)];
+
+        let (anywhere, _) = project_near(&geom, at, None);
+        assert!(
+            anywhere > 1200.0,
+            "the global nearest is the way back: {anywhere}"
+        );
+
+        let (near, off) = project_near(&geom, at, Some(490.0));
+        assert!((near - 500.0).abs() < 2.0, "along {near}");
+        assert!((off - 20.0).abs() < 1.0, "off {off}");
+    }
+
     /// Being off the route must be *measured*, not silently projected — the card
     /// switches to "Off route" from this number.
     #[test]
@@ -3498,15 +3710,37 @@ mod tests {
             bevy::render::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
             _ => panic!("positions are not Float32x3"),
         };
-        let max_z = positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
+        // Two flat layers: the navy rim at 0 and the white face over it.
         assert!(
-            (max_z - ARROW_HALF_LENGTH).abs() < 1e-3,
-            "nose is not at +Z: {max_z}"
+            positions
+                .iter()
+                .all(|p| p[1] == 0.0 || p[1] == ARROW_FACE_LIFT),
+            "the arrow must be two flat layers"
+        );
+        let nose = |y: f32| {
+            positions
+                .iter()
+                .filter(|p| p[1] == y)
+                .map(|p| p[2])
+                .fold(f32::MIN, f32::max)
+        };
+        let (face, rim) = (nose(ARROW_FACE_LIFT), nose(0.0));
+        assert!(
+            (face - ARROW_HALF_LENGTH).abs() < 1e-3,
+            "nose is not at +Z: {face}"
         );
         assert!(
-            positions.iter().all(|p| p[1] == 0.0),
-            "the arrow must be flat"
+            rim > face,
+            "the rim must lead the face's nose: {rim} vs {face}"
         );
+        let tail = |y: f32| {
+            positions
+                .iter()
+                .filter(|p| p[1] == y)
+                .map(|p| p[2])
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(tail(0.0) < tail(ARROW_FACE_LIFT), "…and trail its tails");
 
         let Some(Indices::U32(indices)) = mesh.indices() else {
             panic!("expected u32 indices")

@@ -100,16 +100,19 @@ const CASING_HALF_WIDTH: f32 = 4.8;
 /// lies in the road surface and takes the sun and the terrain with it, so the
 /// width is scaled instead.
 ///
-/// The number is one line's worth of screen: at altitude `a` a ~60° vertical
-/// field of view covers about `1.15 a` metres over the viewport's height, so
-/// `0.0017 a` is roughly 8 px of a 2772 px phone screen — about what the
-/// reference apps draw, and it lands on the base width at ~1.9 km, below which
-/// the real road width takes over again.
-const ROUTE_WIDTH_PER_ALT: f32 = 0.0017;
+/// The number is one line's worth of screen. It was `0.0017 a`, "8 px of a
+/// 2772 px phone screen" — but that phone is ~920 *logical* points tall, so the
+/// line came out under 3 pt there and ~3 px on an 800 px desktop window
+/// (measured 2026-11-02, Groningen from 4.5 km): a pale thread, where the
+/// reference apps draw 5–8 pt. At `0.0034 a` and Bevy's 45° vertical field of
+/// view (`0.83 a` metres over the viewport's height) the line is about six
+/// points on either, and it lands on the base width at ~0.9 km, below which the
+/// real road width takes over again — so the chase rig's view is unchanged.
+const ROUTE_WIDTH_PER_ALT: f32 = 0.0034;
 
-/// Widest the line may get, as a multiple of the ground widths. Reached at ~120
-/// km, well above the altitude the ground detail (and with it this line) is
-/// hidden at — it is a backstop against a degenerate camera, not a working limit.
+/// Widest the line may get, as a multiple of the ground widths. Reached at ~60
+/// km, above the altitude the ground detail (and with it this line) is hidden at
+/// — it is a backstop against a degenerate camera, not a working limit.
 const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
 
 /// Below this camera height the line is a **footpath**, not a road on a map.
@@ -123,7 +126,7 @@ const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
 const STREET_LEVEL_ALT: f32 = 40.0;
 
 /// The width multiplier at street level: a 0.8 m path in a 1.2 m casing, and
-/// 1.75 m markers — a footpath beside an avatar about half a metre across. 0.3
+/// 2 m markers in a 2.8 m ring — a footpath beside an avatar about half a metre across. 0.3
 /// was tried first and still read as a road laid across the square.
 const STREET_LEVEL_SCALE: f32 = 0.125;
 
@@ -159,8 +162,22 @@ fn route_width_scale(altitude_m: f32) -> f32 {
         .clamp(1.0, ROUTE_WIDTH_MAX_SCALE)
 }
 
-/// Radius of the start/finish discs.
-const MARKER_RADIUS: f32 = 7.0;
+/// Radius of the start/finish discs, and of the white ring round each as a
+/// multiple of it. The ring's 11.2 m is a little over twice the casing's
+/// half-width, which is what makes a pin read as a mark *on* the line rather than
+/// a bulge in it.
+const MARKER_RADIUS: f32 = 8.0;
+const MARKER_RIM_SCALE: f32 = 1.4;
+
+/// How far the pins rise over the ground per width band above the base, in
+/// metres: 24 m from the 2× band (~1.3 km up), clear of Groningen's ordinary roofs.
+/// See `update_route_visuals`.
+const PIN_RISE_M: f32 = 12.0;
+
+/// How far each layer of the drawn route — casing, fill, pin ring, pin — floats
+/// over the one below, in metres at the base width (scaled with it). See
+/// `update_route_visuals` for why the depth rungs alone were not enough.
+const LAYER_LIFT_M: f32 = 0.1;
 
 /// Start and finish, as linear sRGB — **one source for the marker on the map and
 /// the glyph in the panel**, which the user sees at the same moment while
@@ -439,9 +456,14 @@ impl RouteState {
     ///
     /// Only the start moves. The destination is what the user asked for, and a
     /// reroute that quietly changed it would be unforgivable.
+    ///
+    /// Named rather than picked ([`Self::set_endpoint_named`]): the start is where
+    /// the vehicle is, which already has a name. Through `set_endpoint_at` every
+    /// reroute relabelled it as raw coordinates and spent a reverse-geocode round
+    /// trip to arrive at a street address nobody asked for.
     pub fn reroute_from(&mut self, lat: f64, lng: f64) {
         let previous = self.route.take();
-        self.set_endpoint_at(Endpoint::From, lat, lng);
+        self.set_endpoint_named(Endpoint::From, HERE_LABEL, lat, lng);
         self.held = previous;
     }
 
@@ -813,12 +835,23 @@ pub fn drive_route_solver(
     time: Res<Time>,
     mut idle_s: Local<f32>,
     mut framed_for: Local<Option<((f64, f64), (f64, f64))>>,
+    driver: Res<crate::systems::driver::DriverState>,
+    walk: Res<crate::systems::walk_guide::WalkGuide>,
 ) {
-    // 0. Age the graph cache. Deliberately unconditional — including while a solve
-    //    is in flight, because the worker holds its own `Arc` clones and writes the
-    //    slot back when it finishes, so releasing it early costs at worst the reuse
-    //    this cache was for. Every path that starts or finishes a solve resets the
-    //    timer below.
+    // 0. Age the graph cache — including while a solve is in flight, because the
+    //    worker holds its own `Arc` clones and writes the slot back when it
+    //    finishes, so releasing it early costs at worst the reuse this cache was
+    //    for. Every path that starts or finishes a solve resets the timer below.
+    //
+    //    **Not while the route is being followed.** Three quiet minutes on the
+    //    route is an ordinary stretch of any drive, and the first missed turn
+    //    after it then found the cache gone and refetched and rebuilt the whole
+    //    corridor — seconds on a phone, in the one moment the held route was
+    //    covering for — where a warm cache answers it with one A*.
+    let following = driver.active || walk.active;
+    if following {
+        *idle_s = 0.0;
+    }
     *idle_s += time.delta_secs();
     if *idle_s > GRAPH_CACHE_IDLE_S {
         *idle_s = 0.0;
@@ -939,6 +972,12 @@ pub fn drive_route_solver(
     let progress = route.progress.clone();
     let cache = route.cache.clone();
     let mode = route.mode;
+    // A reroute is for the mode being followed, and the times of the other two
+    // are for a planner nobody has open: searching them first held every car
+    // reroute behind a walking A* over the whole corridor — the slowest of the
+    // three, its heuristic the weakest. Their chips go blank until the next
+    // ordinary solve, which is the honest state for a route that has moved.
+    let with_others = route.held.is_none();
     progress.0.store(0, Ordering::Relaxed);
     progress.1.store(0, Ordering::Relaxed);
 
@@ -959,7 +998,7 @@ pub fn drive_route_solver(
                         crate::platform::workers::NEAR,
                         Box::new(move || {
                             let result = build_and_search(input, from, to, mode, &cache);
-                            let others = if result.is_ok() {
+                            let others = if result.is_ok() && with_others {
                                 other_modes(&cache, from, to, mode)
                             } else {
                                 Vec::new()
@@ -1368,12 +1407,14 @@ pub fn handle_route_map_pick(
 // ─── World rendering ─────────────────────────────────────────────────────────
 
 /// Materials for the route line, built once.
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct RouteMaterials {
     fill: Handle<StandardMaterial>,
     casing: Handle<StandardMaterial>,
     start: Handle<StandardMaterial>,
     finish: Handle<StandardMaterial>,
+    /// The white ring round each pin.
+    rim: Handle<StandardMaterial>,
 }
 
 /// Rebuild the drawn route when it changes — or when the map re-anchors under it,
@@ -1388,11 +1429,12 @@ pub fn update_route_visuals(
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32, u32, u32, u32)>>,
+    mut drawn: Local<Option<(u32, u32, u32, u32, u32, bool)>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
     globe: Res<GlobeState>,
     cameras: AnchoredCamera,
+    driver: Res<crate::systems::driver::DriverState>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1414,12 +1456,30 @@ pub fn update_route_visuals(
     let width_scale = cameras.get().map_or(1.0, |(cell, tf)| {
         route_width_scale(globe.altitude_m(cell, tf) as f32)
     });
+    // Never the footpath band while driving. The 3D chase rig tightens onto a
+    // junction to ~41 m up, a metre over `STREET_LEVEL_ALT`, so a turn could flip
+    // the line between road and footpath width — a whole-route rebuild each way,
+    // mid-manoeuvre, for a line a driver needs at road width throughout.
+    let width_scale = if driver.active {
+        width_scale.max(1.0)
+    } else {
+        width_scale
+    };
+    // Only a route that climbs onto a deck reads the decks (`route_lift`), so only
+    // such a route rebuilds when one lands. Keyed unconditionally, every deck cell
+    // streaming in or out anywhere re-draped the whole line — a main-thread
+    // rebuild and an upload burst for a route that crosses no bridge.
+    let on_decks = route
+        .displayed()
+        .is_some_and(|r| r.levels.iter().any(|&l| l > 0));
     let key = (
         route.generation,
         stream.anchor_generation,
         terrain.revision,
-        decks.revision,
+        if on_decks { decks.revision } else { 0 },
         width_scale.to_bits(),
+        // The start pin is not drawn while driving (below).
+        driver.active,
     );
     if *drawn == Some(key) {
         return;
@@ -1446,17 +1506,18 @@ pub fn update_route_visuals(
     // UI affordance drawn into the scene, and it has to stay legible at night, when
     // the streets it follows are lit only by the moon.
     let palette = match palette {
-        Some(p) => RouteMaterials {
-            fill: p.fill.clone(),
-            casing: p.casing.clone(),
-            start: p.start.clone(),
-            finish: p.finish.clone(),
-        },
+        Some(p) => p.clone(),
         None => {
             let mut line = |r: f32, g: f32, b: f32, bias: f32| {
                 materials.add(StandardMaterial {
                     base_color: Color::srgb(r, g, b),
                     unlit: true,
+                    // Not hazed. The distance fog greys everything toward the sky
+                    // colour with range, which is right for the city and wrong for
+                    // the one mark on it that has to read from any height: a
+                    // cross-town route planned from 4 km up came out as a pale
+                    // thread a shade off the haze, and the pins vanished into it.
+                    fog_enabled: false,
                     // Above the ground stack physically as well (see `ROUTE_Y`);
                     // the bias keeps it there at range, where a tenth of a metre is
                     // far below the depth buffer's resolution.
@@ -1478,6 +1539,7 @@ pub fn update_route_visuals(
             // Which rung each of these is on is `ground_stack`'s to say, not this
             // file's. The four used to be hand-picked numbers here (18, 20, 22, 22)
             // on a ladder whose other end moved; see that module for what that cost.
+            let pin = GroundLayer::RoutePin.depth_bias();
             let p = RouteMaterials {
                 fill: line(0.16, 0.53, 0.90, GroundLayer::RouteLine.depth_bias()),
                 casing: line(0.06, 0.22, 0.42, GroundLayer::RouteCasing.depth_bias()),
@@ -1485,21 +1547,17 @@ pub fn update_route_visuals(
                     ROUTE_START_RGB[0],
                     ROUTE_START_RGB[1],
                     ROUTE_START_RGB[2],
-                    GroundLayer::RoutePin.depth_bias(),
+                    pin,
                 ),
                 finish: line(
                     ROUTE_FINISH_RGB[0],
                     ROUTE_FINISH_RGB[1],
                     ROUTE_FINISH_RGB[2],
-                    GroundLayer::RoutePin.depth_bias(),
+                    pin,
                 ),
+                rim: line(1.0, 1.0, 1.0, pin),
             };
-            commands.insert_resource(RouteMaterials {
-                fill: p.fill.clone(),
-                casing: p.casing.clone(),
-                start: p.start.clone(),
-                finish: p.finish.clone(),
-            });
+            commands.insert_resource(p.clone());
             p
         }
     };
@@ -1578,6 +1636,15 @@ pub fn update_route_visuals(
         ROUTE_Y
     };
     let base = DVec3::new(origin.x, f64::from(lift_y), origin.z);
+    // Each layer of the line floats this far over the one below it. The depth
+    // rungs alone cannot hold the fill above its casing: both are *draped*, the
+    // fill's vertices sample the ground at different points from the casing's,
+    // and wherever the ground bends between them the fill came out centimetres
+    // under its own casing — the mottled dark-and-light line of the 3D chase view.
+    // A lift that grows with the width is hundreds of depth quanta or more at the
+    // height the line is looked at from (the 64-unit rungs are not), so it ends
+    // the fight instead of refereeing it.
+    let layer_lift = f64::from(LAYER_LIFT_M * width_scale.max(0.3));
     spawn(
         ribbon(&road, &road_lift, CASING_HALF_WIDTH * width_scale),
         palette.casing.clone(),
@@ -1586,7 +1653,7 @@ pub fn update_route_visuals(
     spawn(
         ribbon(&road, &road_lift, ROUTE_HALF_WIDTH * width_scale),
         palette.fill.clone(),
-        base,
+        base + DVec3::Y * layer_lift,
     );
 
     // Pin-to-road connectors, drawn thin so a long one (the pin snapped across
@@ -1617,13 +1684,39 @@ pub fn update_route_visuals(
         }
     }
 
-    // Start / finish discs, at the coordinates the user actually asked for.
-    for (point, material) in [(from_pin, palette.start), (to_pin, palette.finish)] {
-        spawn(
-            disc(MARKER_RADIUS * width_scale),
-            material,
-            base + DVec3::new(f64::from(point.x), 0.01, f64::from(point.y)),
-        );
+    // Start / finish, at the coordinates the user actually asked for: a coloured
+    // disc in a white ring, over the line. A bare disc a shade wider than the line
+    // was lost at any height a route is planned from — the start a red speck, the
+    // finish not there at all against the haze — and a ring is what every map
+    // draws a pin's foot as, because it separates the mark from whatever it lies on.
+    //
+    // No start pin while driving: the vehicle is there, and the green disc lay
+    // under the arrow like a puddle for the first minute of every drive.
+    let pins = [
+        (!driver.active).then_some((from_pin, palette.start)),
+        Some((to_pin, palette.finish)),
+    ];
+    // From above the city the pins ride over the roofs. A pin is where the user
+    // pointed, which is as often a building as a street: on the default start by
+    // the Grote Markt the disc was drawn, counted as rendered, and entirely under
+    // a roof from 4.5 km up. Only in the widened bands, where the camera is high
+    // enough that the rise is no parallax at all; at street and chase height the
+    // pin stays on the ground it marks.
+    let rise = if width_scale > 1.0 {
+        f64::from(PIN_RISE_M * width_scale)
+    } else {
+        0.0
+    };
+    for (point, material) in pins.into_iter().flatten() {
+        let at = base
+            + DVec3::new(
+                f64::from(point.x),
+                2.0 * layer_lift + rise,
+                f64::from(point.y),
+            );
+        let radius = MARKER_RADIUS * width_scale;
+        spawn(disc(radius * MARKER_RIM_SCALE), palette.rim.clone(), at);
+        spawn(disc(radius), material, at + DVec3::Y * layer_lift);
     }
 }
 
@@ -2002,6 +2095,7 @@ pub fn render_route_sheet(
     globe: Res<GlobeState>,
     camera: AnchoredCamera,
     map_anchor: Res<MapAnchor>,
+    clock: Res<crate::systems::transit_live::WorldClock>,
 ) {
     if !right_panel.is(RightPanel::Route) {
         // Read before writing: an unconditional store would mark `RouteState`
@@ -2077,7 +2171,7 @@ pub fn render_route_sheet(
 
                 // The one line the planner exists to produce, or what is standing
                 // between us and it.
-                summary_line(ui, &route);
+                summary_line(ui, &route, clock.hms());
 
                 // The map-pick prompt lives *outside* the body, because arming a
                 // pick is what collapses the sheet: the instruction has to survive
@@ -2166,7 +2260,13 @@ pub fn render_route_sheet(
 
 /// The summary: time · distance when there is a route, and what is in the way of
 /// one when there is not.
-fn summary_line(ui: &mut egui::Ui, route: &RouteState) {
+///
+/// A solved route also says *when* and *where to*: the arrival clock beside the
+/// distance, and the destination under them. Collapsed to its peek the sheet
+/// showed a duration the chip above already showed and nothing else, so a route
+/// on screen did not say where it went — the destination field is in the body
+/// the solve has just folded away.
+fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), bool)) {
     match (&route.status, &route.route) {
         (SolveStatus::Fetching(done, total), _) => {
             if *total > 0 {
@@ -2195,11 +2295,27 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState) {
                 } else {
                     ""
                 };
+                let ((h, m, _), local) = clock;
+                let arrive = crate::systems::driver::arrival_clock(h, m, r.duration_s, local);
                 ui.label(
-                    egui::RichText::new(format!("· {}{door}", format_distance(r.distance_m)))
-                        .color(theme::TEXT_DIM),
+                    egui::RichText::new(format!(
+                        "· {}{door} · arrive {arrive}",
+                        format_distance(r.distance_m)
+                    ))
+                    .color(theme::TEXT_DIM),
                 );
             });
+            let to = route.to.label.trim_start_matches(PICKED_PREFIX).trim();
+            if !to.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("to {to}"))
+                            .size(theme::SIZE_SUB)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .truncate(),
+                );
+            }
         }
         (SolveStatus::Idle, None) => {
             ui.label(
@@ -2316,15 +2432,25 @@ fn start_button(
                 actions.drive = true;
             }
         }
+        // A note, not a greyed-out button. Disabled, the primary button faded to
+        // a ghost of its words over the glass — "Needs a GPS position" at half
+        // contrast read as a rendering fault rather than as the reason.
         Err(_) => {
-            ui.add_enabled_ui(false, |ui| theme::primary_button_sized(ui, &label, width))
-                .response
-                .on_disabled_hover_text(if mode == TravelMode::Foot {
-                    "Walking happens in the world, as your avatar, which needs a session."
-                } else {
-                    "Riding and driving follow this device's position, and it has no \
+            ui.add_sized(
+                [width, theme::row_height()],
+                egui::Label::new(
+                    egui::RichText::new(&label)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                )
+                .sense(egui::Sense::hover()),
+            )
+            .on_hover_text(if mode == TravelMode::Foot {
+                "Walking happens in the world, as your avatar, which needs a session."
+            } else {
+                "Riding and driving follow this device's position, and it has no \
                      location source. Plan here and read the turns; navigate on a phone."
-                });
+            });
         }
     }
 }
@@ -3343,6 +3469,10 @@ mod tests {
         assert!(route.solved_for.is_none(), "and a solve is due");
         assert_eq!(route.to.coord, None, "only the start moved");
         assert_eq!(route.from.coord, Some((53.2001, 6.5502)));
+        assert_eq!(
+            route.from.label, HERE_LABEL,
+            "the start is the vehicle, not a coordinate to reverse-geocode"
+        );
     }
 
     /// Everything that is *not* a reroute must still take the line away — the whole
