@@ -1,6 +1,6 @@
 ---
 topic: zoom-ladder
-triggers: [zoom_rail.rs, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
+triggers: [zoom_rail.rs, zoom_rail_control, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
 updated: 2026-11-02
 ---
 
@@ -186,6 +186,36 @@ same side of it, since the globe has to reach the ceiling before the cosmos can
 take over. While it flies the rail keeps every name out and rings the goal, so
 the thumb is seen passing each rung. The wheel, a pinch and the − / + discs
 still glide as before: they move a step at a time already.
+
+## The rail opens only when asked, and stands aside on a phone
+
+Reported 2026-11-02 as "the rail is in the way; its names appear suddenly when
+I pinch near it". Two causes, both from reading egui's one pointer as if it
+were a mouse:
+
+- **The names opened on egui's hover within 150 pt of the track.** On a
+  touchscreen that hover is the first finger down (`touch-input.md`, "A hand
+  has several fingers"), so a pinch anywhere near the right edge flashed all
+  sixteen names up at once.
+- **Any claimed finger on the track set the height**, from the frame it
+  landed. A pinch's first finger lands a few hundredths of a second before
+  the second, so a pinch begun on the rail jumped the camera before it zoomed.
+
+Now (`map_osd::zoom_rail_control`): a mouse opens the names by resting
+0.25 s on the track itself, and keeps them while it is over the names. A
+finger never hovers; the track takes only a finger that **landed** on it and
+stayed alone for 0.12 s or moved 4 pt, and lets go of it for good when any
+second finger comes down. A tap that lifts sooner still goes where it
+tapped. The full list, every name tappable, is for picking (the hover, or a
+tap on the tag); while a thumb drags or a jump flies, only the names round
+the thumb show, fading out three rungs away, so a drag reads a few names and
+not a wall. Everything fades (0.15 s) rather than switching, and the rail
+dims to 55 % 2.5 s after it was last used or the rung last changed.
+
+On a phone the rail stands at the foot of the right edge, over the dock,
+where the + / − pair was — the middle of the edge is where the other hand
+pinches, and the bottom is where the thumb is. A desktop keeps it centred
+as the mockup has it. The tests replay the finger sequences frame by frame.
 
 ## Light and Dark are the sun modes, not a globe setting
 

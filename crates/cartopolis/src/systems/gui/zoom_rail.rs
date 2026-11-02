@@ -4,8 +4,10 @@
 //!
 //! At rest it is a 4 pt track between a small − (out, towards the universe) and
 //! a + (in, towards the street), with the current rung's name beside the thumb.
-//! Hovering or a finger on the track shows every rung's name as plain text;
-//! dragging along it sets the height, and a tap on a name goes to that rung. It
+//! Resting the mouse on the track, or a tap on that name, shows every rung's
+//! name as plain text, and a tap on a name goes to that rung; dragging along
+//! the track sets the height, with the names round the thumb beside it
+//! (`docs/notes/zoom-ladder.md`, "The rail opens only when asked"). It
 //! replaced the + / − pair Earth mode had on a touchscreen, and the pair's
 //! held-button rate is what its − and + still are.
 //!

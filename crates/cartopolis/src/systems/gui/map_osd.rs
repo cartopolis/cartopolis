@@ -228,7 +228,9 @@ pub struct OsdInput {
 #[derive(Default)]
 struct Fingers {
     held: Vec<(u64, egui::Pos2)>,
-    released: Vec<egui::Pos2>,
+    released: Vec<(u64, egui::Pos2)>,
+    /// Fingers down that no control claimed — the map's: a pan or a pinch.
+    free: usize,
 }
 
 impl Fingers {
@@ -240,7 +242,12 @@ impl Fingers {
                 .iter()
                 .map(|(id, p)| (*id, to_ui(*p)))
                 .collect(),
-            released: touch.ui_released().iter().map(|(_, p)| to_ui(*p)).collect(),
+            released: touch
+                .ui_released()
+                .iter()
+                .map(|(id, p)| (*id, to_ui(*p)))
+                .collect(),
+            free: touch.fingers,
         }
     }
 
@@ -252,7 +259,7 @@ impl Fingers {
     /// Did a claimed finger lift inside this rect this frame? The edge test —
     /// the finger equivalent of `Response::clicked`.
     fn lifted_in(&self, rect: egui::Rect) -> bool {
-        self.released.iter().any(|p| rect.contains(*p))
+        self.released.iter().any(|(_, p)| rect.contains(*p))
     }
 
     fn at(&self, id: u64) -> Option<egui::Pos2> {
@@ -465,6 +472,7 @@ pub fn render_map_osd(
                 camera_state.rail_goal,
                 &mut rail.state,
                 touch_ui,
+                touch.active(),
             );
             next.zoom = zoom;
             next.rail_altitude = goal;
@@ -512,6 +520,30 @@ pub struct RailState {
     /// Until when (egui seconds) every rung's name stays shown after a tap on
     /// the current one — the touch screen's hover.
     names_until: f64,
+    /// The finger working the track, if one landed on it.
+    finger: Option<RailFinger>,
+    /// The claimed fingers down last frame, to tell a landing from a finger
+    /// that slid in from the map.
+    seen: Vec<u64>,
+    /// Since when (egui seconds) the mouse has rested on the track.
+    hover_since: Option<f64>,
+    /// The last time anything happened on the rail or the rung changed.
+    active_at: f64,
+    /// The rung the camera was on last frame.
+    last_rung: usize,
+    /// How far the names were faded in last frame, 0 to 1.
+    shown: f32,
+}
+
+/// A finger that landed on the track. It does nothing until it has stayed
+/// [`RAIL_GRAB_SECS`] or moved [`RAIL_GRAB_SLOP`] alone on the glass: the first
+/// finger of a pinch lands a few hundredths of a second before the second, and
+/// it used to set the height before the pinch had begun.
+struct RailFinger {
+    id: u64,
+    since: f64,
+    from: egui::Pos2,
+    live: bool,
 }
 
 /// Track length of the zoom rail, points: shorter where a phone's height is.
@@ -522,12 +554,42 @@ const RAIL_TRACK_TOUCH: f32 = 200.0;
 const RAIL_DISC: f32 = 30.0;
 /// How long the names stay after a tap on the current one, seconds.
 const RAIL_NAMES_HOLD: f64 = 4.0;
+/// How long the mouse rests on the track before the names open: a cursor
+/// crossing the right edge on its way somewhere else opens nothing.
+const RAIL_HOVER_SECS: f64 = 0.25;
+/// How long a finger rests, or how far it moves, before the track takes it.
+const RAIL_GRAB_SECS: f64 = 0.12;
+const RAIL_GRAB_SLOP: f32 = 4.0;
+/// How long the rail stays at full strength after it was last used or the
+/// rung last changed, seconds, and how faint it is after that.
+const RAIL_AWAKE_SECS: f64 = 2.5;
+const RAIL_REST_OPACITY: f32 = 0.55;
+
+/// How strongly a rung's name shows while the thumb moves: its own rung and
+/// the next one either way in full, fading out from there, so a drag reads
+/// the few names under the thumb rather than a wall of sixteen.
+fn name_strength(i: usize, focus: usize) -> f32 {
+    match i.abs_diff(focus) {
+        0 | 1 => 1.0,
+        2 => 0.55,
+        3 => 0.25,
+        _ => 0.0,
+    }
+}
 
 /// The zoom rail on the right edge: − at the top (out, towards the universe),
 /// the track, + at the foot (in, towards the street). Returns the held zoom
 /// rate of the two discs and a height to go to, if the track or a rung's name
 /// asked for one. While a jump flies (`flying_to`), a ring marks where it is
-/// going and the names stay out, so the thumb is seen passing every rung.
+/// going and the names round the thumb stay out, so it is seen passing them.
+///
+/// **The names open only when asked**: a mouse resting on the track itself
+/// (not anywhere near it), a finger that landed on the track and stayed there
+/// alone, or a tap on the current rung's tag. Until 2026-11-02 they opened for
+/// egui's hover within 150 pt of the track, and on a touchscreen the hover is
+/// the first finger down — so a pinch near the right edge flashed all sixteen
+/// names up, and a pinch finger landing on the track set the height.
+#[allow(clippy::too_many_arguments)]
 fn zoom_rail_control(
     ctx: &egui::Context,
     fingers: &Fingers,
@@ -536,6 +598,7 @@ fn zoom_rail_control(
     flying_to: Option<f64>,
     state: &mut RailState,
     touch_ui: bool,
+    touching: bool,
 ) -> (f32, Option<f64>) {
     use crate::systems::zoom_rail::{altitude_at, index_of, position_of, RAIL};
     let mut wish = 0.0;
@@ -546,17 +609,51 @@ fn zoom_rail_control(
     } else {
         RAIL_TRACK
     };
-    let mut names_rects: Vec<egui::Rect> = Vec::new();
-    let area = egui::Area::new(egui::Id::new("zoom_rail"))
-        .anchor(
+    let current = index_of(alt);
+    if current != state.last_rung || flying_to.is_some() {
+        state.last_rung = current;
+        state.active_at = now;
+    }
+    // Fingers that landed this frame, rather than slid in from the map.
+    let landed: Vec<(u64, egui::Pos2)> = fingers
+        .held
+        .iter()
+        .filter(|(id, _)| !state.seen.contains(id))
+        .copied()
+        .collect();
+    state.seen = fingers.held.iter().map(|(id, _)| *id).collect();
+    // On a phone, the rail stands at the foot of the right edge, over the dock,
+    // where the old + / − pair was and the thumb is: the middle of the edge is
+    // where the other hand pinches (`touch-input.md`, "Both edges anchor to the
+    // bottom"). A desktop keeps it in the middle, as the mockup has it.
+    let anchor = if touch_ui {
+        (
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
+        )
+    } else {
+        (
             egui::Align2::RIGHT_CENTER,
             egui::vec2(-theme::OSD_MARGIN, 0.0),
         )
+    };
+    let mut names_rects: Vec<egui::Rect> = Vec::new();
+    let awake_id = egui::Id::new("zoom_rail_awake");
+    let names_id = egui::Id::new("zoom_rail_names");
+    let area = egui::Area::new(egui::Id::new("zoom_rail"))
+        .anchor(anchor.0, anchor.1)
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
+                let awake = ctx.animate_bool_with_time(
+                    awake_id,
+                    now - state.active_at < RAIL_AWAKE_SECS,
+                    0.4,
+                );
+                ui.multiply_opacity(RAIL_REST_OPACITY + (1.0 - RAIL_REST_OPACITY) * awake);
                 let held = |resp: &egui::Response, hit: egui::Rect| {
-                    (resp.is_pointer_button_down_on()
+                    (!touching
+                        && resp.is_pointer_button_down_on()
                         && resp.interact_pointer_pos().is_some_and(|p| hit.contains(p)))
                         || fingers.pressing(hit)
                 };
@@ -582,19 +679,53 @@ fn zoom_rail_control(
                 );
                 let x = rect.center().x;
                 let y_at = |pos: f32| rect.top() + pos * track_len;
+                let grab = rect.expand(6.0);
+
+                // The finger on the track: one that landed there, alone.
+                if state.finger.is_none() {
+                    if let Some((id, p)) = landed.iter().find(|(_, p)| grab.contains(*p)) {
+                        state.finger = Some(RailFinger {
+                            id: *id,
+                            since: now,
+                            from: *p,
+                            live: false,
+                        });
+                    }
+                }
+                let mut finger_at = None;
+                if let Some(mut f) = state.finger.take() {
+                    let alone = fingers.free == 0 && fingers.held.len() <= 1;
+                    if let Some(p) = fingers.at(f.id) {
+                        // A second finger anywhere makes it a pinch, not the
+                        // rail's: let go of it for good.
+                        if alone {
+                            f.live |= now - f.since >= RAIL_GRAB_SECS
+                                || (p.y - f.from.y).abs() >= RAIL_GRAB_SLOP;
+                            if f.live {
+                                finger_at = Some(p);
+                            }
+                            state.finger = Some(f);
+                        }
+                    } else if alone && !f.live {
+                        // Lifted before it took the track: a tap goes there.
+                        finger_at = fingers
+                            .released
+                            .iter()
+                            .find(|(id, _)| *id == f.id)
+                            .map(|(_, p)| *p);
+                    }
+                }
+                // The mouse's own press; a finger's goes through the above,
+                // because egui's one pointer is the first finger down.
                 let pointer = resp
                     .interact_pointer_pos()
-                    .filter(|_| resp.is_pointer_button_down_on())
-                    .or_else(|| {
-                        fingers
-                            .held
-                            .iter()
-                            .map(|(_, p)| *p)
-                            .find(|p| rect.expand(6.0).contains(*p))
-                    });
+                    .filter(|_| !touching && resp.is_pointer_button_down_on())
+                    .or(finger_at);
                 if let Some(p) = pointer {
                     goal = Some(altitude_at((p.y - rect.top()) / track_len));
+                    state.active_at = now;
                 }
+
                 let p = ui.painter();
                 p.line_segment(
                     [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
@@ -619,7 +750,6 @@ fn zoom_rail_control(
                         egui::Stroke::new(1.5, tick),
                     );
                 }
-                let current = index_of(alt);
                 let thumb_y = y_at(position_of(alt));
                 if let Some(to) = flying_to {
                     p.circle_stroke(
@@ -635,20 +765,50 @@ fn zoom_rail_control(
                     egui::Stroke::new(3.0, theme::OVERLAY_LINE),
                 );
 
-                // Hovering the names themselves keeps them, or the hand could
-                // never reach one.
+                // A mouse opens the names by resting on the track, and keeps
+                // them while it is on the names, or the hand could never reach
+                // one. A finger has no hover: egui's is the first finger down.
+                let hover = ui.ctx().pointer_hover_pos().filter(|_| !touching);
+                let names_open = state.shown > 0.0;
                 let names_zone = rect
                     .expand2(egui::vec2(0.0, 12.0))
                     .with_min_x(rect.left() - 150.0);
-                let hovering = ui
-                    .ctx()
-                    .pointer_hover_pos()
-                    .is_some_and(|h| names_zone.contains(h));
-                let names =
-                    hovering || pointer.is_some() || flying_to.is_some() || now < state.names_until;
+                let on_track =
+                    hover.is_some_and(|h| rect.expand2(egui::vec2(8.0, 4.0)).contains(h));
+                let on_names = names_open && hover.is_some_and(|h| names_zone.contains(h));
+                state.hover_since = if on_track || on_names {
+                    state.hover_since.or(Some(now))
+                } else {
+                    None
+                };
+                let hovering = state
+                    .hover_since
+                    .is_some_and(|t| on_names || now - t >= RAIL_HOVER_SECS);
+                if hovering {
+                    state.active_at = now;
+                }
+                // Picking (the whole list, every name tappable) or following
+                // the thumb (the names round it, fading with distance).
+                let picking = hovering || now < state.names_until;
+                let following = pointer.is_some() || flying_to.is_some();
+                let shown = ctx.animate_bool_with_time(names_id, picking || following, 0.15);
+                state.shown = shown;
+                let focus = pointer
+                    .map(|p| index_of(altitude_at((p.y - rect.top()) / track_len)))
+                    .unwrap_or(current);
                 let font = egui::FontId::proportional(theme::SIZE_SUB);
-                if names {
+                if shown > 0.0 {
+                    let mut p = ui.painter().clone();
+                    p.multiply_opacity(shown);
                     for (i, r) in RAIL.iter().enumerate() {
+                        let strength = if picking {
+                            1.0
+                        } else {
+                            name_strength(i, focus)
+                        };
+                        if strength == 0.0 {
+                            continue;
+                        }
                         let y = y_at((i as f32 + 0.5) / n);
                         let ink = if i == current {
                             theme::CREAM
@@ -682,29 +842,44 @@ fn zoom_rail_control(
                                     egui::Align2::RIGHT_CENTER,
                                     r.label,
                                     font.clone(),
-                                    theme::INK,
+                                    theme::INK.gamma_multiply(strength),
                                 );
                             }
                         }
-                        p.text(at, egui::Align2::RIGHT_CENTER, r.label, font.clone(), ink);
-                        let name = ui.interact(
-                            text_rect,
-                            egui::Id::new(("zoom_rail_name", i)),
-                            egui::Sense::click(),
+                        p.text(
+                            at,
+                            egui::Align2::RIGHT_CENTER,
+                            r.label,
+                            font.clone(),
+                            ink.gamma_multiply(strength),
                         );
-                        if name.clicked() || fingers.lifted_in(text_rect) {
-                            goal = Some(crate::systems::zoom_rail::rung_altitude(i));
-                            state.names_until = 0.0;
+                        // Only a list that is open to pick from takes taps.
+                        if picking && shown >= 1.0 {
+                            let name = ui.interact(
+                                text_rect,
+                                egui::Id::new(("zoom_rail_name", i)),
+                                egui::Sense::click(),
+                            );
+                            if name.clicked() || fingers.lifted_in(text_rect) {
+                                goal = Some(crate::systems::zoom_rail::rung_altitude(i));
+                                state.names_until = 0.0;
+                                state.active_at = now;
+                            }
+                            names_rects.push(text_rect);
                         }
-                        names_rects.push(text_rect);
                     }
-                } else {
+                }
+                if !picking {
                     let label = RAIL[current].label;
                     let at = egui::pos2(x - 16.0, thumb_y);
                     let galley = p.layout_no_wrap(label.to_string(), font.clone(), theme::CREAM);
                     let tag = egui::Align2::RIGHT_CENTER
                         .anchor_size(at, galley.size())
                         .expand2(egui::vec2(7.0, 3.0));
+                    // The tag gives way to the names as they come in, so the
+                    // current rung is not named twice.
+                    let mut p = ui.painter().clone();
+                    p.multiply_opacity(1.0 - shown);
                     p.rect_filled(tag, egui::CornerRadius::same(theme::RADIUS), theme::OVERLAY);
                     p.rect_stroke(
                         tag,
@@ -717,6 +892,7 @@ fn zoom_rail_control(
                         ui.interact(tag, egui::Id::new("zoom_rail_tag"), egui::Sense::click());
                     if tag_resp.clicked() || fingers.lifted_in(tag) {
                         state.names_until = now + RAIL_NAMES_HOLD;
+                        state.active_at = now;
                     }
                     names_rects.push(tag);
                 }
@@ -727,6 +903,9 @@ fn zoom_rail_control(
                 }
             });
         });
+    if wish != 0.0 {
+        state.active_at = now;
+    }
     // The names are the rail's too: a finger landing on one is not a drag of
     // the globe under it.
     let claimed = names_rects
@@ -1340,7 +1519,11 @@ mod tests {
                 .iter()
                 .map(|(id, (x, y))| (*id, egui::pos2(*x, *y)))
                 .collect(),
-            released: released.iter().map(|(x, y)| egui::pos2(*x, *y)).collect(),
+            released: released
+                .iter()
+                .map(|(x, y)| (0, egui::pos2(*x, *y)))
+                .collect(),
+            free: 0,
         }
     }
 
@@ -1570,5 +1753,130 @@ mod tests {
         let corner = stick_wish(Vec2::new(200.0, -200.0), 50.0);
         assert!((corner.length() - 1.0).abs() < 1e-5, "{corner:?}");
         assert!((corner.x - corner.y).abs() < 1e-5, "still on the diagonal");
+    }
+
+    /// Drives the zoom rail on a phone-sized touch screen, one frame at a time.
+    struct Rail {
+        ctx: egui::Context,
+        state: RailState,
+        t: f64,
+    }
+
+    impl Rail {
+        fn new() -> Self {
+            let mut rail = Rail {
+                ctx: egui::Context::default(),
+                state: RailState::default(),
+                t: 0.0,
+            };
+            // Let the layout settle before any finger arrives.
+            for _ in 0..3 {
+                rail.frame(&fingers(&[], &[]), 0);
+            }
+            rail
+        }
+
+        /// One frame at 60 fps with these fingers and `free` map fingers down:
+        /// the height the rail asked for, if any.
+        fn frame(&mut self, f: &Fingers, free: usize) -> Option<f64> {
+            self.run(f, free).0
+        }
+
+        fn run(&mut self, f: &Fingers, free: usize) -> (Option<f64>, egui::Rect) {
+            use crate::systems::egui_manager::UnpaintedPasses;
+            let f = Fingers {
+                held: f.held.clone(),
+                released: f.released.clone(),
+                free,
+            };
+            self.t += 1.0 / 60.0;
+            let input = egui::RawInput {
+                time: Some(self.t),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            let (mut goal, mut areas) = (None, Vec::new());
+            let state = &mut self.state;
+            let touching = !f.held.is_empty() || f.free > 0;
+            self.ctx.run_ui_unpainted(input, |ui| {
+                goal =
+                    zoom_rail_control(ui.ctx(), &f, &mut areas, 1e6, None, state, true, touching).1;
+            });
+            (goal, areas[0])
+        }
+
+        /// A point on the track, `at` of the way down it.
+        fn on_track(&mut self, at: f32) -> (f32, f32) {
+            let r = self.run(&fingers(&[], &[]), 0).1;
+            let (top, bottom) = (r.top() + RAIL_DISC + 6.0, r.bottom() - RAIL_DISC - 6.0);
+            (r.right() - RAIL_DISC / 2.0, top + (bottom - top) * at)
+        }
+    }
+
+    /// A pinch whose first finger lands on the track: the second lands two
+    /// frames later on the map, and the rail must neither move the height nor
+    /// open its names. It did both until 2026-11-02.
+    #[test]
+    fn a_pinch_landing_on_the_rail_leaves_it_alone() {
+        let mut rail = Rail::new();
+        let p = rail.on_track(0.3);
+        let on = fingers(&[(1, p)], &[]);
+        assert_eq!(rail.frame(&on, 0), None);
+        assert_eq!(rail.frame(&on, 0), None);
+        for _ in 0..30 {
+            assert_eq!(
+                rail.frame(&on, 1),
+                None,
+                "the pinch's finger moved the height"
+            );
+        }
+        assert_eq!(rail.frame(&fingers(&[], &[p]), 0), None);
+        assert_eq!(rail.state.shown, 0.0, "the names opened for a pinch");
+    }
+
+    /// A finger that lands on the map and slides over the rail is the map's.
+    #[test]
+    fn a_finger_sliding_in_from_the_map_is_not_the_rails() {
+        let mut rail = Rail::new();
+        let (x, y) = rail.on_track(0.5);
+        rail.frame(&fingers(&[(1, (x - 120.0, y))], &[]), 0);
+        for _ in 0..20 {
+            assert_eq!(rail.frame(&fingers(&[(1, (x, y))], &[]), 0), None);
+        }
+        assert_eq!(rail.state.shown, 0.0);
+    }
+
+    /// A finger meant for the rail lands on it alone and stays: after a
+    /// moment it sets the height, and the names round it come out.
+    #[test]
+    fn a_finger_resting_on_the_track_takes_it() {
+        let mut rail = Rail::new();
+        let p = rail.on_track(0.5);
+        let on = fingers(&[(1, p)], &[]);
+        assert_eq!(rail.frame(&on, 0), None, "not on the frame it landed");
+        let goal = (0..20).find_map(|_| rail.frame(&on, 0));
+        assert!(goal.is_some(), "a resting finger never took the track");
+        assert!(rail.state.shown > 0.0);
+    }
+
+    /// A quick tap on the track, lifted before it took the track, still goes
+    /// where it tapped.
+    #[test]
+    fn a_tap_on_the_track_goes_there() {
+        let mut rail = Rail::new();
+        let p = rail.on_track(0.2);
+        assert_eq!(rail.frame(&fingers(&[(1, p)], &[]), 0), None);
+        let lift = Fingers {
+            held: Vec::new(),
+            released: vec![(1, egui::pos2(p.0, p.1))],
+            free: 0,
+        };
+        let goal = rail.frame(&lift, 0).expect("the tap went nowhere");
+        let up = rail.frame(&fingers(&[], &[]), 0);
+        assert_eq!(up, None);
+        assert!(goal > 1e6, "a tap high on the rail climbs: {goal}");
     }
 }
