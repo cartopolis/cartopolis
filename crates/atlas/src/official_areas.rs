@@ -20,6 +20,8 @@
 //!   Low, per COROP region for 2021, 2040, 2050 and 2060.
 //! - **`ne-admin1-europe`**: Natural Earth's admin-1 over Europe, no figures;
 //!   a province rung for scenarios beyond the Netherlands.
+//! - **`ne-admin0-europe`**: Natural Earth's countries over Europe, no
+//!   figures; the outline the painted far map borders the home country with.
 //!
 //! A figure over time is a **series**: one field per year under one key
 //! (`AreaSet::field_at`), which a scenario's clock of years plays through.
@@ -39,6 +41,8 @@ use serde_json::Value;
 
 /// Natural Earth's admin-1 as GeoJSON, in the project's own repository.
 pub const NATURAL_EARTH_ADMIN1: &str = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson";
+/// Natural Earth's countries, from the same repository.
+pub const NATURAL_EARTH_ADMIN0: &str = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson";
 
 /// CBS's wijken en buurten 2024, as PDOK serves them.
 const CBS_WFS: &str = "https://service.pdok.nl/cbs/wijkenbuurten/2024/wfs/v1_0";
@@ -142,18 +146,46 @@ fn simplified(polys: &[Vec<Vec<LonLat>>], tolerance: f64) -> Vec<Vec<Vec<LonLat>
 
 /// Natural Earth admin-1 over Europe (lon −25…45, lat 34…72), ~1 km tolerance.
 pub fn natural_earth_europe(source: &Value) -> anyhow::Result<AreaSet> {
+    Ok(AreaSet::new(
+        "ne-admin1-europe".into(),
+        "Provinces: Natural Earth (public domain)".into(),
+        natural_earth_areas(source, &["adm1_code"], 0.01)?,
+    )
+    .with_rung(Rung::Province))
+}
+
+/// Natural Earth's countries over Europe, ~200 m tolerance: the outline the
+/// painted far map borders the home country with (`systems::home_country`),
+/// which follows the coast and takes in the islands, where the Kadaster's
+/// country runs out to sea with the municipalities.
+pub fn natural_earth_countries_europe(source: &Value) -> anyhow::Result<AreaSet> {
+    Ok(AreaSet::new(
+        "ne-admin0-europe".into(),
+        "Countries: Natural Earth (public domain)".into(),
+        natural_earth_areas(source, &["ADM0_A3", "adm0_a3"], 0.002)?,
+    )
+    .with_rung(Rung::Country))
+}
+
+/// The features of a Natural Earth layer over Europe, each named by its
+/// `id_keys` and simplified to `tolerance` degrees.
+fn natural_earth_areas(
+    source: &Value,
+    id_keys: &[&str],
+    tolerance: f64,
+) -> anyhow::Result<Vec<Area>> {
     let [w, s, e, n] = [-25.0, 34.0, 45.0, 72.0];
     let mut areas = Vec::new();
     for f in source["features"].as_array().into_iter().flatten() {
         let props = &f["properties"];
         let (Some(id), Some(name), Some(country)) = (
-            first_text(props, &["adm1_code"]),
-            first_text(props, &["name_en", "name"]),
-            first_text(props, &["adm0_a3"]),
+            first_text(props, id_keys),
+            first_text(props, &["name_en", "NAME_EN", "name", "NAME"]),
+            first_text(props, &["adm0_a3", "ADM0_A3"]),
         ) else {
             continue;
         };
-        let polys = simplified(&polygons(&f["geometry"]), 0.01);
+        let polys = simplified(&polygons(&f["geometry"]), tolerance);
         if polys.is_empty() {
             continue;
         }
@@ -168,12 +200,7 @@ pub fn natural_earth_europe(source: &Value) -> anyhow::Result<AreaSet> {
         bail!("no areas in Europe");
     }
     areas.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(AreaSet::new(
-        "ne-admin1-europe".into(),
-        "Provinces: Natural Earth (public domain)".into(),
-        areas,
-    )
-    .with_rung(Rung::Province))
+    Ok(areas)
 }
 
 // ─── CBS ────────────────────────────────────────────────────────────────────
@@ -1061,8 +1088,12 @@ pub fn write(
         "ne-admin1-europe" => vec![natural_earth_europe(&read_source(
             from.unwrap_or(NATURAL_EARTH_ADMIN1),
         )?)?],
+        "ne-admin0-europe" => vec![natural_earth_countries_europe(&read_source(
+            from.unwrap_or(NATURAL_EARTH_ADMIN0),
+        )?)?],
         other => bail!(
-            "no area set {other:?}; there are cbs-2024, ses-2023, pbl-2050, wlo-2025 and ne-admin1-europe"
+            "no area set {other:?}; there are cbs-2024, ses-2023, pbl-2050, wlo-2025, \
+             ne-admin1-europe and ne-admin0-europe"
         ),
     };
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;

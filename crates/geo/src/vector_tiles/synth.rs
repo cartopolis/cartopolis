@@ -112,6 +112,40 @@ pub fn tagged_line_layer(
     out
 }
 
+/// [`tagged_line_layer`] with an unsigned-integer tag — the shape of a
+/// Shortbread `boundaries` feature's `admin_level`.
+pub fn uint_tagged_line_layer(
+    name: &str,
+    extent: u32,
+    (key, value): (&str, u64),
+    points: &[(i32, i32)],
+) -> Vec<u8> {
+    let mut geometry = varint(9);
+    let (mut cx, mut cy) = (0, 0);
+    for (i, &(x, y)) in points.iter().enumerate() {
+        if i == 1 {
+            geometry.extend(varint(((points.len() as u64 - 1) << 3) | 2));
+        }
+        geometry.extend(varint(zigzag(x - cx)));
+        geometry.extend(varint(zigzag(y - cy)));
+        (cx, cy) = (x, y);
+    }
+    let mut feature = varint_field(3, 2); // type = LINESTRING
+    let mut tags = varint(0);
+    tags.extend(varint(0));
+    feature.extend(bytes_field(2, &tags));
+    feature.extend(bytes_field(4, &geometry));
+
+    let mut out = bytes_field(1, name.as_bytes());
+    out.extend(bytes_field(2, &feature));
+    out.extend(bytes_field(3, key.as_bytes()));
+    // A `Value` message with its `uint_value` (field 5) set.
+    out.extend(bytes_field(4, &varint_field(5, value)));
+    out.extend(varint_field(5, u64::from(extent)));
+    out.extend(varint_field(15, 2));
+    out
+}
+
 /// A layer out of already-encoded features.
 pub fn layer(name: &str, extent: u32, features: &[Vec<u8>]) -> Vec<u8> {
     let mut out = bytes_field(1, name.as_bytes());

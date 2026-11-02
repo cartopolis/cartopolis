@@ -47,6 +47,10 @@ pub struct FarDetail {
     /// where the two styles meet carries, for the cross-fade on distance
     /// (`tile_loader::PAINTED_TWIN_ZOOM`).
     pub painted: bool,
+    /// The home country's outline, each ring in the tile's unit square: drawn
+    /// as the strategy map's border, a sharp orange line with a glow on its
+    /// inner side ([`paint_country`]). Empty draws none.
+    pub country: Vec<Vec<[f32; 2]>>,
 }
 
 /// The empty detail: what every caller that has none passes.
@@ -54,6 +58,7 @@ pub static NO_FAR_DETAIL: FarDetail = FarDetail {
     buildings: Vec::new(),
     shadow: None,
     painted: false,
+    country: Vec::new(),
 };
 
 /// Whether a raster of `source_m` ground metres, magnified `factor` times, is
@@ -350,18 +355,140 @@ pub(super) fn paint(
 
     if let Some(meta) = tile.layer("boundaries") {
         let t = c.layer_transform(TileData::extent(meta));
-        let feats: Vec<&Feature> = tile.features(meta).iter().collect();
+        // Between countries a cream line, as the mockup draws the neighbours';
+        // the home country's own outline is `far.country`, over everything.
+        // Shortbread marks a border at sea `maritime`: that one stays grey.
+        let (country, other): (Vec<&Feature>, Vec<&Feature>) = tile
+            .features(meta)
+            .iter()
+            .partition(|f| num_of(f, "admin_level") == Some(2.0) && !bool_of(f, "maritime"));
         stroke(
             pixmap,
             &mut paint,
-            &feats,
+            &other,
             &t,
             palette::BOUNDARY,
             0.7,
             1.2 * c.wf,
             None,
         );
+        stroke(
+            pixmap,
+            &mut paint,
+            &country,
+            &t,
+            palette::painted::NEIGHBOUR_BORDER,
+            0.9,
+            1.6 * c.wf,
+            None,
+        );
     }
+
+    paint_country(pixmap, &mut paint, tile, &far.country, c);
+}
+
+/// How far, in metres, a coast or border may lie from the coarse outline and
+/// still be the home country's: Natural Earth's 1:10m outline misses parts of
+/// the Wadden islands by up to ~3 km (Vlieland's north shore).
+const COUNTRY_REACH_M: f32 = 4_000.0;
+
+/// The home country's border as the strategy map draws it (v1-macro): a sharp
+/// orange line along its coast, its islands' shores and its land borders,
+/// with a wide stroke clipped to the inside so the glow falls inward only.
+///
+/// `rings` is a coarse outline (Natural Earth's): it only says *which* lines
+/// are the country's. The lines are the tile's own — the edge of its `ocean`
+/// and its `boundaries` between countries — so they lie on the map's coast at
+/// every zoom, where the coarse outline is a kilometre out.
+fn paint_country(
+    pixmap: &mut Pixmap,
+    paint: &mut Paint<'static>,
+    tile: &TileData,
+    rings: &[Vec<[f32; 2]>],
+    c: &Canvas,
+) {
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let mut pb = PathBuilder::new();
+    for ring in rings {
+        push_ring(&mut pb, ring, 0.0, 0.0);
+    }
+    let Some(outline) = pb.finish().and_then(|p| p.transform(c.unit_transform())) else {
+        return;
+    };
+    // Everything below is in this band's pixels.
+    let in_px = |layer: &str, area: bool| -> Option<tiny_skia::Path> {
+        let meta = tile.layer(layer)?;
+        let mut pb = PathBuilder::new();
+        for f in tile.features(meta) {
+            if area {
+                append_area(&mut pb, &f.geometry);
+            } else if num_of(f, "admin_level") == Some(2.0) && !bool_of(f, "maritime") {
+                append_lines(&mut pb, &f.geometry);
+            }
+        }
+        pb.finish()?
+            .transform(c.layer_transform(TileData::extent(meta)))
+    };
+    let sea = in_px("ocean", true);
+    let borders = in_px("boundaries", false);
+    let line = |width_px: f32| Stroke {
+        width: width_px * c.wf,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        ..Stroke::default()
+    };
+    let id = Transform::identity();
+    let Some(mut scratch) = Pixmap::new(w, h) else {
+        return;
+    };
+    let white = Paint {
+        shader: tint(0xFF_FF_FF, 1.0),
+        anti_alias: true,
+        ..Paint::default()
+    };
+
+    // Where a line is the country's: the outline, widened by its error.
+    let px_per_m = c.px * c.f / c.source_m.max(1.0);
+    let reach = (COUNTRY_REACH_M * px_per_m).max(3.0 * c.wf);
+    scratch.fill_path(&outline, &white, FillRule::Winding, id, None);
+    scratch.stroke_path(
+        &outline,
+        &white,
+        &Stroke {
+            width: 2.0 * reach,
+            ..Stroke::default()
+        },
+        id,
+        None,
+    );
+    let near = tiny_skia::Mask::from_pixmap(scratch.as_ref(), tiny_skia::MaskType::Alpha);
+
+    // Where the glow may fall: inside the outline and not at sea.
+    scratch.fill(tiny_skia::Color::TRANSPARENT);
+    scratch.fill_path(&outline, &white, FillRule::Winding, id, None);
+    if let Some(sea) = &sea {
+        let clear = Paint {
+            blend_mode: tiny_skia::BlendMode::Clear,
+            ..white.clone()
+        };
+        scratch.fill_path(sea, &clear, FillRule::Winding, id, None);
+    }
+    let inside = tiny_skia::Mask::from_pixmap(scratch.as_ref(), tiny_skia::MaskType::Alpha);
+
+    for (alpha, width, mask) in [(0.4, 20.0, &inside), (0.95, 3.5, &near)] {
+        paint.shader = tint(palette::painted::COUNTRY_BORDER, alpha);
+        for path in [&sea, &borders].into_iter().flatten() {
+            pixmap.stroke_path(path, paint, &line(width), id, Some(mask));
+        }
+    }
+}
+
+/// A boolean property; absent or of another type reads as false.
+fn bool_of(feature: &Feature, key: &str) -> bool {
+    matches!(
+        feature.properties.as_ref().and_then(|p| p.get(key)),
+        Some(Value::Bool(true))
+    )
 }
 
 /// Fill features in runs of one colour, the way the near style batches.

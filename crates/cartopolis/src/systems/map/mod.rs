@@ -31,6 +31,8 @@ pub mod globe_weather;
 pub mod grass;
 pub mod ground_detail;
 pub mod height;
+// The home country's outline, drawn as the far map's border.
+pub mod home_country;
 pub mod interiors;
 // The fog volume the sun's light shafts are marched through; the camera and the
 // sun carry the other two halves (`free_camera::setup_camera`, `sky`).

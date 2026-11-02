@@ -48,9 +48,9 @@ enum Command {
     Areas {
         /// `cbs-2024` (buurt to country, with figures), `ses-2023` (status
         /// scores 2014–2023), `pbl-2050` (the forecast to 2050), `wlo-2025`
-        /// (the WLO futures to 2060) or `ne-admin1-europe`.
+        /// (the WLO futures to 2060), `ne-admin1-europe` or `ne-admin0-europe`.
         set: String,
-        /// For `ne-admin1-europe`: a GeoJSON file or URL instead of Natural
+        /// For the `ne-` sets: a GeoJSON file or URL instead of Natural
         /// Earth's; for `wlo-2025`, the workbook instead of PBL's.
         #[arg(long)]
         from: Option<String>,

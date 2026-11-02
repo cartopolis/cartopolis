@@ -136,3 +136,28 @@ Netherlands, the vertical sides fall 47 px apart on both tiers, the expected
 
 The cell's sides are normal to the lattice's six neighbours, at 0° and ±60°;
 the first build used ±30° and drew bow-ties at every vertex.
+
+## The home country's border
+
+As on v1-macro (asked 2026-11-02, "the shot must be equal"): the Netherlands
+is outlined whole — coast, islands and land borders — in
+`palette::painted::COUNTRY_BORDER`, a sharp line with a wide stroke clipped to
+the inside so the glow falls inward only (`painted::paint_country`). Borders
+between other countries are the mockup's thin cream (`NEIGHBOUR_BORDER`),
+provinces and borders at sea the grey `BOUNDARY`.
+
+The lines are the tile's own: the edge of its `ocean` layer (the OSM coast)
+and its `boundaries` between countries. Natural Earth's 1:10m countries, as
+the mockup used (`atlas areas ne-admin0-europe`, 69 countries, 593 KB,
+fetched once by `systems::home_country`), only pick which of them are the
+country's (`COUNTRY_REACH_M` around it) and where the glow may fall. Drawn
+from Natural Earth alone the line was a kilometre off the Wadden islands —
+invisible at 350 km, 25 px at 60 km — and a tile-size cut-off left half the
+coast orange in one view at 120 km. Two other sources lost earlier:
+Shortbread's `boundaries` alone have no coast, and the Kadaster's country
+(`cbs-land-2024`) is the municipalities' territory, a few kilometres out to
+sea and round the Wadden Sea.
+
+Every far tile waits for the outline before it is drawn, because it is part
+of the stored tile's key. No recorded tile crosses a country border, so the
+render-revision measure draws a synthetic border and outline.
