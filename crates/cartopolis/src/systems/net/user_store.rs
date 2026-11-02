@@ -1185,6 +1185,7 @@ pub fn restore_start_location(
         altitude: Some(loc.altitude),
         pose: Some(loc.pose.clone()),
         silent: true,
+        look: false,
     });
     tracing::info!(lat = loc.lat, lng = loc.lng, mode = %loc.pose.mode, "restoring last location");
 }

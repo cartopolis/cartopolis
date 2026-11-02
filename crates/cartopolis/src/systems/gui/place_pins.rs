@@ -289,6 +289,7 @@ pub fn render_place_pins(
                     altitude: Some(b.altitude),
                     pose: None,
                     silent: false,
+                    look: false,
                 },
                 b.name.clone(),
             ));

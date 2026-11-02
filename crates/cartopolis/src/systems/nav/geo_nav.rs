@@ -2,7 +2,8 @@
 //! ([`render_search_panel`], the dock's leftmost disc or `Ctrl+L`).
 //!
 //! Type a place name ("Groningen") to get OpenStreetMap Nominatim suggestions
-//! and click one to teleport the avatar/camera there; or paste raw
+//! and click one to look at it — signed in, the camera goes and the avatar
+//! stays ([`Teleport::look`]), so the place card can route there; or paste raw
 //! coordinates — "lat, lng" or "lat, lng, altitude" (the format the HUD's
 //! copy button produces) — to jump directly without a lookup. Teleports keep
 //! the current camera mode; bookmark jumps and the last-location restore
@@ -365,7 +366,10 @@ impl GeoNavState {
         if self.teleport_on_result {
             self.teleport_on_result = false;
             let first = &list[0];
-            self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+            self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None).looking());
+            // The card too, as an Enter on a list already shown opens it: the
+            // view is all the jump moves, so "To" is how the trip starts.
+            self.pending_card = Some(card_place(first));
             self.pending_label = Some(first.name.clone());
             self.query = first.label.clone();
             self.show_suggestions = false;
@@ -520,6 +524,7 @@ impl GeoNavState {
             altitude: Some(e.altitude),
             pose: Some(e.pose.clone()),
             silent: false,
+            look: true,
         });
         self.from_history = true;
     }
@@ -544,6 +549,16 @@ pub struct Teleport {
     /// and the device-fix jumps in `locate` / `driver`, which fire whenever the
     /// GPS reports a big enough step and are nobody's decision at all.
     pub silent: bool,
+    /// Move the view, not the avatar: the camera goes to the place and the
+    /// avatar stays where it stands (carried into the new frame if the map
+    /// re-anchors). **Signed in only** — `apply_teleport` ignores it offline,
+    /// where there is no body to keep apart from the view.
+    ///
+    /// Set by search picks, recents and Back/Forward. A pick used to bring the
+    /// avatar along, so the place card's "To" planned a route from the place to
+    /// itself: "My position" is the avatar, and it had just been put there. The
+    /// card's Beam is the one verb that moves the body now.
+    pub look: bool,
 }
 
 impl Teleport {
@@ -555,6 +570,7 @@ impl Teleport {
             altitude,
             pose: None,
             silent: false,
+            look: false,
         }
     }
 
@@ -562,6 +578,13 @@ impl Teleport {
     #[must_use]
     pub fn silently(mut self) -> Self {
         self.silent = true;
+        self
+    }
+
+    /// The same jump, moving only the view. See [`Self::look`].
+    #[must_use]
+    pub fn looking(mut self) -> Self {
+        self.look = true;
         self
     }
 
@@ -573,6 +596,7 @@ impl Teleport {
             altitude: point.view.map(|v| v.altitude),
             pose: point.view.map(|v| CameraPose::free_look(v.pitch, v.yaw)),
             silent: false,
+            look: false,
         }
     }
 
@@ -588,6 +612,7 @@ impl Teleport {
                 .look
                 .map(|(pitch, yaw)| CameraPose::free_look(pitch, yaw)),
             silent: false,
+            look: false,
         }
     }
 }
@@ -1474,6 +1499,7 @@ fn history_row(
                     altitude: Some(h.altitude),
                     pose: Some(h.pose.clone()),
                     silent: false,
+                    look: false,
                 });
                 acted = true;
             }
@@ -1648,14 +1674,14 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
     let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
         if let Some(fix) = crate::systems::place_link::place_from_link(&nav.query) {
-            nav.pending_teleport = Some(Teleport::fix(fix));
+            nav.pending_teleport = Some(Teleport::fix(fix).looking());
             nav.show_suggestions = false;
         } else if nav.query.trim() == nav.last_sent && !nav.stale && !nav.suggestions.is_empty() {
             // …but never off a *stale* list: those hits answer a query the field no
             // longer holds, and Enter is the one gesture that would fly there
             // without the user having read the row.
             let first = nav.suggestions[0].clone();
-            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None).looking());
             nav.pending_card = Some(card_place(&first));
             nav.pending_label = Some(first.name);
             nav.query = first.label;
@@ -1803,6 +1829,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                     altitude: Some(e.altitude),
                     pose: Some(e.pose.clone()),
                     silent: false,
+                    look: true,
                 },
                 e.label.clone(),
                 crate::systems::place_card::CardPlace {
@@ -1832,9 +1859,9 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         }
         nav.pending_card = Some(card);
         match fix {
-            Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix)),
+            Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix).looking()),
             None => {
-                nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None));
+                nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None).looking());
                 nav.pending_label = Some(s.name);
                 nav.query = s.label;
             }
@@ -2092,6 +2119,7 @@ pub fn apply_camera_reanchor(mut camera_state: ResMut<CameraState>, mut nav: Res
         // A globe descent is a camera move that happens to bring the avatar; the
         // person flew here rather than jumping here.
         silent: true,
+        look: false,
     });
 }
 
@@ -2371,6 +2399,14 @@ pub fn apply_teleport(
     if let Some(pose) = &tp.pose {
         pose.apply(&mut camera_state);
     }
+    // A look at a place, signed in, leaves the body where it stands. Follow
+    // frames the avatar, so it would pull the view straight back: the look
+    // lands in Earth mode, the camera for looking at a map.
+    let look = tp.look && online.is_some();
+    if look && camera_state.mode == CameraMode::Avatar {
+        crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Orbit);
+        camera_state.mode = CameraMode::Orbit;
+    }
 
     // Re-anchor the map/globe/buildings to the destination so detail streams
     // there and the camera stays near the origin, where the flat frame is exact
@@ -2390,20 +2426,43 @@ pub fn apply_teleport(
             let (dx, dz) = lat_lng_to_world(a, lat, lng);
             dx.hypot(dz) < SHORT_JUMP_M
         });
-    let (wx, wz) = match current {
-        Some(a) if short => lat_lng_to_world(a, lat, lng),
+    // The frame the jump lands in: the current one for a short jump, else the
+    // destination's.
+    let frame = match current {
+        Some(a) if short => a,
         _ => {
             stream.request_reanchor(lat, lng);
             let base_zoom = current
                 .map(|(_, _, z)| z)
                 .unwrap_or(cartopolis_core::world::DEFAULT_TILE_ZOOM);
             let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
-            lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng)
+            (snapped.0, snapped.1, base_zoom)
         }
     };
+    let (wx, wz) = lat_lng_to_world(frame, lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
     let (avatar_cell, avatar_local) = grid.translation_to_grid(DVec3::new(wx, AVATAR_GROUND_Y, wz));
+    if look {
+        // The avatar keeps its latitude and longitude, so it only moves at all
+        // when the frame does — as `recentre_under_camera` carries it.
+        if let (Some(from), Ok((mut cell, mut tf))) = (current, avatars.single_mut()) {
+            if from != frame {
+                let p = anchored_position_f64(&cell, tf.translation);
+                let (alat, alng) = world_to_lat_lng(from, p.x, p.z);
+                let (x, z) = lat_lng_to_world(frame, alat, alng);
+                let (to_cell, to_local) = grid.translation_to_grid(DVec3::new(x, p.y, z));
+                place_avatar(
+                    &mut cell,
+                    &mut tf,
+                    &mut avatar_state,
+                    online.as_deref(),
+                    to_cell,
+                    to_local,
+                );
+            }
+        }
+    }
     // The entity and the state move together or not at all. They used to be
     // written a line apart with only the *entity* guarded, so on any frame the
     // query missed, `AvatarState` claimed a position the avatar was not at — and
@@ -2418,7 +2477,9 @@ pub fn apply_teleport(
     // Skipping rather than half-applying is the right failure: an avatar that
     // stays put with state that agrees is recoverable by the next teleport, while
     // state that lies about where the avatar is never resolves on its own.
-    if let Ok((mut cell, mut tf)) = avatars.single_mut() {
+    if look {
+        // Carried above, or left standing.
+    } else if let Ok((mut cell, mut tf)) = avatars.single_mut() {
         place_avatar(
             &mut cell,
             &mut tf,
@@ -3314,5 +3375,84 @@ mod tests {
         CameraPose::default().apply(&mut cs);
         assert!(matches!(cs.mode, CameraMode::Avatar));
         assert_eq!(cs.azimuth, 0.7);
+    }
+
+    /// Run [`apply_teleport`] once on `tp`, signed in or not, from Follow mode
+    /// with the avatar standing at the anchor. Returns the avatar's position and
+    /// the camera mode afterwards.
+    fn teleport_once(tp: Teleport, signed_in: bool) -> (Vec3, CameraMode, bool) {
+        let mut app = App::new();
+        let mut nav = GeoNavState::default();
+        nav.pending_teleport = Some(tp);
+        app.insert_resource(nav)
+            .insert_resource(MapStream::anchored_at(ANCHOR))
+            .insert_resource(CameraState {
+                mode: CameraMode::Avatar,
+                ..Default::default()
+            })
+            .insert_resource(AvatarState::default())
+            .insert_resource(GlobeState::default());
+        let (tx, _rx) = futures_channel::mpsc::unbounded();
+        if signed_in {
+            app.insert_resource(crate::resources::OnlineSession { intent_tx: tx });
+        }
+        app.world_mut()
+            .spawn((FreeCamera, GridCell::ZERO, Transform::default()));
+        let avatar = app
+            .world_mut()
+            .spawn((Avatar, GridCell::ZERO, Transform::default()))
+            .id();
+        app.add_systems(Update, apply_teleport);
+        app.update();
+        let at = app.world().get::<Transform>(avatar).unwrap().translation;
+        let reanchors = app.world().resource::<MapStream>().reanchor_pending();
+        (at, app.world().resource::<CameraState>().mode, reanchors)
+    }
+
+    /// A search pick, signed in, moves the view and leaves the body: the route
+    /// planner's "My position" is the avatar, and a pick that brought it along
+    /// made every "To" on the place card a route from the place to itself.
+    #[test]
+    fn a_signed_in_look_leaves_the_avatar_standing() {
+        // ~700 m east of the anchor: a short jump, in the same frame.
+        let near = Teleport::geo(ANCHOR.0, ANCHOR.1 + 0.01, None).looking();
+        let (at, mode, reanchors) = teleport_once(near, true);
+        assert!(!reanchors);
+        assert!(at.length() < 1e-3, "the avatar moved to {at}");
+        assert!(
+            matches!(mode, CameraMode::Orbit),
+            "Follow would pull the view back"
+        );
+
+        // The same jump that is not a look still brings the avatar.
+        let beam = Teleport::geo(ANCHOR.0, ANCHOR.1 + 0.01, None);
+        let (at, ..) = teleport_once(beam, true);
+        assert!(at.x > 600.0, "a beam must move the avatar, it is at {at}");
+
+        // Offline there is no body apart from the view, so a look is a jump.
+        let offline = Teleport::geo(ANCHOR.0, ANCHOR.1 + 0.01, None).looking();
+        let (at, ..) = teleport_once(offline, false);
+        assert!(
+            at.x > 600.0,
+            "offline the avatar rides along, it is at {at}"
+        );
+    }
+
+    /// A far look re-anchors the map under the place and carries the avatar
+    /// into the new frame at the latitude and longitude it stood on.
+    #[test]
+    fn a_far_look_keeps_the_avatar_where_it_was_on_the_earth() {
+        // Winsum, ~15 km north-west: past `SHORT_JUMP_M`.
+        let far = Teleport::geo(53.3284, 6.5164, None).looking();
+        let (at, _, reanchors) = teleport_once(far, true);
+        assert!(reanchors);
+        let next = crate::systems::map_stream::snap_anchor(53.3284, 6.5164, ANCHOR.2);
+        let (wx, wz) = lat_lng_to_world((next.0, next.1, ANCHOR.2), ANCHOR.0, ANCHOR.1);
+        let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+        let (_, local) = grid.translation_to_grid(DVec3::new(wx, 0.0, wz));
+        assert!(
+            (at.x - local.x).abs() < 0.5 && (at.z - local.z).abs() < 0.5,
+            "the avatar is at {at}, its spot on the earth is {local}"
+        );
     }
 }

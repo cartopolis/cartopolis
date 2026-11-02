@@ -13,9 +13,11 @@
 //!   picker would drift from it.
 //! - **Save** — the place into Places, under the name the user just read on the
 //!   row they tapped (no reverse-geocode round trip: we hold the better name).
-//! - **Teleport** — bring the avatar here, *signed in only*. Offline the row
-//!   pick has already moved the view (and the local avatar rides the re-anchor);
-//!   a body you share a world with is what makes "go there" a distinct act.
+//! - **Beam** — bring the avatar here, *signed in only*. Signed in, the row
+//!   pick moves only the view ([`Teleport::look`]): the avatar is "My position"
+//!   to the planner, and a pick that brought it along made "To" a route from
+//!   the place to itself. Offline the pick moves the view and the local avatar
+//!   with it, as there is no body in a shared world to keep apart from it.
 //!
 //! It is a floating `Area` like the dock and the main menu, deliberately not in
 //! the panel chain, and it follows the dock's suppression rules: driver

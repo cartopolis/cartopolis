@@ -924,6 +924,7 @@ fn place_row(
                         altitude: Some(altitude),
                         pose: None,
                         silent: false,
+                        look: false,
                     });
                     act.teleport_label = Some(title.clone());
                 }

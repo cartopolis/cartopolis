@@ -400,6 +400,16 @@ impl MapStream {
         self.pending_reanchor = Some((lat, lng));
     }
 
+    /// A streamer already anchored at `anchor`, for tests of systems that wait
+    /// on one (`geo_nav::apply_teleport`).
+    #[cfg(test)]
+    pub(crate) fn anchored_at(anchor: (f64, f64, u32)) -> Self {
+        Self {
+            anchor: Some(anchor),
+            ..Self::default()
+        }
+    }
+
     /// Is a re-anchor requested and not yet applied?
     pub fn reanchor_pending(&self) -> bool {
         self.pending_reanchor.is_some()

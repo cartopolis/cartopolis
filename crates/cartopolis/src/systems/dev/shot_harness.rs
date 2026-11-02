@@ -3603,6 +3603,7 @@ pub fn place_camera(
         // arrival animation would put a half-formed avatar in the shot of every
         // preset that frames one.
         silent: true,
+        look: false,
     });
     tracing::info!(
         shot = progress.index + 1,

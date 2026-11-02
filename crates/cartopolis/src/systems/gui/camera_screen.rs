@@ -839,6 +839,7 @@ mod native {
                         altitude: Some(globe.altitude_m(cell, &tf)),
                         pose: Some(CameraPose::capture(&cs)),
                         silent: true,
+                        look: false,
                     }
                 });
             }
@@ -1167,6 +1168,7 @@ mod native {
                             pose.harness_yaw_deg(),
                         )),
                         silent: true,
+                        look: false,
                     });
                     session.placed_at = Some((pose.lat, pose.lng));
                 }
