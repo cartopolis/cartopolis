@@ -6,8 +6,9 @@ triggers: [map_geometry.rs, street_furniture.rs, vegetation.rs, globe.rs, traffi
            pending_meshes, upload_pending, TurbineRotor, "flying higher", altitude,
            residency, "browser rung", SWEEP_RATE, ClimbRate, CARTO_NO_SWEEP_HOLD,
            "zoom in", "zooming in", "descent", RING_RETEARS, VIEW_FIRST_CELLS,
-           MeshTag, "fade in", "pop in", CARTO_PERF_FILM, descent-low]
-updated: 2026-10-21
+           MeshTag, "fade in", "pop in", CARTO_PERF_FILM, descent-low, climb,
+           "zoom out", "zooming out", held_for_sweep, orbit_space]
+updated: 2026-11-02
 ---
 
 # What a climb holds, and why it used to hold the street
@@ -160,3 +161,39 @@ turned out cheap — the cost was the cuts). `cargo perf --only city` (3 km) on
 `mac-1`, web-release, two runs each: load 10.1 / 10.5 s → 6.1 / 6.4 s, worker
 time 24–25 s → 7–8 s; the settled picture matched to within the moving traffic
 (mean absolute difference 6e-6).
+
+## The hold goes one way: a climb drops what it leaves (2026-11-02)
+
+The hold above was argued for descents, and it held on a climb too: the
+street-level ring stayed resident and drawn until the zoom slowed — at 245–450
+km on the climb below. Now a sweep may switch a band *off* but never on
+(`DetailWants::held_for_sweep`); dropping costs a retear and no build, since
+nothing is dispatched while sweeping and the basemap image stands in.
+
+Measured with `cargo perf --only climb` (150 m → 200 km in 10 s over
+Groningen) on `mac-2` (M5 Pro VM, debug + `perf`, 640×360, desktop rung),
+three runs each, the before from the same tree with the hold put back:
+
+| | before | after |
+|---|---|---|
+| street ring dropped at | 245–450 km | 500 m and 2.5 km |
+| mesh resident at the end of the zoom | 1,099 MB | 341 MB |
+| mesh resident once arrived | 331 MB | 10 MB |
+| mean frame of the zoom, median [range] | 37 [31–40] ms | 33 [32–39] ms |
+
+The memory is the result; the frame time is inside the spread and is no
+evidence either way on this machine. The 341 MB left at the end of the zoom is
+LoD2.2 (261 MB) and OSM buildings (44 MB), held to 50 km on purpose (above).
+
+**Settled, 3–45 km is not the street.** The same run's census at 3, 15 and
+45 km has the ring at 12 MB in 538 entities; the ~360 MB resident there is the
+buildings again. What costs there is draws (528 / 1,285 / 1,704) and shadow
+casters (285 / 581 / 594) — the next place to look, not this ring's bands.
+
+**A climb through `SPACE_ENTER_ALT` changes what `orbit_distance` means**: from
+the ground focus below it, from the Earth's centre above it. The first `climb`
+run wrote focus distances after the handover, which pulled the camera into the
+ground, which handed back to the focus — a loop from 0 to 1,900 km once a
+second, read by every streamer as a series of teleports. The harness adds the
+radius once `orbit_space` is set; anything else driving the zoom target from
+outside `free_camera` has to do the same.

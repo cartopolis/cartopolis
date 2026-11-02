@@ -969,8 +969,8 @@ fn view_first_enabled() -> bool {
 
 /// Above this rate of change of altitude — in e-folds a second, so 0.3 is the
 /// distance changing by a third every second — a zoom is sweeping through
-/// [`DetailWants`]' bands, and the ring neither changes its detail nor starts
-/// cells until it slows.
+/// [`DetailWants`]' bands, and the ring gains no detail and starts no cells
+/// until it slows. It does lose detail ([`DetailWants::held_for_sweep`]).
 ///
 /// **Why hold rather than follow.** A descent from orbit crosses three bands
 /// (trees at 2 km, furniture at 450 m, the flat ground at 250 m), and each one
@@ -979,6 +979,12 @@ fn view_first_enabled() -> bool {
 /// interrupted. None of those builds could land before the camera was past them.
 /// Held, a brisk zoom pays for one ring, built for where it stops; a slow one
 /// (under this rate) still gains its detail band by band on the way down.
+///
+/// **One way only.** Holding on a climb too kept the street-level ring — flat
+/// ground, furniture, trees, 1.1 GB of meshes over Groningen — resident and
+/// drawn until the zoom slowed, which on `cargo perf --only climb` (150 m →
+/// 200 km in 10 s) was at 245–450 km. Dropping a band costs a retear and no build:
+/// nothing is dispatched while sweeping, so the basemap image stands in.
 const SWEEP_RATE: f32 = 0.3;
 
 /// Whether a sweeping zoom holds the ring ([`SWEEP_RATE`]).
@@ -1280,6 +1286,20 @@ struct DetailWants {
     /// leave it to the basemap image (`FLAT_GROUND_ON_M`). The data they carry is
     /// extracted either way.
     flat_ground: bool,
+}
+
+impl DetailWants {
+    /// What a sweeping zoom keeps of `self` when the altitude asks for `now`:
+    /// the altitude bands may switch off, never on ([`SWEEP_RATE`]). The toggles
+    /// stay as they were, as they did before the hold went one way.
+    fn held_for_sweep(self, now: DetailWants) -> DetailWants {
+        DetailWants {
+            trees: self.trees && now.trees,
+            furniture: self.furniture && now.furniture,
+            flat_ground: self.flat_ground && now.flat_ground,
+            ..self
+        }
+    }
 }
 
 /// Below this camera altitude the flat ground is drawn as meshes; above
@@ -3226,13 +3246,13 @@ pub fn update_map_surfaces(
         modelled: stores.placeholders.mask(),
         flat_ground: flat_ground && ground_meshes_enabled(),
     };
-    // A zoom sweeping through the bands keeps the ring as it is and starts no
-    // cells until it slows (`SWEEP_RATE`): whatever it built now would be the
-    // wrong detail by the time it landed.
+    // A zoom sweeping through the bands gains no detail and starts no cells
+    // until it slows (`SWEEP_RATE`): whatever it built now would be the wrong
+    // detail by the time it landed. It does drop what it has climbed out of.
     let sweeping = surfaces.climb.sample(alt) && sweep_hold_enabled();
     surfaces.held = sweeping && alt <= crate::systems::globe::GLOBE_SHOW_ALT;
     let wants = match was {
-        Some(was) if sweeping => was,
+        Some(was) if sweeping => was.held_for_sweep(wants),
         _ => wants,
     };
     if surfaces.detail_wants != Some(wants) {
@@ -6079,6 +6099,25 @@ mod tests {
         assert!(rate.abs() < SWEEP_RATE, "{rate}");
         // A teleport from orbit to the street in one frame.
         assert_eq!(climb_step(0.0, 40_000.0, 120.0, 1.0 / 60.0), 0.0);
+    }
+
+    /// A sweep holds the ring on the way down and lets it go on the way up.
+    #[test]
+    fn a_sweep_drops_bands_but_never_adds_them() {
+        let street = DetailWants::ALL;
+        let high = DetailWants {
+            trees: false,
+            furniture: false,
+            flat_ground: false,
+            shore: false,
+            ..street
+        };
+        // Climbing out of the street: the bands go, the shore toggle stays.
+        let kept = street.held_for_sweep(high);
+        assert!(!kept.trees && !kept.furniture && !kept.flat_ground);
+        assert!(kept.shore);
+        // Descending into it: nothing is gained until the zoom slows.
+        assert_eq!(high.held_for_sweep(street), high);
     }
 
     /// A surface far over the mesh cap reaches the spawn loop as several meshes,
