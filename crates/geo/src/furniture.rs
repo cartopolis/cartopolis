@@ -2032,8 +2032,12 @@ pub(crate) fn push_box(
             buf.normals.push(world_n);
             buf.colors.push(tint);
         }
+        // The corners above run clockwise seen from outside, so the triangles
+        // take them in reverse: wound the other way, every box was drawn inside
+        // out, and back-face culling showed its floor and its far end wall — a
+        // kerb read as a grey channel with a pale block every metre.
         buf.indices
-            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
     }
 }
 
@@ -2057,6 +2061,33 @@ pub fn paving_base(factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::vector_tiles::synth;
+
+    /// Every triangle of a box faces the way its normal does, turned or not:
+    /// counter-clockwise seen from outside, which is what bevy's back-face
+    /// culling keeps.
+    #[test]
+    fn a_box_is_wound_outward() {
+        for (sn, cs) in [(0.0, 1.0), (0.6, 0.8), (-1.0, 0.0)] {
+            let mut buf = MeshBuf::default();
+            let p = part([0.0, 0.5, 0.0], [1.0, 0.5, 0.2], Tone::Roof);
+            push_box(&mut buf, 3.0, -2.0, (sn, cs), &p, [1.0; 4]);
+            for t in buf.indices.chunks(3) {
+                let [a, b, c] = [0, 1, 2].map(|k| buf.positions[t[k] as usize]);
+                let (u, v) = (
+                    [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                    [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+                );
+                let x = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                let n = buf.normals[t[0] as usize];
+                let facing = x[0] * n[0] + x[1] * n[1] + x[2] * n[2];
+                assert!(facing > 0.0, "{t:?} faces away from {n:?}");
+            }
+        }
+    }
 
     #[test]
     fn a_surveyed_object_replaces_its_osm_twin_and_nothing_else() {
